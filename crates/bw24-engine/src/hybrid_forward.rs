@@ -456,6 +456,91 @@ impl HybridModel {
         Ok((e.dtoh(&logits)?, h_seed, if crate::spec::spec_hpost() { hn } else { x }))
     }
 
+    /// CAPTURE-SAFE prime trunk (task #14 increment 1, ARCHITECTURE-H100.md design v2):
+    /// prime_chunk's layer stack with every capture hazard hoisted — `x` is the
+    /// PRE-EMBEDDED input in a STABLE graph-input buffer (embed + its 8MB htod stay
+    /// eager, one launch), `pos_d` is a baked device param (fresh prime = 0..T, constant
+    /// per bucket), logits/h_seed/hidden stay DEVICE-resident (no dtoh), and cache.pos is
+    /// NOT advanced (host state — the replay wrapper owns it). Body mirrors prime_chunk
+    /// (the prime-graph-gate pins them together). KNOWN smoke-scope gap: append host-len
+    /// bookkeeping still runs on the host per call — the real replay path moves the write
+    /// slot to the len_d device counter (increment 3).
+    /// GRAPH-OUTPUT CONTRACT: results are COPIED into caller-provided stable buffers
+    /// (`logits_out` [n_vocab], `h_seed_out` [n_embd]) — every internal allocation drops
+    /// INSIDE the capture region (alloc+free node pairs). Retaining an in-capture
+    /// allocation across end_capture makes instantiate throw INVALID_VALUE (smoke finding
+    /// 2026-07-26), and under AUTO_FREE_ON_LAUNCH its address wouldn't survive a launch
+    /// anyway — the decode GraphSession's pre-allocated-output pattern is the law here.
+    pub fn prime_chunk_captured(&self, e: &Engine, x_in: &CudaSlice<f32>, pos_d: &CudaSlice<i32>,
+                                t: usize, cache: &mut Cache,
+                                logits_out: &mut CudaSlice<f32>, h_seed_out: &mut CudaSlice<f32>)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let f16fuse = crate::f16_ffi::pp_f16_enabled() && t >= 16;
+        let mut x = e.uninit(t * n_embd)?;
+        e.copy_into(&mut x, 0, x_in, t * n_embd)?;
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.uninit(t * n_embd)?;
+            let mut hx16: Option<CudaSlice<u8>> = None;
+            if f16fuse {
+                let mut b16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                e.rms_norm_f16out(&x, layer.attn_norm.float_data(), &mut h, &mut b16, n_embd, t, eps)?;
+                hx16 = Some(b16);
+            } else {
+                e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            }
+            let mixed = match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache, il)?,
+                Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, hx16.as_ref(), t, cache, il)?,
+            };
+            let mut x1 = e.uninit(t * n_embd)?;
+            e.add(&x, &mixed, &mut x1, t * n_embd)?;
+            let mut z = e.uninit(t * n_embd)?;
+            let mut zx16: Option<CudaSlice<u8>> = None;
+            if f16fuse {
+                let mut b16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                e.rms_norm_f16out(&x1, layer.post_attn_norm.float_data(), &mut z, &mut b16, n_embd, t, eps)?;
+                zx16 = Some(b16);
+            } else {
+                e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            }
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let mut g2 = match &zx16 {
+                        Some(xh) => e.matmul_group_xh(&[ffn_gate, ffn_up], &z, xh, t)?,
+                        None => e.matmul_group(&[ffn_gate, ffn_up], &z, t)?,
+                    };
+                    let up = g2.pop().unwrap();
+                    let gate = g2.pop().unwrap();
+                    let mut act = e.uninit(t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    e.matmul(ffn_down, &act, t)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+            };
+            let mut x2 = e.uninit(t * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
+            x = x2;
+        }
+        if !crate::spec::spec_hpost() {
+            e.copy_view_into(h_seed_out, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        if crate::spec::spec_hpost() {
+            e.copy_view_into(h_seed_out, 0, &hn.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        }
+        let mut hlast = e.uninit(n_embd)?;
+        e.copy_view_into(&mut hlast, 0, &hn.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        let logits = e.matmul(&self.output, &hlast, 1)?;
+        let nv = logits.len();
+        e.copy_into(logits_out, 0, &logits, nv)?;
+        Ok(())
+    }
+
     /// Cross-request BATCHED fresh prime (task #13, design in ARCHITECTURE-H100.md): the
     /// trunk's token-parallel ops (embed, norms, adds, ffn, projection GROUPS) run once on
     /// the CONCATENATION of B sequences — GEMMs at m = sum_T, the continuous-batching win

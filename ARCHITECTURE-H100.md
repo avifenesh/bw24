@@ -815,3 +815,27 @@ fixed cache (riskiest unknown: cuBLASLt fp16 + cp.async under RELAXED capture
 (2) the 4 device-length pieces + beta/g pad mask; (3) pointer table variants
 (append/conv/gdn-state); (4) per-bucket capture at server start + worker
 replay path + prime-graph-gate. Prize: 3.7ms/prime (~15%) + freed host.
+
+**Task #14 SMOKE GREEN (2026-07-26): the prime graph WORKS.** prime-graph-smoke
+at T=512: capture INSTANTIATES in 13ms (the 340ms fear was the decode-session
+snapshot machinery, not capture itself); replay 23.3-24.0ms vs eager 25.7ms
+(**+10% immediately, the gap-floor reclaim**) with logits maxdiff 0.000e0 —
+BIT-IDENTICAL. Debug ledger for the arc:
+1. set_i32_one is a SYNCHRONOUS host memcpy — capture-illegal. Fresh len_d=0
+   goes through a memset node instead.
+2. Warmups polluted the recurrent state (warmup 2 primed as a continuation)
+   and overflowed KV host-lens — fixed by BAKING fresh-prime semantics into
+   the graph head: memset nodes zero conv ring + ssm_state(+alt) + len_d and
+   host lens reset per closure entry. This is the CORRECT per-replay behavior,
+   not a workaround.
+3. Retaining an in-capture allocation across end_capture -> INVALID_VALUE at
+   instantiate (and AUTO_FREE would UAF it anyway). GRAPH-OUTPUT CONTRACT:
+   results copy into caller-preallocated stable buffers; every transient
+   drops inside the capture (alloc+free node pairs). prime_chunk_captured
+   signature carries the contract.
+4. capture_graph_retained's keeper path also trips on the prime; the smoke
+   uses manual staged capture — the serving wrapper will too.
+REMAINING for serving: per-bucket capture at boot, session pointer TABLE
+(this smoke bakes ONE cache's pointers), pad-to-bucket + the 4 device-length
+pieces, worker replay path + prime-graph-gate. Replay math: 512/23.3ms =
+21,973 tok/s pp512-equivalent (+10.3% over eager 19,922).
