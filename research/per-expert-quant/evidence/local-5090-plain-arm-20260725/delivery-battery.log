@@ -1,0 +1,10 @@
+== local-ci: correctness stage ==
+kernel-check: GREEN
+run-gen argmax: MATCH (31B)
+VERIFY-GATE K=7 depth: PASS (31B)
+spec self-consistency 64/64: PASS (31B)
+run-gen argmax depth: MATCH (12B)
+VERIFY-GATE K=7 depth: PASS (12B)
+correctness stage: GREEN
+verify-prefill argmax=120025  decode argmax=120025  logit maxdiff=1.009e0  MATCH
+hy3 gate: 1 MATCH lines
