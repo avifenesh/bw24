@@ -207,7 +207,7 @@ impl HybridModel {
 
         for (il, layer) in self.layers.iter().enumerate() {
             // attn_norm
-            let mut h = e.zeros(t * n_embd)?;
+            let mut h = e.uninit(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             let mixed = match &layer.mixer {
@@ -216,11 +216,11 @@ impl HybridModel {
             };
 
             // residual 1
-            let mut x1 = e.zeros(t * n_embd)?;
+            let mut x1 = e.uninit(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
 
             // pre-FFN norm (post_attention_norm), FFN (Dense or MoE), residual 2
-            let mut z = e.zeros(t * n_embd)?;
+            let mut z = e.uninit(t * n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
@@ -228,18 +228,18 @@ impl HybridModel {
                     let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
-                    let mut act = e.zeros(t * n_ff)?;
+                    let mut act = e.uninit(t * n_ff)?;
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
-            let mut x2 = e.zeros(t * n_embd)?;
+            let mut x2 = e.uninit(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
 
-        let mut hn = e.zeros(t * n_embd)?;
+        let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul(&self.output, &hn, t)?;
         Ok(e.dtoh(&logits)?)
@@ -264,7 +264,7 @@ impl HybridModel {
         // ILLEGAL_ADDRESS to (layer, stage) at ~1 line of output per layer (M3 bring-up tool).
         let probe = std::env::var("BW24_LAYER_PROBE").is_ok();
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.zeros(t * n_embd)?;
+            let mut h = e.uninit(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} norm ok"); }
             let mixed = match &layer.mixer {
@@ -272,9 +272,9 @@ impl HybridModel {
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
             };
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} mixer ok"); }
-            let mut x1 = e.zeros(t * n_embd)?;
+            let mut x1 = e.uninit(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
-            let mut z = e.zeros(t * n_embd)?;
+            let mut z = e.uninit(t * n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
@@ -282,23 +282,23 @@ impl HybridModel {
                     let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
-                    let mut act = e.zeros(t * n_ff)?;
+                    let mut act = e.uninit(t * n_ff)?;
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} ffn ok"); }
-            let mut x2 = e.zeros(t * n_embd)?;
+            let mut x2 = e.uninit(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
         // norm over all T, then slice the LAST row and run lm_head on that single row.
-        let mut hn = e.zeros(t * n_embd)?;
+        let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let last = e.view(&hn, t * n_embd);            // [T, n_embd]
         let last_row = last.slice((t - 1) * n_embd..t * n_embd);  // [1, n_embd]
-        let mut hlast = e.zeros(n_embd)?;
+        let mut hlast = e.uninit(n_embd)?;
         e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
         let logits = e.matmul(&self.output, &hlast, 1)?;   // [1, n_vocab] — lm_head on ONE row
         Ok(e.dtoh(&logits)?)
@@ -384,15 +384,15 @@ impl HybridModel {
 
         let mut x = self.embed(e, tokens)?;   // [T, n_embd]
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.zeros(t * n_embd)?;
+            let mut h = e.uninit(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, &pos_d, t, cache, il)?,
                 Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, t, cache, il)?,
             };
-            let mut x1 = e.zeros(t * n_embd)?;
+            let mut x1 = e.uninit(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
-            let mut z = e.zeros(t * n_embd)?;
+            let mut z = e.uninit(t * n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
@@ -400,13 +400,13 @@ impl HybridModel {
                     let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
-                    let mut act = e.zeros(t * n_ff)?;
+                    let mut act = e.uninit(t * n_ff)?;
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
-            let mut x2 = e.zeros(t * n_embd)?;
+            let mut x2 = e.uninit(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
@@ -414,19 +414,19 @@ impl HybridModel {
         // h_seed = LAST row of x BEFORE output_norm (MTP-PLAN §A default) or AFTER it
         // (BW24_SPEC_HPOST — reference convention; hn is computed just below either way, so
         // the post-norm copy happens after hn exists).
-        let mut h_seed = e.zeros(n_embd)?;
+        let mut h_seed = e.uninit(n_embd)?;
         if !crate::spec::spec_hpost() {
             e.copy_view_into(&mut h_seed, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
         }
         // last-row logits, exactly like forward_last (norm all T — per-row op — then lm_head on 1 row).
-        let mut hn = e.zeros(t * n_embd)?;
+        let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         if crate::spec::spec_hpost() {
             e.copy_view_into(&mut h_seed, 0, &hn.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
         }
         let last = e.view(&hn, t * n_embd);
         let last_row = last.slice((t - 1) * n_embd..t * n_embd);
-        let mut hlast = e.zeros(n_embd)?;
+        let mut hlast = e.uninit(n_embd)?;
         e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
         let logits = e.matmul(&self.output, &hlast, 1)?;
         cache.pos += t;
@@ -460,18 +460,18 @@ impl HybridModel {
         let mut k = g3.pop().unwrap();
         let qf = g3.pop().unwrap();
         let (mut q, gate) = if gated {
-            let mut q = e.zeros(t * n_head * head_dim)?;
-            let mut gate = e.zeros(t * n_head * head_dim)?;
+            let mut q = e.uninit(t * n_head * head_dim)?;
+            let mut gate = e.uninit(t * n_head * head_dim)?;
             e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
             (q, Some(gate))
         } else {
             (qf, None)
         };
 
-        let mut qn = e.zeros(t * n_head * head_dim)?;
+        let mut qn = e.uninit(t * n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
         q = qn;
-        let mut kn = e.zeros(t * n_head_kv * head_dim)?;
+        let mut kn = e.uninit(t * n_head_kv * head_dim)?;
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
@@ -501,7 +501,7 @@ impl HybridModel {
             let kvl = cache.kv[il].as_ref().unwrap();
             kvl.len - t   // KV rows present BEFORE this chunk's append above
         };
-        let mut attn = e.zeros(t * n_head * head_dim)?;
+        let mut attn = e.uninit(t * n_head * head_dim)?;
         if base_len == 0 {
             // fa_prefill's smem layout is compile-time HEAD_DIM: stamped twins exist for 256
             // (qwen35) and 128 (M3, `_hd128` — 2026-07-07). Other dims would overrun the
@@ -537,9 +537,9 @@ impl HybridModel {
 
         let attn_g = match &gate {
             Some(gate) => {
-                let mut gsig = e.zeros(t * n_head * head_dim)?;
+                let mut gsig = e.uninit(t * n_head * head_dim)?;
                 e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
-                let mut ag = e.zeros(t * n_head * head_dim)?;
+                let mut ag = e.uninit(t * n_head * head_dim)?;
                 e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
                 ag
             }
@@ -590,13 +590,13 @@ impl HybridModel {
         let mut k_g = e.uninit(d_state * num_v * t)?;
         let mut v_g = e.uninit(d_state * num_v * t)?;
         e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
-        let mut q_l2 = e.zeros(d_state * num_v * t)?;
+        let mut q_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
-        let mut k_l2 = e.zeros(d_state * num_v * t)?;
+        let mut k_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
-        let mut beta = e.zeros(t * num_v)?;
+        let mut beta = e.uninit(t * num_v)?;
         e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
-        let mut g_log = e.zeros(t * num_v)?;
+        let mut g_log = e.uninit(t * num_v)?;
         e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
 
         // ONE gdn_scan over T from the cache's CURRENT state (zero at fresh prime); the final
@@ -604,7 +604,7 @@ impl HybridModel {
         // decode-determinism discipline from linear_attn_decode_inner). A4: `gdn_scan_prefill`
         // dispatches the chunked WY form under BW24_GDN_CHUNKED (prefill-only seam; decode +
         // verify keep the sequential kernel).
-        let mut o = e.zeros(d_state * num_v * t)?;
+        let mut o = e.uninit(d_state * num_v * t)?;
         {
             let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
             e.gdn_scan_prefill(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
@@ -612,7 +612,7 @@ impl HybridModel {
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
         // gated RMSNorm + out projection (prefill dispatch).
-        let mut gn = e.zeros(d_state * num_v * t)?;
+        let mut gn = e.uninit(d_state * num_v * t)?;
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
         Ok(e.matmul(&la.ssm_out, &gn, t)?)
     }
@@ -637,8 +637,8 @@ impl HybridModel {
         let mut k = g3.pop().unwrap();
         let qf = g3.pop().unwrap();
         let (mut q, gate) = if gated {
-            let mut q = e.zeros(t * n_head * head_dim)?;
-            let mut gate = e.zeros(t * n_head * head_dim)?;
+            let mut q = e.uninit(t * n_head * head_dim)?;
+            let mut gate = e.uninit(t * n_head * head_dim)?;
             e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
             (q, Some(gate))
         } else {
@@ -646,10 +646,10 @@ impl HybridModel {
         };
 
         // QK-norm (per head_dim row), then partial RoPE.
-        let mut qn = e.zeros(t * n_head * head_dim)?;
+        let mut qn = e.uninit(t * n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
         q = qn;
-        let mut kn = e.zeros(t * n_head_kv * head_dim)?;
+        let mut kn = e.uninit(t * n_head_kv * head_dim)?;
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
@@ -657,7 +657,7 @@ impl HybridModel {
         e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
 
         // SDPA
-        let mut attn = e.zeros(t * n_head * head_dim)?;
+        let mut attn = e.uninit(t * n_head * head_dim)?;
         // hand-written FlashAttention prefill (head_dim 256/128 stamped twins). BW24_NOFA
         // falls back to naive sdpa.
         if std::env::var("BW24_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
@@ -670,9 +670,9 @@ impl HybridModel {
         // output gate: attn * sigmoid(gate) — qwen35 only (M3 has no gate).
         let attn_g = match &gate {
             Some(gate) => {
-                let mut gsig = e.zeros(t * n_head * head_dim)?;
+                let mut gsig = e.uninit(t * n_head * head_dim)?;
                 e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
-                let mut ag = e.zeros(t * n_head * head_dim)?;
+                let mut ag = e.uninit(t * n_head * head_dim)?;
                 e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
                 ag
             }
@@ -722,31 +722,31 @@ impl HybridModel {
         e.ssm_conv1d_gdn(&qkv_mixed, la.ssm_conv1d.float_data(), &mut q_g, &mut k_g, &mut v_g,
                          conv_dim, t, d_conv, d_state, num_v, num_k, key_dim)?;
         // L2-norm q,k per (head_dim) row — rows are contiguous d_state in q_g.
-        let mut q_l2 = e.zeros(d_state * num_v * t)?;
+        let mut q_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
-        let mut k_l2 = e.zeros(d_state * num_v * t)?;
+        let mut k_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
         let v_gd = v_g;
 
         // beta = sigmoid(beta_raw) ; g_log = a * softplus(alpha + dt). Both need [num_v, T] layout
         // (g[t*num_v + h]). beta_raw/alpha are [T, num_v] token-major == that layout already.
-        let mut beta = e.zeros(t * num_v)?;
+        let mut beta = e.uninit(t * num_v)?;
         e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
         // gdn_glog expects alpha [H,T] with alpha[t*H+h] and dt_bias/a [H] — matches token-major [T,num_v].
-        let mut g_log = e.zeros(t * num_v)?;
+        let mut g_log = e.uninit(t * num_v)?;
         e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
 
         // GDN scan (A4: gdn_scan_prefill dispatches chunked WY under BW24_GDN_CHUNKED)
         let state_in = e.zeros(d_state * d_state * num_v)?;  // zero state (prefill)
         let mut state_out = e.zeros(d_state * d_state * num_v)?;
-        let mut o = e.zeros(d_state * num_v * t)?;
+        let mut o = e.uninit(d_state * num_v * t)?;
         e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, &state_in, &mut state_out, &mut o, num_v, t, scale)?;
 
         // gated RMSNorm: dst = RMSNorm(o, ssm_norm[head_v]) * silu(z). o is [d_state, num_v, T];
         // rows of head_v=d_state, nrows = num_v*T. z must match row layout: z is [T, value_dim] token-major
         // = [T, num_v*head_v]; per (t, vh) the head_v slice is contiguous -> rows align as (t*num_v+vh).
         // o rows are (t*num_v+vh) too. Good.
-        let mut gn = e.zeros(d_state * num_v * t)?;
+        let mut gn = e.uninit(d_state * num_v * t)?;
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
 
         // ssm_out projection: gn is [d_state, num_v, T] = [value_dim, T] viewed token-major as [T, value_dim]?
