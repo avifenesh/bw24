@@ -1264,3 +1264,20 @@ stride=256; trans 0,0). Remaining harness steps: softmax fragment plumbing ->
 PV wgmma (P bf16 canonical restage) -> online rescale/causal/GQA -> pipelined
 kernel -> BW24_FA3 engine seam. Target: >=3x on the 7.9ms FA slice (+6-7%
 official lane).
+
+**FA3 harness v3-v6 + ncu (2026-07-26/27): PARITY reached; the limiter is now
+measured.** v3 (full kernel, online-softmax, GQA, causal) correct at all T vs
+an online-semantics reference (the two-pass ref mismatch was the shipped
+kernel's own P-bf16-at-running-max class — ref aligned). Rates at T=2048:
+v3 2872us (serial) -> v4 2327 (int4 cp.async K + 2-stage ring) -> v5 996
+(2 warpgroups sharing the K/V ring) ~= the shipped mma kernel's 993us.
+v6 (S(t+1)-before-PV(t) intra-warpgroup overlap) REFUTED: 1200us — with two
+warpgroups the SM already hides softmax naturally; the reorder's extra syncs
+cost more than they buy. ncu(v5): 254 regs -> block-limit-registers 1 CTA/SM,
+12.5% occupancy, compute 25% / memory 12% (latency-bound at 8 warps) — v5
+reproduces the mma kernel's disease because the 64x256 f32 O accumulator per
+warpgroup IS 128 registers. NEXT (the canonical FA3 hd256 shape): split-D —
+two warpgroups share ONE q-tile, WG0 computes S+softmax+P (bP is already the
+broadcast medium), both PV their 128-col D-half (O = 64 regs each); then
+setmaxnreg asymmetric allocation (WG0~168/WG1~88 = half the file -> 2 CTAs/SM,
+16 warps). Target unchanged: >=2x over 993us => +4-6% official lane.
