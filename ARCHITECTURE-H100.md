@@ -676,3 +676,17 @@ vs the above), remaining GDN small kernels (conv/cumgate/solve/attn).
   the reduction tree and the SAME kernels serve decode (decode==verify law).
 THE remaining structural arc is prefill graph capture (3.7ms gap floor);
 everything else measured at or near its wall for this design generation.
+
+**TASK-9 KERNEL SWEEP CLOSED (2026-07-26):** every prime-path kernel measured
+at or near its wall, each with landed wins or refutation evidence: GEMMs (fp16
+mirror @660TF; W8A8 + Lt-autotune refuted by probe), FA (bf16kv + ring, 4x;
+three occupancy probes refuted; FA3 full rewrite = diminishing), GDN K4/K5
+(mma coupled pair, 1.75x/1.78x, fp16 channel), conv (scatter-wall, float4
+refuted, de-broadcast mapped), norms (decode-law-pinned), elementwise (float4
+wave landed), launch diet (uninit conversion). Serving-lane measurement closed
+the attribution: scheduler+HTTP cost 7%; the remaining 2x to vLLM serving
+prefill is cross-request prefill CONCATENATION (their continuous batching runs
+bigger GEMM m) — scheduler work, not kernels. OPEN ARCS (tracked as tasks):
+cross-request prefill batching (decode_step_batch pattern applied to prime)
+and prefill graph capture (15% gap floor). Night: pp512 8674 -> 19886 (+129%),
+bench-shape prefill 398 -> 18659 (47x), TTFT 5.15s -> 0.119s, decode 102% vLLM.
