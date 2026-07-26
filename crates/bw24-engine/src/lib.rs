@@ -464,6 +464,14 @@ impl Drop for PinnedStage {
 /// x 256 threads = 65536 threads covering the 248K-vocab scan in ~4 strided loads/thread.
 pub const ARGMAX_NB: usize = 256;
 
+unsafe extern "C" {
+    /// FA3 v10 shim (cu/fa3_prefill.cu): TMA-swizzled wgmma FA, fresh causal hd256.
+    fn bw24_fa3_prefill(q16: *const core::ffi::c_void, k16: *const core::ffi::c_void,
+                        v16: *const core::ffi::c_void, o: *mut f32,
+                        t: i32, h: i32, hkv: i32, d: i32, scale: f32,
+                        stream: *mut core::ffi::c_void) -> i32;
+}
+
 /// STAGE-2 GROUPED DECODE: 8 expert weight-block device pointers passed BY VALUE as one kernel
 /// param (matches the CUDA `wptr8_t` struct: 8x 64-bit pointers, `#[repr(C)]` => identical
 /// layout). The pointers are SLRU cache-slot base addresses — fixed for the engine's lifetime
@@ -6037,6 +6045,50 @@ impl Engine {
         if portable_mma_gated() {
             return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
                                    t, t_kv, scale, causal);
+        }
+        // FA3 v10 arm (task #20, OPT-IN BW24_FA3=1 — harness-proven 883us vs the shipped
+        // kernel's 993us at T=2048): TMA-swizzled wgmma FA, fresh causal hd256 only.
+        // NEW NUMERIC CONFIG (GDN-mma precedent): online softmax / bf16-P class — the
+        // run-gen argmax + greedy-stream batteries arbitrate; not bit-paired.
+        // PROMOTED default-ON hopper (2026-07-27): 3-seed 2048-prime -> 128-decode
+        // streams MATCH vs mma, full battery green, lane interleaved 5/5 (+2.4%).
+        // BW24_FA3=0 reverts; kernel-check pins the mma config regardless.
+        let fa3_on = head_dim == 256 && causal && t == t_kv
+            && match std::env::var("BW24_FA3").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            };
+        if fa3_on {
+            let n = t * n_head * head_dim;
+            let nkv = t * n_head_kv * head_dim;
+            let mut q16 = self.alloc_u8_uninit(n * 2)?;
+            let mut k16 = self.alloc_u8_uninit(nkv * 2)?;
+            let mut v16 = self.alloc_u8_uninit(nkv * 2)?;
+            self.f32_to_bf16(q, &mut q16, n)?;
+            self.f32_to_bf16(k, &mut k16, nkv)?;
+            self.f32_to_bf16(v, &mut v16, nkv)?;
+            let rc = {
+                use cudarc::driver::{DevicePtr, DevicePtrMut};
+                let stream = &self.gpu.stream;
+                let (qp, _g1) = q16.device_ptr(stream);
+                let (kp, _g2) = k16.device_ptr(stream);
+                let (vp, _g3) = v16.device_ptr(stream);
+                let (op, _g4) = o.device_ptr_mut(stream);
+                unsafe {
+                    bw24_fa3_prefill(qp as *const core::ffi::c_void,
+                                     kp as *const core::ffi::c_void,
+                                     vp as *const core::ffi::c_void,
+                                     op as *mut f32,
+                                     t as i32, n_head as i32, n_head_kv as i32,
+                                     head_dim as i32, scale,
+                                     stream.cu_stream() as *mut core::ffi::c_void)
+                }
+            };
+            if rc != 0 {
+                return Err(format!("bw24_fa3_prefill rc={rc}").into());
+            }
+            return Ok(());
         }
         // FLOOR PORT (P2+P0a+P0b+P1): 4 warps/CTA, BLOCK_Q=64 query rows, BK=32 KV tile,
         // Q-in-reg + register-O, grid.y=n_head_kv (4 Q-heads share staged K/V).

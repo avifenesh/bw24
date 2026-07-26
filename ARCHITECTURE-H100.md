@@ -1445,3 +1445,18 @@ ring, C7515-free shapes now applicable in a winning structure).
 NEXT: engine integration behind BW24_FA3 (per-call cuTensorMapEncodeTiled on
 the mirror buffers ~us-scale host cost x8 layers; the greedy-stream battery +
 interleaved A/B arbitrate), then the vl (batched) twin via grid.z.
+
+**FA3 v10 ENGINE-INTEGRATED + PROMOTED (2026-07-27, round 29): the shipped FA
+is now the wgmma/TMA kernel — official lane 0.085 -> 0.083s (5/5), 24,675
+tok/s = 79.5% of vLLM, TTFT 83ms.** cu/fa3_prefill.cu (static-lib kind, links
+the driver API; non-90a arches build a fail-closed stub): per-call
+cuTensorMapEncodeTiled on the bf16 q/k mirrors + the harness-proven kernel.
+Dispatch arm in fa_prefill (fresh causal hd256; q/k/v bf16 mirrors incl. the
+new q mirror). NEW NUMERIC CONFIG promoted per the GDN-mma bar: 3-seed
+2048-prime -> 128-decode streams MATCH vs mma, full battery green under
+FA3=1 AND under defaults post-promotion; decode-batch gate got the third
+documented prime-config pin (BW24_FA3=0 alongside GDN_MMA/L2_V2).
+BW24_FA3=0 reverts; hd128 twin + batched favl twin remain mapped.
+The FA3 arc: opened, cracked, WON, and shipped in one campaign — 10 harness
+versions, 4 permanent unlocks, 6 mechanism-verdicts, +2.4% on the official
+lane with headroom mapped (V^T map, 3-deep ring, C7515-free bodies).

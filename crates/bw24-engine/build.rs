@@ -125,7 +125,8 @@ fn main() {
         // kernels for the BW24_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
-                        "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
+                        "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu", "cu/mmq_nvfp4_f8f4.cu",
+                        "cu/fa3_prefill.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -153,6 +154,9 @@ fn main() {
             if mmq_src.ends_with("mmq_nvfp4_w4a8.cu") {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
+            }
+            if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
+                args.push("-DBW24_FA3_STUB".into());
             }
             args.extend(["-c".into(), compile_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
             let status = Command::new(&nvcc)
@@ -185,6 +189,8 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         // fp8_prefill.cu calls the cuBLASLt host API directly (same lib64 search path as cudart).
         println!("cargo:rustc-link-lib=dylib=cublasLt");
+        // fa3_prefill.cu calls the driver API (cuTensorMapEncodeTiled)
+        println!("cargo:rustc-link-lib=dylib=cuda");
     }
 
     // ---- CUTLASS sm_120a NVFP4 GEMM: a STATIC LIB (7th artifact, different kind), NOT a fatbin ----
