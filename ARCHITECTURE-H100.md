@@ -353,3 +353,11 @@ break-even); degrade-to-batched live-validated with 3 concurrent clients
 (correct output through the cache handoff). Serve-mode flags OnceLock'd,
 metrics publish throttled. Remaining serving polish: ~0.2s fixed per-request
 setup on the short path; capture-cost reduction would move break-even down.
+
+**Task-8 opening measurement (2026-07-26, OPEN):** two nsys attempts at a
+single-2048 prime profile captured run-gen on the TOKENWISE prime path
+(245k m=1 matvecs = 2048 stepwise) — run-gen's batched-prime branch engages
+under conditions not yet located (bench_bw24's own timer reports 0.230s
+batched prime for the same invocation shape). Before the wgmma FA build:
+find the branch, profile the true batched prime, size FA's share. The
+wgmma payoff bound is unknown until then — do not build blind.
