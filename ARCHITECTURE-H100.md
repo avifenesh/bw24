@@ -330,3 +330,9 @@ counters/cache, replay ONE step per scheduler tick, recapture on bucket cross.
 The capture-region constraints are already solved in generate_graph's body
 (event-tracking off, stable pointers, bucketed t_kv) — the refactor lifts that
 loop body into a stepping struct. THIS is the single next arc for m=1-to-wall.
+
+**GraphSession landed (2026-07-26, commit 7479e9ec):** step-wise CUDA-graph
+decode — gate PASS (token stream == generate_graph exactly), **233.8 tok/s vs
+179.3 eager (+30.4%)** = 66% of the 352 wall, from 53%, with zero kernel
+changes. Confirms the integration thesis. Remaining m=1 ladder: worker wiring
+(single-interactive-session policy), then multi-step replay between D2H syncs.

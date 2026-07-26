@@ -27,6 +27,9 @@ pub struct GraphDecodeState {
 pub struct GraphSession {
     pub gs: GraphDecodeState,
     pub cache: Cache,
+    /// LOAD-BEARING hold: the captured graph's embed-gather node references this
+    /// allocation — dropping it would free memory the graph still reads.
+    #[allow(dead_code)]
     embd_gpu: CudaSlice<u8>,
     graph: cudarc::driver::CudaGraph,
     plan: Vec<crate::graph_update::FaMain>,
