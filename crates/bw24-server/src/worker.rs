@@ -463,8 +463,11 @@ pub fn run(
             // win — per-seq m already at the GEMM plateau). Gate: prime-batch-gate ALL GREEN
             // (per-seq argmax + decode-stream equality). BW24_PRIME_BATCH=1 disables.
             let (cand, held) = 'pb: loop {
+                // default 6 (2026-07-26): with the varlen GDN core (task #18) the
+                // concat sweet spot moved from B=4 to B=6-8 (16501 vs 15950 tok/s
+                // at T=152 — the per-seq core train no longer scales with B).
                 let pb_max: usize = std::env::var("BW24_PRIME_BATCH").ok()
-                    .and_then(|v| v.parse().ok()).unwrap_or(4);
+                    .and_then(|v| v.parse().ok()).unwrap_or(6);
                 let pb_maxt: usize = std::env::var("BW24_PRIME_BATCH_MAX_T").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(320);
                 let min_t = bw24_engine::hybrid_forward::PRIME_MIN_T.max(2);
