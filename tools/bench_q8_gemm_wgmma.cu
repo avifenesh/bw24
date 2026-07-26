@@ -99,7 +99,11 @@ q8_gemm_wgmma_v0(const signed char* __restrict__ A, const half* __restrict__ Asc
             int seg = tid % 2;            // k-core 0..1
             const signed char* src = A + (size_t)(row0 + r) * in_f + blk * 32 + seg * 16;
             int m_core = r / 8, r_in = r % 8;
+#ifndef CORE_K_OUTER
             signed char* dst = sA + (((m_core * 2 + seg) * 8) + r_in) * 16;
+#else
+            signed char* dst = sA + (((seg * 8 + m_core) * 8) + r_in) * 16;
+#endif
             *(int4*)dst = (row0 + r < out_f) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         {
@@ -107,15 +111,31 @@ q8_gemm_wgmma_v0(const signed char* __restrict__ A, const half* __restrict__ Asc
             int seg = tid % 2;
             const signed char* src = B + (size_t)(col0 + c) * in_f + blk * 32 + seg * 16;
             int n_core = c / 8, c_in = c % 8;
+#ifndef B_CORE_K_OUTER
             signed char* dst = sB + (((n_core * 2 + seg) * 8) + c_in) * 16;
+#else
+            signed char* dst = sB + (((seg * 8 + n_core) * 8) + c_in) * 16;
+#endif
             *(int4*)dst = (col0 + c < n_tok) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         __syncthreads();
 
         int acc[32];
         wgmma_fence();
-        unsigned long long da = make_desc(sA, 128, 256, 0);
-        unsigned long long db = make_desc(sB, 128, 256, 0);
+#ifndef DESC_LBO
+#define DESC_LBO 128
+#endif
+#ifndef DESC_SBO
+#define DESC_SBO 256
+#endif
+#ifndef DESC_LBO_B
+#define DESC_LBO_B DESC_LBO
+#endif
+#ifndef DESC_SBO_B
+#define DESC_SBO_B DESC_SBO
+#endif
+        unsigned long long da = make_desc(sA, DESC_LBO, DESC_SBO, 0);
+        unsigned long long db = make_desc(sB, DESC_LBO_B, DESC_SBO_B, 0);
         wgmma_m64n64k32_s8(acc, da, db, /*scale_d=*/0);   // fresh s32 accumulate per k-slice
         wgmma_commit();
         wgmma_wait<0>();

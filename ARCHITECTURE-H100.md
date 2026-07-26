@@ -392,3 +392,10 @@ still FAIL rel~1e2 — the s32 D-fragment row/col mapping needs the exact PTX
 ISA table; speed already proves the arc: 60%-of-prime × 4 ≈ prime 0.23→0.13s
 before pipelining). Next mechanical step: fix fragment mapping (PTX ISA
 wgmma.mma_async D layout, m64nN), verify vs CPU ref, then cp.async pipeline.
+Layout search verdict (160+ combos, best rel 12.6, none pass): the descriptor
+stride space cannot express the fix — B arrives token-major but wgmma consumes
+K-major B; the smem WRITE arrangement for B must perform the transpose into
+the canonical K-major core order (and/or SW128 swizzle), not the descriptor.
+Next: derive from PTX ISA §wgmma matrix-layout tables + a known-good open
+int8 wgmma kernel, write the ONE correct arrangement, verify vs CPU ref.
+The 4.1× raw-speed result stands — only operand plumbing remains.
