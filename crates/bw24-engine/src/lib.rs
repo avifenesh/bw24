@@ -4844,6 +4844,31 @@ impl Engine {
                         rp: bool)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
+        // SMALL-SHAPE GRID FILL (H100 lane, 2026-07-26 microbench: attn qkv out_f=2048 =
+        // 0.97 waves at the 4-warp block -> 66% of peak). The g2 twin (2 warps/block)
+        // doubles the grid when the 4-warp launch would be sub-wave; per-row program
+        // identical -> bit-identical. BW24_Q80_G2=0 reverts.
+        if qtype == QT_Q8_0 && rp && m == 1 && out_f >= 64
+            && (out_f as u32).div_ceil(ROWS_PER_BLOCK) < 4 * self.sm_count() as u32
+            && {
+                static G2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *G2.get_or_init(|| std::env::var("BW24_Q80_G2").as_deref() != Ok("0"))
+            }
+        {
+            let f = self.func("qmatvec_q8_0_mmvq_rp_g2");
+            let mut y = self.alloc_uninit::<f32>(out_f)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((out_f as u32).div_ceil(2), 1, 1),
+                block_dim: (32, 2, 1),
+                shared_mem_bytes: 0,
+            };
+            let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, 1i32, row_bytes as i64);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            unsafe { b.launch(cfg)?; }
+            if scale != 1.0 { self.scale_inplace(&mut y, scale, out_f)?; }
+            return Ok(y);
+        }
         // Multi-row-per-warp (mr2) policy, fixed since the 2026-07 sweeps (the BW24_MMVQ_MR
         // override + mr4 kernel were retired 2026-07-08 — mr4 regressed on register pressure and
         // crashed under rp; q4_K/q6_K mr2 measured flat, "no gain = no change"):
@@ -5031,6 +5056,15 @@ impl Engine {
     /// The variant the batched dispatch will pick for this (shape, m, mcols, layout) — exposed so
     /// gates can distinguish bit-identical variants (bit-bad==0 required) from the k-split family
     /// (deterministic but k-reduce-order-shifted: rel<1e-3 + run-to-run bit-identity required).
+    /// Device SM count (cached) — grid-fill policy input.
+    pub fn sm_count(&self) -> i32 {
+        static SMS: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+        *SMS.get_or_init(|| {
+            use cudarc::driver::sys::CUdevice_attribute_enum as A;
+            self.gpu.ctx.attribute(A::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT).unwrap_or(82)
+        })
+    }
+
     pub fn batched_variant(&self, _m: usize, in_f: usize, out_f: usize, qtype: i32,
                            row_bytes: usize, mcols: usize, rp: bool) -> &'static str {
         // Q8_0 never joined the auto variant machinery (on sm_120 its only batched shapes

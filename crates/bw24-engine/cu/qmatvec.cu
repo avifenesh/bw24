@@ -6497,6 +6497,43 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_rp(
     acc = warp_reduce_sum(acc);
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
+// Small-shape rp twin: 2 warps/block (64 threads) doubles the grid so sub-wave shapes
+// (attn qkv out_f=2048: 512 blocks / 132 SMs ~ 0.97 waves at the 4-warp block) fill the
+// machine. Per-row program IDENTICAL to qmatvec_q8_0_mmvq_rp (one warp per row, same
+// block walk) -> bit-identical; only the block geometry changes. Dispatch: rp && the
+// 4-warp grid would be sub-wave (out_f/4 < 4*SMs).
+extern "C" __global__ void qmatvec_q8_0_mmvq_rp_g2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    int o = blockIdx.x * 2 + threadIdx.y;      // 2 rows per block
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq; const unsigned short* wd;
+    q8_0_rp_planes(W, out_f, o, nblk, &wq, &wd);
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nblk;
+    float acc = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int4 w01 = __ldcs((const int4*)(wq + (size_t)blk * 32));
+        int4 w23 = __ldcs((const int4*)(wq + (size_t)blk * 32 + 16));
+        int wi[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        float dw = half_to_float(wd[blk]);
+        const int4* aq16 = (const int4*)(arow + blk * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi = dp4a(wi[k], aq4[k], sumi);
+        acc += dw * adrow[blk] * (float)sumi;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 // ===== Q8_0 rp + cp.async ring (rpca recipe, H100 m=1 latency fix — 2026-07-26 ncu:
 // issue every 6-9 cycles, 0.16-0.29 eligible warps, long-scoreboard on the weight
 // stream). Window per 32-block iteration: 1024B quants + 64B scales, staged through a
