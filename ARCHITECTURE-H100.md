@@ -1088,3 +1088,27 @@ the foundation for the 7-9-kernel segments whose economics remain open:
 ~6-7 submissions saved per launch x 24-32 layers ~= 1ms/prime IF the pattern
 holds at size). LESSON PINNED: every remaining perf claim in this arc must be
 interleaved-A/B measured; cross-run medians are invalid at this session depth.
+
+**Round-26 gap anatomy (2026-07-26, nsys protocol-immune):** clean seq-prime
+attribution (batch-arm and gate episodes excluded): in-prime gaps ~0.9-1.7ms,
+UNIFORM ~1.5-2.7us launch cadence — no host stalls, no readbacks. Two verdicts:
+(1) BIG-SEGMENT ARC REFUTED at this design generation — the graph-launch probe
+(tools/bench_graph_launch.cu: launch = 0.8 submissions, in-graph gap saving
+~1us/kernel) and the gap anatomy independently bound piecewise segments at
++1-2%, an order below the 8-10% projection; vLLM's piecewise pattern pays for
+their PYTHON host, and the Rust host (1.85us/submission) never had that tax.
+Task #15 CLOSED (foundation kept, seg opt-in). (2) The anatomy surfaced two
+REAL arcs: batch-prime concat/scatter D2D waste (~1ms/round, task #16) and
+~50 standalone f16-cvt passes/prime after silu_mul / gated_rmsnorm / attn-gate.
+
+**f16out epilogue fusion (2026-07-26): +1.6% pp512, INTERLEAVED-VERIFIED,
+bit-identical, default ON.** silu_mul_f16out / gated_rmsnorm_f16out /
+sig_mul_f16out twins emit the downstream GEMM's fp16 operand in-epilogue
+(dst16[i] = __float2half(dst[i]) == the cvt kernel's exact bytes; sig_mul also
+fuses sigmoid+mul: 3 launches -> 1). Wired: FFN down (silu arm), ssm_out (GDN
+wrapper + seg path), wo (attn wrapper + seg path); OFF under verify-exact;
+BW24_F16OUT=0 seam. gated twin pins block_dim=128 (reduction-tree law).
+Gates: greedy streams BYTE-IDENTICAL on/off (T~200 prime + 64 tok),
+kernel-check, validate-h100, prime-batch, graph-session ALL GREEN.
+Interleaved A/B x5 (the corrected protocol): ON wins 5/5, median 18620 vs
+18328 (+1.6%) — the first interleaved-verified prefill win.

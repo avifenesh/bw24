@@ -2,6 +2,7 @@
 // Gated DeltaNet recurrent scan. Ported from llama.cpp ggml-cuda {ssm-conv.cu, gated_delta_net.cu},
 // simplified to single sequence (n_seqs=1). All f32, no tensor cores → sm_120-native.
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 __device__ __forceinline__ float silu(float x) { return x / (1.0f + expf(-x)); }
 
@@ -903,6 +904,20 @@ extern "C" __global__ void sigmoid_f32(const float* x, float* y, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = 1.0f / (1.0f + expf(-x[i]));
 }
+// attn out-gate fused epilogue (task #17): dst = attn * sigmoid(gate) in ONE launch plus the
+// fp16 GEMM operand for wo. BIT-IDENTICAL to sigmoid_f32(gate)->gsig; mul_f32(attn,gsig)->dst;
+// bw24_f16_cvt(dst): the f32 store/reload of gsig is value-exact, so composing the expressions
+// yields the same floats, and dst16 uses the same __float2half.
+extern "C" __global__ void sig_mul_f16out_f32(const float* __restrict__ a, const float* __restrict__ g,
+                                              float* __restrict__ dst, __half* __restrict__ dst16, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float s = 1.0f / (1.0f + expf(-g[i]));
+        float o = a[i] * s;
+        dst[i] = o;
+        dst16[i] = __float2half(o);
+    }
+}
 // softplus(x + bias_broadcast) then * a_broadcast -> g_log. x:[H,T], bias/a:[H]. out:[H,T].
 // alpha layout [H,T] (alpha[t*H+h]); dt_bias/a [H].
 extern "C" __global__ void gdn_glog_f32(const float* alpha, const float* dt_bias, const float* a,
@@ -950,6 +965,39 @@ extern "C" __global__ void gated_rmsnorm_f32(const float* __restrict__ o, const 
     for (int i = tid; i < ncols; i += blockDim.x) {
         float zz = zrow[i];
         drow[i] = (orow[i] * scale * w[i]) * (zz / (1.0f + expf(-zz)));
+    }
+}
+
+// gated RMSNorm with FUSED fp16 GEMM-operand epilogue (task #17): same math as
+// gated_rmsnorm_f32 (identical reduce + normalize + swish gate); the epilogue also writes
+// dst16[i] = __float2half(dst[i]) — exactly the bytes bw24_f16_cvt_kernel would emit — so the
+// ssm_out fp16 GEMM consumes an identical operand without the standalone convert pass.
+extern "C" __global__ void gated_rmsnorm_f16out_f32(const float* __restrict__ o, const float* __restrict__ w,
+                                                    const float* __restrict__ z, float* __restrict__ dst,
+                                                    __half* __restrict__ dst16, int ncols, float eps) {
+    int row = blockIdx.x; int tid = threadIdx.x;
+    const float* orow = o + (size_t)row * ncols;
+    const float* zrow = z + (size_t)row * ncols;
+    float* drow = dst + (size_t)row * ncols;
+    __half* hrow = dst16 + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = orow[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o2);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o2 = 16; o2 > 0; o2 >>= 1) v += __shfl_down_sync(0xffffffff, v, o2);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float zz = zrow[i];
+        float ov = (orow[i] * scale * w[i]) * (zz / (1.0f + expf(-zz)));
+        drow[i] = ov;
+        hrow[i] = __float2half(ov);
     }
 }
 

@@ -739,7 +739,7 @@ impl Engine {
     pub fn set_verify_exact(&self, on: bool) {
         self.verify_exact.store(on, std::sync::atomic::Ordering::Relaxed);
     }
-    fn verify_exact_on(&self) -> bool {
+    pub(crate) fn verify_exact_on(&self) -> bool {
         self.verify_exact.load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -3884,6 +3884,20 @@ impl Engine {
         let ni = n as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(gate).arg(up).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// f16out twin of `silu_mul` (task #17): the epilogue also emits the fp16 GEMM operand
+    /// for the down projection — kills the standalone convert pass. Bit-identical class.
+    pub fn silu_mul_f16out(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+                           dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>, n: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("silu_mul_f16out_f32");
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(dst).arg(dst16).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -7483,6 +7497,20 @@ impl Engine {
         Ok(())
     }
 
+    /// attn out-gate fused epilogue (task #17): dst = a * sigmoid(g) + fp16 twin, one launch
+    /// (replaces sigmoid + mul + convert). Bit-identical class.
+    pub fn sig_mul_f16out(&self, a: &CudaSlice<f32>, g: &CudaSlice<f32>,
+                          dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>, n: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sig_mul_f16out_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(g).arg(dst).arg(dst16).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// gated RMSNorm: dst = RMSNorm(o, w[ncols]) * silu(z), per row of ncols. nrows blocks.
     pub fn gated_rmsnorm(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
                          dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
@@ -7492,6 +7520,22 @@ impl Engine {
         let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// f16out twin of `gated_rmsnorm` (task #17): epilogue also emits the fp16 operand for
+    /// the ssm_out GEMM. Bit-identical class (same floats + the cvt kernel's __float2half).
+    pub fn gated_rmsnorm_f16out(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
+                                dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>,
+                                ncols: usize, nrows: usize, eps: f32)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f16out_f32");
+        // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(dst16).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

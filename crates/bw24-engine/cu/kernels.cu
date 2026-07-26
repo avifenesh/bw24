@@ -1424,6 +1424,35 @@ extern "C" __global__ void silu_mul_f32(const float* __restrict__ gate, const fl
         }
     }
 }
+// f16out twin (task #17, nsys round-26 gap anatomy): the SwiGLU epilogue also emits the fp16
+// GEMM operand for the down projection, removing the standalone bw24_f16_cvt pass (a full extra
+// HBM read+write of act). BIT-IDENTICAL class: dst gets the same floats as silu_mul_f32 and
+// dst16[i] = __float2half(dst[i]) == exactly what bw24_f16_cvt_kernel would have emitted.
+extern "C" __global__ void silu_mul_f16out_f32(const float* __restrict__ gate, const float* __restrict__ up,
+                                               float* __restrict__ dst, __half* __restrict__ dst16, int n) {
+    int i4 = blockIdx.x * blockDim.x + threadIdx.x;
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 g = *(const float4*)(gate + base);
+        float4 u = *(const float4*)(up + base);
+        float4 o;
+        o.x = (g.x / (1.0f + expf(-g.x))) * u.x;
+        o.y = (g.y / (1.0f + expf(-g.y))) * u.y;
+        o.z = (g.z / (1.0f + expf(-g.z))) * u.z;
+        o.w = (g.w / (1.0f + expf(-g.w))) * u.w;
+        *(float4*)(dst + base) = o;
+        __half2* h2 = (__half2*)(dst16 + base);
+        h2[0] = __halves2half2(__float2half(o.x), __float2half(o.y));
+        h2[1] = __halves2half2(__float2half(o.z), __float2half(o.w));
+    } else {
+        for (int i = base; i < n; i++) {
+            float g = gate[i];
+            float o = (g / (1.0f + expf(-g))) * up[i];
+            dst[i] = o;
+            dst16[i] = __float2half(o);
+        }
+    }
+}
 // FFN SwiGLU epilogue fusion (RANK3 LEVER 2). Folds the per-tensor NVFP4 macro-scale of the gate
 // and up matmuls INTO the silu*mul, removing the two separate `scale_f32` launches per dense FFN
 // layer. BIT-IDENTICAL to scale_f32(gate,gs); scale_f32(up,us); silu_mul_f32(gate,up,dst): same

@@ -402,6 +402,15 @@ impl HybridModel {
 
     /// One prime chunk: the full layer stack over `tokens`, continuing from the cache's current
     /// state (`cache.pos` = tokens already primed; 0 = fresh). Positions/RoPE are absolute
+    /// task #17: gate for the fused fp16-operand epilogues (silu_mul/gated_rmsnorm/sig_mul
+    /// `_f16out` twins). Bit-identical class (the twins emit the cvt kernel's exact halves),
+    /// but seam-gated (BW24_F16OUT=0) so a bit-check can arbitrate, and OFF under verify-exact
+    /// (matmul_group skips the f16 lane there; the twins must not resurrect it).
+    fn f16out_on(e: &Engine, t: usize) -> bool {
+        crate::f16_ffi::pp_f16_enabled() && t >= 16 && !e.verify_exact_on()
+            && std::env::var("BW24_F16OUT").as_deref() != Ok("0")
+    }
+
     /// (cache.pos + i). Returns (last-row logits, h_seed, this chunk's hidden stack [T, n_embd]).
     /// See HybridModel::prime_slabs — the eager prime's resident trunk transients.
     pub fn prime_slabs_get(&self, e: &Engine, t: usize, n_embd: usize, n_ff_max: usize)
@@ -545,13 +554,14 @@ impl HybridModel {
             if use_seg {
                 // core-split path: projections -> _inner core -> out-GEMM INTO the mixed
                 // slab (no copies) -> S-mid segment [add + post-norm] as one graph launch.
-                let (pre, w_out) = match &layer.mixer {
+                let (pre, pre16, w_out) = match &layer.mixer {
                     Mixer::Full(fa) => {
                         let g3 = match hx16 {
                             Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
                             None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
                         };
-                        (self.full_attn_prime_core_inner(e, fa, g3, &pos_d, t, cache, il)?, &fa.wo)
+                        let (pre, pre16) = self.full_attn_prime_core_inner(e, fa, g3, &pos_d, t, cache, il)?;
+                        (pre, pre16, &fa.wo)
                     }
                     Mixer::Linear(la) => {
                         let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
@@ -559,13 +569,17 @@ impl HybridModel {
                             Some(xh) => e.matmul_group_xh(&ws, h, xh, t)?,
                             None => e.matmul_group(&ws, h, t)?,
                         };
-                        (self.linear_attn_prime_core_pad_inner(e, la, g4, t, cache, il, None)?, &la.ssm_out)
+                        let (pre, pre16) = self.linear_attn_prime_core_pad_inner(e, la, g4, t, cache, il, None)?;
+                        (pre, pre16, &la.ssm_out)
                     }
                 };
                 {
                     let (_, sm, mslab, _) = seg.as_mut().unwrap();
                     let pre_n = pre.len() / t;
-                    let xh_pre = e.f16_act(&pre, t * pre_n)?;
+                    let xh_pre = match pre16 {
+                        Some(x) => x,
+                        None => e.f16_act(&pre, t * pre_n)?,
+                    };
                     if !e.try_f16_gemm_pre_into(w_out, &xh_pre, t, mslab)? {
                         let y = e.matmul(w_out, &pre, t)?;
                         e.copy_into(mslab, 0, &y, t * n_embd)?;
@@ -620,9 +634,21 @@ impl HybridModel {
                         e.copy_into(sl_gate, 0, &gate_y, t * n_ff)?;
                         e.copy_into(sl_up, 0, &up_y, t * n_ff)?;
                     }
-                    Self::ffn_act(e, &self.cfg, sl_gate, sl_up, act, t * n_ff)?;
+                    // task #17: the silu arm's f16out twin emits the down GEMM's fp16
+                    // operand in-epilogue; non-silu activations keep the standalone convert.
+                    let act16 = if Self::f16out_on(e, t) && self.cfg.m3.is_none() {
+                        let mut a16 = e.alloc_u8_uninit(t * n_ff * 2)?;
+                        e.silu_mul_f16out(sl_gate, sl_up, act, &mut a16, t * n_ff)?;
+                        Some(a16)
+                    } else {
+                        Self::ffn_act(e, &self.cfg, sl_gate, sl_up, act, t * n_ff)?;
+                        None
+                    };
                     // down GEMM into the ffn_out slab (f16 arm; fallback copies)
-                    let xh_act = e.f16_act(act, t * n_ff)?;
+                    let xh_act = match act16 {
+                        Some(x) => x,
+                        None => e.f16_act(act, t * n_ff)?,
+                    };
                     if !e.try_f16_gemm_pre_into(ffn_down, &xh_act, t, sl_fo)? {
                         let y = e.matmul(ffn_down, &*act, t)?;
                         e.copy_into(sl_fo, 0, &y, t * n_embd)?;
@@ -937,13 +963,18 @@ impl HybridModel {
     fn full_attn_prime_core(&self, e: &Engine, fa: &FullAttnLayer, g3: Vec<CudaSlice<f32>>,
                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let attn_g = self.full_attn_prime_core_inner(e, fa, g3, pos_d, t, cache, il)?;
+        let (attn_g, ag16) = self.full_attn_prime_core_inner(e, fa, g3, pos_d, t, cache, il)?;
+        if let Some(xh) = &ag16 {
+            if let Some(y) = e.try_f16_gemm_pre(&fa.wo, xh, t)? {
+                return Ok(y);
+            }
+        }
         Ok(e.matmul(&fa.wo, &attn_g, t)?)
     }
 
     fn full_attn_prime_core_inner(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
-                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+                            -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -1034,26 +1065,26 @@ impl HybridModel {
             }
         }
 
-        let attn_g = match &gate {
+        // task #17: sig_mul_f16out fuses [sigmoid + mul + f16 convert] into one launch
+        // (bit-identical composition) and hands wo its fp16 operand directly.
+        let (attn_g, ag16) = match &gate {
             Some(gate) => {
-                let mut gsig = e.uninit(t * n_head * head_dim)?;
-                e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
-                let mut ag = e.uninit(t * n_head * head_dim)?;
-                e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
-                ag
+                let n = t * n_head * head_dim;
+                let mut ag = e.uninit(n)?;
+                if Self::f16out_on(e, t) {
+                    let mut a16 = e.alloc_u8_uninit(n * 2)?;
+                    e.sig_mul_f16out(&attn, gate, &mut ag, &mut a16, n)?;
+                    (ag, Some(a16))
+                } else {
+                    let mut gsig = e.uninit(n)?;
+                    e.sigmoid(gate, &mut gsig, n)?;
+                    e.mul(&attn, &gsig, &mut ag, n)?;
+                    (ag, None)
+                }
             }
-            None => attn,
+            None => (attn, None),
         };
-        Ok(attn_g)
-    }
-
-    /// Task #15 core-split: the attention core WITHOUT the wo projection — returns the
-    /// gated attention output so the caller can run wo _into_ a resident slab (the
-    /// piecewise S-mid/S-attn boundary). Composes with the tail wo == the old core.
-    fn full_attn_prime_core_pre(&self, e: &Engine, fa: &FullAttnLayer, g3: Vec<CudaSlice<f32>>,
-                                pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
-                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.full_attn_prime_core_inner(e, fa, g3, pos_d, t, cache, il)
+        Ok((attn_g, ag16))
     }
 
     /// STATEFUL batched linear-attention prime: `linear_attn`'s prefill-dispatch pass (normal
@@ -1089,7 +1120,7 @@ impl HybridModel {
     fn linear_attn_prime_core_pad_inner(&self, e: &Engine, la: &LinearAttnLayer, mut g4: Vec<CudaSlice<f32>>,
                               t: usize, cache: &mut Cache, il: usize,
                               pad_len: Option<&CudaSlice<i32>>)
-                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+                              -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;       // 128
@@ -1144,10 +1175,19 @@ impl HybridModel {
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
-        // gated RMSNorm + out projection (prefill dispatch).
+        // gated RMSNorm + out projection (prefill dispatch). task #17: the f16out twin also
+        // emits the ssm_out GEMM's fp16 operand in-epilogue (kills the standalone convert).
         let mut gn = e.uninit(d_state * num_v * t)?;
-        e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
-        Ok(gn)
+        let gn16 = if Self::f16out_on(e, t) {
+            let mut g16 = e.alloc_u8_uninit(d_state * num_v * t * 2)?;
+            e.gated_rmsnorm_f16out(&o, la.ssm_norm.float_data(), &z, &mut gn, &mut g16,
+                                   d_state, num_v * t, eps)?;
+            Some(g16)
+        } else {
+            e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
+            None
+        };
+        Ok((gn, gn16))
     }
 
     /// Task #15 core-split wrapper: composes inner + ssm_out (== the old core).
@@ -1156,7 +1196,12 @@ impl HybridModel {
                               t: usize, cache: &mut Cache, il: usize,
                               pad_len: Option<&CudaSlice<i32>>)
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let gn = self.linear_attn_prime_core_pad_inner(e, la, g4, t, cache, il, pad_len)?;
+        let (gn, gn16) = self.linear_attn_prime_core_pad_inner(e, la, g4, t, cache, il, pad_len)?;
+        if let Some(xh) = &gn16 {
+            if let Some(y) = e.try_f16_gemm_pre(&la.ssm_out, xh, t)? {
+                return Ok(y);
+            }
+        }
         Ok(e.matmul(&la.ssm_out, &gn, t)?)
     }
 
