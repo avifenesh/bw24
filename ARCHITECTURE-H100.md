@@ -1360,3 +1360,22 @@ narrower: TMA bulk-tensor with mbarrier completion (producer never self-waits)
 + >=3-deep rings + the cracked setmaxnreg split. v5 999us == engine 993us
 stands as the harness floor; official lane holds at 77.6% with this single
 arc open and every step of it evidence-priced.
+
+**FA3 v9 (2026-07-27): async-producer mbarriers CORRECT but 1830us == v8 —
+the sync mechanism was never the wall.** Debug ledger: cp.async.mbarrier.arrive
+DEFAULTS to self-balancing (increments pending before arriving — deadlocks a
+fixed-count mbarrier); the .noinc variant is the producer-signal form. With
+that fixed, v9 matches v8 exactly, and the real differentiator surfaces:
+ptxas C7515 fires on BOTH 3-WG variants ("wgmma serialized — non-wgmma
+instructions define accumulator registers inside the pipeline stage") but NOT
+on v5 — at the 240-reg setmaxnreg region the compiler stops pipelining the PV
+wgmma chain around the oacc-alpha rescale, halving tensor throughput. ARC
+LEDGER after 9 versions: v5 (999us == engine 993us) is the floor; 5 refuted
+shapes each with a mechanism (v6 reorder, v7 split-D, v8a spills, v8b/c
+barrier-serial + C7515, v9 mbarrier + C7515). The remaining recipe is now
+COMPILER-SHAPE work: keep the PV accumulator chain free of interleaved scalar
+defs under the 240-reg region (restage alpha via smem or pre-scaled P), or
+TMA+128B-swizzle to cut the staging instructions the producer exists to hide.
+Foundations (descriptors, canonical staging, online softmax, GQA, setmaxnreg
+contract, mbarrier signaling incl. the .noinc lesson) are all proven in
+tools/bench_fa3.cu and reusable for ANY future warp-specialized kernel.
