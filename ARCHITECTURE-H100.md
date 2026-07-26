@@ -241,3 +241,11 @@ Tasks tracked in-session: 2=this doc, 3=B1, 4=B3, 5=B2, 6=A1-A6(+C2 if needed),
 7=B4, 8=C1, 9=C4, 10=D, 11=validation harness, 12=end-to-end lane demo.
 Sequencing: A first (cheap, unblocks everything), B1→B2→B3→B4 as the core
 build, C1 parallel to B once A validates the toolchain, C4+D continuous.
+
+**Q8_0 split-plane result (2026-07-26, commit fec8f234):** ALL GATES GREEN incl
+strict bit-identity through the mirrors (249 tensors). Serving curve: B=2
+236→266, B=4 368→420 (+14%), B=8 487→**526 tok/s (3.34×, 2.9× vLLM
+single-seq)**. m=1 essentially flat (183.6) — the m=1 kernel's per-warp walk
+was already sector-coalesced; its remaining gap to the 352 tok/s wall is
+latency-bound (next: multi-block ILP / cp.async staging / mr2-style rows —
+the continuing task-9 lane, with wgmma prefill as task 8).
