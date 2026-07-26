@@ -24,6 +24,12 @@ pub struct PrimeSlabs {
     pub gate: CudaSlice<f32>,     // t * n_ff_max
     pub up: CudaSlice<f32>,       // t * n_ff_max
     pub ffn_out: CudaSlice<f32>,  // t * n_embd
+    /// piecewise increment 3: per-layer S-glue segment graphs (down-add + next
+    /// attn-norm, ALL-slab IO, zero in-graph allocations -> keeperless capture is
+    /// clean). Baked at this t_cap; replay only when t == t_cap. seg_glue[il] fires
+    /// between layer il and il+1 (ping-pong parity is deterministic per il).
+    pub seg_glue: Vec<Option<cudarc::driver::CudaGraph>>,
+    pub seg_t: usize,
 }
 
 
@@ -411,6 +417,8 @@ impl HybridModel {
                 gate: e.uninit(t * n_ff_max)?,
                 up: e.uninit(t * n_ff_max)?,
                 ffn_out: e.uninit(t * n_embd)?,
+                seg_glue: Vec::new(),
+                seg_t: 0,
             });
         }
         Ok(g)
@@ -449,14 +457,16 @@ impl HybridModel {
         let mut x_own;   // fallback storage when slabs are off
         type SlabRefs<'a> = (&'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>);
         let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<SlabRefs>);
+        let mut seg: Option<(&mut Vec<Option<cudarc::driver::CudaGraph>>, &mut usize)> = None;
         let mut x_own2;
         match slab_guard.as_mut() {
             Some(g) => {
                 let slabs = g.as_mut().unwrap();
                 e.copy_into(&mut slabs.xa, 0, &x_embed, t * n_embd)?;
-                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, .. } = slabs;
+                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, seg_glue, seg_t, .. } = slabs;
                 x_cur = xa;
                 x_nxt = xb;
+                seg = Some((seg_glue, seg_t));
                 sl = Some((h, x1, z, act, h16, z16, gate, up, ffn_out));
             }
             None => {
@@ -493,12 +503,29 @@ impl HybridModel {
                 sl_gate = &mut alloc_gate; sl_up = &mut alloc_up; sl_fo = &mut alloc_fo;
             }
         }
-        for (il, layer) in self.layers.iter().enumerate() {
-            if f16fuse {
-                e.rms_norm_f16out(x_cur, layer.attn_norm.float_data(), h, h16, n_embd, t, eps)?;
-            } else {
-                e.rms_norm(x_cur, layer.attn_norm.float_data(), h, n_embd, t, eps)?;
+        // piecewise increment 3: layer-0 norm hoisted; the per-layer tail fuses
+        // [down-add + NEXT layer's attn-norm] into one captured S-glue segment
+        // (all-slab IO, zero in-graph allocations). Capture happens lazily on the
+        // first prime at this t (capture does not execute -> launch right after).
+        let n_layers = self.layers.len();
+        let use_seg = f16fuse && seg.is_some()
+            && std::env::var("BW24_PRIME_SEG").as_deref() != Ok("0");
+        if let Some((sg, st)) = seg.as_mut() {
+            if **st != t {
+                sg.clear();
+                sg.extend((0..n_layers).map(|_| None));
+                **st = t;
             }
+        }
+        {
+            let layer0 = &self.layers[0];
+            if f16fuse {
+                e.rms_norm_f16out(x_cur, layer0.attn_norm.float_data(), h, h16, n_embd, t, eps)?;
+            } else {
+                e.rms_norm(x_cur, layer0.attn_norm.float_data(), h, n_embd, t, eps)?;
+            }
+        }
+        for (il, layer) in self.layers.iter().enumerate() {
             let hx16 = if f16fuse { Some(&*h16) } else { None };
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
@@ -544,7 +571,36 @@ impl HybridModel {
                     e.copy_into(sl_fo, 0, &y, t * n_embd)?;
                 }
             }
-            e.add(x1, sl_fo, x_nxt, t * n_embd)?;
+            if use_seg && il + 1 < n_layers {
+                // S-glue segment: [add + next attn-norm(+f16out)] — one cuGraphLaunch
+                let w_next = self.layers[il + 1].attn_norm.float_data();
+                let (sg, _) = seg.as_mut().unwrap();
+                if sg[il].is_none() {
+                    use cudarc::driver::sys::{CUgraphInstantiate_flags, CUstreamCaptureMode};
+                    e.stream().synchronize()?;
+                    e.stream().begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
+                    let r = (|| -> Result<(), Box<dyn std::error::Error>> {
+                        e.add(x1, sl_fo, x_nxt, t * n_embd)?;
+                        e.rms_norm_f16out(x_nxt, w_next, h, h16, n_embd, t, eps)?;
+                        Ok(())
+                    })();
+                    let g = e.stream().end_capture(
+                        CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+                    r?;
+                    sg[il] = Some(g?.ok_or("S-glue capture produced no graph")?);
+                }
+                sg[il].as_ref().unwrap().launch()?;
+            } else {
+                e.add(x1, sl_fo, x_nxt, t * n_embd)?;
+                if il + 1 < n_layers {
+                    let w_next = self.layers[il + 1].attn_norm.float_data();
+                    if f16fuse {
+                        e.rms_norm_f16out(x_nxt, w_next, h, h16, n_embd, t, eps)?;
+                    } else {
+                        e.rms_norm(x_nxt, w_next, h, n_embd, t, eps)?;
+                    }
+                }
+            }
             std::mem::swap(&mut x_cur, &mut x_nxt);
         }
         // hidden-stack return: clone the final x out of the slab

@@ -1053,3 +1053,16 @@ change (all captured kernels address-deterministic; Lt untouched, and slabs
 already froze its operands).
 Gate: piecewise-vs-eager bit-identity (same kernels, same buffers, same
 order — this one CAN be a bit-gate, unlike the monolithic config).
+
+**Piecewise increment 3 (2026-07-26): FIRST SEGMENT LIVE — pp512 crosses 20k.**
+S-glue (down-add + next attn-norm, all-slab IO, zero in-graph allocations —
+keeperless capture is clean here) captured per layer per T, replayed as ONE
+cuGraphLaunch each: pp512 19,825 (off) -> 20,009 (on), +0.9% from a 2-kernel
+segment x31 layers. BIT-IDENTICAL confirmed (same kernels/buffers/order — the
+piecewise config is bit-gateable as designed; argmax/output byte-equal, all
+batteries green). The submission-cadence mechanism is VALIDATED: this is the
+first launch-structure change that moved the number (three count-reduction
+neutrals stand in contrast). Scaling path: S-mid (add+post-norm — needs the
+`mixed` slab via the mixer out-GEMM `_into` refactor), then S-prep/S-attn
+(7-9 kernels each) per the build-ready segmentation — projected +8-10% total.
+BW24_PRIME_SEG=0 reverts.
