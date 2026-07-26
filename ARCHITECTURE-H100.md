@@ -276,3 +276,10 @@ accumulation order = bit-identical): port q8_0_mmvq_rp -> _rpca next.
 Expected class: NVFP4 rpca's long_scoreboard fix; target is the 250-300
 tok/s band en route to the 334-345 wall goal (which likely also needs the
 fused-launch family widened to rp).
+
+**rpca probe (2026-07-26):** Q8_0 m=1 cp.async ring measured −2% (181.8 vs rp
+185.5) — smem staging costs more than it hides for 8-bit direct-dp4a. Opt-in
+seam kept. m=1 stands at 186 (~57% of achievable BW); the remaining gap is
+per-shape latency work (grid fill on small out_f, register-window ILP) and
+the non-matvec per-token floor — next probes need per-shape microbenches
+(tools/bench_mapped_qmatvec.cu pattern), not whole-engine A/Bs.
