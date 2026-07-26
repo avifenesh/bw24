@@ -268,6 +268,7 @@ pub fn run(
     let mut last_batch = 0usize;
     // Starvation sentinel (estimator blind spot): last time an interactive session decoded.
     let mut last_interactive_decode = Instant::now();
+    let mut tick_n: u64 = 0;
 
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
@@ -341,7 +342,10 @@ pub fn run(
         //        replaces vLLM's single global chunked-prefill knob and its baseline-p99 tax);
         //    (c) decoding sessions advance through BATCHED steps: sample+emit host-side, then
         //        decode_step_batch over survivors in chunks of <= 8, interactive rows first.
-        let batching = std::env::var("BW24_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
+        let batching = {
+            static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *B.get_or_init(|| std::env::var("BW24_SERVE_BATCH").map(|v| v != "0").unwrap_or(true))
+        };
         let mut finished: Vec<usize> = Vec::new();
         if !batching {
             for i in 0..active.len() {
@@ -359,7 +363,10 @@ pub fn run(
             // greedy interactive session to GraphSession replay (+34% at B=1); degrade back
             // to batched-eager the moment concurrency arrives (dc==eager bit-identity makes
             // the cache handoff seamless).
-            let gs_on = std::env::var("BW24_SERVE_GS").map(|v| v != "0").unwrap_or(true);
+            let gs_on = {
+                static G: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *G.get_or_init(|| std::env::var("BW24_SERVE_GS").map(|v| v != "0").unwrap_or(true))
+            };
             if gs_on && active.len() > 1 {
                 for i in 0..active.len() {
                     if active[i].graph.is_none() { continue; }
@@ -589,8 +596,11 @@ pub fn run(
                 }
             }
         }
-        // publish lane metrics (worker owns the counters; axum reads the snapshot)
-        if let Ok(mut m) = metrics.lock() {
+        // publish lane metrics (worker owns the counters; axum reads the snapshot).
+        // THROTTLED: the per-tick mutex+percentile cost ~1.7ms/token of B=1 TPOT
+        // (2026-07-26 live A/B) — publish every 32nd tick.
+        tick_n = tick_n.wrapping_add(1);
+        if tick_n % 32 == 0 { if let Ok(mut m) = metrics.lock() {
             m.admitted = lane_admitted;
             m.shed = lane_shed;
             m.completed = lane_completed;
@@ -598,7 +608,7 @@ pub fn run(
             m.step_p50_ms = step_stats.p(50.0).unwrap_or(0.0);
             m.step_p99_ms = step_stats.p(99.0).unwrap_or(0.0);
             m.batch_size_last = last_batch;
-        }
+        } }
         if !finished.is_empty() && std::env::var("BW24_SPILL_STATS").as_deref() == Ok("1") {
             if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
                 engine.moe_pread_stats() {
