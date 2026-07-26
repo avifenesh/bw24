@@ -1298,3 +1298,36 @@ causal) — the remaining work is choreography, not discovery. The mma kernel's
 993us stands as a well-tuned baseline: it earns its rate from deep ILP within
 64 warps, which wgmma can only beat with occupancy the naive shapes can't
 reach.**
+
+**FP8-for-Q8_0 assessment (2026-07-27): NOT the lane lever.** BW24_PP_FP8
+serves F8-E4M3-ORIGIN checkpoints (raw e4m3 bytes + per-tensor scale). For the
+Q8_0 model a Q8_0->e4m3 mirror is a NEW lossy hop: e4m3's 3 mantissa bits +
+per-TENSOR scale cannot carry Q8_0's per-32-block scale spread (Lt fp8
+supports scalar/outer-vec scales only — the same per-block-scale wall as the
+C7514/W8A8 verdicts). Rates would also be shape-limited like the int8 probe
+(654-892 TOP at m=512, not the 2x datasheet). A5 stays scoped to F8
+checkpoints.
+
+## FA3 v8 design (build-ready — the choreography, all pieces proven)
+1. Host: cuTensorMapEncodeTiled for K/V [T, HKV*D] bf16, box (64, 64) x 4
+   per-D-quarter maps OR box (64,256) with 128B swizzle; pass as
+   __grid_constant__ CUtensorMap. Q likewise (loaded once).
+2. Kernel CTA = 384 thr: WG0/WG1 consumers (v5's 2-q-tile shape — the proven
+   best), WG2 producer. setmaxnreg: consumers .inc 216, producer .dec 40
+   (2x128x216 + 128x40 = 60.4K regs < 64K, 1 CTA — the win is producer
+   latency-hiding + consumer spill-freedom, smem caps 1 CTA regardless).
+3. Producer loop: cp.async.bulk.tensor.2d [smem ring stage], [tmap, {k0, kvh
+   base}], mbar; arrive_expect_tx per stage. Ring: 2 stages x (K 32KB + V
+   32KB) as v5. V^T handled by a SECOND tensor map with element-stride swap
+   (TMA im2col not needed — transpose staged via 128B-swizzle map read along
+   the other axis) OR keep V^T scalar staging in the producer (it hides).
+4. Consumers: mbarrier.try_wait parity loop instead of cp_wait/syncthreads;
+   descriptors switch to swizzle-mode bits matching the TMA layout (desc bits
+   62-63 = 1 for 128B swizzle; LBO/SBO change per PTX table — iterate with the
+   harness QK^T probe EXACTLY like the canonical layout was cracked).
+5. Gate: harness vs online-ref at all T (existing battery), then engine
+   integration behind BW24_FA3 with the greedy-stream battery.
+Expected: producer removes the staging serialization v5 still pays inside its
+consumer warpgroups; with consumers never idling on K/V, the wgmma chain
+approaches its issue-bound floor. Measured points to beat: v5 999us, engine
+993us; the slice is 7.9ms of the 85ms official-lane prime.
