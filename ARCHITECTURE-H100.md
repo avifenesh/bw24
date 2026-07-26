@@ -1168,3 +1168,13 @@ prime-batch b=4/b=8 uneven). ROUND-26 CUMULATIVE batched serving-shape prime:
 13441 -> 16022 (+19.2%: scatter-elim +6.1%, vl-K4/K5 +2.3%, vl-K1-K3 +3%,
 vl-prep/tail +7.3%). NOTE: the B=4-12 concat plateau was measured with per-seq
 cores — varlen changes B-scaling; re-sweep before touching serving policy.
+
+**Batch-trunk f16out + batched lm_head (2026-07-26): +4.7% batched prime,
+interleaved OLD-vs-NEW binaries 5/5 (median 17265 vs 16494).** Two nsys-round-26
+residuals: (1) the batch trunk's FFN still paid 32 standalone cvt passes —
+silu_mul_f16out + try_f16_gemm_pre now serve it (same #17 bit-identical class);
+(2) the epilogue ran B sequential m=1 lm_head matvecs (B re-reads of the 600MB
+weight, 2.2ms at B=6) — the B last rows now gather into ONE m=B f16 GEMM + one
+DtoH (numeric class = prefill f16 GEMM; prime_batch_gate argmax battery
+arbitrates and stays GREEN at b=4/6/8). Also fixed the b^2 hidden-stack split.
+ROUND-26 CUMULATIVE batched serving-shape prime: 13441 -> 17265 (+28.4%).

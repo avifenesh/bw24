@@ -926,8 +926,19 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(total * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, total * n_ff)?;
-                    e.matmul(ffn_down, &act, total)?
+                    // task #17 (batch trunk): silu twin emits the down GEMM's fp16 operand
+                    // in-epilogue (nsys round-26: this trunk still paid 32 cvt passes).
+                    if Self::f16out_on(e, total) && self.cfg.m3.is_none() {
+                        let mut a16 = e.alloc_u8_uninit(total * n_ff * 2)?;
+                        e.silu_mul_f16out(&gate, &up, &mut act, &mut a16, total * n_ff)?;
+                        match e.try_f16_gemm_pre(ffn_down, &a16, total)? {
+                            Some(y) => y,
+                            None => e.matmul(ffn_down, &act, total)?,
+                        }
+                    } else {
+                        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, total * n_ff)?;
+                        e.matmul(ffn_down, &act, total)?
+                    }
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, total, il as u16)?,
             };
@@ -938,6 +949,27 @@ impl HybridModel {
         // epilogue per seq (identical math to prime_chunk: norm all rows, lm_head on last row)
         let mut hn = e.uninit(total * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, total, eps)?;
+        // batched lm_head (nsys round-26: B sequential m=1 matvecs re-read the 600MB
+        // lm_head weight B times — 2.2ms at B=6): gather the B last rows and run ONE
+        // m=B GEMM (f16 lane; falls back to the per-seq matvec when no mirror). The
+        // f16-vs-mmvq logits delta is the prefill GEMM numeric class — prime_batch_gate's
+        // argmax battery arbitrates, same as every other prefill GEMM change.
+        let mut hcat = e.uninit(b * n_embd)?;
+        for s in 0..b {
+            let last0 = (offs[s] + ts[s] - 1) * n_embd;
+            e.copy_view_into(&mut hcat, s * n_embd, &hn.slice(last0..last0 + n_embd), n_embd)?;
+        }
+        let logits_cat = if b >= 2 { e.try_f16_gemm(&self.output, &hcat, b)? } else { None };
+        let logits_host: Option<Vec<f32>> = match &logits_cat {
+            Some(lc) => Some(e.dtoh(lc)?),
+            None => None,
+        };
+        let n_vocab = self.output.out_features();
+        let mut hidden_all = if crate::spec::spec_hpost() {
+            split(e, &hn, n_embd)?
+        } else {
+            split(e, &x, n_embd)?
+        };
         let mut out = Vec::with_capacity(b);
         for s in 0..b {
             let last0 = (offs[s] + ts[s] - 1) * n_embd;
@@ -947,16 +979,16 @@ impl HybridModel {
             } else {
                 e.copy_view_into(&mut h_seed, 0, &hn.slice(last0..last0 + n_embd), n_embd)?;
             }
-            let mut hlast = e.uninit(n_embd)?;
-            e.copy_view_into(&mut hlast, 0, &hn.slice(last0..last0 + n_embd), n_embd)?;
-            let logits = e.matmul(&self.output, &hlast, 1)?;
-            caches[s].pos += ts[s];
-            let hidden = if crate::spec::spec_hpost() {
-                split(e, &hn, n_embd)?.swap_remove(s)
-            } else {
-                split(e, &x, n_embd)?.swap_remove(s)
+            let logits = match &logits_host {
+                Some(lh) => lh[s * n_vocab..(s + 1) * n_vocab].to_vec(),
+                None => {
+                    let mut hlast = e.uninit(n_embd)?;
+                    e.copy_view_into(&mut hlast, 0, &hn.slice(last0..last0 + n_embd), n_embd)?;
+                    e.dtoh(&e.matmul(&self.output, &hlast, 1)?)?
+                }
             };
-            out.push((e.dtoh(&logits)?, h_seed, hidden));
+            caches[s].pos += ts[s];
+            out.push((logits, h_seed, hidden_all.remove(0)));
         }
         Ok(out)
     }
