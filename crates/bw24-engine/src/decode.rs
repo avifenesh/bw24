@@ -22,6 +22,36 @@ pub struct GraphDecodeState {
     pub captures: usize,                           // count of (re)captures, for reporting
 }
 
+/// Long-lived step-wise CUDA-graph decode session (see HybridModel::graph_session_new).
+/// One replay per step(); the only steady-state D2H is the 4-byte next-token read.
+pub struct GraphSession {
+    pub gs: GraphDecodeState,
+    pub cache: Cache,
+    embd_gpu: CudaSlice<u8>,
+    graph: cudarc::driver::CudaGraph,
+    plan: Vec<crate::graph_update::FaMain>,
+    pub bucket_max: usize,
+}
+
+impl GraphSession {
+    /// One graph-replay decode step. Returns the next token (already fed back into the
+    /// resident token_d — the following step consumes it). Errors past bucket_max
+    /// (the caller sized max_new at capture; recapture-on-cross is a follow-up).
+    pub fn step(&mut self, e: &Engine) -> Result<u32, Box<dyn std::error::Error>> {
+        if self.cache.pos + 1 >= self.bucket_max {
+            return Err("GraphSession: past bucket_max (generation budget exceeded)".into());
+        }
+        crate::graph_update::fa_apply(&self.graph, &mut self.plan, self.cache.pos + 1,
+                                      crate::fa_split_keys)?;
+        self.graph.launch()?;
+        self.cache.pos += 1;
+        for kvl in self.cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+            kvl.len += 1;
+        }
+        e.dtoh_u32_one(&self.gs.token_d)
+    }
+}
+
 impl GraphDecodeState {
     pub fn new(e: &Engine) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(GraphDecodeState {
@@ -879,6 +909,90 @@ impl HybridModel {
             if let Some(r) = emit(tok) { return Ok(r); }
         }
         Ok(StopReason::MaxNew)
+    }
+
+    /// Step-wise CUDA-graph decode session (ARCHITECTURE-H100.md graph-serving lane,
+    /// 2026-07-26): generate_graph's prime+capture lifted into a long-lived session so a
+    /// SERVING scheduler can replay ONE step per tick instead of blocking a whole
+    /// generation. Serving policy (measured): graphs win only at B=1 (214 solo vs 425
+    /// aggregate batched-eager at B=4) — this is the single-interactive-session path.
+    /// Capture discipline is generate_graph's verbatim: event tracking must be OFF for
+    /// every buffer the graph references (new() toggles it), capture at bucket_max =
+    /// pos + max_new + 1, fa geometry retuned per step (fa_apply, FP lockstep with eager).
+    pub fn graph_session_new(
+        &self,
+        e: &Engine,
+        prompt: &[u32],
+        max_new: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let (qt, row_bytes) = self.embd.qt_and_row_bytes(n_embd);
+        let was_tracking = e.ctx().is_event_tracking();
+        if was_tracking {
+            unsafe { e.ctx().disable_event_tracking(); }
+        }
+        let r = self.graph_session_new_inner(e, prompt, max_new, qt, row_bytes);
+        if was_tracking {
+            unsafe { e.ctx().enable_event_tracking(); }
+        }
+        r
+    }
+
+    fn graph_session_new_inner(
+        &self,
+        e: &Engine,
+        prompt: &[u32],
+        max_new: usize,
+        qt: i32,
+        row_bytes: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        let n_vocab = self.output.out_features();
+        let embd_gpu = e.upload_u8(&self.embd.raw)?;
+        let max_ctx = prompt.len() + max_new + 8;
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+        let mut gs = GraphDecodeState::new(e)?;
+        gs.pos_d = e.htod_i32(&[0])?;
+        gs.token_d = e.stream().clone_htod(&[0u32])?;
+        // prime (dc path — device counters advance with the host)
+        let mut next_in = 0u32;
+        for &tok in prompt {
+            e.set_u32_one(&mut gs.token_d, tok)?;
+            let nt = self.decode_step_dc(e, &gs.token_d, &mut gs.pos_d, &embd_gpu,
+                                         qt, row_bytes, &mut cache, n_vocab)?;
+            next_in = e.dtoh_u32_one(&nt)?;
+        }
+        e.set_u32_one(&mut gs.token_d, next_in)?;
+
+        // capture ONCE at bucket_max (snapshot/rollback the warmup runs — the
+        // graph_decode_loop recipe verbatim)
+        let bucket_max = cache.pos + max_new + 1;
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+        let graph = {
+            let GraphDecodeState { token_d, pos_d, .. } = &mut gs;
+            let cache_ref = &mut cache;
+            let embd_ref = &embd_gpu;
+            e.capture_graph(|e| {
+                self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
+                                        cache_ref, n_vocab, bucket_max)
+            })?
+        };
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(&mut gs.pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
+            }
+        }
+        e.set_u32_one(&mut gs.token_d, tok_save)?;
+        let plan = crate::graph_update::fa_plan(&graph)?;
+        let first = e.dtoh_u32_one(&gs.token_d)?;
+        Ok((GraphSession {
+            gs, cache, embd_gpu, graph, plan, bucket_max,
+        }, first))
     }
 
     /// Device-counter full-attention decode (CUDA-GRAPH-PLAN Phase 2): clone of `full_attn_decode`
