@@ -1460,3 +1460,15 @@ BW24_FA3=0 reverts; hd128 twin + batched favl twin remain mapped.
 The FA3 arc: opened, cracked, WON, and shipped in one campaign — 10 harness
 versions, 4 permanent unlocks, 6 mechanism-verdicts, +2.4% on the official
 lane with headroom mapped (V^T map, 3-deep ring, C7515-free bodies).
+
+**FA3 v11 SHIPPED (2026-07-27, round 30): full-TMA staging + trans_b PV —
+205us in-harness (4.8x the old kernel), official lane 0.085 -> 0.079s (5/5,
++7.6%) = 25,924 tok/s = 83.5% of vLLM, TTFT 79ms.** The PV trans_b pairing
+(probe_tma sweep: SBO=1024, k-slice = base + j*2048, trans_b=1 over TMA
+row-loaded V) eliminated v10's remaining wall — the 16K-scalar-load V^T
+transpose staging per tile (the engine kernel's original staging disease in
+miniature). Kernel: Q/K/V all TMA swizzled through one expect-tx ring; PV
+consumes V atoms MN-major via the trans bit. Engine shim upgraded in place
+(3 maps/call); promotion bar re-run: 3-seed long streams MATCH, validate ALL
+GREEN, interleaved 5/5. Harness ladder final: 2872 -> 999 (parity) -> 883
+(v10) -> 205 (v11). FA slice: 7.9ms -> ~1.6ms of the official lane.

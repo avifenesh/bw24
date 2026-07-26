@@ -53,6 +53,21 @@ __device__ __forceinline__ void wgmma_m64n64k16_bf16(float acc[32], unsigned lon
           "+f"(acc[24]),"+f"(acc[25]),"+f"(acc[26]),"+f"(acc[27]),"+f"(acc[28]),"+f"(acc[29]),"+f"(acc[30]),"+f"(acc[31])
         : "l"(da), "l"(db), "r"(scale_d));
 }
+__device__ __forceinline__ void wgmma_m64n64k16_bf16_tb(float acc[32], unsigned long long da,
+                                                        unsigned long long db, int scale_d) {
+    asm volatile(
+        "{\n.reg .pred p;\nsetp.ne.b32 p, %34, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, p, 1, 1, 0, 1;\n}"
+        : "+f"(acc[0]),"+f"(acc[1]),"+f"(acc[2]),"+f"(acc[3]),"+f"(acc[4]),"+f"(acc[5]),"+f"(acc[6]),"+f"(acc[7]),
+          "+f"(acc[8]),"+f"(acc[9]),"+f"(acc[10]),"+f"(acc[11]),"+f"(acc[12]),"+f"(acc[13]),"+f"(acc[14]),"+f"(acc[15]),
+          "+f"(acc[16]),"+f"(acc[17]),"+f"(acc[18]),"+f"(acc[19]),"+f"(acc[20]),"+f"(acc[21]),"+f"(acc[22]),"+f"(acc[23]),
+          "+f"(acc[24]),"+f"(acc[25]),"+f"(acc[26]),"+f"(acc[27]),"+f"(acc[28]),"+f"(acc[29]),"+f"(acc[30]),"+f"(acc[31])
+        : "l"(da), "l"(db), "r"(scale_d));
+}
+
 __device__ __forceinline__ void v10_mbar_init(void* mbar, unsigned count) {
     unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
     asm volatile("mbarrier.init.shared.b64 [%0], %1;" :: "r"(a), "r"(count));
@@ -94,7 +109,7 @@ __device__ __forceinline__ unsigned long long v10_desc_swz(const void* p) {
 
 extern "C" __global__ void __launch_bounds__(256, 1)
 bw24_fa3_v10_kernel(const __grid_constant__ CUtensorMap tQ, const __grid_constant__ CUtensorMap tK,
-        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        const __grid_constant__ CUtensorMap tV, float* __restrict__ O,
         int T, int H, int HKV, int D, float scale) {
     extern __shared__ char smem[];
     const int wg = threadIdx.x / 128;
@@ -122,23 +137,14 @@ bw24_fa3_v10_kernel(const __grid_constant__ CUtensorMap tQ, const __grid_constan
     const int kv_end_own = q0 + 64 <= T ? q0 + 64 : T;
     const int n_own = q0 < T ? (kv_end_own + 63) / 64 : 0;
 
-    // prologue: thread 0 issues Q (both WGs) + K(0) on FULL[0]
+    // prologue: thread 0 issues Q (both WGs) + K(0) + V(0) on FULL[0] — all TMA
     if (threadIdx.x == 0) {
-        v10_expect_tx(&mFull[0], 2 * 32768 + 32768);
+        v10_expect_tx(&mFull[0], 2 * 32768 + 2 * 32768);
         for (int a = 0; a < 4; a++) {
             v10_tma3d(&tQ, smem + a * 8192, a * 64, head, (blockIdx.x * 2) * 64, &mFull[0]);
             v10_tma3d(&tQ, smem + 32768 + a * 8192, a * 64, head, (blockIdx.x * 2 + 1) * 64, &mFull[0]);
             v10_tma3d(&tK, bK[0] + a * 8192, a * 64, kvh, 0, &mFull[0]);
-        }
-    }
-    // V(0) cooperative
-    {
-        for (int idx = threadIdx.x; idx < 64 * D; idx += 256) {
-            int r = idx / D, c = idx % D;
-            int stv = r / 16, kkv = r % 16;
-            size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2;
-            *(__nv_bfloat16*)(bV[0] + offv) = (r < T)
-                ? V[((size_t)r * HKV + kvh) * D + c] : __float2bfloat16(0.0f);
+            v10_tma3d(&tV, bV[0] + a * 8192, a * 64, kvh, 0, &mFull[0]);
         }
     }
     __syncthreads();
@@ -163,9 +169,11 @@ bw24_fa3_v10_kernel(const __grid_constant__ CUtensorMap tQ, const __grid_constan
         // issue K(t+1) (stage freed two tiles ago; EMPTY guards reuse)
         if (threadIdx.x == 0 && t + 1 < n_tiles) {
             if (t + 1 >= 2) v10_wait(&mEmpty[cur ^ 1], ((t - 1) >> 1) & 1);
-            v10_expect_tx(&mFull[cur ^ 1], 32768);
-            for (int a = 0; a < 4; a++)
+            v10_expect_tx(&mFull[cur ^ 1], 2 * 32768);
+            for (int a = 0; a < 4; a++) {
                 v10_tma3d(&tK, bK[cur ^ 1] + a * 8192, a * 64, kvh, (t + 1) * 64, &mFull[cur ^ 1]);
+                v10_tma3d(&tV, bV[cur ^ 1] + a * 8192, a * 64, kvh, (t + 1) * 64, &mFull[cur ^ 1]);
+            }
         }
         if (active) {
             float acc[32];
@@ -229,24 +237,13 @@ bw24_fa3_v10_kernel(const __grid_constant__ CUtensorMap tQ, const __grid_constan
                 unsigned long long da = make_desc(bP + st * 2048, 128, 256);
                 #pragma unroll
                 for (int nb = 0; nb < 4; nb++) {
-                    unsigned long long db = make_desc(bV[cur] + st * 8192 + nb * 64 * 32, 128, 256);
-                    wgmma_m64n64k16_bf16(oacc[nb], da, db, 1);
+                    // V rows TMA-swizzled; trans_b MN-major B: atom = nb*8192, k-slice = st*2048
+                    unsigned long long db = v10_desc_swz(bV[cur] + nb * 8192 + st * 2048);
+                    wgmma_m64n64k16_bf16_tb(oacc[nb], da, db, 1);
                 }
             }
             wgmma_commit();
             wgmma_wait<0>();
-        }
-        // V(t+1) cooperative into the other stage, then flag EMPTY for K reuse
-        if (t + 1 < n_tiles) {
-            int k1 = (t + 1) * 64;
-            for (int idx = threadIdx.x; idx < 64 * D; idx += 256) {
-                int r = idx / D, c = idx % D;
-                int stv = r / 16, kkv = r % 16;
-                size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2;
-                int gr = k1 + r;
-                *(__nv_bfloat16*)(bV[cur ^ 1] + offv) = (gr < T)
-                    ? V[((size_t)gr * HKV + kvh) * D + c] : __float2bfloat16(0.0f);
-            }
         }
         __syncthreads();
         v10_arrive(&mEmpty[cur]);
@@ -292,6 +289,10 @@ extern "C" int bw24_fa3_prefill(const void* q16, const void* k16, const void* v1
     if (cuTensorMapEncodeTiled(&tK, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 3, (void*)k16,
             gdk, gsk, bx, es, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
             CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)) return 1;
+    CUtensorMap tV;
+    if (cuTensorMapEncodeTiled(&tV, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 3, (void*)v16,
+            gdk, gsk, bx, es, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+            CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)) return 1;
     int shmem = 212992 + 64;
     static int attr_set = 0;
     if (!attr_set) {
@@ -301,7 +302,7 @@ extern "C" int bw24_fa3_prefill(const void* q16, const void* k16, const void* v1
     }
     dim3 grid((T + 127) / 128, H);
     bw24_fa3_v10_kernel<<<grid, 256, shmem, (cudaStream_t)stream>>>(
-        tQ, tK, (const __nv_bfloat16*)v16, o, T, H, HKV, D, scale);
+        tQ, tK, tV, o, T, H, HKV, D, scale);
     return cudaPeekAtLastError() ? 2 : 0;
 }
 

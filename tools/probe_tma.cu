@@ -146,6 +146,103 @@ extern "C" __global__ void tma_qk_swz(const __grid_constant__ CUtensorMap tq,
     }
 }
 
+// ---- PV trans_b probe: O = P(64x64, canonical A) x V(64kv x 64d slice, TMA-swizzled
+// rows as MN-major B with the wgmma trans_b bit). If a desc pairing MATCHes, v10's
+// scalar V^T staging is replaced by TMA (its last staging cost). Knobs: -DTB_SBO.
+#ifndef TB_SBO
+#define TB_SBO 1024
+#endif
+__device__ __forceinline__ unsigned long long make_desc(const void* smem_ptr,
+                                                        unsigned lead_bytes, unsigned stride_bytes) {
+    unsigned addr = (unsigned)__cvta_generic_to_shared(smem_ptr);
+    unsigned long long d = 0;
+    d |= (unsigned long long)((addr & 0x3FFFF) >> 4);
+    d |= (unsigned long long)((lead_bytes >> 4) & 0x3FFF) << 16;
+    d |= (unsigned long long)((stride_bytes >> 4) & 0x3FFF) << 32;
+    return d;
+}
+__device__ __forceinline__ unsigned long long make_desc_tb(
+const void* p, unsigned sbo) {
+    unsigned addr = (unsigned)__cvta_generic_to_shared(p);
+    unsigned long long d = 0;
+    d |= (unsigned long long)((addr & 0x3FFFF) >> 4);
+    d |= (unsigned long long)((sbo >> 4) & 0x3FFF) << 32;
+    d |= (unsigned long long)1 << 62;
+    return d;
+}
+__device__ __forceinline__ void wgmma64_tb(float acc[32], unsigned long long da,
+                                           unsigned long long db, int scale_d) {
+    asm volatile(
+        "{\n.reg .pred p;\nsetp.ne.b32 p, %34, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, p, 1, 1, 0, 1;\n}"   // trans_b = 1
+        : "+f"(acc[0]),"+f"(acc[1]),"+f"(acc[2]),"+f"(acc[3]),"+f"(acc[4]),"+f"(acc[5]),"+f"(acc[6]),"+f"(acc[7]),
+          "+f"(acc[8]),"+f"(acc[9]),"+f"(acc[10]),"+f"(acc[11]),"+f"(acc[12]),"+f"(acc[13]),"+f"(acc[14]),"+f"(acc[15]),
+          "+f"(acc[16]),"+f"(acc[17]),"+f"(acc[18]),"+f"(acc[19]),"+f"(acc[20]),"+f"(acc[21]),"+f"(acc[22]),"+f"(acc[23]),
+          "+f"(acc[24]),"+f"(acc[25]),"+f"(acc[26]),"+f"(acc[27]),"+f"(acc[28]),"+f"(acc[29]),"+f"(acc[30]),"+f"(acc[31])
+        : "l"(da), "l"(db), "r"(scale_d));
+}
+
+extern "C" __global__ void tma_pv_tb(const __grid_constant__ CUtensorMap tv,
+                                     const __nv_bfloat16* __restrict__ P,
+                                     float* __restrict__ O) {
+    // V: one 64(kv) x 64(d) swizzled atom via TMA; P: 64x64 canonical (staged scalar).
+    __shared__ __align__(1024) __nv_bfloat16 sV[64 * 64];
+    __shared__ __align__(128) __nv_bfloat16 sP[64 * 64];
+    __shared__ __align__(8) unsigned long long mbar;
+    const int tid = threadIdx.x;
+    if (tid == 0) {
+        mbar_init(&mbar, 1);
+        asm volatile("fence.proxy.async.shared::cta;");
+        mbar_expect_tx(&mbar, 64 * 64 * 2);
+        unsigned d = (unsigned)__cvta_generic_to_shared(sV);
+        unsigned b = (unsigned)__cvta_generic_to_shared(&mbar);
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes "
+                     "[%0], [%1, {%2, %3}], [%4];" :: "r"(d), "l"(&tv), "r"(0), "r"(0), "r"(b) : "memory");
+    }
+    // canonical P staging (k-steps over kv: 4 x 64x16 tiles)
+    char* bP = (char*)sP;
+    for (int idx = tid; idx < 64 * 64; idx += 128) {
+        int r = idx / 64, c = idx % 64;
+        int st = c / 16, kk = c % 16;
+        size_t off = (size_t)st * 2048 + (r / 8) * 256 + (kk / 8) * 128 + (r % 8) * 16 + (kk % 8) * 2;
+        *(__nv_bfloat16*)(bP + off) = P[r * 64 + c];
+    }
+    __syncthreads();
+    mbar_wait(&mbar, 0);
+    asm volatile("fence.proxy.async.shared::cta;");
+    float acc[32];
+    #pragma unroll
+    for (int i = 0; i < 32; i++) acc[i] = 0.0f;
+    wgmma_fence_probe();
+    // 4 k16-steps over kv; A = P canonical (desc lead128/stride256); B = V atom with
+    // trans_b: kv is B's k dim, rows of the swizzled atom — slice via base + j*?? sweep:
+    // try k-slice = row-group offset j*SBO/4?? use j * 32 first (as K-major) and j * 2048.
+    for (int j = 0; j < 4; j++) {
+        unsigned long long da = make_desc((char*)sP + j * 2048, 128, 256);
+#ifndef TB_JSTRIDE
+#define TB_JSTRIDE 32
+#endif
+        unsigned long long db = make_desc_tb((char*)sV + j * TB_JSTRIDE, TB_SBO);
+        wgmma64_tb(acc, da, db, j == 0 ? 0 : 1);
+    }
+    wgmma_commit_probe();
+    wgmma_wait_probe();
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    #pragma unroll
+    for (int i = 0; i < 32; i += 4) {
+        int n8 = i / 4;
+        O[(r0 + 0) * 64 + c0 + n8 * 8 + 0] = acc[i + 0];
+        O[(r0 + 0) * 64 + c0 + n8 * 8 + 1] = acc[i + 1];
+        O[(r0 + 8) * 64 + c0 + n8 * 8 + 0] = acc[i + 2];
+        O[(r0 + 8) * 64 + c0 + n8 * 8 + 1] = acc[i + 3];
+    }
+}
+
 int main() {
     const int ROWS = 256, COLS = 256;
     __nv_bfloat16* h = (__nv_bfloat16*)malloc(ROWS * COLS * 2);
@@ -230,6 +327,47 @@ int main() {
         }
         printf("SWZ QK^T: max_rel %.3e bad %d %s (LBO=%d SBO=%d)\n", mr, b2,
                b2 == 0 ? "MATCH" : "MISMATCH", SWZ_LBO, SWZ_SBO);
-        return b2 != 0;
+        if (b2) return 1;
+
+        // ---- PV trans_b: O = P(64x64) x V(64x64) ----
+        __nv_bfloat16 *hp = (__nv_bfloat16*)malloc(64 * 64 * 2), *hv2 = (__nv_bfloat16*)malloc(64 * 64 * 2);
+        for (int i = 0; i < 64 * 64; i++) {
+            hp[i] = __float2bfloat16((rand() % 255) * 0.003f);
+            hv2[i] = __float2bfloat16((rand() % 255 - 127) * 0.01f);
+        }
+        float* ref2 = (float*)malloc(64 * 64 * 4);
+        for (int r = 0; r < 64; r++)
+            for (int d2 = 0; d2 < 64; d2++) {
+                float o = 0;
+                for (int c = 0; c < 64; c++)
+                    o += __bfloat162float(hp[r * 64 + c]) * __bfloat162float(hv2[c * 64 + d2]);
+                ref2[r * 64 + d2] = o;
+            }
+        __nv_bfloat16 *dp2, *dv2; float* dO2;
+        CK(cudaMalloc(&dp2, 64 * 64 * 2)); CK(cudaMalloc(&dv2, 64 * 64 * 2)); CK(cudaMalloc(&dO2, 64 * 64 * 4));
+        CK(cudaMemcpy(dp2, hp, 64 * 64 * 2, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(dv2, hv2, 64 * 64 * 2, cudaMemcpyHostToDevice));
+        CUtensorMap tv;
+        cuuint64_t gdv[2] = { 64, 64 };
+        cuuint64_t gsv[1] = { 64 * 2 };
+        cuuint32_t bxv[2] = { 64, 64 };
+        cuuint32_t esv[2] = { 1, 1 };
+        CD(cuTensorMapEncodeTiled(&tv, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)dv2, gdv, gsv, bxv, esv,
+                                  CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+                                  CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));
+        tma_pv_tb<<<1, 128>>>(tv, dp2, dO2);
+        CK(cudaGetLastError());
+        CK(cudaDeviceSynchronize());
+        float* hO2 = (float*)malloc(64 * 64 * 4);
+        CK(cudaMemcpy(hO2, dO2, 64 * 64 * 4, cudaMemcpyDeviceToHost));
+        float mr2 = 0; int b3 = 0;
+        for (int i = 0; i < 64 * 64; i++) {
+            float rl = fabsf(hO2[i] - ref2[i]) / fmaxf(fabsf(ref2[i]), 1e-3f);
+            if (rl > mr2) mr2 = rl;
+            if (rl > 2e-2f) b3++;
+        }
+        printf("PV trans_b: max_rel %.3e bad %d %s (SBO=%d JS=%d)\n", mr2, b3,
+               b3 == 0 ? "MATCH" : "MISMATCH", TB_SBO, TB_JSTRIDE);
+        return b3 != 0;
     }
 }
