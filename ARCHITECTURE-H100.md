@@ -839,3 +839,31 @@ REMAINING for serving: per-bucket capture at boot, session pointer TABLE
 (this smoke bakes ONE cache's pointers), pad-to-bucket + the 4 device-length
 pieces, worker replay path + prime-graph-gate. Replay math: 512/23.3ms =
 21,973 tok/s pp512-equivalent (+10.3% over eager 19,922).
+
+**Task #14 design v3 (2026-07-26, post-smoke): COPY-OUT beats the pointer
+table.** Economics: one graph per bucket binds a DEDICATED scratch cache;
+after replay, D2D-copy the outputs into the session's cache — KV rows [0,T)
+(~12MB), conv rings + ssm states (~64MB) ≈ 25-50us total vs the 2.3ms the
+graph saves. ZERO kernel changes, ZERO cudaGraphExec node patching (the
+160-param patching alternative costs ~320us/session-switch AND graph_update
+surgery; copy-out wins on both simplicity and cost). AUTO_FREE LAW (smoke
+finding 3 corollary): in-graph transient ADDRESSES recycle per launch — every
+replay-consumed output MUST be copy-noded into a stable buffer inside the
+graph; the copy-out sources are exactly those stable buffers plus the scratch
+cache's resident state.
+PAD-PROOFING (the 4 pieces, insertion points pinned):
+1. gdn_pad_mask(beta_raw, g_log, len_d, H, T_bucket) — tiny kernel; insert in
+   linear_attn_prime_core between the g4 pops and gdn_glog/sigmoid consumers
+   (zeroed beta + g_log make pad rows identity state-steps).
+2. conv-ring writeback from device true_len (the fresh prime's ring must hold
+   rows [len-3, len), not the pad tail) — device-int variant of the ring
+   update call in linear_attn_prime_core.
+3. row_gather_device(hn/x, len_d) for h_seed + hlast (the smoke gathers row
+   T-1 host-side — padded graphs need the true last row).
+4. len_d/host-len finalize post-replay (host memcpy, already trivial).
+Worker path: buckets {128, 256, 384, 512} captured at boot (13ms each) on the
+scratch cache; fresh prime with T <= 512 routes: pad x_in to bucket, memcpy
+tokens' embed rows + len_d := T, replay, copy-out, host lens := T. The
+prime-batch path (task #13) keeps priority below T=320 at batch >= 2; graphs
+serve the singles. Gate: prime-graph-gate (graphed vs eager prime: argmax +
+decode-stream + state maxdiff — the prime-batch-gate pattern).
