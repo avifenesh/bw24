@@ -112,11 +112,14 @@ extern "C" __global__ void ssm_conv1d_gdn_f32(
 // read the resident ring (== ssm_conv1d_tm_state_f32's st[pad+tt]), outputs land
 // directly in q_g/k_g/v_g token-major. BIT-IDENTICAL values (same 8-tap ascending
 // accumulation, same SiLU, same scatter mapping). Ring update stays a separate launch.
+// hk (task #21 de-broadcast): q_g/k_g head count — num_k stores each distinct GQA head
+// ONCE ([T, num_k, 128]); passing hk == num_v reproduces the broadcast layout exactly.
 extern "C" __global__ void ssm_conv1d_gdn_state_f32(
         const float* __restrict__ qkv_tm, const float* __restrict__ conv_state,
         const float* __restrict__ w,
         float* __restrict__ q_g, float* __restrict__ k_g, float* __restrict__ v_g,
-        int conv_dim, int T, int d_conv, int d_state, int num_v, int num_k, int key_dim) {
+        int conv_dim, int T, int d_conv, int d_state, int num_v, int num_k, int key_dim,
+        int hk) {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     int t = blockIdx.y;
     if (c >= conv_dim || t >= T) return;
@@ -138,8 +141,8 @@ extern "C" __global__ void ssm_conv1d_gdn_state_f32(
         float* dst = (c < key_dim) ? q_g : k_g;
         int kh = cc / d_state;
         int i  = cc % d_state;
-        for (int vh = kh; vh < num_v; vh += num_k) {
-            dst[((size_t)t * num_v + vh) * d_state + i] = val;
+        for (int vh = kh; vh < hk; vh += num_k) {
+            dst[((size_t)t * hk + vh) * d_state + i] = val;
         }
     } else {
         int cc = c - 2 * key_dim;
@@ -488,7 +491,8 @@ __device__ __forceinline__ void gdn_k2_body(
         const float* __restrict__ q, const float* __restrict__ k,
         const float* __restrict__ gcum, const float* __restrict__ beta,
         float* __restrict__ A, float* __restrict__ P, int H, int T, int C,
-        int c, int h, int jb) {
+        int c, int h, int jb, int hk) {
+    const int hq = h % hk;   // q/k head (task #21 de-broadcast; hk == H reproduces old)
     const int t0 = c * C;
     const int Cc = min(C, T - t0);
     if (jb >= Cc) return;                      // uniform per block (tail chunk)
@@ -503,13 +507,13 @@ __device__ __forceinline__ void gdn_k2_body(
     }
     for (int idx = tid; idx < Cc * GDN_D; idx += 256) {
         int r = idx / GDN_D, d = idx % GDN_D;
-        kt[r][d] = k[((size_t)(t0 + r) * H + h) * GDN_D + d];
+        kt[r][d] = k[((size_t)(t0 + r) * hk + hq) * GDN_D + d];
     }
     const int jn = min(32, Cc - jb);
     for (int idx = tid; idx < jn * GDN_D; idx += 256) {
         int r = idx / GDN_D, d = idx % GDN_D;
-        qt[r][d]  = q[((size_t)(t0 + jb + r) * H + h) * GDN_D + d];
-        kjt[r][d] = k[((size_t)(t0 + jb + r) * H + h) * GDN_D + d];
+        qt[r][d]  = q[((size_t)(t0 + jb + r) * hk + hq) * GDN_D + d];
+        kjt[r][d] = k[((size_t)(t0 + jb + r) * hk + hq) * GDN_D + d];
     }
     __syncthreads();
     const int jg = tid / 16, ig = tid % 16;    // 16x2 j-rows x 16x2 i-cols
@@ -556,8 +560,8 @@ __device__ __forceinline__ void gdn_k2_body(
 extern "C" __global__ void gdn_chunk_attn_f32(
         const float* __restrict__ q, const float* __restrict__ k,
         const float* __restrict__ gcum, const float* __restrict__ beta,
-        float* __restrict__ A, float* __restrict__ P, int H, int T, int C) {
-    gdn_k2_body(q, k, gcum, beta, A, P, H, T, C, blockIdx.x, blockIdx.y, blockIdx.z * 32);
+        float* __restrict__ A, float* __restrict__ P, int H, int T, int C, int hk) {
+    gdn_k2_body(q, k, gcum, beta, A, P, H, T, C, blockIdx.x, blockIdx.y, blockIdx.z * 32, hk);
 }
 #endif
 
@@ -639,8 +643,9 @@ __device__ void gdn_chunk_solve_kernel(
         const float* __restrict__ v, const float* __restrict__ k,
         const float* __restrict__ A, const float* __restrict__ gcum,
         float* __restrict__ U, float* __restrict__ W, int H, int T, int c,
-        __nv_bfloat16* __restrict__ Wb16) {
+        __nv_bfloat16* __restrict__ Wb16, int hk) {
     const int h = blockIdx.y;
+    const int hq = h % hk;   // task #21: k head map (hk == H reproduces old)
     const int t0 = c * CT;
     const int Cc = min(CT, T - t0);
     const int tid = threadIdx.x;
@@ -661,7 +666,7 @@ __device__ void gdn_chunk_solve_kernel(
             float acc;
             if (is_w) {
                 acc = expf(gcum[(size_t)(t0 + j) * H + h])
-                    * k[((size_t)(t0 + j) * H + h) * GDN_D + col];
+                    * k[((size_t)(t0 + j) * hk + hq) * GDN_D + col];
             } else {
                 acc = v[((size_t)(t0 + j) * H + h) * GDN_D + col];
             }
@@ -676,7 +681,7 @@ __device__ void gdn_chunk_solve_kernel(
             float acc;
             if (is_w) {
                 acc = expf(gcum[(size_t)(t0 + j) * H + h])
-                    * k[((size_t)(t0 + j) * H + h) * GDN_D + col];
+                    * k[((size_t)(t0 + j) * hk + hq) * GDN_D + col];
             } else {
                 acc = v[((size_t)(t0 + j) * H + h) * GDN_D + col];
             }
@@ -689,13 +694,13 @@ __device__ void gdn_chunk_solve_kernel(
 }
 extern "C" __global__ void gdn_chunk_solve32_f32(
         const float* v, const float* k, const float* A, const float* gcum,
-        float* U, float* W, __nv_bfloat16* Wb16, int H, int T) {
-    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T, blockIdx.x, Wb16);
+        float* U, float* W, __nv_bfloat16* Wb16, int H, int T, int hk) {
+    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T, blockIdx.x, Wb16, hk);
 }
 extern "C" __global__ void gdn_chunk_solve64_f32(
         const float* v, const float* k, const float* A, const float* gcum,
-        float* U, float* W, __nv_bfloat16* Wb16, int H, int T) {
-    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T, blockIdx.x, Wb16);
+        float* U, float* W, __nv_bfloat16* Wb16, int H, int T, int hk) {
+    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T, blockIdx.x, Wb16, hk);
 }
 // Generic (any C <= 128): thread-private history in local memory (L1, lane-interleaved).
 extern "C" __global__ void gdn_chunk_solve_f32(
@@ -1540,7 +1545,7 @@ gdn_k4_body(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gc
             const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
             __half* __restrict__ Y, __half* __restrict__ Ssnap,
             const float* __restrict__ state_in, float* __restrict__ state_out,
-            int H, int T, int C, int h, int col0) {
+            int H, int T, int C, int h, int col0, int hk) {
     constexpr int D = GDN_D;
     const int tid = threadIdx.x;
     const int warp = tid / 32, lane = tid % 32;
@@ -1574,7 +1579,7 @@ gdn_k4_body(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gc
             cp_async16_g(&Wb[buf_][r * D + seg * 8],                                      \
                          Wb16 + (((size_t)(c_) * H + h) * C + r) * D + seg * 8, 16);      \
             cp_async16_g(&kb[buf_][r * D + seg * 8],                                      \
-                         kb16 + ((size_t)(t0_ + r) * H + h) * D + seg * 8,                \
+                         kb16 + ((size_t)(t0_ + r) * hk + (h % hk)) * D + seg * 8,        \
                          (t0_ + r < T) ? 16 : 0);                                         \
         }                                                                                 \
         cp_commit();                                                                      \
@@ -1681,18 +1686,18 @@ gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restr
                      const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
                      __half* __restrict__ Y, __half* __restrict__ Ssnap,
                      const float* __restrict__ state_in, float* __restrict__ state_out,
-                     int H, int T, int C) {
+                     int H, int T, int C, int hk) {
     gdn_k4_body(kb16, gcum, beta, U, Wb16, Y, Ssnap, state_in, state_out,
-                H, T, C, blockIdx.x, blockIdx.y * 32);
+                H, T, C, blockIdx.x, blockIdx.y * 32, hk);
 }
 
 // varlen twin (task #18): grid (H, D/32, B); block (h, col-tile) of seq blockIdx.z runs
 // the EXACT per-seq body on that seq's buffers/state — bit-identical per block.
 extern "C" __global__ void __launch_bounds__(256, 2)
-gdn_chunk_state_mma_vl(gdnvl_t v, int H, int C) {
+gdn_chunk_state_mma_vl(gdnvl_t v, int H, int C, int hk) {
     const gdnseq_t a = v.s[blockIdx.z];
     gdn_k4_body(a.kb16, a.gcum, a.beta, a.U, a.Wb16, a.Y, a.Ssnap, a.state_in, a.state_out,
-                H, a.T, C, blockIdx.x, blockIdx.y * 32);
+                H, a.T, C, blockIdx.x, blockIdx.y * 32, hk);
 }
 
 
@@ -1711,7 +1716,7 @@ __device__ __forceinline__ void
 gdn_k5_body(const float* __restrict__ q, const float* __restrict__ gcum,
             const float* __restrict__ P, const __half* __restrict__ Yb,
             const __half* __restrict__ Stb, float* __restrict__ o,
-            int H, int T, int C, float scale, int c, int h, int j0) {
+            int H, int T, int C, float scale, int c, int h, int j0, int hk) {
     constexpr int D = GDN_D;
     const int t0 = c * C;
     const int Cc = min(C, T - t0);
@@ -1750,7 +1755,7 @@ gdn_k5_body(const float* __restrict__ q, const float* __restrict__ gcum,
     K5_STAGE_ST(0, 0);
     for (int idx = tid; idx < 32 * D; idx += 256) {
         int r = idx / D, d = idx % D;
-        float v = (r < jn) ? q[((size_t)(t0 + j0 + r) * H + h) * D + d] : 0.0f;
+        float v = (r < jn) ? q[((size_t)(t0 + j0 + r) * hk + (h % hk)) * D + d] : 0.0f;
         qs[r * D + d] = __float2half(v);
     }
     // P staged up front too (phase 2 A operand; independent of the ring)
@@ -1849,18 +1854,18 @@ extern "C" __global__ void __launch_bounds__(256, 2)
 gdn_chunk_output_mma(const float* __restrict__ q, const float* __restrict__ gcum,
                       const float* __restrict__ P, const __half* __restrict__ Yb,
                       const __half* __restrict__ Stb, float* __restrict__ o,
-                      int H, int T, int C, float scale) {
+                      int H, int T, int C, float scale, int hk) {
     gdn_k5_body(q, gcum, P, Yb, Stb, o, H, T, C, scale,
-                blockIdx.x, blockIdx.y, blockIdx.z * 32);
+                blockIdx.x, blockIdx.y, blockIdx.z * 32, hk);
 }
 
 // varlen twin (task #18): grid (max_nc, H, B); requires C == 32 (j-tile = 1, the mma
 // seam's chunk size). Chunks past a seq's nc early-return via the body's Cc guard.
 extern "C" __global__ void __launch_bounds__(256, 2)
-gdn_chunk_output_mma_vl(gdnvl_t v, int H, int C, float scale) {
+gdn_chunk_output_mma_vl(gdnvl_t v, int H, int C, float scale, int hk) {
     const gdnseq_t a = v.s[blockIdx.z];
     gdn_k5_body(a.q, a.gcum, a.P, a.Y, a.Ssnap, a.o, H, a.T, C, scale,
-                blockIdx.x, blockIdx.y, 0);
+                blockIdx.x, blockIdx.y, 0, hk);
 }
 
 // varlen K1-K3 (task #18 increment 2): grid (max_nc, H, B) each; chunks past a seq's
@@ -1879,18 +1884,18 @@ extern "C" __global__ void gdn_chunk_cumgate_vl(gdnvl_t v, int H, int C) {
     }
 }
 
-extern "C" __global__ void gdn_chunk_attn_vl(gdnvl_t v, int H, int C) {
+extern "C" __global__ void gdn_chunk_attn_vl(gdnvl_t v, int H, int C, int hk) {
     const gdnseq_t s = v.s[blockIdx.z];
     gdn_k2_body(s.q, s.k, s.gcum, s.beta, s.a, s.P, H, s.T, C,
-                blockIdx.x, blockIdx.y, 0);
+                blockIdx.x, blockIdx.y, 0, hk);
 }
 
-extern "C" __global__ void gdn_chunk_solve32_vl(gdnvl_t v, int H, int C) {
+extern "C" __global__ void gdn_chunk_solve32_vl(gdnvl_t v, int H, int C, int hk) {
     const gdnseq_t s = v.s[blockIdx.z];
     if (blockIdx.x * 32 >= s.T) return;
     // mirror-fold: W's bf16 twin (the K4 wb16 mirror) is emitted on store
     gdn_chunk_solve_kernel<32>(s.v, s.k, s.a, s.gcum, s.U, s.w, H, s.T, blockIdx.x,
-                               (__nv_bfloat16*)s.Wb16);
+                               (__nv_bfloat16*)s.Wb16, hk);
 }
 
 // ---- task #18 increment 3: varlen PREP + TAIL (one launch per stage for all B seqs).
@@ -1935,7 +1940,7 @@ extern "C" __global__ void ssm_conv1d_tm_state_vl(gdnprepvl_t v, const float* __
 }
 
 extern "C" __global__ void ssm_conv1d_gdn_state_vl(gdnprepvl_t vv, const float* __restrict__ w,
-        int conv_dim, int d_conv, int d_state, int num_v, int num_k, int key_dim) {
+        int conv_dim, int d_conv, int d_state, int num_v, int num_k, int key_dim, int hk) {
     const gdnprep_t sq = vv.s[blockIdx.z];
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     int t = blockIdx.y;
@@ -1958,8 +1963,8 @@ extern "C" __global__ void ssm_conv1d_gdn_state_vl(gdnprepvl_t vv, const float* 
         float* dst = (c < key_dim) ? sq.q_g : sq.k_g;
         int kh = cc / d_state;
         int i  = cc % d_state;
-        for (int vh = kh; vh < num_v; vh += num_k) {
-            dst[((size_t)t * num_v + vh) * d_state + i] = val;
+        for (int vh = kh; vh < hk; vh += num_k) {
+            dst[((size_t)t * hk + vh) * d_state + i] = val;
         }
     } else {
         int cc = c - 2 * key_dim;

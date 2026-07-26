@@ -1495,3 +1495,17 @@ bit-identical, wide edit across conv-scatter/l2/K2/K4/K5 + vl twins), gap
 floor (~1.4 of 2.4ms), K4 Ssnap smem staging (~0.4ms) — sum ~= 3ms => ~99%.
 The last ~1% is vLLM's int8-vs-fp16 GEMM edge at these shapes, refused by the
 accuracy laws (per-block-scale walls, probes on file).
+
+**De-broadcast q/k (2026-07-27, round 31, task #21): +1.4% official lane
+(5/5) / +1.7% batched (3/3), BYTE-IDENTICAL streams.** q/k now store num_k=16
+distinct GQA heads ([T,16,128]) instead of the num_v=32 broadcast; every
+consumer takes an explicit hk param with h%hk mapping (hk==H provably
+reproduces the old indexing — harness bins pass hk=H). Producer layout decided
+ONCE in prep (gdn_hk: db && chunked && t>=16 && mma && num_k*2==num_v);
+s128/verify/diff paths assert broadcast. Touched: fused conv scatter(+vl),
+K2 body(+vl), K3 template(+vl, generic asserted broadcast-only), K4 kb16
+staging(+vl), K5 q staging(+vl), l2 rows, kb16 sizes, chunked mirror sizing.
+BW24_GDN_DB=0 reverts. Full battery green.
+OFFICIAL LANE: 29,257 tok/s = 94.3% of vLLM, TTFT 70ms (theirs 66).
+Remaining map: K4 Ssnap (~0.4ms), FA3 batched favl twin (serving), gap floor
+(segments re-refuted by construction — add_rms fusion made them 1-kernel spans).

@@ -7607,7 +7607,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn gdn_chunk_k123(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                           g: &CudaSlice<f32>, beta: &CudaSlice<f32>, wb16: Option<&mut CudaSlice<u8>>,
-                          n_head: usize, t: usize, c: usize)
+                          n_head: usize, t: usize, c: usize, hk: usize)
                           -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         const D: usize = 128;
         let h = n_head;
@@ -7629,10 +7629,12 @@ impl Engine {
             let f = self.func("gdn_chunk_attn_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let hki = hk as i32;
             let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
+            b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
             unsafe { b.launch(cfg)?; }
         } else {       // K2 generic (C = 128, or the portable target's low-smem fallback)
+            assert!(hk == h, "generic K2 is broadcast-only (de-broadcast rides C==32)");
             let f = self.func("gdn_chunk_attn_g_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 8, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);
@@ -7646,11 +7648,13 @@ impl Engine {
                     let f = self.func(if c == 32 { "gdn_chunk_solve32_f32" } else { "gdn_chunk_solve64_f32" });
                     // mirror-fold: W's bf16 twin emitted on store (0 = skip)
                     let wb: u64 = match wb16 { Some(d) => self.addr_u8(d), None => 0 };
+                    let hki = hk as i32;
                     let mut b = self.gpu.stream.launch_builder(&f);
-                    b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&wb).arg(&hi).arg(&ti);
+                    b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&wb).arg(&hi).arg(&ti).arg(&hki);
                     unsafe { b.launch(cfg)?; }
                 }
                 _ => {
+                    assert!(hk == h, "generic K3 is broadcast-only");
                     let f = self.func("gdn_chunk_solve_f32");
                     let mut b = self.gpu.stream.launch_builder(&f);
                     b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&hi).arg(&ti).arg(&ci);
@@ -7659,6 +7663,13 @@ impl Engine {
             }
         }
         Ok((gcum, p, u, w))
+    }
+
+    /// task #21 de-broadcast seam: q/k stored at num_k distinct GQA heads instead of
+    /// the num_v broadcast. BW24_GDN_DB=0 reverts. Only the chunked prefill path
+    /// consumes the compact layout (hk plumbed; hk == H reproduces broadcast exactly).
+    pub fn gdn_db_on() -> bool {
+        std::env::var("BW24_GDN_DB").as_deref() != Ok("0")
     }
 
     /// Whether the K4/K5 mma pair serves at chunk size `c` (mirrors gdn_scan_chunked's
@@ -7683,6 +7694,7 @@ impl Engine {
                                v_g: &mut CudaSlice<f32>,
                                conv_dim: usize, t: usize, d_conv: usize,
                                d_state: usize, num_v: usize, num_k: usize, key_dim: usize,
+                               hk: usize,
                                pad_len: Option<&CudaSlice<i32>>)
                                -> Result<(), Box<dyn std::error::Error>> {
         assert!(t >= d_conv - 1, "fused state conv requires T >= pad (PRIME_MIN_T gates)");
@@ -7693,10 +7705,10 @@ impl Engine {
                 block_dim: (256, 1, 1), shared_mem_bytes: 0,
             };
             let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-            let (ds, nv, nk, kd) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+            let (ds, nv, nk, kd, hki) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, hk as i32);
             let mut b = self.gpu.stream.launch_builder(&f);
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(q_g).arg(k_g).arg(v_g)
-             .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd);
+             .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&hki);
             unsafe { b.launch(cfg)?; }
         }
         match pad_len {
@@ -7725,7 +7737,7 @@ impl Engine {
     /// task #18 increment 2: allocate ONE sequence's chunk buffers (no launches) —
     /// K1-K5 all run varlen afterwards. `a`/`w` become struct members so the varlen
     /// K2/K3 can write them.
-    pub fn gdn_chunk_alloc(&self, n_head: usize, t: usize, c: usize)
+    pub fn gdn_chunk_alloc(&self, n_head: usize, t: usize, c: usize, hk: usize)
                            -> Result<GdnChunkBufs, Box<dyn std::error::Error>> {
         const D: usize = 128;
         assert!(c == 32, "gdn_chunk_alloc: varlen chain is the C==32 mma pair");
@@ -7737,7 +7749,7 @@ impl Engine {
             p: self.uninit(nc * h * c * c)?,
             u: self.uninit(nc * h * c * D)?,
             w: self.uninit(nc * h * c * D)?,
-            kb16: self.alloc_u8_uninit(t * h * D * 2)?,
+            kb16: self.alloc_u8_uninit(t * hk * D * 2)?,
             wb16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
             y16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
             ssnap16: self.alloc_u8_uninit(nc * h * D * D * 2)?,
@@ -7760,7 +7772,7 @@ impl Engine {
 
     /// task #18 increment 2: varlen K1+K2+K3 — three launches run every sequence's
     /// cumgate/attn/solve (per-block math identical to the per-seq kernels).
-    pub fn gdn_chunk_k123_vl8(&self, seqs: &[GdnSeqVl], n_head: usize)
+    pub fn gdn_chunk_k123_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, hk: usize)
                               -> Result<(), Box<dyn std::error::Error>> {
         let b = seqs.len();
         assert!(b >= 1 && b <= 8, "gdn_chunk_k123_vl8: 1..=8 sequences");
@@ -7776,18 +7788,19 @@ impl Engine {
             lb.arg(&v).arg(&hi).arg(&ci);
             unsafe { lb.launch(cfg)?; }
         }
+        let hki = hk as i32;
         {
             let f = self.func("gdn_chunk_attn_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut lb = self.gpu.stream.launch_builder(&f);
-            lb.arg(&v).arg(&hi).arg(&ci);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
         {
             let f = self.func("gdn_chunk_solve32_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut lb = self.gpu.stream.launch_builder(&f);
-            lb.arg(&v).arg(&hi).arg(&ci);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
         Ok(())
@@ -7800,7 +7813,7 @@ impl Engine {
     pub fn gdn_prep_vl8(&self, seqs: &[GdnPrepVl], conv_w: &CudaSlice<f32>,
                         dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
                         conv_dim: usize, d_conv: usize, d_state: usize,
-                        num_v: usize, num_k: usize, key_dim: usize, eps: f32)
+                        num_v: usize, num_k: usize, key_dim: usize, hk: usize, eps: f32)
                         -> Result<(), Box<dyn std::error::Error>> {
         let b = seqs.len();
         assert!(b >= 1 && b <= 8);
@@ -7810,12 +7823,13 @@ impl Engine {
         let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
         let (cdi, dci) = (conv_dim as i32, d_conv as i32);
         let conv_fuse = std::env::var("BW24_CONV_FUSE").as_deref() != Ok("0");
+        assert!(conv_fuse || hk == num_v, "de-broadcast requires the fused conv");
         if conv_fuse {
             let f = self.func("ssm_conv1d_gdn_state_vl");
             let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let (dsi, nvi, nki, kdi) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+            let (dsi, nvi, nki, kdi, hki) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, hk as i32);
             let mut lb = self.gpu.stream.launch_builder(&f);
-            lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi);
+            lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         } else {
             let f = self.func("ssm_conv1d_tm_state_vl");
@@ -7843,15 +7857,15 @@ impl Engine {
         }
         if Self::l2_v2_on(d_state) {
             let f = self.func("gdn_l2_v2_vl");
-            let cfg = LaunchConfig { grid_dim: ((max_t * num_v as u32).div_ceil(8), 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let (dsi, nvi) = (d_state as i32, num_v as i32);
+            let cfg = LaunchConfig { grid_dim: ((max_t * hk as u32).div_ceil(8), 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi) = (d_state as i32, hk as i32);
             let mut lb = self.gpu.stream.launch_builder(&f);
             lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
             unsafe { lb.launch(cfg)?; }
         } else {
             let f = self.func("gdn_l2_vl");
-            let cfg = LaunchConfig { grid_dim: (max_t * num_v as u32, 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let (dsi, nvi) = (d_state as i32, num_v as i32);
+            let cfg = LaunchConfig { grid_dim: (max_t * hk as u32, 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi) = (d_state as i32, hk as i32);
             let mut lb = self.gpu.stream.launch_builder(&f);
             lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
             unsafe { lb.launch(cfg)?; }
@@ -7869,14 +7883,14 @@ impl Engine {
     }
 
     /// varlen bf16 mirrors over the gdnseq_t table (which: 0 = k_l2 -> kb16, 1 = w -> wb16).
-    pub fn gdn_mirror_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, which: i32)
+    pub fn gdn_mirror_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, which: i32, hk: usize)
                           -> Result<(), Box<dyn std::error::Error>> {
         let b = seqs.len();
         assert!(b >= 1 && b <= 8);
         let mut packed = [GdnSeqVl::default(); 8];
         packed[..b].copy_from_slice(seqs);
         let v = GdnVl8(packed);
-        let ept = (n_head * 128) as i32;
+        let ept = (if which == 0 { hk } else { n_head } * 128) as i32;
         let max_n = seqs.iter().map(|s| if which == 0 { s.t as i64 * ept as i64 }
                                         else { s.nc as i64 * ept as i64 * 32 }).max().unwrap();
         let f = self.func("gdn_mirror_vl");
@@ -7934,7 +7948,7 @@ impl Engine {
     /// task #18: the varlen K4+K5 pair — TWO launches run every sequence's state pass
     /// and output pass (grid gains a seq dim; per-block math identical to the per-seq
     /// launches, so this is strictly bit-gateable against them).
-    pub fn gdn_chunk_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, scale: f32)
+    pub fn gdn_chunk_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, scale: f32, hk: usize)
                          -> Result<(), Box<dyn std::error::Error>> {
         const NSPLIT: u32 = 4;
         let b = seqs.len();
@@ -7944,18 +7958,19 @@ impl Engine {
         let v = GdnVl8(packed);
         let (hi, ci) = (n_head as i32, 32i32);
         let max_nc = seqs.iter().map(|a| a.nc).max().unwrap() as u32;
+        let hki = hk as i32;
         {
             let f = self.func("gdn_chunk_state_mma_vl");
             let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut lb = self.gpu.stream.launch_builder(&f);
-            lb.arg(&v).arg(&hi).arg(&ci);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
         {
             let f = self.func("gdn_chunk_output_mma_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut lb = self.gpu.stream.launch_builder(&f);
-            lb.arg(&v).arg(&hi).arg(&ci).arg(&scale);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&scale).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
         Ok(())
@@ -7964,7 +7979,7 @@ impl Engine {
                             g: &CudaSlice<f32>, beta: &CudaSlice<f32>, kb16_pre: Option<&CudaSlice<u8>>,
                             state_in: &CudaSlice<f32>,
                             state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
-                            n_head: usize, t: usize, scale: f32, c: usize)
+                            n_head: usize, t: usize, scale: f32, c: usize, hk: usize)
                             -> Result<(), Box<dyn std::error::Error>> {
         const D: usize = 128;
         const NSPLIT: u32 = 4;
@@ -7984,7 +7999,7 @@ impl Engine {
         let mut wb16_pre: Option<CudaSlice<u8>> = if gdn_mma_pre {
             Some(self.alloc_u8_uninit(nc * h * c * D * 2)?)
         } else { None };
-        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, wb16_pre.as_mut(), n_head, t, c)?;
+        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, wb16_pre.as_mut(), n_head, t, c, hk)?;
         let _ = &w;
         let mut y = self.uninit(nc * h * c * D)?;
         let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
@@ -8005,7 +8020,7 @@ impl Engine {
                 _ => cfg!(bw24_hopper_mma),
             };
         if gdn_mma {
-            let nk = t * h * D;
+            let nk = t * hk * D;
             let wb16 = wb16_pre.take().expect("mma path pre-allocates wb16 (K3 store fold)");
             let kb16 = match kb16_pre {
                 Some(kb) => {
@@ -8036,17 +8051,19 @@ impl Engine {
             {
                 let f = self.func("gdn_chunk_state_mma");
                 let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let hki = hk as i32;
                 let mut b = self.gpu.stream.launch_builder(&f);
                 b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&mut y16).arg(&mut ssnap16)
-                 .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci);
+                 .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
                 unsafe { b.launch(cfg)?; }
             }
             {   // K5-mma (bf16 St/Y consumers)
                 let f = self.func("gdn_chunk_output_mma");
                 let jt = ((c + 31) / 32) as u32;
                 let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let hki = hk as i32;
                 let mut b = self.gpu.stream.launch_builder(&f);
-                b.arg(q).arg(&gcum).arg(&p).arg(&y16).arg(&ssnap16).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale);
+                b.arg(q).arg(&gcum).arg(&p).arg(&y16).arg(&ssnap16).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale).arg(&hki);
                 unsafe { b.launch(cfg)?; }
             }
             return Ok(());
@@ -8083,15 +8100,17 @@ impl Engine {
                             g: &CudaSlice<f32>, beta: &CudaSlice<f32>, kb16_pre: Option<&CudaSlice<u8>>,
                             state_in: &CudaSlice<f32>,
                             state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
-                            n_head: usize, t: usize, scale: f32)
+                            n_head: usize, t: usize, scale: f32, hk: usize)
                             -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("BW24_GDN_DIFF").is_ok() && t >= 16 {
+            assert!(hk == n_head, "GDN_DIFF oracle is broadcast-only");
             return self.gdn_scan_diff(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale);
         }
         if Self::gdn_chunked_enabled() && t >= 16 {
             self.gdn_scan_chunked(q, k, v, g, beta, kb16_pre, state_in, state_out, o, n_head, t, scale,
-                                  Self::gdn_chunk_size())
+                                  Self::gdn_chunk_size(), hk)
         } else {
+            assert!(hk == n_head, "s128 scan is broadcast-only (prep guarantees by predicate)");
             self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)
         }
     }
@@ -8108,7 +8127,7 @@ impl Engine {
         let mut o_c = self.uninit(o.len())?;
         let mut st_c = self.uninit(state_out.len())?;
         self.gdn_scan_chunked(q, k, v, g, beta, None, state_in, &mut st_c, &mut o_c,
-                              n_head, t, scale, Self::gdn_chunk_size())?;
+                              n_head, t, scale, Self::gdn_chunk_size(), n_head)?;
         self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)?;
         let (oh_s, oh_c) = (self.dtoh(o)?, self.dtoh(&o_c)?);
         let (sh_s, sh_c) = (self.dtoh(state_out)?, self.dtoh(&st_c)?);

@@ -48,6 +48,7 @@ pub(crate) struct AttnPre {
 
 /// task #18: one sequence's GDN prep outputs (the scan inputs).
 pub(crate) struct GdnPrep {
+    pub hk: usize,
     pub q_l2: cudarc::driver::CudaSlice<f32>,
     pub k_l2: cudarc::driver::CudaSlice<f32>,
     pub v_g: cudarc::driver::CudaSlice<f32>,
@@ -420,6 +421,22 @@ impl HybridModel {
 
     /// One prime chunk: the full layer stack over `tokens`, continuing from the cache's current
     /// state (`cache.pos` = tokens already primed; 0 = fresh). Positions/RoPE are absolute
+    /// task #21 de-broadcast: the q/k head count PREP must emit so the scan's consumers
+    /// agree. Compact (num_k) ONLY when the scan will take the chunked+mma route AND
+    /// num_k == num_v/2 (the engine-side hint mirrors this exact formula); everything
+    /// else (s128 verify tier, chunked-off, mma-off) keeps the broadcast layout.
+    fn gdn_hk(e: &Engine, t: usize, num_v: usize, num_k: usize) -> usize {
+        if Engine::gdn_db_on()
+            && Engine::gdn_chunked_enabled() && t >= 16
+            && e.gdn_mma_enabled(Engine::gdn_chunk_size())
+            && num_k * 2 == num_v
+        {
+            num_k
+        } else {
+            num_v
+        }
+    }
+
     /// task #17: gate for the fused fp16-operand epilogues (silu_mul/gated_rmsnorm/sig_mul
     /// `_f16out` twins). Bit-identical class (the twins emit the cvt kernel's exact halves),
     /// but seam-gated (BW24_F16OUT=0) so a bit-check can arbitrate, and OFF under verify-exact
@@ -1361,29 +1378,32 @@ impl HybridModel {
         // conv_out intermediate and its transposed re-read disappear (values bit-identical).
         // BW24_CONV_FUSE=0 reverts to the two-kernel chain.
         let rl = cache.recur[il].as_mut().unwrap();
-        let mut q_g = e.uninit(d_state * num_v * t)?;
-        let mut k_g = e.uninit(d_state * num_v * t)?;
+        let hk = Self::gdn_hk(e, t, num_v, num_k);
+        let conv_fuse = std::env::var("BW24_CONV_FUSE").as_deref() != Ok("0");
+        let hk = if conv_fuse { hk } else { num_v };   // de-broadcast rides the fused conv
+        let mut q_g = e.uninit(d_state * hk * t)?;
+        let mut k_g = e.uninit(d_state * hk * t)?;
         let mut v_g = e.uninit(d_state * num_v * t)?;
-        if std::env::var("BW24_CONV_FUSE").as_deref() != Ok("0") {
+        if conv_fuse {
             e.ssm_conv1d_gdn_state_pad(qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
                                   &mut q_g, &mut k_g, &mut v_g,
-                                  conv_dim, t, d_conv, d_state, num_v, num_k, key_dim, pad_len)?;
+                                  conv_dim, t, d_conv, d_state, num_v, num_k, key_dim, hk, pad_len)?;
         } else {
             let mut conv_out = e.uninit(conv_dim * t)?;      // [conv_dim, T] channel-major, SiLU
             e.ssm_conv1d_tm_state_pad_v(qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
                                   &mut conv_out, conv_dim, t, d_conv, pad_len)?;
             e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         }
-        let mut q_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm_pp(&q_g, &mut q_l2, None, d_state, num_v * t, eps)?;
-        let mut k_l2 = e.uninit(d_state * num_v * t)?;
+        let mut q_l2 = e.uninit(d_state * hk * t)?;
+        e.l2_norm_pp(&q_g, &mut q_l2, None, d_state, hk * t, eps)?;
+        let mut k_l2 = e.uninit(d_state * hk * t)?;
         // mirror-fold: emit k's bf16 twin (the chunked-scan kb16 mirror) in-epilogue
         let kb16 = if Engine::l2_v2_on(d_state) {
-            let mut kb = e.alloc_u8_uninit(d_state * num_v * t * 2)?;
-            e.l2_norm_pp(&k_g, &mut k_l2, Some(&mut kb), d_state, num_v * t, eps)?;
+            let mut kb = e.alloc_u8_uninit(d_state * hk * t * 2)?;
+            e.l2_norm_pp(&k_g, &mut k_l2, Some(&mut kb), d_state, hk * t, eps)?;
             Some(kb)
         } else {
-            e.l2_norm_pp(&k_g, &mut k_l2, None, d_state, num_v * t, eps)?;
+            e.l2_norm_pp(&k_g, &mut k_l2, None, d_state, hk * t, eps)?;
             None
         };
         let mut beta = e.uninit(t * num_v)?;
@@ -1393,7 +1413,7 @@ impl HybridModel {
         if let Some(len_d) = pad_len {
             e.gdn_pad_mask(&mut beta, &mut g_log, len_d, num_v, t)?;
         }
-        Ok(GdnPrep { q_l2, k_l2, v_g, beta, g_log, kb16 })
+        Ok(GdnPrep { hk, q_l2, k_l2, v_g, beta, g_log, kb16 })
     }
 
     /// task #18: batched GDN mixer core — per-seq prep + K1-K3, then ONE varlen K4 and
@@ -1442,22 +1462,23 @@ impl HybridModel {
         }
         let d_conv = ssm.conv_kernel as usize;
         let f16o = Self::f16out_on(e, 16);
+        let hk = Self::gdn_hk(e, 16, num_v, num_k);   // vl path is always chunked+mma
         let mut sb = Vec::with_capacity(b);
         let mut pres = Vec::with_capacity(b);
         for &t in ts.iter().take(b) {
             sb.push(SeqBufs {
                 conv_out: e.uninit(conv_dim * t)?,
-                q_g: e.uninit(d_state * num_v * t)?,
-                k_g: e.uninit(d_state * num_v * t)?,
+                q_g: e.uninit(d_state * hk * t)?,
+                k_g: e.uninit(d_state * hk * t)?,
                 v_g: e.uninit(d_state * num_v * t)?,
-                q_l2: e.uninit(d_state * num_v * t)?,
-                k_l2: e.uninit(d_state * num_v * t)?,
+                q_l2: e.uninit(d_state * hk * t)?,
+                k_l2: e.uninit(d_state * hk * t)?,
                 beta: e.uninit(t * num_v)?,
                 g_log: e.uninit(t * num_v)?,
                 gn: e.uninit(d_state * num_v * t)?,
                 gn16: e.alloc_u8_uninit(d_state * num_v * t * 2)?,
             });
-            pres.push(e.gdn_chunk_alloc(num_v, t, c)?);
+            pres.push(e.gdn_chunk_alloc(num_v, t, c, hk)?);
         }
         let prep_args: Vec<crate::GdnPrepVl> = (0..b).map(|s| {
             let (o, t) = (offs[s], ts[s]);
@@ -1495,14 +1516,14 @@ impl HybridModel {
             }
         }).collect();
         e.gdn_prep_vl8(&prep_args, la.ssm_conv1d.float_data(), la.ssm_dt.float_data(),
-                       la.ssm_a.float_data(), conv_dim, d_conv, d_state, num_v, num_k, key_dim, eps)?;
+                       la.ssm_a.float_data(), conv_dim, d_conv, d_state, num_v, num_k, key_dim, hk, eps)?;
         // mirror-fold (round 27): l2 v2 emits kb16 in-epilogue; K3's store emits wb16 —
         // both standalone mirror launches vanish on the default config.
         if !Engine::l2_v2_on(d_state) {
-            e.gdn_mirror_vl8(&args, num_v, 0)?;
+            e.gdn_mirror_vl8(&args, num_v, 0, hk)?;
         }
-        e.gdn_chunk_k123_vl8(&args, num_v)?;
-        e.gdn_chunk_vl8(&args, num_v, scale)?;
+        e.gdn_chunk_k123_vl8(&args, num_v, hk)?;
+        e.gdn_chunk_vl8(&args, num_v, scale, hk)?;
         if f16o {
             e.gdn_tail_vl8(&prep_args, la.ssm_norm.float_data(), d_state, num_v, eps)?;
         }
@@ -1556,7 +1577,8 @@ impl HybridModel {
         {
             let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
             e.gdn_scan_prefill(&prep.q_l2, &prep.k_l2, &prep.v_g, &prep.g_log, &prep.beta,
-                               prep.kb16.as_ref(), ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+                               prep.kb16.as_ref(), ssm_state, ssm_state_alt, &mut o, num_v, t, scale,
+                               prep.hk)?;
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
@@ -1713,7 +1735,7 @@ impl HybridModel {
         let state_in = e.zeros(d_state * d_state * num_v)?;  // zero state (prefill)
         let mut state_out = e.zeros(d_state * d_state * num_v)?;
         let mut o = e.uninit(d_state * num_v * t)?;
-        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, None, &state_in, &mut state_out, &mut o, num_v, t, scale)?;
+        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, None, &state_in, &mut state_out, &mut o, num_v, t, scale, num_v)?;
 
         // gated RMSNorm: dst = RMSNorm(o, ssm_norm[head_v]) * silu(z). o is [d_state, num_v, T];
         // rows of head_v=d_state, nrows = num_v*T. z must match row layout: z is [T, value_dim] token-major
