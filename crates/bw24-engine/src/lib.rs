@@ -4884,12 +4884,13 @@ impl Engine {
         // Q4_0 split-plane rp: mr2 default; BW24_Q40_MR=1 reaches the mr1 rp twin
         // (2026-07-13 — the tall-input/short-output tail-quantization probe).
         if qtype == QT_Q4_0 && rp && mr != 1 { mr = 2; }
-        // Q8_0 rp (H100 lane): mr2 default (the m=1 latency lever — 2 rows/warp doubles
-        // bytes in flight); BW24_Q80_MR=1 keeps the single-row rp twin for A/B.
+        // Q8_0 rp (H100 lane): mr1 default — the q4_0 mr2 recipe MEASURED NEGATIVE on H100
+        // (2026-07-26 N=3: mr1 186.2 vs mr2 171.5 tok/s; halving the grid on 132 SMs costs
+        // more than 2-row ILP buys). mr2 kernel stays behind BW24_Q80_MR=2 for the corpus.
         if qtype == QT_Q8_0 && rp {
             static Q80MR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
             mr = *Q80MR.get_or_init(|| std::env::var("BW24_Q80_MR").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(2));
+                .and_then(|v| v.parse().ok()).unwrap_or(1));
         }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
