@@ -383,21 +383,42 @@ impl HybridModel {
         let pos_d = e.htod_i32(&pos)?;
 
         let mut x = self.embed(e, tokens)?;   // [T, n_embd]
+        // task #14: fuse the fp16 GEMM-operand emission into the trunk norms (kills the
+        // standalone convert launches). Only when the f16 lane serves and T reaches the
+        // GEMM tier; bit-identical either way.
+        let f16fuse = crate::f16_ffi::pp_f16_enabled() && t >= 16;
         for (il, layer) in self.layers.iter().enumerate() {
             let mut h = e.uninit(t * n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let mut hx16: Option<CudaSlice<u8>> = None;
+            if f16fuse {
+                let mut b16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                e.rms_norm_f16out(&x, layer.attn_norm.float_data(), &mut h, &mut b16, n_embd, t, eps)?;
+                hx16 = Some(b16);
+            } else {
+                e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, &pos_d, t, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, t, cache, il)?,
+                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), &pos_d, t, cache, il)?,
+                Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, hx16.as_ref(), t, cache, il)?,
             };
             let mut x1 = e.uninit(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
             let mut z = e.uninit(t * n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            let mut zx16: Option<CudaSlice<u8>> = None;
+            if f16fuse {
+                let mut b16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                e.rms_norm_f16out(&x1, layer.post_attn_norm.float_data(), &mut z, &mut b16, n_embd, t, eps)?;
+                zx16 = Some(b16);
+            } else {
+                e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            }
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
+                    let mut g2 = match &zx16 {
+                        Some(xh) => e.matmul_group_xh(&[ffn_gate, ffn_up], &z, xh, t)?,
+                        None => e.matmul_group(&[ffn_gate, ffn_up], &z, t)?,
+                    };
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
@@ -478,12 +499,13 @@ impl HybridModel {
         let mut x = self.embed(e, &cat_tokens)?;   // [total, n_embd]
         for (il, layer) in self.layers.iter().enumerate() {
             let mut h = e.uninit(total * n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, total, eps)?;
+            let mut hx16 = e.alloc_u8_uninit(total * n_embd * 2)?;
+            e.rms_norm_f16out(&x, layer.attn_norm.float_data(), &mut h, &mut hx16, n_embd, total, eps)?;
             // mixer: projection GROUP on the concat (m = total), stateful core per seq
             let mut mixed = e.uninit(total * n_embd)?;
             match &layer.mixer {
                 Mixer::Full(fa) => {
-                    let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], &h, total)?;
+                    let g3 = e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], &h, &hx16, total)?;
                     let mut parts: Vec<Vec<CudaSlice<f32>>> = (0..b).map(|_| Vec::new()).collect();
                     for (w, y) in [&fa.wq, &fa.wk, &fa.wv].iter().zip(g3) {
                         for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
@@ -497,7 +519,7 @@ impl HybridModel {
                 }
                 Mixer::Linear(la) => {
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
-                    let g4 = e.matmul_group(&ws, &h, total)?;
+                    let g4 = e.matmul_group_xh(&ws, &h, &hx16, total)?;
                     let mut parts: Vec<Vec<CudaSlice<f32>>> = (0..b).map(|_| Vec::new()).collect();
                     for (w, y) in ws.iter().zip(g4) {
                         for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
@@ -513,11 +535,12 @@ impl HybridModel {
             let mut x1 = e.uninit(total * n_embd)?;
             e.add(&x, &mixed, &mut x1, total * n_embd)?;
             let mut z = e.uninit(total * n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, total, eps)?;
+            let mut zx16 = e.alloc_u8_uninit(total * n_embd * 2)?;
+            e.rms_norm_f16out(&x1, layer.post_attn_norm.float_data(), &mut z, &mut zx16, n_embd, total, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, total)?;
+                    let mut g2 = e.matmul_group_xh(&[ffn_gate, ffn_up], &z, &zx16, total)?;
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(total * n_ff)?;
@@ -562,12 +585,17 @@ impl HybridModel {
     /// batched `append_kv_quantized_rows` runs that exact warp math on a (block, token) grid).
     /// The attention itself is unchanged prefill math (fa_prefill over the f32 K/V).
     fn full_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                       hx: Option<&CudaSlice<u8>>,
                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         // PROJ/CORE SPLIT (task #13, 2026-07-26): the q/k/v group projection is hoisted so
         // the cross-request batch driver can run it at m = sum_T over concatenated tokens;
         // this single-seq path composes proj+core identically (byte-for-byte the old body).
-        let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
+        // task #14: `hx` = the norm-fused fp16 twin of `h` (skips the convert launch).
+        let g3 = match hx {
+            Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
+            None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
+        };
         self.full_attn_prime_core(e, fa, g3, pos_d, t, cache, il)
     }
 
@@ -685,11 +713,16 @@ impl HybridModel {
     /// (ssm_conv1d_tm_state writes the final ring back) + ONE gdn_scan from cache.recur[il]'s
     /// current state (zero at a fresh prime) whose final state ping-pongs back into the cache.
     /// Wiring mirrors `linear_attn_verify_t` (spec.rs); dispatch mirrors `linear_attn` (prefill).
-    fn linear_attn_prime(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize,
+    fn linear_attn_prime(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                         hx: Option<&CudaSlice<u8>>, t: usize,
                          cache: &mut Cache, il: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         // PROJ/CORE SPLIT (task #13): see full_attn_prime — same hoist for the GDN 4-tuple.
-        let g4 = e.matmul_group(&[&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha], h, t)?;
+        let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
+        let g4 = match hx {
+            Some(xh) => e.matmul_group_xh(&ws, h, xh, t)?,
+            None => e.matmul_group(&ws, h, t)?,
+        };
         self.linear_attn_prime_core(e, la, g4, t, cache, il)
     }
 

@@ -751,3 +751,18 @@ batched 4 and SINGLE-primed the rest -> rounds. Final: 98% of burst tokens
 batched (14288/14592). Serving A/B (96 x 152-tok, conc 32, max_tokens=1):
 off 7971 -> on 9689 tok/s (+21.6%). Long prompts (937t > MAX_T) byte-unchanged
 (17188 vs 17189). prime-batch-gate + validate-h100 ALL GREEN.
+
+**Task #14 verdict (2026-07-26): the gap floor is NOT launch-count-bound —
+graphs or acceptance.** Norm+cvt fusion landed (rms_norm_f16out emits the
+GEMM's fp16 operand in the norm epilogue — BIT-IDENTICAL, byte-checked vs the
+pre-fusion build; kills ~64 convert launches/prime + their re-read traffic)
+and measured NEUTRAL (19,872 = the 19.9k band), exactly like matmul_group's
+convert-once before it. TWO independent launch-diet passes now show the 3.7ms
+gap floor does not shrink with launch count at this granularity — the residual
+is per-launch host cost x remaining ~700 launches plus legitimate inter-op
+drains. Reclaiming it means TRUE prime graph capture (single cuGraphLaunch;
+the pointer-table generalization) — the one remaining structural arc — or
+accepting the floor. Fusion KEPT (bit-identical, less traffic, groundwork:
+the fp16-operand plumbing is what a graphed prime wants anyway).
+All gates green (validate, graph-session, prime-batch); serving short-burst
+9334 tok/s (9689 band).

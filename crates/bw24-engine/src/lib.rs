@@ -5393,6 +5393,42 @@ impl Engine {
         Ok(None)
     }
 
+    /// rms_norm + fused fp16 twin (task #14): f32 output verbatim `rms_norm` + the fp16
+    /// copy the f16-mirror GEMM group would otherwise produce with a standalone convert
+    /// launch. BIT-IDENTICAL end-to-end (same reduction, same __float2half values).
+    pub fn rms_norm_f16out(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                           dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>,
+                           ncols: usize, nrows: usize, eps: f32)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm_f16out_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(dst).arg(dst16).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// matmul_group with a PRE-EMITTED fp16 activation (task #14: the producer norm fused
+    /// the convert). Mirror-less members fall back to `matmul` on the f32 activation.
+    pub fn matmul_group_xh(&self, ws: &[&crate::model::GpuTensor], x: &CudaSlice<f32>,
+                           xh: &CudaSlice<u8>, m: usize)
+                           -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let mut out = Vec::with_capacity(ws.len());
+        let in_f = ws[0].in_features();
+        for w in ws {
+            if w.in_features() == in_f && m >= 16 && !self.verify_exact_on() {
+                if let Some(y) = self.try_f16_gemm_pre(w, xh, m)? {
+                    out.push(y);
+                    continue;
+                }
+            }
+            out.push(self.matmul(w, x, m)?);
+        }
+        Ok(out)
+    }
+
     /// Grouped matmul: several weights consuming ONE activation (hybrid layers: the GDN
     /// 4-tuple wqkv/gate/beta/alpha, attention q/k/v, ffn gate/up). Semantics identical to
     /// calling `matmul` per weight; the f16-mirror arm converts the activation ONCE for the

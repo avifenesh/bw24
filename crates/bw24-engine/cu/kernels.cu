@@ -1,4 +1,5 @@
 // bw24 engine Stage-1 kernels: correctness-first, all f32, no tensor cores.
+#include <cuda_fp16.h>
 // Math matches llama.cpp ggml CUDA ops node-for-node (norm.cu, rope.cu).
 #include <cuda_runtime.h>
 #include <cstdint>
@@ -215,6 +216,40 @@ extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+}
+
+// rms_norm + fused fp16 twin emission (task #14 launch diet, 2026-07-26): on the prefill
+// path the f32 output feeds nothing but the f16-mirror GEMM group, so emit the fp16 copy
+// here and kill the standalone bw24_f16_cvt launch (+ its full re-read of dst). The f32
+// math and store are VERBATIM rms_norm_f32 (same reduction tree); the fp16 value is the
+// same __float2half of the same f32 -> end-to-end BIT-IDENTICAL to norm-then-convert.
+extern "C" __global__ void rms_norm_f16out_f32(const float* __restrict__ x, const float* __restrict__ w,
+                                               float* __restrict__ dst, __half* __restrict__ dst16,
+                                               int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    __half* hr = dst16 + (size_t)row * ncols;
+
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = xr[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float o = xr[i] * scale * w[i];
+        dr[i] = o;
+        hr[i] = __float2half(o);
+    }
 }
 
 // ---- RANK3 LEVER (add+rmsnorm fuse): residual-add THEN RMSNorm in ONE kernel. ----
