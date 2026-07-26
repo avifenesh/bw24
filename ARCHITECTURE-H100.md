@@ -867,3 +867,16 @@ tokens' embed rows + len_d := T, replay, copy-out, host lens := T. The
 prime-batch path (task #13) keeps priority below T=320 at batch >= 2; graphs
 serve the singles. Gate: prime-graph-gate (graphed vs eager prime: argmax +
 decode-stream + state maxdiff — the prime-batch-gate pattern).
+
+**Task #14 PAD-PROOF GREEN (2026-07-26): the engine core is COMPLETE.**
+len_d threaded through the captured prime (gdn_pad_mask after the beta/g
+producers, ssm_conv_ring_update_dev writeback, row_gather_dev for
+h_seed/hlast — eager paths byte-unchanged via Option<None>). Smoke at
+bucket 512 / true_len 300: replayed logits maxdiff 0.000e0 vs the EAGER
+300-token prime — pads are provably invisible (identity GDN steps, causal
+attention, discarded pad rows), and even the m=512-padded GEMMs bit-match the
+m=300 eager run at these shapes. Exact-length case still bit-identical.
+Capture 13-15ms; replay 23.2-24.0ms. Remaining = the serving WRAPPER only:
+PrimeGraph { graph, scratch cache, x_in/pos_d/len_d/outs } per bucket at
+boot, copy-out into session caches (design v3), worker route below the
+batch-prime threshold, prime-graph-gate formalization.

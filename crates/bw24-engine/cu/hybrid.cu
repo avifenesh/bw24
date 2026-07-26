@@ -149,6 +149,20 @@ extern "C" __global__ void ssm_conv_ring_update_f32(
     int tt = T - pad + j;                     // >= 0 by the host T>=pad guarantee
     conv_state[(size_t)c * pad + j] = qkv_tm[(size_t)tt * conv_dim + c];
 }
+// task #14 pad-proofing piece 2: ring update from a DEVICE true length (padded prime
+// graphs — the ring must hold the last real rows, not the pad tail). Same math, len from
+// len_d[0]; host guarantees true_len >= pad (PRIME_MIN_T).
+extern "C" __global__ void ssm_conv_ring_update_dev_f32(
+        const float* __restrict__ qkv_tm, float* __restrict__ conv_state,
+        const int* __restrict__ len_d, int conv_dim, int d_conv) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int pad = d_conv - 1;
+    if (idx >= conv_dim * pad) return;
+    int c = idx / pad;
+    int j = idx % pad;
+    int tt = len_d[0] - pad + j;
+    conv_state[(size_t)c * pad + j] = qkv_tm[(size_t)tt * conv_dim + c];
+}
 // PREFIX ring rebuild (spec REPLAY-FREE partial accept): the ring a T=1 chain would hold after
 // processing only the FIRST Tc input columns = the last `pad` entries of [ring_old | cols 0..Tc-1].
 // PURE COPIES (the ring stores raw input columns — no arithmetic, so this cannot perturb any FP

@@ -22,12 +22,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rest: Vec<String> = args.collect();
     let t: usize = rest.iter().position(|a| a == "--t")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(512);
+    // --true-len L: PAD-PROOF mode — bucket = t, real prompt = L tokens, rows [L, t) are
+    // pads. The graph's logits must match the eager prime of the L-token prompt.
+    let true_len: usize = rest.iter().position(|a| a == "--true-len")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(t);
+    assert!(true_len <= t);
 
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;
-    let prompt: Vec<u32> = (0..t as u32).map(|j| 55 + j * 31).collect();
-    println!("loaded {} ({} layers); T={t}", g.arch().unwrap_or("?"), model.layers.len());
+    let prompt: Vec<u32> = (0..true_len as u32).map(|j| 55 + j * 31).collect();
+    println!("loaded {} ({} layers); bucket T={t} true_len={true_len}",
+             g.arch().unwrap_or("?"), model.layers.len());
 
     // eager reference
     let mut c_ref = Cache::new(&e, &model.cfg, t + 64)?;
@@ -37,10 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // graph arm: stable input buffers + capture
     let n_embd = model.cfg.n_embd as usize;
     let x_embed = model.embed(&e, &prompt)?;           // eager embed (stays outside the graph)
-    let mut x_in = e.uninit(t * n_embd)?;              // THE stable graph-input buffer
-    e.copy_into(&mut x_in, 0, &x_embed, t * n_embd)?;
+    let mut x_in = e.zeros(t * n_embd)?;               // stable graph input; pad rows ZERO
+    e.copy_into(&mut x_in, 0, &x_embed, true_len * n_embd)?;
     let pos: Vec<i32> = (0..t as i32).collect();
     let pos_d = e.htod_i32(&pos)?;
+    let len_d = e.htod_i32(&[true_len as i32])?;
     let mut c_g = Cache::new(&e, &model.cfg, t + 64)?;
 
     let n_vocab = l_ref.len();
@@ -60,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             e.stream().memset_zeros(&mut rl.ssm_state)?;
             e.stream().memset_zeros(&mut rl.ssm_state_alt)?;
         }
-        model.prime_chunk_captured(&e, &x_in, &pos_d, t, &mut c_g,
+        model.prime_chunk_captured(&e, &x_in, &pos_d, t, &mut c_g, &len_d,
                                    &mut logits_out.borrow_mut(), &mut h_seed_out.borrow_mut())?;
         e.stream().synchronize()?;
         let lv = e.dtoh(&logits_out.borrow())?;
@@ -81,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 e.stream().memset_zeros(&mut rl.ssm_state)?;
                 e.stream().memset_zeros(&mut rl.ssm_state_alt)?;
             }
-            model.prime_chunk_captured(e, &x_in, &pos_d, t, &mut c_g,
+            model.prime_chunk_captured(e, &x_in, &pos_d, t, &mut c_g, &len_d,
                                        &mut logits_out.borrow_mut(), &mut h_seed_out.borrow_mut())?;
             Ok(())
         };

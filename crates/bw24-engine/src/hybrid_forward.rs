@@ -473,6 +473,7 @@ impl HybridModel {
     /// anyway — the decode GraphSession's pre-allocated-output pattern is the law here.
     pub fn prime_chunk_captured(&self, e: &Engine, x_in: &CudaSlice<f32>, pos_d: &CudaSlice<i32>,
                                 t: usize, cache: &mut Cache,
+                                len_d: &CudaSlice<i32>,
                                 logits_out: &mut CudaSlice<f32>, h_seed_out: &mut CudaSlice<f32>)
                                 -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -493,7 +494,14 @@ impl HybridModel {
             }
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, hx16.as_ref(), t, cache, il)?,
+                Mixer::Linear(la) => {
+                    let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
+                    let g4 = match hx16.as_ref() {
+                        Some(xh) => e.matmul_group_xh(&ws, &h, xh, t)?,
+                        None => e.matmul_group(&ws, &h, t)?,
+                    };
+                    self.linear_attn_prime_core_pad(e, la, g4, t, cache, il, Some(len_d))?
+                }
             };
             let mut x1 = e.uninit(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
@@ -525,16 +533,17 @@ impl HybridModel {
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
+        // device-indexed TRUE last row (pads sit past it in a bucketed graph)
         if !crate::spec::spec_hpost() {
-            e.copy_view_into(h_seed_out, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+            e.row_gather_dev(&x, h_seed_out, len_d, n_embd)?;
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         if crate::spec::spec_hpost() {
-            e.copy_view_into(h_seed_out, 0, &hn.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+            e.row_gather_dev(&hn, h_seed_out, len_d, n_embd)?;
         }
         let mut hlast = e.uninit(n_embd)?;
-        e.copy_view_into(&mut hlast, 0, &hn.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        e.row_gather_dev(&hn, &mut hlast, len_d, n_embd)?;
         let logits = e.matmul(&self.output, &hlast, 1)?;
         let nv = logits.len();
         e.copy_into(logits_out, 0, &logits, nv)?;
@@ -815,6 +824,17 @@ impl HybridModel {
     fn linear_attn_prime_core(&self, e: &Engine, la: &LinearAttnLayer, mut g4: Vec<CudaSlice<f32>>,
                               t: usize, cache: &mut Cache, il: usize)
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.linear_attn_prime_core_pad(e, la, g4.drain(..).collect(), t, cache, il, None)
+    }
+
+    /// task #14: `pad_len` = device true length for PADDED prime graphs. Pads become
+    /// identity GDN steps (gdn_pad_mask zeroes beta/g_log past the true length) and the
+    /// conv ring writes back from the true tail. None = classic path, byte-identical.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attn_prime_core_pad(&self, e: &Engine, la: &LinearAttnLayer, mut g4: Vec<CudaSlice<f32>>,
+                              t: usize, cache: &mut Cache, il: usize,
+                              pad_len: Option<&CudaSlice<i32>>)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;       // 128
@@ -836,8 +856,8 @@ impl HybridModel {
         // conv with CARRIED ring state + ring roll (state read + final-window write-back).
         let rl = cache.recur[il].as_mut().unwrap();
         let mut conv_out = e.uninit(conv_dim * t)?;      // [conv_dim, T] channel-major, SiLU
-        e.ssm_conv1d_tm_state(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
-                              &mut conv_out, conv_dim, t, d_conv)?;
+        e.ssm_conv1d_tm_state_pad(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                              &mut conv_out, conv_dim, t, d_conv, pad_len)?;
 
         // GDN prep via the PREFILL kernels (repack + 256-thread l2_norm + sigmoid + glog) —
         // the same kernels forward_last's fused path reproduces value-for-value.
@@ -853,6 +873,9 @@ impl HybridModel {
         e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
         let mut g_log = e.uninit(t * num_v)?;
         e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
+        if let Some(len_d) = pad_len {
+            e.gdn_pad_mask(&mut beta, &mut g_log, len_d, num_v, t)?;
+        }
 
         // ONE gdn_scan over T from the cache's CURRENT state (zero at fresh prime); the final
         // state lands in the spare buffer and ping-pongs back (stable resident pointers, the

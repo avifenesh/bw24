@@ -7004,6 +7004,17 @@ impl Engine {
                                w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
                                conv_dim: usize, t: usize, d_conv: usize)
                                -> Result<(), Box<dyn std::error::Error>> {
+        self.ssm_conv1d_tm_state_pad(qkv_tm, conv_state, w, y, conv_dim, t, d_conv, None)
+    }
+
+    /// task #14: `pad_len` = device true length for PADDED prime graphs — the ring update
+    /// reads rows [len-pad, len) instead of the pad tail. None = the classic host-T path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_tm_state_pad(&self, qkv_tm: &CudaSlice<f32>, conv_state: &mut CudaSlice<f32>,
+                               w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize,
+                               pad_len: Option<&CudaSlice<i32>>)
+                               -> Result<(), Box<dyn std::error::Error>> {
         assert!(t >= 1, "ssm_conv1d_tm_state requires T >= 1");
         // clone BEFORE the window kernel is issued is not required (stream-ordered: the dtod and
         // the window kernel both read the pre-roll ring; the roll launches after both) — but
@@ -7020,8 +7031,17 @@ impl Engine {
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
             unsafe { b.launch(cfg)?; }
         }
-        match ring_old {
-            None => {
+        match (ring_old, pad_len) {
+            (None, Some(len_d)) => {
+                let f = self.func("ssm_conv_ring_update_dev_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, dc) = (conv_dim as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            (None, None) => {
                 let f = self.func("ssm_conv_ring_update_f32");
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
@@ -7030,7 +7050,7 @@ impl Engine {
                 b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
-            Some(old) => self.ssm_conv_ring_rebuild(qkv_tm, &old, conv_state, conv_dim, t, d_conv)?,
+            (Some(old), _) => self.ssm_conv_ring_rebuild(qkv_tm, &old, conv_state, conv_dim, t, d_conv)?,
         }
         Ok(())
     }
