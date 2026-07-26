@@ -6,6 +6,7 @@
 //! Usage:  ./target/release/gdn-bench [T] [H] [iters]
 //! ncu  :  sudo ncu --kernel-name regex:gdn_scan --launch-skip 2 --launch-count 1 \
 //!              --set full ./target/release/gdn-bench 512 32 5
+use bw24_validate::maxdiff;
 use bw24_engine::Engine;
 use std::time::Instant;
 
@@ -45,9 +46,6 @@ fn cpu_ref(q: &[f32], k: &[f32], v: &[f32], g: &[f32], beta: &[f32],
     out
 }
 
-fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();

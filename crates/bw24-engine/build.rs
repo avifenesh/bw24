@@ -52,6 +52,15 @@ fn main() {
         if cuda_arch == "100a" && src == "cu/qmatvec_gemm.cu" {
             args.push("-DBW24_DISABLE_NATIVE_FP4=1");
         }
+        // TUNE SEAM: BW24_FA_PP_MINBLOCKS sweeps fa_prefill_f32_pp's __launch_bounds__
+        // min-blocks (occupancy vs register-spill tradeoff; H100 ncu 2026-07-26).
+        println!("cargo:rerun-if-env-changed=BW24_FA_PP_MINBLOCKS");
+        let fa_mb = std::env::var("BW24_FA_PP_MINBLOCKS").ok();
+        let fa_mb_arg;
+        if let (Some(mb), "cu/flash_attn.cu") = (&fa_mb, src) {
+            fa_mb_arg = format!("-DFA_PP_MINBLOCKS={mb}");
+            args.push(&fa_mb_arg);
+        }
         args.extend(["-o", fatbin.to_str().unwrap(), src]);
         let status = Command::new(&nvcc)
             .args(args)

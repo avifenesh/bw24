@@ -973,7 +973,13 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     }
 }
 
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp(
+// FA_PP_MINBLOCKS occupancy seam (H100 ncu 2026-07-26: 255 regs -> 2 blocks/SM, 6.25%
+// achieved occupancy, 67% long-scoreboard on the K/V stage — latency-starved). Forcing
+// more resident blocks trades register spills for latency hiding; swept at build time.
+#ifndef FA_PP_MINBLOCKS
+#define FA_PP_MINBLOCKS 2
+#endif
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_f32_pp(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,

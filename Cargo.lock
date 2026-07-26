@@ -104,6 +104,7 @@ dependencies = [
  "bw24-runtime",
  "bw24-sampling",
  "bw24-tokenizer",
+ "bw24-validate",
  "cudarc",
  "libc",
  "memmap2",
@@ -164,6 +165,10 @@ version = "0.0.0"
 dependencies = [
  "bw24-gguf",
 ]
+
+[[package]]
+name = "bw24-validate"
+version = "0.0.0"
 
 [[package]]
 name = "bytes"

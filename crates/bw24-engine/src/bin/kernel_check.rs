@@ -1,14 +1,8 @@
 //! M1 gate: validate each Stage-1 kernel against a CPU reference. Run before wiring the forward.
 
+use bw24_validate::{maxdiff, pr};
 use bw24_engine::Engine;
 
-fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
-}
-fn pr(i: usize) -> f32 {
-    let x = (i.wrapping_mul(2654435761) ^ 0x9E3779B9) as u32;
-    ((x >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let e = Engine::new(0)?;
