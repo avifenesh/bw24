@@ -407,7 +407,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut so_s = e.zeros(s_v * s_v * h)?; let mut o_s = e.zeros(s_v * h * t)?;
             e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_s, &mut o_s, h, t, scale)?;
             let mut so_c = e.zeros(s_v * s_v * h)?; let mut o_c = e.zeros(s_v * h * t)?;
+            // pin the f32 chunked form explicitly (the default may be the mma config on the
+            // Hopper lane — both configs stay pinned regardless of the shipped default).
+            // SAFETY: single-threaded gate binary; the seam reads the env per call.
+            unsafe { std::env::set_var("BW24_GDN_MMA", "0"); }
             e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_c, &mut o_c, h, t, scale, c)?;
+            unsafe { std::env::remove_var("BW24_GDN_MMA"); }
             let (ro_s, rs_s) = (relerr(&o64, &e.dtoh(&o_s)?), relerr(&s64, &e.dtoh(&so_s)?));
             let (ro_c, rs_c) = (relerr(&o64, &e.dtoh(&o_c)?), relerr(&s64, &e.dtoh(&so_c)?));
             let ok = ro_c < 1e-4 && rs_c < 2.5e-4

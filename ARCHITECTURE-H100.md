@@ -609,3 +609,12 @@ OWN kernel-check pin (out<8e-2, state<8e-1 — regression guard, measured
 4.30e-2/4.25e-1). PROMOTION CRITERION: long-context chunked prime -> long
 decode + multi-turn continuation battery showing no stream drift vs f32.
 Ragged-T edge verified clean in harness (T=200/488 in band).
+
+**GDN K4-MMA PROMOTED (2026-07-26, state-carry battery green):** promotion
+criterion met — 2048-token prime (64 in-kernel state carries) -> 256 greedy
+decode tokens IDENTICAL to f32 on 3 seeds; chunked-continuation prime
+(BW24_PRIME_CHUNK=512, 4 cross-call carries through cache.recur) IDENTICAL on
+2 seeds. Default ON on the Hopper lane; kernel-check pins BOTH configs by
+forcing the seam env per case (f32 tight band + mma 8e-2/8e-1 band).
+pp512 DEFAULT: 16694 -> 17240 tok/s. Night cumulative: 8674 -> 17240 (+99%).
+Remaining task-9 arcs: FA3 staging redesign, prefill graph capture.

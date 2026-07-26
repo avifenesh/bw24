@@ -7155,17 +7155,22 @@ impl Engine {
                 }
             }
         }
-        // K4-MMA seam (BW24_GDN_MMA=1, OPT-IN; harness verdict 1.75x — tools/bench_gdn_k4.cu,
-        // ledger 2026-07-26): M in mma accumulator fragments, bf16 W/k mirrors through a
-        // cp.async ring. C==32 only (the kernel's tile). Battery: pp512 +3.5% (17286),
-        // argmax MATCH x3, greedy streams identical, oracle out mean_rel ~1e-4 — BUT the
-        // kernel-check f64-truth STATE pin (2.5e-4) reads 4.25e-1 on hostile synthetics:
-        // the recurrent state (which feeds decode/continuation) is where bf16 rounding
-        // accumulates. Default stays f32 until a state-carry battery (long-context chunked
-        // prime -> long decode, multi-turn continuation) proves no drift. The mma config
-        // has its own kernel-check pin (band 8e-2/8e-1) so it stays regression-guarded.
+        // K4-MMA seam (BW24_GDN_MMA; harness verdict 1.75x — tools/bench_gdn_k4.cu, ledger
+        // 2026-07-26): M in mma accumulator fragments, bf16 W/k mirrors through a cp.async
+        // ring. C==32 only (the kernel's tile). PROMOTED default-ON on the Hopper lane
+        // after the STATE-CARRY battery (2026-07-26): 2048-token prime (64 in-kernel state
+        // carries) -> 256 greedy decode tokens IDENTICAL to f32 on 3 seeds, AND chunked-
+        // continuation prime (BW24_PRIME_CHUNK=512, 4 cross-call carries via cache.recur)
+        // IDENTICAL on 2 seeds; plus argmax MATCH, pp512 +3.5% (17286), oracle out
+        // mean_rel ~1e-4. kernel-check pins BOTH configs (f32 tight band forced =0; mma
+        // band 8e-2/8e-1 vs f64 truth). =0 reverts; portable stays f32. NOT read via
+        // OnceLock ON PURPOSE: kernel-check toggles the env per call to pin both forms.
         let gdn_mma = !portable_mma_gated() && c == 32
-            && std::env::var("BW24_GDN_MMA").as_deref() == Ok("1");
+            && match std::env::var("BW24_GDN_MMA").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => cfg!(bw24_hopper_mma),
+            };
         if gdn_mma {
             let nw = nc * h * c * D;
             let nk = t * h * D;
