@@ -134,6 +134,123 @@ extern "C" __global__ void fa3_qk_probe(const __nv_bfloat16* __restrict__ Q,
     }
 }
 
+// ---- v2 probe: ONE full FA tile — S = QK^T -> causal+scale -> softmax -> P(bf16) ->
+// O = P.V, all wgmma (PV = 4x m64n64k16 over V restaged n-major canonical).
+extern "C" __global__ void fa3_tile_probe(const __nv_bfloat16* __restrict__ Q,
+                                          const __nv_bfloat16* __restrict__ K,
+                                          const __nv_bfloat16* __restrict__ V,
+                                          float* __restrict__ O,
+                                          int D, float scale) {
+    __shared__ __align__(128) __nv_bfloat16 sQ[64 * 256];
+    __shared__ __align__(128) __nv_bfloat16 sK[64 * 256];
+    __shared__ __align__(128) __nv_bfloat16 sV[64 * 256];   // V^T n-major canonical (4 k-steps x n256)
+    __shared__ __align__(128) __nv_bfloat16 sP[64 * 64];    // P canonical (4 k-steps x 64x16)
+    const int tid = threadIdx.x;
+    char *bQ = (char*)sQ, *bK = (char*)sK, *bP = (char*)sP, *bV = (char*)sV;
+    for (int idx = tid; idx < 64 * D; idx += 128) {
+        int r = idx / D, c = idx % D;
+        int st = c / 16, kk = c % 16;
+        size_t off = (size_t)st * 2048 + (r / 8) * 256 + (kk / 8) * 128 + (r % 8) * 16 + (kk % 8) * 2;
+        *(__nv_bfloat16*)(bQ + off) = Q[r * D + c];
+        *(__nv_bfloat16*)(bK + off) = K[r * D + c];
+        // V^T: B element (n=d, k=kv_row): steps over kv (4 x 16), 256 n-rows of 8KB tiles
+        int kv = r, d = c;
+        int stv = kv / 16, kkv = kv % 16;
+        size_t offv = (size_t)stv * 8192 + (d / 8) * 256 + (kkv / 8) * 128 + (d % 8) * 16 + (kkv % 8) * 2;
+        *(__nv_bfloat16*)(bV + offv) = V[kv * D + d];
+    }
+    __syncthreads();
+    asm volatile("fence.proxy.async.shared::cta;");
+
+    float acc[32];
+    #pragma unroll
+    for (int i = 0; i < 32; i++) acc[i] = 0.0f;
+    wgmma_fence();
+    for (int st = 0; st < D / 16; st++) {
+        unsigned long long da = make_desc(bQ + st * 2048, 128, 256);
+        unsigned long long db = make_desc(bK + st * 2048, 128, 256);
+        wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+    }
+    wgmma_commit();
+    wgmma_wait<0>();
+
+    // fragment coords: thread owns rows r0/r0+8, cols c0 + n8*8 (+1)
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    // causal+scale, rowmax/rowsum over the 4-thread row group (shfl over lane%4 dim = xor 1,2)
+    float m[2] = {-1e30f, -1e30f};
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        int rr = r0 + ((i % 4) / 2) * 8;
+        int cc = c0 + (i / 4) * 8 + (i % 2);
+        acc[i] = (cc <= rr) ? acc[i] * scale : -1e30f;
+        int half = (i % 4) / 2;
+        if (acc[i] > m[half]) m[half] = acc[i];
+    }
+    #pragma unroll
+    for (int o = 1; o <= 2; o <<= 1) {
+        m[0] = fmaxf(m[0], __shfl_xor_sync(0xffffffffu, m[0], o));
+        m[1] = fmaxf(m[1], __shfl_xor_sync(0xffffffffu, m[1], o));
+    }
+    float l[2] = {0.0f, 0.0f};
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        int half = (i % 4) / 2;
+        float pv = expf(acc[i] - m[half]);
+        acc[i] = pv;
+        l[half] += pv;
+    }
+    #pragma unroll
+    for (int o = 1; o <= 2; o <<= 1) {
+        l[0] += __shfl_xor_sync(0xffffffffu, l[0], o);
+        l[1] += __shfl_xor_sync(0xffffffffu, l[1], o);
+    }
+    // P -> bf16 canonical smem (steps over the kv dim: st = col/16)
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        int rr = r0 + ((i % 4) / 2) * 8;
+        int cc = c0 + (i / 4) * 8 + (i % 2);
+        int st = cc / 16, kk = cc % 16;
+        size_t off = (size_t)st * 2048 + (rr / 8) * 256 + (kk / 8) * 128 + (rr % 8) * 16 + (kk % 8) * 2;
+        *(__nv_bfloat16*)(bP + off) = __float2bfloat16(acc[i]);
+    }
+    __syncthreads();
+    asm volatile("fence.proxy.async.shared::cta;");
+
+    // O = P.V : 4 n64-blocks x 4 k16-steps of m64n64k16
+    float oacc[4][32];
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i++) oacc[nb][i] = 0.0f;
+    wgmma_fence();
+    for (int st = 0; st < 4; st++) {
+        unsigned long long da = make_desc(bP + st * 2048, 128, 256);
+        #pragma unroll
+        for (int nb = 0; nb < 4; nb++) {
+            unsigned long long db = make_desc(bV + st * 8192 + nb * 64 * 32, 128, 256);
+            wgmma_m64n64k16_bf16(oacc[nb], da, db, st == 0 ? 0 : 1);
+        }
+    }
+    wgmma_commit();
+    wgmma_wait<0>();
+
+    // O scatter with 1/l normalization
+    float il[2] = {1.0f / l[0], 1.0f / l[1]};
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i += 4) {
+            int n8 = i / 4;
+            int cc = nb * 64 + c0 + n8 * 8;
+            O[(r0 + 0) * D + cc + 0] = oacc[nb][i + 0] * il[0];
+            O[(r0 + 0) * D + cc + 1] = oacc[nb][i + 1] * il[0];
+            O[(r0 + 8) * D + cc + 0] = oacc[nb][i + 2] * il[1];
+            O[(r0 + 8) * D + cc + 1] = oacc[nb][i + 3] * il[1];
+        }
+}
+
 int main() {
     const int D = 256;
     // hostile-ish operands
@@ -167,5 +284,46 @@ int main() {
     }
     printf("QK^T tile: max_rel %.3e bad %d/4096 %s (AL=%d AS=%d BL=%d BS=%d TA=%d TB=%d)\n",
            max_rel, bad, bad == 0 ? "MATCH" : "MISMATCH", A_LEAD, A_STRIDE, B_LEAD, B_STRIDE, TRANS_A, TRANS_B);
+    if (bad) return 1;
+
+    // ---- v2: full FA tile ----
+    float scale = 1.0f / sqrtf((float)D);
+    __nv_bfloat16* hV = (__nv_bfloat16*)malloc(64 * D * 2);
+    for (int i = 0; i < 64 * D; i++) hV[i] = __float2bfloat16((rand() % 255 - 127) * 0.011f);
+    float* refO = (float*)malloc(64 * D * 4);
+    for (int r = 0; r < 64; r++) {
+        float mx = -1e30f, sm = 0.0f, p[64];
+        for (int c = 0; c <= r; c++) {
+            float sv = refS[r * 64 + c] * scale;
+            if (sv > mx) mx = sv;
+        }
+        for (int c = 0; c <= r; c++) {
+            p[c] = expf(refS[r * 64 + c] * scale - mx);
+            sm += p[c];
+        }
+        for (int d = 0; d < D; d++) {
+            float o = 0.0f;
+            // kernel semantics: P rounds to bf16 BEFORE PV (same as the shipped mma
+            // kernel's sP); the l denominator is the f32 sum of unrounded p.
+            for (int c = 0; c <= r; c++)
+                o += __bfloat162float(__float2bfloat16(p[c])) * __bfloat162float(hV[c * D + d]);
+            refO[r * D + d] = o / sm;
+        }
+    }
+    __nv_bfloat16* dV; float* dO;
+    CK(cudaMalloc(&dV, 64 * D * 2)); CK(cudaMalloc(&dO, 64 * D * 4));
+    CK(cudaMemcpy(dV, hV, 64 * D * 2, cudaMemcpyHostToDevice));
+    fa3_tile_probe<<<1, 128>>>(dQ, dK, dV, dO, D, scale);
+    CK(cudaDeviceSynchronize());
+    float* hO = (float*)malloc(64 * D * 4);
+    CK(cudaMemcpy(hO, dO, 64 * D * 4, cudaMemcpyDeviceToHost));
+    max_rel = 0.0f; bad = 0;
+    for (int i = 0; i < 64 * D; i++) {
+        float r = fabsf(hO[i] - refO[i]) / fmaxf(fabsf(refO[i]), 1e-3f);
+        if (r > max_rel) max_rel = r;
+        if (r > 3e-2f) bad++;
+    }
+    printf("FA tile:   max_rel %.3e bad %d/%d %s\n", max_rel, bad, 64 * D,
+           bad == 0 ? "MATCH" : "MISMATCH");
     return bad == 0 ? 0 : 1;
 }
