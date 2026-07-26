@@ -944,3 +944,19 @@ GEMM speed). DISPOSITION: prime graphs stay off serving; the machinery
 committed and regression-guarded for when a deterministic GEMM lands. The
 serving default remains the all-green eager + batch-prime stack at
 pp512 19.9k / +21.6% serving bursts.
+
+**CUTLASS deterministic-GEMM probe (2026-07-26): reclaim path REFUTED at
+current rates — the branch is measured, closed, and priced.** tools/
+bench_cutlass_f16.cu: sm90 CollectiveBuilder fp16 TN, 7 config sweep
+(tiles 128x128/128x256/64x256/256x128, K 64/128, clusters, pingpong/coop/
+auto). VERDICT: (1) DETERMINISTIC under address shifts on every shape and
+every config — the property Lt lacks, confirmed available; (2) RATE ceiling
+0.69-0.75x of Lt (best: default 128x128x64 cluster1x2 auto = 419-514TF vs
+nvjet 611-687TF; explicit pingpong pathological at 30TF on this
+toolchain/instantiation). ECONOMICS: cutlass-in-graph pays +4ms GEMM tax for
+-2.3ms gap savings = net -6% per prime — REFUTED; cutlass-everywhere -30%
+GEMM — refuted trivially. The gap-floor reclaim therefore requires a
+hand-tuned deterministic fp16 GEMM at >= ~620TF: a CUTLASS-grade kernel
+project (weeks-class — tonight's hand-rolled wgmma pipeline history peaked
+at ~0.5x Lt). EVERY sub-week avenue in the system now has a measured
+endpoint: landed, promoted, or refuted with data.
