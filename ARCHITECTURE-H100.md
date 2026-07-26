@@ -654,3 +654,12 @@ The three refuted FA occupancy probes stand; the remaining FA headroom is the
 full FA3 producer/consumer redesign (cp.async ring on the now-bf16 tiles is
 the next increment — the mirrors make it a plain byte ring, no convert).
 Remaining arcs: FA cp.async ring, prefill graph capture, K2/K3/conv GDN passes.
+
+**FA cp.async ring on bf16 tiles (2026-07-26): +0.85% (pp512 19886),
+bit-identical.** The 2-stage ring prefetches tile k0+BK behind the current
+tile's mma (only copy TIMING changes — bit-check byte-equal). The vectorized
+bf16 staging had already absorbed most of the stall; the ring takes the rest.
+FA slice now effectively at its non-redesign wall. pp512 night cumulative:
+8674 -> 19886 (+129%); prefill ~57% of vLLM. Remaining structural arcs:
+prefill graph capture (gap floor), full FA3 warp specialization (diminishing
+vs the above), remaining GDN small kernels (conv/cumgate/solve/attn).

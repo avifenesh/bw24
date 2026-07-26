@@ -806,9 +806,12 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     const int nqw = min(M_ROWS, T - qrow_base);
 
     extern __shared__ char smem_raw[];
-    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // BK*HEAD_DIM
-    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM
-    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // BQ*BK
+    // BF16KV ring (2026-07-26): two K/V stages so the next tile's cp.async lands behind
+    // the current tile's mma (bit-identical — only copy TIMING changes).
+    constexpr int KV_STAGES = BF16KV ? 2 : 1;
+    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // KV_STAGES*BK*HEAD_DIM
+    __nv_bfloat16* sV = sK + KV_STAGES*BK*HEAD_DIM;               // KV_STAGES*BK*HEAD_DIM
+    __nv_bfloat16* sP = sV + KV_STAGES*BK*HEAD_DIM;               // BQ*BK
     // sS retained ONLY as the alpha broadcast slot (BQ f32 is enough but
     // keep the same layout offsets so the launcher smem calc is unchanged).
     float* sS = (float*)(sP + BQ*BK);                        // BQ*BK f32
@@ -826,6 +829,24 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
         ATile Qf[HD_KTILES];
         load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();
+        if constexpr (BF16KV) {
+            // ring prologue: tile 0 into stage 0 (after the sync — Q staging reused sK smem).
+            const int nk0 = min(BK, T_kv);
+            const int bt0 = warp*WARP_SZ + lane;
+            const __nv_bfloat16* Kb = (const __nv_bfloat16*)K;
+            const __nv_bfloat16* Vb = (const __nv_bfloat16*)V;
+            for (int i8 = bt0; i8 < BK*HEAD_DIM/8; i8 += NW*WARP_SZ) {
+                int kk = (i8 * 8) / HEAD_DIM, d = (i8 * 8) % HEAD_DIM;
+                int ok = (kk < nk0) ? 16 : 0;
+                unsigned dk = (unsigned)__cvta_generic_to_shared(sK + i8*8);
+                unsigned dv = (unsigned)__cvta_generic_to_shared(sV + i8*8);
+                const void* srck = Kb + ((size_t)kk * n_head_kv + kv_head) * head_dim + d;
+                const void* srcv = Vb + ((size_t)kk * n_head_kv + kv_head) * head_dim + d;
+                asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dk), "l"(srck), "r"(ok));
+                asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dv), "l"(srcv), "r"(ok));
+            }
+            asm volatile("cp.async.commit_group;");
+        }
 
         CTile O_acc[O_NBLK];
         #pragma unroll
@@ -843,22 +864,28 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
 
             const int bt = warp*WARP_SZ + lane;
             if constexpr (BF16KV) {
-                // BF16-KV mirrors (2026-07-26, ncu: 67% of stall cycles were this staging as
-                // 64 scalar f32 loads+converts per thread): the producers pre-convert K/V to
-                // bf16 ONCE (identical __float2bfloat16 values -> BIT-IDENTICAL outputs);
-                // staging becomes 8x int4 vector copies per thread.
-                const __nv_bfloat16* Kb = (const __nv_bfloat16*)K;
-                const __nv_bfloat16* Vb = (const __nv_bfloat16*)V;
-                for (int i8 = bt; i8 < BK*HEAD_DIM/8; i8 += NW*WARP_SZ) {
-                    int kk = (i8 * 8) / HEAD_DIM, d = (i8 * 8) % HEAD_DIM;
-                    if (kk < nk) {
-                        *(int4*)(sK + i8*8) = *(const int4*)(Kb + ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d);
-                        *(int4*)(sV + i8*8) = *(const int4*)(Vb + ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d);
-                    } else {
-                        int4 z = make_int4(0,0,0,0);
-                        *(int4*)(sK + i8*8) = z;
-                        *(int4*)(sV + i8*8) = z;
+                // ring: current tile was prefetched (prologue / previous iter); wait, then
+                // issue the NEXT tile into the other stage before this tile's mma.
+                asm volatile("cp.async.wait_group 0;");
+                __syncthreads();
+                int nxt0 = k0 + BK;
+                if (nxt0 < T_kv && !(causal_i && nxt0 > q_pos_max)) {
+                    const int nnk = min(BK, T_kv - nxt0);
+                    __nv_bfloat16* nK = sK + ((k0 / BK + 1) & 1) * BK*HEAD_DIM;
+                    __nv_bfloat16* nV = sV + ((k0 / BK + 1) & 1) * BK*HEAD_DIM;
+                    const __nv_bfloat16* Kb = (const __nv_bfloat16*)K;
+                    const __nv_bfloat16* Vb = (const __nv_bfloat16*)V;
+                    for (int i8 = bt; i8 < BK*HEAD_DIM/8; i8 += NW*WARP_SZ) {
+                        int kk = (i8 * 8) / HEAD_DIM, d = (i8 * 8) % HEAD_DIM;
+                        int ok = (kk < nnk) ? 16 : 0;
+                        unsigned dk = (unsigned)__cvta_generic_to_shared(nK + i8*8);
+                        unsigned dv = (unsigned)__cvta_generic_to_shared(nV + i8*8);
+                        const void* srck = Kb + ((size_t)(nxt0 + kk) * n_head_kv + kv_head) * head_dim + d;
+                        const void* srcv = Vb + ((size_t)(nxt0 + kk) * n_head_kv + kv_head) * head_dim + d;
+                        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dk), "l"(srck), "r"(ok));
+                        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dv), "l"(srcv), "r"(ok));
                     }
+                    asm volatile("cp.async.commit_group;");
                 }
             } else {
                 for (int i = bt; i < BK*HEAD_DIM; i += NW*WARP_SZ) {
@@ -870,6 +897,8 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
                 }
             }
             __syncthreads();
+            const __nv_bfloat16* cK = BF16KV ? (sK + ((k0 / BK) & (KV_STAGES - 1)) * BK*HEAD_DIM) : sK;
+            const __nv_bfloat16* cV = BF16KV ? (sV + ((k0 / BK) & (KV_STAGES - 1)) * BK*HEAD_DIM) : sV;
 
             // ---- GEMM0: QK^T -> 4 score CTiles HELD IN REGISTERS (no sSw write) ----
             CTile Sc[BK/N_KEYS];                 // BK/8 = 4 CTiles, 8 cols each
@@ -882,7 +911,7 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
                 #pragma unroll
                 for (int kt = 0; kt < HD_KTILES; ++kt) {
                     ATile Kt;
-                    ld_A(Kt, sK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                    ld_A(Kt, cK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
                     BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
                     BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
                     mma_bf16(C0, Qf[kt], Blo);
@@ -965,7 +994,7 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
                 for (int kk = 0; kk < BK; kk += K_STEP) {
                     ATile A; ATile Bt;
                     ld_A(A, sPw + kk, BK/2);
-                    ld_A_trans(Bt, sV + kk*HEAD_DIM + d0, HEAD_DIM/2);
+                    ld_A_trans(Bt, cV + kk*HEAD_DIM + d0, HEAD_DIM/2);
                     BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
                     BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
                     mma_bf16(Clo, A, Blo);

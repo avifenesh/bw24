@@ -5834,9 +5834,10 @@ impl Engine {
                     if floor { "" } else { "_pp" },
                     if floor { "" } else { w2_sfx })
         });
-        // persistent smem: bf16*(sK + sV + sP) + f32*(sS + sM + sL)
-        //   = bf16*(2*BK*hd + block_q*BK) + f32*(block_q*BK + 2*block_q)
-        let shmem = (2 * (2 * BK * head_dim + block_q * BK)
+        // persistent smem: bf16*(KV_STAGES*(sK + sV) + sP) + f32*(sS + sM + sL);
+        // the bf16kv ring doubles the K/V stages (KV_STAGES=2).
+        let kv_stages = if bf16kv { 2 } else { 1 };
+        let shmem = (2 * (kv_stages * 2 * BK * head_dim + block_q * BK)
                    + 4 * (block_q * BK + 2 * block_q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
