@@ -756,19 +756,19 @@ impl HybridModel {
             .and_then(|v| v.parse().ok());
         let adapt_floor: usize = adapt_floor_env.unwrap_or(adapt_floor_default);
         // POSITION KEY (2026-07-26): the HIGH floor is a SHORT-CTX win. At depth the
-        // per-position acceptance is lower (31B d1736: 0.69-0.74 under floor4 vs 0.82
-        // under floor1) and FORCED-DEEP drafts turn net-negative: d1736 floor4 99-101 vs
-        // floor1 103.8-104.2 (flip-tree N=2), while the chat cell holds +15-20% under
-        // floor4. Default: the floor applies while pos < 1024 and relaxes to min(floor, 2)
-        // past it — a MILD floor stays a win at depth (26B d1736 floor2 329.7 vs ~318
-        // floor1; 31B d1736 floor2 at par with floor1 within noise), only the deep-forced
-        // class hurts. BW24_SPEC_FLOOR_CTX overrides the boundary; an explicit
-        // BW24_SPEC_ADAPT_FLOOR pins the floor at every position.
+        // per-position acceptance is lower and FORCED-DEEP drafts turn net-negative:
+        // 31B d1736 floor4 99-101 and floor2 97.4-99.8 @ 0.758-0.778 vs floor1
+        // 103.8-104.2 @ 0.817 (two perf-ci batteries + flip-tree N=2 — floor2 is a REAL
+        // small loss there, not noise), while its chat cell holds +15-20% under floor4.
+        // The 26B is the opposite at depth: its mild floor2 WINS (304-305 vs ~297).
+        // Default: full floor while pos < floor_ctx; past it HIGH-floor models (>=4)
+        // relax to 1, MILD-floor models keep their floor. BW24_SPEC_FLOOR_CTX overrides
+        // the boundary; an explicit BW24_SPEC_ADAPT_FLOOR pins the floor everywhere.
         let floor_ctx: usize = std::env::var("BW24_SPEC_FLOOR_CTX").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(1024);
         let floor_at = |pos: usize| -> usize {
             if adapt_floor_env.is_some() || pos < floor_ctx { adapt_floor }
-            else { adapt_floor.min(2) }
+            else if adapt_floor >= 4 { 1 } else { adapt_floor }
         };
         // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
         // The historical cap>=8 "crash" was two host bugs, both fixed 2026-07-12: round 1
