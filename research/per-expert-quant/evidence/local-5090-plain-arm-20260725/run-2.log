@@ -1,0 +1,13 @@
+[moe] resident-experts decision: per-layer 1557MB x 81 layers = 126.1GB vs budget 18.9GB -> SLRU cache
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 5128, 423, 2690, 11, 280, 7444, 11, 287, 1750, 244, 607, 41, 16882, 63, 22976, 14463, 1080, 6712, 6091, 2067, 23055, 6542, 356, 252, 6134, 377, 423, 30, 120007, 120029, 120030, 11142, 11, 423, 665, 2690, 13, 2068, 1750, 244, 75005, 6712, 23055, 11, 444, 1029, 1085, 252, 1873, 3586, 1015, 1438, 6944, 185, 73, 42287, 3671, 46, 8427, 2107, 19119, 604, 3717, 3645, 4389, 11, 1178, 46, 8427, 2107, 316, 2653, 11, 735, 3000, 252, 75005, 823, 575, 362, 23055, 13, 4383, 7674, 423, 287, 3788, 11, 444, 1750, 252, 75005, 23055, 412, 7855, 11, 3397, 280, 4932, 369, 549, 316, 1370, 356, 252, 75005, 4891, 397, 1232, 25183, 5384, 287, 252, 75005, 823, 2856, 362, 14324, 12517, 11, 5819, 890, 5598, 619, 859, 4389, 62062, 6712, 11333, 444, 24527, 1178, 1214, 287, 362, 2346, 37298, 19591, 13]
+[moe-cache] size-aware fixed slots: 5146 slots in 1 classes, 13.91 GB / 13.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=2703360 total_pinned_bytes=86507520 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=25.86 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=286  decode argmax=286  logit maxdiff=7.907e-1  MATCH
+[spill-pread] reads=127461 bytes=344572968960 errors=0 short_reads=0 fallbacks=0 buffer_waits=37779 ring_full=0
+[bw24-cpu-cache] hits=68788 misses=72491 hit_rate=48.69% read_GB=195.969 resident_GB=21.473
+[bw24-cpu-profile] calls=11736 prepare=0.383748s io=19.036372s insert=0.050131s compute=35.009203s read_projections=72491 read_GB=195.969 stage_entry=0.484677s stage_cached=31.564995s stage_missing=1.533268s stage_accum=0.371068s prefetch_projections=0 prefetch_GB=0.000

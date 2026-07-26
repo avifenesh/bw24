@@ -1,0 +1,4 @@
+layer=01 proj=gate experts=192 bytes=0.478G
+layer=01 proj=up   experts=192 bytes=0.478G
+layer=01 proj=down experts=192 bytes=0.478G
+layer=02 proj=gate experts=192 bytes=0.478G

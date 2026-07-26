@@ -1,0 +1,13 @@
+[moe] resident-experts decision: per-layer 1557MB x 81 layers = 126.1GB vs budget 18.9GB -> SLRU cache
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 30021, 1359, 244, 7164, 2816, 13384, 287, 1666, 244, 7311, 279, 10540, 3791, 5303, 289, 3602, 20602, 252, 7060, 6310, 275, 2010, 1954, 279, 6950, 359, 3005, 7529, 324, 10765, 18134, 1221, 478, 34, 2283, 1221, 478, 14970, 1221, 478, 35342, 1221, 478, 112848, 7029, 120007, 120029, 120030, 3946, 665, 244, 7164, 13384, 369, 13672, 12982, 252, 2745, 13, 1660, 823, 1085, 244, 356, 8231, 287, 47698, 1594, 1346, 2457, 280, 252, 1703, 289, 1402, 1085, 275, 682, 6107, 287, 1189, 244, 3188, 356, 4258, 413, 275, 2010, 1166, 279, 6950, 412, 1438, 6515, 185, 3005, 7529, 324, 10765, 18134, 1221, 478, 34, 2283, 1221, 478, 14970, 1221, 478, 35342, 1221, 478, 112848, 50639, 2676, 3791, 280, 4423, 7529, 592, 300, 682, 7615, 6197, 3181, 8, 3072, 206, 17, 2184, 206, 15, 592, 408, 2742, 6197, 3181, 584, 3717, 3417, 444, 2593, 252, 7076, 11, 444, 5598, 1901, 423, 257, 691, 11355, 478, 18134, 1221, 478, 14970, 1221, 289, 478, 112848, 1221, 735, 431, 252, 10540, 10284, 369, 619, 275, 2010, 1166, 279, 6950, 280, 859, 5303, 13]
+[moe-cache] size-aware fixed slots: 5146 slots in 1 classes, 13.91 GB / 13.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=2703360 total_pinned_bytes=86507520 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=25.59 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=120025  decode argmax=120025  logit maxdiff=8.293e-1  MATCH
+[spill-pread] reads=178554 bytes=482695741440 errors=0 short_reads=0 fallbacks=0 buffer_waits=52636 ring_full=9
+[bw24-cpu-cache] hits=100120 misses=102695 hit_rate=49.37% read_GB=277.622 resident_GB=21.473
+[bw24-cpu-profile] calls=14923 prepare=0.463382s io=29.636837s insert=0.078492s compute=100.808038s read_projections=102695 read_GB=277.622 stage_entry=1.928646s stage_cached=73.687632s stage_missing=10.687734s stage_accum=1.683599s prefetch_projections=0 prefetch_GB=0.000
