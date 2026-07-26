@@ -483,6 +483,7 @@ pub struct GdnSeqVl {
     pub kb16: u64, pub gcum: u64, pub beta: u64, pub u: u64, pub wb16: u64,
     pub y: u64, pub ssnap: u64, pub state_in: u64, pub state_out: u64,
     pub q: u64, pub p: u64, pub o: u64,
+    pub k: u64, pub v: u64, pub g: u64, pub a: u64, pub w: u64,
     pub t: i32, pub nc: i32,
 }
 unsafe impl cudarc::driver::DeviceRepr for GdnSeqVl {}
@@ -491,13 +492,14 @@ unsafe impl cudarc::driver::DeviceRepr for GdnSeqVl {}
 pub struct GdnVl8(pub [GdnSeqVl; 8]);
 unsafe impl cudarc::driver::DeviceRepr for GdnVl8 {}
 
-/// task #18: one sequence's chunk buffers prepped through K1-K3 + bf16 mirrors,
-/// awaiting the varlen K4/K5 mma pair (C == 32 only). Owns everything K4/K5 read
-/// and write except the caller-held q/beta/state buffers.
-pub struct GdnChunkPre {
+/// task #18 increment 2: one sequence's FULL chunk-buffer set (alloc-only; the
+/// varlen K1-K5 chain fills them).
+pub struct GdnChunkBufs {
     pub gcum: CudaSlice<f32>,
+    pub a: CudaSlice<f32>,
     pub p: CudaSlice<f32>,
     pub u: CudaSlice<f32>,
+    pub w: CudaSlice<f32>,
     pub kb16: CudaSlice<u8>,
     pub wb16: CudaSlice<u8>,
     pub y16: CudaSlice<u8>,
@@ -7430,38 +7432,75 @@ impl Engine {
             }
     }
 
-    /// task #18: run K1-K3 + the bf16 W/k mirrors for ONE sequence and allocate its
-    /// K4/K5 outputs — the per-seq half of the varlen batched scan (mma path, C == 32).
-    #[allow(clippy::too_many_arguments)]
-    pub fn gdn_chunk_pre(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
-                         g: &CudaSlice<f32>, beta: &CudaSlice<f32>,
-                         n_head: usize, t: usize, c: usize)
-                         -> Result<GdnChunkPre, Box<dyn std::error::Error>> {
+    /// task #18 increment 2: allocate ONE sequence's chunk buffers (no launches) —
+    /// K1-K5 all run varlen afterwards. `a`/`w` become struct members so the varlen
+    /// K2/K3 can write them.
+    pub fn gdn_chunk_alloc(&self, n_head: usize, t: usize, c: usize)
+                           -> Result<GdnChunkBufs, Box<dyn std::error::Error>> {
         const D: usize = 128;
-        assert!(c == 32, "gdn_chunk_pre: varlen K4/K5 are the C==32 mma pair");
+        assert!(c == 32, "gdn_chunk_alloc: varlen chain is the C==32 mma pair");
         let h = n_head;
         let nc = (t + c - 1) / c;
-        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, n_head, t, c)?;
-        let nw = nc * h * c * D;
-        let nk = t * h * D;
-        let mut wb16 = self.alloc_u8_uninit(nw * 2)?;
-        let mut kb16 = self.alloc_u8_uninit(nk * 2)?;
+        Ok(GdnChunkBufs {
+            gcum: self.uninit(t * h)?,
+            a: self.uninit(nc * h * c * c)?,
+            p: self.uninit(nc * h * c * c)?,
+            u: self.uninit(nc * h * c * D)?,
+            w: self.uninit(nc * h * c * D)?,
+            kb16: self.alloc_u8_uninit(t * h * D * 2)?,
+            wb16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
+            y16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
+            ssnap16: self.alloc_u8_uninit(nc * h * D * D * 2)?,
+            o: self.uninit(D * h * t)?,
+            t, nc,
+        })
+    }
+
+    /// f32 -> bf16 bulk mirror into a caller buffer (the K4/K5 operand mirrors).
+    pub fn f32_to_bf16(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<u8>, n: usize)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("f32_to_bf16_bulk");
+        let ni = n as i64;
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #18 increment 2: varlen K1+K2+K3 — three launches run every sequence's
+    /// cumgate/attn/solve (per-block math identical to the per-seq kernels).
+    pub fn gdn_chunk_k123_vl8(&self, seqs: &[GdnSeqVl], n_head: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8, "gdn_chunk_k123_vl8: 1..=8 sequences");
+        let mut packed = [GdnSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnVl8(packed);
+        let (hi, ci) = (n_head as i32, 32i32);
+        let max_nc = seqs.iter().map(|a| a.nc).max().unwrap() as u32;
         {
-            let f = self.func("f32_to_bf16_bulk");
-            let (n1, n2) = (nw as i64, nk as i64);
-            let cfg1 = LaunchConfig::for_num_elems((nw as u32).div_ceil(4));
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(&w).arg(&mut wb16).arg(&n1);
-            unsafe { b.launch(cfg1)?; }
-            let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(k).arg(&mut kb16).arg(&n2);
-            unsafe { b.launch(cfg2)?; }
+            let f = self.func("gdn_chunk_cumgate_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci);
+            unsafe { lb.launch(cfg)?; }
         }
-        let y16 = self.alloc_u8_uninit(nc * h * c * D * 2)?;
-        let ssnap16 = self.alloc_u8_uninit(nc * h * D * D * 2)?;
-        let o = self.uninit(D * h * t)?;
-        Ok(GdnChunkPre { gcum, p, u, kb16, wb16, y16, ssnap16, o, t, nc })
+        {
+            let f = self.func("gdn_chunk_attn_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_chunk_solve32_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
     }
 
     /// Raw device address helpers for the varlen by-value arg struct (single-stream

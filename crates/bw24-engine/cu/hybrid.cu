@@ -426,6 +426,12 @@ extern "C" __global__ void gdn_chunk_cumgate_f32(
     }
 }
 
+// varlen twin (task #18 increment 2): grid (max_nc, H, B). Chunks past a seq's
+// nc no-op via the Cc guard (loop bound goes non-positive). gdnseq_t is declared
+// later in this file for the K4/K5 twins; forward-declare its use here via a
+// generic pointer table would hurt readability — the vl twins for K1-K3 live
+// AFTER the gdnseq_t declaration instead (see gdn_chunk_k123_vl kernels below).
+
 // K2 (C <= 64): chunk gate/attention matrices, register-tiled — each thread owns a 2x2
 // (j,i) output tile of BOTH A and P and runs a scalar-smem dot over d (no shuffles; the
 // warp-per-pair butterfly version was issue-bound at ~10 shfl/pair). Whole-chunk k rows +
@@ -433,14 +439,13 @@ extern "C" __global__ void gdn_chunk_cumgate_f32(
 // banks). P is written FULL-width: zeros above the diagonal — K5's rectangular inner loop
 // relies on P[j][i>j] == 0. grid (NC, H, ceil(C/32)), block 256.
 #if !defined(BW24_PORTABLE_CUDA) || defined(BW24_HOPPER_MMA)
-extern "C" __global__ void gdn_chunk_attn_f32(
+__device__ __forceinline__ void gdn_k2_body(
         const float* __restrict__ q, const float* __restrict__ k,
         const float* __restrict__ gcum, const float* __restrict__ beta,
-        float* __restrict__ A, float* __restrict__ P, int H, int T, int C) {
-    const int c = blockIdx.x, h = blockIdx.y;
+        float* __restrict__ A, float* __restrict__ P, int H, int T, int C,
+        int c, int h, int jb) {
     const int t0 = c * C;
     const int Cc = min(C, T - t0);
-    const int jb = blockIdx.z * 32;
     if (jb >= Cc) return;                      // uniform per block (tail chunk)
     __shared__ float kt[64][GDN_D + 1];        // all i-rows of the chunk (C <= 64)
     __shared__ float qt[32][GDN_D + 1];        // this j-block's q rows
@@ -501,6 +506,13 @@ extern "C" __global__ void gdn_chunk_attn_f32(
         float* Prow = P + (((size_t)c * H + h) * C + j) * C;
         for (int i = j + 1 + (tid % 32); i < Cc; i += 32) Prow[i] = 0.0f;
     }
+}
+
+extern "C" __global__ void gdn_chunk_attn_f32(
+        const float* __restrict__ q, const float* __restrict__ k,
+        const float* __restrict__ gcum, const float* __restrict__ beta,
+        float* __restrict__ A, float* __restrict__ P, int H, int T, int C) {
+    gdn_k2_body(q, k, gcum, beta, A, P, H, T, C, blockIdx.x, blockIdx.y, blockIdx.z * 32);
 }
 #endif
 
@@ -581,8 +593,8 @@ template <int CT>
 __device__ void gdn_chunk_solve_kernel(
         const float* __restrict__ v, const float* __restrict__ k,
         const float* __restrict__ A, const float* __restrict__ gcum,
-        float* __restrict__ U, float* __restrict__ W, int H, int T) {
-    const int c = blockIdx.x, h = blockIdx.y;
+        float* __restrict__ U, float* __restrict__ W, int H, int T, int c) {
+    const int h = blockIdx.y;
     const int t0 = c * CT;
     const int Cc = min(CT, T - t0);
     const int tid = threadIdx.x;
@@ -630,12 +642,12 @@ __device__ void gdn_chunk_solve_kernel(
 extern "C" __global__ void gdn_chunk_solve32_f32(
         const float* v, const float* k, const float* A, const float* gcum,
         float* U, float* W, int H, int T) {
-    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T);
+    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T, blockIdx.x);
 }
 extern "C" __global__ void gdn_chunk_solve64_f32(
         const float* v, const float* k, const float* A, const float* gcum,
         float* U, float* W, int H, int T) {
-    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T);
+    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T, blockIdx.x);
 }
 // Generic (any C <= 128): thread-private history in local memory (L1, lane-interleaved).
 extern "C" __global__ void gdn_chunk_solve_f32(
@@ -1465,10 +1477,11 @@ template<int N> __device__ __forceinline__ void cp_wait() {
 // per-seq launch, so the varlen path is strictly bit-gateable). Passed BY VALUE like
 // wptr8_t (Rust GdnSeqVl/GdnVl8, #[repr(C)]).
 typedef struct {
-    const __nv_bfloat16* kb16; const float* gcum; const float* beta;
-    const float* U; const __nv_bfloat16* Wb16; __half* Y; __half* Ssnap;
+    const __nv_bfloat16* kb16; float* gcum; const float* beta;
+    float* U; const __nv_bfloat16* Wb16; __half* Y; __half* Ssnap;
     const float* state_in; float* state_out;
-    const float* q; const float* P; float* o;
+    const float* q; float* P; float* o;
+    const float* k; const float* v; const float* g; float* a; float* w;
     int T; int nc;
 } gdnseq_t;
 typedef struct { gdnseq_t s[8]; } gdnvl_t;
@@ -1800,6 +1813,34 @@ gdn_chunk_output_mma_vl(gdnvl_t v, int H, int C, float scale) {
     const gdnseq_t a = v.s[blockIdx.z];
     gdn_k5_body(a.q, a.gcum, a.P, a.Y, a.Ssnap, a.o, H, a.T, C, scale,
                 blockIdx.x, blockIdx.y, 0);
+}
+
+// varlen K1-K3 (task #18 increment 2): grid (max_nc, H, B) each; chunks past a seq's
+// nc no-op via the Cc guards. Per-block math identical to the per-seq launches.
+extern "C" __global__ void gdn_chunk_cumgate_vl(gdnvl_t v, int H, int C) {
+    const gdnseq_t s = v.s[blockIdx.z];
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, s.T - t0);
+    if (threadIdx.x == 0) {
+        float acc = 0.0f;
+        for (int j = 0; j < Cc; j++) {
+            acc += s.g[(size_t)(t0 + j) * H + h];
+            s.gcum[(size_t)(t0 + j) * H + h] = acc;
+        }
+    }
+}
+
+extern "C" __global__ void gdn_chunk_attn_vl(gdnvl_t v, int H, int C) {
+    const gdnseq_t s = v.s[blockIdx.z];
+    gdn_k2_body(s.q, s.k, s.gcum, s.beta, s.a, s.P, H, s.T, C,
+                blockIdx.x, blockIdx.y, 0);
+}
+
+extern "C" __global__ void gdn_chunk_solve32_vl(gdnvl_t v, int H, int C) {
+    const gdnseq_t s = v.s[blockIdx.z];
+    if (blockIdx.x * 32 >= s.T) return;
+    gdn_chunk_solve_kernel<32>(s.v, s.k, s.a, s.gcum, s.U, s.w, H, s.T, blockIdx.x);
 }
 
 #endif  // !BW24_PORTABLE_CUDA || BW24_HOPPER_MMA

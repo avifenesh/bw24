@@ -1248,7 +1248,8 @@ impl HybridModel {
                     t, caches[s], il, None)
             }).collect();
         }
-        // stage 1: per-seq prep + K1-K3 + mirrors
+        // stage 1: per-seq prep (conv/repack/l2/sigmoid/glog) + buffer allocs + the
+        // k mirror (independent of K1-K3); the w mirror waits for varlen K3.
         let mut preps = Vec::with_capacity(b);
         let mut pres = Vec::with_capacity(b);
         for s in 0..b {
@@ -1259,12 +1260,12 @@ impl HybridModel {
                 &g4[2].slice(o * num_v..(o + t) * num_v),
                 &g4[3].slice(o * num_v..(o + t) * num_v),
                 t, caches[s], il, None)?;
-            let pre = e.gdn_chunk_pre(&prep.q_l2, &prep.k_l2, &prep.v_g, &prep.g_log, &prep.beta,
-                                      num_v, t, c)?;
+            let mut bufs = e.gdn_chunk_alloc(num_v, t, c)?;
+            e.f32_to_bf16(&prep.k_l2, &mut bufs.kb16, t * num_v * 128)?;
             preps.push(prep);
-            pres.push(pre);
+            pres.push(bufs);
         }
-        // stage 2: varlen K4 + K5 (two launches for the whole batch)
+        // stage 2: varlen K1+K2+K3 (three launches), per-seq w mirrors, varlen K4+K5.
         let args: Vec<crate::GdnSeqVl> = (0..b).map(|s| {
             let rl = caches[s].recur[il].as_ref().unwrap();
             crate::GdnSeqVl {
@@ -1275,9 +1276,18 @@ impl HybridModel {
                 state_in: e.addr_f32(&rl.ssm_state), state_out: e.addr_f32(&rl.ssm_state_alt),
                 q: e.addr_f32(&preps[s].q_l2), p: e.addr_f32(&pres[s].p),
                 o: e.addr_f32(&pres[s].o),
+                k: e.addr_f32(&preps[s].k_l2), v: e.addr_f32(&preps[s].v_g),
+                g: e.addr_f32(&preps[s].g_log), a: e.addr_f32(&pres[s].a),
+                w: e.addr_f32(&pres[s].w),
                 t: ts[s] as i32, nc: pres[s].nc as i32,
             }
         }).collect();
+        e.gdn_chunk_k123_vl8(&args, num_v)?;
+        for bufs in pres.iter_mut() {
+            let n = bufs.nc * num_v * c * 128;
+            let (w_ref, wb16_ref) = (&bufs.w, &mut bufs.wb16);
+            e.f32_to_bf16(w_ref, wb16_ref, n)?;
+        }
         e.gdn_chunk_vl8(&args, num_v, scale)?;
         // stage 3: per-seq state swap + gated norm (+f16out twin for the out-GEMM)
         let mut out = Vec::with_capacity(b);

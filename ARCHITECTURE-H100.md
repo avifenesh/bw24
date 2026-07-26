@@ -1142,3 +1142,16 @@ launches), linear_attn_gdn_prep stage split, linear_attn_prime_core_batch
 Gates: kernel-check, prime-batch b=4 AND b=8 uneven ALL GREEN. Interleaved
 seam A/B x5 at B=4 T=152: VL 5/5, median 14488 vs 14164 (+2.3% — the
 K4/K5-only slice of the projected varlen total; K1-K3/prep increments next).
+
+**Varlen GDN increment 2 (2026-07-26): K1-K3 varlen — full K1-K5 varlen chain,
++5.5% batched prime interleaved 5/5 (median 14976 vs 14191).** gdnseq_t gained
+the K1-K3 operands (k/v/g/a/w; gcum/P/U de-consted — K1/K2/K3 write through the
+struct); K2 body extracted (gdn_k2_body), K3 solve template takes `c` as a
+param; three _vl kernels (cumgate/attn/solve32) launch every sequence's chunk
+grid at once. Engine: gdn_chunk_alloc (alloc-only), gdn_chunk_k123_vl8,
+f32_to_bf16 helper; batched core order = per-seq prep + k-mirror -> vl K1-K3
+-> per-seq w-mirror -> vl K4/K5. Per-layer GDN core launches at B=4:
+52 -> 41 -> now 3 vl + per-seq prep/mirrors. Gates green (kernel-check,
+prime-batch b=4/b=8 uneven). Cumulative batched-prime this round:
+13441 (pre-#16) -> 14976 (+11.4%). NEXT (increment 3): varlen prep
+(conv-with-ring-table, repack, l2, sigmoid/glog) + gated-norm tail.
