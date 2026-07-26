@@ -176,6 +176,17 @@ Per-step admission planner replacing MAX_ACTIVE round-robin:
   m=8: auto≈base (490 vs 489) — the picker is fine; the residual efficiency
   gap (~30-35% of peak BW in mmvq_b8) lives inside the b8 kernel (ncu next).
 
+**LANE BATTERY (2026-07-26, the B2-style demo record):** four scheduler defects
+found by measurement and fixed (fixed-chunk stalls → per-tick stall bounds;
+estimator starvation blind spot → sentinel; interactive cap serializing clients
+→ cap follows batched capacity; decode-only estimator → full-tick TPOT +
+SLO-headroom-adaptive dark chunks). Final NINT=12 battery: interactive p50 flat
+41.5 ms at judge rates 0-8, p99 bounded 42-75 ms, zero starvation; dark lanes
+duty-cycle honestly (judge 24 admitted/1348 shed at saturation). Envelope: 12
+streams saturate the 50 ms SLO at today's decode ceiling — dark yield is real
+at NINT≤8 (measured 15-18 ms TPOT + thousands of judge tok/s); widening it is
+exactly the Phase C decode-wall work.
+
 ## 4. Phase C — the wgmma lane (the 3-4× decode headroom)
 
 New kernels, guarded `bw24_hopper_mma`, tuned for 132 SM / 228 KB smem / HBM3:
