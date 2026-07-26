@@ -1226,6 +1226,19 @@ impl HybridModel {
         tokens: &[u32],
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
+        // DEVICE embed gather (round 30; the gemma4 machinery adopted for every model):
+        // resident quantized table + gather kernel — replaces the CPU row gather + 31MB
+        // pageable HtoD (2.2ms at T=2048, the lane's largest host stall). Same d*q
+        // dequant math as the CPU gather; the greedy-stream A/B arbitrates.
+        // BW24_EMBED_DEV=0 reverts.
+        if std::env::var("BW24_EMBED_DEV").as_deref() != Ok("0") {
+            let tbl = self
+                .embd_gpu
+                .get_or_init(|| e.upload_u8(&self.embd.raw).expect("embed table upload"));
+            let tok_d = e.htod_u32_v(tokens)?;
+            let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+            return e.embed_gather_device_td(tbl, &tok_d, tokens.len(), n_embd, qt, rb);
+        }
         let x = self.embd.gather(n_embd, tokens);
         Ok(e.htod(&x)?)
     }

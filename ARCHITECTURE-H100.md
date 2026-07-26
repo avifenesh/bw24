@@ -1472,3 +1472,15 @@ consumes V atoms MN-major via the trans bit. Engine shim upgraded in place
 (3 maps/call); promotion bar re-run: 3-seed long streams MATCH, validate ALL
 GREEN, interleaved 5/5. Harness ladder final: 2872 -> 999 (parity) -> 883
 (v10) -> 205 (v11). FA slice: 7.9ms -> ~1.6ms of the official lane.
+
+**Device embed gather (2026-07-27, round 30): +12.4% official lane, 5/5 —
+29,050 tok/s = 93.6% of vLLM, TTFT 70ms (theirs 66).** The post-v11 host
+attribution found the lane's largest remaining cost OUTSIDE the kernels: the
+CPU embed row-gather + 31MB pageable HtoD (~9ms of the 79ms protocol prime at
+T=2048 — the gather memcpy itself, not just the copy). The gemma4 machinery
+(embd_gpu resident quantized table + embed_gather_device_td) adopted for every
+model in HybridModel::embed — token ids htod (8KB) + device dequant-gather,
+same d*q math, greedy streams MATCH device-vs-host. BW24_EMBED_DEV=0 reverts.
+Full battery green. The lane is now within 6.4% of vLLM with GEMMs (52% of
+kernel time) at their probe-refuted ceiling; remaining mapped: de-broadcast
+(~1.5ms), gaps (~1.4ms), K4 Ssnap (~0.4ms), FA3 batched twin (serving).
