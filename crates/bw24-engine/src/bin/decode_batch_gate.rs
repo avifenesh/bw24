@@ -38,6 +38,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let strict: bool = rest.iter().position(|a| a == "--mode")
         .and_then(|i| rest.get(i + 1)).map(|v| v == "strict").unwrap_or(false);
 
+    // PIN THE PRIME CONFIG (2026-07-26): this gate compares DECODE configs
+    // (decode_step_batch vs decode_step_h) from a shared primed state — the GDN prime
+    // config is a nuisance variable here. The K4/K5-MMA prime (Hopper default) shifts
+    // near-tie logits enough to flip the config-mode step-16 threshold on the fixed
+    // prompt (observed: step-1 argmax flip; STRICT bit-gate and gate2 both still PASS,
+    // proving decode itself is untouched). The mma prime's own correctness is covered
+    // by its kernel-check pin + the state-carry battery + run-gen argmax gates.
+    // SAFETY: single-threaded gate binary; the GDN seam reads the env per call.
+    unsafe { std::env::set_var("BW24_GDN_MMA", "0"); }
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;

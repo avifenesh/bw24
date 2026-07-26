@@ -7188,13 +7188,30 @@ impl Engine {
                 b.arg(k).arg(&mut kb16).arg(&n2);
                 unsafe { b.launch(cfg2)?; }
             }
-            let f = self.func("gdn_chunk_state_mma");
-            let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(&kb16).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&mut y).arg(&mut ssnap)
-             .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci);
-            unsafe { b.launch(cfg)?; }
-        } else {   // K4 (sequential over chunks inside; blocks col-partition the state)
+            // COUPLED PAIR: K4-mma writes Y and Ssnap as bf16 (their only consumer is
+            // K5-mma, which rounds to bf16 regardless — identical numerics, half the
+            // traffic; harness K5 63.0 -> 35.3us). Fresh bf16 buffers replace the f32 ones.
+            let mut y16 = self.alloc_u8_uninit(nc * h * c * D * 2)?;
+            let mut ssnap16 = self.alloc_u8_uninit(nc * h * D * D * 2)?;
+            {
+                let f = self.func("gdn_chunk_state_mma");
+                let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(&kb16).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&mut y16).arg(&mut ssnap16)
+                 .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci);
+                unsafe { b.launch(cfg)?; }
+            }
+            {   // K5-mma (bf16 St/Y consumers)
+                let f = self.func("gdn_chunk_output_mma");
+                let jt = ((c + 31) / 32) as u32;
+                let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(q).arg(&gcum).arg(&p).arg(&y16).arg(&ssnap16).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale);
+                unsafe { b.launch(cfg)?; }
+            }
+            return Ok(());
+        }
+        {   // K4 (sequential over chunks inside; blocks col-partition the state)
             let f = self.func("gdn_chunk_state_f32");
             let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);

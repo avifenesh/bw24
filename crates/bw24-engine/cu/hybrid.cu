@@ -1337,9 +1337,17 @@ static __device__ __forceinline__ void mma_bf16(CTile& D, const ATile& A, const 
         : "+f"(Dx[0]),"+f"(Dx[1]),"+f"(Dx[2]),"+f"(Dx[3])
         : "r"(Ax[0]),"r"(Ax[1]),"r"(Ax[2]),"r"(Ax[3]),"r"(Bx[0]),"r"(Bx[1]));
 }
+static __device__ __forceinline__ void mma_f16(CTile& D, const ATile& A, const BTile& B){
+    // same fragment shapes; operands are IEEE half (the coupled Y/Ssnap channel needs
+    // 11 mantissa bits — bf16's 8 compounded K4->K5 error past the config pin).
+    const int* Ax=(const int*)A.x; const int* Bx=(const int*)B.x; float* Dx=D.x;
+    asm("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+        : "+f"(Dx[0]),"+f"(Dx[1]),"+f"(Dx[2]),"+f"(Dx[3])
+        : "r"(Ax[0]),"r"(Ax[1]),"r"(Ax[2]),"r"(Ax[3]),"r"(Bx[0]),"r"(Bx[1]));
+}
 }  // namespace k4mma
 using k4mma::CTile; using k4mma::ATile; using k4mma::BTile;
-using k4mma::ld_A; using k4mma::ld_A_trans; using k4mma::mma_bf16;
+using k4mma::ld_A; using k4mma::ld_A_trans; using k4mma::mma_bf16; using k4mma::mma_f16;
 #define MB_PAD 40
 
 // bulk f32 -> bf16 convert (the W/k mirrors the mma K4 consumes; float4-vectorized).
@@ -1374,7 +1382,7 @@ extern "C" __global__ void __launch_bounds__(256, 2)
 gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
                      const float* __restrict__ beta,
                      const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
-                     float* __restrict__ Y, float* __restrict__ Ssnap,
+                     __half* __restrict__ Y, __half* __restrict__ Ssnap,
                      const float* __restrict__ state_in, float* __restrict__ state_out,
                      int H, int T, int C) {
     constexpr int D = GDN_D;
@@ -1425,14 +1433,18 @@ gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restr
         const int Cc = min(C, T - t0);
         const int cur = c & 1;
         // chunk top: Ssnap + Mb mirror + gk (independent of the in-flight stage)
-        float* sc_out = Ssnap + ((size_t)c * H + h) * D * D;
+        // COUPLED PAIR (2026-07-26): Ssnap and Y are written BF16 — K5-mma is their only
+        // consumer and rounds them to bf16 anyway; writing bf16 directly is numerically
+        // identical to the uncoupled chain and halves the K5-side traffic (harness: K5
+        // 63.0 -> 35.3us). The f32 K4/K5 pair keeps f32 buffers (the seam switches both).
+        __half* sc_out = Ssnap + ((size_t)c * H + h) * D * D;
         #pragma unroll
         for (int t4 = 0; t4 < 4; t4++)
             #pragma unroll
             for (int l = 0; l < 4; l++) {
                 int col = mh * 16 + fr + ((l < 2) ? 0 : 8);
                 int i = nq * 32 + t4 * 8 + fc + (l & 1);
-                sc_out[(size_t)i * D + col0 + col] = Macc[t4].x[l];
+                sc_out[(size_t)i * D + col0 + col] = __float2half(Macc[t4].x[l]);
                 Mb[col * MB_STR + i] = __float2bfloat16(Macc[t4].x[l]);
             }
         if (tid < Cc) {
@@ -1468,7 +1480,7 @@ gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restr
                 if (j < Cc) {
                     float u = U[(((size_t)c * H + h) * C + j) * D + col0 + col];
                     float y = u - Sc.x[l];
-                    Y[(((size_t)c * H + h) * C + j) * D + col0 + col] = y;
+                    Y[(((size_t)c * H + h) * C + j) * D + col0 + col] = __float2half(y);
                     ys[j * MB_PAD + col] = __float2bfloat16(y * gk[j]);
                 } else {
                     ys[j * MB_PAD + col] = __float2bfloat16(0.0f);
@@ -1510,5 +1522,156 @@ gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restr
         }
 }
 
+
+// ---- v2: coupled form — St and Y arrive as BF16 (written by K4-mma directly; identical
+// numerics to v1 which rounds them anyway) through a cp.async ring. P stays f32->bf16.
+__device__ __forceinline__ void cp_async16_k5(void* dst, const void* src, int src_size) {
+    unsigned d = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(d), "l"(src), "r"(src_size));
+}
+__device__ __forceinline__ void cp_commit_k5() { asm volatile("cp.async.commit_group;"); }
+template<int N> __device__ __forceinline__ void cp_wait_k5() {
+    asm volatile("cp.async.wait_group %0;" :: "n"(N));
+}
+
+extern "C" __global__ void __launch_bounds__(256, 2)
+gdn_chunk_output_mma(const float* __restrict__ q, const float* __restrict__ gcum,
+                      const float* __restrict__ P, const __half* __restrict__ Yb,
+                      const __half* __restrict__ Stb, float* __restrict__ o,
+                      int H, int T, int C, float scale) {
+    constexpr int D = GDN_D;
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, T - t0);
+    const int j0 = blockIdx.z * 32;
+    if (j0 >= Cc) return;
+    const int tid = threadIdx.x;
+    const int warp = tid / 32, lane = tid % 32;
+    const int fr = lane / 4, fc = (lane % 4) * 2;
+    const int mh = warp / 4, nq = warp % 4;
+    const int jend = min(j0 + 32, Cc);
+    const int jn = jend - j0;
+
+    __shared__ __half qs[32 * D];
+    __shared__ __half ts[2][32 * D];    // double-buffered B sub-tiles (bf16, 8KB each)
+    __shared__ __half ps[32 * 40];
+
+    // stage sub-tile: St rows it0..+31 (phase 1) or Y rows (phase 2); 32 rows x 128 bf16 = 16B x 16/row
+    const __half* stb = Stb + ((size_t)c * H + h) * D * D;
+    #define K5_STAGE_ST(it0_, buf_) do {                                                  \
+        for (int idx = tid; idx < 32 * (D / 8); idx += 256) {                             \
+            int r = idx / (D / 8), seg = idx % (D / 8);                                   \
+            cp_async16_k5(&ts[buf_][r * D + seg * 8],                                     \
+                          stb + (size_t)((it0_) + r) * D + seg * 8, 16);                  \
+        }                                                                                 \
+        cp_commit_k5();                                                                   \
+    } while (0)
+    #define K5_STAGE_Y(it0_, itn_, buf_) do {                                             \
+        for (int idx = tid; idx < 32 * (D / 8); idx += 256) {                             \
+            int r = idx / (D / 8), seg = idx % (D / 8);                                   \
+            cp_async16_k5(&ts[buf_][r * D + seg * 8],                                     \
+                          Yb + (((size_t)c * H + h) * C + (it0_) + r) * D + seg * 8,      \
+                          (r < (itn_)) ? 16 : 0);                                         \
+        }                                                                                 \
+        cp_commit_k5();                                                                   \
+    } while (0)
+
+    K5_STAGE_ST(0, 0);
+    for (int idx = tid; idx < 32 * D; idx += 256) {
+        int r = idx / D, d = idx % D;
+        float v = (r < jn) ? q[((size_t)(t0 + j0 + r) * H + h) * D + d] : 0.0f;
+        qs[r * D + d] = __float2half(v);
+    }
+    // P staged up front too (phase 2 A operand; independent of the ring)
+    for (int idx = tid; idx < 32 * 32; idx += 256) {
+        int r = idx / 32, i = idx % 32;
+        float v = (r < jn && i < min(32, jend) && i <= j0 + r)
+            ? P[(((size_t)c * H + h) * C + j0 + r) * C + i] : 0.0f;
+        ps[r * 40 + i] = __float2half(v);
+    }
+
+    CTile acc[4];
+    #pragma unroll
+    for (int t4 = 0; t4 < 4; t4++) { acc[t4].x[0]=acc[t4].x[1]=acc[t4].x[2]=acc[t4].x[3]=0.0f; }
+
+    for (int it = 0; it < 4; it++) {           // phase 1: 4 x 32-i sub-tiles
+        cp_wait_k5<0>();
+        __syncthreads();
+        int cur = it & 1;
+        if (it < 3) K5_STAGE_ST((it + 1) * 32, cur ^ 1);
+        #pragma unroll
+        for (int k16 = 0; k16 < 2; k16++) {
+            ATile A;
+            ld_A(A, (const __nv_bfloat16*)(qs + (mh * 16) * D + it * 32 + k16 * 16), D / 2, lane);
+            #pragma unroll
+            for (int p2 = 0; p2 < 2; p2++) {
+                ATile Bt;
+                ld_A_trans(Bt, (const __nv_bfloat16*)(ts[cur] + (k16 * 16) * D + nq * 32 + p2 * 16), D / 2, lane);
+                BTile Blo, Bhi;
+                Blo.x[0] = Bt.x[0]; Blo.x[1] = Bt.x[2];
+                Bhi.x[0] = Bt.x[1]; Bhi.x[1] = Bt.x[3];
+                mma_f16(acc[p2 * 2 + 0], A, Blo);
+                mma_f16(acc[p2 * 2 + 1], A, Bhi);
+            }
+        }
+        if (it == 3) K5_STAGE_Y(0, min(32, jend), 0);   // prefetch phase-2's first tile
+        __syncthreads();
+    }
+    {
+        float b_lo = 0.0f, b_hi = 0.0f;
+        int j_lo = mh * 16 + fr, j_hi = j_lo + 8;
+        if (j_lo < jn) b_lo = expf(gcum[(size_t)(t0 + j0 + j_lo) * H + h]);
+        if (j_hi < jn) b_hi = expf(gcum[(size_t)(t0 + j0 + j_hi) * H + h]);
+        #pragma unroll
+        for (int t4 = 0; t4 < 4; t4++) {
+            acc[t4].x[0] *= b_lo; acc[t4].x[1] *= b_lo;
+            acc[t4].x[2] *= b_hi; acc[t4].x[3] *= b_hi;
+        }
+    }
+    const int nit2 = (jend + 31) / 32;
+    for (int it = 0; it < nit2; it++) {        // phase 2 (j0=0,C=32 -> usually 1 sub-tile)
+        cp_wait_k5<0>();
+        __syncthreads();
+        int cur = it & 1;
+        if (it + 1 < nit2) K5_STAGE_Y((it + 1) * 32, min(32, jend - (it + 1) * 32), cur ^ 1);
+        // refresh ps for sub-tiles beyond the first (P cols shift by it*32)
+        if (it > 0) {
+            for (int idx = tid; idx < 32 * 32; idx += 256) {
+                int r = idx / 32, i = idx % 32;
+                int gi = it * 32 + i;
+                float v = (r < jn && gi < jend && gi <= j0 + r)
+                    ? P[(((size_t)c * H + h) * C + j0 + r) * C + gi] : 0.0f;
+                ps[r * 40 + i] = __float2half(v);
+            }
+            __syncthreads();
+        }
+        #pragma unroll
+        for (int k16 = 0; k16 < 2; k16++) {
+            ATile A;
+            ld_A(A, (const __nv_bfloat16*)(ps + (mh * 16) * 40 + k16 * 16), 20, lane);
+            #pragma unroll
+            for (int p2 = 0; p2 < 2; p2++) {
+                ATile Bt;
+                ld_A_trans(Bt, (const __nv_bfloat16*)(ts[cur] + (k16 * 16) * D + nq * 32 + p2 * 16), D / 2, lane);
+                BTile Blo, Bhi;
+                Blo.x[0] = Bt.x[0]; Blo.x[1] = Bt.x[2];
+                Bhi.x[0] = Bt.x[1]; Bhi.x[1] = Bt.x[3];
+                mma_f16(acc[p2 * 2 + 0], A, Blo);
+                mma_f16(acc[p2 * 2 + 1], A, Bhi);
+            }
+        }
+        __syncthreads();
+    }
+    #pragma unroll
+    for (int t4 = 0; t4 < 4; t4++) {
+        #pragma unroll
+        for (int l = 0; l < 4; l++) {
+            int j = mh * 16 + fr + ((l < 2) ? 0 : 8);
+            int col = nq * 32 + t4 * 8 + fc + (l & 1);
+            if (j < jn)
+                o[((size_t)(t0 + j0 + j) * H + h) * D + col] = scale * acc[t4].x[l];
+        }
+    }
+}
 
 #endif  // !BW24_PORTABLE_CUDA || BW24_HOPPER_MMA

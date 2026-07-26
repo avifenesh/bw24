@@ -618,3 +618,24 @@ decode tokens IDENTICAL to f32 on 3 seeds; chunked-continuation prime
 forcing the seam env per case (f32 tight band + mma 8e-2/8e-1 band).
 pp512 DEFAULT: 16694 -> 17240 tok/s. Night cumulative: 8674 -> 17240 (+99%).
 Remaining task-9 arcs: FA3 staging redesign, prefill graph capture.
+
+**GDN K5-MMA + coupled pair (2026-07-26): LANDED default, pp512 17786.** K5
+(gdn_chunk_output) followed the K4 playbook: harness v1 (mma, f32 sources) was
+correct but NEUTRAL (62->62us — K5 is staging-bound like K4 was); v2 with
+bf16 sources + cp.async double-buffer hit 35.3us (1.78x). Engine adoption
+coupled the pair: K4-mma writes Y/Ssnap directly in half precision (their only
+consumer is K5-mma, which rounds anyway — no extra numeric hop, half the
+traffic). FIRST coupling attempt in bf16 FAILED its own config pin (out
+2.19e-1 vs 8e-2 band: K4 error compounding through K5's bf16 rounding) —
+switched the coupled channel + K5 operands to FP16 (11 mantissa bits): pin
+back to 4.28e-2 in band, pp 17786. mma m16n8k16.f16 = same rate as bf16;
+ld_A/ldmatrix are type-agnostic b16 moves.
+decode-batch-gate note: the config-mode gate1 (decode_step_batch vs
+decode_step_h, step-16 threshold) flipped at step 1 under the mma prime —
+STRICT bit-gate + gate2 still PASS, so decode is untouched; the mma-primed
+state shifted near-tie logits on the gate's fixed prompt. Fixed by PINNING the
+gate's prime config to f32 (the gate tests DECODE configs; prime is a nuisance
+variable there — doc'd in the bin).
+Battery (coupled pair default): validate-h100 ALL GREEN, graph-session
+token-exact, state-carry IDENTICAL x2 seeds, 3-prompt streams IDENTICAL to
+f32, argmax MATCH. Night cumulative: pp512 8674 -> 17786 (+105%).
