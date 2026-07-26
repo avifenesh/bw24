@@ -960,3 +960,12 @@ hand-tuned deterministic fp16 GEMM at >= ~620TF: a CUTLASS-grade kernel
 project (weeks-class — tonight's hand-rolled wgmma pipeline history peaked
 at ~0.5x Lt). EVERY sub-week avenue in the system now has a measured
 endpoint: landed, promoted, or refuted with data.
+
+**CUTLASS int8 probe (2026-07-26, W8A8-reopen check):** default-config sm90
+int8 GEMM: 569-780 TOP at model shapes (ffn_down 1.11x vs cublasGemmEx, rest
+0.72-0.87x) — DETERMINISTIC everywhere, but nowhere near the ~1300TF-class the
+vLLM-35k arithmetic implies (9B x 2FLOP x 35k tok/s = 630TF effective WHOLE
+forward => their GEMMs must exceed ~1.1-1.3PF or their FLOP count is lower
+than assumed). The inference chain is now suspect — decomposing vLLM's actual
+prefill with nsys on this box (their GEMM kernels/us, GDN/FLA kernels, gaps)
+to replace inference with measurement before pricing the beat-35k path.
