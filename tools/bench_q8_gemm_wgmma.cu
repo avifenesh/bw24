@@ -92,24 +92,30 @@ q8_gemm_wgmma_v0(const signed char* __restrict__ A, const half* __restrict__ Asc
         // wgmma smem A layout (no swizzle, K-major): row r, k -> sA[r*32 + k] with the
         // descriptor lead/stride encoding the 8x8 core-matrix tiling; v0 uses the plain
         // "canonical row-major with LBO=16, SBO=512" arrangement (K%32==0 tiles).
+        // CORE-MATRIX order (canonical no-swizzle): 8-row x 16B cores; tile 64x32 =
+        // 8 M-cores x 2 K-cores; core(m,k) base = ((m*2+k)*8)*16, row r at +r*16.
         {
-            int r = tid / 2;              // 0..63
-            int seg = tid % 2;            // 0..1 (16B halves of the 32B k-slice)
+            int r = tid / 2;              // source row 0..63
+            int seg = tid % 2;            // k-core 0..1
             const signed char* src = A + (size_t)(row0 + r) * in_f + blk * 32 + seg * 16;
-            *(int4*)(sA + r * 32 + seg * 16) = (row0 + r < out_f) ? *(const int4*)src : make_int4(0,0,0,0);
+            int m_core = r / 8, r_in = r % 8;
+            signed char* dst = sA + (((m_core * 2 + seg) * 8) + r_in) * 16;
+            *(int4*)dst = (row0 + r < out_f) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         {
             int c = tid / 2;
             int seg = tid % 2;
             const signed char* src = B + (size_t)(col0 + c) * in_f + blk * 32 + seg * 16;
-            *(int4*)(sB + c * 32 + seg * 16) = (col0 + c < n_tok) ? *(const int4*)src : make_int4(0,0,0,0);
+            int n_core = c / 8, c_in = c % 8;
+            signed char* dst = sB + (((n_core * 2 + seg) * 8) + c_in) * 16;
+            *(int4*)dst = (col0 + c < n_tok) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         __syncthreads();
 
         int acc[32];
         wgmma_fence();
-        unsigned long long da = make_desc(sA, 16, 512, 0);
-        unsigned long long db = make_desc(sB, 16, 512, 0);
+        unsigned long long da = make_desc(sA, 128, 256, 0);
+        unsigned long long db = make_desc(sB, 128, 256, 0);
         wgmma_m64n64k32_s8(acc, da, db, /*scale_d=*/0);   // fresh s32 accumulate per k-slice
         wgmma_commit();
         wgmma_wait<0>();

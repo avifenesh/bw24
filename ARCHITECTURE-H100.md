@@ -386,3 +386,9 @@ order (8-row × 16B cores; A 64×32 = 8 M-cores × 2 K-cores; store core(m,k)
 at ((m*2+k)*8 + r)*16, then LBO/SBO encode inter-core strides: try LBO=128,
 SBO=256 first, then the transposed pairing). Verify against PTX ISA §9.7.14
 asynchronous-warpgroup-level matrix shape/layout tables before trusting signs.
+v0 UPDATE (same day): core-matrix smem order + LBO=128/SBO=256 → kernel RUNS:
+**169µs = 4.1× the MMQ class raw** (101.6 int8 TOP/s, unpipelined, correctness
+still FAIL rel~1e2 — the s32 D-fragment row/col mapping needs the exact PTX
+ISA table; speed already proves the arc: 60%-of-prime × 4 ≈ prime 0.23→0.13s
+before pipelining). Next mechanical step: fix fragment mapping (PTX ISA
+wgmma.mma_async D layout, m64nN), verify vs CPU ref, then cp.async pipeline.
