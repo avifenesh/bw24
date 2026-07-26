@@ -253,6 +253,41 @@ extern "C" __global__ void rms_norm_f16out_f32(const float* __restrict__ x, cons
     }
 }
 
+// f16out twin of add_rms_norm_f32 (round 28): the prefill trunk's residual+norm pair
+// in ONE kernel, norm epilogue also emitting the fp16 GEMM operand (task-#17 class).
+// BIT-IDENTICAL to add_f32 -> rms_norm_f16out_f32: same IEEE add, same reduction order,
+// same __float2half twin.
+extern "C" __global__ void add_rms_norm_f16out_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                                   const float* __restrict__ w, float* __restrict__ res,
+                                                   float* __restrict__ dst, __half* __restrict__ dst16,
+                                                   int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    __half* hr = dst16 + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i] + br[i]; rr[i] = v; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float o = rr[i] * scale * w[i];
+        dr[i] = o;
+        hr[i] = __float2half(o);
+    }
+}
+
 // ---- RANK3 LEVER (add+rmsnorm fuse): residual-add THEN RMSNorm in ONE kernel. ----
 // res = a + b  (the residual, written out for the next residual-add); dst = rms_norm(res) * w.
 // Fuses e.add(a,b,res) + e.rms_norm(res,w,dst) — removes one launch + one HBM read of `res` per

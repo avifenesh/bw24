@@ -624,10 +624,13 @@ impl HybridModel {
                     Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
                     Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
                 };
-                e.add(x_cur, &mixed, x1, t * n_embd)?;
                 if f16fuse {
-                    e.rms_norm_f16out(x1, layer.post_attn_norm.float_data(), z, z16, n_embd, t, eps)?;
+                    // round 28: residual+norm in ONE kernel (add_rms_norm precedent,
+                    // bit-identical) — the standalone add pass disappears.
+                    e.add_rms_norm_f16out(x_cur, &mixed, layer.post_attn_norm.float_data(),
+                                          x1, z, z16, n_embd, t, eps)?;
                 } else {
+                    e.add(x_cur, &mixed, x1, t * n_embd)?;
                     e.rms_norm(x1, layer.post_attn_norm.float_data(), z, n_embd, t, eps)?;
                 }
             }
@@ -697,14 +700,16 @@ impl HybridModel {
                 }
                 sg[il].as_ref().unwrap().launch()?;
             } else {
-                e.add(x1, sl_fo, x_nxt, t * n_embd)?;
                 if il + 1 < n_layers {
                     let w_next = self.layers[il + 1].attn_norm.float_data();
                     if f16fuse {
-                        e.rms_norm_f16out(x_nxt, w_next, h, h16, n_embd, t, eps)?;
+                        e.add_rms_norm_f16out(x1, sl_fo, w_next, x_nxt, h, h16, n_embd, t, eps)?;
                     } else {
+                        e.add(x1, sl_fo, x_nxt, t * n_embd)?;
                         e.rms_norm(x_nxt, w_next, h, n_embd, t, eps)?;
                     }
+                } else {
+                    e.add(x1, sl_fo, x_nxt, t * n_embd)?;
                 }
             }
             std::mem::swap(&mut x_cur, &mut x_nxt);
@@ -1015,10 +1020,10 @@ impl HybridModel {
                 }
             }
             let mut x1 = e.uninit(total * n_embd)?;
-            e.add(&x, &mixed, &mut x1, total * n_embd)?;
             let mut z = e.uninit(total * n_embd)?;
             let mut zx16 = e.alloc_u8_uninit(total * n_embd * 2)?;
-            e.rms_norm_f16out(&x1, layer.post_attn_norm.float_data(), &mut z, &mut zx16, n_embd, total, eps)?;
+            e.add_rms_norm_f16out(&x, &mixed, layer.post_attn_norm.float_data(),
+                                  &mut x1, &mut z, &mut zx16, n_embd, total, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();

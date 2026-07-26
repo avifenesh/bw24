@@ -1396,3 +1396,12 @@ FA3 paths, priced: (a) C7515-free consumer bodies (fold alpha into P before
 restage — P' = P, O-rescale via a separate smem-staged multiply outside the
 wgmma window), (b) TMA+128B-swizzle inside the v5 shape. The official lane
 holds at 77.6% with this as the sole open arc.
+
+**add+norm f16out fusion (2026-07-27): landed, honest-small.** The prefill
+trunk's residual-add + norm pairs now run as add_rms_norm_f16out_f32 (the
+add_rms_norm_f32 decode precedent, f16out twin) at 3 trunk sites (prime x2,
+batch x1). Streams BYTE-IDENTICAL vs the separate pair (old-binary gate);
+kernel-check + prime-batch green. Measured: batched +0.17% (4/5, inside
+noise); single-seq arithmetic ~+0.6% at T=2048 (one 33MB re-read saved per
+site x64, below the ms display floor). KEPT: bit-identical, strictly less
+traffic and launches — the launch-diet class.

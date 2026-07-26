@@ -5547,6 +5547,22 @@ impl Engine {
         Ok(())
     }
 
+    /// add+norm(+f16out) fusion for the prefill trunk (round 28; add_rms_norm precedent —
+    /// bit-identical to add_f32 -> rms_norm_f16out). block_dim matches rms_norm_f16out's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_rms_norm_f16out(&self, a: &CudaSlice<f32>, b: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                               res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                               dst16: &mut CudaSlice<u8>, ncols: usize, nrows: usize, eps: f32)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_rms_norm_f16out_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(a).arg(b).arg(w).arg(res).arg(dst).arg(dst16).arg(&nc).arg(&e);
+        unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
     /// matmul_group with a PRE-EMITTED fp16 activation (task #14: the producer norm fused
     /// the convert). Mirror-less members fall back to `matmul` on the f32 activation.
     pub fn matmul_group_xh(&self, ws: &[&crate::model::GpuTensor], x: &CudaSlice<f32>,
