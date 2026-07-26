@@ -283,3 +283,16 @@ seam kept. m=1 stands at 186 (~57% of achievable BW); the remaining gap is
 per-shape latency work (grid fill on small out_f, register-window ILP) and
 the non-matvec per-token floor — next probes need per-shape microbenches
 (tools/bench_mapped_qmatvec.cu pattern), not whole-engine A/Bs.
+
+**m=1 mystery RESOLVED (2026-07-26, per-shape microbench + graph A/B):**
+tools/bench_q8_shapes.cu isolates the rp matvec per trunk shape: 97-100% of
+peak on square shapes (4096x4096), 80-90% on wide (11-12k out, lm_head), 66%
+on the sub-wave attn qkv, launch-floor on beta/alpha(32). Kernel times sum to
+~297 tok/s — the kernels are essentially AT the wall. The 186 e2e gap is
+~370 launches/token of gap overhead + per-token D2H sampling. PROOF: the
+in-tree CUDA-graph decode (generate_graph) measures **214.1 tok/s (+14%)**
+with zero new code. The m=1 road to 334-345: graph decode as the serving
+default (graph-decode-gate covers bit-identity) + device-resident sampling
+(argmax_token_device / spec_sample machinery exists) to kill the D2H — an
+INTEGRATION lane now, not a kernel lane. Wide-shape 80% + attn-qkv 66% are
+the only true kernel work left in the m=1 stack.
