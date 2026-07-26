@@ -371,3 +371,12 @@ PREFILL GEMM (m≥16 int8 class, both MMQ and qmatvec_gemm tie today), worth
 up to ~2.4× on prime if wgmma reaches its int8 ceiling; FA prefill is the
 secondary 9% target. Measurement discipline saved building the wrong kernel
 a second time.
+
+**wgmma arc OPENED (2026-07-26):** tools/bench_q8_gemm_wgmma.cu — standalone
+dev harness (synthetic Q8_0, CPU reference, timing) + v0 kernel
+(m64n64k32.s8 warpgroup mainloop, per-block scale fold). ptxas ACCEPTS wgmma
+on the 90a build (the build.rs "separate later lane" is open). v0 status:
+illegal memory access on first launch — smem descriptor encoding (LBO/SBO,
+canonical no-swizzle layout) is the live bug; fragment row/col mapping
+unverified until it runs. Iteration cycle: 30s standalone compile+run.
+Target: beat the 688µs int8-mma class = up to 2.4× on prime.
