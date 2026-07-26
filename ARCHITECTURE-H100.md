@@ -336,3 +336,11 @@ decode — gate PASS (token stream == generate_graph exactly), **233.8 tok/s vs
 179.3 eager (+30.4%)** = 66% of the 352 wall, from 53%, with zero kernel
 changes. Confirms the integration thesis. Remaining m=1 ladder: worker wiring
 (single-interactive-session policy), then multi-step replay between D2H syncs.
+
+**Step decomposition (2026-07-26):** fa_apply 1µs + launch 25µs + gpu 4.25ms —
+the graph step is 99% GPU-bound; multi-step replay KILLED pre-build (would
+save 0.6%). Gap to wall = ~1.4ms/step of in-graph non-matvec GPU work (norm
+rows ~0.5ms, attention+combine, state ops, argmax-248k, embed). Next
+instruments: nsys graph-node timing; next levers: further norm-chain fusion,
+combine batching, device argmax split tuning. Session A/B improved to +34%
+(234.0 vs 174.5 eager on the 48-tok-prompt shape).
