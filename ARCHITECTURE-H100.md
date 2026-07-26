@@ -361,3 +361,13 @@ under conditions not yet located (bench_bw24's own timer reports 0.230s
 batched prime for the same invocation shape). Before the wgmma FA build:
 find the branch, profile the true batched prime, size FA's share. The
 wgmma payoff bound is unknown until then — do not build blind.
+
+**Task-8 scope CORRECTED by clean profile (2026-07-26, BW24_PP_ONLY):** pure
+batched-prime kernel shares: **MMQ int8 GEMM 60.1%** (688µs/launch), split-
+plane build 9.5% (load-time artifact), **fa_prefill_f32_pp 9.3%** (2.65ms/call
+× 8 full-attn layers), gdn_chunk 6%+. The earlier "FA mainloop dominates"
+read came from a contaminated mixed capture — task 8's wgmma target is the
+PREFILL GEMM (m≥16 int8 class, both MMQ and qmatvec_gemm tie today), worth
+up to ~2.4× on prime if wgmma reaches its int8 ceiling; FA prefill is the
+secondary 9% target. Measurement discipline saved building the wrong kernel
+a second time.
