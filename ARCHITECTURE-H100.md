@@ -1075,3 +1075,16 @@ segment) needs the mixer out-GEMM written _into_ the slab directly — the
 core-contract refactor (cores return gn/attn_g; prime_chunk runs the out-GEMM
 via try_f16_gemm_pre_into) is the gating increment for the remaining +7-9%.
 Increment-3 state (S-glue live, pp512 20,009) is the shipped baseline.
+
+**Piecewise increments 3-5 CORRECTED VERDICT (2026-07-26, interleaved A/B):**
+the interleaved protocol (the repo's own law, violated in the increment
+measurements) refutes the small segments: ON vs OFF interleaved x3 = -1.0%,
+-1.2%, +0.0% — a cuGraphLaunch costs about what two kernel submissions do, and
+the earlier "+0.9% / pp512 crosses 20k" was CLOCK DRIFT across builds (the
+absolute band moved 19.8k -> 20.1k -> 17.7k over the session; only interleaved
+comparisons are valid). DISPOSITION: BW24_PRIME_SEG flipped to OPT-IN; the
+core-split refactor + slabs + _into plumbing stay (byte-identical, verified,
+the foundation for the 7-9-kernel segments whose economics remain open:
+~6-7 submissions saved per launch x 24-32 layers ~= 1ms/prime IF the pattern
+holds at size). LESSON PINNED: every remaining perf claim in this arc must be
+interleaved-A/B measured; cross-run medians are invalid at this session depth.

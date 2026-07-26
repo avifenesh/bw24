@@ -29,6 +29,11 @@ pub struct PrimeSlabs {
     /// clean). Baked at this t_cap; replay only when t == t_cap. seg_glue[il] fires
     /// between layer il and il+1 (ping-pong parity is deterministic per il).
     pub seg_glue: Vec<Option<cudarc::driver::CudaGraph>>,
+    /// increment 5 (core-split edition): the mixer out-GEMM writes _into_ `mixed`
+    /// directly (no staging copy — the increment-4 copy route was refuted), making
+    /// S-mid [add + post-norm] all-slab and capturable.
+    pub mixed: CudaSlice<f32>,
+    pub seg_mid: Vec<Option<cudarc::driver::CudaGraph>>,
     pub seg_t: usize,
 }
 
@@ -418,6 +423,8 @@ impl HybridModel {
                 up: e.uninit(t * n_ff_max)?,
                 ffn_out: e.uninit(t * n_embd)?,
                 seg_glue: Vec::new(),
+                mixed: e.uninit(t * n_embd)?,
+                seg_mid: Vec::new(),
                 seg_t: 0,
             });
         }
@@ -457,16 +464,16 @@ impl HybridModel {
         let mut x_own;   // fallback storage when slabs are off
         type SlabRefs<'a> = (&'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>);
         let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<SlabRefs>);
-        let mut seg: Option<(&mut Vec<Option<cudarc::driver::CudaGraph>>, &mut usize)> = None;
+        let mut seg: Option<(&mut Vec<Option<cudarc::driver::CudaGraph>>, &mut Vec<Option<cudarc::driver::CudaGraph>>, &mut CudaSlice<f32>, &mut usize)> = None;
         let mut x_own2;
         match slab_guard.as_mut() {
             Some(g) => {
                 let slabs = g.as_mut().unwrap();
                 e.copy_into(&mut slabs.xa, 0, &x_embed, t * n_embd)?;
-                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, seg_glue, seg_t, .. } = slabs;
+                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, seg_glue, mixed, seg_mid, seg_t, .. } = slabs;
                 x_cur = xa;
                 x_nxt = xb;
-                seg = Some((seg_glue, seg_t));
+                seg = Some((seg_glue, seg_mid, mixed, seg_t));
                 sl = Some((h, x1, z, act, h16, z16, gate, up, ffn_out));
             }
             None => {
@@ -508,12 +515,20 @@ impl HybridModel {
         // (all-slab IO, zero in-graph allocations). Capture happens lazily on the
         // first prime at this t (capture does not execute -> launch right after).
         let n_layers = self.layers.len();
+        // OPT-IN (2026-07-26 interleaved verdict): 2-kernel segments measured NET
+        // -0.7%-to-neutral under the interleaved A/B protocol — one cuGraphLaunch costs
+        // about what two kernel submissions do. The earlier "+0.9%" was cross-run clock
+        // drift (the repo's interleaved-A/B law exists for exactly this). Larger segments
+        // (S-prep/S-attn, 7-9 kernels) remain the open hypothesis; the core-split
+        // machinery stays (byte-identical) as their foundation.
         let use_seg = f16fuse && seg.is_some()
-            && std::env::var("BW24_PRIME_SEG").as_deref() != Ok("0");
-        if let Some((sg, st)) = seg.as_mut() {
+            && std::env::var("BW24_PRIME_SEG").as_deref() == Ok("1");
+        if let Some((sg, sm, _, st)) = seg.as_mut() {
             if **st != t {
                 sg.clear();
                 sg.extend((0..n_layers).map(|_| None));
+                sm.clear();
+                sm.extend((0..n_layers).map(|_| None));
                 **st = t;
             }
         }
@@ -527,15 +542,62 @@ impl HybridModel {
         }
         for (il, layer) in self.layers.iter().enumerate() {
             let hx16 = if f16fuse { Some(&*h16) } else { None };
-            let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
-            };
-            e.add(x_cur, &mixed, x1, t * n_embd)?;
-            if f16fuse {
-                e.rms_norm_f16out(x1, layer.post_attn_norm.float_data(), z, z16, n_embd, t, eps)?;
+            if use_seg {
+                // core-split path: projections -> _inner core -> out-GEMM INTO the mixed
+                // slab (no copies) -> S-mid segment [add + post-norm] as one graph launch.
+                let (pre, w_out) = match &layer.mixer {
+                    Mixer::Full(fa) => {
+                        let g3 = match hx16 {
+                            Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
+                            None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
+                        };
+                        (self.full_attn_prime_core_inner(e, fa, g3, &pos_d, t, cache, il)?, &fa.wo)
+                    }
+                    Mixer::Linear(la) => {
+                        let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
+                        let g4 = match hx16 {
+                            Some(xh) => e.matmul_group_xh(&ws, h, xh, t)?,
+                            None => e.matmul_group(&ws, h, t)?,
+                        };
+                        (self.linear_attn_prime_core_pad_inner(e, la, g4, t, cache, il, None)?, &la.ssm_out)
+                    }
+                };
+                {
+                    let (_, sm, mslab, _) = seg.as_mut().unwrap();
+                    let pre_n = pre.len() / t;
+                    let xh_pre = e.f16_act(&pre, t * pre_n)?;
+                    if !e.try_f16_gemm_pre_into(w_out, &xh_pre, t, mslab)? {
+                        let y = e.matmul(w_out, &pre, t)?;
+                        e.copy_into(mslab, 0, &y, t * n_embd)?;
+                    }
+                    if sm[il].is_none() {
+                        use cudarc::driver::sys::{CUgraphInstantiate_flags, CUstreamCaptureMode};
+                        let w_post = layer.post_attn_norm.float_data();
+                        e.stream().synchronize()?;
+                        e.stream().begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
+                        let r = (|| -> Result<(), Box<dyn std::error::Error>> {
+                            e.add(x_cur, mslab, x1, t * n_embd)?;
+                            e.rms_norm_f16out(x1, w_post, z, z16, n_embd, t, eps)?;
+                            Ok(())
+                        })();
+                        let g = e.stream().end_capture(
+                            CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+                        r?;
+                        sm[il] = Some(g?.ok_or("S-mid capture produced no graph")?);
+                    }
+                    sm[il].as_ref().unwrap().launch()?;
+                }
             } else {
-                e.rms_norm(x1, layer.post_attn_norm.float_data(), z, n_embd, t, eps)?;
+                let mixed = match &layer.mixer {
+                    Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
+                    Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
+                };
+                e.add(x_cur, &mixed, x1, t * n_embd)?;
+                if f16fuse {
+                    e.rms_norm_f16out(x1, layer.post_attn_norm.float_data(), z, z16, n_embd, t, eps)?;
+                } else {
+                    e.rms_norm(x1, layer.post_attn_norm.float_data(), z, n_embd, t, eps)?;
+                }
             }
             let zx16 = if f16fuse { Some(&*z16) } else { None };
             match &layer.ffn {
@@ -574,7 +636,7 @@ impl HybridModel {
             if use_seg && il + 1 < n_layers {
                 // S-glue segment: [add + next attn-norm(+f16out)] — one cuGraphLaunch
                 let w_next = self.layers[il + 1].attn_norm.float_data();
-                let (sg, _) = seg.as_mut().unwrap();
+                let (sg, _, _, _) = seg.as_mut().unwrap();
                 if sg[il].is_none() {
                     use cudarc::driver::sys::{CUgraphInstantiate_flags, CUstreamCaptureMode};
                     e.stream().synchronize()?;
@@ -871,7 +933,15 @@ impl HybridModel {
 
     /// Everything after the q/k/v projections (split/QK-norm/RoPE/FA/gate/append + wo).
     /// `g3` = matmul_group([wq, wk, wv]) output rows for THIS sequence.
-    fn full_attn_prime_core(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
+    /// Composes inner + wo (== the pre-split core; every existing caller unchanged).
+    fn full_attn_prime_core(&self, e: &Engine, fa: &FullAttnLayer, g3: Vec<CudaSlice<f32>>,
+                            pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let attn_g = self.full_attn_prime_core_inner(e, fa, g3, pos_d, t, cache, il)?;
+        Ok(e.matmul(&fa.wo, &attn_g, t)?)
+    }
+
+    fn full_attn_prime_core_inner(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -974,7 +1044,16 @@ impl HybridModel {
             }
             None => attn,
         };
-        Ok(e.matmul(&fa.wo, &attn_g, t)?)
+        Ok(attn_g)
+    }
+
+    /// Task #15 core-split: the attention core WITHOUT the wo projection — returns the
+    /// gated attention output so the caller can run wo _into_ a resident slab (the
+    /// piecewise S-mid/S-attn boundary). Composes with the tail wo == the old core.
+    fn full_attn_prime_core_pre(&self, e: &Engine, fa: &FullAttnLayer, g3: Vec<CudaSlice<f32>>,
+                                pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_prime_core_inner(e, fa, g3, pos_d, t, cache, il)
     }
 
     /// STATEFUL batched linear-attention prime: `linear_attn`'s prefill-dispatch pass (normal
@@ -1007,7 +1086,7 @@ impl HybridModel {
     /// identity GDN steps (gdn_pad_mask zeroes beta/g_log past the true length) and the
     /// conv ring writes back from the true tail. None = classic path, byte-identical.
     #[allow(clippy::too_many_arguments)]
-    fn linear_attn_prime_core_pad(&self, e: &Engine, la: &LinearAttnLayer, mut g4: Vec<CudaSlice<f32>>,
+    fn linear_attn_prime_core_pad_inner(&self, e: &Engine, la: &LinearAttnLayer, mut g4: Vec<CudaSlice<f32>>,
                               t: usize, cache: &mut Cache, il: usize,
                               pad_len: Option<&CudaSlice<i32>>)
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -1068,6 +1147,16 @@ impl HybridModel {
         // gated RMSNorm + out projection (prefill dispatch).
         let mut gn = e.uninit(d_state * num_v * t)?;
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
+        Ok(gn)
+    }
+
+    /// Task #15 core-split wrapper: composes inner + ssm_out (== the old core).
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attn_prime_core_pad(&self, e: &Engine, la: &LinearAttnLayer, g4: Vec<CudaSlice<f32>>,
+                              t: usize, cache: &mut Cache, il: usize,
+                              pad_len: Option<&CudaSlice<i32>>)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let gn = self.linear_attn_prime_core_pad_inner(e, la, g4, t, cache, il, pad_len)?;
         Ok(e.matmul(&la.ssm_out, &gn, t)?)
     }
 
