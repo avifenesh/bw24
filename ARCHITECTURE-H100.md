@@ -663,3 +663,16 @@ FA slice now effectively at its non-redesign wall. pp512 night cumulative:
 8674 -> 19886 (+129%); prefill ~57% of vLLM. Remaining structural arcs:
 prefill graph capture (gap floor), full FA3 warp specialization (diminishing
 vs the above), remaining GDN small kernels (conv/cumgate/solve/attn).
+
+**Round-9 wall audit (2026-07-26, anatomy at 19.9k):** per-prime: GEMMs 10.3ms
+(practical ceiling — W8A8 + autotune refuted), GDN state-mma 1.56 + output-mma
+0.85 (post-mma walls), FA 1.07 (was 4.3 — bf16kv+ring), conv 0.95, norms+cvt
+~3.2, gaps 3.7ms (15%). Probes this round:
+- ssm_conv1d_gdn float4: NEUTRAL, reverted — the kernel's wall is the GQA
+  broadcast WRITE amplification (~25MB materialized q/k copies), not tap loads.
+  Mapped option for later: de-broadcast layout (k/q stay [T, num_k, 128];
+  consumers map vh -> vh % num_k) — touches K2/K4/K5 mirrors, prefill-only.
+- Norm reductions (l2/rms, ~1.7ms) stay pinned: any load-width change reorders
+  the reduction tree and the SAME kernels serve decode (decode==verify law).
+THE remaining structural arc is prefill graph capture (3.7ms gap floor);
+everything else measured at or near its wall for this design generation.
