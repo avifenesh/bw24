@@ -563,3 +563,16 @@ producer/consumer redesign (TMA staging + warp specialization). Seam kept
 (BW24_FA_PP_W2=1): at dark-lane chunk sizes (T=256 -> grid 64 CTAs, half the
 SMs idle) W2's coverage argument doubles — an untested SERVING-side hypothesis
 the lane battery should arbitrate, not pp512.
+
+**W8A8 per-row arc REFUTED BY PROBE (2026-07-26, tools/bench_lt_i8.cu):** the
+"vLLM numeric config" (int8 W per-row x int8 act per-token, s32 GEMM + f32
+dequant epilogue) measures NET 0.87-1.04x vs the SHIPPED fp16 mirror at every
+m=512 shape: int8 IMMA only reaches 654-892 TOP/s here (not the 2x-of-fp16
+datasheet ratio), and the epilogue pass (5-19us) eats the remainder. VERDICT:
+the fp16-mirror path is at the practical H100 GEMM ceiling for this workload —
+no dtype change buys more; a fused-epilogue cutlass kernel would at best
+reclaim the 5-19us epilogue, which the probe shows is not worth the arc.
+STRATEGIC COROLLARY: vLLM's remaining prefill edge (35k vs 16.7k) is
+STRUCTURAL, not GEMM-rate — fused epilogues/norms into GEMMs, TC attention,
+fewer launches, graphs. The remaining roadmap is exactly the three structural
+arcs: FA3 staging redesign, GDN K4 bf16-mma, prefill graph capture.
