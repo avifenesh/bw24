@@ -1129,6 +1129,110 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) f
         head_dim, n_head, n_head_kv, a.T, a.T, scale, 1);
 }
 
+// ---- task #18 (attn pre-FA): varlen split/norm/rope/append — the last per-seq attn
+// launches. Inputs are VIEWS of the concat projections (removes the q/k/v split copies).
+// Every twin reproduces the per-seq kernel's per-element/per-block math exactly.
+typedef struct {
+    const float* qf;             // [T, n_head*2*head_dim] fused [q|gate] rows (view)
+    const float* kf;             // [T, n_head_kv*head_dim] raw k rows (view)
+    const float* vf;             // [T, n_head_kv*head_dim] raw v rows (view)
+    float* q; float* gate;       // split outputs
+    float* qn; float* kn;        // normed (rope applies in-place after)
+    unsigned char* kc; unsigned char* vc;   // per-seq KV cache bases
+    int T; int pad_;
+} attnpre_t;
+typedef struct { attnpre_t s[8]; } attnprevl_t;
+
+extern "C" __global__ void q_gate_split_vl(attnprevl_t v, int head_dim, int n_head) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)sq.T * n_head * head_dim;
+    if (idx >= total) return;
+    int d  = idx % head_dim;
+    int hh = (idx / head_dim) % n_head;
+    int tok = idx / ((long)head_dim * n_head);
+    int stride = 2 * head_dim;
+    long src = (long)tok * (n_head * stride) + (long)hh * stride;
+    sq.q[idx]    = sq.qf[src + d];
+    sq.gate[idx] = sq.qf[src + head_dim + d];
+}
+
+// fused q+k QK-norm (grid.y: 0 = q rows with wq, 1 = k rows with wk); the reduction body
+// is rms_norm_f32's — the launcher passes the SAME block size (rms_block()).
+extern "C" __global__ void attn_rms_vl(attnprevl_t v, const float* __restrict__ wq,
+                                       const float* __restrict__ wk,
+                                       int ncols, int n_head, int n_head_kv, float eps) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    int nrows = (blockIdx.y == 0 ? n_head : n_head_kv) * sq.T;
+    int row = blockIdx.x;
+    if (row >= nrows) return;
+    const float* x = blockIdx.y == 0 ? sq.q : sq.kf;
+    const float* w = blockIdx.y == 0 ? wq : wk;
+    float* dst = blockIdx.y == 0 ? sq.qn : sq.kn;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v2 = xr[i]; sum += v2 * v2; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+}
+
+// fused q+k RoPE (grid.y picks), FRESH positions (pos[tok] == tok — the batched prime is
+// fresh-only, so the iota position is computed in-kernel; identical value to pos_d[tok]).
+extern "C" __global__ void attn_rope_vl(attnprevl_t v, int head_dim, int n_dims,
+                                        int n_head, int n_head_kv,
+                                        float theta_scale, float freq_scale) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    int n_heads = blockIdx.y == 0 ? n_head : n_head_kv;
+    float* x = blockIdx.y == 0 ? sq.qn : sq.kn;
+    int hd2 = head_dim / 2;
+    int j = threadIdx.x;
+    if (j >= hd2) return;
+    int hr = blockIdx.x;
+    if (hr >= n_heads * sq.T) return;
+    int tok = hr / n_heads;
+    float* base = x + (size_t)hr * head_dim;
+    int half = n_dims / 2;
+    if (j >= half) return;
+    float theta = (float)tok * powf(theta_scale, (float)j) * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = base[j], x1 = base[j + half];
+    base[j]        = x0 * c - x1 * sn;
+    base[j + half] = x0 * sn + x1 * c;
+}
+
+// varlen KV append (fresh: t0 == 0). Per-block math == append_quantize_kv_q8_0_q5_1_rows.
+extern "C" __global__ void append_kv_vl(attnprevl_t v, int kv_dim_k, int kv_dim_v,
+                                        long k_tok_bytes, long v_tok_bytes) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    const int b    = blockIdx.x;
+    const int tt   = blockIdx.y;
+    if (tt >= sq.T) return;
+    const int lane = threadIdx.x;
+    const int eidx = b * 32 + lane;
+    const int t    = tt;                    // fresh: t0 == 0
+    // K rows are the POST-ROPE kn; V rows are the raw vf view.
+    if (b * 32 < kv_dim_k) {
+        float x = (eidx < kv_dim_k) ? sq.kn[(size_t)tt * kv_dim_k + eidx] : 0.0f;
+        quant_K_block(x, lane, sq.kc + (size_t)t * k_tok_bytes + (size_t)b * K_BLK_B);
+    }
+    if (b * 32 < kv_dim_v) {
+        float x = (eidx < kv_dim_v) ? sq.vf[(size_t)tt * kv_dim_v + eidx] : 0.0f;
+        quant_V_block(x, lane, sq.vc + (size_t)t * v_tok_bytes + (size_t)b * V_BLK_B);
+    }
+}
+
 // ===================================================================== //
 //  KERNEL 1b : fa_prefill_q  (quantized-cache prefill: q8_0 K / q5_1 V) //
 //  Identical to fa_prefill_f32 EXCEPT the stage-to-smem copy dequants    //

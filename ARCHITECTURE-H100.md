@@ -1190,3 +1190,18 @@ batch arm runs per-seq pre_fa -> ONE vl FA -> per-seq post_fa + wo-into-mixed.
 Fresh-only, bf16kv lane, hd 256/128; BW24_FA_VL=0 reverts. Gates green
 (kernel-check, prime-batch b=4/6/8 uneven). ROUND-26 CUMULATIVE batched
 serving-shape prime: 13441 -> 18273 (+35.9%).
+
+**Varlen attn pre-FA (2026-07-26, task #18 completion): +2.8% batched prime,
+attn arm now fully varlen (interleaved arm total 18784 vs 17326 per-seq, 5/5).**
+attnpre_t table + four vl kernels: q_gate_split_vl, attn_rms_vl (fused q+k
+QK-norm, grid.y picks; rms_block() parity), attn_rope_vl (fused q+k; FRESH
+pos == token index — identical value to pos_d[tok]), append_kv_vl (fresh t0=0;
+per-block math == the rows append kernel). Inputs are VIEWS of the concat
+projections — the attn q/k/v split copies are gone (task #16's mapped
+remainder). Host keeps per-seq len/len_d bookkeeping. Gated-arch only
+(qwen35); non-gated falls to the per-seq path. Gates green (kernel-check,
+validate-h100, graph-session, decode-batch, prime-batch b=4/6/8 uneven).
+ROUND-26 FINAL CUMULATIVE: batched serving-shape prime 13441 -> 18784
+(+39.8%); serving burst 8284 -> 13907 tok/s (+68%). The batched prime now runs
+GEMMs eager (their ceiling) + ~17 varlen launches + trunk glue per layer-pair;
+per-seq launch trains are fully retired on both mixer types.

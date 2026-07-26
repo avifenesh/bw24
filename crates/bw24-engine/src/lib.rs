@@ -522,6 +522,21 @@ unsafe impl cudarc::driver::DeviceRepr for FaSeqVl {}
 pub struct FaVl8(pub [FaSeqVl; 8]);
 unsafe impl cudarc::driver::DeviceRepr for FaVl8 {}
 
+/// task #18 (attn pre-FA): per-seq split/norm/rope/append args (CUDA `attnpre_t`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct AttnPreVl {
+    pub qf: u64, pub kf: u64, pub vf: u64,
+    pub q: u64, pub gate: u64, pub qn: u64, pub kn: u64,
+    pub kc: u64, pub vc: u64,
+    pub t: i32, pub pad: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for AttnPreVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AttnPreVl8(pub [AttnPreVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for AttnPreVl8 {}
+
 /// task #18 increment 2: one sequence's FULL chunk-buffer set (alloc-only; the
 /// varlen K1-K5 chain fills them).
 pub struct GdnChunkBufs {
@@ -6096,6 +6111,60 @@ impl Engine {
         let mut lb = self.gpu.stream.launch_builder(&f);
         lb.arg(&v).arg(&hd).arg(&nh).arg(&nhkv).arg(&scale);
         unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #18 (attn pre-FA): varlen split + QK-norm + RoPE + KV-append — FOUR launches
+    /// for every fresh sequence (was 6 x B, plus the q/k/v split copies which the view
+    /// inputs remove entirely). Fresh-only (append at t0=0, RoPE pos = token index).
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_pre_vl8(&self, seqs: &[AttnPreVl], wq: &CudaSlice<f32>, wk: &CudaSlice<f32>,
+                        head_dim: usize, rope_dims: usize, n_head: usize, n_head_kv: usize,
+                        eps: f32, freq_base: f32, freq_scale: f32,
+                        kv_dim_k: usize, kv_dim_v: usize,
+                        k_tok_bytes: usize, v_tok_bytes: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [AttnPreVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = AttnPreVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        {
+            let f = self.func("q_gate_split_vl");
+            let n = max_t * (n_head * head_dim) as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hd).arg(&nh);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("attn_rms_vl");
+            let cfg = LaunchConfig { grid_dim: (max_t * n_head as u32, 2, b as u32), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(wq).arg(wk).arg(&hd).arg(&nh).arg(&nhkv).arg(&eps);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("attn_rope_vl");
+            let theta_scale = freq_base.powf(-2.0 / rope_dims as f32);
+            let nd = rope_dims as i32;
+            let cfg = LaunchConfig { grid_dim: (max_t * n_head as u32, 2, b as u32), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hd).arg(&nd).arg(&nh).arg(&nhkv).arg(&theta_scale).arg(&freq_scale);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("append_kv_vl");
+            let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+            let cfg = LaunchConfig { grid_dim: (nblk, max_t, b as u32), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+            let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+            unsafe { lb.launch(cfg)?; }
+        }
         Ok(())
     }
 
