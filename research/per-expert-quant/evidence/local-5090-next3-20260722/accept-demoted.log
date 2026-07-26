@@ -12,3 +12,36 @@ prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 132
 
 [generate]   63 tok in 13.656s = 4.61 tok/s (gen-only; this run's prime 13.026s)
   tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438, 503, 279, 1244, 1970, 24674, 496, 32215, 107669, 503, 539, 712, 35299, 9, 252, 1970, 58138, 9042, 45164, 41116, 503, 369, 8205, 280, 244, 1970, 28462, 14965, 11367, 13239, 1726, 82, 341, 37483, 36, 8, 2438, 503, 1119, 13604, 1320, 16268, 1320, 978, 53, 104242, 739, 575, 6652, 280, 6910, 5033, 13, 286, 42866, 1219, 206]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=50 full_accept=50 len_hist=[37, 13, 0, 0, 0] per_slot=[13/13=1.000 0/0 0/0 0/0] total=13/13=1.000 tok_per_round=1.260
+[spec-phase] draft=358.2ms (2.6%) verify-issue=13331.7ms (97.1%) verify-wait=32.8ms (0.2%) commit-host=4.6ms (0.0%) rounds=50
+
+[generate_spec K=4] 64 tok in 14.143s = 4.45 tok/s (0.97x vs generate; this run's prime 11.201s)
+  acceptance: 13/13 = 100.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[bw24-cpu-cache] hits=142742 misses=64870 hit_rate=68.75% read_GB=142.352 resident_GB=21.474
+[bw24-cpu-profile] calls=16964 prepare=0.576018s io=17.111104s insert=0.071032s compute=28.415945s read_projections=64870 read_GB=142.352 stage_entry=0.769344s stage_cached=22.463547s stage_missing=2.664014s stage_accum=0.666018s prefetch_projections=0 prefetch_GB=0.000
+	Command being timed: "env BW24_NGEN=64 BW24_SPEC_K=4 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.8 BW24_SPEC_PMIN0=1 BW24_CPU_EXPERT_PIPELINE=0 BW24_CPU_EXPERT_FREEZE_PROFILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/freeze-dual-tq.txt BW24_PROMPT=Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs. tools/run_hy3_local_5090.sh /home/avifenesh/.local/share/bw24-models/hy3-tailq2k-dual-nvme /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so /home/avifenesh/.local/share/bw24-models/hy3-tailq2k-mirror/inode-alternates.tsv"
+	User time (seconds): 305.84
+	System time (seconds): 41.53
+	Percent of CPU this job got: 125%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:37.57
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 31008868
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3407107
+	Minor (reclaiming a frame) page faults: 15856964
+	Voluntary context switches: 5078472
+	Involuntary context switches: 4681
+	Swaps: 0
+	File system inputs: 354518760
+	File system outputs: 32
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
