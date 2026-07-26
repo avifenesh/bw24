@@ -102,6 +102,7 @@ version = "0.0.0"
 dependencies = [
  "bw24-gguf",
  "bw24-runtime",
+ "bw24-sampling",
  "bw24-tokenizer",
  "cudarc",
  "libc",
@@ -136,6 +137,10 @@ dependencies = [
  "bw24-gguf",
  "cudarc",
 ]
+
+[[package]]
+name = "bw24-sampling"
+version = "0.0.0"
 
 [[package]]
 name = "bw24-server"

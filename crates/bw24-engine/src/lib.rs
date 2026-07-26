@@ -20,7 +20,7 @@ pub mod round_stream;
 pub mod graph_update;
 pub mod dflash;
 pub mod eagle;
-pub mod sampler;
+pub use bw24_sampling as sampler;
 
 /// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
 /// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
