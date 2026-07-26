@@ -1281,3 +1281,20 @@ two warpgroups share ONE q-tile, WG0 computes S+softmax+P (bP is already the
 broadcast medium), both PV their 128-col D-half (O = 64 regs each); then
 setmaxnreg asymmetric allocation (WG0~168/WG1~88 = half the file -> 2 CTAs/SM,
 16 warps). Target unchanged: >=2x over 993us => +4-6% official lane.
+
+**FA3 harness v7 verdict (2026-07-27): split-D REFUTED at this structure —
+1392us (WG1 fully idles behind WG0's serialized S+softmax; 172KB smem still
+caps 1 CTA/SM, so the register win buys nothing). ARC STATE after 7 versions:
+v5 (2 q-tiles x 2 warpgroups, shared K/V ring, int4 cp.async, canonical
+core-matrix wgmma) = 999us == the shipped mma kernel (993us), correct at all
+T vs the online-semantics reference. Three refutations with mechanisms (v6
+overlap reorder: natural WG interleave already covers it; v7 split-D: WG1
+starvation + smem cap). WHAT BEATING 993 REQUIRES (priced): the full FA3
+producer/consumer discipline — a dedicated producer warpgroup on TMA with
+setmaxnreg (32/160 reg split), smem diet to 2 CTAs/SM, and cluster-level KV
+multicast for the GQA share. Foundations all proven in tools/bench_fa3.cu
+(wgmma bf16 descriptors, staging, online softmax fragment plumbing, GQA,
+causal) — the remaining work is choreography, not discovery. The mma kernel's
+993us stands as a well-tuned baseline: it earns its rate from deep ILP within
+64 warps, which wgmma can only beat with occupancy the naive shapes can't
+reach.**
