@@ -2128,6 +2128,30 @@ impl Engine {
         Ok(())
     }
 
+    /// Q8_0 twin of `build_q4_rp4` (H100 coalescing fix, 2026-07-26 ncu: GGUF 34B-stride
+    /// weight loads hold Max Bandwidth at 41-46%; the split mirror makes them aligned 16B
+    /// ldcs). Raw bytes stay resident (prefill GEMM/MMQ/fused m=1 launches read GGUF layout);
+    /// the mmvq/batched decode arms prefer the mirror via `rp4`. Bit-identical outputs.
+    pub fn build_q8_rp4(&self, t: &mut crate::model::GpuTensor)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, qtype, row_bytes, ne, rp4, .. } = t else { return Ok(()) };
+        if *qtype != QT_Q8_0 || rp4.is_some() || ne.len() != 2 { return Ok(()); }
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        if in_f % 32 != 0 || *row_bytes != (in_f / 32) * 34 { return Ok(()); }
+        let nblk = in_f / 32;
+        let mut dst = self.alloc_uninit::<u8>(out_f * nblk * 34)?;
+        let f = self.func("q8_0_split_rp_build");
+        let cfg = LaunchConfig { grid_dim: (((out_f * nblk) as u32).div_ceil(256), 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (of, nb) = (out_f as i32, nblk as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
+        unsafe { b.launch(cfg)?; }
+        *rp4 = Some(dst);
+        Ok(())
+    }
+
     /// IN-PLACE split-plane swap (the 31B dense arc): build the split layout and REPLACE the
     /// GGUF bytes (zero extra steady-state VRAM — the transient peak is one tensor's size).
     /// The tensor's `rp` flag then routes every consumer (mmvq/batched `_rp` twins, the
@@ -4867,6 +4891,7 @@ impl Engine {
             (QT_Q4_0, 1, true)   => "qmatvec_q4_0_mmvq_rp",
             (QT_Q4_0, _, true)   => "qmatvec_q4_0_mmvq_mr2_rp",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
+            (QT_Q8_0, _, true) => "qmatvec_q8_0_mmvq_rp",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q4_0, 2, false) => "qmatvec_q4_0_mmvq_mr2",
@@ -4991,6 +5016,13 @@ impl Engine {
     /// (deterministic but k-reduce-order-shifted: rel<1e-3 + run-to-run bit-identity required).
     pub fn batched_variant(&self, _m: usize, in_f: usize, out_f: usize, qtype: i32,
                            row_bytes: usize, mcols: usize, rp: bool) -> &'static str {
+        // Q8_0 never joined the auto variant machinery (on sm_120 its only batched shapes
+        // were tiny aux tensors). On Q8_0-trunk models the layout is the whole game: the
+        // split-plane mirror (rp) routes to the _rp twins (H100 coalescing fix, 2026-07-26);
+        // GGUF layout stays "base". rp bytes MUST never reach the base kernel or vice versa.
+        if qtype == QT_Q8_0 {
+            return if rp { "rp" } else { "base" };
+        }
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {
             Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("r2w8") => "r2w8",

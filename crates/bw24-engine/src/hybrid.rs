@@ -694,7 +694,7 @@ impl HybridModel {
         let embd = EmbedHost::from_source(src, "token_embd.weight");
         let output_norm = load_t(e, src, "output_norm.weight")?;
         // tied embeddings: fall back to tok_embd if output.weight absent.
-        let output = if src.has("output.weight") {
+        let mut output = if src.has("output.weight") {
             load_t(e, src, "output.weight")?
         } else {
             load_t(e, src, "token_embd.weight")?
@@ -1045,6 +1045,49 @@ impl HybridModel {
             None
         };
         let mut layers = layers;
+        // Q8_0 SPLIT-PLANE DECODE MIRRORS (2026-07-26, the H100 lane): Q8_0-trunk models
+        // (Qwen3.5-9B class) stream their whole weight mass through the 34B-stride GGUF
+        // layout — ncu on H100 held Max Bandwidth at 41-46% (Mem Busy 66-76%) from sector
+        // overfetch. Mirrors route the m<=16 mmvq/batched decode family to the aligned-16B
+        // `_rp` twins (bit-identical). VRAM cost == the mirrored trunk (~model size), so
+        // DEFAULT ON only on the Hopper lane (80GB); BW24_Q8RP=1/0 overrides either way.
+        {
+            let q8rp_on = match std::env::var("BW24_Q8RP").as_deref() {
+                Ok("0") => false,
+                Ok(_) => true,
+                Err(_) => cfg!(bw24_hopper_mma),
+            };
+            if q8rp_on {
+                let e_ref = e;
+                let mut nmir = 0usize;
+                let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
+                    let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
+                    e_ref.build_q8_rp4(w)?;
+                    if !before && matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. }) {
+                        nmir += 1;
+                    }
+                    Ok(())
+                };
+                for layer in layers.iter_mut() {
+                    match &mut layer.mixer {
+                        Mixer::Full(fa) => {
+                            for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mir(w)?; }
+                        }
+                        Mixer::Linear(la) => {
+                            for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
+                                      &mut la.ssm_alpha, &mut la.ssm_out] { mir(w)?; }
+                        }
+                    }
+                    if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
+                        for w in [ffn_gate, ffn_up, ffn_down] { mir(w)?; }
+                    }
+                }
+                mir(&mut output)?;
+                if nmir > 0 {
+                    eprintln!("[q8rp] split-plane decode mirrors built: {nmir} tensors");
+                }
+            }
+        }
         // Q4_0 SPLIT-PLANE DECODE MIRRORS (2026-07-10, BW24_Q4RP seam): gemma-4 MoE-class trunk
         // (26B — attn wq/wk/wv/wo + the parallel shared FFN triple). The 18B GGUF block stride
         // costs ~25-35% decode bandwidth in sector overfetch (rp_q4_probe: m=1 1.34x, m=3 1.17x,
