@@ -1205,3 +1205,18 @@ ROUND-26 FINAL CUMULATIVE: batched serving-shape prime 13441 -> 18784
 (+39.8%); serving burst 8284 -> 13907 tok/s (+68%). The batched prime now runs
 GEMMs eager (their ceiling) + ~17 varlen launches + trunk glue per layer-pair;
 per-seq launch trains are fully retired on both mixer types.
+
+**Conv-fuse (2026-07-26, round 27): +9.7% official prefill lane / +7.8% batched
+prime, INTERLEAVED 5/5 both, BIT-IDENTICAL.** The T=2048 anatomy showed
+conv (7.2ms) + repack (4.6ms) = 14% of the official lane: a 67MB channel-major
+conv_out intermediate written uncoalesced then re-read transposed.
+ssm_conv1d_gdn_state_f32 (+_vl twin) fuses carried-ring conv + SiLU + GDN
+scatter into ONE pass (the 2026-07-03 zero-state fused kernel finally gets its
+state twin) — same 8-tap ascending accumulation, same SiLU, same scatter
+mapping => greedy streams byte-identical on/off. Ring update stays separate
+(pad-aware, unchanged). BW24_CONV_FUSE=0 reverts; wired in the single-seq prep
+AND gdn_prep_vl8. Interleaved x5: T=2048 prime 0.0875s vs 0.096s (5/5);
+batched B=6 T=152 20235 vs 18777 (5/5). Full battery green; serving rounds
+observed at 45ms/912tok (20.3k) live.
+OFFICIAL LANE: prefill T=2048 = 23,406 tok/s (75.4% of vLLM's 31,036, was
+69%); TTFT 87.5ms. Batched prime cumulative: 13441 -> 20235 (+50.5%).

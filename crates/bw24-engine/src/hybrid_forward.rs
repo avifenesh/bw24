@@ -1351,17 +1351,23 @@ impl HybridModel {
         debug_assert!(t >= d_conv - 1, "stateful conv needs T >= pad (PRIME_MIN_T gates)");
 
         // conv with CARRIED ring state + ring roll (state read + final-window write-back).
+        // task #18 conv-fuse (default ON): conv + SiLU + repack in one pass — the 67MB
+        // conv_out intermediate and its transposed re-read disappear (values bit-identical).
+        // BW24_CONV_FUSE=0 reverts to the two-kernel chain.
         let rl = cache.recur[il].as_mut().unwrap();
-        let mut conv_out = e.uninit(conv_dim * t)?;      // [conv_dim, T] channel-major, SiLU
-        e.ssm_conv1d_tm_state_pad_v(qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
-                              &mut conv_out, conv_dim, t, d_conv, pad_len)?;
-
-        // GDN prep via the PREFILL kernels (repack + 256-thread l2_norm + sigmoid + glog) —
-        // the same kernels forward_last's fused path reproduces value-for-value.
         let mut q_g = e.uninit(d_state * num_v * t)?;
         let mut k_g = e.uninit(d_state * num_v * t)?;
         let mut v_g = e.uninit(d_state * num_v * t)?;
-        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
+        if std::env::var("BW24_CONV_FUSE").as_deref() != Ok("0") {
+            e.ssm_conv1d_gdn_state_pad(qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                                  &mut q_g, &mut k_g, &mut v_g,
+                                  conv_dim, t, d_conv, d_state, num_v, num_k, key_dim, pad_len)?;
+        } else {
+            let mut conv_out = e.uninit(conv_dim * t)?;      // [conv_dim, T] channel-major, SiLU
+            e.ssm_conv1d_tm_state_pad_v(qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                                  &mut conv_out, conv_dim, t, d_conv, pad_len)?;
+            e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
+        }
         let mut q_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
         let mut k_l2 = e.uninit(d_state * num_v * t)?;

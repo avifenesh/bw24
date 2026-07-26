@@ -7577,6 +7577,56 @@ impl Engine {
             }
     }
 
+    /// task #18 conv-fuse: carried-ring conv + SiLU + GDN repack in ONE pass (the
+    /// conv_out intermediate and its transposed re-read disappear — 11.8ms of the
+    /// T=2048 prime). Ring update stays the separate follow-up launch (pad-aware).
+    /// BIT-IDENTICAL values to ssm_conv1d_tm_state_pad + qkv_to_gdn_repack.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_gdn_state_pad(&self, qkv_tm: &cudarc::driver::CudaView<f32>,
+                               conv_state: &mut CudaSlice<f32>, w: &CudaSlice<f32>,
+                               q_g: &mut CudaSlice<f32>, k_g: &mut CudaSlice<f32>,
+                               v_g: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize,
+                               d_state: usize, num_v: usize, num_k: usize, key_dim: usize,
+                               pad_len: Option<&CudaSlice<i32>>)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        assert!(t >= d_conv - 1, "fused state conv requires T >= pad (PRIME_MIN_T gates)");
+        {
+            let f = self.func("ssm_conv1d_gdn_state_f32");
+            let cfg = LaunchConfig {
+                grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+                block_dim: (256, 1, 1), shared_mem_bytes: 0,
+            };
+            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+            let (ds, nv, nk, kd) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(q_g).arg(k_g).arg(v_g)
+             .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd);
+            unsafe { b.launch(cfg)?; }
+        }
+        match pad_len {
+            Some(len_d) => {
+                let f = self.func("ssm_conv_ring_update_dev_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, dc) = (conv_dim as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            None => {
+                let f = self.func("ssm_conv_ring_update_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+        }
+        Ok(())
+    }
+
     /// task #18 increment 2: allocate ONE sequence's chunk buffers (no launches) —
     /// K1-K5 all run varlen afterwards. `a`/`w` become struct members so the varlen
     /// K2/K3 can write them.
@@ -7664,7 +7714,15 @@ impl Engine {
         let v = GdnPrepVl8(packed);
         let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
         let (cdi, dci) = (conv_dim as i32, d_conv as i32);
-        {
+        let conv_fuse = std::env::var("BW24_CONV_FUSE").as_deref() != Ok("0");
+        if conv_fuse {
+            let f = self.func("ssm_conv1d_gdn_state_vl");
+            let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi, nki, kdi) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi);
+            unsafe { lb.launch(cfg)?; }
+        } else {
             let f = self.func("ssm_conv1d_tm_state_vl");
             let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut lb = self.gpu.stream.launch_builder(&f);
@@ -7679,7 +7737,7 @@ impl Engine {
             lb.arg(&v).arg(&cdi).arg(&dci);
             unsafe { lb.launch(cfg)?; }
         }
-        {
+        if !conv_fuse {
             let f = self.func("qkv_to_gdn_repack_vl");
             let n = max_t * (num_v * d_state) as u32;
             let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };

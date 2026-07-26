@@ -104,6 +104,50 @@ extern "C" __global__ void ssm_conv1d_gdn_f32(
     }
 }
 
+// STATE twin (task #18 conv-fuse, 2026-07-26): the prime path's conv+repack chain
+// materialized conv_out [conv_dim, T] (67MB at T=2048) with uncoalesced channel-major
+// writes, then re-read it transposed — 11.8ms of the 86.8ms T=2048 prime. This fuses
+// the CARRIED-ring window conv + SiLU + GDN scatter into one pass: negative window rows
+// read the resident ring (== ssm_conv1d_tm_state_f32's st[pad+tt]), outputs land
+// directly in q_g/k_g/v_g token-major. BIT-IDENTICAL values (same 8-tap ascending
+// accumulation, same SiLU, same scatter mapping). Ring update stays a separate launch.
+extern "C" __global__ void ssm_conv1d_gdn_state_f32(
+        const float* __restrict__ qkv_tm, const float* __restrict__ conv_state,
+        const float* __restrict__ w,
+        float* __restrict__ q_g, float* __restrict__ k_g, float* __restrict__ v_g,
+        int conv_dim, int T, int d_conv, int d_state, int num_v, int num_k, int key_dim) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = blockIdx.y;
+    if (c >= conv_dim || t >= T) return;
+    int pad = d_conv - 1;
+    const float* wc = w + (size_t)c * d_conv;
+    const float* st = conv_state + (size_t)c * pad;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) {
+        if (j < d_conv) {
+            int tt = t - pad + j;
+            float xv = (tt >= 0) ? qkv_tm[(size_t)tt * conv_dim + c] : st[pad + tt];
+            acc += xv * wc[j];
+        }
+    }
+    float val = silu(acc);
+    if (c < 2 * key_dim) {
+        int cc = (c < key_dim) ? c : c - key_dim;
+        float* dst = (c < key_dim) ? q_g : k_g;
+        int kh = cc / d_state;
+        int i  = cc % d_state;
+        for (int vh = kh; vh < num_v; vh += num_k) {
+            dst[((size_t)t * num_v + vh) * d_state + i] = val;
+        }
+    } else {
+        int cc = c - 2 * key_dim;
+        int vh = cc / d_state;
+        int i  = cc % d_state;
+        v_g[((size_t)t * num_v + vh) * d_state + i] = val;
+    }
+}
+
 // ---- BATCHED verify conv: token-major input, CARRIED conv state, ring update, T>1. ----
 // The spec verify path runs T=K+1 tokens through a linear-attn layer in one pass. This is
 // ssm_conv1d_tm_f32 with the zero left-pad replaced by the RESIDENT conv ring (window rows
@@ -1881,6 +1925,41 @@ extern "C" __global__ void ssm_conv1d_tm_state_vl(gdnprepvl_t v, const float* __
         }
     }
     sq.conv_out[(size_t)c * sq.T + t] = silu(acc);
+}
+
+extern "C" __global__ void ssm_conv1d_gdn_state_vl(gdnprepvl_t vv, const float* __restrict__ w,
+        int conv_dim, int d_conv, int d_state, int num_v, int num_k, int key_dim) {
+    const gdnprep_t sq = vv.s[blockIdx.z];
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = blockIdx.y;
+    if (c >= conv_dim || t >= sq.T) return;
+    int pad = d_conv - 1;
+    const float* wc = w + (size_t)c * d_conv;
+    const float* st = sq.conv_state + (size_t)c * pad;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) {
+        if (j < d_conv) {
+            int tt = t - pad + j;
+            float xv = (tt >= 0) ? sq.qkv[(size_t)tt * conv_dim + c] : st[pad + tt];
+            acc += xv * wc[j];
+        }
+    }
+    float val = silu(acc);
+    if (c < 2 * key_dim) {
+        int cc = (c < key_dim) ? c : c - key_dim;
+        float* dst = (c < key_dim) ? sq.q_g : sq.k_g;
+        int kh = cc / d_state;
+        int i  = cc % d_state;
+        for (int vh = kh; vh < num_v; vh += num_k) {
+            dst[((size_t)t * num_v + vh) * d_state + i] = val;
+        }
+    } else {
+        int cc = c - 2 * key_dim;
+        int vh = cc / d_state;
+        int i  = cc % d_state;
+        sq.v_g[((size_t)t * num_v + vh) * d_state + i] = val;
+    }
 }
 
 extern "C" __global__ void ssm_conv_ring_update_vl(gdnprepvl_t v, int conv_dim, int d_conv) {
