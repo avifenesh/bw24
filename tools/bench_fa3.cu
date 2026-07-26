@@ -251,6 +251,513 @@ extern "C" __global__ void fa3_tile_probe(const __nv_bfloat16* __restrict__ Q,
         }
 }
 
+// ---- v3: the full kernel — grid (T/64, H); KV tile loop with online rescale; GQA. ----
+// Layouts (engine): Q/O [T, H, D] rows; K/V [T, HKV, D] rows (bf16 mirrors).
+// Q tile staged once (canonical); per KV tile: stage K,V^T -> S wgmma -> causal/scale ->
+// online max/sum rescale (O *= alpha) -> P restage -> PV wgmma accumulate.
+extern "C" __global__ void __launch_bounds__(128, 1)
+fa3_v3(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+       const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+       int T, int H, int HKV, int D, float scale) {
+    extern __shared__ char smem[];
+    char* bQ = smem;                    // 32KB (16 steps x 2KB)
+    char* bK = bQ + 64 * 256 * 2;       // 32KB
+    char* bV = bK + 64 * 256 * 2;       // 32KB (4 kv-steps x 8KB, n-major)
+    char* bP = bV + 64 * 256 * 2;       // 8KB
+    const int tid = threadIdx.x;
+    const int q0 = blockIdx.x * 64;
+    const int head = blockIdx.y;
+    const int kvh = head / (H / HKV);
+    if (q0 >= T) return;
+
+    for (int idx = tid; idx < 64 * D; idx += 128) {
+        int r = idx / D, c = idx % D;
+        int st = c / 16, kk = c % 16;
+        size_t off = (size_t)st * 2048 + (r / 8) * 256 + (kk / 8) * 128 + (r % 8) * 16 + (kk % 8) * 2;
+        float qv = (q0 + r < T) ? __bfloat162float(Q[((size_t)(q0 + r) * H + head) * D + c]) : 0.0f;
+        *(__nv_bfloat16*)(bQ + off) = __float2bfloat16(qv);
+    }
+
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float m[2] = {-1e30f, -1e30f};
+    float l[2] = {0.0f, 0.0f};
+    float oacc[4][32];
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i++) oacc[nb][i] = 0.0f;
+
+    const int kv_end = q0 + 64 <= T ? q0 + 64 : T;   // causal: tiles up to the diagonal
+    for (int k0 = 0; k0 < kv_end; k0 += 64) {
+        // stage K rows + V^T for this tile
+        for (int idx = tid; idx < 64 * D; idx += 128) {
+            int r = idx / D, c = idx % D;
+            int st = c / 16, kk = c % 16;
+            size_t off = (size_t)st * 2048 + (r / 8) * 256 + (kk / 8) * 128 + (r % 8) * 16 + (kk % 8) * 2;
+            float kvv = (k0 + r < T) ? __bfloat162float(K[((size_t)(k0 + r) * HKV + kvh) * D + c]) : 0.0f;
+            *(__nv_bfloat16*)(bK + off) = __float2bfloat16(kvv);
+            int stv = r / 16, kkv = r % 16;
+            size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2;
+            float vv = (k0 + r < T) ? __bfloat162float(V[((size_t)(k0 + r) * HKV + kvh) * D + c]) : 0.0f;
+            *(__nv_bfloat16*)(bV + offv) = __float2bfloat16(vv);
+        }
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+
+        float acc[32];
+        wgmma_fence();
+        for (int st = 0; st < D / 16; st++) {
+            unsigned long long da = make_desc(bQ + st * 2048, 128, 256);
+            unsigned long long db = make_desc(bK + st * 2048, 128, 256);
+            wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+        }
+        wgmma_commit();
+        wgmma_wait<0>();
+
+        // causal mask (global coords) + scale; new running max
+        float mn[2] = {m[0], m[1]};
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int rr = q0 + r0 + ((i % 4) / 2) * 8;
+            int cc = k0 + c0 + (i / 4) * 8 + (i % 2);
+            acc[i] = (cc <= rr && cc < T) ? acc[i] * scale : -1e30f;
+            int half = (i % 4) / 2;
+            if (acc[i] > mn[half]) mn[half] = acc[i];
+        }
+        #pragma unroll
+        for (int o = 1; o <= 2; o <<= 1) {
+            mn[0] = fmaxf(mn[0], __shfl_xor_sync(0xffffffffu, mn[0], o));
+            mn[1] = fmaxf(mn[1], __shfl_xor_sync(0xffffffffu, mn[1], o));
+        }
+        float alpha[2] = {expf(m[0] - mn[0]), expf(m[1] - mn[1])};
+        if (m[0] == -1e30f) alpha[0] = 0.0f;
+        if (m[1] == -1e30f) alpha[1] = 0.0f;
+        m[0] = mn[0]; m[1] = mn[1];
+        float ladd[2] = {0.0f, 0.0f};
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int half = (i % 4) / 2;
+            float pv = expf(acc[i] - m[half]);
+            acc[i] = pv;
+            ladd[half] += pv;
+        }
+        #pragma unroll
+        for (int o = 1; o <= 2; o <<= 1) {
+            ladd[0] += __shfl_xor_sync(0xffffffffu, ladd[0], o);
+            ladd[1] += __shfl_xor_sync(0xffffffffu, ladd[1], o);
+        }
+        l[0] = l[0] * alpha[0] + ladd[0];
+        l[1] = l[1] * alpha[1] + ladd[1];
+        // O rescale
+        #pragma unroll
+        for (int nb = 0; nb < 4; nb++)
+            #pragma unroll
+            for (int i = 0; i < 32; i++) oacc[nb][i] *= alpha[(i % 4) / 2];
+        // P restage
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int rr = r0 + ((i % 4) / 2) * 8;
+            int cc = c0 + (i / 4) * 8 + (i % 2);
+            int st = cc / 16, kk = cc % 16;
+            size_t off = (size_t)st * 2048 + (rr / 8) * 256 + (kk / 8) * 128 + (rr % 8) * 16 + (kk % 8) * 2;
+            *(__nv_bfloat16*)(bP + off) = __float2bfloat16(acc[i]);
+        }
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+        wgmma_fence();
+        for (int st = 0; st < 4; st++) {
+            unsigned long long da = make_desc(bP + st * 2048, 128, 256);
+            #pragma unroll
+            for (int nb = 0; nb < 4; nb++) {
+                unsigned long long db = make_desc(bV + st * 8192 + nb * 64 * 32, 128, 256);
+                wgmma_m64n64k16_bf16(oacc[nb], da, db, 1);
+            }
+        }
+        wgmma_commit();
+        wgmma_wait<0>();
+        __syncthreads();   // K/V smem reused next tile
+    }
+    // write O rows (skip pads)
+    float il[2] = {l[0] > 0.0f ? 1.0f / l[0] : 0.0f, l[1] > 0.0f ? 1.0f / l[1] : 0.0f};
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i += 4) {
+            int n8 = i / 4;
+            int cc = nb * 64 + c0 + n8 * 8;
+            int ra = q0 + r0, rb = q0 + r0 + 8;
+            if (ra < T) {
+                O[((size_t)ra * H + head) * D + cc + 0] = oacc[nb][i + 0] * il[0];
+                O[((size_t)ra * H + head) * D + cc + 1] = oacc[nb][i + 1] * il[0];
+            }
+            if (rb < T) {
+                O[((size_t)rb * H + head) * D + cc + 0] = oacc[nb][i + 2] * il[1];
+                O[((size_t)rb * H + head) * D + cc + 1] = oacc[nb][i + 3] * il[1];
+            }
+        }
+}
+
+// ---- v4: v3 + int4 cp.async K staging (canonical 16B segments are contiguous in
+// global K rows) + 2-stage K/V ring (prefetch next tile behind current compute).
+// V^T staging stays scalar (transposed scatter) — measured next if it dominates.
+__device__ __forceinline__ void fa3_cp16(void* dst, const void* src, int pred_bytes) {
+    unsigned d = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(d), "l"(src), "r"(pred_bytes));
+}
+__device__ __forceinline__ void fa3_cp_commit() { asm volatile("cp.async.commit_group;"); }
+template<int N> __device__ __forceinline__ void fa3_cp_wait() {
+    asm volatile("cp.async.wait_group %0;" :: "n"(N));
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+fa3_v4(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+       const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+       int T, int H, int HKV, int D, float scale) {
+    extern __shared__ char smem[];
+    char* bQ = smem;                          // 32KB
+    char* bK[2] = { bQ + 65536, bQ + 65536 + 32768 };
+    char* bV[2] = { bQ + 65536 + 65536, bQ + 65536 + 65536 + 32768 };
+    char* bP = bQ + 65536 + 131072;           // 8KB  (total 168KB)
+    const int tid = threadIdx.x;
+    const int q0 = blockIdx.x * 64;
+    const int head = blockIdx.y;
+    const int kvh = head / (H / HKV);
+    if (q0 >= T) return;
+
+    // Q staged once: int4 segments (r, st, h16): src Q row contiguous 16B
+    for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
+        int r = seg / (D / 8), s8v = seg % (D / 8);
+        int st = s8v / 2, h16 = s8v % 2;
+        char* dst = bQ + st * 2048 + (r / 8) * 256 + h16 * 128 + (r % 8) * 16;
+        int gr = q0 + r;
+        fa3_cp16(dst, Q + ((size_t)(gr < T ? gr : T - 1) * H + head) * D + st * 16 + h16 * 8,
+                 gr < T ? 16 : 0);
+    }
+    fa3_cp_commit();
+
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float m[2] = {-1e30f, -1e30f};
+    float l[2] = {0.0f, 0.0f};
+    float oacc[4][32];
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i++) oacc[nb][i] = 0.0f;
+
+    const int kv_end = q0 + 64 <= T ? q0 + 64 : T;
+    const int n_tiles = (kv_end + 63) / 64;
+
+    // stage(kv-tile, buf): K via int4 cp.async; V^T scalar (after the cp group commits)
+    #define V4_STAGE_K(t_, b_) do {                                                     \
+        int k0_ = (t_) * 64;                                                            \
+        for (int seg = tid; seg < 64 * (D / 8); seg += 128) {                           \
+            int r = seg / (D / 8), s8v = seg % (D / 8);                                 \
+            int st = s8v / 2, h16 = s8v % 2;                                            \
+            char* dst = bK[b_] + st * 2048 + (r / 8) * 256 + h16 * 128 + (r % 8) * 16;  \
+            int gr = k0_ + r;                                                           \
+            fa3_cp16(dst, K + ((size_t)(gr < T ? gr : T - 1) * HKV + kvh) * D + st * 16 + h16 * 8, \
+                     gr < T ? 16 : 0);                                                  \
+        }                                                                               \
+        fa3_cp_commit();                                                                \
+    } while (0)
+    #define V4_STAGE_V(t_, b_) do {                                                    \
+        int k0_ = (t_) * 64;                                                            \
+        for (int idx = tid; idx < 64 * D; idx += 128) {                                 \
+            int r = idx / D, c = idx % D;                                               \
+            int stv = r / 16, kkv = r % 16;                                             \
+            size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2; \
+            int gr = k0_ + r;                                                           \
+            *(__nv_bfloat16*)(bV[b_] + offv) = (gr < T)                                 \
+                ? V[((size_t)gr * HKV + kvh) * D + c] : __float2bfloat16(0.0f);         \
+        }                                                                               \
+    } while (0)
+
+    V4_STAGE_K(0, 0);
+    V4_STAGE_V(0, 0);
+    for (int t = 0; t < n_tiles; t++) {
+        const int k0 = t * 64;
+        const int cur = t & 1;
+        fa3_cp_wait<0>();
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+        // prefetch next tile behind this tile's compute
+        if (t + 1 < n_tiles) V4_STAGE_K(t + 1, cur ^ 1);
+
+        float acc[32];
+        wgmma_fence();
+        for (int st = 0; st < D / 16; st++) {
+            unsigned long long da = make_desc(bQ + st * 2048, 128, 256);
+            unsigned long long db = make_desc(bK[cur] + st * 2048, 128, 256);
+            wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+        }
+        wgmma_commit();
+        // stage next V while S cooks
+        if (t + 1 < n_tiles) V4_STAGE_V(t + 1, cur ^ 1);
+        wgmma_wait<0>();
+
+        float mn[2] = {m[0], m[1]};
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int rr = q0 + r0 + ((i % 4) / 2) * 8;
+            int cc = k0 + c0 + (i / 4) * 8 + (i % 2);
+            acc[i] = (cc <= rr && cc < T) ? acc[i] * scale : -1e30f;
+            int half = (i % 4) / 2;
+            if (acc[i] > mn[half]) mn[half] = acc[i];
+        }
+        #pragma unroll
+        for (int o = 1; o <= 2; o <<= 1) {
+            mn[0] = fmaxf(mn[0], __shfl_xor_sync(0xffffffffu, mn[0], o));
+            mn[1] = fmaxf(mn[1], __shfl_xor_sync(0xffffffffu, mn[1], o));
+        }
+        float alpha[2] = {expf(m[0] - mn[0]), expf(m[1] - mn[1])};
+        if (m[0] == -1e30f) alpha[0] = 0.0f;
+        if (m[1] == -1e30f) alpha[1] = 0.0f;
+        m[0] = mn[0]; m[1] = mn[1];
+        float ladd[2] = {0.0f, 0.0f};
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int half = (i % 4) / 2;
+            float pv = expf(acc[i] - m[half]);
+            acc[i] = pv;
+            ladd[half] += pv;
+        }
+        #pragma unroll
+        for (int o = 1; o <= 2; o <<= 1) {
+            ladd[0] += __shfl_xor_sync(0xffffffffu, ladd[0], o);
+            ladd[1] += __shfl_xor_sync(0xffffffffu, ladd[1], o);
+        }
+        l[0] = l[0] * alpha[0] + ladd[0];
+        l[1] = l[1] * alpha[1] + ladd[1];
+        #pragma unroll
+        for (int nb = 0; nb < 4; nb++)
+            #pragma unroll
+            for (int i = 0; i < 32; i++) oacc[nb][i] *= alpha[(i % 4) / 2];
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int rr = r0 + ((i % 4) / 2) * 8;
+            int cc = c0 + (i / 4) * 8 + (i % 2);
+            int st = cc / 16, kk = cc % 16;
+            size_t off = (size_t)st * 2048 + (rr / 8) * 256 + (kk / 8) * 128 + (rr % 8) * 16 + (kk % 8) * 2;
+            *(__nv_bfloat16*)(bP + off) = __float2bfloat16(acc[i]);
+        }
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+        wgmma_fence();
+        for (int st = 0; st < 4; st++) {
+            unsigned long long da = make_desc(bP + st * 2048, 128, 256);
+            #pragma unroll
+            for (int nb = 0; nb < 4; nb++) {
+                unsigned long long db = make_desc(bV[cur] + st * 8192 + nb * 64 * 32, 128, 256);
+                wgmma_m64n64k16_bf16(oacc[nb], da, db, 1);
+            }
+        }
+        wgmma_commit();
+        wgmma_wait<0>();
+        __syncthreads();
+    }
+    float il[2] = {l[0] > 0.0f ? 1.0f / l[0] : 0.0f, l[1] > 0.0f ? 1.0f / l[1] : 0.0f};
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i += 4) {
+            int n8 = i / 4;
+            int cc = nb * 64 + c0 + n8 * 8;
+            int ra = q0 + r0, rb = q0 + r0 + 8;
+            if (ra < T) {
+                O[((size_t)ra * H + head) * D + cc + 0] = oacc[nb][i + 0] * il[0];
+                O[((size_t)ra * H + head) * D + cc + 1] = oacc[nb][i + 1] * il[0];
+            }
+            if (rb < T) {
+                O[((size_t)rb * H + head) * D + cc + 0] = oacc[nb][i + 2] * il[1];
+                O[((size_t)rb * H + head) * D + cc + 1] = oacc[nb][i + 3] * il[1];
+            }
+        }
+}
+
+// ---- v5: 2 warpgroups x 64 q-rows per CTA sharing the K/V ring (halves K/V staging
+// traffic; the warpgroups' softmax/wgmma phases interleave on the SM). smem 208KB.
+extern "C" __global__ void __launch_bounds__(256, 1)
+fa3_v5(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+       const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+       int T, int H, int HKV, int D, float scale) {
+    extern __shared__ char smem[];
+    const int wg = threadIdx.x / 128;         // warpgroup 0/1
+    const int tid = threadIdx.x % 128;
+    char* bQ = smem + wg * 32768;             // 2 x 32KB
+    char* bK[2] = { smem + 65536, smem + 65536 + 32768 };
+    char* bV[2] = { smem + 131072, smem + 131072 + 32768 };
+    char* bP = smem + 196608 + wg * 8192;     // 2 x 8KB (total 212992 = 208KB)
+    const int q0 = (blockIdx.x * 2 + wg) * 64;
+    const int head = blockIdx.y;
+    const int kvh = head / (H / HKV);
+
+    // Q staged per warpgroup
+    if (q0 < T) {
+        for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
+            int r = seg / (D / 8), s8v = seg % (D / 8);
+            int st = s8v / 2, h16 = s8v % 2;
+            char* dst = bQ + st * 2048 + (r / 8) * 256 + h16 * 128 + (r % 8) * 16;
+            int gr = q0 + r;
+            fa3_cp16(dst, Q + ((size_t)(gr < T ? gr : T - 1) * H + head) * D + st * 16 + h16 * 8,
+                     gr < T ? 16 : 0);
+        }
+    }
+    fa3_cp_commit();
+
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float m[2] = {-1e30f, -1e30f};
+    float l[2] = {0.0f, 0.0f};
+    float oacc[4][32];
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i++) oacc[nb][i] = 0.0f;
+
+    // BOTH warpgroups loop over the union of needed kv tiles (wg1's diagonal is 64
+    // further); wg0 skips tiles past its own diagonal (no work, but stays in the
+    // __syncthreads() cadence — staging is cooperative across all 256 threads).
+    const int blk_q_end = (blockIdx.x * 2 + 1) * 64;   // wg1's q0
+    const int kv_end_all = blk_q_end + 64 <= T ? blk_q_end + 64 : T;
+    const int kv_end_own = q0 + 64 <= T ? q0 + 64 : T;
+    const int n_tiles = (kv_end_all + 63) / 64;
+
+    #define V5_STAGE_K(t_, b_) do {                                                     \
+        int k0_ = (t_) * 64;                                                            \
+        for (int seg = threadIdx.x; seg < 64 * (D / 8); seg += 256) {                   \
+            int r = seg / (D / 8), s8v = seg % (D / 8);                                 \
+            int st = s8v / 2, h16 = s8v % 2;                                            \
+            char* dst = bK[b_] + st * 2048 + (r / 8) * 256 + h16 * 128 + (r % 8) * 16;  \
+            int gr = k0_ + r;                                                           \
+            fa3_cp16(dst, K + ((size_t)(gr < T ? gr : T - 1) * HKV + kvh) * D + st * 16 + h16 * 8, \
+                     gr < T ? 16 : 0);                                                  \
+        }                                                                               \
+        fa3_cp_commit();                                                                \
+    } while (0)
+    #define V5_STAGE_V(t_, b_) do {                                                    \
+        int k0_ = (t_) * 64;                                                            \
+        for (int idx = threadIdx.x; idx < 64 * D; idx += 256) {                         \
+            int r = idx / D, c = idx % D;                                               \
+            int stv = r / 16, kkv = r % 16;                                             \
+            size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2; \
+            int gr = k0_ + r;                                                           \
+            *(__nv_bfloat16*)(bV[b_] + offv) = (gr < T)                                 \
+                ? V[((size_t)gr * HKV + kvh) * D + c] : __float2bfloat16(0.0f);         \
+        }                                                                               \
+    } while (0)
+
+    V5_STAGE_K(0, 0);
+    V5_STAGE_V(0, 0);
+    for (int t = 0; t < n_tiles; t++) {
+        const int k0 = t * 64;
+        const int cur = t & 1;
+        fa3_cp_wait<0>();
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+        if (t + 1 < n_tiles) V5_STAGE_K(t + 1, cur ^ 1);
+
+        const bool active = (q0 < T) && (k0 < kv_end_own);
+        float acc[32];
+        if (active) {
+            wgmma_fence();
+            for (int st = 0; st < D / 16; st++) {
+                unsigned long long da = make_desc(bQ + st * 2048, 128, 256);
+                unsigned long long db = make_desc(bK[cur] + st * 2048, 128, 256);
+                wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+            }
+            wgmma_commit();
+        }
+        if (t + 1 < n_tiles) V5_STAGE_V(t + 1, cur ^ 1);
+        if (active) {
+            wgmma_wait<0>();
+            float mn[2] = {m[0], m[1]};
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int rr = q0 + r0 + ((i % 4) / 2) * 8;
+                int cc = k0 + c0 + (i / 4) * 8 + (i % 2);
+                acc[i] = (cc <= rr && cc < T) ? acc[i] * scale : -1e30f;
+                int half = (i % 4) / 2;
+                if (acc[i] > mn[half]) mn[half] = acc[i];
+            }
+            #pragma unroll
+            for (int o = 1; o <= 2; o <<= 1) {
+                mn[0] = fmaxf(mn[0], __shfl_xor_sync(0xffffffffu, mn[0], o));
+                mn[1] = fmaxf(mn[1], __shfl_xor_sync(0xffffffffu, mn[1], o));
+            }
+            float alpha[2] = {expf(m[0] - mn[0]), expf(m[1] - mn[1])};
+            if (m[0] == -1e30f) alpha[0] = 0.0f;
+            if (m[1] == -1e30f) alpha[1] = 0.0f;
+            m[0] = mn[0]; m[1] = mn[1];
+            float ladd[2] = {0.0f, 0.0f};
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int half = (i % 4) / 2;
+                float pv = expf(acc[i] - m[half]);
+                acc[i] = pv;
+                ladd[half] += pv;
+            }
+            #pragma unroll
+            for (int o = 1; o <= 2; o <<= 1) {
+                ladd[0] += __shfl_xor_sync(0xffffffffu, ladd[0], o);
+                ladd[1] += __shfl_xor_sync(0xffffffffu, ladd[1], o);
+            }
+            l[0] = l[0] * alpha[0] + ladd[0];
+            l[1] = l[1] * alpha[1] + ladd[1];
+            #pragma unroll
+            for (int nb = 0; nb < 4; nb++)
+                #pragma unroll
+                for (int i = 0; i < 32; i++) oacc[nb][i] *= alpha[(i % 4) / 2];
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int rr = r0 + ((i % 4) / 2) * 8;
+                int cc = c0 + (i / 4) * 8 + (i % 2);
+                int st = cc / 16, kk = cc % 16;
+                size_t off = (size_t)st * 2048 + (rr / 8) * 256 + (kk / 8) * 128 + (rr % 8) * 16 + (kk % 8) * 2;
+                *(__nv_bfloat16*)(bP + off) = __float2bfloat16(acc[i]);
+            }
+            // bP is per-warpgroup: warpgroup-local barrier suffices
+            asm volatile("bar.sync %0, 128;" :: "r"(wg + 1));
+            asm volatile("fence.proxy.async.shared::cta;");
+            wgmma_fence();
+            for (int st = 0; st < 4; st++) {
+                unsigned long long da = make_desc(bP + st * 2048, 128, 256);
+                #pragma unroll
+                for (int nb = 0; nb < 4; nb++) {
+                    unsigned long long db = make_desc(bV[cur] + st * 8192 + nb * 64 * 32, 128, 256);
+                    wgmma_m64n64k16_bf16(oacc[nb], da, db, 1);
+                }
+            }
+            wgmma_commit();
+            wgmma_wait<0>();
+        }
+        __syncthreads();
+    }
+    if (q0 < T) {
+        float il[2] = {l[0] > 0.0f ? 1.0f / l[0] : 0.0f, l[1] > 0.0f ? 1.0f / l[1] : 0.0f};
+        #pragma unroll
+        for (int nb = 0; nb < 4; nb++)
+            #pragma unroll
+            for (int i = 0; i < 32; i += 4) {
+                int n8 = i / 4;
+                int cc = nb * 64 + c0 + n8 * 8;
+                int ra = q0 + r0, rb = q0 + r0 + 8;
+                if (ra < T) {
+                    O[((size_t)ra * H + head) * D + cc + 0] = oacc[nb][i + 0] * il[0];
+                    O[((size_t)ra * H + head) * D + cc + 1] = oacc[nb][i + 1] * il[0];
+                }
+                if (rb < T) {
+                    O[((size_t)rb * H + head) * D + cc + 0] = oacc[nb][i + 2] * il[1];
+                    O[((size_t)rb * H + head) * D + cc + 1] = oacc[nb][i + 3] * il[1];
+                }
+            }
+    }
+}
+
 int main() {
     const int D = 256;
     // hostile-ish operands
@@ -325,5 +832,129 @@ int main() {
     }
     printf("FA tile:   max_rel %.3e bad %d/%d %s\n", max_rel, bad, 64 * D,
            bad == 0 ? "MATCH" : "MISMATCH");
-    return bad == 0 ? 0 : 1;
+    if (bad) return 1;
+
+    // ---- v3: correctness at T=192 (3 tiles, exercises rescale + GQA) + rate at T=2048 ----
+    {
+        const int H = 16, HKV = 4;
+        for (int T : {64, 128, 192, 2048}) {
+            size_t nq = (size_t)T * H * D, nkv = (size_t)T * HKV * D;
+            __nv_bfloat16 *q = (__nv_bfloat16*)malloc(nq * 2), *k = (__nv_bfloat16*)malloc(nkv * 2), *vv = (__nv_bfloat16*)malloc(nkv * 2);
+            for (size_t i = 0; i < nq; i++) q[i] = __float2bfloat16((rand() % 255 - 127) * 0.011f);
+            for (size_t i = 0; i < nkv; i++) { k[i] = __float2bfloat16((rand() % 255 - 127) * 0.009f); vv[i] = __float2bfloat16((rand() % 255 - 127) * 0.012f); }
+            __nv_bfloat16 *dq, *dk, *dv; float* dout;
+            CK(cudaMalloc(&dq, nq * 2)); CK(cudaMalloc(&dk, nkv * 2)); CK(cudaMalloc(&dv, nkv * 2)); CK(cudaMalloc(&dout, nq * 4));
+            CK(cudaMemcpy(dq, q, nq * 2, cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(dk, k, nkv * 2, cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(dv, vv, nkv * 2, cudaMemcpyHostToDevice));
+            int shmem = 64 * 256 * 2 * 3 + 64 * 64 * 2;
+            int shmem4 = 65536 + 131072 + 8192;
+            int shmem5 = 212992;
+            CK(cudaFuncSetAttribute(fa3_v3, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem));
+            CK(cudaFuncSetAttribute(fa3_v4, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem4));
+            CK(cudaFuncSetAttribute(fa3_v5, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem5));
+            dim3 grid((T + 63) / 64, H);
+            dim3 grid5((T + 127) / 128, H);
+            fa3_v5<<<grid5, 256, shmem5>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+            CK(cudaDeviceSynchronize());
+            if (T != 2048) {
+                float* ho = (float*)malloc(nq * 4);
+                CK(cudaMemcpy(ho, dout, nq * 4, cudaMemcpyDeviceToHost));
+                double worst = 0; int nb2 = 0;
+                // ONLINE reference — the kernel's exact arithmetic class: per-64-tile max,
+                // P rounded bf16 at the tile max, O rescaled by alpha (the shipped mma
+                // kernel makes the same tradeoff; engine arbitration = the argmax battery).
+                for (int h = 0; h < H; h++) {
+                    int kh = h / (H / HKV);
+                    for (int r = 0; r < T; r++) {
+                        static float sv_row[4096];
+                        for (int c = 0; c <= r; c++) {
+                            float sv = 0;
+                            for (int d = 0; d < D; d++)
+                                sv += __bfloat162float(q[((size_t)r * H + h) * D + d]) * __bfloat162float(k[((size_t)c * HKV + kh) * D + d]);
+                            sv_row[c] = sv * scale;
+                        }
+                        for (int d = 0; d < D; d += 37) {   // spot columns
+                            float m2 = -1e30f, l2 = 0.0f, o = 0.0f;
+                            for (int k0 = 0; k0 <= r; k0 += 64) {
+                                int ce = (k0 + 64 <= r + 1) ? k0 + 64 : r + 1;
+                                float tm = m2;
+                                for (int c = k0; c < ce; c++) if (sv_row[c] > tm) tm = sv_row[c];
+                                float al = (m2 == -1e30f) ? 0.0f : expf(m2 - tm);
+                                m2 = tm;
+                                o *= al; l2 *= al;
+                                for (int c = k0; c < ce; c++) {
+                                    float pv = expf(sv_row[c] - m2);
+                                    l2 += pv;
+                                    o += __bfloat162float(__float2bfloat16(pv)) * __bfloat162float(vv[((size_t)c * HKV + kh) * D + d]);
+                                }
+                            }
+                            o /= l2;
+                            float got = ho[((size_t)r * H + h) * D + d];
+                            float rel = fabsf(got - o) / fmaxf(fabsf(o), 1e-3f);
+                            if (rel > worst) worst = rel;
+                            if (rel > 5e-3f && fabsf(got - o) > 2e-3f) nb2++;
+                        }
+                    }
+                }
+                printf("v3 T=%d:  max_rel %.3e bad %d %s\n", T, worst, nb2, nb2 == 0 ? "MATCH" : "MISMATCH");
+                if (nb2 && T == 128) {   // per-row diagnostics, head 0
+                    for (int r = 0; r < T; r += 8) {
+                        double w = 0;
+                        for (int rr2 = r; rr2 < r + 8; rr2++) {
+                            // recompute row worst for head 0 only
+                            int h = 0, kh = 0;
+                            float mx = -1e30f, sm = 0.0f; static float p2[4096];
+                            for (int c = 0; c <= rr2; c++) {
+                                float sv = 0;
+                                for (int d = 0; d < D; d++) sv += __bfloat162float(q[((size_t)rr2 * H + h) * D + d]) * __bfloat162float(k[((size_t)c * HKV + kh) * D + d]);
+                                p2[c] = sv * scale; if (p2[c] > mx) mx = p2[c];
+                            }
+                            for (int c = 0; c <= rr2; c++) { p2[c] = expf(p2[c] - mx); sm += p2[c]; }
+                            float* ho2 = (float*)malloc(4);
+                            for (int d = 0; d < D; d += 64) {
+                                float o = 0;
+                                for (int c = 0; c <= rr2; c++) o += __bfloat162float(__float2bfloat16(p2[c])) * __bfloat162float(vv[((size_t)c * HKV + kh) * D + d]);
+                                o /= sm;
+                                float got;
+                                CK(cudaMemcpy(&got, dout + ((size_t)rr2 * H + h) * D + d, 4, cudaMemcpyDeviceToHost));
+                                float rel = fabsf(got - o) / fmaxf(fabsf(o), 1e-3f);
+                                if (rel > w) w = rel;
+                            }
+                            free(ho2);
+                        }
+                        printf("  rows %3d-%3d: worst %.3e\n", r, r + 7, w);
+                    }
+                }
+                free(ho);
+                if (nb2 && T > 64) return 1;
+            } else {
+                cudaEvent_t a, b2; CK(cudaEventCreate(&a)); CK(cudaEventCreate(&b2));
+                for (int i = 0; i < 3; i++) fa3_v3<<<grid, 128, shmem>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaDeviceSynchronize());
+                CK(cudaEventRecord(a));
+                for (int i = 0; i < 20; i++) fa3_v3<<<grid, 128, shmem>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
+                float ms; CK(cudaEventElapsedTime(&ms, a, b2));
+                printf("v3 T=2048: %.0fus/call (engine mma baseline 993us)\n", ms * 50.0);
+                for (int i = 0; i < 3; i++) fa3_v4<<<grid, 128, shmem4>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaDeviceSynchronize());
+                CK(cudaEventRecord(a));
+                for (int i = 0; i < 20; i++) fa3_v4<<<grid, 128, shmem4>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
+                CK(cudaEventElapsedTime(&ms, a, b2));
+                printf("v4 T=2048: %.0fus/call (int4 cp.async K + 2-stage ring)\n", ms * 50.0);
+                for (int i = 0; i < 3; i++) fa3_v5<<<grid5, 256, shmem5>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaDeviceSynchronize());
+                CK(cudaEventRecord(a));
+                for (int i = 0; i < 20; i++) fa3_v5<<<grid5, 256, shmem5>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
+                CK(cudaEventElapsedTime(&ms, a, b2));
+                printf("v5 T=2048: %.0fus/call (2 warpgroups, shared K/V ring)\n", ms * 50.0);
+            }
+            cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
+            free(q); free(k); free(vv);
+        }
+    }
+    return 0;
 }
