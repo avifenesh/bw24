@@ -310,3 +310,12 @@ policy exonerated. Wide-shape 80% decomposes as wave-quantization tail (5.8
 waves at 3072 blocks ≈ 14%) + residual; next testable fix = persistent-CTA
 row loop (grid = exact fill, per-row program unchanged = legal). ffn_down at
 95.7%, squares at 97%, lm_head 90% — five of eight shapes effectively AT wall.
+
+**Persistent-CTA probe (2026-07-26):** REFUTED — −11% wqkv, −12% ffn, −31%
+ffn_down, −9% lm_head (stride-loop overhead + lost locality exceed the wave
+tail). m=1 matvec per-shape survey COMPLETE: squares/down AT wall (96-100%),
+lm_head 90%, wide 79-82% (best-known after ldg/persistent/rpca all refuted),
+qkv 66% (g2 wins in isolation, e2e-invisible), beta/alpha launch-floor
+(already dual-fused in the m=1 chain). The kernel family is surveyed; the
+m=1 frontier is CONFIRMED as integration (graph serving + device sampler,
++14% measured floor) — kernel-side, only the FA-prefill mainloop remains.
