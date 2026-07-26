@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bw24-sampling = { path = "../bw24-sampling" }
 bw24-validate = { path = "../bw24-validate" }
+bw24-kv = { path = "../bw24-kv" }
 bw24-gguf = { path = "../bw24-gguf" }
 bw24-runtime = { path = "../bw24-runtime" }
 bw24-tokenizer = { path = "../bw24-tokenizer" }

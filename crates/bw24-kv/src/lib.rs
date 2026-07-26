@@ -1,9 +1,84 @@
-//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-RESIDENT (Stage-2):
-//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).
-//! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).
-//! No host round-trips per step. Single sequence.
+//! bw24-kv — the dual KV/recurrent cache, extracted (Phase D, ARCHITECTURE-H100.md §5).
+//!
+//! Moved VERBATIM from bw24-engine/src/cache.rs behind the `KvDev` seam: the cache only
+//! ever needed 7 device ops (alloc/copy/set), so the trait is that surface and nothing
+//! more. The append/dequant KERNELS stay in the engine fatbins — this crate owns the
+//! structure, sizing math, and the KV format policy (env-selected, shared by the engine's
+//! fatbin router and every cache consumer). bw24-engine re-exports this as `cache` so
+//! call sites are unchanged.
 
-use crate::Engine;
+
+// ---------------- KV format policy (env-selected; moved from bw24-engine) ----------------
+
+/// Env-selected KV cache formats (BW24_KV_K / BW24_KV_V). The engine's flash-fatbin router
+/// and the cache sizing below MUST agree — both read this one function.
+pub fn kv_cache_formats() -> (&'static str, &'static str) {
+    static F: std::sync::OnceLock<(&'static str, &'static str)> = std::sync::OnceLock::new();
+    *F.get_or_init(|| {
+        let k = match std::env::var("BW24_KV_K").as_deref() {
+            Ok("fp8") => "fp8",
+            Ok("q8_0") | Ok("") | Err(_) => "q8_0",
+            Ok(o) => panic!("BW24_KV_K={o} unsupported (q8_0 | fp8)"),
+        };
+        let v = match std::env::var("BW24_KV_V").as_deref() {
+            Ok("q4_0") => "q4_0",
+            Ok("fp8") => "fp8",
+            Ok("q5_1") | Ok("") | Err(_) => "q5_1",
+            Ok(o) => panic!("BW24_KV_V={o} unsupported (q5_1 | q4_0 | fp8)"),
+        };
+        if (k, v) != ("q8_0", "q5_1") {
+            eprintln!("[bw24] KV cache format: K={k} V={v} (non-default — new numeric config)");
+        }
+        (k, v)
+    })
+}
+
+/// Per-32-element block bytes for the selected (K, V) formats.
+pub fn kv_blk_bytes() -> (usize, usize) {
+    let (k, v) = kv_cache_formats();
+    let kb = match k { "fp8" => 32, _ => 34 };
+    let vb = match v { "q4_0" => 18, "fp8" => 32, _ => 24 };
+    (kb, vb)
+}
+
+/// FP8-GLOBALS switch (BW24_GEMMA_GKV, default ON): gemma global (hd512) layers keep
+/// their KV in e4m3 — the dequant-latency arc (HANDOVER). Windowed layers stay q8_0/q5_1.
+pub fn gkv_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_GEMMA_GKV").map(|v| v != "0").unwrap_or(true))
+}
+
+/// FP8-WINDOWED switch (BW24_GEMMA_WKV; serving-mode default): SPEC serving (BW24_DRAFT
+/// set) -> OFF, plain -> ON — the acceptance-vs-depth record lives on the engine-side
+/// history of `Engine::wkv_on` (git). Explicit env always wins.
+pub fn wkv_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v != "0")
+        .unwrap_or_else(|_| std::env::var("BW24_DRAFT").is_err()))
+}
+
+/// QWEN FP8-KV switch (BW24_KV_FP8, default OFF — bring-up arc): non-gemma full-attn
+/// layers hold e4m3 K/V via the kf8vf8 module.
+pub fn kv_fp8_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_KV_FP8").as_deref() == Ok("1"))
+}
+
+// ---------------- the device seam ----------------
+
+/// The 7 device ops the cache needs — nothing more. Implemented by the engine (and by
+/// any future backend); all ops are stream-ordered on the implementor's worker stream.
+pub trait KvDev {
+    fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>>;
+    fn uninit(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>>;
+    fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>>;
+    fn htod_i32(&self, v: &[i32]) -> Result<CudaSlice<i32>, Box<dyn std::error::Error>>;
+    fn clone_dtod(&self, src: &CudaSlice<f32>) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>>;
+    fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
+                 -> Result<(), Box<dyn std::error::Error>>;
+    fn set_i32_one(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>>;
+}
+
 use bw24_gguf::config::{LayerKind, ModelConfig};
 use cudarc::driver::CudaSlice;
 
@@ -80,7 +155,7 @@ pub struct CacheSnapshot {
 impl Cache {
     /// Allocate GPU-resident caches sized by arch + max context.
     pub fn new(
-        e: &Engine,
+        e: &impl KvDev,
         cfg: &ModelConfig,
         max_ctx: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -96,7 +171,7 @@ impl Cache {
         let kv_dim_v = head_dim_v * n_head_kv;
         // per-block bytes follow the env-selected KV formats (kvbytes lane; default q8_0/q5_1
         // = 34/24 — MUST match the flash fatbin Engine::new loaded, both read the same env).
-        let (kbb, vbb) = crate::kv_blk_bytes();
+        let (kbb, vbb) = kv_blk_bytes();
         let (conv_dim, d_state, num_v, d_conv) = if let Some(s) = &cfg.ssm {
             let num_k = s.group_count as usize;
             let num_v = s.time_step_rank as usize;
@@ -147,18 +222,18 @@ impl Cache {
             }
             // FP8-GLOBALS (gemma, 2026-07-11): global (hd512) layers hold e4m3 K/V (32B/32elem
             // both planes — the dequant-latency arc); windowed layers keep the default pair.
-            let g4_global_fp8 = crate::Engine::gkv_on()
+            let g4_global_fp8 = gkv_on()
                 && cfg
                     .gemma4
                     .as_ref()
                     .is_some_and(|g| !g.swa_pattern[il as usize]);
-            let g4_windowed_fp8 = crate::Engine::wkv_on()
+            let g4_windowed_fp8 = wkv_on()
                 && cfg
                     .gemma4
                     .as_ref()
                     .is_some_and(|g| g.swa_pattern[il as usize]);
             // QWEN FP8-KV (BW24_KV_FP8, bring-up): non-gemma full-attn layers, uniform class.
-            let qwen_fp8 = crate::Engine::kv_fp8_on() && cfg.gemma4.is_none();
+            let qwen_fp8 = kv_fp8_on() && cfg.gemma4.is_none();
             let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 || qwen_fp8 {
                 (32, 32)
             } else {
@@ -199,7 +274,7 @@ impl Cache {
     /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
     /// Records each full-attn `len` (cheap) and makes a REAL device copy of each linear-attn
     /// conv_state/ssm_state (a fresh alloc + memcpy_dtod — NOT an Arc clone).
-    pub fn snapshot(&self, e: &Engine) -> Result<CacheSnapshot, Box<dyn std::error::Error>> {
+    pub fn snapshot(&self, e: &impl KvDev) -> Result<CacheSnapshot, Box<dyn std::error::Error>> {
         let n = self.kv.len();
         let mut kv_len = Vec::with_capacity(n);
         let mut conv = Vec::with_capacity(n);
@@ -234,7 +309,7 @@ impl Cache {
     /// `snapshot()` of THIS cache (same layer shapes).
     pub fn snapshot_into(
         &self,
-        e: &Engine,
+        e: &impl KvDev,
         snap: &mut CacheSnapshot,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let n = self.kv.len();
@@ -265,7 +340,7 @@ impl Cache {
     /// `cache.pos` is set to `snap.pos` so the caller's replay advances it back to the commit point.
     pub fn rollback(
         &mut self,
-        e: &Engine,
+        e: &impl KvDev,
         snap: &CacheSnapshot,
         accept_len: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {

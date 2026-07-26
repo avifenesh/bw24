@@ -11,7 +11,11 @@ pub mod model;
 pub mod forward;
 pub mod hybrid;
 pub mod hybrid_forward;
-pub mod cache;
+/// The dual cache lives in the shared `bw24-kv` crate (Phase D extraction); this
+/// re-export keeps every `crate::cache::` / `bw24_engine::cache::` path unchanged.
+pub mod cache {
+    pub use bw24_kv::*;
+}
 pub mod decode;
 pub mod decode_batch;
 pub mod spec;
@@ -94,37 +98,9 @@ const FLASH_FATBIN_KF8: &str = env!("BW24_FLASH_FATBIN_KF8");
 const FLASH_FATBIN_KF8VQ4: &str = env!("BW24_FLASH_FATBIN_KF8VQ4");
 const FLASH_FATBIN_KF8VF8: &str = env!("BW24_FLASH_FATBIN_KF8VF8");
 
-/// The (K, V) cache formats picked by env (cached; both the fatbin pick and every
-/// tok-bytes computation MUST come through here so they can never diverge).
-pub fn kv_cache_formats() -> (&'static str, &'static str) {
-    static F: std::sync::OnceLock<(&'static str, &'static str)> = std::sync::OnceLock::new();
-    *F.get_or_init(|| {
-        let k = match std::env::var("BW24_KV_K").as_deref() {
-            Ok("fp8") => "fp8",
-            Ok("q8_0") | Ok("") | Err(_) => "q8_0",
-            Ok(o) => panic!("BW24_KV_K={o} unsupported (q8_0 | fp8)"),
-        };
-        let v = match std::env::var("BW24_KV_V").as_deref() {
-            Ok("q4_0") => "q4_0",
-            Ok("fp8") => "fp8",
-            Ok("q5_1") | Ok("") | Err(_) => "q5_1",
-            Ok(o) => panic!("BW24_KV_V={o} unsupported (q5_1 | q4_0 | fp8)"),
-        };
-        if (k, v) != ("q8_0", "q5_1") {
-            eprintln!("[bw24] KV cache format: K={k} V={v} (non-default — new numeric config)");
-        }
-        (k, v)
-    })
-}
-
-/// Per-32-element block bytes for the selected (K, V) formats. Callers compute
-/// `tok_bytes = (kv_dim/32) * blk_bytes` (cache.rs, spec.rs, eagle.rs, gates, benches).
-pub fn kv_blk_bytes() -> (usize, usize) {
-    let (k, v) = kv_cache_formats();
-    let kb = match k { "fp8" => 32, _ => 34 };
-    let vb = match v { "q4_0" => 18, "fp8" => 32, _ => 24 };
-    (kb, vb)
-}
+/// KV format policy moved to the shared `bw24-kv` crate (Phase D); re-exported so the
+/// fatbin router below and every existing `crate::kv_blk_bytes()` call site is unchanged.
+pub use bw24_kv::{kv_blk_bytes, kv_cache_formats};
 
 /// The flash_attn fatbin matching the selected KV formats.
 fn flash_fatbin_path() -> &'static str {
@@ -559,8 +535,7 @@ impl Engine {
     /// FP8-GLOBALS switch (BW24_GEMMA_GKV, default ON): gemma global (hd512) layers keep
     /// their KV in e4m3 — the dequant-latency arc (HANDOVER). Windowed layers stay q8_0/q5_1.
     pub fn gkv_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_GEMMA_GKV").map(|v| v != "0").unwrap_or(true))
+        bw24_kv::gkv_on()
     }
 
     /// FP8-WINDOWED switch (BW24_GEMMA_WKV — measured 2026-07-12 in a validity-gated
@@ -575,9 +550,7 @@ impl Engine {
     /// depth-plain +3% stands). Explicit BW24_GEMMA_WKV always wins. GKV (globals) stays
     /// ON for both — no acceptance cost measured.
     pub fn wkv_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v != "0")
-            .unwrap_or_else(|_| std::env::var("BW24_DRAFT").is_err()))
+        bw24_kv::wkv_on()
     }
 
     /// QWEN FP8-KV switch (BW24_KV_FP8, default OFF — bring-up arc, HANDOVER "QWEN FP8-KV"):
@@ -586,8 +559,7 @@ impl Engine {
     /// v4-rows parity fix — this arm re-litigates it through the gemma recipe; the spec
     /// K=1..8 + acceptance A/B battery arbitrates any default flip.
     pub fn kv_fp8_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_KV_FP8").as_deref() == Ok("1"))
+        bw24_kv::kv_fp8_on()
     }
 
     /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
@@ -7471,5 +7443,32 @@ mod target_dispatch_tests {
     fn hopper_mma_build_re_admits_legacy_quant_gemm() {
         assert!(legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), cfg!(bw24_hopper_mma), false));
         assert!(super::portable_mma_gated() == false);
+    }
+}
+
+/// The bw24-kv device seam (Phase D): the cache's 7 ops delegate to the engine's
+/// inherent methods (inherent methods win name resolution, so no recursion).
+impl bw24_kv::KvDev for Engine {
+    fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Engine::zeros(self, n)
+    }
+    fn uninit(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Engine::uninit(self, n)
+    }
+    fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        Engine::alloc_u8(self, n)
+    }
+    fn htod_i32(&self, v: &[i32]) -> Result<CudaSlice<i32>, Box<dyn std::error::Error>> {
+        Engine::htod_i32(self, v)
+    }
+    fn clone_dtod(&self, src: &CudaSlice<f32>) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Engine::clone_dtod(self, src)
+    }
+    fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
+                 -> Result<(), Box<dyn std::error::Error>> {
+        Engine::copy_into(self, dst, off, src, len)
+    }
+    fn set_i32_one(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
+        Engine::set_i32_one(self, d, v)
     }
 }

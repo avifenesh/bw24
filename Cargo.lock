@@ -101,6 +101,7 @@ name = "bw24-engine"
 version = "0.0.0"
 dependencies = [
  "bw24-gguf",
+ "bw24-kv",
  "bw24-runtime",
  "bw24-sampling",
  "bw24-tokenizer",
@@ -115,6 +116,14 @@ name = "bw24-gguf"
 version = "0.0.0"
 dependencies = [
  "memmap2",
+]
+
+[[package]]
+name = "bw24-kv"
+version = "0.0.0"
+dependencies = [
+ "bw24-gguf",
+ "cudarc",
 ]
 
 [[package]]
