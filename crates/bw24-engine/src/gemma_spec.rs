@@ -749,8 +749,21 @@ impl HybridModel {
         // floor=1 (the 2026-07-10 sweep measured floor=2 worse there — cheap verify,
         // wasted drafts dominate).
         let adapt_floor_default: usize = if self.cfg.n_embd >= 3500 { 4 } else { 1 };
-        let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(adapt_floor_default);
+        let adapt_floor_env: Option<usize> = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
+            .and_then(|v| v.parse().ok());
+        let adapt_floor: usize = adapt_floor_env.unwrap_or(adapt_floor_default);
+        // POSITION KEY (2026-07-26): the floor is a SHORT-CTX win. At depth the per-position
+        // acceptance is lower (31B d1736: 0.69-0.74 under floor4 vs 0.82 under floor1) and
+        // forced-deep drafts turn net-negative: d1736 floor4 99-101 vs floor1 103.8-104.2
+        // (flip-tree N=2), while the chat cell holds +15-20% under floor4. Default: the
+        // floor applies while pos < 1024 and relaxes to 1 past it (BW24_SPEC_FLOOR_CTX
+        // overrides the boundary; an explicit BW24_SPEC_ADAPT_FLOOR pins the floor at
+        // every position). Both board cells measured on both sides of the key.
+        let floor_ctx: usize = std::env::var("BW24_SPEC_FLOOR_CTX").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(1024);
+        let floor_at = |pos: usize| -> usize {
+            if adapt_floor_env.is_some() || pos < floor_ctx { adapt_floor } else { 1 }
+        };
         // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
         // The historical cap>=8 "crash" was two host bugs, both fixed 2026-07-12: round 1
         // ran UNCLAMPED (`kc = k` — verify t=K+1 entered the b16 tier while it was gated)
@@ -1009,7 +1022,7 @@ impl HybridModel {
                     e.spec_rollback_stream(ptrs, &bufs.pos_start_d, &bufs.acc_d, 1, n_rows)?;
                     e.spec_ring_commit(batch_d, &bufs.acc_d, &bufs.brk_d,
                                        &mut bufs.ring_d, &mut bufs.pend_d)?;
-                    e.spec_adapt_k(&bufs.acc_d, &mut bufs.brk_d, adapt_floor, k_cap)?;
+                    e.spec_adapt_k(&bufs.acc_d, &mut bufs.brk_d, floor_at(cache.pos), k_cap)?;
                     Ok(())
                 };
                 // BW24_ROUND_GRAPH_CHECK=1: run the body EAGERLY (no capture/replay) —
@@ -1390,14 +1403,15 @@ impl HybridModel {
             // corrections-only learning measured +0.5 acceptance pts, jsonl 2026-07-19).
             trim_adapt_learn(e, d, &vam)?;
             if adapt {
-                kc = (m + 1).clamp(adapt_floor.min(k_cap), k_cap);
+                let fl_now = floor_at(cache.pos);
+                kc = (m + 1).clamp(fl_now.min(k_cap), k_cap);
                 // confidence cut (BW24_SPEC_PMIN > 0): next round drafts no deeper than one
                 // past the first low-confidence draft of THIS round (llama's p-min class,
                 // one round late — the zero-sync enqueue stays intact). One extra tiny dtoh.
                 if pmin > 0.0 {
                     let ph = e.dtoh(&p_d)?;
                     if let Some(fl) = ph[..kr].iter().position(|&p| p < pmin) {
-                        kc = kc.min((fl + 1).max(adapt_floor.min(k_cap)));
+                        kc = kc.min((fl + 1).max(fl_now.min(k_cap)));
                     }
                 }
             }

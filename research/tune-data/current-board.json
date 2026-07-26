@@ -95,7 +95,7 @@
   },
   {
    "model": "Gemma-4 12B chat (K=4 MTP + own-gen trim)",
-   "bw24": 244.8,
+   "bw24": 235.0,
    "llama": 172.4,
    "spec": true
   },
@@ -118,7 +118,7 @@
   },
   {
    "model": "Gemma-4 31B chat (K=5 MTP + own-gen trim)",
-   "bw24": 119.6,
+   "bw24": 124.3,
    "llama": 99.0,
    "spec": true
   },

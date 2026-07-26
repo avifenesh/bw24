@@ -169,9 +169,17 @@ pub fn fa_vec_min_tkv() -> usize {
 /// f16-P/V class (DEFAULT since 2026-07-23 stamp v4; BW24_FA_F16PV=0 = f32-class rollback):
 /// llama-fa=1-style f16 P + f16 P@V accumulation on the hd512/SWA prefill stamps
 /// (KQ/softmax/normalize stay f32). Laptop stamp: 12B 1.045x, 31B 0.979x vs llama.
+///
+/// SPEC-SERVING FLIP (2026-07-26, the wkv acceptance-law pattern): with BW24_DRAFT set the
+/// default is OFF. f16 P/V shifts the PRIME's hidden states/KV in the sub-argmax logit
+/// space the drafter feeds on — argmax gates stay MATCH while depth acceptance falls off a
+/// cliff (26B d1736 0.883 -> 0.405, -40% e2e; f16pv-off alone restores 0.846/314 tok/s —
+/// the perf-ci acceptance battery is the only gate that sees this class). Explicit
+/// BW24_FA_F16PV always wins; plain serving keeps the f16 prefill win.
 pub fn fa_f16pv_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").map(|v| v != "0")
+        .unwrap_or_else(|_| std::env::var("BW24_DRAFT").is_err()))
 }
 
 /// hd512 head-pair arm (DEFAULT since stamp v4; BW24_FA512_HP=0 reverts to sp16): GQA
