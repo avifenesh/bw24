@@ -1,0 +1,13 @@
+temp: 53
+ALL GREEN: kernels match CPU reference.
+== gemma-4-31B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=1.070e0  MATCH
+prefill 1736 tok in 1.1470s = 1513.5 tok/s (pp1736)
+prefill argmax=623  decode argmax=623  logit maxdiff=1.070e0  MATCH
+prefill 1736 tok in 1.1487s = 1511.3 tok/s (pp1736)
+== gemma-4-12b-it-qat-q4_0.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=2.093e0  MATCH
+prefill 1736 tok in 0.4248s = 4086.4 tok/s (pp1736)
+prefill argmax=623  decode argmax=623  logit maxdiff=2.093e0  MATCH
+prefill 1736 tok in 0.4247s = 4087.1 tok/s (pp1736)
+OCC3 GATE COMPLETE Thu Jul 23 10:08:57 AM UTC 2026

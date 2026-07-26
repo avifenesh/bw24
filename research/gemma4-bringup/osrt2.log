@@ -1,0 +1,11 @@
+generated 64 tokens in 0.763s = 83.84 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.123s) [stop: MaxNew]
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)     Med (ns)    Min (ns)    Max (ns)   StdDev (ns)                   Name                  
+     72.6    5,486,134,695        680  8,067,845.1  8,642,899.0      6,190  94,677,617  7,242,002.9  cuMemcpyDtoHAsync_v2                   
+      2.4      182,184,618    649,688        280.4        256.0         47   5,316,163      6,896.6  cuMemAllocAsync                        
+      2.2      164,329,567    649,686        252.9        252.0         39      41,548         95.6  cuMemFreeAsync                         
+      1.9      143,906,955    104,586      1,376.0      1,433.0         33     492,644      7,167.2  cuMemsetD8Async                        
+      1.0       73,223,264      1,023     71,577.0      2,553.0        238  13,787,869    591,777.5  cuStreamSynchronize                    
+      0.2       13,100,936         64    204,702.1    202,622.5    190,110     253,213     10,192.5  cuGraphLaunch                          
+      0.1        4,301,306          2  2,150,653.0  2,150,653.0  1,362,119   2,939,187  1,115,155.5  cuGraphInstantiateWithFlags            
+      0.0          110,156      2,772         39.7         37.0         32         811         19.5  cuKernelGetName                        
+OSRT2 COMPLETE Thu Jul 23 03:18:39 PM UTC 2026

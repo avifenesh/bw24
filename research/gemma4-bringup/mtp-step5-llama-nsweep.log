@@ -1,0 +1,24 @@
+build: cceb23c6
+== llama 12B n-max sweep
+12B n-max=2 rep1: 175.86 tok/s
+12B n-max=2 rep2: 173.46 tok/s
+12B n-max=3 rep1: 156.39 tok/s
+12B n-max=3 rep2: 157.22 tok/s
+12B n-max=4 rep1: 155.22 tok/s
+12B n-max=4 rep2: 156.10 tok/s
+12B n-max=5 rep1: 149.18 tok/s
+12B n-max=5 rep2: 148.35 tok/s
+12B n-max=6 rep1: 144.76 tok/s
+12B n-max=6 rep2: 146.61 tok/s
+== llama 31B n-max sweep
+31B n-max=2 rep1: 87.67 tok/s
+31B n-max=2 rep2: 87.89 tok/s
+31B n-max=3 rep1: 96.03 tok/s
+31B n-max=3 rep2: 96.32 tok/s
+31B n-max=4 rep1: 99.17 tok/s
+31B n-max=4 rep2: 99.53 tok/s
+31B n-max=5 rep1: 93.96 tok/s
+31B n-max=5 rep2: 94.34 tok/s
+31B n-max=6 rep1: 87.72 tok/s
+31B n-max=6 rep2: 87.73 tok/s
+STEP5 COMPLETE Sat Jul 25 09:27:21 AM UTC 2026

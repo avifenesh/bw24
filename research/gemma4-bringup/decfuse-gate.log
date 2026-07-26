@@ -1,0 +1,23 @@
+temp: 55  plimit: 150.00W
+== kernel-check
+ALL GREEN: kernels match CPU reference.
+== argmax x4
+-- gemma-4-12b-it-qat-q4_0.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+-- gemma-4-31B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+-- gemma-4-26B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=3.502e0  MATCH
+-- gemma-4-E4B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=7.589e-1  MATCH
+== tg128 pair 12B (llama then bw24, cooldowns)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.59 ± 1.03 |
+generated 128 tokens in 1.417s = 90.36 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.125s) [stop: MaxNew]
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.62 ± 0.39 |
+generated 128 tokens in 1.416s = 90.41 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.126s) [stop: MaxNew]
+== run-spec K=1..8 self-consistency (31B MTP)
+
+thread 'main' (3419729) panicked at crates/bw24-engine/src/hybrid.rs:695:9:
+not a hybrid arch
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+DECFUSE GATE COMPLETE Thu Jul 23 05:02:57 AM UTC 2026

@@ -1,0 +1,62 @@
+build: 6ed959d8
+== qwen argmax x3
+temp: 57  arm: argmax-Qwen3.5-9B-NVFP4-MTP-GGUF
+prefill argmax=8  decode argmax=8  logit maxdiff=7.811e-1  MATCH
+temp: 60  arm: argmax-mtp-Qwen3.6-27B-NVFP4
+DIED (rc=101):
+thread 'main' (3192999) panicked at crates/bw24-engine/src/model.rs:292:32:
+missing tensor blk.0.attn_norm.weight
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+temp: 57  arm: argmax-Qwen3.6-35B-A3B-UD-IQ4_XS
+prefill argmax=68  decode argmax=68  logit maxdiff=6.864e-1  MATCH
+== qwen run-spec self-consistency
+temp: 59  arm: spec-Qwen3.5-9B-NVFP4-MTP-GGUF
+
+[generate_spec K=5] 32 tok in 0.383s = 80.89 tok/s (0.63x vs generate; this run's prime 0.364s)
+  acceptance: 17/85 = 20.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.428s = 72.37 tok/s (0.57x vs generate; this run's prime 0.366s)
+  acceptance: 17/102 = 16.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.475s = 65.26 tok/s (0.51x vs generate; this run's prime 0.365s)
+  acceptance: 17/119 = 14.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.758s = 40.88 tok/s (0.32x vs generate; this run's prime 0.363s)
+  acceptance: 17/136 = 12.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+temp: 58  arm: spec-mtp-Qwen3.6-27B-NVFP4
+DIED (rc=101):
+thread 'main' (3275581) panicked at crates/bw24-engine/src/model.rs:292:32:
+missing tensor blk.0.attn_norm.weight
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+[loader-law] WARNING: output.weight loads as 2D Float ne=[5120, 248320] (src BF16) — a Float matmul weight rides cuBLAS f32 GEMV and poisons all-or-nothing q8-fast predicates (uses_q8_1_fast/mixer_in_q8_1_fast). If matmul-class: Q8_0-encode at load (model.rs ssm arm / source.rs BF16+F8 gates). If deliberately Float: add it to float_2d_audited with the audit rationale.
+
+thread 'main' (3275581) panicked at crates/bw24-engine/src/model.rs:292:32:
+missing tensor blk.0.attn_norm.weight
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+temp: 56  arm: spec-Qwen3.6-35B-A3B-UD-IQ4_XS
+
+[generate_spec K=5] 32 tok in 0.153s = 202.98 tok/s (1.17x vs generate; this run's prime 0.543s)
+  acceptance: 24/40 = 60.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.172s = 180.15 tok/s (1.04x vs generate; this run's prime 0.546s)
+  acceptance: 24/48 = 50.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.190s = 162.92 tok/s (0.94x vs generate; this run's prime 0.545s)
+  acceptance: 24/56 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.240s = 129.09 tok/s (0.74x vs generate; this run's prime 0.546s)
+  acceptance: 24/64 = 37.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+== gemma 31B MTP verify oracle (VERIFY_GATE2=4)
+temp: 58  arm: g31mtp-vg2
+DIED (rc=101):
+thread 'main' (3333072) panicked at crates/bw24-engine/src/hybrid.rs:695:9:
+not a hybrid arch
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+PREMERGE BATTERY COMPLETE Thu Jul 23 09:59:36 PM UTC 2026

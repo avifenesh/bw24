@@ -458,7 +458,10 @@ extern "C" {
 size_t bw24_mmq_q8_0_act_bytes(int in_f, int n_tokens) {
     const int64_t ne10_padded = GGML_PAD((int64_t) in_f, MATRIX_ROW_PADDING);
     const int64_t nblocks = (int64_t) n_tokens * (ne10_padded / (4 * QK8_1));
-    return (size_t) nblocks * sizeof(block_q8_1_mmq);
+    // +MMQ_X blocks: the mul_mat_q y-tile loader always reads a FULL mmq_x-column tile; for the
+    // final k-block with n_tokens % MMQ_X != 0 that read runs past the last real column. Padding
+    // the scratch keeps the overread mapped (values are garbage; write-back drops j > j_max).
+    return (size_t) (nblocks + MMQ_X) * sizeof(block_q8_1_mmq);
 }
 
 // Run the Q8_0 int8-MMA MMQ prefill GEMM. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.

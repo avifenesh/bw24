@@ -1,0 +1,57 @@
+== kernel-check NAKED
+fa_prefill_w bf16-stage T=64: SKIPPED (hp door numeric class)
+fa_prefill_w bf16-stage T=100: SKIPPED (hp door numeric class)
+ALL GREEN: kernels match CPU reference.
+== argmax NAKED x4 (D1736) + D512 sentinel
+-- gemma-4-12b-it-qat-q4_0.gguf D1736:
+prefill argmax=623  decode argmax=623  logit maxdiff=2.919e0  MATCH
+-- gemma-4-31B_q4_0-it.gguf D1736:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.106e0  MATCH
+-- gemma-4-26B_q4_0-it.gguf D1736:
+prefill argmax=623  decode argmax=623  logit maxdiff=4.738e0  MATCH
+-- gemma-4-E4B_q4_0-it.gguf D1736:
+prefill argmax=623  decode argmax=623  logit maxdiff=8.513e-1  MATCH
+-- 31B D512 sentinel:
+prefill argmax=6571  decode argmax=6571  logit maxdiff=6.374e0  MATCH
+-- 12B D512 sentinel:
+prefill argmax=236761  decode argmax=236761  logit maxdiff=5.722e0  MATCH
+== board pairs (naked, N=3, per-arm cooldowns)
+== model: gemma-4-12b-it-qat-q4_0.gguf
+temp: 78  plimit: 175.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           pp512 |     4093.32 ± 136.57 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3808.65 ± 150.98 |
+temp: 59  plimit: 150.00W
+prefill 512 tok in 0.1224s = 4183.6 tok/s (pp512)
+prefill 1736 tok in 0.4220s = 4114.2 tok/s (pp1736)
+temp: 59  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           pp512 |     4156.47 ± 153.66 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3859.46 ± 162.66 |
+temp: 57  plimit: 150.00W
+prefill 512 tok in 0.1220s = 4196.8 tok/s (pp512)
+prefill 1736 tok in 0.4212s = 4121.1 tok/s (pp1736)
+temp: 59  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           pp512 |     4165.65 ± 145.23 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3865.60 ± 153.47 |
+temp: 57  plimit: 150.00W
+prefill 512 tok in 0.1222s = 4190.2 tok/s (pp512)
+prefill 1736 tok in 0.4224s = 4110.1 tok/s (pp1736)
+== model: gemma-4-31B_q4_0-it.gguf
+temp: 58  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1466.20 ± 50.37 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1508.65 ± 8.62 |
+temp: 57  plimit: 150.00W
+prefill 512 tok in 0.3287s = 1557.9 tok/s (pp512)
+prefill 1736 tok in 1.1516s = 1507.5 tok/s (pp1736)
+temp: 61  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1577.14 ± 67.84 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1525.79 ± 0.42 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3288s = 1557.4 tok/s (pp512)
+prefill 1736 tok in 1.1514s = 1507.8 tok/s (pp1736)
+temp: 61  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1575.98 ± 66.27 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1525.16 ± 0.26 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3282s = 1559.8 tok/s (pp512)
+prefill 1736 tok in 1.1531s = 1505.5 tok/s (pp1736)
+BATTERY V6 COMPLETE Thu Jul 23 11:50:45 AM UTC 2026

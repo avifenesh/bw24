@@ -1,0 +1,37 @@
+temp: 56
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 0/262144 OK
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 0/409600 OK
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+ALL GREEN: kernels match CPU reference.
+== gemma-4-31B_q4_0-it.gguf
+-- hp (default):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1535s = 1504.9 tok/s (pp1736)
+-- h2c:
+prefill argmax=623  decode argmax=623  logit maxdiff=9.972e-1  MATCH
+prefill 1736 tok in 1.1613s = 1494.9 tok/s (pp1736)
+-- hp (default):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1577s = 1499.6 tok/s (pp1736)
+-- h2c:
+prefill argmax=623  decode argmax=623  logit maxdiff=9.972e-1  MATCH
+prefill 1736 tok in 1.1615s = 1494.6 tok/s (pp1736)
+== gemma-4-12b-it-qat-q4_0.gguf
+-- hp (default):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4283s = 4053.4 tok/s (pp1736)
+-- h2c:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.773e0  MATCH
+prefill 1736 tok in 0.4303s = 4034.3 tok/s (pp1736)
+-- hp (default):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4276s = 4059.6 tok/s (pp1736)
+-- h2c:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.773e0  MATCH
+prefill 1736 tok in 0.4289s = 4047.6 tok/s (pp1736)
+H2C GATE COMPLETE Thu Jul 23 10:46:13 AM UTC 2026

@@ -1,0 +1,3 @@
+[graph-census] {"CU_GRAPH_NODE_TYPE_KERNEL": 826, "CU_GRAPH_NODE_TYPE_MEMCPY": 8, "CU_GRAPH_NODE_TYPE_MEMSET": 144}
+generated 8 tokens in 0.117s = 68.31 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
+CENSUS COMPLETE Thu Jul 23 03:23:28 PM UTC 2026

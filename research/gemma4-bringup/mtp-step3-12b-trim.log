@@ -1,0 +1,25 @@
+build: 5b7dcfe9
+ranks: 32768 ids
+== 12B spec K=3 trim32k
+temp: 57
+plain: 93.56 tok/s | spec: 192.67 tok/s (2.06x) | stream agreement 128/128
+temp: 56
+plain: 93.59 tok/s | spec: 201.99 tok/s (2.16x) | stream agreement 128/128
+temp: 56
+plain: 93.55 tok/s | spec: 200.44 tok/s (2.14x) | stream agreement 128/128
+== 12B spec K=3 trim16k
+temp: 56
+plain: 93.56 tok/s | spec: 195.21 tok/s (2.09x) | stream agreement 128/128
+temp: 57
+plain: 93.57 tok/s | spec: 200.87 tok/s (2.15x) | stream agreement 128/128
+temp: 56
+plain: 93.63 tok/s | spec: 198.76 tok/s (2.12x) | stream agreement 128/128
+== 12B spec K=3 notrim
+temp: 55
+plain: 93.63 tok/s | spec: 191.15 tok/s (2.04x) | stream agreement 128/128
+temp: 58
+plain: 93.45 tok/s | spec: 188.70 tok/s (2.02x) | stream agreement 128/128
+temp: 55
+plain: 93.66 tok/s | spec: 191.12 tok/s (2.04x) | stream agreement 128/128
+STEP3 COMPLETE Sat Jul 25 08:34:26 AM UTC 2026
+CHAIN23 COMPLETE Sat Jul 25 08:34:26 AM UTC 2026

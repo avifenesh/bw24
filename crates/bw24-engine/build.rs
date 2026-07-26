@@ -84,6 +84,10 @@ fn main() {
         // (47KB smem -> 2 CTA/SM vs 57KB/1; the q45k occupancy ceiling found by ncu).
         println!("cargo:rerun-if-env-changed=BW24_MMQ_X_Q45K");
         let q45k_x = std::env::var("BW24_MMQ_X_Q45K").ok();
+        // TUNE SEAM: BW24_MMQ_X_Q4=64|96 shrinks the q4_0 MMQ token-tile (same axis as the
+        // q45k/w4a8 seams; build-time — the tile is a template constant).
+        println!("cargo:rerun-if-env-changed=BW24_MMQ_X_Q4");
+        let q4_x = std::env::var("BW24_MMQ_X_Q4").ok();
         // TUNE SEAM: BW24_MMQ_X_W4A8=<n> rebuilds the NVFP4 W4A8 MMQ with an n-token tile.
         // ncu 2026-07-06 (27B pp6257): default 128x128 tile = 61KB smem = 1 CTA/SM ->
         // warps_active 16.7%, tensor pipe 53% — the same occupancy ceiling q45k hit.
@@ -98,7 +102,7 @@ fn main() {
         // kernels for the BW24_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
-                        "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
+                        "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -122,6 +126,9 @@ fn main() {
             ];
             if mmq_src.ends_with("mmq_q45k.cu") {
                 if let Some(x) = &q45k_x { args.push(format!("-DMMQ_X={x}")); }
+            }
+            if mmq_src.ends_with("mmq_q4_0.cu") {
+                if let Some(x) = &q4_x { args.push(format!("-DMMQ_X={x}")); }
             }
             if mmq_src.ends_with("mmq_nvfp4_w4a8.cu") {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }

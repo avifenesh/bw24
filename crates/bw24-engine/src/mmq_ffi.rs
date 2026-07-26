@@ -15,6 +15,16 @@
 use crate::Engine;
 use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
 
+/// Quantize-once seam state (see `Engine::mmq_act_begin`): window epoch + one cached
+/// (epoch, act_ptr, m, in_f, D4 scratch) slot. Slot drops (freeing the scratch) on each new window.
+static MMQ_ACT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[allow(clippy::type_complexity)]
+static MMQ_ACT_SLOT: std::sync::Mutex<Option<(u64, u64, usize, usize, CudaSlice<u8>)>> =
+    std::sync::Mutex::new(None);
+/// Stream-k fixup scratch (lazy; sized once per process — one slot per SM).
+static MMQ_FIXUP_SLOT: std::sync::Mutex<Option<cudarc::driver::CudaSlice<u8>>> =
+    std::sync::Mutex::new(None);
+
 unsafe extern "C" {
     /// Bytes needed for the block_fp4_mmq activation scratch for (in_f, n_tokens).
     pub fn bw24_mmq_nvfp4_act_bytes(in_f: i32, n_tokens: i32) -> usize;
@@ -117,6 +127,58 @@ unsafe extern "C" {
         stream: *mut core::ffi::c_void,
     ) -> i32;
 
+    /// Bytes needed for the block_q8_1_mmq (D4) activation scratch for the Q4_0 MMQ path.
+    pub fn bw24_mmq_q4_0_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Run the Q4_0 int8-MMA MMQ prefill GEMM (BW24_PP_Q4MMQ). Nibbles dequant to int8 at
+    /// tile-load (the -8 zero-point folds into the quants, D4 epilogue — same accuracy class as
+    /// the Q8_0 MMQ). `rp`: 0 = raw ggml 18B blocks, 1 = BW24_Q4RP split-plane repack (qs plane +
+    /// fp16 d plane) — pure address remap, bit-identical output either way. Requires
+    /// in_f % 32 == 0. Returns 0 or (1000 + cudaError).
+    pub fn bw24_mmq_q4_0(
+        w_q4_0: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        rp: i32,
+    ) -> i32;
+    /// Quantize-only entry (quantize-once seam): f32 activation -> block_q8_1_mmq scratch.
+    pub fn bw24_mmq_q4_0_quant_act(
+        act_f32: *const f32,
+        act_scratch: *mut core::ffi::c_void,
+        in_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+    /// GEMM-only entry: consumes a pre-quantized scratch (from bw24_mmq_q4_0_quant_act).
+    pub fn bw24_mmq_q4_0_gemm(
+        w_q4_0: *const core::ffi::c_void,
+        act_scratch: *const core::ffi::c_void,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+        rp: i32,
+    ) -> i32;
+    /// Stream-k fixup scratch bytes (one [MMQ_X x MMQ_Y] f32 slot per SM).
+    pub fn bw24_mmq_q4_0_fixup_bytes() -> usize;
+    /// Stream-k GEMM entry: tiling when wave efficiency >= 90%, else stream-k + fixup.
+    pub fn bw24_mmq_q4_0_gemm_sk(
+        w_q4_0: *const core::ffi::c_void,
+        act_scratch: *const core::ffi::c_void,
+        y: *mut f32,
+        fixup_scratch: *mut core::ffi::c_void,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+        rp: i32,
+    ) -> i32;
+
     // ---- IQ3_S / IQ4_XS expert-segmented int8-MMA MMQ (cu/mmq_iq_experts.cu, BW24_MOE_MMA) ----
     /// Bytes for the token-major block_q8_1_mmq activation scratch (in_f, n_tokens).
     pub fn bw24_mmq_iq_experts_act_bytes(in_f: i32, n_tokens: i32) -> usize;
@@ -186,6 +248,20 @@ pub fn mmq_q8_enabled() -> bool {
     })
 }
 
+/// Q4_0 MMQ prefill seam (gemma-4-12B lane, 2026-07-22): routes Q4_0 dense projections (m>=16)
+/// through the vendored int8-MMA MMQ (cu/mmq_q4_0.cu) instead of the hand-rolled
+/// `qmatvec_gemm_q4_0[_rp]` tiling GEMM (measured 77% of the 12B prime pass). Its own numeric
+/// config (MMA f32 reduction order != the tiling GEMM's) — gated with the full exactness battery
+/// before default-flip; `BW24_PP_Q4MMQ=0` reverts.
+pub fn mmq_q4_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("BW24_PP_Q4MMQ")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
+}
+
 impl Engine {
     /// True if `w` should take a vendored MMQ GEMM under the current env policy (see
     /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
@@ -213,9 +289,18 @@ impl Engine {
                 (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 256 == 0
             }
             // Q8_0 dense projections (35B attn/ssm/shexp): opt-in only (BW24_PP_Q8MMQ=1), its own
-            // numeric config vs qmatvec_gemm_q8_0. in_f % 32 == 0 (integral q8_0 blocks per row).
+            // numeric config vs qmatvec_gemm_q8_0. in_f % 256 == 0: MMQ_ITER_K=256 loads 8-block
+            // groups, so a non-multiple row would read a garbage weight tail (fp16 d bytes can be
+            // NaN-pattern, and NaN * 0-padded-activation = NaN — the 26B ffn_down lesson).
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q8_0 => {
-                mmq_q8_enabled() && w.in_features() % 32 == 0
+                mmq_q8_enabled() && w.in_features() % 256 == 0
+            }
+            // Q4_0 dense projections (gemma QAT ggufs): BW24_PP_Q4MMQ seam. Both weight layouts
+            // (raw 18B blocks and the BW24_Q4RP split-plane repack) have loader arms. Same
+            // in_f % 256 == 0 tail rule as Q8_0 (26B ffn_down in_f=2112 NaN'd on the %32 gate);
+            // non-multiples fall back to the hand-rolled qmatvec_gemm_q4_0[_rp].
+            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_0 => {
+                mmq_q4_enabled() && w.in_features() % 256 == 0
             }
             _ => false,
         }
@@ -266,6 +351,13 @@ impl Engine {
             }
             q if q == crate::QT_Q8_0 => {
                 let mut y = self.qmatvec_mmq_q8_0_raw(bytes, x, m, in_f, out_f)?;
+                if *scale != 1.0 {
+                    self.scale_inplace(&mut y, *scale, m * out_f)?;
+                }
+                Ok(y)
+            }
+            q if q == crate::QT_Q4_0 => {
+                let mut y = self.qmatvec_mmq_q4_0_raw(bytes, x, m, in_f, out_f, *rp)?;
                 if *scale != 1.0 {
                     self.scale_inplace(&mut y, *scale, m * out_f)?;
                 }
@@ -362,6 +454,118 @@ impl Engine {
             };
             if rc != 0 {
                 return Err(format!("bw24_mmq_q8_0 rc={rc}").into());
+            }
+        }
+        Ok(y)
+    }
+
+    /// Open a quantize-once sharing window for the NEXT activation (quantize-once seam): sibling
+    /// Q4_0 MMQ matmuls on the SAME input (q/k/v; gate/up) quantize its D4 scratch once. Safe by
+    /// construction: a hit requires the same window epoch AND the same (ptr, m, in_f) — the caller
+    /// opens a window while it holds the shared input alive, so its address can neither change nor
+    /// be recycled inside the window. Paths that never call this never hit the cache.
+    pub fn mmq_act_begin(&self) {
+        use std::sync::atomic::Ordering;
+        MMQ_ACT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        *MMQ_ACT_SLOT.lock().unwrap() = None;
+    }
+
+    /// Bare Q4_0 int8-MMA MMQ launch (no macro-scale) — the kernel_check accuracy-gate entry and
+    /// the `qmatvec_mmq` dispatch body. `rp` selects the weight layout (BW24_Q4RP split-plane vs
+    /// raw ggml 18B blocks) — pure address remap, bit-identical output.
+    pub fn qmatvec_mmq_q4_0_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        rp: bool,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
+        assert!(
+            in_f % 32 == 0,
+            "MMQ Q4_0 requires in_f % 32 == 0, got {in_f}"
+        );
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let stream = &self.gpu.stream;
+        let (x_p, _gx) = x.device_ptr(stream);
+        let epoch = MMQ_ACT_EPOCH.load(Ordering::Relaxed);
+        // quantize-once: reuse the window's scratch when the SAME activation comes back.
+        let mut slot = MMQ_ACT_SLOT.lock().unwrap();
+        let hit = matches!(&*slot,
+            Some((e, p, mm, inf, _)) if *e == epoch && *p == x_p as u64 && *mm == m && *inf == in_f);
+        if !hit {
+            let act_bytes = unsafe { bw24_mmq_q4_0_act_bytes(in_f as i32, m as i32) };
+            let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+            {
+                let (s_p, _gs) = scratch.device_ptr_mut(stream);
+                let rc = unsafe {
+                    bw24_mmq_q4_0_quant_act(
+                        x_p as *const f32,
+                        s_p as *mut core::ffi::c_void,
+                        in_f as i32,
+                        m as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void,
+                    )
+                };
+                if rc != 0 {
+                    return Err(
+                        format!("bw24_mmq_q4_0_quant_act(in_f={in_f}, m={m}) rc={rc}").into()
+                    );
+                }
+            }
+            *slot = Some((epoch, x_p as u64, m, in_f, scratch));
+        }
+        let scratch = &slot.as_ref().unwrap().4;
+        {
+            let (w_p, _gw) = bytes.device_ptr(stream);
+            let (y_p, _gy) = y.device_ptr_mut(stream);
+            let (s_p, _gs) = scratch.device_ptr(stream);
+            // Stream-k arm (DEFAULT since 2026-07-23; BW24_MMQ_SK=0 reverts to xy-tiling):
+            // small-batch tail-wave fix — the sk entry itself falls back to (bit-identical)
+            // tiling at >=90% wave efficiency. Band-class fold order below that. Gate: 12B
+            // pp512 +3.3% (1.005x vs llama), pp1736 +1.0%; 31B +0.5%; D512 sentinel MATCH.
+            static SK_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let sk = *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK").as_deref() != Ok("0"));
+            let rc = if sk {
+                let mut fx = MMQ_FIXUP_SLOT.lock().unwrap();
+                if fx.is_none() {
+                    let nb = unsafe { bw24_mmq_q4_0_fixup_bytes() };
+                    *fx = Some(self.alloc_uninit::<u8>(nb)?);
+                }
+                let (f_p, _gf) = fx.as_mut().unwrap().device_ptr_mut(stream);
+                unsafe {
+                    bw24_mmq_q4_0_gemm_sk(
+                        w_p as *const core::ffi::c_void,
+                        s_p as *const core::ffi::c_void,
+                        y_p as *mut f32,
+                        f_p as *mut core::ffi::c_void,
+                        in_f as i32,
+                        out_f as i32,
+                        m as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void,
+                        rp as i32,
+                    )
+                }
+            } else { unsafe {
+                bw24_mmq_q4_0_gemm(
+                    w_p as *const core::ffi::c_void,
+                    s_p as *const core::ffi::c_void,
+                    y_p as *mut f32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                    rp as i32,
+                )
+            } };
+            if rc != 0 {
+                return Err(format!(
+                    "bw24_mmq_q4_0_gemm(rp={rp}, in_f={in_f}, out_f={out_f}, m={m}, wbytes={}) rc={rc}",
+                    bytes.len()
+                )
+                .into());
             }
         }
         Ok(y)

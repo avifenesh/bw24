@@ -1,0 +1,7 @@
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3813.80 ± 113.06 |
+prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
+prefill 1736 tok in 0.4605s = 3769.6 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3873.32 ± 193.92 |
+prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
+prefill 1736 tok in 0.4646s = 3736.7 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3850.84 ± 107.89 |

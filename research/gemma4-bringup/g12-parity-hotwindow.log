@@ -1,0 +1,8 @@
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3871.34 ± 131.82 |
+prefill 1736 tok in 0.4524s = 3837.3 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |      3845.78 ± 86.52 |
+prefill 1736 tok in 0.4634s = 3746.0 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3824.12 ± 100.21 |
+prefill 1736 tok in 0.4645s = 3737.3 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |      3771.33 ± 67.60 |
+prefill 1736 tok in 0.4956s = 3503.2 tok/s (pp1736)

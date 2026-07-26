@@ -1,0 +1,13 @@
+temp: 51  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.14 ± 0.52 |
+temp: 53  plimit: 150.00W
+generated 128 tokens in 1.415s = 90.47 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 54  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.46 ± 0.24 |
+temp: 53  plimit: 150.00W
+generated 128 tokens in 1.416s = 90.42 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 54  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.41 ± 0.21 |
+temp: 54  plimit: 150.00W
+generated 128 tokens in 1.416s = 90.40 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+G12TG STAMP COMPLETE Thu Jul 23 06:36:25 PM UTC 2026

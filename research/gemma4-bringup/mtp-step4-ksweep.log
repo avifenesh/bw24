@@ -1,0 +1,18 @@
+build: cceb23c6  TRIM12=1 TRIM31=1
+== 12B K sweep
+K=1  temp 54: plain: 93.67 tok/s | spec: 154.90 tok/s (1.65x) | stream agreement 128/128
+K=2  temp 55: plain: 93.67 tok/s | spec: 191.29 tok/s (2.04x) | stream agreement 128/128
+K=3  temp 55: plain: 93.64 tok/s | spec: 200.64 tok/s (2.14x) | stream agreement 128/128
+K=4  temp 58: plain: 93.54 tok/s | spec: 197.56 tok/s (2.11x) | stream agreement 128/128
+K=5  temp 56: plain: 93.66 tok/s | spec: 190.01 tok/s (2.03x) | stream agreement 128/128
+K=6  temp 57: plain: 93.61 tok/s | spec: 187.42 tok/s (2.00x) | stream agreement 128/128
+K=7  temp 58: plain: 93.50 tok/s | spec: 186.56 tok/s (2.00x) | stream agreement 128/128
+== 31B K sweep
+K=1  temp 56: plain: 41.51 tok/s | spec: 70.58 tok/s (1.70x) | stream agreement 128/128
+K=2  temp 56: plain: 41.50 tok/s | spec: 86.13 tok/s (2.08x) | stream agreement 128/128
+K=3  temp 56: plain: 41.50 tok/s | spec: 99.03 tok/s (2.39x) | stream agreement 128/128
+K=4  temp 56: plain: 41.51 tok/s | spec: 103.74 tok/s (2.50x) | stream agreement 128/128
+K=5  temp 56: plain: 41.39 tok/s | spec: 102.43 tok/s (2.47x) | stream agreement 128/128
+K=6  temp 58: plain: 41.49 tok/s | spec: 103.14 tok/s (2.49x) | stream agreement 128/128
+K=7  temp 56: plain: 41.50 tok/s | spec: 102.63 tok/s (2.47x) | stream agreement 128/128
+STEP4 COMPLETE Sat Jul 25 08:57:19 AM UTC 2026

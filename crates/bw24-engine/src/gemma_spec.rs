@@ -527,6 +527,7 @@ impl HybridModel {
                         win,
                         kvl.k_tok_bytes,
                         kvl.v_tok_bytes,
+                        None,
                     )?;
                 } else {
                     e.fa_decode_dc(
@@ -738,6 +739,31 @@ impl HybridModel {
         // acceptance; no new syncs. Policy sweep (short chat, N=1 each): floor1/cap3 239.2
         // vs fixed-K3 231.1 (+3.5%, accept .52->.58); floor2 and cap4/5 all worse.
         let adapt = std::env::var("BW24_SPEC_ADAPT").as_deref() != Ok("0");
+        // ADAPTIVE FLOOR default is per-model (BW24_SPEC_ADAPT_FLOOR overrides): the floor-1
+        // policy collapses to shallow drafts after any miss and pays a slow re-deepen; on
+        // models with an expensive verify step the deep-draft upside dwarfs the wasted-draft
+        // cost. Measured 2026-07-25 (chat cell, own-gen trim; peak grids both models):
+        // 31B K=5 floor=4 120.2 vs floor=1 103.8 (+15.7%, N=3; floor 5-6 falls off);
+        // 12B K=4-5 floor=4 240.5-240.8 vs floor=1 200.6 (+20%, floor 5+ falls off).
+        // The floor clamps to k_cap, so shallow-K callers are unaffected. 26B/E4B keep
+        // floor=1 (the 2026-07-10 sweep measured floor=2 worse there — cheap verify,
+        // wasted drafts dominate).
+        let adapt_floor_default: usize = if self.cfg.n_embd >= 3500 { 4 } else { 1 };
+        let adapt_floor_env: Option<usize> = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
+            .and_then(|v| v.parse().ok());
+        let adapt_floor: usize = adapt_floor_env.unwrap_or(adapt_floor_default);
+        // POSITION KEY (2026-07-26): the floor is a SHORT-CTX win. At depth the per-position
+        // acceptance is lower (31B d1736: 0.69-0.74 under floor4 vs 0.82 under floor1) and
+        // forced-deep drafts turn net-negative: d1736 floor4 99-101 vs floor1 103.8-104.2
+        // (flip-tree N=2), while the chat cell holds +15-20% under floor4. Default: the
+        // floor applies while pos < 1024 and relaxes to 1 past it (BW24_SPEC_FLOOR_CTX
+        // overrides the boundary; an explicit BW24_SPEC_ADAPT_FLOOR pins the floor at
+        // every position). Both board cells measured on both sides of the key.
+        let floor_ctx: usize = std::env::var("BW24_SPEC_FLOOR_CTX").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(1024);
+        let floor_at = |pos: usize| -> usize {
+            if adapt_floor_env.is_some() || pos < floor_ctx { adapt_floor } else { 1 }
+        };
         // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
         // The historical cap>=8 "crash" was two host bugs, both fixed 2026-07-12: round 1
         // ran UNCLAMPED (`kc = k` — verify t=K+1 entered the b16 tier while it was gated)
@@ -918,8 +944,6 @@ impl HybridModel {
                     let scr = self.verify_stream_scratch(e, k_cap + 1)?;
                     burst_state = Some((bufs, fill_dummy, ptrs, scr));
                 }
-                let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
-                    .and_then(|v| v.parse().ok()).unwrap_or(1);
                 // entry: `last` is the pending token (emitted at drain), h is the seed.
                 let (bufs, fill_dummy, ptrs, scr) = burst_state.as_mut().unwrap();
                 let n_rows = cache.kv.len() + 1;
@@ -998,7 +1022,7 @@ impl HybridModel {
                     e.spec_rollback_stream(ptrs, &bufs.pos_start_d, &bufs.acc_d, 1, n_rows)?;
                     e.spec_ring_commit(batch_d, &bufs.acc_d, &bufs.brk_d,
                                        &mut bufs.ring_d, &mut bufs.pend_d)?;
-                    e.spec_adapt_k(&bufs.acc_d, &mut bufs.brk_d, adapt_floor, k_cap)?;
+                    e.spec_adapt_k(&bufs.acc_d, &mut bufs.brk_d, floor_at(cache.pos), k_cap)?;
                     Ok(())
                 };
                 // BW24_ROUND_GRAPH_CHECK=1: run the body EAGERLY (no capture/replay) —
@@ -1379,18 +1403,15 @@ impl HybridModel {
             // corrections-only learning measured +0.5 acceptance pts, jsonl 2026-07-19).
             trim_adapt_learn(e, d, &vam)?;
             if adapt {
-                let floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(1);
-                kc = (m + 1).clamp(floor.min(k_cap), k_cap);
+                let fl_now = floor_at(cache.pos);
+                kc = (m + 1).clamp(fl_now.min(k_cap), k_cap);
                 // confidence cut (BW24_SPEC_PMIN > 0): next round drafts no deeper than one
                 // past the first low-confidence draft of THIS round (llama's p-min class,
                 // one round late — the zero-sync enqueue stays intact). One extra tiny dtoh.
                 if pmin > 0.0 {
                     let ph = e.dtoh(&p_d)?;
                     if let Some(fl) = ph[..kr].iter().position(|&p| p < pmin) {
-                        kc = kc.min((fl + 1).max(floor.min(k_cap)));
+                        kc = kc.min((fl + 1).max(fl_now.min(k_cap)));
                     }
                 }
             }
@@ -1410,6 +1431,153 @@ impl HybridModel {
             let hist: Vec<String> = (0..16).filter(|&j| pos_att[j] > 0)
                 .map(|j| format!("p{j}:{}/{}", pos_acc[j], pos_att[j])).collect();
             eprintln!("[gemma-spec] per-position accept: {}", hist.join(" "));
+        }
+        Ok(out)
+    }
+}
+
+
+impl HybridModel {
+    /// PLAIN-DECODE CUDA-GRAPH loop (gemma4, greedy): one captured verify-trunk step
+    /// (t=1, device tokens/pos/lens) replayed per token — the launch-gap eraser the
+    /// decode decomposition demanded (2026-07-23: ~2.3ms/token idle at 128 launches).
+    /// Self-feeding: argmax -> tok_d -> next embed; counters advance in-graph via
+    /// spec_rollback_stream(base=1, acc=0). Tokens land in a device ring; ONE host sync
+    /// per drain window. Captures are keyed on the (rung, window-side, f512-side) regime
+    /// (the round-graph hint law); regime-crossing stretches run the same body eagerly.
+    /// Caller guarantees: gemma4, greedy, shared_kv_layers == 0, prompt already primed
+    /// (cache.pos = prompt len, host kvl.len mirrors set).
+    pub fn gemma4_generate_plain_graph(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        last: u32,
+        max_new: usize,
+        eos: &[u32],
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        const RING: usize = 64;
+        const DRAIN: usize = 32;                 // replays per host sync
+        let win_main = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+        let n_rows = cache.kv.len() + 1;
+
+        let was_tracking = e.ctx().is_event_tracking();
+        if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        let r = self.gemma4_plain_graph_inner(e, cache, last, max_new, eos,
+                                              RING, DRAIN, win_main, n_rows);
+        if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_plain_graph_inner(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        last: u32,
+        max_new: usize,
+        eos: &[u32],
+        ring_cap: usize,
+        drain: usize,
+        win_main: usize,
+        n_rows: usize,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let mut scr = self.verify_stream_scratch(e, 1)?;
+        let mut tok_d = e.stream().alloc_zeros::<u32>(1)?;
+        e.u32_set_k(&mut tok_d, last, 0)?;
+        let mut pos_ctr = e.htod_i32(&[cache.pos as i32])?;
+        let mut pos_start_d = e.htod_i32(&[cache.pos as i32])?;
+        let acc0 = e.stream().alloc_zeros::<u32>(2)?;          // acc[0] = 0 -> counters +1
+        let mut ring = e.stream().alloc_zeros::<u32>(ring_cap)?;
+        let ptrs = crate::round_stream::kv_len_ptr_table(e, cache, Some(&pos_ctr))?;
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        let ring_base = cache.pos;                             // baked into every capture
+
+        let mut graphs: std::collections::HashMap<
+            (usize, bool, bool),
+            (cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>),
+        > = Default::default();
+
+        let mut out: Vec<u32> = Vec::with_capacity(max_new);
+        let mut drained = 0usize;                              // tokens read off the ring
+
+        // hint law (round-graph): the arm-gating bound must sit on the SAME side of every
+        // crossover as the live lengths this capture serves, with the arms' own margins.
+        let hint_for = |pos: usize| -> usize {
+            if pos > win_main { pos + drain + 2 }
+            else if pos + 1 >= crate::fa512_min_tkv() { win_main.saturating_sub(2) }
+            else { crate::fa512_min_tkv().saturating_sub(5) }
+        };
+        let regime_key = |pos: usize| -> (usize, bool, bool) {
+            let rung = (pos + drain + 2).next_power_of_two().max(512);
+            (rung, pos > win_main, pos + 1 >= crate::fa512_min_tkv())
+        };
+        // the whole [pos, pos+n) stretch must share one regime for a captured replay run.
+        let stable_for = |pos: usize, n: usize| -> bool {
+            regime_key(pos) == regime_key(pos + n)
+                && (pos > win_main || pos + n + 2 < win_main)
+                && (pos + 1 >= crate::fa512_min_tkv()
+                    || pos + n + 2 < crate::fa512_min_tkv())
+        };
+
+        while out.len() < max_new {
+            let pos = cache.pos;
+            let hint = hint_for(pos);
+            let scr_ptr: *mut crate::hybrid_forward::VerifyStreamScratch = &mut scr;
+            let cache_ptr: *mut Cache = cache as *mut Cache;
+            let tok_ptr: *mut CudaSlice<u32> = &mut tok_d;
+            let ring_ptr: *mut CudaSlice<u32> = &mut ring;
+            let start_ptr: *mut CudaSlice<i32> = &mut pos_start_d;
+            let step = |e: &Engine| -> Result<(), Box<dyn std::error::Error>> {
+                // SAFETY: single-threaded body; raw pointers alias the outer &mut only here.
+                let (scr, cache, tok_d, ring, pos_start_d) = unsafe {
+                    (&mut *scr_ptr, &mut *cache_ptr, &mut *tok_ptr,
+                     &mut *ring_ptr, &mut *start_ptr) };
+                e.i32_copy_add(&pos_ctr, pos_start_d, 0)?;
+                let (vam, _hn) = self.gemma4_verify_t_am_stream(
+                    e, tok_d, 1, &pos_ctr, hint, cache, scr)?;
+                e.u32_copy(&vam, tok_d)?;
+                e.plain_tok_ring(&vam, pos_start_d, ring_base, ring)?;
+                e.spec_rollback_stream(&ptrs, pos_start_d, &acc0, 1, n_rows)?;
+                Ok(())
+            };
+
+            let n_left = max_new - out.len();
+            let burst = drain.min(n_left);
+            // BW24_G4PLAIN_EAGER=1: run the body eagerly every step (no capture/replay) —
+            // splits "body semantics wrong" from "replay mechanics wrong" (round-graph law).
+            let force_eager = std::env::var("BW24_G4PLAIN_EAGER").as_deref() == Ok("1");
+            let steps_done = if !force_eager && burst >= 4 && stable_for(pos, burst + 3) {
+                let key = regime_key(pos);
+                if !graphs.contains_key(&key) {
+                    // capture cost = 3 SERVED steps (2 warmups + the captured run itself):
+                    // the loop is self-feeding, so they are real tokens in the ring.
+                    let g = e.capture_graph_retained(step)?;
+                    graphs.insert(key, g);
+                    3
+                } else {
+                    let (g, _keep) = graphs.get(&key).unwrap();
+                    for _ in 0..burst { g.launch()?; }
+                    burst
+                }
+            } else {
+                step(e)?;                                     // eager fallback (same body)
+                1
+            };
+
+            // host mirrors + drain
+            cache.pos += steps_done;
+            for kvl in cache.kv.iter_mut().flatten() { kvl.len = cache.pos; }
+            e.stream().synchronize()?;
+            let ringh = e.dtoh_u32(&ring)?;
+            let total = cache.pos - ring_base;
+            while drained < total && out.len() < max_new {
+                let t = ringh[drained % ring_cap];
+                out.push(t);
+                drained += 1;
+                if eos.contains(&t) { return Ok(out); }
+            }
         }
         Ok(out)
     }

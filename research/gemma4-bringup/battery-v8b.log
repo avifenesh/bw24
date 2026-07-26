@@ -1,0 +1,46 @@
+build: afb57ff7
+== 31B plain cells N=3 (per-rep guarded)
+temp: 56  plimit: 150.00W
+rep 1 DIRTY (dropped)
+temp: 54  plimit: 150.00W
+-- rep 1 CLEAN
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |     1058.76 ± 105.23 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |      1519.99 ± 20.09 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.24 ± 0.29 |
+prefill 512 tok in 0.3117s = 1642.6 tok/s (pp512)
+prefill 1736 tok in 1.0905s = 1592.0 tok/s (pp1736)
+generated 128 tokens in 3.129s = 40.91 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.315s) [stop: MaxNew]
+temp: 58  plimit: 150.00W
+rep 3 DIRTY (dropped)
+temp: 58  plimit: 150.00W
+-- rep 2 CLEAN
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1610.29 ± 53.29 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1546.77 ± 1.02 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         40.08 ± 0.04 |
+prefill 512 tok in 0.3124s = 1639.2 tok/s (pp512)
+prefill 1736 tok in 1.0914s = 1590.6 tok/s (pp1736)
+generated 128 tokens in 3.131s = 40.88 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.315s) [stop: MaxNew]
+temp: 58  plimit: 150.00W
+-- rep 3 CLEAN
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1613.69 ± 55.84 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1547.09 ± 1.05 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         40.14 ± 0.04 |
+prefill 512 tok in 0.3116s = 1643.2 tok/s (pp512)
+prefill 1736 tok in 1.0920s = 1589.8 tok/s (pp1736)
+generated 128 tokens in 3.129s = 40.91 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.315s) [stop: MaxNew]
+== 12B MTP pair (llama draft-mtp warm server x3 vs bw24 spec x3)
+temp: 59  rep: 0
+llama gen: 128 tok @ 152.60 tok/s
+temp: 57  rep: 1
+llama gen: 128 tok @ 157.04 tok/s
+temp: 57  rep: 2
+llama gen: 128 tok @ 157.27 tok/s
+temp: 57  rep: 3
+llama gen: 128 tok @ 156.06 tok/s
+temp: 54
+plain: 93.75 tok/s | spec: 190.52 tok/s (2.03x) | stream agreement 128/128
+temp: 54
+plain: 93.73 tok/s | spec: 190.65 tok/s (2.03x) | stream agreement 128/128
+temp: 54
+plain: 93.69 tok/s | spec: 194.22 tok/s (2.07x) | stream agreement 128/128
+BATTERY V8B COMPLETE Fri Jul 24 11:25:32 PM UTC 2026

@@ -593,3 +593,14 @@ extern "C" __global__ void spec_accept_greedy_dc(
     out[0] = (unsigned int)n_acc;
     out[1] = bonus;
 }
+
+// PLAIN-DECODE GRAPH ring store: ring[(pos_start - base) % cap] = vam[0]. The base is baked
+// per capture; the modulo keeps one captured graph valid indefinitely (drain tracks order).
+extern "C" __global__ void plain_tok_ring(const unsigned int* __restrict__ vam,
+                                          const int* __restrict__ pos_start,
+                                          int base, unsigned int* __restrict__ ring, int cap) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int idx = pos_start[0] - base;
+    idx %= cap; if (idx < 0) idx += cap;
+    ring[idx] = vam[0];
+}

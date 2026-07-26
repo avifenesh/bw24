@@ -47,6 +47,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("rms_norm     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- warp-per-row qkv norm (BW24_QKVNORM_W, prefill rows>=64): CPU-oracle gate on the
+    // rms_norm_qkv dispatch at prefill depth (picks rms_norm_qkv_w4_f32). Own numeric config
+    // (float4-lane reduce order) -> f32-band tolerance vs CPU, not bit-identity. ---
+    {
+        let (hd, nh, nkv, t) = (512usize, 4usize, 1usize, 32usize);
+        let eps = 1e-6f32;
+        let (rq, rk) = (nh * t, nkv * t);
+        let q: Vec<f32> = (0..rq * hd).map(|i| pr(i + 29)).collect();
+        let k: Vec<f32> = (0..rk * hd).map(|i| pr(i + 31)).collect();
+        let v: Vec<f32> = (0..rk * hd).map(|i| pr(i + 37)).collect();
+        let wq: Vec<f32> = (0..hd).map(|i| 0.5 + pr(i + 41) * 0.1).collect();
+        let wk: Vec<f32> = (0..hd).map(|i| 0.5 + pr(i + 43) * 0.1).collect();
+        let wv: Vec<f32> = vec![1.0; hd];
+        let cpu_norm = |x: &[f32], w: &[f32], rows: usize| -> Vec<f32> {
+            let mut o = vec![0f32; rows * hd];
+            for r in 0..rows {
+                let xr = &x[r * hd..(r + 1) * hd];
+                let ms: f32 = xr.iter().map(|v| v * v).sum::<f32>() / hd as f32;
+                let s = 1.0 / (ms + eps).sqrt();
+                for i in 0..hd { o[r * hd + i] = xr[i] * s * w[i]; }
+            }
+            o
+        };
+        let (cq, ck, cv) = (cpu_norm(&q, &wq, rq), cpu_norm(&k, &wk, rk), cpu_norm(&v, &wv, rk));
+        let qd = e.htod(&q)?; let kd = e.htod(&k)?; let vd = e.htod(&v)?;
+        let wqd = e.htod(&wq)?; let wkd = e.htod(&wk)?; let wvd = e.htod(&wv)?;
+        let mut dq = e.zeros(rq * hd)?; let mut dk = e.zeros(rk * hd)?; let mut dv = e.zeros(rk * hd)?;
+        e.rms_norm_qkv(&qd, &kd, &vd, &wqd, &wkd, &wvd, &mut dq, &mut dk, &mut dv, hd, rq, rk, eps)?;
+        let d = maxdiff(&cq, &e.dtoh(&dq)?)
+            .max(maxdiff(&ck, &e.dtoh(&dk)?))
+            .max(maxdiff(&cv, &e.dtoh(&dv)?));
+        println!("rms_norm_qkv_w4 (prefill rows) maxdiff={d:.2e} {}",
+                 if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- RANK3 LEVER (add+rmsnorm fuse): add_rms_norm must be BIT-IDENTICAL to add_f32 then
     //     rms_norm_f32 (same residual `res` AND same normed `dst`). ---
     {
@@ -847,6 +882,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            // --- VENDORED llama Q4_0 MMQ GEMM (BW24_PP_Q4MMQ) vs the f32 dequant oracle. ---
+            // Nibble->int8 tile-load dequant is lossless ((q-8) exact in int8) + q8_1 D4 activation
+            // -> same int8-activation band as Q8_0 (~1e-3..1e-2). 2e-2 hard gate. Uses the 12B
+            // gemma QAT q4_0 projections. Also gates the rp split-plane loader BIT-identical to
+            // the raw-18B-block loader (pure address remap, same FP ops in the same order).
+            {
+                const G12: &str = "/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf";
+                // Host mirror of q4_0_split_rp_build: qs plane (16B/block, block-major) then fp16
+                // d plane (2B/block) at out_f*nblk*16.
+                fn repack_q4_0_split(raw: &[u8], nblocks: usize) -> Vec<u8> {
+                    let mut out = vec![0u8; nblocks * 18];
+                    let dplane = nblocks * 16;
+                    for i in 0..nblocks {
+                        let b = &raw[i * 18..i * 18 + 18];
+                        out[i * 16..i * 16 + 16].copy_from_slice(&b[2..18]);
+                        out[dplane + i * 2] = b[0];
+                        out[dplane + i * 2 + 1] = b[1];
+                    }
+                    out
+                }
+                if std::path::Path::new(G12).exists() {
+                    let g12 = GgufFile::open(G12)?;
+                    use bw24_gguf::dequant;
+                    use bw24_runtime::cpu_linear;
+                    for tname in ["blk.0.attn_q.weight", "blk.0.ffn_gate.weight"] {
+                        let Some(t) = g12.find(tname).filter(|t| t.ggml_type == GgmlType::Q4_0) else { continue };
+                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                        let raw = g12.tensor_data(t);
+                        let w_f32 = dequant::dequantize(GgmlType::Q4_0, raw, in_f * out_f);
+                        let wd = e.htod_bytes(raw)?;
+                        let wd_rp = e.htod_bytes(&repack_q4_0_split(raw, out_f * in_f / 32))?;
+                        for tt in [16usize, 64, 128, 512] {
+                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 59) * 0.1).collect();
+                            let xd = e.htod(&x)?;
+                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                            let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                            let d = maxdiff(&cpu, &yb);
+                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let rel = d / scale;
+                            println!("MMQ-Q4_0 {tname} [Q4_0 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
+                                     if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                            let yr = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd_rp, &xd, tt, in_f, out_f, true)?)?;
+                            let nbad = yb.iter().zip(yr.iter())
+                                .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                            println!("MMQ-Q4_0-RP {tname} T={tt}: bit-mismatch {nbad}/{} {}",
+                                     yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                        }
+                    }
+                }
+            }
             // 27B ffn_down NVFP4 shape probe (in_f=17408 not a clean MMQ_ITER_K_FP4 multiple? T=512)
             // — compare MMQ vs the dp4a oracle to isolate the 27B T=513 mismatch.
             {
@@ -1407,6 +1492,170 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
             println!("fa_prefill T={t} Tkv={tkv}: rel={rel:.2e} {}", if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
         }
+        // --- windowed FA prefill (gemma4 SWA, hd256): CPU-oracle rel + f32-vs-bf16-stage BIT
+        // identity (same pre-converter argument as hd512/mmq — any nonzero diff = staging bug).
+        {
+            let (hdw, nhw, nkvw, wnd) = (256usize, 4usize, 1usize, 32usize);
+            let scalew = 1.0f32 / (hdw as f32).sqrt();
+            let cpu_sdpa_w = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+                let mut o = vec![0.0f32; t * nhw * hdw];
+                for head in 0..nhw { for qt in 0..t {
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nhw + head) * hdw..][..hdw];
+                    let mut sc = vec![0.0f32; tkv];
+                    for (tk, s) in sc.iter_mut().enumerate() {
+                        let kv = &k[tk * hdw..][..hdw];
+                        let mut a = 0.0; for d in 0..hdw { a += qv[d] * kv[d]; }
+                        a *= scalew;
+                        if tk > q_pos || (q_pos >= wnd && tk < q_pos - (wnd - 1)) { a = -1e30; }
+                        *s = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nhw + head) * hdw..][..hdw];
+                    for d in 0..hdw {
+                        let mut a = 0.0; for tk in 0..tkv { a += sc[tk] * v[tk * hdw + d]; }
+                        ov[d] = a;
+                    }
+                } }
+                o
+            };
+            for (t, tkv) in [(64usize, 64usize), (100, 100)] {
+                let q: Vec<f32> = (0..hdw*nhw*t).map(|i| pr(i+47)*0.2).collect();
+                let k: Vec<f32> = (0..hdw*nkvw*tkv).map(|i| pr(i+53)*0.2).collect();
+                let v: Vec<f32> = (0..hdw*nkvw*tkv).map(|i| pr(i+61)*0.2).collect();
+                let cpu = cpu_sdpa_w(&q, &k, &v, t, tkv);
+                let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+                let mut o_f32=e.zeros(hdw*nhw*t)?; let mut o_bf=e.zeros(hdw*nhw*t)?;
+                e.fa_prefill_w_arm(&qd,&kd,&vd,&mut o_f32,hdw,nhw,nkvw,t,tkv,scalew,true,wnd,true,false)?;
+                e.fa_prefill_w_arm(&qd,&kd,&vd,&mut o_bf,hdw,nhw,nkvw,t,tkv,scalew,true,wnd,false,false)?;
+                let gf=e.dtoh(&o_f32)?; let gb=e.dtoh(&o_bf)?;
+                let d=maxdiff(&cpu,&gf);
+                let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+                println!("fa_prefill_w T={t} Tkv={tkv} w={wnd}: rel={rel:.2e} {}",
+                         if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+                // The SWA hp door (BW24_FAW_HP + BW24_FA_F16PV) swaps the bf16 arm for the
+                // f16-P/V h2 kernel — a different numeric class; the oracle band above is
+                // its gate and bit-identity does not apply.
+                let hp_door = bw24_engine::fa_f16pv_on() && bw24_engine::faw_hp_on();
+                if hp_door {
+                    println!("fa_prefill_w bf16-stage T={t}: SKIPPED (hp door numeric class)");
+                } else {
+                    let nbad = gf.iter().zip(gb.iter()).filter(|(a,b)| a.to_bits()!=b.to_bits()).count();
+                    println!("fa_prefill_w bf16-stage T={t}: bit-mismatch {nbad}/{} {}",
+                             gf.len(), if nbad==0 {"OK"} else {fails+=1;"FAIL"});
+                }
+            }
+        }
+        // --- hd512 FA prefill (gemma4 globals, MQA nkv=1): CPU-oracle rel gate on BOTH stage
+        // arms + f32-vs-bf16-stage BIT identity (the pre-converter applies the exact
+        // __float2bfloat16 the in-kernel stage applied -> ANY nonzero diff = staging bug).
+        {
+            let (hd5, nh5, nhkv5) = (512usize, 8usize, 1usize);
+            let scale5 = 1.0f32 / (hd5 as f32).sqrt();
+            let cpu_sdpa5 = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+                let mut o = vec![0.0f32; t * nh5 * hd5];
+                for head in 0..nh5 { for qt in 0..t {
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nh5 + head) * hd5..][..hd5];
+                    let mut sc = vec![0.0f32; tkv];
+                    for (tk, s) in sc.iter_mut().enumerate() {
+                        let kv = &k[tk * hd5..][..hd5];
+                        let mut a = 0.0; for d in 0..hd5 { a += qv[d] * kv[d]; }
+                        a *= scale5; if tk > q_pos { a = -1e30; } *s = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nh5 + head) * hd5..][..hd5];
+                    for d in 0..hd5 {
+                        let mut a = 0.0; for tk in 0..tkv { a += sc[tk] * v[tk * hd5 + d]; }
+                        ov[d] = a;
+                    }
+                } }
+                o
+            };
+            for (t, tkv) in [(64usize, 64usize), (100, 100)] {
+                let q: Vec<f32> = (0..hd5*nh5*t).map(|i| pr(i+13)*0.2).collect();
+                let k: Vec<f32> = (0..hd5*nhkv5*tkv).map(|i| pr(i+17)*0.2).collect();
+                let v: Vec<f32> = (0..hd5*nhkv5*tkv).map(|i| pr(i+23)*0.2).collect();
+                let cpu = cpu_sdpa5(&q, &k, &v, t, tkv);
+                let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+                let mut o_f32=e.zeros(hd5*nh5*t)?; let mut o_bf=e.zeros(hd5*nh5*t)?;
+                let mut o_sp=e.zeros(hd5*nh5*t)?; let mut o_sp16=e.zeros(hd5*nh5*t)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_f32,hd5,nh5,nhkv5,t,tkv,scale5,true,true,false,false)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_bf,hd5,nh5,nhkv5,t,tkv,scale5,true,false,false,false)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_sp,hd5,nh5,nhkv5,t,tkv,scale5,true,false,true,false)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_sp16,hd5,nh5,nhkv5,t,tkv,scale5,true,false,true,true)?;
+                let gf=e.dtoh(&o_f32)?; let gb=e.dtoh(&o_bf)?; let gs=e.dtoh(&o_sp)?;
+                let gs16=e.dtoh(&o_sp16)?;
+                let d=maxdiff(&cpu,&gf);
+                let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+                println!("fa_prefill_hd512 T={t} Tkv={tkv}: rel={rel:.2e} {}",
+                         if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+                let nbad = gf.iter().zip(gb.iter()).filter(|(a,b)| a.to_bits()!=b.to_bits()).count();
+                println!("fa_prefill_hd512 bf16-stage T={t}: bit-mismatch {nbad}/{} {}",
+                         gf.len(), if nbad==0 {"OK"} else {fails+=1;"FAIL"});
+                // Single-pass arm: own numeric config (split-K partial order) — oracle band, not bit.
+                let dsp=maxdiff(&cpu,&gs); let relsp=dsp/sc;
+                println!("fa_prefill_hd512_sp T={t} Tkv={tkv}: rel={relsp:.2e} {}",
+                         if relsp<2e-2 {"OK"} else {fails+=1;"FAIL"});
+                // f16-P/V door (BW24_FA_F16PV): f16 P + f16 P@V accum — own numeric class.
+                // Same 2e-2 oracle band: f16's 11-bit mantissa on softmax-weighted O(1) sums
+                // sits at ~1e-3; a band miss means a real staging/fragment bug, not rounding.
+                let d16=maxdiff(&cpu,&gs16); let rel16=d16/sc;
+                println!("fa_prefill_hd512_sp16 T={t} Tkv={tkv}: rel={rel16:.2e} {}",
+                         if rel16<2e-2 {"OK"} else {fails+=1;"FAIL"});
+            }
+        }
+        // --- hd512 GQA gate (31B globals: nkv>1, even group — the h2 head-pair arm's real
+        // shape; the nkv=1 case above never exercises kv_head sharing). CPU oracle indexes
+        // K/V by kv_head = head / (nh/nkv). 2026-07-23: the 31B D512 argmax MISMATCH traced
+        // to the hp arm — this gate pins the class band at the GQA shape.
+        {
+            let (hd6, nh6, nhkv6) = (512usize, 8usize, 4usize);
+            let scale6 = 1.0f32 / (hd6 as f32).sqrt();
+            let grp = nh6 / nhkv6;
+            let cpu_sdpa6 = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+                let mut o = vec![0.0f32; t * nh6 * hd6];
+                for head in 0..nh6 { for qt in 0..t {
+                    let kvh = head / grp;
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nh6 + head) * hd6..][..hd6];
+                    let mut sc = vec![0.0f32; tkv];
+                    for (tk, sv) in sc.iter_mut().enumerate() {
+                        let kv = &k[(tk * nhkv6 + kvh) * hd6..][..hd6];
+                        let mut a = 0.0; for d in 0..hd6 { a += qv[d] * kv[d]; }
+                        a *= scale6; if tk > q_pos { a = -1e30; } *sv = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for sv in sc.iter_mut() { *sv = (*sv - mx).exp(); sum += *sv; }
+                    for sv in sc.iter_mut() { *sv /= sum; }
+                    let ov = &mut o[(qt * nh6 + head) * hd6..][..hd6];
+                    for d in 0..hd6 {
+                        let mut a = 0.0;
+                        for tk in 0..tkv { a += sc[tk] * v[(tk * nhkv6 + kvh) * hd6 + d]; }
+                        ov[d] = a;
+                    }
+                } }
+                o
+            };
+            for (t, tkv) in [(64usize, 64usize), (100, 100)] {
+                let q: Vec<f32> = (0..hd6*nh6*t).map(|i| pr(i+29)*0.2).collect();
+                let k: Vec<f32> = (0..hd6*nhkv6*tkv).map(|i| pr(i+31)*0.2).collect();
+                let v: Vec<f32> = (0..hd6*nhkv6*tkv).map(|i| pr(i+37)*0.2).collect();
+                let cpu = cpu_sdpa6(&q, &k, &v, t, tkv);
+                let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+                let mut o_hp=e.zeros(hd6*nh6*t)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_hp,hd6,nh6,nhkv6,t,tkv,scale6,true,false,true,true)?;
+                let gh=e.dtoh(&o_hp)?;
+                let d=maxdiff(&cpu,&gh);
+                let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+                println!("fa_prefill_hd512 GQA nkv=4 (hp arm) T={t} Tkv={tkv}: rel={rel:.2e} {}",
+                         if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+            }
+        }
         // decode cases (T=1) — K/V come from the QUANTIZED resident cache (q8_0 K / q5_1 V).
         // Quantize the f32 K/V token-by-token via the append kernel, then fa_decode dequants
         // inline. Tolerance loosened vs the f32 path: q5_1 V (5-bit affine) is the looser link.
@@ -1524,7 +1773,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
             let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
             let mut o_rows = e.zeros(hd*nh*t)?;
-            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false, false)?;
+            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false, false, None)?;
             let a = e.dtoh(&o_loop)?; let b = e.dtoh(&o_rows)?;
             let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("fa_decode_rows vs per-row loop base={base_len} T={t}: bitdiff={bitdiff} {}",
@@ -1549,7 +1798,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
                 let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
                 let mut o_rows3 = e.zeros(hd*nh*t)?;
-                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false, false)?;
+                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false, false, None)?;
                 unsafe { std::env::remove_var("BW24_FA_V3"); }
                 let a3 = e.dtoh(&o_loop3)?; let b3 = e.dtoh(&o_rows3)?;
                 let bd3 = a3.iter().zip(&b3).filter(|(x,y)| x.to_bits() != y.to_bits()).count();

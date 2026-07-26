@@ -1,0 +1,16 @@
+build: 795a315c
+== 12B OFFICIAL (bw24 K=3 trim-on vs llama n-max=2), N=3
+llama 12B rep1: 176.23 tok/s  temp 64
+llama 12B rep2: 176.48 tok/s  temp 64
+llama 12B rep3: 176.27 tok/s  temp 64
+bw24 12B rep1  temp 55: plain: 93.71 tok/s | spec: 197.46 tok/s (2.11x) | stream agreement 128/128
+bw24 12B rep1  temp 55: plain: 93.66 tok/s | spec: 200.68 tok/s (2.14x) | stream agreement 128/128
+bw24 12B rep1  temp 54: plain: 93.71 tok/s | spec: 201.01 tok/s (2.15x) | stream agreement 128/128
+== 31B OFFICIAL (bw24 K=4 trim-on vs llama n-max=4), N=3
+llama 31B rep1: 99.62 tok/s  temp 66
+llama 31B rep2: 99.43 tok/s  temp 66
+llama 31B rep3: 99.15 tok/s  temp 66
+bw24 31B rep1  temp 55: plain: 41.52 tok/s | spec: 103.93 tok/s (2.50x) | stream agreement 128/128
+bw24 31B rep1  temp 55: plain: 41.51 tok/s | spec: 103.81 tok/s (2.50x) | stream agreement 128/128
+bw24 31B rep1  temp 55: plain: 41.50 tok/s | spec: 103.77 tok/s (2.50x) | stream agreement 128/128
+STEP6 COMPLETE Sat Jul 25 09:40:05 AM UTC 2026

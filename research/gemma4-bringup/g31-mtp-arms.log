@@ -1,0 +1,21 @@
+build: 960c4c30  baseline K=4 trim = 103.8 (need >=109.4)
+== pmin sweep at K=4
+K4 pmin=0.10: plain: 41.54 tok/s | spec: 104.11 tok/s (2.51x) | stream agreement 128/128
+K4 pmin=0.20: plain: 41.53 tok/s | spec: 103.51 tok/s (2.49x) | stream agreement 128/128
+K4 pmin=0.30: plain: 41.55 tok/s | spec: 104.06 tok/s (2.50x) | stream agreement 128/128
+K4 pmin=0.40: plain: 41.54 tok/s | spec: 104.05 tok/s (2.50x) | stream agreement 128/128
+== pmin unlocks deeper K (drafts stop early when unconfident)
+K5 pmin=0.20: plain: 41.52 tok/s | spec: 104.51 tok/s (2.52x) | stream agreement 128/128
+K5 pmin=0.30: plain: 41.53 tok/s | spec: 104.52 tok/s (2.52x) | stream agreement 128/128
+K6 pmin=0.20: plain: 41.52 tok/s | spec: 103.62 tok/s (2.50x) | stream agreement 128/128
+K6 pmin=0.30: plain: 41.56 tok/s | spec: 103.59 tok/s (2.49x) | stream agreement 128/128
+K7 pmin=0.20: plain: 41.53 tok/s | spec: 103.07 tok/s (2.48x) | stream agreement 128/128
+K7 pmin=0.30: plain: 41.50 tok/s | spec: 102.80 tok/s (2.48x) | stream agreement 128/128
+== Q8_0 drafter (higher acceptance/position, bigger head)
+K4 Q8_0 drafter: plain: 41.52 tok/s | spec: 99.99 tok/s (2.41x) | stream agreement 128/128
+K5 Q8_0 drafter: plain: 41.48 tok/s | spec: 99.71 tok/s (2.40x) | stream agreement 128/128
+K5 Q8_0 pmin=0.25: plain: 41.51 tok/s | spec: 100.21 tok/s (2.41x) | stream agreement 128/128
+== adaptive-K floor
+K6 adaptfloor=2: plain: 41.51 tok/s | spec: 103.72 tok/s (2.50x) | stream agreement 128/128
+K6 adaptfloor=3: plain: 41.51 tok/s | spec: 110.56 tok/s (2.66x) | stream agreement 128/128
+ARMS COMPLETE Sat Jul 25 11:42:13 AM UTC 2026

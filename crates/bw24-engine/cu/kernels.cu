@@ -1,5 +1,6 @@
 // bw24 engine Stage-1 kernels: correctness-first, all f32, no tensor cores.
 // Math matches llama.cpp ggml CUDA ops node-for-node (norm.cu, rope.cu).
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 
@@ -195,6 +196,7 @@ extern "C" __global__ void argmax_final_f32(
 // x: [ncols, nrows] row-major (row stride = ncols). weight: [ncols]. dst same shape as x.
 extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float* __restrict__ w,
                                         float* __restrict__ dst, int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* xr = x + (size_t)row * ncols;
@@ -226,6 +228,7 @@ extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float
 extern "C" __global__ void add_rms_norm_f32(const float* __restrict__ a, const float* __restrict__ b,
                                             const float* __restrict__ w, float* __restrict__ res,
                                             float* __restrict__ dst, int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* ar = a + (size_t)row * ncols;
@@ -776,6 +779,93 @@ extern "C" __global__ void rms_norm_qkv_f32(const float* __restrict__ q, const f
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
 }
 
+// ---- warp-per-row twin of rms_norm_qkv_f32 (prefill T>=16): the block-per-row form runs
+// 17k+ tiny blocks of rms_block() threads over 512-col head rows at ~92GB/s (launch/reduce
+// latency dominates the 2KB/row payload). Here: 8 warps/block, one ROW per warp, float4
+// loads, warp-shuffle reduce only. OWN NUMERIC CONFIG (float4-lane partial sums reduce in a
+// different order than the block tree) — battery-gated, BW24_QKVNORM_W=0 reverts. ----
+extern "C" __global__ void rms_norm_qkv_w4_f32(const float* __restrict__ q, const float* __restrict__ k,
+                                               const float* __restrict__ v,
+                                               const float* __restrict__ wq, const float* __restrict__ wk,
+                                               const float* __restrict__ wv,
+                                               float* __restrict__ dq, float* __restrict__ dk,
+                                               float* __restrict__ dv,
+                                               int ncols, int rq, int rk, int rv, float eps) {
+    const int row  = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= rq + rk + rv) return;
+    const float* xr; const float* w; float* dr;
+    if (row < rq)           { xr = q + (size_t)row * ncols;              w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { int r = row - rq;      xr = k + (size_t)r * ncols; w = wk; dr = dk + (size_t)r * ncols; }
+    else                    { int r = row - rq - rk; xr = v + (size_t)r * ncols; w = wv; dr = dv + (size_t)r * ncols; }
+    const int nc4 = ncols >> 2;
+    const float4* x4 = (const float4*)xr;
+    float sum = 0.0f;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i];
+        sum += xv.x * xv.x + xv.y * xv.y + xv.z * xv.z + xv.w * xv.w;
+    }
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    const float scale = rsqrtf(sum / ncols + eps);
+    const float4* w4 = (const float4*)w;
+    float4* d4 = (float4*)dr;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i]; float4 wv4 = w4[i];
+        float4 ov;
+        ov.x = xv.x * scale * wv4.x; ov.y = xv.y * scale * wv4.y;
+        ov.z = xv.z * scale * wv4.z; ov.w = xv.w * scale * wv4.w;
+        d4[i] = ov;
+    }
+}
+
+extern "C" __global__ void rms_norm_qkv_w4b_f32(const float* __restrict__ q, const float* __restrict__ k,
+                                               const float* __restrict__ v,
+                                               const float* __restrict__ wq, const float* __restrict__ wk,
+                                               const float* __restrict__ wv,
+                                               float* __restrict__ dq, float* __restrict__ dk,
+                                               float* __restrict__ dv,
+                                               __nv_bfloat16* __restrict__ dvb,
+                                               int ncols, int rq, int rk, int rv, float eps,
+                                               int vf16) {
+    const int row  = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= rq + rk + rv) return;
+    const float* xr; const float* w; float* dr;
+    if (row < rq)           { xr = q + (size_t)row * ncols;              w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { int r = row - rq;      xr = k + (size_t)r * ncols; w = wk; dr = dk + (size_t)r * ncols; }
+    else                    { int r = row - rq - rk; xr = v + (size_t)r * ncols; w = wv; dr = dv + (size_t)r * ncols; }
+    const int nc4 = ncols >> 2;
+    const float4* x4 = (const float4*)xr;
+    float sum = 0.0f;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i];
+        sum += xv.x * xv.x + xv.y * xv.y + xv.z * xv.z + xv.w * xv.w;
+    }
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    const float scale = rsqrtf(sum / ncols + eps);
+    const float4* w4 = (const float4*)w;
+    float4* d4 = (float4*)dr;
+    // v rows also emit bf16 (the FA V operand; q/k get theirs post-rope).
+    __nv_bfloat16* db = (row >= rq + rk) ? dvb + (size_t)(row - rq - rk) * ncols : nullptr;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i]; float4 wv4 = w4[i];
+        float4 ov;
+        ov.x = xv.x * scale * wv4.x; ov.y = xv.y * scale * wv4.y;
+        ov.z = xv.z * scale * wv4.z; ov.w = xv.w * scale * wv4.w;
+        d4[i] = ov;
+        if (db) {
+            if (vf16) {   // f16-P/V door: V operand consumed as __half by the h2/sp16 stamps
+                __half* dh = (__half*)db;
+                dh[4*i+0] = __float2half(ov.x); dh[4*i+1] = __float2half(ov.y);
+                dh[4*i+2] = __float2half(ov.z); dh[4*i+3] = __float2half(ov.w);
+            } else {
+                db[4*i+0] = __float2bfloat16(ov.x); db[4*i+1] = __float2bfloat16(ov.y);
+                db[4*i+2] = __float2bfloat16(ov.z); db[4*i+3] = __float2bfloat16(ov.w);
+            }
+        }
+    }
+}
+
 // ---- E4B glue fusion wave 3: rms_norm_qkv + rope_neox2 in ONE launch. Row segments as in
 // rms_norm_qkv_f32; after the norm store, q rows (seg 0) and k rows (seg 1) rope in-block
 // (rope_neox math verbatim on the normed row; barrier between store and rope read). ----
@@ -914,6 +1004,14 @@ extern "C" __global__ void softcap_f32(float* __restrict__ y, float cap, int n) 
     if (i < n) y[i] = cap * tanhf(y[i] / cap);
 }
 
+// ---- gemma4: suppress-token mask — y[row][ids[j]] = -inf for every logits row, so every
+// downstream consumer (host/device argmax, sampler) inherits the model card's forbidden ids. ----
+extern "C" __global__ void mask_ids_rows_f32(float* __restrict__ y, const int* __restrict__ ids,
+                                             int n_ids, int n_vocab, int t) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_ids * t) y[(size_t)(i / n_ids) * n_vocab + ids[i % n_ids]] = -INFINITY;
+}
+
 // ---- gemma4: residual add + layer scale + NEXT layer's attn_norm in one launch.
 // res = (a+b)*c (add_scale_f32 verbatim); dst = rms_norm(res, w) (rms_norm_f32 verbatim). ----
 extern "C" __global__ void add_scale_rms_norm_f32(const float* __restrict__ a, const float* __restrict__ b,
@@ -995,6 +1093,7 @@ extern "C" __global__ void add_scale_rms_norm_q8_1(const float* __restrict__ a, 
                                                    float* __restrict__ res,
                                                    signed char* __restrict__ out_q, float* __restrict__ out_d,
                                                    int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* ar = a + (size_t)row * ncols;
@@ -1235,6 +1334,38 @@ extern "C" __global__ void rope_neox2_f32(float* __restrict__ q, float* __restri
     float x1 = base[j + half];
     base[j]        = x0 * c - x1 * sn;
     base[j + half] = x0 * sn + x1 * c;
+}
+
+// bf16-emit twin (31B glue lane 2026-07-23): identical rope math + stores, ALSO emits the
+// post-rope values as bf16 (the exact __float2bfloat16 the FA pre-converter applied) — the FA
+// operands come out of this launch, killing the separate q/k f32->bf16 convert + re-read.
+extern "C" __global__ void rope_neox2_bf16e_f32(float* __restrict__ q, float* __restrict__ k,
+                                          __nv_bfloat16* __restrict__ qb, __nv_bfloat16* __restrict__ kb,
+                                          const int* __restrict__ pos,
+                                          int head_dim, int n_dims, int nh_q, int nh_k,
+                                          int n_tokens, float theta_scale, float freq_scale,
+                                          const float* __restrict__ ff) {
+    int hd2 = head_dim / 2;
+    int j = threadIdx.x;
+    if (j >= hd2) return;
+    int hr = blockIdx.x;
+    int total_q = nh_q * n_tokens;
+    float* base; __nv_bfloat16* baseb; int tok;
+    if (hr < total_q) { base = q + (size_t)hr * head_dim; baseb = qb + (size_t)hr * head_dim; tok = hr / nh_q; }
+    else { int r = hr - total_q; base = k + (size_t)r * head_dim; baseb = kb + (size_t)r * head_dim; tok = r / nh_k; }
+    int half = n_dims / 2;
+    if (j >= half) return;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = base[j];
+    float x1 = base[j + half];
+    float y0 = x0 * c - x1 * sn;
+    float y1 = x0 * sn + x1 * c;
+    base[j]        = y0;
+    base[j + half] = y1;
+    baseb[j]        = __float2bfloat16(y0);
+    baseb[j + half] = __float2bfloat16(y1);
 }
 
 // ---- tiny async setters/packers (gemma spec round: zero host-memory transfers) ----

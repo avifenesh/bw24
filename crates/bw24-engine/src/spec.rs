@@ -1840,6 +1840,7 @@ impl HybridModel {
                 None,
                 false,
                 crate::Engine::kv_fp8_on(),
+                None,
             )?;
         } else {
             for r in 0..t {

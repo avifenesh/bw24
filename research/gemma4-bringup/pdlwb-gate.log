@@ -1,0 +1,37 @@
+== kernel-check
+temp: 54  arm: kc
+ALL GREEN: kernels match CPU reference.
+== argmax x4
+temp: 57  arm: argmax-gemma-4-12b-it-qat-q4_0
+prefill argmax=623  decode argmax=623  logit maxdiff=2.202e0  MATCH
+temp: 62  arm: argmax-gemma-4-31B_q4_0-it
+prefill argmax=623  decode argmax=623  logit maxdiff=1.269e0  MATCH
+temp: 68  arm: argmax-gemma-4-26B_q4_0-it
+prefill argmax=623  decode argmax=623  logit maxdiff=4.738e0  MATCH
+temp: 64  arm: argmax-gemma-4-E4B_q4_0-it
+prefill argmax=623  decode argmax=623  logit maxdiff=1.107e0  MATCH
+== wb on/off pair (identity + quick delta)
+temp: 63  arm: id-on
+generated 32 tokens in 0.359s = 89.25 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
+temp: 74  arm: id-off
+generated 32 tokens in 0.356s = 89.98 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
+== graph stream gate
+temp: 70  arm: graph
+GRAPH-GATE: eager 89.11 tok/s | graph 85.10 tok/s | stream 96/96 IDENTICAL
+== tg128 pair 12B
+temp: 60
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.93 ± 0.60 |
+temp: 57  arm: tg-1
+generated 128 tokens in 1.395s = 91.77 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.121s) [stop: MaxNew]
+temp: 57
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.26 ± 0.29 |
+temp: 56  arm: tg-1
+generated 128 tokens in 1.393s = 91.86 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 56
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.27 ± 0.27 |
+temp: 56  arm: tg-1
+generated 128 tokens in 1.395s = 91.78 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+== 31B single
+temp: 56  arm: g31
+generated 128 tokens in 3.162s = 40.48 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.313s) [stop: MaxNew]
+PDLWB GATE COMPLETE Thu Jul 23 08:18:41 PM UTC 2026

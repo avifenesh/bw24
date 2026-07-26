@@ -1,0 +1,9 @@
+build: 960c4c30+tree  known: K3f1 200.7 | K3f3 214.9 | K4f3 226.9 | K4f4 240.5
+12B K5 f4 temp 58: plain: 90.57 tok/s | spec: 240.84 tok/s (2.66x) | stream agreement 128/128
+12B K5 f5 temp 58: plain: 89.64 tok/s | spec: 221.80 tok/s (2.47x) | stream agreement 128/128
+12B K6 f5 temp 58: plain: 91.08 tok/s | spec: 215.67 tok/s (2.37x) | stream agreement 128/128
+12B K6 f6 temp 55: plain: 93.64 tok/s | spec: 215.62 tok/s (2.30x) | stream agreement 128/128
+12B K7 f6 temp 55: plain: 93.66 tok/s | spec: 229.07 tok/s (2.45x) | stream agreement 128/128
+31B K6 f5 temp 55: plain: 41.52 tok/s | spec: 111.25 tok/s (2.68x) | stream agreement 128/128
+31B K6 f6 temp 56: plain: 41.41 tok/s | spec: 108.29 tok/s (2.62x) | stream agreement 128/128
+PEAK COMPLETE Sat Jul 25 08:33:41 PM UTC 2026

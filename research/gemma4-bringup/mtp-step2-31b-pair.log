@@ -1,0 +1,23 @@
+build: 5b7dcfe9
+== llama draft-mtp warm server x3 (31B)
+temp: 59  rep: 0
+llama gen: 128 tok @ 90.07 tok/s
+temp: 58  rep: 1
+llama gen: 128 tok @ 95.76 tok/s
+temp: 57  rep: 2
+llama gen: 128 tok @ 96.44 tok/s
+temp: 57  rep: 3
+llama gen: 128 tok @ 96.36 tok/s
+== bw24 spec x3 (K=3, trim ON: own-gen ranks + adaptive)
+temp: 56
+plain: 41.51 tok/s | spec: 99.01 tok/s (2.39x) | stream agreement 128/128
+temp: 56
+plain: 41.50 tok/s | spec: 99.00 tok/s (2.39x) | stream agreement 128/128
+temp: 56
+plain: 41.49 tok/s | spec: 97.98 tok/s (2.36x) | stream agreement 128/128
+== bw24 spec x2 (K=3, trim OFF — trim-vs-untrimmed control)
+temp: 56
+plain: 41.52 tok/s | spec: 96.92 tok/s (2.33x) | stream agreement 128/128
+temp: 56
+plain: 41.50 tok/s | spec: 96.74 tok/s (2.33x) | stream agreement 128/128
+STEP2 COMPLETE Sat Jul 25 07:59:55 AM UTC 2026

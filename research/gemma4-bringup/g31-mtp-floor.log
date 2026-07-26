@@ -1,0 +1,17 @@
+build: 960c4c30  target >=109.4 (llama 99.4 x 1.1)
+== floor x cap grid
+K4 floor=3: plain: 41.55 tok/s | spec: 110.89 tok/s (2.67x) | stream agreement 128/128
+K4 floor=4: plain: 41.46 tok/s | spec: 111.95 tok/s (2.70x) | stream agreement 128/128
+K5 floor=3: plain: 41.49 tok/s | spec: 115.79 tok/s (2.79x) | stream agreement 128/128
+K5 floor=4: plain: 41.49 tok/s | spec: 120.08 tok/s (2.89x) | stream agreement 128/128
+K5 floor=5: plain: 41.50 tok/s | spec: 111.37 tok/s (2.68x) | stream agreement 128/128
+K6 floor=3: plain: 41.50 tok/s | spec: 111.37 tok/s (2.68x) | stream agreement 128/128
+K6 floor=4: plain: 41.51 tok/s | spec: 114.83 tok/s (2.77x) | stream agreement 128/128
+K6 floor=5: plain: 41.49 tok/s | spec: 110.94 tok/s (2.67x) | stream agreement 128/128
+K7 floor=3: plain: 41.50 tok/s | spec: 110.37 tok/s (2.66x) | stream agreement 128/128
+K7 floor=4: plain: 41.51 tok/s | spec: 113.34 tok/s (2.73x) | stream agreement 128/128
+K7 floor=5: plain: 41.51 tok/s | spec: 110.48 tok/s (2.66x) | stream agreement 128/128
+== adaptive OFF control (fixed depth)
+K4 adapt=off: plain: 41.51 tok/s | spec: 112.67 tok/s (2.71x) | stream agreement 128/128
+K6 adapt=off: plain: 41.47 tok/s | spec: 108.56 tok/s (2.62x) | stream agreement 128/128
+FLOOR COMPLETE Sat Jul 25 12:24:04 PM UTC 2026

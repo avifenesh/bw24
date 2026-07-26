@@ -64,6 +64,26 @@ pub fn kernel_nodes(graph: &cudarc::driver::CudaGraph)
     Ok(out)
 }
 
+/// Node-type census of a captured graph (debug: which node types remain — mem-alloc/free
+/// nodes are the graph-launch-latency suspects).
+pub fn node_census(graph: &cudarc::driver::CudaGraph)
+    -> Result<std::collections::BTreeMap<String, usize>, Box<dyn std::error::Error>>
+{
+    let g = graph.cu_graph();
+    let mut n: usize = 0;
+    unsafe { cu_try(sys::cuGraphGetNodes(g, std::ptr::null_mut(), &mut n), "cuGraphGetNodes(count)")?; }
+    let mut nodes: Vec<sys::CUgraphNode> = vec![std::ptr::null_mut(); n];
+    unsafe { cu_try(sys::cuGraphGetNodes(g, nodes.as_mut_ptr(), &mut n), "cuGraphGetNodes")?; }
+    nodes.truncate(n);
+    let mut out: std::collections::BTreeMap<String, usize> = Default::default();
+    for node in nodes {
+        let mut ty = sys::CUgraphNodeType::CU_GRAPH_NODE_TYPE_EMPTY;
+        unsafe { cu_try(sys::cuGraphNodeGetType(node, &mut ty), "cuGraphNodeGetType")?; }
+        *out.entry(format!("{ty:?}")).or_insert(0) += 1;
+    }
+    Ok(out)
+}
+
 /// Push updated launch params for one node into the instantiated exec. `params` is the
 /// (edited) struct from [`kernel_nodes`] — same node topology, new geometry/arg values.
 pub fn set_exec_params(graph: &cudarc::driver::CudaGraph, node: sys::CUgraphNode,

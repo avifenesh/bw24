@@ -1,0 +1,10 @@
+temp: 57
+== fa_prefill_w_bf16_p1h2
+  NO REP; ==PROF== lines:
+==PROF== Connected to process 2687831 (/home/avifenesh/projects/bw24-g12/target/release/run-gen)
+==PROF== Disconnected from process 2687831
+== fa_prefill_bf16_hd512_sp16h2
+  NO REP; ==PROF== lines:
+==PROF== Connected to process 2830588 (/home/avifenesh/projects/bw24-g12/target/release/run-gen)
+==PROF== Disconnected from process 2830588
+NCU PROBE COMPLETE Thu Jul 23 09:39:34 AM UTC 2026

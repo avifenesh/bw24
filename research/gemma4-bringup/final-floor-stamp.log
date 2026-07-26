@@ -1,0 +1,28 @@
+build: f55eb465+floor-default tree
+== gates
+ALL GREEN: kernels match CPU reference.
+gemma-4-12b-it-qat-q4_0.gguf: prefill argmax=623  decode argmax=623  logit maxdiff=2.517e0  MATCH
+gemma-4-31B_q4_0-it.gguf: prefill argmax=623  decode argmax=623  logit maxdiff=1.269e0  MATCH
+gemma-4-26B_q4_0-it.gguf: prefill argmax=623  decode argmax=623  logit maxdiff=4.738e0  MATCH
+gemma-4-E4B_q4_0-it.gguf: prefill argmax=623  decode argmax=623  logit maxdiff=1.107e0  MATCH
+== spec stream gate, K ladder (31B + 12B naked floor defaults)
+31B K=1: stream agreement 64/64
+31B K=2: stream agreement 64/64
+31B K=5: stream agreement 64/64
+31B K=8: stream agreement 64/64
+12B K=1: stream agreement 64/64
+== OFFICIAL bw24 stamps N=3 (naked floor defaults)
+bw24 31B K5 rep179 temp 56: plain: 41.34 tok/s | spec: 118.72 tok/s (2.87x) | stream agreement 128/128
+bw24 31B K5 rep1 temp 54: plain: 41.52 tok/s | spec: 119.56 tok/s (2.88x) | stream agreement 128/128
+bw24 31B K5 rep1 temp 56: plain: 41.50 tok/s | spec: 120.28 tok/s (2.90x) | stream agreement 128/128
+bw24 12B K4 rep1 temp 56: plain: 93.48 tok/s | spec: 244.65 tok/s (2.62x) | stream agreement 128/128
+bw24 12B K4 rep1 temp 56: plain: 93.65 tok/s | spec: 244.84 tok/s (2.61x) | stream agreement 128/128
+bw24 12B K4 rep1 temp 56: plain: 93.67 tok/s | spec: 244.80 tok/s (2.61x) | stream agreement 128/128
+== llama same-session re-pairs (31B n-max=4, 12B n-max=2)
+llama 31B rep1: 99.53 tok/s
+llama 31B rep2: 98.58 tok/s
+llama 31B rep3: 99.01 tok/s
+llama 12B rep1: 172.37 tok/s
+llama 12B rep2: 174.91 tok/s
+llama 12B rep3: 158.08 tok/s
+FINAL STAMP COMPLETE Sun Jul 26 01:34:04 AM UTC 2026

@@ -3217,6 +3217,17 @@ impl HybridModel {
          1.0, swa)
     }
 
+    /// Suppress-token mask over t logits rows (tokenizer.ggml.suppress_tokens; no-op when the
+    /// model ships none). NOT monotonic like softcap — must run before every argmax/sample, so
+    /// every gemma4 logits tail (forward/prime/decode/dc/verify/e4b) calls this on device ld.
+    fn gemma4_suppress(&self, e: &Engine, ld: &mut CudaSlice<f32>, t: usize)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        if let Some((ids, n)) = self.gemma4_aux.as_ref().and_then(|a| a.suppress_d.as_ref()) {
+            e.mask_ids_rows(ld, ids, *n, self.output.out_features(), t)?;
+        }
+        Ok(())
+    }
+
     /// gemma4 attention (R5 geometry, R7 weightless V-norm on the RAW K projection, R9 dual rope).
     /// `cache`: Some => PRIME mode — append the T post-rope K / normed V rows into the quantized
     /// KV cache (same per-row quantize math as the decode append) and advance len. Fresh-prompt
@@ -3229,6 +3240,9 @@ impl HybridModel {
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
 
+        // quantize-once window: q/k/v share `h` — the MMQ D4 activation quantizes once
+        // (h stays borrowed across the triple, so the cache key can't go stale).
+        e.mmq_act_begin();
         let q0 = e.matmul(&fa.wq, h, t)?;   // [t, nh*hd]
         let k0 = e.matmul(&fa.wk, h, t)?;   // [t, nkv*hd]
         // globals ship no v_proj (wv := wk at load) — V input is the SAME projection output;
@@ -3239,13 +3253,40 @@ impl HybridModel {
         let mut k = e.uninit(t * nkv * hd)?;
         // R7: V = weightless rms_norm of the raw projection; NEVER roped.
         let mut v = e.uninit(t * nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        // 31B glue lane: producers emit the bf16 FA operands (norm emits vb; rope emits qb/kb
+        // post-rope) — kills 3 f32->bf16 converts + re-reads per layer. Bit-identical operands
+        // (same __float2bfloat16); BW24_FA_EMIT=0 reverts to the convert-in-FA path.
+        static EMIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let emit = t >= 16 && crate::Engine::qkvnorm_w_on_prefill(nh * t + 2 * nkv * t, hd)
+            && *EMIT.get_or_init(|| std::env::var("BW24_FA_EMIT").map(|s| s != "0").unwrap_or(true));
+        let mut qb = e.alloc_uninit::<u8>(if emit { t * nh * hd * 2 } else { 1 })?;
+        let mut kb = e.alloc_uninit::<u8>(if emit { t * nkv * hd * 2 } else { 1 })?;
+        let mut vb = e.alloc_uninit::<u8>(if emit { t * nkv * hd * 2 } else { 1 })?;
+        // f16-P/V door: emit V as f16 straight from the norm when this layer's FA consumer
+        // reads f16 — kills the per-layer bf16->f16 re-encode (1.4GB/pass on 31B SWA).
+        let v_f16 = emit && crate::fa_f16pv_on() && match hd {
+            512 => true,
+            256 => swa && crate::faw_hp_on() && nh % 2 == 0 && (nh / nkv) % 2 == 0,
+            _ => false,
+        };
+        if emit {
+            e.rms_norm_qkv_w4b(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                               &aux.ones, &mut q, &mut k, &mut v, &mut vb,
+                               hd, nh * t, nkv * t, eps, v_f16)?;
+        } else {
+            e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                           &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        }
 
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        if emit {
+            e.rope_neox2_bf16e(&mut q, &mut k, &mut qb, &mut kb, pos_d, hd, hd, nh, nkv, t,
+                               base, 1.0, ff)?;
+        } else {
+            e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        }
 
         if let Some(cache) = cache {
             let kvl = cache.kv[il].as_mut().unwrap();
@@ -3260,9 +3301,20 @@ impl HybridModel {
         // is exact — SWA rides fa_prefill (hd-256 stamp), the hd-512 globals stay naive.
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         if swa && t > win {
-            e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+            if hd == 256 && std::env::var("BW24_NOFA").is_err() {
+                if emit { e.fa_prefill_w_pre(&qb, &kb, &vb, &mut attn, hd, nh, nkv, t, t,
+                                             scale, true, win, v_f16)?; }
+                else { e.fa_prefill_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true,
+                                      win)?; }
+            } else {
+                e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+            }
         } else if hd == 256 && std::env::var("BW24_NOFA").is_err() {
             e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        } else if hd == 512 && std::env::var("BW24_NOFA").is_err() {
+            if emit { e.fa_prefill_hd512_pre(&qb, &kb, &vb, &mut attn, hd, nh, nkv, t, t,
+                                             scale, true, v_f16)?; }
+            else { e.fa_prefill_hd512(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?; }
         } else {
             e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         }
@@ -3663,7 +3715,11 @@ impl HybridModel {
                 } else { None };
                 match fused {
                     Some(p) => p,
-                    None => (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?),
+                    None => {
+                        // quantize-once window: gate/up share `zsh` (borrowed across the pair).
+                        e.mmq_act_begin();
+                        (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?)
+                    }
                 }
             };
             let mut act = e.uninit(t * n_ff)?;
@@ -3822,10 +3878,12 @@ impl HybridModel {
             e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
             let mut ld = e.matmul(&self.output, &hlast, 1)?;
             e.softcap(&mut ld, cap, n_vocab)?;
+            self.gemma4_suppress(e, &mut ld, 1)?;
             e.dtoh(&ld)?
         } else {
             let mut ld = e.matmul(&self.output, &hn, t)?;
             e.softcap(&mut ld, cap, t * n_vocab)?;
+            self.gemma4_suppress(e, &mut ld, t)?;
             e.dtoh(&ld)?
         };
         Ok(logits)
@@ -3866,6 +3924,7 @@ impl HybridModel {
         let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, self.output.out_features())?;
+        self.gemma4_suppress(e, &mut ld, 1)?;
         let logits = e.dtoh(&ld)?;
         Ok((logits, h_seed, hiddens))
     }
@@ -3903,12 +3962,14 @@ impl HybridModel {
         let mut q = e.uninit(nh * hd)?;
         let mut k = e.uninit(nkv * hd)?;
         let mut v = e.uninit(nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
+        // E4B wave-3 fold, m=1 completion (2026-07-23): the rows arms took this fold at
+        // 550fcfa5; the decode-step trio kept 2 launches/layer it doesn't need.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
                               kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
@@ -3928,7 +3989,7 @@ impl HybridModel {
             e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
                              kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)), false,
-                             false)?;
+                             false, None)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
@@ -3939,7 +4000,7 @@ impl HybridModel {
             let base = kvl.len as i32;
             e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, &kvl.len_d, -1, 1, scale,
-                               win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               win, kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) } else { (0, kvl.len) };
@@ -4003,10 +4064,259 @@ impl HybridModel {
         }
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
-        let logits = e.matmul(&self.output, &hn, 1)?;
+        let mut logits = e.matmul(&self.output, &hn, 1)?;
+        self.gemma4_suppress(e, &mut logits, 1)?;   // cap skipped (monotonic); the mask is not
         e.argmax_token_device_into(&logits, tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;
         if cap_bucket_max.is_none() { cache.pos += 1; }
+        Ok(())
+    }
+
+    /// Persistent transient slots for the ALLOC-FREE captured dc step (the graph door):
+    /// every buffer the step produces per token lives here, allocated ONCE pre-capture, so
+    /// the captured graph carries zero cuMemAllocAsync/Free nodes (the 226us/launch tax,
+    /// osrt 2026-07-23). Sized for the model's max per-layer shapes.
+
+    /// Build the slot set (call OUTSIDE any capture).
+    pub fn g4_dc_slots(&self, e: &Engine) -> Result<G4DcSlots, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let n_vocab = self.output.out_features();
+        let n_layers = self.layers.len();
+        let (mut qmax, mut kvmax, mut ffmax) = (0usize, 0usize, 0usize);
+        for il in 0..n_layers {
+            let (hd, nkv, nh, _b, _s, _w) = self.gemma4_geom(il);
+            qmax = qmax.max(nh * hd);
+            kvmax = kvmax.max(nkv * hd);
+            if let crate::hybrid::Ffn::Dense { ffn_gate, .. } = &self.layers[il].ffn {
+                ffmax = ffmax.max(ffn_gate.out_features());
+            }
+        }
+        Ok(G4DcSlots {
+            x: e.uninit(n_embd)?, xn: e.uninit(n_embd)?, cur: e.uninit(n_embd)?,
+            hq: e.alloc_i8_uninit(n_embd)?, hd_: e.uninit(n_embd / 32)?,
+            q0: e.uninit(qmax)?, k0: e.uninit(kvmax)?, v0: e.uninit(kvmax)?,
+            q: e.uninit(qmax)?, k: e.uninit(kvmax)?, v: e.uninit(kvmax)?,
+            attn: e.uninit(qmax)?, o: e.uninit(n_embd)?,
+            attn_out: e.uninit(n_embd)?, zsh: e.uninit(n_embd)?,
+            // zq/zd feed the wo matvec (nh*hd rows — 4096 on hd512 globals > n_embd),
+            // the ffn entry (n_embd) and the lm_head (n_embd): size for the max.
+            zq: e.alloc_i8_uninit(n_embd.max(qmax))?, zd: e.uninit(n_embd.max(qmax) / 32)?,
+            gate: e.uninit(ffmax)?, up: e.uninit(ffmax)?,
+            act: e.uninit(ffmax)?, actq: e.alloc_i8_uninit(ffmax)?, actd: e.uninit(ffmax / 32)?,
+            f0: e.uninit(n_embd)?, sn: e.uninit(n_embd)?,
+            hn: e.uninit(n_embd)?, logits: e.uninit(n_vocab)?,
+        })
+    }
+
+    /// m=1 pre-quantized matvec into a slot — mirrors matmul_pre's m=1 mmvq route exactly
+    /// (rp4-mirror bytes; mmvq_supports guaranteed for gemma4 q4_0/q6_K).
+    fn g4_matvec_m1_into(&self, e: &Engine, w: &crate::model::GpuTensor,
+                         aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, y: &mut CudaSlice<f32>)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } =>
+                (bytes, *qtype, *row_bytes, *scale, *rp),
+            _ => return Err("g4_matvec_m1_into: non-quant tensor".into()),
+        };
+        let (mbytes, mrp) = match w {
+            GpuTensor::Quant { rp4: Some(m4), .. } => (m4, true),
+            _ => (bytes, rp),
+        };
+        e.qmatvec_mmvq_into(mbytes, aq, ad, 1, w.in_features(), w.out_features(),
+                            qtype, row_bytes, scale, mrp, y)
+    }
+
+    /// ALLOC-FREE dc step (capture body): kernel-for-kernel mirror of
+    /// `gemma4_decode_step_dc_into` at t=1 with every transient slot-fed. Dense gemma4 only
+    /// (12B/31B; uniform q4_0 trunk guarantees the fused2/3 arms).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemma4_decode_step_dc_slotted(&self, e: &Engine, token_d: &CudaSlice<u32>,
+                                         pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                         embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                         n_vocab: usize, cap_bucket_max: Option<(usize, usize)>,
+                                         sl: &mut G4DcSlots, tok_out: &mut CudaSlice<u32>,
+                                         ring: Option<(&mut CudaSlice<u32>, usize)>)
+                                         -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        e.embed_gather_device_into(embd_gpu, token_d, &mut sl.x, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut sl.x, (n_embd as f32).sqrt(), n_embd)?;
+        let n_layers = self.layers.len();
+        let mut has_carry = false;
+        for il in 0..n_layers {
+            if !has_carry {
+                e.rms_norm_q8_1_into(&sl.x, self.layers[il].attn_norm.float_data(), n_embd, 1,
+                                     eps, &mut sl.hq, &mut sl.hd_)?;
+            }
+            has_carry = true;
+            let layer = &self.layers[il];
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            self.gemma4_decode_attn_dc_slotted(e, fa, il, pos_d, cache, cap_bucket_max, sl)?;
+            e.rms_norm(&sl.o, layer.post_attn_norm.float_data(), &mut sl.cur, n_embd, 1, eps)?;
+            let next_norm = if il + 1 < n_layers {
+                Some(self.layers[il + 1].attn_norm.float_data())
+            } else { None };
+            self.gemma4_layer_tail_slotted(e, layer, next_norm, sl)?;
+            std::mem::swap(&mut sl.x, &mut sl.xn);
+        }
+        e.rms_norm(&sl.x, self.output_norm.float_data(), &mut sl.hn, n_embd, 1, eps)?;
+        e.quantize_q8_1_into(&sl.hn, 1, n_embd, &mut sl.zq, &mut sl.zd)?;
+        // lm_head via the same m=1 mmvq route as matmul (q6_K on the gemma4 family).
+        {
+            let (zq, zd) = (&sl.zq, &sl.zd);
+            let zq = unsafe { &*(zq as *const CudaSlice<i8>) };
+            let zd = unsafe { &*(zd as *const CudaSlice<f32>) };
+            self.g4_matvec_m1_into(e, &self.output, zq, zd, &mut sl.logits)?;
+        }
+        self.gemma4_suppress(e, &mut sl.logits, 1)?;
+        e.argmax_token_device_into(&sl.logits, tok_out, n_vocab)?;
+        if let Some((ring, base)) = ring {
+            // in-graph token parking: slot = (pos - base) % ring.len(); the door drains
+            // with ONE sync per chunk instead of a per-token dtoh (the launch-serialization
+            // fix — llama's 885us/launch overlaps GPU work because nothing waits per token).
+            e.plain_tok_ring(tok_out, pos_d, base, ring)?;
+        }
+        e.inc_seqlen(pos_d)?;
+        if cap_bucket_max.is_none() { cache.pos += 1; }
+        Ok(())
+    }
+
+    /// Slot-fed dc attention: mirrors gemma4_decode_attn_dc's CAPTURE arm kernel-for-kernel.
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_decode_attn_dc_slotted(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer,
+                                     il: usize, pos_d: &CudaSlice<i32>, cache: &mut Cache,
+                                     cap_bucket_max: Option<(usize, usize)>, sl: &mut G4DcSlots)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        {
+            let hq = unsafe { &*(&sl.hq as *const CudaSlice<i8>) };
+            let hdq = unsafe { &*(&sl.hd_ as *const CudaSlice<f32>) };
+            if swa {
+                if !e.matmul_q4_fused3_into(&fa.wq, &fa.wk, &fa.wv, hq, hdq,
+                                            &mut sl.q0, &mut sl.k0, &mut sl.v0)? {
+                    return Err("slotted step: fused3 unavailable (non-uniform trunk)".into());
+                }
+            } else {
+                if !e.matmul_q4_fused2_into(&fa.wq, &fa.wk, hq, hdq, &mut sl.q0, &mut sl.k0)? {
+                    return Err("slotted step: fused2 unavailable".into());
+                }
+                let k0r = unsafe { &*(&sl.k0 as *const CudaSlice<f32>) };
+                e.copy_into(&mut sl.v0, 0, k0r, nkv * hd)?;
+            }
+        }
+        // E4B wave-3 fold, m=1 completion (2026-07-23) — MUST mirror the dc_into arm
+        // kernel-for-kernel (graph stream-identity gate).
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        let kvl = cache.kv[il].as_mut().unwrap();
+        let kv_fp8 = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+        if crate::Engine::qkv_append_on() {
+            // append fold (2026-07-23): mirrors dc_into.
+            e.rms_norm_qkv_rope_append_dc(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(),
+                fa.k_norm.float_data(), &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv,
+                pos_d, nh, nkv, base, 1.0, ff, eps,
+                &mut kvl.k, &mut kvl.v, &kvl.len_d, kvl.k_tok_bytes, kvl.v_tok_bytes, kv_fp8)?;
+        } else {
+            e.rms_norm_qkv_rope(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv,
+                                pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            e.append_kv_quantized_dc(&sl.k, &sl.v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                     kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                     kv_fp8)?;
+        }
+        e.inc_seqlen(&mut kvl.len_d)?;
+        let (b_swa, b_glob) = cap_bucket_max.expect("slotted step is capture-only");
+        let k_view = e.view_u8(&kvl.k, kvl.k.len());
+        let v_view = e.view_u8(&kvl.v, kvl.v.len());
+        let rows_on = std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0");
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        // combine-q8 emit (wave-5b m=1 port): the rows arms quantize inside the combine —
+        // the standalone quantize launch runs only on the non-rows fallback. MUST mirror
+        // the dc_into arm branch-for-branch (stream gate).
+        let mut fa_q8 = false;
+        if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
+            e.fa_decode_rows(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv, b_glob - 1,
+                             1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                             Some((&kvl.len_d, -1)), false, false,
+                             Some((&mut sl.zq, &mut sl.zd)))?;
+            fa_q8 = true;
+        } else if swa && b_swa > win && hd == 256 && rows_on {
+            e.fa_decode_rows_w(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv,
+                               &kvl.len_d, -1, 1, scale, win,
+                               kvl.k_tok_bytes, kvl.v_tok_bytes,
+                               Some((&mut sl.zq, &mut sl.zd)))?;
+            fa_q8 = true;
+        } else {
+            let b = if swa { b_swa } else { b_glob };
+            e.fa_decode_dc(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv, &kvl.len_d, b,
+                           scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                           swa && crate::Engine::wkv_on())?;
+        }
+        if !fa_q8 {
+            let aq = unsafe { &*(&sl.attn as *const CudaSlice<f32>) };
+            e.quantize_q8_1_into(aq, 1, nh * hd, &mut sl.zq, &mut sl.zd)?;
+        }
+        {
+            let zq = unsafe { &*(&sl.zq as *const CudaSlice<i8>) };
+            let zd = unsafe { &*(&sl.zd as *const CudaSlice<f32>) };
+            self.g4_matvec_m1_into(e, &fa.wo, zq, zd, &mut sl.o)?;
+        }
+        Ok(())
+    }
+
+    /// Slot-fed dense layer tail: mirrors gemma4_layer_tail_core (t=1, no pre-norm fold) +
+    /// tail_add_nq kernel-for-kernel; the next layer's (hq, hd_) carry lands in the slots.
+    fn gemma4_layer_tail_slotted(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                                 next_norm: Option<&CudaSlice<f32>>, sl: &mut G4DcSlots)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let bits = layer.gemma4.as_ref().unwrap();
+        let crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &layer.ffn
+        else { return Err("slotted tail: dense ffn only".into()) };
+        e.add_rms_norm(&sl.cur, &sl.x, bits.ffn_norm.float_data(), &mut sl.attn_out,
+                       &mut sl.zsh, n_embd, 1, eps)?;
+        let n_ff = ffn_gate.out_features();
+        {
+            let zshr = unsafe { &*(&sl.zsh as *const CudaSlice<f32>) };
+            e.quantize_q8_1_into(zshr, 1, n_embd, &mut sl.zq, &mut sl.zd)?;
+        }
+        {
+            let zq = unsafe { &*(&sl.zq as *const CudaSlice<i8>) };
+            let zd = unsafe { &*(&sl.zd as *const CudaSlice<f32>) };
+            if !e.matmul_q4_fused2_into(ffn_gate, ffn_up, zq, zd, &mut sl.gate, &mut sl.up)? {
+                return Err("slotted tail: ffn fused2 unavailable".into());
+            }
+        }
+        debug_assert!(e.uses_q8_1_fast(ffn_down));
+        {
+            let upr = unsafe { &*(&sl.up as *const CudaSlice<f32>) };
+            let upv = e.view(upr, n_ff);
+            let up_all = upv.slice(0..n_ff);
+            let gr = unsafe { &*(&sl.gate as *const CudaSlice<f32>) };
+            e.gelu_tanh_mul_q8_1_into(gr, &up_all, &mut sl.act, n_ff, 1,
+                                      &mut sl.actq, &mut sl.actd)?;
+        }
+        {
+            let aq = unsafe { &*(&sl.actq as *const CudaSlice<i8>) };
+            let ad = unsafe { &*(&sl.actd as *const CudaSlice<f32>) };
+            self.g4_matvec_m1_into(e, ffn_down, aq, ad, &mut sl.f0)?;
+        }
+        e.rms_norm(&sl.f0, bits.post_ffw_norm.float_data(), &mut sl.sn, n_embd, 1, eps)?;
+        match next_norm {
+            Some(w) => {
+                e.add_scale_rms_norm_q8_1_into(&sl.sn, &sl.attn_out, bits.layer_scale, w,
+                                               &mut sl.xn, n_embd, 1, eps,
+                                               &mut sl.hq, &mut sl.hd_)?;
+            }
+            None => {
+                e.add_scale(&sl.sn, &sl.attn_out, bits.layer_scale, &mut sl.xn, n_embd)?;
+            }
+        }
         Ok(())
     }
 
@@ -4045,17 +4355,30 @@ impl HybridModel {
         let mut q = e.uninit(nh * hd)?;
         let mut k = e.uninit(nkv * hd)?;
         let mut v = e.uninit(nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
+        // E4B wave-3 fold, m=1 completion (2026-07-23): mirrored by the slotted arm.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
-        e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
+        let kv_fp8 = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+        if crate::Engine::qkv_append_on() {
+            // append fold (2026-07-23): norm+rope+cache-append in ONE launch.
+            e.rms_norm_qkv_rope_append_dc(&q0, &k0, &v0, fa.q_norm.float_data(),
+                fa.k_norm.float_data(), &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                pos_d, nh, nkv, base, 1.0, ff, eps,
+                &mut kvl.k, &mut kvl.v, &kvl.len_d, kvl.k_tok_bytes, kvl.v_tok_bytes, kv_fp8)?;
+        } else {
+            e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                                pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                     kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, kv_fp8)?;
+        }
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
+        // combine-q8 emit carrier (wave-5b m=1 port): rows arms fill this; the tail then
+        // rides g4_matvec_m1_into instead of matmul's internal quantize.
+        let mut fa_q8: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         // Weight prefetch NOT wired here (26B/31B/qwen probes 2026-07-13: 26B flat
         // 196.6/196.0 vs 196.4/196.1 — MoE ffn dilutes wo; 31B −0.2% — dense decode sits
         // at the DRAM wall, no idle window to front-load into). E4B keeps the arm
@@ -4073,16 +4396,22 @@ impl HybridModel {
                     // dc: len_d is live (inc_seqlen) — device-len rides it, plus=-1.
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
                                      scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false, false)?;
+                                     Some((&kvl.len_d, -1)), false, false,
+                                     Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else if swa && kvl.len > win && hd == 256
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, &kvl.len_d, -1,
-                                       1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                       1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                       Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else {
                     let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) }
                                           else { (0, kvl.len) };
@@ -4105,13 +4434,19 @@ impl HybridModel {
                 let rows_on = std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0");
                 let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
                 if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, b_glob - 1,
                                      1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false, false)?;
+                                     Some((&kvl.len_d, -1)), false, false,
+                                     Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else if swa && b_swa > win && hd == 256 && rows_on {
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                        &kvl.len_d, -1, 1, scale, win,
-                                       kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                       kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                       Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else {
                     let b = if swa { b_swa } else { b_glob };
                     e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
@@ -4119,6 +4454,13 @@ impl HybridModel {
                                    swa && crate::Engine::wkv_on())?;
                 }
             }
+        }
+        // combine-q8 emit (wave-5b m=1 port): the rows arms produced the wo activation pair
+        // in-combine — ride the slotted arm's exact matvec route (parity by construction).
+        if let Some((aq8, ad8)) = fa_q8 {
+            let mut y = e.uninit(fa.wo.out_features())?;
+            self.g4_matvec_m1_into(e, &fa.wo, &aq8, &ad8, &mut y)?;
+            return Ok(y);
         }
         Ok(e.matmul(&fa.wo, &attn, 1)?)
     }
@@ -4154,7 +4496,22 @@ impl HybridModel {
         let nkv_g = g4.head_count_kv.iter().zip(g4.swa_pattern.iter())
             .find(|p| !*p.1).map(|p| *p.0 as usize).unwrap_or(2);
         let mut graphs: std::collections::HashMap<((bool, usize), (bool, usize), bool, bool),
-                                                  cudarc::driver::CudaGraph> = Default::default();
+                                                  (cudarc::driver::CudaGraph,
+                                                   Vec<Box<dyn std::any::Any + Send>>)> = Default::default();
+        // ALLOC-FREE capture: persistent transient slots — the captured graph carries zero
+        // mem nodes (the 226us/launch tax). Slots must outlive every cached graph.
+        let mut slots = self.g4_dc_slots(e)?;
+        // Chunked replay ring: tokens park on-device; ONE drain sync per chunk. ring_base is
+        // baked at the door entry (the modulo keeps every capture valid indefinitely).
+        const RING: usize = 64;
+        // DRAIN pinned at 1 (2026-07-23): relaunching the SAME graph exec before its prior
+        // launch completes is ILLEGAL (chunk=4 -> ILLEGAL_ADDRESS; chunk=1 clean). Pipelining
+        // needs alternating exec instances — and the measured payoff was ~0 (the ~200us
+        // cuGraphLaunch host cost already overlaps its own launch's GPU work; llama pays
+        // 885us/launch the same way). BW24_GRAPH_DRAIN raises it only for experiments.
+        const DRAIN: usize = 1;
+        let mut ring = e.stream().alloc_zeros::<u32>(RING)?;
+        let ring_base = prompt_pos;
         let mut out = Vec::with_capacity(max_new);
         let mut reason = StopReason::MaxNew;
         let mut next = first_token;
@@ -4190,16 +4547,26 @@ impl HybridModel {
                 let len_save: Vec<Option<i32>> = cache.kv.iter()
                     .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
                 let tok_save = e.dtoh_u32_one(&token_d)?;
+                // RETAINED capture (2026-07-23): the plain capture_graph left pool-transient
+                // clones as dead COPY NODES replayed every launch — the E4B 0.74ms/token
+                // regression class, and this door's measured -8.8%. The keeper pins warmup
+                // transients so the captured graph holds kernel nodes only.
                 let graph = {
                     let tok_ref = &mut token_d;
                     let pos_ref = &mut pos_d;
                     let cache_ref = &mut *cache;
-                    e.capture_graph(|e| {
+                    let slots_ref = &mut slots;
+                    let ring_ref = &mut ring;
+                    e.capture_graph_retained_flags(
+                        cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_USE_NODE_PRIORITY,
+                        |e| {
                         // self-feeding: the argmax writes token_d itself.
                         let tok_in = unsafe { &*(tok_ref as *const CudaSlice<u32>) };
-                        self.gemma4_decode_step_dc_into(e, tok_in, pos_ref, embd_gpu, qt, rb,
-                                                        cache_ref, n_vocab, Some(bucket_max),
-                                                        tok_ref)
+                        let sl = unsafe { &mut *(slots_ref as *mut G4DcSlots) };
+                        let rg = unsafe { &mut *(ring_ref as *mut CudaSlice<u32>) };
+                        self.gemma4_decode_step_dc_slotted(e, tok_in, pos_ref, embd_gpu, qt, rb,
+                                                           cache_ref, n_vocab, Some(bucket_max),
+                                                           sl, tok_ref, Some((rg, ring_base)))
                     })?
                 };
                 cache.rollback(e, &snap, 0)?;
@@ -4210,13 +4577,62 @@ impl HybridModel {
                     }
                 }
                 e.set_u32_one(&mut token_d, tok_save)?;
+                if std::env::var("BW24_GRAPH_CENSUS").as_deref() == Ok("1") {
+                    if let Ok(c) = crate::graph_update::node_census(&graph.0) {
+                        eprintln!("[graph-census] {c:?}");
+                    }
+                }
                 graphs.insert(key, graph);
                 captures += 1;
             }
-            graphs.get(&key).unwrap().launch()?;
-            cache.pos += 1;
-            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
-            next = e.dtoh_u32_one(&token_d)?;
+            // CHUNKED REPLAY: enqueue up to DRAIN launches back-to-back (the ~200us host
+            // cost of each cuGraphLaunch overlaps the PREVIOUS launch's ~11ms GPU work),
+            // then ONE sync + ring drain. The chunk must stay inside this bucket key and
+            // the budget; capture warmups already emitted their tokens through the ring.
+            let mut chunk = 1usize;
+            let drain_cap: usize = std::env::var("BW24_GRAPH_DRAIN").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(DRAIN);
+            while chunk < drain_cap && out.len() + chunk < max_new {
+                let t_next = cache.pos + 1 + chunk;
+                let key_s2 = if t_next > win { (true, usize::MAX) }
+                             else { e.fa_bucket_key(t_next, hd_s, nkv_s, crate::Engine::wkv_on()) };
+                let key_g2 = if t_next >= f512 {
+                    (true, (t_next + 1).next_power_of_two().max(f512 * 2))
+                } else { e.fa_bucket_key(t_next, hd_g, nkv_g, false) };
+                if (key_s2, key_g2, t_next >= f512, t_next > win) != key { break; }
+                chunk += 1;
+            }
+            let g = &graphs.get(&key).unwrap().0;
+            for _ in 0..chunk { g.launch()?; }
+            e.stream().synchronize()?;
+            let ringh = e.dtoh_u32(&ring)?;
+            for j in 0..chunk {
+                let pos_j = cache.pos + j;
+                let tok_j = ringh[(pos_j - ring_base) % RING];
+                cache.pos += 0; // advanced below in one shot
+                if j + 1 == chunk { next = tok_j; }
+                else {
+                    out.push(tok_j);
+                    if eos.contains(&tok_j) || !on_token(tok_j) {
+                        reason = if eos.contains(&tok_j) { StopReason::Eos }
+                                 else { StopReason::Callback };
+                        // roll device/host state back to the stop point.
+                        let keep = cache.pos + j + 1;
+                        e.set_i32_one(&mut pos_d, keep as i32)?;
+                        for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+                            e.set_i32_one(&mut kvl.len_d, keep as i32)?;
+                            kvl.len = keep;
+                        }
+                        cache.pos = keep;
+                        if std::env::var("BW24_GRAPH_STATS").is_ok() {
+                            eprintln!("[gemma-graph] captures={captures} buckets={}", graphs.len());
+                        }
+                        return Ok((out, reason));
+                    }
+                }
+            }
+            cache.pos += chunk;
+            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += chunk; }
         }
         if std::env::var("BW24_GRAPH_STATS").is_ok() {
             eprintln!("[gemma-graph] captures={captures} buckets={}", graphs.len());
@@ -4405,7 +4821,8 @@ impl HybridModel {
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let ld = e.matmul(&self.output, &hn, t)?;
+        let mut ld = e.matmul(&self.output, &hn, t)?;
+        self.gemma4_suppress(e, &mut ld, t)?;   // before the per-row argmax consumers
         cache.pos += t;
         Ok((ld, hn))
     }
@@ -4458,12 +4875,14 @@ impl HybridModel {
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        // E4B wave-3 fold (2026-07-23 decode-dust port): q/k/v norms + q/k rope in ONE
+        // launch — rope math verbatim on the normed rows; V ones-rms, never roped.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         // append at the DEVICE slot; the counter advances by t on-device.
         e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
@@ -4484,7 +4903,7 @@ impl HybridModel {
             // still holds the pre-append len; row r's T_kv = ctr + r + 1).
             e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                &kvl.len_d, 0, t, scale, win,
-                               kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
         } else if hd == 512 && hint + t < crate::fa512_min_tkv() {
             // globals UNDER the fa512 crossover: eager runs the per-row fa_decode_kvmod
             // fallback there (parity with t=1 decode) — mirror it with per-row fa_decode_dc
@@ -4516,7 +4935,7 @@ impl HybridModel {
             // sizes splits — upper bound; splits beyond the device len exit in-kernel).
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, hint, t, scale,
                              kvl.k_tok_bytes, kvl.v_tok_bytes,
-                             Some((&kvl.len_d, 0)), false, false)?;
+                             Some((&kvl.len_d, 0)), false, false, None)?;
         } else {
             // hd256 under-window: v4 device-len rows twin.
             e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
@@ -4569,12 +4988,14 @@ impl HybridModel {
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        // E4B wave-3 fold (2026-07-23 decode-dust port): q/k/v norms + q/k rope in ONE
+        // launch — rope math verbatim on the normed rows; V ones-rms, never roped.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         let base_len = kvl.len;
         e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
@@ -4597,7 +5018,7 @@ impl HybridModel {
                 e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t,
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
                                  Some((&kvl.len_d, 0)), false,
-                                 swa && crate::Engine::wkv_on())?;
+                                 swa && crate::Engine::wkv_on(), None)?;
             } else {
                 // hd256: the SAME v4_dc symbol the burst verify launches (PARITY LAW — the
                 // host-base rows_v4 twin compiles apart from v4_dc and the two-symbol split
@@ -4623,7 +5044,7 @@ impl HybridModel {
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
             e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
             e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, 0,
-                               t, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               t, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         for i in 0..t {
@@ -4647,7 +5068,7 @@ impl HybridModel {
                 let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
                 e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows_w(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, &kvl.len_d, 0,
-                                   1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                   1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
             } else if !swa && hd == 512 && avail >= crate::fa512_min_tkv()
                 && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                 let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
@@ -4655,7 +5076,7 @@ impl HybridModel {
                 e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                 Some((&kvl.len_d, 0)), false, false)?;
+                                 Some((&kvl.len_d, 0)), false, false, None)?;
             } else {
                 e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
                             kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
@@ -4700,6 +5121,7 @@ impl HybridModel {
         let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, self.output.out_features())?;   // R4 on device (262k host tanh ~ms/step)
+        self.gemma4_suppress(e, &mut ld, 1)?;
         let logits = e.dtoh(&ld)?;
         cache.pos += 1;
         Ok((logits, h_seed))
@@ -5072,6 +5494,7 @@ impl HybridModel {
             let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
             e.softcap(&mut ld, cap, t * self.output.out_features())?;
         }
+        self.gemma4_suppress(e, &mut ld, t)?;   // mask both capped and argmax-only consumers
         Ok((ld, x))
     }
 
@@ -5274,3 +5697,18 @@ mod page_prefetch_tests {
         assert!(worker_prefetch_positions(0, 4, 0).is_empty());
     }
 }
+
+pub struct G4DcSlots {
+    x: CudaSlice<f32>, xn: CudaSlice<f32>, cur: CudaSlice<f32>,
+    hq: CudaSlice<i8>, hd_: CudaSlice<f32>,
+    q0: CudaSlice<f32>, k0: CudaSlice<f32>, v0: CudaSlice<f32>,
+    q: CudaSlice<f32>, k: CudaSlice<f32>, v: CudaSlice<f32>,
+    attn: CudaSlice<f32>, o: CudaSlice<f32>,
+    attn_out: CudaSlice<f32>, zsh: CudaSlice<f32>,
+    zq: CudaSlice<i8>, zd: CudaSlice<f32>,
+    gate: CudaSlice<f32>, up: CudaSlice<f32>,
+    act: CudaSlice<f32>, actq: CudaSlice<i8>, actd: CudaSlice<f32>,
+    f0: CudaSlice<f32>, sn: CudaSlice<f32>,
+    hn: CudaSlice<f32>, logits: CudaSlice<f32>,
+}
+

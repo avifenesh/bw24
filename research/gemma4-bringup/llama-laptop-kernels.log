@@ -1,0 +1,7 @@
+== gemma-4-12b-it-qat-q4_0.gguf
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |       4048.53 ± 0.00 |
+      4.5       37,364,312        320    116,763.5    114,719.0     62,879    178,815     37,541.5  void flash_attn_ext_f16<(int)256, (int)256, (int)32, (int)2, (bool)0, (bool)0>(const char *, const …
+      2.1       17,900,825         64    279,700.4    272,814.0    146,815    455,964    100,844.4  void flash_attn_ext_f16<(int)512, (int)512, (int)8, (int)8, (bool)0, (bool)0>(const char *, const c…
+== gemma-4-31B_q4_0-it.gguf
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1555.61 ± 0.00 |
+LK PROBE COMPLETE Thu Jul 23 02:42:10 AM UTC 2026

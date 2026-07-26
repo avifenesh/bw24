@@ -1,0 +1,45 @@
+== kernel-check (h8 arm via env)
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 0/262144 OK
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 0/409600 OK
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+ALL GREEN: kernels match CPU reference.
+== gemma-4-12b-it-qat-q4_0.gguf
+temp: 60
+-- default (hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4186s = 4147.4 tok/s (pp1736)
+temp: 58
+-- h8:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.773e0  MATCH
+prefill 1736 tok in 0.4220s = 4113.7 tok/s (pp1736)
+temp: 58
+-- default (hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4195s = 4137.8 tok/s (pp1736)
+temp: 58
+-- h8:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.773e0  MATCH
+prefill 1736 tok in 0.4222s = 4112.2 tok/s (pp1736)
+== gemma-4-31B_q4_0-it.gguf
+temp: 59
+-- default (hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1421s = 1520.0 tok/s (pp1736)
+temp: 60
+-- h8:
+prefill argmax=623  decode argmax=623  logit maxdiff=9.972e-1  MATCH
+prefill 1736 tok in 1.1483s = 1511.7 tok/s (pp1736)
+temp: 61
+-- default (hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1429s = 1519.0 tok/s (pp1736)
+temp: 61
+-- h8:
+prefill argmax=623  decode argmax=623  logit maxdiff=9.972e-1  MATCH
+prefill 1736 tok in 1.1497s = 1509.9 tok/s (pp1736)
+H8 GATE COMPLETE Thu Jul 23 04:45:08 AM UTC 2026

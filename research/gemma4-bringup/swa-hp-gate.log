@@ -1,0 +1,30 @@
+plimit: 150.00W temp: 56
+== kernel-check (SWA hp arm engaged via env)
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: SKIPPED (hp door numeric class)
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: SKIPPED (hp door numeric class)
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+ALL GREEN: kernels match CPU reference.
+== gemma-4-12b-it-qat-q4_0.gguf
+-- p1 (no hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.059e0  MATCH
+prefill 1736 tok in 0.4374s = 3968.5 tok/s (pp1736)
+-- swa-hp (f16-V emit):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.879e0  MATCH
+prefill 1736 tok in 0.4388s = 3956.0 tok/s (pp1736)
+-- full chain (door+512hp+swahp):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4256s = 4078.5 tok/s (pp1736)
+== gemma-4-31B_q4_0-it.gguf
+-- p1 (no hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.141e0  MATCH
+prefill 1736 tok in 1.1990s = 1447.9 tok/s (pp1736)
+-- swa-hp (f16-V emit):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.046e0  MATCH
+prefill 1736 tok in 1.2782s = 1358.2 tok/s (pp1736)
+-- full chain (door+512hp+swahp):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.3046s = 1330.7 tok/s (pp1736)
+GATE COMPLETE Thu Jul 23 01:47:02 AM UTC 2026
