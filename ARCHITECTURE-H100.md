@@ -502,3 +502,25 @@ ranked: (1) GDN chunk kernels to their wall (18%), (2) FA prefill tensor-core
 port (10%, FA3-class arc), (3) norm/add fusion + prefill graph capture for the
 gap structure (22%), (4) cutlass int8 per-row epilogue GEMM (the vLLM numeric
 config) if (1)-(3) exhaust.
+
+**Prime grind round 2 (2026-07-26, after the f16 promotion):** pp512
+15626 -> 16679-16839 tok/s across three landed changes + two refuted probes:
+- zeros->uninit on 47 full-overwrite prefill buffers (+4.5%): nsys cuda_api_sum
+  showed 1230 memsets/trace + cuMemAllocAsync pool-miss tails (med 980ns,
+  avg 22us) as the layer-boundary gap fuel. state_in/out keep semantic zeros.
+- elementwise float4 wave: silu_mul + add + f16 cvt (+2.7%): bit-identical per
+  element; decode/graph token-exact gates green. Norm reductions untouched
+  (sum order pinned by decode==verify).
+- matmul_group convert-once: neutral, kept (launch structure).
+- REFUTED: Lt algo autotune (neutral + cold-start cost, reverted); GDN chunk
+  C sweep re-validated shipped default C=32 on the new profile (C=128 tanks 32%).
+Launch gaps 22% -> 12-18%; launches 1028 -> 910/prime.
+
+REMAINING ARCS (each multi-day, evidence attached in this ledger):
+1. GDN K4 (gdn_chunk_state) runs ~9TF f32, smem+serial-bound over NC chunks —
+   a bf16-mma rewrite of its C x D GEMM steps is the chunked-config upgrade path.
+2. FA prefill is ALREADY the bf16-mma FA-2 floor port (P0a/P0b/C4 arcs) at
+   ~400-540us/launch — next step is an ncu-driven stall analysis, not a rewrite.
+3. Prefill CUDA-graph capture (gap floor ~12% remains).
+4. cutlass int8 per-row-epilogue GEMM (vLLM's numeric config) if 1-3 exhaust.
+Standing vs vLLM: decode 101%, prefill ~48% (16.8k vs 35k) — was 1.1% at boot.
