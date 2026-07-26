@@ -380,3 +380,9 @@ illegal memory access on first launch — smem descriptor encoding (LBO/SBO,
 canonical no-swizzle layout) is the live bug; fragment row/col mapping
 unverified until it runs. Iteration cycle: 30s standalone compile+run.
 Target: beat the 688µs int8-mma class = up to 2.4× on prime.
+Debug hint for the v0 fault: plain row-major smem does NOT match wgmma's
+canonical no-swizzle operand layout — the tile must be arranged in CORE-MATRIX
+order (8-row × 16B cores; A 64×32 = 8 M-cores × 2 K-cores; store core(m,k)
+at ((m*2+k)*8 + r)*16, then LBO/SBO encode inter-core strides: try LBO=128,
+SBO=256 first, then the transposed pairing). Verify against PTX ISA §9.7.14
+asynchronous-warpgroup-level matrix shape/layout tables before trusting signs.
