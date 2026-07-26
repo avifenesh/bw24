@@ -3210,7 +3210,24 @@ impl Engine {
 
     fn alloc_uninit<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, n: usize)
             -> Result<CudaSlice<T>, Box<dyn std::error::Error>> {
-        let s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        let mut s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        // BW24_DEBUG_ZERO_ALLOCS=1 (task #14 defect hunt): memset EVERY engine allocation —
+        // the global uninit-read discriminator (the prime-fn-scoped zeroing experiment could
+        // not cover engine-internal buffers). Debug-only: massive launch overhead.
+        {
+            static Z: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *Z.get_or_init(|| std::env::var("BW24_DEBUG_ZERO_ALLOCS").as_deref() == Ok("1")) {
+                // raw D8 memset (T lacks ValidAsZeroBits in the generic bound)
+                use cudarc::driver::DevicePtrMut;
+                let n_bytes = s.len() * std::mem::size_of::<T>();
+                let stream = &self.gpu.stream;
+                let (p_, _g) = s.device_ptr_mut(stream);
+                unsafe {
+                    cudarc::driver::sys::cuMemsetD8Async(p_, 0, n_bytes, stream.cu_stream())
+                        .result()?;
+                }
+            }
+        }
         self.keep_if_capturing(&s);
         Ok(s)
     }

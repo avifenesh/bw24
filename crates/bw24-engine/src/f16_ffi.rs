@@ -82,9 +82,28 @@ pub struct F16Scratch {
     cap_xh: usize,
 }
 
+impl F16Scratch {
+    /// Pre-sized scratch (task #14: the captured prime gets a PRIVATE scratch so the
+    /// graph's baked cvt/Lt pointers are never mutated by eager GEMMs between replays).
+    pub fn with_capacity(e: &crate::Engine, xh_bytes: usize)
+                         -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(F16Scratch {
+            xh: e.alloc_u8_uninit(xh_bytes)?,
+            ws: e.alloc_u8_uninit(F16_WS_BYTES)?,
+            cap_xh: xh_bytes,
+        })
+    }
+}
+
 const F16_WS_BYTES: usize = 64 << 20;
 
 impl crate::Engine {
+    /// Swap the resident f16 scratch (task #14 capture isolation). Returns the previous
+    /// contents; pass them back to restore.
+    pub fn f16_scratch_swap(&self, new: Option<F16Scratch>) -> Option<F16Scratch> {
+        std::mem::replace(&mut *self.f16_scratch.lock().unwrap(), new)
+    }
+
     /// FP16 prefill GEMM for a weight carrying the f16 mirror: y[m,out] = x[m,in] @ (fp16 W)^T,
     /// f32 accumulate. Returns None when the weight has no mirror (caller falls through to MMQ).
     pub fn try_f16_gemm(

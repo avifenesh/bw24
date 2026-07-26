@@ -920,3 +920,27 @@ replays. FIX CANDIDATE (next unit, one file): give the captured prime a
 PRIVATE f16 scratch (per-PrimeGraph xh/ws, threaded like len_d) — removes the
 sharing entirely. Serving policy meanwhile: graphs stay OFF; the eager+
 batch-prime stack (all green) serves.
+
+**Task #14 CLOSING VERDICT (2026-07-26): prime graphs are blocked by
+cuBLASLt's address-variant numerics — mechanism identified, reclaim path
+priced.** The global discriminator (BW24_DEBUG_ZERO_ALLOCS=1: memset EVERY
+engine allocation) left all diffs BYTE-IDENTICAL — contents-independent,
+allocation-LAYOUT-dependent. Seven hypotheses tested across the arc (uninit
+x2 scopes, pool corruption, keeper, copy-out, alignment-lottery control,
+launch stream, shared f16 scratch — the private-scratch isolation MOVED the
+diffs, confirming layout sensitivity, but did not remove them). MECHANISM:
+Lt/nvjet algos contain pointer-alignment-specialized variants; a baked layout
+that differs from eager's seeds ~1e-3 GEMM deviations which the 32-layer
+recurrent GDN gating chain AMPLIFIES to percent-scale state diffs — the
+keeperless smoke's exact 0.000e0 was the one layout where capture reused the
+eager warmups' pool slots verbatim. Consequence: with Lt as the prefill GEMM
+engine, a captured prime is an address-lottery numeric config (stream flips
+as early as step 2 on synthetic prompts) — below the stream-identity bar
+every promoted config met tonight. RECLAIM PATH (priced, not taken): replace
+Lt inside captured primes with an address-deterministic fp16 GEMM kernel (a
+new kernel arc; MMQ-inside-graph is a net loss: saves 2.3ms gaps, loses ~5ms
+GEMM speed). DISPOSITION: prime graphs stay off serving; the machinery
+(PrimeGraph, captured trunk, pad-proofing, gates, discriminator flag) is
+committed and regression-guarded for when a deterministic GEMM lands. The
+serving default remains the all-green eager + batch-prime stack at
+pp512 19.9k / +21.6% serving bursts.

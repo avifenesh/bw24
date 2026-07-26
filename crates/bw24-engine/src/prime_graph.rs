@@ -28,6 +28,11 @@ pub struct PrimeGraph {
     /// it, any post-capture allocation can land on graph-internal addresses and every
     /// replay scribbles it (the prime-graph-gate T=512 corruption, 2026-07-26).
     _keeper: Vec<Box<dyn std::any::Any + Send>>,
+    /// PRIVATE f16 scratch (defect-hunt lead, 2026-07-26): the graph bakes the resident
+    /// f16 scratch's cvt/Lt pointers; sharing them with eager GEMMs cross-contaminates
+    /// replays. This scratch was resident DURING capture and is swapped back in around
+    /// every replay so the baked pointers always address graph-owned memory.
+    private_scratch: Option<crate::f16_ffi::F16Scratch>,
     scratch: Cache,
     x_in: CudaSlice<f32>,
     len_d: CudaSlice<i32>,
@@ -58,6 +63,15 @@ impl HybridModel {
         let mut logits_out = e.uninit(n_vocab)?;
         let mut h_seed_out = e.uninit(n_embd)?;
 
+        // capture with a PRIVATE f16 scratch resident (pre-sized to the trunk's largest
+        // GEMM input: m = bucket, in_f up to n_ff) so no eager call ever mutates the
+        // graph-baked buffers.
+        let n_ff_max = self.layers.iter().map(|l| match &l.ffn {
+            crate::hybrid::Ffn::Dense { ffn_gate, .. } => ffn_gate.out_features(),
+            _ => n_embd,
+        }).max().unwrap_or(n_embd).max(n_embd);
+        let private = crate::f16_ffi::F16Scratch::with_capacity(e, bucket * n_ff_max * 2)?;
+        let prev_scratch = e.f16_scratch_swap(Some(private));
         let scratch_cell = std::cell::RefCell::new(&mut scratch);
         let lo_cell = std::cell::RefCell::new(&mut logits_out);
         let hs_cell = std::cell::RefCell::new(&mut h_seed_out);
@@ -78,12 +92,15 @@ impl HybridModel {
         drop(scratch_cell);
         drop(lo_cell);
         drop(hs_cell);
+        // reclaim the private scratch (graph-baked) and restore the eager one
+        let private_scratch = e.f16_scratch_swap(prev_scratch);
         let _ = CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED;
         let _ = CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH;
         Ok(PrimeGraph {
             bucket,
             graph,
             _keeper: keeper,
+            private_scratch,
             scratch,
             x_in,
             len_d,
