@@ -1066,3 +1066,12 @@ neutrals stand in contrast). Scaling path: S-mid (add+post-norm — needs the
 `mixed` slab via the mixer out-GEMM `_into` refactor), then S-prep/S-attn
 (7-9 kernels each) per the build-ready segmentation — projected +8-10% total.
 BW24_PRIME_SEG=0 reverts.
+
+**Piecewise increment 4 probe (2026-07-26): S-mid-via-copy REFUTED.** Staging
+the mixer output into a slab (one 8MB D2D/layer, ~80us/prime + its submission)
+costs more than a 2-kernel segment saves: ON 19,870 vs OFF 19,999 (S-glue-only
+baseline 20,009). Bit-identical, reverted. The proper S-mid (and every larger
+segment) needs the mixer out-GEMM written _into_ the slab directly — the
+core-contract refactor (cores return gn/attn_g; prime_chunk runs the out-GEMM
+via try_f16_gemm_pre_into) is the gating increment for the remaining +7-9%.
+Increment-3 state (S-glue live, pp512 20,009) is the shipped baseline.
