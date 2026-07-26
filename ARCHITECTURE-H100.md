@@ -296,3 +296,10 @@ default (graph-decode-gate covers bit-identity) + device-resident sampling
 (argmax_token_device / spec_sample machinery exists) to kill the D2H — an
 INTEGRATION lane now, not a kernel lane. Wide-shape 80% + attn-qkv 66% are
 the only true kernel work left in the m=1 stack.
+
+**g2 probe (2026-07-26):** sub-wave grid-fill twin kept (bit-identical, wins
+in isolation on the 66%-peak qkv shape) but e2e-neutral at N=3 resolution —
+the shape is 4 launches/token. Confirms the ledger rule: e2e A/Bs resolve
+nothing below ~2%; per-shape microbench is the instrument. The one remaining
+>5% m=1 lever is the GRAPH-SERVING integration (+14% measured standalone):
+worker sessions on generate_graph + device sampling — an integration arc.
