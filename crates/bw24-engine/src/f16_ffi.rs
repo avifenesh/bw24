@@ -270,6 +270,62 @@ impl crate::Engine {
         Ok(true)
     }
 
+    /// `_into` at a ROW OFFSET (task #16): the batched prime's per-seq out-GEMMs write
+    /// straight into the concat `mixed` trunk at offs[s] — removing the per-seq gather
+    /// copy. off_elems must keep the pointer's alignment class (n_embd rows do).
+    pub fn try_f16_gemm_pre_into_off(
+        &self,
+        w: &crate::model::GpuTensor,
+        xh: &CudaSlice<u8>,
+        m: usize,
+        y: &mut CudaSlice<f32>,
+        off_elems: usize,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let (w16, ne, scale) = match w {
+            GpuTensor::Quant { f16: Some(w16), ne, scale, .. } => (w16, ne, *scale),
+            _ => return Ok(false),
+        };
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        assert!(y.len() >= off_elems + m * out_f, "try_f16_gemm_pre_into_off: output slab too small");
+        if scale != 1.0 {
+            return Ok(false); // post-scale would need a strided view; caller falls back
+        }
+        let mut guard = self.f16_scratch.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(F16Scratch {
+                xh: self.alloc_u8_uninit(2)?,
+                ws: self.alloc_u8_uninit(F16_WS_BYTES)?,
+                cap_xh: 2,
+            });
+        }
+        let s = guard.as_mut().unwrap();
+        let rc = {
+            let stream = &self.gpu.stream;
+            let (w_p, _gw) = w16.device_ptr(stream);
+            let (h_p, _gh) = xh.device_ptr(stream);
+            let (y_p, _gy) = y.device_ptr_mut(stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            unsafe {
+                bw24_f16_pp_gemm_pre(
+                    w_p as *const core::ffi::c_void,
+                    h_p as *const core::ffi::c_void,
+                    (y_p as *mut f32).add(off_elems),
+                    m as i32,
+                    out_f as i32,
+                    in_f as i32,
+                    ws_p as *mut core::ffi::c_void,
+                    F16_WS_BYTES,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!("bw24_f16_pp_gemm_pre(into_off) rc={rc} (m={m} n={out_f} k={in_f})").into());
+        }
+        Ok(true)
+    }
+
     /// FP16 GEMM on a pre-converted activation — the matmul_group arm. Same contract as
     /// `try_f16_gemm` minus the convert.
     pub fn try_f16_gemm_pre(

@@ -7087,6 +7087,53 @@ impl Engine {
         Ok(())
     }
 
+    /// qkv-view twin (task #16): batched prime reads the concat GEMM output directly.
+    pub fn ssm_conv1d_tm_state_pad_v(&self, qkv_tm: &cudarc::driver::CudaView<f32>, conv_state: &mut CudaSlice<f32>,
+                               w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize,
+                               pad_len: Option<&CudaSlice<i32>>)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        assert!(t >= 1, "ssm_conv1d_tm_state requires T >= 1");
+        // clone BEFORE the window kernel is issued is not required (stream-ordered: the dtod and
+        // the window kernel both read the pre-roll ring; the roll launches after both) — but
+        // cloning first keeps the ordering trivially correct under any future stream split.
+        let ring_old = if t < d_conv - 1 { Some(self.clone_dtod(conv_state)?) } else { None };
+        {
+            let f = self.func("ssm_conv1d_tm_state_f32");
+            let cfg = LaunchConfig {
+                grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+                block_dim: (256, 1, 1), shared_mem_bytes: 0,
+            };
+            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
+            unsafe { b.launch(cfg)?; }
+        }
+        match (ring_old, pad_len) {
+            (None, Some(len_d)) => {
+                let f = self.func("ssm_conv_ring_update_dev_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, dc) = (conv_dim as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            (None, None) => {
+                let f = self.func("ssm_conv_ring_update_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            (Some(_), _) => unreachable!(
+                "ssm_conv1d_tm_state_pad_v: T < d_conv-1 has no view path (PRIME_MIN_T gates it)"),
+        }
+        Ok(())
+    }
+
     /// PREFIX conv-ring rebuild (spec REPLAY-FREE partial accept): overwrite the resident ring
     /// with the state a T=1 chain holds after only the FIRST `tc` columns of `qkv_tm` — the last
     /// `pad` entries of [ring_old | cols 0..tc-1]. PURE COPIES (the ring stores raw inputs; no
@@ -7486,6 +7533,31 @@ impl Engine {
         Ok(())
     }
 
+    /// view twins (task #16): the batched prime's GDN core reads the CONCAT projection
+    /// buffers at row offsets (CudaView) — same kernels, same values, no split copies.
+    pub fn sigmoid_v(&self, x: &cudarc::driver::CudaView<f32>, y: &mut CudaSlice<f32>, n: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sigmoid_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(y).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    pub fn gdn_glog_v(&self, alpha: &cudarc::driver::CudaView<f32>, dt_bias: &CudaSlice<f32>,
+                      a: &CudaSlice<f32>, g_log: &mut CudaSlice<f32>, n_head: usize, t: usize)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_glog_f32");
+        let cfg = LaunchConfig::for_num_elems((n_head * t) as u32);
+        let (h, ti) = (n_head as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(alpha).arg(dt_bias).arg(a).arg(g_log).arg(&h).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn sigmoid(&self, x: &CudaSlice<f32>, y: &mut CudaSlice<f32>, n: usize)
                    -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("sigmoid_f32");
@@ -7563,6 +7635,35 @@ impl Engine {
     /// gated RMSNorm emitting q8_1 directly (fused quantize epilogue) — the ssm_out matvec input.
     /// BIT-IDENTICAL bytes to gated_rmsnorm + quantize_q8_1 (ncols % 32 == 0; blocks never straddle
     /// rows). Saves one launch per linear-attn layer (36/token on the 9B).
+    /// z-view twins of gated_rmsnorm(+f16out) — task #16 batched-prime split removal.
+    pub fn gated_rmsnorm_zv(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                            z: &cudarc::driver::CudaView<f32>,
+                            dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    pub fn gated_rmsnorm_f16out_zv(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                                   z: &cudarc::driver::CudaView<f32>,
+                                   dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>,
+                                   ncols: usize, nrows: usize, eps: f32)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f16out_f32");
+        // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(dst16).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn gated_rmsnorm_q8_1(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
                               ncols: usize, nrows: usize, eps: f32)
                               -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {

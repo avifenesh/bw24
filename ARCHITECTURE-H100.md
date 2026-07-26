@@ -1112,3 +1112,20 @@ Gates: greedy streams BYTE-IDENTICAL on/off (T~200 prime + 64 tok),
 kernel-check, validate-h100, prime-batch, graph-session ALL GREEN.
 Interleaved A/B x5 (the corrected protocol): ON wins 5/5, median 18620 vs
 18328 (+1.6%) — the first interleaved-verified prefill win.
+
+**Batch-prime scatter/gather elimination (2026-07-26, task #16): +6.1%
+batched prime, INTERLEAVED-VERIFIED 5/5, gates green.** The round-26 anatomy
+showed matmul_group_multi's per-seq split (16MB qkv + 8MB z per GDN layer) and
+mixer-output gather were ~1ms/round of pure D2D. Fix: (a) the GDN core is now
+view-consuming (linear_attn_prime_core_pad_view; the Vec `_inner` is a shim
+making full-range views — every existing caller byte-identical), fed row-offset
+CudaViews of the CONCAT projection outputs via view launcher twins
+(ssm_conv1d_tm_state_pad_v / sigmoid_v / gdn_glog_v / gated_rmsnorm[_f16out]_zv
+— same kernels, same values); (b) both mixer out-GEMMs write straight into the
+concat `mixed` trunk at offs[s] via try_f16_gemm_pre_into_off (n_embd-row
+offsets preserve the Lt alignment class). Attn q/k/v split copies stay (8
+layers, RoPE mutates in place — smaller half of the waste, mapped for later).
+Gates: prime-batch-gate b=3/b=4 uneven lengths ALL GREEN (argmax + 16-step
+streams MATCH vs individual primes — the offset-view proof), validate-h100,
+graph-session, decode-batch green. Interleaved OLD-binary vs NEW x5 at
+B=4 T=152 (the serving shape): NEW 5/5, median 14259 vs 13441 (+6.1%).

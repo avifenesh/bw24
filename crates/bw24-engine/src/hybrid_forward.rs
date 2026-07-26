@@ -871,22 +871,45 @@ impl HybridModel {
                         }
                     }
                     for (s, g3s) in parts.into_iter().enumerate() {
-                        let m = self.full_attn_prime_core(e, fa, g3s, &pos_ds[s], ts[s], caches[s], il)?;
-                        e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                        // task #16 gather removal: wo writes into `mixed` at offs[s] directly.
+                        let (attn_g, ag16) = self.full_attn_prime_core_inner(
+                            e, fa, g3s, &pos_ds[s], ts[s], caches[s], il)?;
+                        let mut done = false;
+                        if let Some(xh) = &ag16 {
+                            done = e.try_f16_gemm_pre_into_off(&fa.wo, xh, ts[s], &mut mixed, offs[s] * n_embd)?;
+                        }
+                        if !done {
+                            let m = e.matmul(&fa.wo, &attn_g, ts[s])?;
+                            e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                        }
                     }
                 }
                 Mixer::Linear(la) => {
+                    // task #16: NO split copies — the core reads row-offset VIEWS of the
+                    // concat projection outputs, and its out-GEMM writes straight into
+                    // `mixed` at offs[s] (same kernels/values; the old path's per-seq
+                    // D2D scatter+gather was ~1ms/round of pure copy).
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
                     let g4 = e.matmul_group_xh(&ws, &h, &hx16, total)?;
-                    let mut parts: Vec<Vec<CudaSlice<f32>>> = (0..b).map(|_| Vec::new()).collect();
-                    for (w, y) in ws.iter().zip(g4) {
-                        for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
-                            parts[s].push(ys);
+                    let (cdim, vdim, hdim) = (la.wqkv.out_features(), la.wqkv_gate.out_features(),
+                                              la.ssm_beta.out_features());
+                    for s in 0..b {
+                        let (o, t) = (offs[s], ts[s]);
+                        let (gn, gn16) = self.linear_attn_prime_core_pad_view(
+                            e, la,
+                            &g4[0].slice(o * cdim..(o + t) * cdim),
+                            &g4[1].slice(o * vdim..(o + t) * vdim),
+                            &g4[2].slice(o * hdim..(o + t) * hdim),
+                            &g4[3].slice(o * hdim..(o + t) * hdim),
+                            t, caches[s], il, None)?;
+                        let mut done = false;
+                        if let Some(xh) = &gn16 {
+                            done = e.try_f16_gemm_pre_into_off(&la.ssm_out, xh, t, &mut mixed, o * n_embd)?;
                         }
-                    }
-                    for (s, g4s) in parts.into_iter().enumerate() {
-                        let m = self.linear_attn_prime_core(e, la, g4s, ts[s], caches[s], il)?;
-                        e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                        if !done {
+                            let m = e.matmul(&la.ssm_out, &gn, t)?;
+                            e.copy_into(&mut mixed, o * n_embd, &m, t * n_embd)?;
+                        }
                     }
                 }
             }
@@ -1121,6 +1144,37 @@ impl HybridModel {
                               t: usize, cache: &mut Cache, il: usize,
                               pad_len: Option<&CudaSlice<i32>>)
                               -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
+        // shim over the view twin (task #16): full-range views of the owned buffers.
+        let ssm = self.cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;
+        let num_k = ssm.group_count as usize;
+        let num_v = ssm.time_step_rank as usize;
+        let key_dim = d_state * num_k;
+        let value_dim = d_state * num_v;
+        let conv_dim = key_dim * 2 + value_dim;
+        let alpha = g4.pop().unwrap();                   // [T, num_v]
+        let beta_raw = g4.pop().unwrap();                // [T, num_v]
+        let z = g4.pop().unwrap();                       // [T, value_dim]
+        let qkv_mixed = g4.pop().unwrap();               // [T, conv_dim] token-major
+        self.linear_attn_prime_core_pad_view(
+            e, la,
+            &qkv_mixed.slice(0..t * conv_dim), &z.slice(0..t * value_dim),
+            &beta_raw.slice(0..t * num_v), &alpha.slice(0..t * num_v),
+            t, cache, il, pad_len)
+    }
+
+    /// task #16: view-consuming GDN prime core — the batched prime hands row-offset
+    /// views of the CONCAT projection outputs directly (no per-seq split copies).
+    /// Same kernels, same values, byte-identical to the Vec shim above.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attn_prime_core_pad_view(&self, e: &Engine, la: &LinearAttnLayer,
+                              qkv_mixed: &cudarc::driver::CudaView<f32>,
+                              z: &cudarc::driver::CudaView<f32>,
+                              beta_raw: &cudarc::driver::CudaView<f32>,
+                              alpha: &cudarc::driver::CudaView<f32>,
+                              t: usize, cache: &mut Cache, il: usize,
+                              pad_len: Option<&CudaSlice<i32>>)
+                              -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;       // 128
@@ -1130,19 +1184,15 @@ impl HybridModel {
         let key_dim = d_state * num_k;               // 2048
         let value_dim = d_state * num_v;             // 4096
         let conv_dim = key_dim * 2 + value_dim;      // 8192
+        let _ = (key_dim, value_dim);
         let eps = cfg.rms_eps;
         let scale = 1.0 / (d_state as f32).sqrt();
         debug_assert!(t >= d_conv - 1, "stateful conv needs T >= pad (PRIME_MIN_T gates)");
 
-        let alpha = g4.pop().unwrap();                   // [T, num_v]
-        let beta_raw = g4.pop().unwrap();                // [T, num_v]
-        let z = g4.pop().unwrap();                       // [T, value_dim]
-        let qkv_mixed = g4.pop().unwrap();               // [T, conv_dim] token-major
-
         // conv with CARRIED ring state + ring roll (state read + final-window write-back).
         let rl = cache.recur[il].as_mut().unwrap();
         let mut conv_out = e.uninit(conv_dim * t)?;      // [conv_dim, T] channel-major, SiLU
-        e.ssm_conv1d_tm_state_pad(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+        e.ssm_conv1d_tm_state_pad_v(qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
                               &mut conv_out, conv_dim, t, d_conv, pad_len)?;
 
         // GDN prep via the PREFILL kernels (repack + 256-thread l2_norm + sigmoid + glog) —
@@ -1156,9 +1206,9 @@ impl HybridModel {
         let mut k_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
         let mut beta = e.uninit(t * num_v)?;
-        e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
+        e.sigmoid_v(beta_raw, &mut beta, t * num_v)?;
         let mut g_log = e.uninit(t * num_v)?;
-        e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
+        e.gdn_glog_v(alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
         if let Some(len_d) = pad_len {
             e.gdn_pad_mask(&mut beta, &mut g_log, len_d, num_v, t)?;
         }
@@ -1180,11 +1230,11 @@ impl HybridModel {
         let mut gn = e.uninit(d_state * num_v * t)?;
         let gn16 = if Self::f16out_on(e, t) {
             let mut g16 = e.alloc_u8_uninit(d_state * num_v * t * 2)?;
-            e.gated_rmsnorm_f16out(&o, la.ssm_norm.float_data(), &z, &mut gn, &mut g16,
-                                   d_state, num_v * t, eps)?;
+            e.gated_rmsnorm_f16out_zv(&o, la.ssm_norm.float_data(), z, &mut gn, &mut g16,
+                                      d_state, num_v * t, eps)?;
             Some(g16)
         } else {
-            e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
+            e.gated_rmsnorm_zv(&o, la.ssm_norm.float_data(), z, &mut gn, d_state, num_v * t, eps)?;
             None
         };
         Ok((gn, gn16))
