@@ -319,3 +319,14 @@ qkv 66% (g2 wins in isolation, e2e-invisible), beta/alpha launch-floor
 (already dual-fused in the m=1 chain). The kernel family is surveyed; the
 m=1 frontier is CONFIRMED as integration (graph serving + device sampler,
 +14% measured floor) — kernel-side, only the FA-prefill mainloop remains.
+
+**Graph-serving design pinned (2026-07-26):** generate_graph is whole-generation
+(owns its Cache, primes internally — decode.rs:742) — routing lanes through it
+whole-request blocks the scheduler tick ~1.2s/request = interactive p99
+destroyed; DISQUALIFIED for concurrent serving. The +14% (and the device-
+sampler D2H kill) therefore requires the step-wise refactor: a GraphSession
+API — capture per (fa_vec, split) bucket ONCE against a session's resident
+counters/cache, replay ONE step per scheduler tick, recapture on bucket cross.
+The capture-region constraints are already solved in generate_graph's body
+(event-tracking off, stable pointers, bucketed t_kv) — the refactor lifts that
+loop body into a stepping struct. THIS is the single next arc for m=1-to-wall.
