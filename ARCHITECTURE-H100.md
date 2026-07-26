@@ -407,3 +407,13 @@ requires the PTX ISA wgmma matrix-layout table (§9.7.15) or cross-reading a
 known-good open int8 wgmma kernel (marlin-hopper / FA3 source). Both are
 fetchable references; one derivation, one verify run. Everything else in the
 arc (harness, CPU ref, fragment mapping, 4.1× speed proof) is in place.
+**v0 CORRECT (2026-07-26, the arc's breakthrough):** rel err 1.6e-05 OK at
+**179µs = 3.84× the MMQ class**, unpipelined. Root causes (via Colfax/PTX
+canonical reference): (1) the missing `fence.proxy.async.shared::cta` between
+generic-proxy smem writes and async-proxy wgmma reads — THE correctness bug
+all along; (2) original core-matrix arrangements were canonical (A and B both
+core(i,j) = i*SBO(256) + j*LBO(128) + row*16, K-major no-swizzle) — the
+"transpose fix" detour was wrong. Path to integration: k-slice pipeline
+(cp.async or TMA), Q8_0 dequant-fold epilogue check vs qmatvec_gemm bit
+policy, engine dispatch at m>=16, kernel-check case, prime A/B (expect
+0.23s -> ~0.10-0.13s = prefill toward 60-80% of vLLM).

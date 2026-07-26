@@ -107,20 +107,20 @@ q8_gemm_wgmma_v0(const signed char* __restrict__ A, const half* __restrict__ Asc
             *(int4*)dst = (row0 + r < out_f) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         {
-            // B is K-major inside wgmma: core = 8 k-rows x 16 n-bytes. Source is
-            // token-major, so this write IS the transpose (scattered byte gather;
-            // v1 will quantize activations directly into K-major to kill this).
-            int k = tid / 4;             // 0..31
-            int ngrp = tid % 4;          // 4 groups of 16 tokens
-            int k_core = k / 8, k_in = k % 8;
-            signed char* dst = sB + (((k_core * 4 + ngrp) * 8) + k_in) * 16;
-            #pragma unroll
-            for (int b = 0; b < 16; b++) {
-                int tok = col0 + ngrp * 16 + b;
-                dst[b] = (tok < n_tok) ? B[(size_t)tok * in_f + blk * 32 + k] : 0;
-            }
+            // canonical K-major B (PTX core matrices): core = 8 N-rows x 16 K-bytes;
+            // core(n_core, k_core) at n_core*SBO(256) + k_core*LBO(128), row n_in at
+            // +n_in*16 — token-major source is k-contiguous per token: clean int4 copies.
+            int c = tid / 2;              // token 0..63
+            int seg = tid % 2;            // k-core 0..1
+            const signed char* src = B + (size_t)(col0 + c) * in_f + blk * 32 + seg * 16;
+            int n_core = c / 8, c_in = c % 8;
+            signed char* dst = sB + n_core * 256 + seg * 128 + c_in * 16;
+            *(int4*)dst = (col0 + c < n_tok) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         __syncthreads();
+        // smem was written by the GENERIC proxy (st.shared); wgmma reads it in the
+        // ASYNC proxy — without this fence the reads are undefined (PTX mem model).
+        asm volatile("fence.proxy.async.shared::cta;");
 
         int acc[32];
         wgmma_fence();
