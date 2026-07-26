@@ -399,3 +399,11 @@ the canonical K-major core order (and/or SW128 swizzle), not the descriptor.
 Next: derive from PTX ISA §wgmma matrix-layout tables + a known-good open
 int8 wgmma kernel, write the ONE correct arrangement, verify vs CPU ref.
 The 4.1× raw-speed result stands — only operand plumbing remains.
+v0 status (end of stretch): B transpose-in-write confirmed directionally
+(error class changed; gather costs 169→411µs, still under MMQ 688 — v1 will
+quantize activations directly into K-major, killing the gather). Exact core
+arrangement still wrong after ~170 tested combos — STOP guessing: the fix
+requires the PTX ISA wgmma matrix-layout table (§9.7.15) or cross-reading a
+known-good open int8 wgmma kernel (marlin-hopper / FA3 source). Both are
+fetchable references; one derivation, one verify run. Everything else in the
+arc (harness, CPU ref, fragment mapping, 4.1× speed proof) is in place.

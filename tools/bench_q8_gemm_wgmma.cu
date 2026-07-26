@@ -107,16 +107,18 @@ q8_gemm_wgmma_v0(const signed char* __restrict__ A, const half* __restrict__ Asc
             *(int4*)dst = (row0 + r < out_f) ? *(const int4*)src : make_int4(0,0,0,0);
         }
         {
-            int c = tid / 2;
-            int seg = tid % 2;
-            const signed char* src = B + (size_t)(col0 + c) * in_f + blk * 32 + seg * 16;
-            int n_core = c / 8, c_in = c % 8;
-#ifndef B_CORE_K_OUTER
-            signed char* dst = sB + (((n_core * 2 + seg) * 8) + c_in) * 16;
-#else
-            signed char* dst = sB + (((seg * 8 + n_core) * 8) + c_in) * 16;
-#endif
-            *(int4*)dst = (col0 + c < n_tok) ? *(const int4*)src : make_int4(0,0,0,0);
+            // B is K-major inside wgmma: core = 8 k-rows x 16 n-bytes. Source is
+            // token-major, so this write IS the transpose (scattered byte gather;
+            // v1 will quantize activations directly into K-major to kill this).
+            int k = tid / 4;             // 0..31
+            int ngrp = tid % 4;          // 4 groups of 16 tokens
+            int k_core = k / 8, k_in = k % 8;
+            signed char* dst = sB + (((k_core * 4 + ngrp) * 8) + k_in) * 16;
+            #pragma unroll
+            for (int b = 0; b < 16; b++) {
+                int tok = col0 + ngrp * 16 + b;
+                dst[b] = (tok < n_tok) ? B[(size_t)tok * in_f + blk * 32 + k] : 0;
+            }
         }
         __syncthreads();
 
