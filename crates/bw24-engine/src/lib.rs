@@ -473,6 +473,40 @@ pub const ARGMAX_NB: usize = 256;
 pub struct WPtr8(pub [u64; 8]);
 unsafe impl cudarc::driver::DeviceRepr for WPtr8 {}
 
+/// task #18 varlen GDN: per-seq args for gdn_chunk_{state,output}_mma_vl — one launch
+/// runs all B<=8 sequences' K4/K5 (CUDA `gdnseq_t`/`gdnvl_t`, layout-identical repr(C)).
+/// Raw addresses are valid for the launch: every referenced buffer outlives the call and
+/// all work is on the single compute stream (same discipline as the f16 GEMM FFI).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GdnSeqVl {
+    pub kb16: u64, pub gcum: u64, pub beta: u64, pub u: u64, pub wb16: u64,
+    pub y: u64, pub ssnap: u64, pub state_in: u64, pub state_out: u64,
+    pub q: u64, pub p: u64, pub o: u64,
+    pub t: i32, pub nc: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for GdnSeqVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GdnVl8(pub [GdnSeqVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for GdnVl8 {}
+
+/// task #18: one sequence's chunk buffers prepped through K1-K3 + bf16 mirrors,
+/// awaiting the varlen K4/K5 mma pair (C == 32 only). Owns everything K4/K5 read
+/// and write except the caller-held q/beta/state buffers.
+pub struct GdnChunkPre {
+    pub gcum: CudaSlice<f32>,
+    pub p: CudaSlice<f32>,
+    pub u: CudaSlice<f32>,
+    pub kb16: CudaSlice<u8>,
+    pub wb16: CudaSlice<u8>,
+    pub y16: CudaSlice<u8>,
+    pub ssnap16: CudaSlice<u8>,
+    pub o: CudaSlice<f32>,
+    pub t: usize,
+    pub nc: usize,
+}
+
 /// STAGE-2 GROUPED DECODE: the 8 routed-expert weights by value (CUDA `f32x8_t`).
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -7328,25 +7362,22 @@ impl Engine {
     /// NOT bit-identical to the sequential scan (chunked FP accumulation order); run-gen
     /// argmax + run-spec batteries are the accuracy authority. PREFILL callers only.
     #[allow(clippy::too_many_arguments)]
-    pub fn gdn_scan_chunked(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
-                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
-                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
-                            n_head: usize, t: usize, scale: f32, c: usize)
-                            -> Result<(), Box<dyn std::error::Error>> {
+    /// task #18: K1-K3 of the chunked WY scan (shared by the per-seq path and the
+    /// batched-prime varlen path). Returns (gcum, P, U, W); `A` is K3-internal.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn gdn_chunk_k123(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                          g: &CudaSlice<f32>, beta: &CudaSlice<f32>,
+                          n_head: usize, t: usize, c: usize)
+                          -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         const D: usize = 128;
-        const NSPLIT: u32 = 4;
-        assert!(c >= 1 && c <= 128, "gdn_scan_chunked: C must be in 1..=128");
         let h = n_head;
         let nc = (t + c - 1) / c;
         let (hi, ti, ci) = (h as i32, t as i32, c as i32);
-        // scratch (stream-ordered allocs; pool-reused across layers)
         let mut gcum = self.uninit(t * h)?;
         let mut a = self.uninit(nc * h * c * c)?;
         let mut p = self.uninit(nc * h * c * c)?;
         let mut u = self.uninit(nc * h * c * D)?;
         let mut w = self.uninit(nc * h * c * D)?;
-        let mut y = self.uninit(nc * h * c * D)?;
-        let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
         {   // K1
             let f = self.func("gdn_chunk_cumgate_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
@@ -7385,6 +7416,120 @@ impl Engine {
                 }
             }
         }
+        Ok((gcum, p, u, w))
+    }
+
+    /// Whether the K4/K5 mma pair serves at chunk size `c` (mirrors gdn_scan_chunked's
+    /// seam read — env re-read per call ON PURPOSE, kernel-check pins both configs).
+    pub fn gdn_mma_enabled(&self, c: usize) -> bool {
+        !portable_mma_gated() && c == 32
+            && match std::env::var("BW24_GDN_MMA").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => cfg!(bw24_hopper_mma),
+            }
+    }
+
+    /// task #18: run K1-K3 + the bf16 W/k mirrors for ONE sequence and allocate its
+    /// K4/K5 outputs — the per-seq half of the varlen batched scan (mma path, C == 32).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_chunk_pre(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                         g: &CudaSlice<f32>, beta: &CudaSlice<f32>,
+                         n_head: usize, t: usize, c: usize)
+                         -> Result<GdnChunkPre, Box<dyn std::error::Error>> {
+        const D: usize = 128;
+        assert!(c == 32, "gdn_chunk_pre: varlen K4/K5 are the C==32 mma pair");
+        let h = n_head;
+        let nc = (t + c - 1) / c;
+        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, n_head, t, c)?;
+        let nw = nc * h * c * D;
+        let nk = t * h * D;
+        let mut wb16 = self.alloc_u8_uninit(nw * 2)?;
+        let mut kb16 = self.alloc_u8_uninit(nk * 2)?;
+        {
+            let f = self.func("f32_to_bf16_bulk");
+            let (n1, n2) = (nw as i64, nk as i64);
+            let cfg1 = LaunchConfig::for_num_elems((nw as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&w).arg(&mut wb16).arg(&n1);
+            unsafe { b.launch(cfg1)?; }
+            let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(k).arg(&mut kb16).arg(&n2);
+            unsafe { b.launch(cfg2)?; }
+        }
+        let y16 = self.alloc_u8_uninit(nc * h * c * D * 2)?;
+        let ssnap16 = self.alloc_u8_uninit(nc * h * D * D * 2)?;
+        let o = self.uninit(D * h * t)?;
+        Ok(GdnChunkPre { gcum, p, u, kb16, wb16, y16, ssnap16, o, t, nc })
+    }
+
+    /// Raw device address helpers for the varlen by-value arg struct (single-stream
+    /// launches; every buffer outlives the call — the f16 FFI discipline).
+    pub fn addr_f32(&self, x: &CudaSlice<f32>) -> u64 {
+        use cudarc::driver::DevicePtr;
+        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        p as u64
+    }
+    pub fn addr_f32_mut(&self, x: &mut CudaSlice<f32>) -> u64 {
+        use cudarc::driver::DevicePtrMut;
+        let (p, _g) = x.device_ptr_mut(&self.gpu.stream);
+        p as u64
+    }
+    pub fn addr_f32v(&self, x: &cudarc::driver::CudaView<f32>) -> u64 {
+        use cudarc::driver::DevicePtr;
+        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        p as u64
+    }
+    pub fn addr_u8(&self, x: &CudaSlice<u8>) -> u64 {
+        use cudarc::driver::DevicePtr;
+        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        p as u64
+    }
+
+    /// task #18: the varlen K4+K5 pair — TWO launches run every sequence's state pass
+    /// and output pass (grid gains a seq dim; per-block math identical to the per-seq
+    /// launches, so this is strictly bit-gateable against them).
+    pub fn gdn_chunk_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, scale: f32)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        const NSPLIT: u32 = 4;
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8, "gdn_chunk_vl8: 1..=8 sequences");
+        let mut packed = [GdnSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnVl8(packed);
+        let (hi, ci) = (n_head as i32, 32i32);
+        let max_nc = seqs.iter().map(|a| a.nc).max().unwrap() as u32;
+        {
+            let f = self.func("gdn_chunk_state_mma_vl");
+            let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_chunk_output_mma_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&scale);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
+    }
+    pub fn gdn_scan_chunked(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                            n_head: usize, t: usize, scale: f32, c: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        const D: usize = 128;
+        const NSPLIT: u32 = 4;
+        assert!(c >= 1 && c <= 128, "gdn_scan_chunked: C must be in 1..=128");
+        let h = n_head;
+        let nc = (t + c - 1) / c;
+        let (hi, ti, ci) = (h as i32, t as i32, c as i32);
+        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, n_head, t, c)?;
+        let mut y = self.uninit(nc * h * c * D)?;
+        let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
         // K4-MMA seam (BW24_GDN_MMA; harness verdict 1.75x — tools/bench_gdn_k4.cu, ledger
         // 2026-07-26): M in mma accumulator fragments, bf16 W/k mirrors through a cp.async
         // ring. C==32 only (the kernel's tile). PROMOTED default-ON on the Hopper lane

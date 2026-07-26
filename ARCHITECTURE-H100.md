@@ -1129,3 +1129,16 @@ Gates: prime-batch-gate b=3/b=4 uneven lengths ALL GREEN (argmax + 16-step
 streams MATCH vs individual primes — the offset-view proof), validate-h100,
 graph-session, decode-batch green. Interleaved OLD-binary vs NEW x5 at
 B=4 T=152 (the serving shape): NEW 5/5, median 14259 vs 13441 (+6.1%).
+
+**Varlen GDN increment 1 (2026-07-26, task #18): K4/K5 varlen pair LANDED,
++2.3% batched prime interleaved 5/5.** gdn_chunk_{state,output}_mma bodies
+extracted to __device__ fns; _vl twins take gdnseq_t[8] BY VALUE (the wptr8_t
+pattern) + a seq grid dim — ONE launch runs every sequence's K4 (and one K5),
+per-block math identical to the per-seq launch (strictly bit-gateable).
+Engine: gdn_chunk_k123 extraction (shared, launch-configs untouched),
+gdn_chunk_pre (per-seq K1-K3 + mirrors + output allocs), gdn_chunk_vl8 (two
+launches), linear_attn_gdn_prep stage split, linear_attn_prime_core_batch
+(prep x B -> vl K4+K5 -> per-seq swap/norm; BW24_GDN_VL=0 reverts to per-seq).
+Gates: kernel-check, prime-batch b=4 AND b=8 uneven ALL GREEN. Interleaved
+seam A/B x5 at B=4 T=152: VL 5/5, median 14488 vs 14164 (+2.3% — the
+K4/K5-only slice of the projected varlen total; K1-K3/prep increments next).

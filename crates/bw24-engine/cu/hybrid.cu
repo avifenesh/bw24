@@ -1460,17 +1460,27 @@ template<int N> __device__ __forceinline__ void cp_wait() {
     asm volatile("cp.async.wait_group %0;" :: "n"(N));
 }
 
-extern "C" __global__ void __launch_bounds__(256, 2)
-gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
-                     const float* __restrict__ beta,
-                     const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
-                     __half* __restrict__ Y, __half* __restrict__ Ssnap,
-                     const float* __restrict__ state_in, float* __restrict__ state_out,
-                     int H, int T, int C) {
+// task #18 (varlen): per-seq args for the batched-prime varlen twins — one launch runs
+// ALL B sequences' K4/K5 (grid gains a seq dim; each block's math is IDENTICAL to the
+// per-seq launch, so the varlen path is strictly bit-gateable). Passed BY VALUE like
+// wptr8_t (Rust GdnSeqVl/GdnVl8, #[repr(C)]).
+typedef struct {
+    const __nv_bfloat16* kb16; const float* gcum; const float* beta;
+    const float* U; const __nv_bfloat16* Wb16; __half* Y; __half* Ssnap;
+    const float* state_in; float* state_out;
+    const float* q; const float* P; float* o;
+    int T; int nc;
+} gdnseq_t;
+typedef struct { gdnseq_t s[8]; } gdnvl_t;
+
+__device__ __forceinline__ void
+gdn_k4_body(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+            const float* __restrict__ beta,
+            const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+            __half* __restrict__ Y, __half* __restrict__ Ssnap,
+            const float* __restrict__ state_in, float* __restrict__ state_out,
+            int H, int T, int C, int h, int col0) {
     constexpr int D = GDN_D;
-    constexpr int COLS = 32;
-    const int h = blockIdx.x;
-    const int col0 = blockIdx.y * COLS;
     const int tid = threadIdx.x;
     const int warp = tid / 32, lane = tid % 32;
 
@@ -1604,6 +1614,26 @@ gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restr
         }
 }
 
+extern "C" __global__ void __launch_bounds__(256, 2)
+gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+                     const float* __restrict__ beta,
+                     const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+                     __half* __restrict__ Y, __half* __restrict__ Ssnap,
+                     const float* __restrict__ state_in, float* __restrict__ state_out,
+                     int H, int T, int C) {
+    gdn_k4_body(kb16, gcum, beta, U, Wb16, Y, Ssnap, state_in, state_out,
+                H, T, C, blockIdx.x, blockIdx.y * 32);
+}
+
+// varlen twin (task #18): grid (H, D/32, B); block (h, col-tile) of seq blockIdx.z runs
+// the EXACT per-seq body on that seq's buffers/state — bit-identical per block.
+extern "C" __global__ void __launch_bounds__(256, 2)
+gdn_chunk_state_mma_vl(gdnvl_t v, int H, int C) {
+    const gdnseq_t a = v.s[blockIdx.z];
+    gdn_k4_body(a.kb16, a.gcum, a.beta, a.U, a.Wb16, a.Y, a.Ssnap, a.state_in, a.state_out,
+                H, a.T, C, blockIdx.x, blockIdx.y * 32);
+}
+
 
 // ---- v2: coupled form — St and Y arrive as BF16 (written by K4-mma directly; identical
 // numerics to v1 which rounds them anyway) through a cp.async ring. P stays f32->bf16.
@@ -1616,16 +1646,14 @@ template<int N> __device__ __forceinline__ void cp_wait_k5() {
     asm volatile("cp.async.wait_group %0;" :: "n"(N));
 }
 
-extern "C" __global__ void __launch_bounds__(256, 2)
-gdn_chunk_output_mma(const float* __restrict__ q, const float* __restrict__ gcum,
-                      const float* __restrict__ P, const __half* __restrict__ Yb,
-                      const __half* __restrict__ Stb, float* __restrict__ o,
-                      int H, int T, int C, float scale) {
+__device__ __forceinline__ void
+gdn_k5_body(const float* __restrict__ q, const float* __restrict__ gcum,
+            const float* __restrict__ P, const __half* __restrict__ Yb,
+            const __half* __restrict__ Stb, float* __restrict__ o,
+            int H, int T, int C, float scale, int c, int h, int j0) {
     constexpr int D = GDN_D;
-    const int c = blockIdx.x, h = blockIdx.y;
     const int t0 = c * C;
     const int Cc = min(C, T - t0);
-    const int j0 = blockIdx.z * 32;
     if (j0 >= Cc) return;
     const int tid = threadIdx.x;
     const int warp = tid / 32, lane = tid % 32;
@@ -1754,6 +1782,24 @@ gdn_chunk_output_mma(const float* __restrict__ q, const float* __restrict__ gcum
                 o[((size_t)(t0 + j0 + j) * H + h) * D + col] = scale * acc[t4].x[l];
         }
     }
+}
+
+extern "C" __global__ void __launch_bounds__(256, 2)
+gdn_chunk_output_mma(const float* __restrict__ q, const float* __restrict__ gcum,
+                      const float* __restrict__ P, const __half* __restrict__ Yb,
+                      const __half* __restrict__ Stb, float* __restrict__ o,
+                      int H, int T, int C, float scale) {
+    gdn_k5_body(q, gcum, P, Yb, Stb, o, H, T, C, scale,
+                blockIdx.x, blockIdx.y, blockIdx.z * 32);
+}
+
+// varlen twin (task #18): grid (max_nc, H, B); requires C == 32 (j-tile = 1, the mma
+// seam's chunk size). Chunks past a seq's nc early-return via the body's Cc guard.
+extern "C" __global__ void __launch_bounds__(256, 2)
+gdn_chunk_output_mma_vl(gdnvl_t v, int H, int C, float scale) {
+    const gdnseq_t a = v.s[blockIdx.z];
+    gdn_k5_body(a.q, a.gcum, a.P, a.Y, a.Ssnap, a.o, H, a.T, C, scale,
+                blockIdx.x, blockIdx.y, 0);
 }
 
 #endif  // !BW24_PORTABLE_CUDA || BW24_HOPPER_MMA

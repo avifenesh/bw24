@@ -38,6 +38,15 @@ pub struct PrimeSlabs {
 }
 
 
+/// task #18: one sequence's GDN prep outputs (the scan inputs).
+pub(crate) struct GdnPrep {
+    pub q_l2: cudarc::driver::CudaSlice<f32>,
+    pub k_l2: cudarc::driver::CudaSlice<f32>,
+    pub v_g: cudarc::driver::CudaSlice<f32>,
+    pub beta: cudarc::driver::CudaSlice<f32>,
+    pub g_log: cudarc::driver::CudaSlice<f32>,
+}
+
 /// Device scratch for the burst verify stream (see `verify_stream_scratch`).
 pub(crate) struct VerifyStreamScratch {
     pub pos_d: CudaSlice<i32>,
@@ -885,23 +894,15 @@ impl HybridModel {
                     }
                 }
                 Mixer::Linear(la) => {
-                    // task #16: NO split copies — the core reads row-offset VIEWS of the
-                    // concat projection outputs, and its out-GEMM writes straight into
-                    // `mixed` at offs[s] (same kernels/values; the old path's per-seq
-                    // D2D scatter+gather was ~1ms/round of pure copy).
+                    // task #16: NO split copies (cores read row-offset views of the concat
+                    // outputs; out-GEMMs write into `mixed` at offs[s]). task #18: the core
+                    // itself is BATCHED — per-seq prep/K1-K3, then ONE varlen K4 + ONE
+                    // varlen K5 launch for all sequences.
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
                     let g4 = e.matmul_group_xh(&ws, &h, &hx16, total)?;
-                    let (cdim, vdim, hdim) = (la.wqkv.out_features(), la.wqkv_gate.out_features(),
-                                              la.ssm_beta.out_features());
-                    for s in 0..b {
+                    let outs = self.linear_attn_prime_core_batch(e, la, &g4, &offs, &ts, caches, il)?;
+                    for (s, (gn, gn16)) in outs.into_iter().enumerate() {
                         let (o, t) = (offs[s], ts[s]);
-                        let (gn, gn16) = self.linear_attn_prime_core_pad_view(
-                            e, la,
-                            &g4[0].slice(o * cdim..(o + t) * cdim),
-                            &g4[1].slice(o * vdim..(o + t) * vdim),
-                            &g4[2].slice(o * hdim..(o + t) * hdim),
-                            &g4[3].slice(o * hdim..(o + t) * hdim),
-                            t, caches[s], il, None)?;
                         let mut done = false;
                         if let Some(xh) = &gn16 {
                             done = e.try_f16_gemm_pre_into_off(&la.ssm_out, xh, t, &mut mixed, o * n_embd)?;
@@ -1163,18 +1164,16 @@ impl HybridModel {
             t, cache, il, pad_len)
     }
 
-    /// task #16: view-consuming GDN prime core — the batched prime hands row-offset
-    /// views of the CONCAT projection outputs directly (no per-seq split copies).
-    /// Same kernels, same values, byte-identical to the Vec shim above.
+    /// task #18: the GDN prep stage (conv + repack + l2 x2 + sigmoid + glog + pad-mask) —
+    /// shared verbatim by the per-seq scan path and the varlen batched path.
     #[allow(clippy::too_many_arguments)]
-    fn linear_attn_prime_core_pad_view(&self, e: &Engine, la: &LinearAttnLayer,
-                              qkv_mixed: &cudarc::driver::CudaView<f32>,
-                              z: &cudarc::driver::CudaView<f32>,
-                              beta_raw: &cudarc::driver::CudaView<f32>,
-                              alpha: &cudarc::driver::CudaView<f32>,
-                              t: usize, cache: &mut Cache, il: usize,
-                              pad_len: Option<&CudaSlice<i32>>)
-                              -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
+    fn linear_attn_gdn_prep(&self, e: &Engine, la: &LinearAttnLayer,
+                            qkv_mixed: &cudarc::driver::CudaView<f32>,
+                            beta_raw: &cudarc::driver::CudaView<f32>,
+                            alpha: &cudarc::driver::CudaView<f32>,
+                            t: usize, cache: &mut Cache, il: usize,
+                            pad_len: Option<&CudaSlice<i32>>)
+                            -> Result<GdnPrep, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;       // 128
@@ -1184,9 +1183,7 @@ impl HybridModel {
         let key_dim = d_state * num_k;               // 2048
         let value_dim = d_state * num_v;             // 4096
         let conv_dim = key_dim * 2 + value_dim;      // 8192
-        let _ = (key_dim, value_dim);
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (d_state as f32).sqrt();
         debug_assert!(t >= d_conv - 1, "stateful conv needs T >= pad (PRIME_MIN_T gates)");
 
         // conv with CARRIED ring state + ring roll (state read + final-window write-back).
@@ -1212,6 +1209,119 @@ impl HybridModel {
         if let Some(len_d) = pad_len {
             e.gdn_pad_mask(&mut beta, &mut g_log, len_d, num_v, t)?;
         }
+        Ok(GdnPrep { q_l2, k_l2, v_g, beta, g_log })
+    }
+
+    /// task #18: batched GDN mixer core — per-seq prep + K1-K3, then ONE varlen K4 and
+    /// ONE varlen K5 launch for all B sequences (full-machine occupancy vs B underfilled
+    /// per-seq trains). Per-block math identical to the per-seq path (bit-gateable);
+    /// BW24_GDN_VL=0 or a non-mma/non-C32 config falls back to the per-seq loop.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attn_prime_core_batch(&self, e: &Engine, la: &LinearAttnLayer,
+                                    g4: &[CudaSlice<f32>], offs: &[usize], ts: &[usize],
+                                    caches: &mut [&mut Cache], il: usize)
+                                    -> Result<Vec<(CudaSlice<f32>, Option<CudaSlice<u8>>)>, Box<dyn std::error::Error>> {
+        let ssm = self.cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;
+        let num_k = ssm.group_count as usize;
+        let num_v = ssm.time_step_rank as usize;
+        let key_dim = d_state * num_k;
+        let value_dim = d_state * num_v;
+        let conv_dim = key_dim * 2 + value_dim;
+        let eps = self.cfg.rms_eps;
+        let scale = 1.0 / (d_state as f32).sqrt();
+        let b = ts.len();
+        let c = Engine::gdn_chunk_size();
+        let use_vl = (2..=8).contains(&b)
+            && Engine::gdn_chunked_enabled() && ts.iter().all(|&t| t >= 16)
+            && e.gdn_mma_enabled(c)
+            && std::env::var("BW24_GDN_VL").as_deref() != Ok("0");
+        if !use_vl {
+            return (0..b).map(|s| {
+                let (o, t) = (offs[s], ts[s]);
+                self.linear_attn_prime_core_pad_view(
+                    e, la,
+                    &g4[0].slice(o * conv_dim..(o + t) * conv_dim),
+                    &g4[1].slice(o * value_dim..(o + t) * value_dim),
+                    &g4[2].slice(o * num_v..(o + t) * num_v),
+                    &g4[3].slice(o * num_v..(o + t) * num_v),
+                    t, caches[s], il, None)
+            }).collect();
+        }
+        // stage 1: per-seq prep + K1-K3 + mirrors
+        let mut preps = Vec::with_capacity(b);
+        let mut pres = Vec::with_capacity(b);
+        for s in 0..b {
+            let (o, t) = (offs[s], ts[s]);
+            let prep = self.linear_attn_gdn_prep(
+                e, la,
+                &g4[0].slice(o * conv_dim..(o + t) * conv_dim),
+                &g4[2].slice(o * num_v..(o + t) * num_v),
+                &g4[3].slice(o * num_v..(o + t) * num_v),
+                t, caches[s], il, None)?;
+            let pre = e.gdn_chunk_pre(&prep.q_l2, &prep.k_l2, &prep.v_g, &prep.g_log, &prep.beta,
+                                      num_v, t, c)?;
+            preps.push(prep);
+            pres.push(pre);
+        }
+        // stage 2: varlen K4 + K5 (two launches for the whole batch)
+        let args: Vec<crate::GdnSeqVl> = (0..b).map(|s| {
+            let rl = caches[s].recur[il].as_ref().unwrap();
+            crate::GdnSeqVl {
+                kb16: e.addr_u8(&pres[s].kb16), gcum: e.addr_f32(&pres[s].gcum),
+                beta: e.addr_f32(&preps[s].beta), u: e.addr_f32(&pres[s].u),
+                wb16: e.addr_u8(&pres[s].wb16), y: e.addr_u8(&pres[s].y16),
+                ssnap: e.addr_u8(&pres[s].ssnap16),
+                state_in: e.addr_f32(&rl.ssm_state), state_out: e.addr_f32(&rl.ssm_state_alt),
+                q: e.addr_f32(&preps[s].q_l2), p: e.addr_f32(&pres[s].p),
+                o: e.addr_f32(&pres[s].o),
+                t: ts[s] as i32, nc: pres[s].nc as i32,
+            }
+        }).collect();
+        e.gdn_chunk_vl8(&args, num_v, scale)?;
+        // stage 3: per-seq state swap + gated norm (+f16out twin for the out-GEMM)
+        let mut out = Vec::with_capacity(b);
+        for s in 0..b {
+            let rl = caches[s].recur[il].as_mut().unwrap();
+            std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
+            let (o, t) = (offs[s], ts[s]);
+            let z_v = g4[1].slice(o * value_dim..(o + t) * value_dim);
+            let mut gn = e.uninit(d_state * num_v * t)?;
+            let gn16 = if Self::f16out_on(e, t) {
+                let mut g16 = e.alloc_u8_uninit(d_state * num_v * t * 2)?;
+                e.gated_rmsnorm_f16out_zv(&pres[s].o, la.ssm_norm.float_data(), &z_v, &mut gn, &mut g16,
+                                          d_state, num_v * t, eps)?;
+                Some(g16)
+            } else {
+                e.gated_rmsnorm_zv(&pres[s].o, la.ssm_norm.float_data(), &z_v, &mut gn,
+                                   d_state, num_v * t, eps)?;
+                None
+            };
+            out.push((gn, gn16));
+        }
+        Ok(out)
+    }
+
+    /// task #16: view-consuming GDN prime core — the batched prime hands row-offset
+    /// views of the CONCAT projection outputs directly (no per-seq split copies).
+    /// Same kernels, same values, byte-identical to the Vec shim above.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_attn_prime_core_pad_view(&self, e: &Engine, la: &LinearAttnLayer,
+                              qkv_mixed: &cudarc::driver::CudaView<f32>,
+                              z: &cudarc::driver::CudaView<f32>,
+                              beta_raw: &cudarc::driver::CudaView<f32>,
+                              alpha: &cudarc::driver::CudaView<f32>,
+                              t: usize, cache: &mut Cache, il: usize,
+                              pad_len: Option<&CudaSlice<i32>>)
+                              -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let ssm = cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;       // 128
+        let num_v = ssm.time_step_rank as usize;     // 32
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (d_state as f32).sqrt();
+
+        let prep = self.linear_attn_gdn_prep(e, la, qkv_mixed, beta_raw, alpha, t, cache, il, pad_len)?;
 
         // ONE gdn_scan over T from the cache's CURRENT state (zero at fresh prime); the final
         // state lands in the spare buffer and ping-pongs back (stable resident pointers, the
@@ -1219,9 +1329,11 @@ impl HybridModel {
         // dispatches the chunked WY form under BW24_GDN_CHUNKED (prefill-only seam; decode +
         // verify keep the sequential kernel).
         let mut o = e.uninit(d_state * num_v * t)?;
+        let rl = cache.recur[il].as_mut().unwrap();
         {
             let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
-            e.gdn_scan_prefill(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+            e.gdn_scan_prefill(&prep.q_l2, &prep.k_l2, &prep.v_g, &prep.g_log, &prep.beta,
+                               ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
