@@ -5429,6 +5429,34 @@ impl Engine {
         Ok(out)
     }
 
+    /// task #14 pad-proofing: zero beta/g_log at rows >= len_d[0] (pads become identity
+    /// GDN steps). Layouts [T, H].
+    pub fn gdn_pad_mask(&self, beta: &mut CudaSlice<f32>, g_log: &mut CudaSlice<f32>,
+                        len_d: &CudaSlice<i32>, h: usize, t: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_pad_mask_f32");
+        let cfg = LaunchConfig::for_num_elems((t * h) as u32);
+        let (hi, ti) = (h as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(beta).arg(g_log).arg(len_d).arg(&hi).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #14 pad-proofing: dst[ncols] = src row (len_d[0]-1) — device-indexed last-row
+    /// gather for the padded prime graph's h_seed/hlast.
+    pub fn row_gather_dev(&self, src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                          len_d: &CudaSlice<i32>, ncols: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("row_gather_dev_f32");
+        let cfg = LaunchConfig::for_num_elems(ncols as u32);
+        let nc = ncols as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(dst).arg(len_d).arg(&nc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Grouped matmul: several weights consuming ONE activation (hybrid layers: the GDN
     /// 4-tuple wqkv/gate/beta/alpha, attention q/k/v, ffn gate/up). Semantics identical to
     /// calling `matmul` per weight; the f16-mirror arm converts the activation ONCE for the

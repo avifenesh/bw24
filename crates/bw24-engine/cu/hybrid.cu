@@ -863,6 +863,26 @@ extern "C" __global__ void gdn_chunk_output_f32(
     }
 }
 
+
+// ---- task #14 pad-proofing (design v3) ----
+// Pads beyond the true length become IDENTITY steps in the GDN recurrence: the update law
+// is state' = exp(g)*state + beta*(...), so beta=0 AND g_log=0 at pad rows leaves state
+// untouched and contributes nothing. beta/g layout [T,H] (t*H+h); len from a device int.
+extern "C" __global__ void gdn_pad_mask_f32(float* __restrict__ beta, float* __restrict__ g_log,
+                                            const int* __restrict__ len_d, int H, int T) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * H) return;
+    if (i / H >= len_d[0]) { beta[i] = 0.0f; g_log[i] = 0.0f; }
+}
+
+// Gather row (len_d[0]-1) of a [T, ncols] buffer into dst[ncols] — the padded prime
+// graph's h_seed/hlast source (the true last token's row, not the pad tail).
+extern "C" __global__ void row_gather_dev_f32(const float* __restrict__ src, float* __restrict__ dst,
+                                              const int* __restrict__ len_d, int ncols) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < ncols) dst[i] = src[(size_t)(len_d[0] - 1) * ncols + i];
+}
+
 // ---- helpers for the linear-attn glue ----
 // sigmoid(x) elementwise
 extern "C" __global__ void sigmoid_f32(const float* x, float* y, int n) {
