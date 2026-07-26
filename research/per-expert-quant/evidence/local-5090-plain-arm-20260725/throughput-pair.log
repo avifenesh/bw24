@@ -1,0 +1,11 @@
+=== throughput_pair start 2026-07-26T20:17:39+03:00 ===
+warming freeze profile for plain-q3k 2026-07-26T20:18:09+03:00
+lockstep m=1: 32 tokens in 11.143s = 2.87 tok/s aggregate, 2.87 tok/s per stream
+lockstep m=1: 32 tokens in 22.180s = 1.44 tok/s aggregate, 1.44 tok/s per stream
+lockstep m=1: 32 tokens in 10.473s = 3.06 tok/s aggregate, 3.06 tok/s per stream
+warming freeze profile for fusedcand 2026-07-26T20:39:40+03:00
+lockstep m=1: 32 tokens in 10.084s = 3.17 tok/s aggregate, 3.17 tok/s per stream
+lockstep m=1: 32 tokens in 11.085s = 2.89 tok/s aggregate, 2.89 tok/s per stream
+lockstep m=1: 32 tokens in 6.239s = 5.13 tok/s aggregate, 5.13 tok/s per stream
+lockstep m=1: 32 tokens in 6.239s = 5.13 tok/s aggregate, 5.13 tok/s per stream
+lockstep m=1: 32 tokens in 6.201s = 5.16 tok/s aggregate, 5.16 tok/s per stream

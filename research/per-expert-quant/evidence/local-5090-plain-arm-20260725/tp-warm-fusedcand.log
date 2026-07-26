@@ -1,0 +1,29 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded decode tokens before fixed residency
+[moe-cache] size-aware fixed slots: 5398 slots in 3 classes, 13.96 GB / 13.97 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spill-pread] falling back to mmap: worker read ring is busy
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=28.80 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5398 slots, 5398 resident blocks; 1798 complete experts, 4 one-projection fragments, 0 two-projection fragments (4 stranded blocks)
+[moe-cache] freeze profile saved: 5398 blocks -> /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/freeze-fusedcand.txt
+post-freeze verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.104e0  MATCH
+generated 1 tokens in 0.358s = 2.79 tok/s (ST greedy decode)
+tokens: [40129]
+MoE cache DECODE-WINDOW: 5398 slots | hits=825 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=79 experts=357 backend_wall=0.334s exposed_wait=0.330s RAM_hits=561 RAM_misses=510 RAM_fills=1.43 GB RAM_resident=21.47 GB phase_prepare=0.001s phase_io=0.130s phase_insert=0.000s phase_compute=0.201s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=355 resident_1=2 resident_2=0
+storage DECODE-WINDOW: 1.43 GB physical reads
+OUTPUT TEXT: "Below"
+--- generated text ---
+Below
+[spill-pread] reads=167760 bytes=454637715456 errors=0 short_reads=0 fallbacks=1 buffer_waits=138953 ring_full=347
+[bw24-cpu-cache] hits=80790 misses=95295 hit_rate=45.88% read_GB=253.091 resident_GB=21.474
+[bw24-cpu-profile] calls=13717 prepare=0.553709s io=24.380871s insert=0.069302s compute=35.641842s read_projections=95295 read_GB=253.091 stage_entry=0.734955s stage_cached=32.290651s stage_missing=1.654303s stage_accum=0.338995s prefetch_projections=0 prefetch_GB=0.000

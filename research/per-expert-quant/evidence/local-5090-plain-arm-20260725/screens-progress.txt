@@ -1,0 +1,2 @@
+arm plain-q3k rc=0
+arm fusedcand rc=0

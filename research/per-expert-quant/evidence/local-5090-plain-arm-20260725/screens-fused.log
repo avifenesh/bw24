@@ -1,0 +1,27 @@
+=== screens_fused start 2026-07-26T05:07:45+03:00 ===
+{"format": "bw24-relocated-expert-overlay-v1", "overlay": "/data/ai-ml/hf-models/hy3-fused-cand-overlay", "published_manifest_sha256": "06a51a8587ef957b57b2bde53710d5c19893f873e7c192041d562d3971c71483", "runtime_manifest_sha256": "c37f3f5d48a3b84c81df2ba08c41703402f505858ce14efea4cb434639cb643d", "source": "/data/ai-ml/hf-models/hy3-layer103p5-sparse-source", "source_fingerprints": {"config.json": {"bytes": 1195, "sha256": "663036ceca3d8a178cd772739566c262caffdecebaed6c1d76b464d729bb2951"}, "model.safetensors.index.json": {"bytes": 4266322, "sha256": "9594f1a9419e62ca7afca51bb644f38ef19039374f7812449381ccf42f0ef79b"}}}
+prepared 25/237 expert files
+prepared 50/237 expert files
+prepared 75/237 expert files
+prepared 100/237 expert files
+prepared 125/237 expert files
+prepared 150/237 expert files
+prepared 175/237 expert files
+prepared 200/237 expert files
+prepared 225/237 expert files
+prepared 237/237 expert files
+dual-NVMe view ready: 119 source files / 118 copied files, 59.10 GB / 58.62 GB
+prepared 20/237 mirrored expert files
+prepared 40/237 mirrored expert files
+prepared 60/237 mirrored expert files
+prepared 80/237 mirrored expert files
+prepared 100/237 mirrored expert files
+prepared 120/237 mirrored expert files
+prepared 140/237 mirrored expert files
+prepared 160/237 mirrored expert files
+prepared 180/237 mirrored expert files
+prepared 200/237 mirrored expert files
+prepared 220/237 mirrored expert files
+prepared 237/237 mirrored expert files
+mirror ready: 118 hard links, 119 verified copies, 117.73 GB; map=/home/avifenesh/.local/share/bw24-models/hy3-fused-cand-root-mirror/inode-alternates.tsv
+candidate serving assets ready 2026-07-26T05:14:31+03:00

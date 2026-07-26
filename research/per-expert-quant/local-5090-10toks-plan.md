@@ -355,3 +355,31 @@ bank (layer103.5 retains 9,900). Cross-run comparison — labeled as such, not a
 
 Next gates: throughput pair (m=1, N=3) fusedcand vs plain vs served layer103.5, then the
 ship-decision comparison vs the served candidate as a separate question (speed x quality x bytes).
+
+### Same-day throughput triads (m=1, NGEN=32, lockstep, freeze-profiles, N=3 each)
+
+Raw logs `evidence/local-5090-plain-arm-20260725/tp-*.log`, all three arms measured back-to-back
+on 2026-07-26 evening under the same guards (foreign-GPU < 500 MiB, temp <= 56, load <= 6).
+
+| arm | bank | expert bytes | runs (tok/s) | median |
+| --- | --- | --- | --- | --- |
+| plain-q3k | 15,168 full | 115 G | 1.44 / 2.87 / 3.06 | 2.87 |
+| fusedcand | 15,168 full | 110 G | 3.17 / 2.89 / 2.89 | 2.89 |
+| layer103p5 (served) | 9,900 pruned | 78.5 G | 5.13 / 5.13 / 5.16 | 5.13 |
+
+Note: layer103.5 measures 5.13 today vs 4.29 in yesterday's rebase triad — same artifact, same
+methodology; day-to-day regime shift. Cross-arm conclusions use only the same-day columns.
+
+### Ship decision picture
+
+- Science result (paired, same day): importance-fused tier redistribution is FREE — fusedcand
+  matches plain speed (2.89 vs 2.87) and beats it on quality (38/56 vs 36/56) at 95.7% bytes.
+  The method works: routed-mass x big-corpus fusion, no pruning, quality holds.
+- Serving result: fusedcand does NOT displace the served layer103.5 — 2.89 vs 5.13 tok/s. The
+  speed gap is bank size (110 G / 15,168 experts vs 78.5 G / 9,900): GPU residency hit rate and
+  spill traffic dominate, and no tier shaping at 110 G closes a 1.78x gap.
+- Layer103.5 stays the served candidate. The fused method's real shot at the board: rebuild the
+  fused design at the SERVED byte budget (~78 G, full bank, no pruning — deeper Q2_K cold slice,
+  same hot Q8_0 protection) and screen it paired against layer103.5 directly. That is the
+  byte-matched question the owner directives (no pruning, reuse NVFP4-study evidence) point at,
+  and it is a separate build+screen cycle awaiting owner call.
