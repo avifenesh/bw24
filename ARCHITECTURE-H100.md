@@ -249,3 +249,20 @@ single-seq)**. m=1 essentially flat (183.6) — the m=1 kernel's per-warp walk
 was already sector-coalesced; its remaining gap to the 352 tok/s wall is
 latency-bound (next: multi-block ILP / cp.async staging / mr2-style rows —
 the continuing task-9 lane, with wgmma prefill as task 8).
+
+**Tuning-lane ledger (2026-07-26, all N≥2 measured on the box):**
+| probe | verdict |
+|---|---|
+| Q8_0 split-plane mirrors | **+14% B=4, +8% B=8, +2.8% m=1** — kept (fec8f234) |
+| Q8_0 mr2 (q4_0 recipe) | −8% on H100 (132-SM grid math) — default mr1, kernel behind seam |
+| MMVQ_ROWS 2/8 | kernel-check FAIL (cross-kernel invariant) — blocked by gates |
+| KV_PREFETCH | +0.6% (noise) — not taken |
+| batched-state pointer-array kernels | perf-neutral, launch hygiene kept — states pooled for future |
+| prefill GEMM tiles (NSTAGE/BM/BN/K1_*) | ALL FLAT at 0.230s — GEMM is not the prime bound; profile says fa_prefill_f32_pp (415µs/call) + gdn_chunk pass are |
+| MMQ vs qmatvec_gemm prefill | tie (0.231s both) |
+
+Next frontier (evidence-ranked): (1) fa_prefill bf16 mainloop perf on H100
+(415µs/call — wgmma/TMA candidate, task 8's real target, NOT the int8 GEMM);
+(2) m=1 latency class (186→352 wall: cp.async staged weight ring);
+(3) fa_decode_combine batching (64 launches/step at B=8);
+(4) remaining shared extraction (bw24-validate, bw24-sampling, bw24-kv).
