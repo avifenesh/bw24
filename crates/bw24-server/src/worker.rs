@@ -433,9 +433,7 @@ pub fn run(
                     }
                 }
             }
-            // record the interactive TPOT ground truth (only ticks that decoded interactive)
             if had_interactive {
-                step_stats.record(t_decode.elapsed().as_secs_f32() * 1000.0);
                 last_interactive_decode = Instant::now();
             }
             last_batch = ready.len();
@@ -448,21 +446,35 @@ pub fn run(
                           active.len(), n_int, n_j, n_pref, ready.len(),
                           t_decode.elapsed().as_secs_f32() * 1000.0);
             }
-            // (d) dark-lane prefill, bounded per tick: judge/harvest primes consume their
-            // stall-bound budgets only after every decoding stream has advanced.
+            // (d) dark-lane prefill, ADAPTIVE: the tick period IS the client TPOT, so dark
+            // primes may only consume the SLO headroom decode left over (2026-07-26 yield
+            // battery: fixed 256-tok chunks pushed client p99 42 -> 91ms while the
+            // decode-only estimator read 44ms). Chunk tokens = headroom_ms x prime rate.
+            let decode_ms = t_decode.elapsed().as_secs_f32() * 1000.0;
+            let headroom_ms = (policy.slo_p99_ms - decode_ms).max(0.0);
+            let prime_tok_per_ms: f32 = std::env::var("BW24_PRIME_TOK_PER_MS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(8.0);
+            let adaptive_cap = (headroom_ms * prime_tok_per_ms) as usize;
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
                 let li = s.lane.idx();
                 if li == 0 || budgets[li] == 0 { continue; }
-                match prefill_tick(&engine, &loaded, s, budgets[li]) {
+                let chunk = budgets[li].min(adaptive_cap);
+                if chunk < bw24_engine::hybrid_forward::PRIME_MIN_T { break; }
+                match prefill_tick(&engine, &loaded, s, chunk) {
                     Ok(consumed) => budgets[li] = budgets[li].saturating_sub(consumed),
                     Err(err) => {
                         let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
                         finished.push(i);
                     }
                 }
+                break; // one dark chunk per tick — the headroom budget is tick-global
+            }
+            // Engine-truth TPOT = the FULL client-visible tick (decode + any dark prime).
+            if had_interactive {
+                step_stats.record(t_decode.elapsed().as_secs_f32() * 1000.0);
             }
         }
         // retire finished sessions (reverse order so indices stay valid). Long-enough sessions
