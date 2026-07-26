@@ -4900,6 +4900,12 @@ impl Engine {
             (QT_Q4_0, _, true)   => "qmatvec_q4_0_mmvq_mr2_rp",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, 2, true) => "qmatvec_q8_0_mmvq_mr2_rp",
+            // rpca: cp.async-staged weight ring (H100 long-scoreboard fix) — needs whole
+            // 32-block windows (in_f % 1024). BW24_Q80_CA=0 reverts to the plain rp twin.
+            (QT_Q8_0, _, true) if in_f % 1024 == 0 && {
+                static CA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *CA.get_or_init(|| std::env::var("BW24_Q80_CA").as_deref() != Ok("0"))
+            } => "qmatvec_q8_0_mmvq_rpca",
             (QT_Q8_0, _, true) => "qmatvec_q8_0_mmvq_rp",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",

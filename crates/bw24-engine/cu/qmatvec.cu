@@ -6497,6 +6497,72 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_rp(
     acc = warp_reduce_sum(acc);
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
+// ===== Q8_0 rp + cp.async ring (rpca recipe, H100 m=1 latency fix — 2026-07-26 ncu:
+// issue every 6-9 cycles, 0.16-0.29 eligible warps, long-scoreboard on the weight
+// stream). Window per 32-block iteration: 1024B quants + 64B scales, staged through a
+// per-warp smem ring so the dp4a loop reads smem while cp.async prefetches STAGES-1
+// windows ahead. Accumulation order per (row, block) IDENTICAL to qmatvec_q8_0_mmvq_rp
+// -> bit-identical (k-split stays banned; this hides latency without reordering). =====
+__device__ __forceinline__ void ca_issue_window_q8(unsigned char* dst,
+        const unsigned char* qsrc, const unsigned char* ssrc, int lane) {
+    cp_async16_g(dst + lane * 16, qsrc + lane * 16);                     // quant lo: 512B
+    cp_async16_g(dst + 512 + lane * 16, qsrc + 512 + lane * 16);        // quant hi: 512B
+    if (lane < 4) cp_async16_g(dst + 1024 + lane * 16, ssrc + lane * 16); // scales: 64B
+}
+extern "C" __global__ void qmatvec_q8_0_mmvq_rpca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    constexpr int STAGES = 3;
+    constexpr int WIN = 1024 + 64;
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    int niter = nblk >> 5;                     // dispatch gate: nblk % 32 == 0
+    const unsigned char* qplane = W + ((size_t)o * nblk) * 32;
+    const unsigned char* splane = W + (size_t)out_f * nblk * 32 + (size_t)o * nblk * 2;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nblk;
+    __shared__ __align__(16) unsigned char smw[BW24_MMVQ_ROWS][STAGES][WIN];
+    unsigned char (*ring)[WIN] = smw[threadIdx.y];
+    float acc = 0.0f;
+    #pragma unroll
+    for (int s = 0; s < STAGES - 1; s++) {
+        if (s < niter) {
+            ca_issue_window_q8(ring[s], qplane + (size_t)s * 1024, splane + (size_t)s * 64, lane);
+        }
+        cp_async_commit();
+    }
+    for (int it = 0; it < niter; it++) {
+        cp_async_wait<STAGES - 2>();
+        __syncwarp();
+        const unsigned char* wnd = ring[it % STAGES];
+        int blk = it * 32 + lane;
+        const int4* wq16 = (const int4*)(wnd + lane * 32);
+        int4 w01 = wq16[0], w23 = wq16[1];
+        int wi[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        float dw = half_to_float(*(const unsigned short*)(wnd + 1024 + lane * 2));
+        const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi = dp4a(wi[k], aq4[k], sumi);
+        acc += dw * adrow[blk] * (float)sumi;
+        int itn = it + STAGES - 1;
+        if (itn < niter) {
+            ca_issue_window_q8(ring[itn % STAGES], qplane + (size_t)itn * 1024,
+                               splane + (size_t)itn * 64, lane);
+        }
+        cp_async_commit();
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 // m=1 two-rows-per-warp rp twin (the q4_0 mr2 recipe: doubles per-warp bytes in flight —
 // the m=1 latency lever; same per-row dp4a order as qmatvec_q8_0_mmvq_rp -> bit-identical).
 extern "C" __global__ void qmatvec_q8_0_mmvq_mr2_rp(
