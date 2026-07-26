@@ -969,3 +969,32 @@ forward => their GEMMs must exceed ~1.1-1.3PF or their FLOP count is lower
 than assumed). The inference chain is now suspect — decomposing vLLM's actual
 prefill with nsys on this box (their GEMM kernels/us, GDN/FLA kernels, gaps)
 to replace inference with measurement before pricing the beat-35k path.
+
+## vLLM decomposed on-box (2026-07-26 nsys) — the lane math changes
+
+Rerun of the engine-decision bench script (same box, same 2048-prompt shape):
+**vLLM prefill = 31.0k tok/s TODAY (not the recorded 35k); decode 171.6-176.4
+— bw24's 183.7 = 105-107% of vLLM decode (lead widened).** bw24 prefill 19.9k
+= 64% of the real number. Their prefill burst per-kernel (nsys):
+- nvjet_sm90_tst_256x128 (Lt INT8) ~174us/launch — their GEMM engine is ALSO
+  Lt/nvjet, i.e. the SAME address-variant numeric class that blocked our
+  monolithic prime graphs;
+- flashinfer GDN JIT kernels dominate their busy time (device_kernel 100ms
+  class + delta_rule cutlass kernels) — their GDN prefill is EXPENSIVE;
+- triton fused int8-quant/norm/silu chains + causal-conv kernels;
+- "Capturing CUDA graphs (mixed prefill-decode, PIECEWISE)" — vLLM ships
+  graphs WITH nvjet by capturing PIECEWISE: graph the elementwise/state
+  chains, call the GEMMs eagerly between graph segments.
+
+**THE UNBLOCKED ROUTE — PIECEWISE PRIME GRAPHS:** our gap floor (3.7ms/prime)
+sits in exactly the small-kernel clusters (norms/adds/cvt/GDN glue) that
+piecewise capture covers; every one of OUR custom kernels is
+address-deterministic (mma/cp.async fixed schedules — only Lt is not).
+Graphing the between-GEMM segments (per layer: norm->proj-split glue,
+conv/GDN chunk stack, add/norm/silu chains) with Lt GEMMs eager between
+segments reclaims most of the floor with ZERO numeric-config change —
+bit-identity preserved because the captured kernels are deterministic and
+the Lt calls stay exactly as they are. vLLM's own stack validates the
+approach on this model/GPU. This is a sub-week arc: segment the captured
+trunk at GEMM boundaries, capture each segment once per bucket, replay
+segments interleaved with eager GEMM calls.
