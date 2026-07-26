@@ -690,3 +690,35 @@ bigger GEMM m) — scheduler work, not kernels. OPEN ARCS (tracked as tasks):
 cross-request prefill batching (decode_step_batch pattern applied to prime)
 and prefill graph capture (15% gap floor). Night: pp512 8674 -> 19886 (+129%),
 bench-shape prefill 398 -> 18659 (47x), TTFT 5.15s -> 0.119s, decode 102% vLLM.
+
+## Task #13 design — cross-request prefill batching (the measured 2x)
+
+WHY (measured 2026-07-26): serving prefill 17.3k vs vLLM 35k; scheduler costs
+only 7% — the whole remaining gap is GEMM batch size (vLLM concatenates
+prefill chunks across requests; our tick primes one request at a time; nvjet
+at m=512 runs ~660TF and larger m climbs toward the fp16 ceiling).
+
+DESIGN (decode_step_batch precedent, applied to prime):
+- New `prime_cache_batch(e, prompts: &[&[u32]], caches: &mut [&mut Cache])` in
+  hybrid_forward. Embed CONCATENATED tokens [sum_T, n_embd]; per layer:
+  * BATCHED on the concat buffer (one launch, m = sum_T): rms_norm chains,
+    qkv/out/gate-up/down projections (matmul_group / f16 GEMMs), elementwise,
+    ffn. These are token-parallel — rows independent.
+  * PER-SEQ on contiguous VIEWS of the concat buffer (offsets = prefix sums,
+    zero copies): rope (positions restart per seq), QK-norm is token-parallel
+    (safe either way), FA prefill, conv+GDN chunk stack (chunk kernels take
+    per-seq T), KV quantize-append, per-seq last-token logits.
+- Worker tick: collect up to BW24_PRIME_BATCH (default 4) pending interactive
+  FRESH prefills (continuation primes stay single — the suffix arm is
+  session-stateful); dispatch prime_cache_batch; per-seq TTFT emitted as each
+  seq's logits land.
+- NUMERIC CONFIG: batched GEMM at m=sum_T tiles K differently than per-seq m
+  -> NOT bit-identical to single primes (same class as every prefill GEMM
+  change). Gate: batch-vs-sequential ARGMAX equality per seq on the prompt
+  battery + logit-band + the standard batteries. Decode untouched (per-seq
+  caches identical structure after prime).
+- GATE BIN: prime_batch_gate — N prompts, prime individually vs batched,
+  compare per-seq prefill argmax + decode-16 streams + state maxdiff bands.
+- EXPECTED: GEMM m 512->2048 lifts the 10.3ms GEMM slice toward the ceiling
+  (+15-25% aggregate prefill), amortizes the per-tick fixed costs; stacks
+  with task #14 (graphs) toward the 35k lane target.
