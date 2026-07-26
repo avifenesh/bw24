@@ -1331,3 +1331,16 @@ Expected: producer removes the staging serialization v5 still pays inside its
 consumer warpgroups; with consumers never idling on K/V, the wgmma chain
 approaches its issue-bound floor. Measured points to beat: v5 999us, engine
 993us; the slice is 7.9ms of the 85ms official-lane prime.
+
+**FA3 v8a (2026-07-27): producer warpgroup w/o setmaxnreg REFUTED — 1562us.
+Mechanism: __launch_bounds__(384) forces a 170-reg ptxas ceiling onto the
+254-reg consumer path -> local-memory spills eat the producer's gain. The
+named-barrier choreography itself is CORRECT (all T MATCH) and stays as the
+v8 skeleton. THE remaining unknown is one specific contract: how CUTLASS-class
+kernels compile consumer code at ~240 regs while launching 384 threads
+(setmaxnreg.inc/dec + the launch-time register check interplay — study
+cutlass::arch::warpgroup_reg_{alloc,dealloc} codegen and the .maxnreg PTX
+annotation before the next attempt). Harness scoreboard: v5 999us == engine
+993us stands; v6/v7/v8a refuted with mechanisms. Everything else on the
+official lane is at its measured wall; the lane sits at 77.6% of vLLM with
+this one arc open.

@@ -1109,6 +1109,193 @@ fa3_v7(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
     }
 }
 
+// ---- v8a: producer warpgroup (no TMA yet). CTA = 384 thr: WG0/WG1 = v5's consumers
+// (staging removed), WG2 stages the K/V ring and signals via named barriers:
+//   FULL[s] (id 2+s, count 384): producer arrives after staging stage s; consumers sync.
+//   EMPTY[s] (id 4+s, count 384): consumers arrive when done with stage s; producer syncs.
+// Consumer-only sync: id 1 count 256. Per-WG P barrier: ids 6/7 count 128.
+__device__ __forceinline__ void bar_sync(int id, int cnt) {
+    asm volatile("bar.sync %0, %1;" :: "r"(id), "r"(cnt));
+}
+__device__ __forceinline__ void bar_arrive(int id, int cnt) {
+    asm volatile("bar.arrive %0, %1;" :: "r"(id), "r"(cnt));
+}
+
+extern "C" __global__ void __launch_bounds__(384, 1)
+fa3_v8(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+       const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+       int T, int H, int HKV, int D, float scale) {
+    extern __shared__ char smem[];
+    const int wg = threadIdx.x / 128;          // 0,1 consumers; 2 producer
+    const int tid = threadIdx.x % 128;
+    char* bQ = smem + (wg < 2 ? wg : 0) * 32768;
+    char* bK[2] = { smem + 65536, smem + 65536 + 32768 };
+    char* bV[2] = { smem + 131072, smem + 131072 + 32768 };
+    char* bP = smem + 196608 + (wg < 2 ? wg : 0) * 8192;
+    const int q0 = (blockIdx.x * 2 + (wg < 2 ? wg : 0)) * 64;
+    const int head = blockIdx.y;
+    const int kvh = head / (H / HKV);
+
+    const int blk_q_end = (blockIdx.x * 2 + 1) * 64;
+    const int kv_end_all = blk_q_end + 64 <= T ? blk_q_end + 64 : T;
+    const int n_tiles = (kv_end_all + 63) / 64;
+
+    if (wg == 2) {
+        // ---- producer ----
+        for (int t = 0; t < n_tiles; t++) {
+            const int b = t & 1;
+            if (t >= 2) bar_sync(4 + b, 384);
+            int k0 = t * 64;
+            for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
+                int r = seg / (D / 8), s8v = seg % (D / 8);
+                int st = s8v / 2, h16 = s8v % 2;
+                char* dst = bK[b] + st * 2048 + (r / 8) * 256 + h16 * 128 + (r % 8) * 16;
+                int gr = k0 + r;
+                fa3_cp16(dst, K + ((size_t)(gr < T ? gr : T - 1) * HKV + kvh) * D + st * 16 + h16 * 8,
+                         gr < T ? 16 : 0);
+            }
+            fa3_cp_commit();
+            for (int idx = tid; idx < 64 * D; idx += 128) {
+                int r = idx / D, c = idx % D;
+                int stv = r / 16, kkv = r % 16;
+                size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2;
+                int gr = k0 + r;
+                *(__nv_bfloat16*)(bV[b] + offv) = (gr < T)
+                    ? V[((size_t)gr * HKV + kvh) * D + c] : __float2bfloat16(0.0f);
+            }
+            fa3_cp_wait<0>();
+            asm volatile("fence.proxy.async.shared::cta;");
+            bar_arrive(2 + b, 384);
+        }
+        return;
+    }
+
+    // ---- consumers (v5 shape) ----
+    if (q0 < T) {
+        for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
+            int r = seg / (D / 8), s8v = seg % (D / 8);
+            int st = s8v / 2, h16 = s8v % 2;
+            char* dst = bQ + st * 2048 + (r / 8) * 256 + h16 * 128 + (r % 8) * 16;
+            int gr = q0 + r;
+            fa3_cp16(dst, Q + ((size_t)(gr < T ? gr : T - 1) * H + head) * D + st * 16 + h16 * 8,
+                     gr < T ? 16 : 0);
+        }
+    }
+    fa3_cp_commit();
+    fa3_cp_wait<0>();
+
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float m[2] = {-1e30f, -1e30f};
+    float l[2] = {0.0f, 0.0f};
+    float oacc[4][32];
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i++) oacc[nb][i] = 0.0f;
+
+    const int kv_end_own = q0 + 64 <= T ? q0 + 64 : T;
+    const int n_own = q0 < T ? (kv_end_own + 63) / 64 : 0;
+
+    for (int t = 0; t < n_tiles; t++) {
+        const int k0 = t * 64;
+        const int cur = t & 1;
+        const bool active = t < n_own;
+        bar_sync(2 + cur, 384);                 // stage `cur` FULL
+        asm volatile("fence.proxy.async.shared::cta;");
+        if (active) {
+            float acc[32];
+            wgmma_fence();
+            for (int st = 0; st < D / 16; st++) {
+                unsigned long long da = make_desc(bQ + st * 2048, 128, 256);
+                unsigned long long db = make_desc(bK[cur] + st * 2048, 128, 256);
+                wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+            }
+            wgmma_commit();
+            wgmma_wait<0>();
+            float mn[2] = {m[0], m[1]};
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int rr = q0 + r0 + ((i % 4) / 2) * 8;
+                int cc = k0 + c0 + (i / 4) * 8 + (i % 2);
+                acc[i] = (cc <= rr && cc < T) ? acc[i] * scale : -1e30f;
+                int half = (i % 4) / 2;
+                if (acc[i] > mn[half]) mn[half] = acc[i];
+            }
+            #pragma unroll
+            for (int o = 1; o <= 2; o <<= 1) {
+                mn[0] = fmaxf(mn[0], __shfl_xor_sync(0xffffffffu, mn[0], o));
+                mn[1] = fmaxf(mn[1], __shfl_xor_sync(0xffffffffu, mn[1], o));
+            }
+            float alpha[2] = {expf(m[0] - mn[0]), expf(m[1] - mn[1])};
+            if (m[0] == -1e30f) alpha[0] = 0.0f;
+            if (m[1] == -1e30f) alpha[1] = 0.0f;
+            m[0] = mn[0]; m[1] = mn[1];
+            float ladd[2] = {0.0f, 0.0f};
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int half = (i % 4) / 2;
+                float pv = expf(acc[i] - m[half]);
+                acc[i] = pv;
+                ladd[half] += pv;
+            }
+            #pragma unroll
+            for (int o = 1; o <= 2; o <<= 1) {
+                ladd[0] += __shfl_xor_sync(0xffffffffu, ladd[0], o);
+                ladd[1] += __shfl_xor_sync(0xffffffffu, ladd[1], o);
+            }
+            l[0] = l[0] * alpha[0] + ladd[0];
+            l[1] = l[1] * alpha[1] + ladd[1];
+            #pragma unroll
+            for (int nb = 0; nb < 4; nb++)
+                #pragma unroll
+                for (int i = 0; i < 32; i++) oacc[nb][i] *= alpha[(i % 4) / 2];
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int rr = r0 + ((i % 4) / 2) * 8;
+                int cc = c0 + (i / 4) * 8 + (i % 2);
+                int st = cc / 16, kk = cc % 16;
+                size_t off = (size_t)st * 2048 + (rr / 8) * 256 + (kk / 8) * 128 + (rr % 8) * 16 + (kk % 8) * 2;
+                *(__nv_bfloat16*)(bP + off) = __float2bfloat16(acc[i]);
+            }
+            bar_sync(6 + wg, 128);              // per-WG P visibility
+            asm volatile("fence.proxy.async.shared::cta;");
+            wgmma_fence();
+            for (int st = 0; st < 4; st++) {
+                unsigned long long da = make_desc(bP + st * 2048, 128, 256);
+                #pragma unroll
+                for (int nb = 0; nb < 4; nb++) {
+                    unsigned long long db = make_desc(bV[cur] + st * 8192 + nb * 64 * 32, 128, 256);
+                    wgmma_m64n64k16_bf16(oacc[nb], da, db, 1);
+                }
+            }
+            wgmma_commit();
+            wgmma_wait<0>();
+        }
+        bar_arrive(4 + cur, 384);               // stage `cur` EMPTY
+    }
+    if (q0 < T) {
+        float il[2] = {l[0] > 0.0f ? 1.0f / l[0] : 0.0f, l[1] > 0.0f ? 1.0f / l[1] : 0.0f};
+        #pragma unroll
+        for (int nb = 0; nb < 4; nb++)
+            #pragma unroll
+            for (int i = 0; i < 32; i += 4) {
+                int n8 = i / 4;
+                int cc = nb * 64 + c0 + n8 * 8;
+                int ra = q0 + r0, rb = q0 + r0 + 8;
+                if (ra < T) {
+                    O[((size_t)ra * H + head) * D + cc + 0] = oacc[nb][i + 0] * il[0];
+                    O[((size_t)ra * H + head) * D + cc + 1] = oacc[nb][i + 1] * il[0];
+                }
+                if (rb < T) {
+                    O[((size_t)rb * H + head) * D + cc + 0] = oacc[nb][i + 2] * il[1];
+                    O[((size_t)rb * H + head) * D + cc + 1] = oacc[nb][i + 3] * il[1];
+                }
+            }
+    }
+}
+
 int main() {
     const int D = 256;
     // hostile-ish operands
@@ -1203,14 +1390,16 @@ int main() {
             int shmem5 = 212992;
             int shmem6 = 196608 + 32768;
             int shmem7 = 172032 + 512;
+            int shmem8 = 212992;
             CK(cudaFuncSetAttribute(fa3_v3, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem));
             CK(cudaFuncSetAttribute(fa3_v4, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem4));
             CK(cudaFuncSetAttribute(fa3_v5, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem5));
             CK(cudaFuncSetAttribute(fa3_v6, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem6));
             CK(cudaFuncSetAttribute(fa3_v7, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem7));
+            CK(cudaFuncSetAttribute(fa3_v8, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem8));
             dim3 grid((T + 63) / 64, H);
             dim3 grid5((T + 127) / 128, H);
-            fa3_v7<<<grid, 256, shmem7>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+            fa3_v8<<<grid5, 384, shmem8>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
             CK(cudaDeviceSynchronize());
             if (T != 2048) {
                 float* ho = (float*)malloc(nq * 4);
@@ -1320,6 +1509,13 @@ int main() {
                 CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
                 CK(cudaEventElapsedTime(&ms, a, b2));
                 printf("v7 T=2048: %.0fus/call (split-D, 2 WGs one q-tile)\n", ms * 50.0);
+                for (int i = 0; i < 3; i++) fa3_v8<<<grid5, 384, shmem8>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaDeviceSynchronize());
+                CK(cudaEventRecord(a));
+                for (int i = 0; i < 20; i++) fa3_v8<<<grid5, 384, shmem8>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+                CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
+                CK(cudaEventElapsedTime(&ms, a, b2));
+                printf("v8 T=2048: %.0fus/call (producer warpgroup, named barriers)\n", ms * 50.0);
             }
             cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
             free(q); free(k); free(vv);
