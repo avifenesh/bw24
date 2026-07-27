@@ -1732,3 +1732,18 @@ double-refuted (f32 optimal), conv at 72% compute-SOL, cumgate/glog trivial. The
 kernels, not tensor-starved ones — the FA3 disease applied to K2/K5 (fixed) but not
 K4-core/K3. Remaining unrefuted item: FA3-style TMA/mbarrier ring rebuild of the k45
 chunk loop (priced multi-hour, high form-risk). Banked tools: tf32 pairing (876cdcb7).
+
+## k45 refutation #12 closes the micro-frontier (2026-07-27)
+
+q(c+1) double-buffered cp.async prefetch issued in the exchange window (pure async
+issues — deliberately distinct from the refuted register-path hoists): 91.0 -> 92.2µs.
+The unhidden q cost (~8.7µs by knob) is aggregate LSU/queue pressure, not issue-time
+latency — moving the issues doesn't reduce it. TASK #22 KERNEL FRONTIER STATUS: 12
+measured refutations + 3 shipped majors; every remaining idea is either refuted with
+a mechanism or priced as the FA3-TMA-ring rebuild (high effort, high form-risk, targets
+already-hidden costs — deprioritized on evidence). The chunk-stack arc's kernel phase
+is CLOSED on measurement. The goal's remaining frontier is engine-side: the
+cross-request prefill-batching scheduler (RESULTS.md: vLLM's serving edge = continuous
+batching concatenation, effective GEMM m >> per-request m; bw24 ticks one interactive
+prime at a time). That arc is scheduler work in bw24-server/lanes + prime_cache_batch
+plumbing — the varlen cores it needs (this arc's vl twins) are SHIPPED.
