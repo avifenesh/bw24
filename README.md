@@ -18,6 +18,42 @@ Running bw24 on your own rig — desktop 50-series, older NVIDIA, anything? A [h
 
 **Current standing: six supported models, all fully gated. Qwen leads llama.cpp on every cell (plain 1.06-1.08x, spec 1.06-2.30x). Gemma leads decisively where llama lacks the capability or the depth (31B spec 1.7k 1.16x, E4B spec ≥1.23x, E4B plain 1.10x) and sits at 0.99-1.06x elsewhere under the strictest best-vs-best pairing (2026-07-15 re-audit).** Every number below is a same-session, same-prompt, interleaved measurement against llama.cpp's best config; exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
 
+## The H100 lane (`backend/sm90a-boot`)
+
+This branch boots the engine on datacenter Hopper (sm_90a, 1x H100 80GB) and runs it
+against vLLM 0.26 (w8a8) on the same box — a different contract than the 5090 story:
+multi-tenant serving (lanes scheduler, cross-request prefill batching, per-session
+CUDA-graph decode) instead of single-user, and wgmma/TMA kernels instead of sm_120a MMA.
+
+**Same-session, same-box scoreboard (2026-07-27, N=5 medians, 2048-token prompt, 512 gen):**
+
+| lane | bw24 | vLLM w8a8 | ratio |
+|---|---:|---:|---:|
+| decode tok/s | **220.5** | 179.5 | **122.8%** |
+| serving decode (GraphSession) | **233.6** | — | — |
+| single-seq prefill tok/s | 26,290 | 35,986 | 73% |
+| serving burst prefill (16x 937-tok) | 27,364 aggregate | — | — |
+
+Decode wins on exact math (every config gated bit-identical or greedy-identical). The
+prefill gap is precisely priced: vLLM rides INT8 tensor-core GEMMs; a Q8_0-EXACT int8
+GEMM is mechanism-refuted on Hopper (per-32-block scale rescale costs 5.4x naive / 17x
+pipelined — ptxas serializes cross-bank GMMA register reads, C7517), so closing it means
+w8a8-class numerics that change model outputs — an accuracy-bar decision, not an
+engineering gap. Every alternative route carries a measured refutation in the ledger.
+
+What shipped on this lane: FA3 prefill attention (TMA swizzled ring + wgmma, 4.8x the
+mma kernel), a fused GDN chunk kernel family on wgmma (K4+K5 in one persistent-state
+kernel, K2 on tensor cores, varlen twins for batched serving), device-side embed gather,
+bf16 mirror folds, a capture/replay decode door (+16% official decode), cross-request
+prime batching with measured thresholds, and the Hopper wgmma toolkit
+(`crates/bw24-engine/cu/wgmma_common.cuh`): canonical core-matrix pairings probed for
+bf16/tf32/s8 — one byte-geometry, one descriptor, three kinds.
+
+- Evidence ledger (every verdict, every refutation): [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)
+- Flags + promoted defaults: [docs/FLAGS.md §7](docs/FLAGS.md)
+- One-command battery: `tools/validate-h100.sh <model.gguf> [--quick]`
+- Build: `BW24_CUDA_ARCH=90a cargo build --release`
+
 ## Model support
 
 | Tier | Models | State |

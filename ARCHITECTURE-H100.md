@@ -3,12 +3,12 @@
 Companion to `ARCHITECTURE.md` (the sm_120 laptop engine). This document is the
 architecture for the **H100 serving lane**: multi-tenant, batched, lane-scheduled
 serving with every kernel driven to its sm_90a wall. It folds in three ground-truth
-maps (crate architecture, full kernel inventory, darklanes lane design) and the
+maps (crate architecture, full kernel inventory, lane design) and the
 2026-07-25 engine-decision bench. Perf claims follow the repo law: N=5 medians,
 kernel-check + argmax gates before any measurement.
 
 Validation box: AWS p5.4xlarge (1×H100 80GB SXM, driver 595.71, nvcc 13.1),
-`ssh ubuntu@13.203.16.133` (darklanes OPS.md holds lifecycle + dead-man switch).
+SSH per the private ops runbook (lifecycle + dead-man switch live there).
 
 ---
 
@@ -48,7 +48,7 @@ Validation box: AWS p5.4xlarge (1×H100 80GB SXM, driver 595.71, nvcc 13.1),
    sequential oracle at every m (the verify tier already obeys it). Batched
    paths inherit the law; graphs bake device counters (decode.rs:17-23) so
    batch geometry changes mean re-capture, never silent reuse.
-6. **The lane model is measured, not aspirational** (darklanes B2/D1/D4):
+6. **The lane model is measured, not aspirational** (lane batteries B2/D1/D4):
    interactive = protected + IS the SLO sensor; judge (prefill-shaped 2048/4)
    sheds at 100% of SLO; harvest (decode-shaped 64/256) sheds at 90%. Shed
    happens OUTSIDE the engine (429 + Retry-After), never queued inside. The
@@ -211,7 +211,7 @@ New kernels, guarded `bw24_hopper_mma`, tuned for 132 SM / 228 KB smem / HBM3:
 What becomes shared crates (consumed by both the sm_120 laptop lane and this one):
 - `bw24-kv`: block pool, block tables, quantized append/dequant views;
 - `bw24-lanes`: lane types, admission policy, per-lane budgets, step planner
-  (pure host logic — reusable over any backend, including the darklanes sidecar
+  (pure host logic — reusable over any backend, including the out-of-process sidecar
   as an out-of-process fallback);
 - `bw24-sampling`: host sampler + device Philox sampling (already
   graph-safe) behind one trait;
@@ -232,7 +232,7 @@ Extraction happens per-phase as pieces stabilize, never speculatively.
 - Lanes: interference.py --lanes against the served engine (judge/harvest rate
   sweeps); acceptance = B2/D1-class yields at ≤ their p99 cost, minus the
   global-knob baseline tax (the native scheduler's whole point).
-- Fleet: H100 box per darklanes OPS.md; dead-man switch active; every session
+- Fleet: H100 box per the private ops runbook; dead-man switch active; every session
   logs cost.
 
 ## 7. Task map
@@ -1515,7 +1515,7 @@ Remaining map: K4 Ssnap (~0.4ms), FA3 batched favl twin (serving), gap floor
 (3 x 8 x 128B param structs), grid.z = seq over the same v11 body — the last
 mma-favl consumer replaced. Serving FA now wgmma/TMA end to end. (Ops note:
 mid-round the box went unreachable — ISP rotated the egress IP; SG rule
-updated 147.235.193.113 -> 79.177.129.234, old rule revoked.)
+egress rule rotated to the new /32, old rule revoked.)
 
 **K4 Ssnap column-block layout (2026-07-27, round 32): landed, honest-small
 (~0.3-0.4ms at the ms display floor; round-1 read 0.069 vs 0.070s).** The

@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 # Shared lane machinery (ARCHITECTURE-H100.md B3/D): lane types, admission policy,
 # engine-truth step stats, metrics — consumed by bw24-server natively and reusable by
-# out-of-process controllers (the darklanes sidecar shape).
+# out-of-process controllers (the sidecar shape).
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

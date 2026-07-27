@@ -105,6 +105,20 @@ artifact. Secondary backends must preserve the model bytes, default off at build
 disabled target-specific kernels, and pass a same-prompt golden-output gate before producing
 scored evidence. They do not change the naked sm_120a build or its performance defaults.
 
+### The sm_90a (Hopper/H100) lane — `backend/sm90a-boot`
+
+Build: `BW24_CUDA_ARCH=90a`. Evidence ledger: `ARCHITECTURE-H100.md` (append-only; every
+promoted config, every mechanism refutation). Gate battery: `tools/validate-h100.sh
+<model.gguf> [--quick]` — kernel-check config pins, decode-batch (config + strict),
+decode-dc, graph-decode, graph-session. LAWS learned the hard way on this lane (do not
+relearn them): (1) every perf claim is interleaved x5 on-box — cross-run AND cross-day
+comparisons are clock-drift-invalid, INCLUDING the competitor denominator; (2) thresholds
+and verdicts calibrated on old cores/kernels must be re-swept when the code under them
+moves (five stale-verdict finds in one day, rounds 35-36); (3) anything guarding a live
+lane belongs INSIDE validate-h100.sh — gates outside the battery rot silently; (4) wgmma
+kernels are form-sensitive on nvcc 13.1 (C7514/15/17/19 family): measure every scheduling
+change, never assume. Flags catalog: `docs/FLAGS.md §7`.
+
 ## Evidence discipline (measurement lanes)
 
 - Raw sweep output is part of the deliverable: commit the per-run JSONL/log next to the summary

@@ -1,5 +1,5 @@
-//! Lane model — the darklanes yield-gate invariants, native in the scheduler.
-//! (ARCHITECTURE-H100.md §3 B3; thresholds mirror darklanes sidecar/yieldgate.py so the
+//! Lane model — the yield-gate invariants, native in the scheduler.
+//! (ARCHITECTURE-H100.md §3 B3; thresholds mirror the out-of-process sidecar gate so the
 //! external sidecar remains a compatible outer layer.)
 //!
 //! Three lanes:
