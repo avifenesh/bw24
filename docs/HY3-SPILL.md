@@ -45,14 +45,26 @@ lower-contention default while broader mixed-format end-to-end tuning continues.
 
 Earlier Hy3 throughput measurements used the retired external CPU backend and are not performance
 claims for this implementation. Native ABI v2 results are published only with their dependency,
-packed-row oracle, exactness, and raw-run evidence. On the final 2026-07-21 target-rig gate, the
-default 128-token residency warmup measured 4.48 tok/s over one N=32 post-freeze `run-gen` window;
-the MTP-capable default `run-spec` plain control measured 3.76 tok/s over N=7 before its K sweep.
-These are single observations, not board-moving medians. `kernel-check` was all green, the
-post-freeze serving assignment passed prefill/decode argmax, and K=1 through K=8 were
-self-consistent. Raw logs and the exact thermal/memory regime are under
-`research/per-expert-quant/evidence/local-5090-native-20260721/`. Sustained 10 tok/s remains the
-target.
+packed-row oracle, exactness, and raw-run evidence.
+
+Current state (v0.42.0, measured 2026-07-26): the served Layer103.5 candidate decodes at a
+5.13 tok/s m=1 median (N=3: 5.13/5.13/5.16, NGEN=32 post-freeze lockstep windows). Day-to-day
+regime drift is real — the same artifact and methodology measured 4.29 the previous day — so
+cross-arm comparisons are only made same-day. Step budget at last decomposition: io ~39%,
+CPU compute ~47%, GPU ~14%. Mixed multi-request concurrency gains +13% from pinned per-executor
+core groups (`BW24_CPU_EXPERT_EXECUTOR_CPUSETS="0-7;8-15"`, see `docs/FLAGS.md`). Raw triads:
+`research/per-expert-quant/evidence/local-5090-plain-arm-20260725/tp-*.log`.
+
+Closed lanes, each with receipts: speculative/MTP decode (verify positions route disjoint
+experts — 0.97x at 100% acceptance), prefetch prediction (trained-predictor ceiling: 0.2-2.6%
+non-resident precision cross-layer, 21% best-case cross-token persistence;
+`research/moe/route_predictability_ceiling.py`), in-call io/compute overlap (concurrent-DMA
+interference, three falsifications), and the artifact axis at the served byte budget (a full
+15,168-expert bank at the pure Q2_K floor is still ~110% of the served bank bytes). The
+plain-arm methodology study (`research/per-expert-quant/local-5090-10toks-plan.md`) showed
+importance-fused tier redistribution holds quality at matched bytes (38/56 vs 36/56 paired
+screens at 95.7% bytes) — a method receipt, not a serving change. Sustained 10 tok/s remains
+the target; remaining lanes are system work on the served artifact.
 
 ## Obtaining the published overlay
 

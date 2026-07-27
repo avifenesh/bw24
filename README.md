@@ -142,7 +142,7 @@ Earlier published Gemma spec margins (1.37-1.54x, and the 31B 167.5/112.1 pair) 
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
 - Gemma plain margins are thin where both engines sit at the DRAM wall (31B 1.02-1.03x, 26B 1.06x; best kernel = 91% of measured wall, e2e 87-89%). Every mechanism class measured — ours plus llama/vLLM/SGLang current releases — is shipped or carries a falsification row in the campaign log. No open spec cells remain — every gemma spec cell reads ≥1.04x against llama's swept best (26B short flipped 0.99x → 1.10x on 2026-07-26 via the K/floor sweep + f16pv spec flip).
-- Hy3 native spill is correctness-gated at a 4.60 tok/s N=3 median after the paired native AVX-VNNI Q2_K win and is being tuned toward a sustained 10 tok/s ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
+- Hy3 native spill serves the Layer103.5 candidate at a 5.13 tok/s m=1 N=3 median (2026-07-26, same-day protocol — day-to-day regime drift makes cross-day numbers incomparable) and is being tuned toward a sustained 10 tok/s ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception.
 
 ## What's inside
