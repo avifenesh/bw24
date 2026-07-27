@@ -189,10 +189,12 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                 int il = fc + n8 * 8;
                 int i0 = ih + il;
                 if (cll < 32) {
+#ifndef SKIP_SNAP
                     snap[(size_t)(col >> 5) * (D * 32) + (size_t)(i0 + 0) * 32 + (col & 31)] = __float2half(Macc[q + 0]);
                     snap[(size_t)(col >> 5) * (D * 32) + (size_t)(i0 + 1) * 32 + (col & 31)] = __float2half(Macc[q + 1]);
                     snap[(size_t)((col + 8) >> 5) * (D * 32) + (size_t)(i0 + 0) * 32 + ((col + 8) & 31)] = __float2half(Macc[q + 2]);
                     snap[(size_t)((col + 8) >> 5) * (D * 32) + (size_t)(i0 + 1) * 32 + ((col + 8) & 31)] = __float2half(Macc[q + 3]);
+#endif
                     *(__nv_bfloat162*)((char*)sM[wg] + canon_off(il / 16, cll, il % 16)) =
                         __floats2bfloat162_rn(Macc[q + 0], Macc[q + 1]);
                     *(__nv_bfloat162*)((char*)sM[wg] + canon_off(il / 16, cll + 8, il % 16)) =
@@ -201,6 +203,7 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
             }
         }
         // stage W (cooperative 256) + own k^T half + gk
+#ifndef SKIP_STAGE
         for (int seg = tid; seg < 64 * (D / 8); seg += 256) {
             int r = seg / (D / 8), s8 = seg % (D / 8);
             int st = s8 / 2, kk8 = (s8 % 2) * 8;
@@ -217,15 +220,37 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
             for (int e2 = 0; e2 < 8; e2++)
                 *(__nv_bfloat16*)((char*)sK[0][wg] + canon_off(j >> 4, i8l + e2, j & 15)) = kv8[e2];
         }
+#endif
         if (tid < 32) {
             float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
             gk[tid] = (tid < Cc) ? expf(gC - gcum[(size_t)(t0 + tid) * H + h]) * beta[(size_t)(t0 + tid) * H + h] : 0.0f;
+        }
+        // U prefetch (wg0 epilogue operands): register loads under staging + step-A shadow
+        float2 uPre[16];
+        if (wg == 0) {
+            const int j0p = warp * 16 + fr;
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4, cl = fc + n8 * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0p + pr * 8;
+                    uPre[n8 * 2 + pr] = (j < Cc && cl < 32)
+                        ? *(const float2*)(U + (((size_t)c * H + h) * C + j) * D + col0 + cl)
+                        : make_float2(0.0f, 0.0f);
+                }
+            }
         }
         __syncthreads();
         asm volatile("fence.proxy.async.shared::cta;");
 
         // step A: partial S over own i-half (4 k-steps)
         float acc[32];
+#ifdef SKIP_STEPA
+        #pragma unroll
+        for (int q = 0; q < 32; q++) acc[q] = 0.0f;
+#endif
+#ifndef SKIP_STEPA
         wgmma_fence();
         for (int st = 0; st < 4; st++) {
             unsigned long long da = make_desc((char*)sW[0] + (wg * 4 + st) * 2048, 128, 256);
@@ -234,6 +259,7 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
         }
         wgmma_commit();
         wgmma_wait<0>();
+#endif
         __syncthreads();                            // both wgs done reading sM (= sS region)
         // exchange: wg1 partials -> sS; wg0 sums
         if (wg == 1) {
@@ -249,6 +275,7 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
         }
         __syncthreads();
         const float bC = expf(gcum[(size_t)(t0 + Cc - 1) * H + h]);
+#ifndef SKIP_EPI
         if (wg == 0) {
             // full S = own + peer; Y epilogue + ys^T staging (j rows 0..31 live here)
             const int j0 = warp * 16 + fr;
@@ -261,7 +288,7 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                     int j = j0 + pr * 8;
                     float yv0 = 0.0f, yv1 = 0.0f;
                     if (j < Cc && cl < 32) {
-                        float2 u2 = *(const float2*)(U + (((size_t)c * H + h) * C + j) * D + col0 + cl);
+                        float2 u2 = uPre[n8 * 2 + pr];
                         yv0 = u2.x - (acc[q + pr * 2 + 0] + sS[j * 64 + cl + 0]);
                         yv1 = u2.y - (acc[q + pr * 2 + 1] + sS[j * 64 + cl + 1]);
                         *(float2*)(Y + (((size_t)c * H + h) * C + j) * D + col0 + cl) = make_float2(yv0, yv1);
@@ -274,11 +301,13 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                 }
             }
         }
+#endif
         __syncthreads();
         asm volatile("fence.proxy.async.shared::cta;");
         // step B: M(col, own i) = bC*M + ys^T . k^T-half (2 k-steps, 1 atom)
         #pragma unroll
         for (int q = 0; q < 32; q++) Macc[q] *= bC;
+#ifndef SKIP_STEPB
         wgmma_fence();
         for (int st = 0; st < 2; st++) {
             unsigned long long da = make_desc((char*)sYs + st * 2048, 128, 256);
@@ -287,6 +316,7 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
         }
         wgmma_commit();
         wgmma_wait<0>();
+#endif
         __syncthreads();                            // next restage overwrites sM/sS
     }
     #pragma unroll
