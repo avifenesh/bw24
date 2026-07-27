@@ -145,14 +145,14 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                 int H, int T, int C) {
     constexpr int D = 128;
     const int h = blockIdx.x;
-    const int col0 = blockIdx.y * 64;
+    const int col0 = blockIdx.y * 32;   // v3: 32-col slices -> grid (H,4) = 128 CTAs (machine fill)
     const int tid = threadIdx.x;
     const int warp = tid / 32, lane = tid % 32;
     const int fr = lane / 4, fc = (lane % 4) * 2;
 
-    __shared__ __align__(128) __nv_bfloat16 sM[64 * 128];   // M-slice canonical (B for step A)
-    __shared__ __align__(128) __nv_bfloat16 sW[64 * 128];   // W chunk rows (32 real + pad)
-    __shared__ __align__(128) __nv_bfloat16 sK[64 * 64];    // k^T canonical B for step B: 2 atoms (n=i 64) x 2 k-steps (j)
+    __shared__ __align__(128) __nv_bfloat16 sM[64 * 128];      // M-slice canonical (B for step A)
+    __shared__ __align__(128) __nv_bfloat16 sW[2][64 * 128];   // W chunk rows (32 real + pad), double-buffered
+    __shared__ __align__(128) __nv_bfloat16 sK[2][64 * 64];    // k^T canonical B (2 atoms x 2 k-steps), double-buffered
     __shared__ __align__(128) __nv_bfloat16 sYs[64 * 64];   // ys^T (A for step B): [col-m][j-k]
     __shared__ float gk[32];
 
@@ -166,16 +166,42 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
             int n8 = q / 4;
             int col = warp * 16 + fr;
             int i0 = nb * 64 + fc + n8 * 8;
-            Macc[nb][q + 0] = state_in[((size_t)h * D + col0 + col) * D + i0 + 0];
-            Macc[nb][q + 1] = state_in[((size_t)h * D + col0 + col) * D + i0 + 1];
-            Macc[nb][q + 2] = state_in[((size_t)h * D + col0 + col + 8) * D + i0 + 0];
-            Macc[nb][q + 3] = state_in[((size_t)h * D + col0 + col + 8) * D + i0 + 1];
+            bool re0 = col < 32, re1 = col + 8 < 32;
+            Macc[nb][q + 0] = re0 ? state_in[((size_t)h * D + col0 + col) * D + i0 + 0] : 0.0f;
+            Macc[nb][q + 1] = re0 ? state_in[((size_t)h * D + col0 + col) * D + i0 + 1] : 0.0f;
+            Macc[nb][q + 2] = re1 ? state_in[((size_t)h * D + col0 + col + 8) * D + i0 + 0] : 0.0f;
+            Macc[nb][q + 3] = re1 ? state_in[((size_t)h * D + col0 + col + 8) * D + i0 + 1] : 0.0f;
         }
 
     const int NC = (T + C - 1) / C;
+    // W/k staging for chunk cc2 into buffer buf (16B copies; issued under wgmma shadows)
+    auto stage_wk = [&](int cc2, int buf) {
+        const int t0s = cc2 * C;
+        const int Ccs = min(C, T - t0s);
+        for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
+            int r = seg / (D / 8), s8 = seg % (D / 8);
+            int st = s8 / 2, kk8 = (s8 % 2) * 8;
+            uint4 v = make_uint4(0u, 0u, 0u, 0u);
+            if (r < Ccs) v = *(const uint4*)(Wb16 + (((size_t)cc2 * H + h) * C + r) * D + st * 16 + kk8);
+            *(uint4*)((char*)sW[buf] + canon_off(st, r, kk8)) = v;
+        }
+        for (int idx = tid; idx < 32 * (D / 8); idx += 128) {
+            int j = idx / (D / 8), i8 = (idx % (D / 8)) * 8;
+            __nv_bfloat16 kv8[8];
+            if (j < Ccs) *(uint4*)kv8 = *(const uint4*)(kb16 + ((size_t)(t0s + j) * H + h) * D + i8);
+            else         *(uint4*)kv8 = make_uint4(0u, 0u, 0u, 0u);
+            #pragma unroll
+            for (int e2 = 0; e2 < 8; e2++) {
+                int i = i8 + e2;
+                *(__nv_bfloat16*)((char*)sK[buf] + (i >> 6) * 4096 + canon_off(j >> 4, i & 63, j & 15)) = kv8[e2];
+            }
+        }
+    };
     for (int c = 0; c < NC; c++) {
         const int t0 = c * C;
         const int Cc = min(C, T - t0);
+        const int buf = c & 1;
+        stage_wk(c, buf);
         // Ssnap (shipped column-block layout: [4 cb][128 i][32 col] per (c,h)) + M restage
         {
             __half* snap = Ssnap + ((size_t)c * H + h) * D * D;
@@ -184,35 +210,24 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                 #pragma unroll
                 for (int q = 0; q < 32; q += 4) {
                     int n8 = q / 4;
-                    int col = col0 + warp * 16 + fr;
+                    int cll = warp * 16 + fr;
+                    int col = col0 + cll;
                     int i0 = nb * 64 + fc + n8 * 8;
-                    // two col-rows x two i:
-                    snap[(size_t)(col >> 5) * (D * 32) + (size_t)(i0 + 0) * 32 + (col & 31)] = __float2half(Macc[nb][q + 0]);
-                    snap[(size_t)(col >> 5) * (D * 32) + (size_t)(i0 + 1) * 32 + (col & 31)] = __float2half(Macc[nb][q + 1]);
-                    snap[(size_t)((col + 8) >> 5) * (D * 32) + (size_t)(i0 + 0) * 32 + ((col + 8) & 31)] = __float2half(Macc[nb][q + 2]);
-                    snap[(size_t)((col + 8) >> 5) * (D * 32) + (size_t)(i0 + 1) * 32 + ((col + 8) & 31)] = __float2half(Macc[nb][q + 3]);
-                    // M -> smem canonical for step A's B: B(n=col-local, k=i)
-                    int cl = warp * 16 + fr;
-                    *(__nv_bfloat16*)((char*)sM + canon_off((i0 + 0) / 16, cl, (i0 + 0) % 16)) = __float2bfloat16(Macc[nb][q + 0]);
-                    *(__nv_bfloat16*)((char*)sM + canon_off((i0 + 1) / 16, cl, (i0 + 1) % 16)) = __float2bfloat16(Macc[nb][q + 1]);
-                    *(__nv_bfloat16*)((char*)sM + canon_off((i0 + 0) / 16, cl + 8, (i0 + 0) % 16)) = __float2bfloat16(Macc[nb][q + 2]);
-                    *(__nv_bfloat16*)((char*)sM + canon_off((i0 + 1) / 16, cl + 8, (i0 + 1) % 16)) = __float2bfloat16(Macc[nb][q + 3]);
+                    // two col-rows x two i (pad rows 32..63 skip):
+                    if (cll < 32) {
+                        snap[(size_t)(col >> 5) * (D * 32) + (size_t)(i0 + 0) * 32 + (col & 31)] = __float2half(Macc[nb][q + 0]);
+                        snap[(size_t)(col >> 5) * (D * 32) + (size_t)(i0 + 1) * 32 + (col & 31)] = __float2half(Macc[nb][q + 1]);
+                    }
+                    if (cll + 8 < 32) {
+                        snap[(size_t)((col + 8) >> 5) * (D * 32) + (size_t)(i0 + 0) * 32 + ((col + 8) & 31)] = __float2half(Macc[nb][q + 2]);
+                        snap[(size_t)((col + 8) >> 5) * (D * 32) + (size_t)(i0 + 1) * 32 + ((col + 8) & 31)] = __float2half(Macc[nb][q + 3]);
+                    }
+                    // M -> smem canonical for step A's B: B(n=col-local, k=i), 4B pair stores
+                    *(__nv_bfloat162*)((char*)sM + canon_off(i0 / 16, cll, i0 % 16)) =
+                        __floats2bfloat162_rn(Macc[nb][q + 0], Macc[nb][q + 1]);
+                    *(__nv_bfloat162*)((char*)sM + canon_off(i0 / 16, cll + 8, i0 % 16)) =
+                        __floats2bfloat162_rn(Macc[nb][q + 2], Macc[nb][q + 3]);
                 }
-        }
-        // stage W rows (m64: 32 real + 32 zero, canonical A) + gk
-        for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
-            int r = seg / (D / 8), s8 = seg % (D / 8);
-            int st = s8 / 2, kk8 = (s8 % 2) * 8;
-            for (int e2 = 0; e2 < 8; e2++) {
-                float wv = (r < Cc) ? __bfloat162float(Wb16[(((size_t)c * H + h) * C + r) * D + st * 16 + kk8 + e2]) : 0.0f;
-                *(__nv_bfloat16*)((char*)sW + canon_off(st, r, kk8 + e2)) = __float2bfloat16(wv);
-            }
-        }
-        // stage k transposed (canonical B for step B: n=i local, k=j): atom = i/64
-        for (int idx = tid; idx < 32 * D; idx += 128) {
-            int j = idx >> 7, i = idx & (D - 1);
-            __nv_bfloat16 kv = (j < Cc) ? kb16[((size_t)(t0 + j) * H + h) * D + i] : __float2bfloat16(0.0f);
-            *(__nv_bfloat16*)((char*)sK + (i >> 6) * 4096 + canon_off(j >> 4, i & 63, j & 15)) = kv;
         }
         if (tid < 32) {
             float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
@@ -225,7 +240,7 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
         float acc[32];
         wgmma_fence();
         for (int st = 0; st < 8; st++) {
-            unsigned long long da = make_desc((char*)sW + st * 2048, 128, 256);
+            unsigned long long da = make_desc((char*)sW[buf] + st * 2048, 128, 256);
             unsigned long long db = make_desc((char*)sM + st * 2048, 128, 256);
             wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
         }
@@ -241,19 +256,19 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                 int n8 = q / 4;
                 int cl = fc + n8 * 8;          // col-local 0..63
                 #pragma unroll
-                for (int e2 = 0; e2 < 4; e2++) {
-                    int j = j0 + (e2 >= 2 ? 8 : 0);
-                    int cc = cl + (e2 & 1);
-                    float yv = 0.0f;
-                    float a = acc[q + e2];
-                    if (j < Cc) {
-                        float u = U[(((size_t)c * H + h) * C + j) * D + col0 + cc];
-                        yv = u - a;
-                        Y[(((size_t)c * H + h) * C + j) * D + col0 + cc] = yv;
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0 + pr * 8;
+                    float yv0 = 0.0f, yv1 = 0.0f;
+                    if (j < Cc && cl < 32) {
+                        float2 u2 = *(const float2*)(U + (((size_t)c * H + h) * C + j) * D + col0 + cl);
+                        yv0 = u2.x - acc[q + pr * 2 + 0];
+                        yv1 = u2.y - acc[q + pr * 2 + 1];
+                        *(float2*)(Y + (((size_t)c * H + h) * C + j) * D + col0 + cl) = make_float2(yv0, yv1);
+                        yv0 *= gk[j]; yv1 *= gk[j];
                     }
-                    // ys^T: A(m=cc, k=j) = gk[j] * yv
-                    float ysv = (j < Cc) ? yv * gk[j] : 0.0f;
-                    *(__nv_bfloat16*)((char*)sYs + canon_off(j / 16, cc, j % 16)) = __float2bfloat16(ysv);
+                    // ys^T: A(m=cc, k=j) = gk[j]*yv (pad j/cols stage 0)
+                    *(__nv_bfloat16*)((char*)sYs + canon_off(j / 16, cl + 0, j % 16)) = __float2bfloat16(yv0);
+                    *(__nv_bfloat16*)((char*)sYs + canon_off(j / 16, cl + 1, j % 16)) = __float2bfloat16(yv1);
                 }
             }
         }
@@ -270,7 +285,7 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
             #pragma unroll
             for (int nb = 0; nb < 2; nb++) {
                 // B = k^T canonical K-major (n=i local, k=j): atom nb, k-slice st
-                unsigned long long db = make_desc((char*)sK + nb * 4096 + st * 2048, 128, 256);
+                unsigned long long db = make_desc((char*)sK[buf] + nb * 4096 + st * 2048, 128, 256);
                 wgmma_m64n64k16_bf16(Macc[nb], da, db, 1);
             }
         }
@@ -286,10 +301,14 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
             int n8 = q / 4;
             int col = warp * 16 + fr;
             int i0 = nb * 64 + fc + n8 * 8;
-            state_out[((size_t)h * D + col0 + col) * D + i0 + 0] = Macc[nb][q + 0];
-            state_out[((size_t)h * D + col0 + col) * D + i0 + 1] = Macc[nb][q + 1];
-            state_out[((size_t)h * D + col0 + col + 8) * D + i0 + 0] = Macc[nb][q + 2];
-            state_out[((size_t)h * D + col0 + col + 8) * D + i0 + 1] = Macc[nb][q + 3];
+            if (col < 32) {
+                state_out[((size_t)h * D + col0 + col) * D + i0 + 0] = Macc[nb][q + 0];
+                state_out[((size_t)h * D + col0 + col) * D + i0 + 1] = Macc[nb][q + 1];
+            }
+            if (col + 8 < 32) {
+                state_out[((size_t)h * D + col0 + col + 8) * D + i0 + 0] = Macc[nb][q + 2];
+                state_out[((size_t)h * D + col0 + col + 8) * D + i0 + 1] = Macc[nb][q + 3];
+            }
         }
 }
 
@@ -404,7 +423,7 @@ int main() {
         CK(cudaMemcpy(dbt, bt, ng * 4, cudaMemcpyHostToDevice));
         CK(cudaMemcpy(dU, U2, nu * 4, cudaMemcpyHostToDevice));
         CK(cudaMemcpy(dsi, si, (size_t)H * D * D * 4, cudaMemcpyHostToDevice));
-        dim3 grid(H, 2);
+        dim3 grid(H, 4);
         gdn_k4_wgmma_v2<<<grid, 128>>>(dkb, dgc, dbt, dU, dwb, dY, dS, dsi, dso, H, T, C);
         CK(cudaGetLastError());
         CK(cudaDeviceSynchronize());
