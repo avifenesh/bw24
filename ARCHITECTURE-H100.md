@@ -1747,3 +1747,16 @@ cross-request prefill-batching scheduler (RESULTS.md: vLLM's serving edge = cont
 batching concatenation, effective GEMM m >> per-request m; bw24 ticks one interactive
 prime at a time). That arc is scheduler work in bw24-server/lanes + prime_cache_batch
 plumbing — the varlen cores it needs (this arc's vl twins) are SHIPPED.
+
+## FA3-TMA-ring k45 rebuild: REFUTED BY COMPOSITION (2026-07-27)
+
+The last unrefuted chunk-stack item falls to already-measured mechanisms, without a build:
+(1) its primary target — staging latency — measures ~0 in the phase probe (cp.async fully
+hidden; SKIP_STAGE Δ = 0.1µs); (2) its secondary mechanism — warp-specialized
+producer/consumer — is the C7515 finding: setmaxnreg/warp-spec presence degrades ptxas
+wgmma pipelining on this toolchain more than it saves (measured 1562 vs 1830µs in the FA3
+arc); (3) twelve scheduling-form experiments on this kernel regressed, establishing the
+form-sensitivity law. A TMA ring re-arranges costs that are either already hidden or
+already shown to worsen under rearrangement. Task #22's kernel frontier is CLOSED: every
+item shipped, measured to optimum, or mechanism-refuted. Tools/harness helper copies stay
+frozen on purpose (reproduction stability) — extraction decision documented.
