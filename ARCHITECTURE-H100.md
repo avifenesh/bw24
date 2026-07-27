@@ -1620,3 +1620,19 @@ Findings en route:
   until a second commit_group after the q/P loop).
 Next: engine seam BW24_GDN_WGMMA (fused kernel into hybrid.cu, qb16/Pb16 mirrors in prep,
 Ssnap/K5-launch removal on the gated path), kernel-check + state battery + lane A/B ×5.
+
+## BW24_GDN_WGMMA promoted default-ON hopper (2026-07-27)
+
+Engine seam shipped: `gdn_k45_wgmma` in hybrid.cu (sm_90a-guarded, hk-mapped, Y/Ssnap never
+materialized — their only consumer was K5, now in-kernel), qb16 mirror via f32_to_bf16_bulk,
+Pb16 pre-masked mirror via new `gdn_p_bf16_masked`, dispatch nested in the GDN-mma branch.
+Battery (all green): harness in-band incl. tail chunks (T=200: O rel 5.6e-3); argmax gate
+PASS; greedy IDENTICAL on 3 distinct ~1.6-2k-token primes (real model, hk=16 de-broadcast);
+chunked-continuation (BW24_PRIME_CHUNK=512) IDENTICAL; kernel-check ALL GREEN with a new
+WGMMA-fused config pin (out band 4e-1 — measured 2.19e-1: fused phase 1 stages q/M as bf16
+where K5-mma staged fp16, a legitimately wider class; state 8e-1 shared with mma class);
+decode-batch gate green (BW24_GDN_WGMMA=0 pinned there, nuisance pattern). Official
+single-seq prefill lane interleaved x5 at pp2017: off mean 25604.7 -> on mean 25793.6 tok/s,
++0.74%, on wins 5/5 rounds. Promoted default-ON via cfg!(bw24_hopper_mma); =0 reverts.
+Chunk-stack arc continues: K2 cumgate + K3 solve remain; v5 marginal costs (sO exchange
+~11µs, O store ~14µs at T=512 dims) are the next fusion-side targets.

@@ -2124,3 +2124,296 @@ extern "C" __global__ void gated_rmsnorm_f16out_vl(gdnprepvl_t v, const float* _
 }
 
 #endif  // !BW24_PORTABLE_CUDA || BW24_HOPPER_MMA
+
+
+// ================= K4+K5 fused wgmma (BW24_GDN_WGMMA, task #22) =================
+// Harness-proven (tools/bench_gdn_wgmma.cu v5, ledger 1f08b997): persistent-M chunk
+// kernel absorbing K5's output pass. CTA (head, 32-col block) x 256 threads, 2
+// warpgroups x i-halves. gk folds into the k^T staging so plain Y^T serves step B's
+// A-operand and phase 2's B-operand; Y and Ssnap globals have no consumer here and
+// are never written. q/P arrive as bf16 mirrors (P pre-masked) for cp.async staging.
+// sm_90a only (wgmma); the dispatch is env+cfg gated so other arches never call it.
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 900)
+#define BW24_K45_REAL 1
+#endif
+
+__device__ __forceinline__ unsigned long long k45_desc(const void* smem_ptr,
+                                                       unsigned lead_bytes, unsigned stride_bytes) {
+    unsigned addr = (unsigned)__cvta_generic_to_shared(smem_ptr);
+    unsigned long long d = 0;
+    d |= (unsigned long long)((addr & 0x3FFFF) >> 4);
+    d |= (unsigned long long)((lead_bytes >> 4) & 0x3FFF) << 16;
+    d |= (unsigned long long)((stride_bytes >> 4) & 0x3FFF) << 32;
+    return d;
+}
+__device__ __forceinline__ size_t k45_canon(int st, int r, int kk) {
+    return (size_t)st * 2048 + (r / 8) * 256 + (kk / 8) * 128 + (r % 8) * 16 + (kk % 8) * 2;
+}
+#ifdef BW24_K45_REAL
+__device__ __forceinline__ void k45_wgmma(float acc[32], unsigned long long da,
+                                          unsigned long long db, int scale_d) {
+    asm volatile(
+        "{\n.reg .pred p;\nsetp.ne.b32 p, %34, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, p, 1, 1, 0, 0;\n}"
+        : "+f"(acc[0]),"+f"(acc[1]),"+f"(acc[2]),"+f"(acc[3]),"+f"(acc[4]),"+f"(acc[5]),"+f"(acc[6]),"+f"(acc[7]),
+          "+f"(acc[8]),"+f"(acc[9]),"+f"(acc[10]),"+f"(acc[11]),"+f"(acc[12]),"+f"(acc[13]),"+f"(acc[14]),"+f"(acc[15]),
+          "+f"(acc[16]),"+f"(acc[17]),"+f"(acc[18]),"+f"(acc[19]),"+f"(acc[20]),"+f"(acc[21]),"+f"(acc[22]),"+f"(acc[23]),
+          "+f"(acc[24]),"+f"(acc[25]),"+f"(acc[26]),"+f"(acc[27]),"+f"(acc[28]),"+f"(acc[29]),"+f"(acc[30]),"+f"(acc[31])
+        : "l"(da), "l"(db), "r"(scale_d));
+}
+__device__ __forceinline__ void k45_fence()  { asm volatile("wgmma.fence.sync.aligned;"); }
+__device__ __forceinline__ void k45_commit() { asm volatile("wgmma.commit_group.sync.aligned;"); }
+__device__ __forceinline__ void k45_wait()   { asm volatile("wgmma.wait_group.sync.aligned 0;"); }
+__device__ __forceinline__ void k45_cp16(void* dst, const void* src, int sz) {
+    unsigned d = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" :: "r"(d), "l"(src), "r"(sz));
+}
+#endif
+
+// P masked bf16 mirror: out[j][j2] = j2 <= j ? bf16(p) : 0   (layout [nc][h][C][C])
+extern "C" __global__ void gdn_p_bf16_masked(const float* __restrict__ p,
+                                             __nv_bfloat16* __restrict__ out,
+                                             int C, long long n) {
+    long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    int j2 = (int)(i % C), j = (int)((i / C) % C);
+    out[i] = (j2 <= j) ? __float2bfloat16(p[i]) : __float2bfloat16(0.0f);
+}
+
+extern "C" __global__ void __launch_bounds__(256, 1)
+gdn_k45_wgmma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+              const float* __restrict__ beta,
+              const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+              const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ Pb16,
+              float* __restrict__ o, float scale,
+              const float* __restrict__ state_in, float* __restrict__ state_out,
+              int H, int T, int C, int hk) {
+#ifdef BW24_K45_REAL
+    constexpr int D = GDN_D;
+    const int h = blockIdx.x;
+    const int hq = h % hk;
+    const int col0 = blockIdx.y * 32;
+    const int tid = threadIdx.x;
+    const int wg = tid >> 7, wtid = tid & 127;
+    const int warp = wtid >> 5, lane = tid & 31;
+    const int fr = lane >> 2, fc = (lane & 3) * 2;
+    const int ih = wg * 64;
+
+    __shared__ __align__(128) __nv_bfloat16 sM[2][64 * 64];
+    __shared__ __align__(128) __nv_bfloat16 sW[64 * 128];
+    __shared__ __align__(128) __nv_bfloat16 sK[2][64 * 32];
+    __shared__ __align__(128) __nv_bfloat16 sQ[2][64 * 64];
+    __shared__ __align__(128) __nv_bfloat16 sP2[64 * 32];
+    __shared__ __align__(128) __nv_bfloat16 sYs[64 * 32];
+    float* sS = (float*)&sM[0][0];
+    float* sO = (float*)&sQ[0][0];
+
+    float Macc[32];
+    #pragma unroll
+    for (int q = 0; q < 32; q += 4) {
+        int n8 = q / 4;
+        int cll = warp * 16 + fr;
+        int il = fc + n8 * 8;
+        bool re0 = cll < 32, re1 = cll + 8 < 32;
+        Macc[q + 0] = re0 ? state_in[((size_t)h * D + col0 + cll) * D + ih + il + 0] : 0.0f;
+        Macc[q + 1] = re0 ? state_in[((size_t)h * D + col0 + cll) * D + ih + il + 1] : 0.0f;
+        Macc[q + 2] = re1 ? state_in[((size_t)h * D + col0 + cll + 8) * D + ih + il + 0] : 0.0f;
+        Macc[q + 3] = re1 ? state_in[((size_t)h * D + col0 + cll + 8) * D + ih + il + 1] : 0.0f;
+    }
+
+    const int NC = (T + C - 1) / C;
+    for (int seg = tid; seg < 32 * (D / 8); seg += 256) {
+        int r = 32 + seg / (D / 8), s8 = seg % (D / 8);
+        *(uint4*)((char*)sW + k45_canon(s8 / 2, r, (s8 % 2) * 8)) = make_uint4(0u, 0u, 0u, 0u);
+    }
+    for (int seg = tid; seg < 32 * 4; seg += 256) {
+        int r = 32 + seg / 4, s8 = seg % 4;
+        *(uint4*)((char*)sP2 + k45_canon(s8 / 2, r, (s8 % 2) * 8)) = make_uint4(0u, 0u, 0u, 0u);
+    }
+    for (int c = 0; c < NC; c++) {
+        const int t0 = c * C;
+        const int Cc = min(C, T - t0);
+        #pragma unroll
+        for (int q = 0; q < 32; q += 4) {
+            int n8 = q / 4;
+            int cll = warp * 16 + fr;
+            int il = fc + n8 * 8;
+            if (cll < 32) {
+                *(__nv_bfloat162*)((char*)sM[wg] + k45_canon(il / 16, cll, il % 16)) =
+                    __floats2bfloat162_rn(Macc[q + 0], Macc[q + 1]);
+                *(__nv_bfloat162*)((char*)sM[wg] + k45_canon(il / 16, cll + 8, il % 16)) =
+                    __floats2bfloat162_rn(Macc[q + 2], Macc[q + 3]);
+            }
+        }
+        for (int seg = tid; seg < 32 * (D / 8); seg += 256) {
+            int r = seg / (D / 8), s8 = seg % (D / 8);
+            int st = s8 / 2, kk8 = (s8 % 2) * 8;
+            k45_cp16((char*)sW + k45_canon(st, r, kk8),
+                     Wb16 + (((size_t)c * H + h) * C + r) * D + st * 16 + kk8, (r < Cc) ? 16 : 0);
+        }
+        asm volatile("cp.async.commit_group;");
+        {
+            const float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
+            for (int idx = wtid; idx < 32 * 8; idx += 128) {
+                int j = idx / 8, i8l = (idx % 8) * 8;
+                float gkj = 0.0f;
+                __nv_bfloat16 kv8[8];
+                if (j < Cc) {
+                    gkj = expf(gC - gcum[(size_t)(t0 + j) * H + h]) * beta[(size_t)(t0 + j) * H + h];
+                    *(uint4*)kv8 = *(const uint4*)(kb16 + ((size_t)(t0 + j) * hk + hq) * D + ih + i8l);
+                } else *(uint4*)kv8 = make_uint4(0u, 0u, 0u, 0u);
+                #pragma unroll
+                for (int e2 = 0; e2 < 8; e2++)
+                    *(__nv_bfloat16*)((char*)sK[wg] + k45_canon(j >> 4, i8l + e2, j & 15)) =
+                        __float2bfloat16(gkj * __bfloat162float(kv8[e2]));
+            }
+        }
+        for (int seg = tid; seg < 2 * 32 * (D / 16); seg += 256) {
+            int half = seg / 256, rem = seg % 256;
+            int j = rem / 8, s8 = rem % 8;
+            int st = s8 / 2, kk8 = (s8 % 2) * 8;
+            k45_cp16((char*)sQ[half] + k45_canon(st, j, kk8),
+                     qb16 + ((size_t)(t0 + j) * hk + hq) * D + half * 64 + st * 16 + kk8,
+                     (j < Cc) ? 16 : 0);
+        }
+        for (int seg = tid; seg < 32 * 4; seg += 256) {
+            int j = seg / 4, s8 = seg % 4;
+            k45_cp16((char*)sP2 + k45_canon(s8 / 2, j, (s8 % 2) * 8),
+                     Pb16 + (((size_t)c * H + h) * C + j) * C + (s8 / 2) * 16 + (s8 % 2) * 8,
+                     (j < Cc) ? 16 : 0);
+        }
+        asm volatile("cp.async.commit_group;");
+        float2 uPre[16];
+        if (wg == 0) {
+            const int j0p = warp * 16 + fr;
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4, cl = fc + n8 * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0p + pr * 8;
+                    uPre[n8 * 2 + pr] = (j < Cc && cl < 32)
+                        ? *(const float2*)(U + (((size_t)c * H + h) * C + j) * D + col0 + cl)
+                        : make_float2(0.0f, 0.0f);
+                }
+            }
+        }
+        asm volatile("cp.async.wait_group 0;");
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+
+        float acc[32], Oacc[32];
+        k45_fence();
+        for (int st = 0; st < 4; st++) {
+            unsigned long long da = k45_desc((char*)sW + (wg * 4 + st) * 2048, 128, 256);
+            unsigned long long dq = k45_desc((char*)sQ[wg] + st * 2048, 128, 256);
+            unsigned long long db = k45_desc((char*)sM[wg] + st * 2048, 128, 256);
+            k45_wgmma(acc, da, db, st == 0 ? 0 : 1);
+            k45_wgmma(Oacc, dq, db, st == 0 ? 0 : 1);
+        }
+        k45_commit();
+        k45_wait();
+        __syncthreads();
+        if (wg == 1) {
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4;
+                int r = warp * 16 + fr, cc = fc + n8 * 8;
+                sS[(r + 0) * 64 + cc + 0] = acc[q + 0];
+                sS[(r + 0) * 64 + cc + 1] = acc[q + 1];
+                sS[(r + 8) * 64 + cc + 0] = acc[q + 2];
+                sS[(r + 8) * 64 + cc + 1] = acc[q + 3];
+                sO[(r + 0) * 64 + cc + 0] = Oacc[q + 0];
+                sO[(r + 0) * 64 + cc + 1] = Oacc[q + 1];
+                sO[(r + 8) * 64 + cc + 0] = Oacc[q + 2];
+                sO[(r + 8) * 64 + cc + 1] = Oacc[q + 3];
+            }
+        }
+        __syncthreads();
+        const float bC = expf(gcum[(size_t)(t0 + Cc - 1) * H + h]);
+        if (wg == 0) {
+            const int j0 = warp * 16 + fr;
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4;
+                int cl = fc + n8 * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0 + pr * 8;
+                    float yv0 = 0.0f, yv1 = 0.0f;
+                    if (j < Cc && cl < 32) {
+                        float2 u2 = uPre[n8 * 2 + pr];
+                        yv0 = u2.x - (acc[q + pr * 2 + 0] + sS[j * 64 + cl + 0]);
+                        yv1 = u2.y - (acc[q + pr * 2 + 1] + sS[j * 64 + cl + 1]);
+                    }
+                    if (j0 < 32 && cl < 32) {
+                        *(__nv_bfloat16*)((char*)sYs + k45_canon(j / 16, cl + 0, j % 16)) = __float2bfloat16(yv0);
+                        *(__nv_bfloat16*)((char*)sYs + k45_canon(j / 16, cl + 1, j % 16)) = __float2bfloat16(yv1);
+                    }
+                }
+            }
+            const float b0 = (j0 < Cc) ? expf(gcum[(size_t)(t0 + j0) * H + h]) : 0.0f;
+            const float b1 = (j0 + 8 < Cc) ? expf(gcum[(size_t)(t0 + j0 + 8) * H + h]) : 0.0f;
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4;
+                int r = j0, cc = fc + n8 * 8;
+                Oacc[q + 0] = (Oacc[q + 0] + sO[(r + 0) * 64 + cc + 0]) * b0;
+                Oacc[q + 1] = (Oacc[q + 1] + sO[(r + 0) * 64 + cc + 1]) * b0;
+                Oacc[q + 2] = (Oacc[q + 2] + sO[(r + 8) * 64 + cc + 0]) * b1;
+                Oacc[q + 3] = (Oacc[q + 3] + sO[(r + 8) * 64 + cc + 1]) * b1;
+            }
+        }
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+        #pragma unroll
+        for (int q = 0; q < 32; q++) Macc[q] *= bC;
+        k45_fence();
+        for (int st = 0; st < 2; st++) {
+            unsigned long long da = k45_desc((char*)sYs + st * 2048, 128, 256);
+            unsigned long long db = k45_desc((char*)sK[wg] + st * 2048, 128, 256);
+            k45_wgmma(Macc, da, db, 1);
+        }
+        // phase 2 on BOTH wgs (C7519: divergent wgmma serializes); wg1 result discarded
+        for (int st = 0; st < 2; st++) {
+            unsigned long long da = k45_desc((char*)sP2 + st * 2048, 128, 256);
+            unsigned long long db = k45_desc((char*)sYs + st * 2048, 128, 256);
+            k45_wgmma(Oacc, da, db, 1);
+        }
+        k45_commit();
+        k45_wait();
+        if (wg == 0) {
+            const int j0 = warp * 16 + fr;
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4, cl = fc + n8 * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0 + pr * 8;
+                    if (j < Cc && cl < 32)
+                        *(float2*)(o + ((size_t)(t0 + j) * H + h) * D + col0 + cl) =
+                            make_float2(scale * Oacc[q + pr * 2 + 0], scale * Oacc[q + pr * 2 + 1]);
+                }
+            }
+        }
+        __syncthreads();
+    }
+    #pragma unroll
+    for (int q = 0; q < 32; q += 4) {
+        int n8 = q / 4;
+        int cll = warp * 16 + fr;
+        int il = fc + n8 * 8;
+        if (cll < 32) {
+            state_out[((size_t)h * D + col0 + cll) * D + ih + il + 0] = Macc[q + 0];
+            state_out[((size_t)h * D + col0 + cll) * D + ih + il + 1] = Macc[q + 1];
+        }
+        if (cll + 8 < 32) {
+            state_out[((size_t)h * D + col0 + cll + 8) * D + ih + il + 0] = Macc[q + 2];
+            state_out[((size_t)h * D + col0 + cll + 8) * D + ih + il + 1] = Macc[q + 3];
+        }
+    }
+#endif  // BW24_K45_REAL
+}

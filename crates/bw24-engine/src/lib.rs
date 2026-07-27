@@ -8063,6 +8063,55 @@ impl Engine {
                 (None, Some(kb)) => kb,
                 _ => unreachable!(),
             };
+            // K4+K5 FUSED wgmma seam (BW24_GDN_WGMMA, task #22; harness verdict
+            // tools/bench_gdn_wgmma.cu v5, ledger 1f08b997: in-band Y 1.07e-2 / state
+            // 1.03e-2 / O 1.08e-2, 91.3us vs 70.4 K4-only at H=32 T=512). K5's output
+            // pass runs inside the persistent-M kernel; Y and Ssnap are never
+            // materialized. New numeric class (gk folds into k^T instead of ys) —
+            // explicit opt-in until the state-carry battery promotes it. Env read per
+            // call (kernel-check pins configs by toggling env, GDN_MMA precedent).
+            // PROMOTED default-ON hopper (2026-07-27): full battery green — harness
+            // in-band, argmax gate PASS, 3-seed greedy IDENTICAL after ~2k prime,
+            // chunked-continuation IDENTICAL, kernel-check + decode-batch gates green,
+            // official prefill lane +0.74% interleaved x5 (5/5 rounds). =0 reverts.
+            let gdn_wgmma = match std::env::var("BW24_GDN_WGMMA").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            };
+            if gdn_wgmma {
+                let nq = t * hk * D;
+                let mut qb16 = self.alloc_u8_uninit(nq * 2)?;
+                {
+                    let f = self.func("f32_to_bf16_bulk");
+                    let n2 = nq as i64;
+                    let cfg2 = LaunchConfig::for_num_elems((nq as u32).div_ceil(4));
+                    let mut b = self.gpu.stream.launch_builder(&f);
+                    b.arg(q).arg(&mut qb16).arg(&n2);
+                    unsafe { b.launch(cfg2)?; }
+                }
+                let np = nc * h * c * c;
+                let mut pb16 = self.alloc_u8_uninit(np * 2)?;
+                {
+                    let f = self.func("gdn_p_bf16_masked");
+                    let n2 = np as i64;
+                    let ci32 = c as i32;
+                    let cfg2 = LaunchConfig::for_num_elems(np as u32);
+                    let mut b = self.gpu.stream.launch_builder(&f);
+                    b.arg(&p).arg(&mut pb16).arg(&ci32).arg(&n2);
+                    unsafe { b.launch(cfg2)?; }
+                }
+                {
+                    let f = self.func("gdn_k45_wgmma");
+                    let cfg = LaunchConfig { grid_dim: (h as u32, 4, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                    let hki = hk as i32;
+                    let mut b = self.gpu.stream.launch_builder(&f);
+                    b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&qb16).arg(&pb16)
+                     .arg(o).arg(&scale).arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
+                    unsafe { b.launch(cfg)?; }
+                }
+                return Ok(());
+            }
             // COUPLED PAIR: K4-mma writes Y and Ssnap as bf16 (their only consumer is
             // K5-mma, which rounds to bf16 regardless — identical numerics, half the
             // traffic; harness K5 63.0 -> 35.3us). Fresh bf16 buffers replace the f32 ones.

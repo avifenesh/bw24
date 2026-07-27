@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the same near-tie logits at step 1. Gate tests DECODE; prime stays pinned f32-class.
     unsafe { std::env::set_var("BW24_L2_V2", "0"); }
     unsafe { std::env::set_var("BW24_FA3", "0"); }
+    unsafe { std::env::set_var("BW24_GDN_WGMMA", "0"); }
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;

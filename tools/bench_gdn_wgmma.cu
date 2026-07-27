@@ -796,7 +796,7 @@ gdn_k4_wgmma_v2(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
         }
 }
 
-int main() {
+int main(int argc, char** argv) {
     __nv_bfloat16 *hW = (__nv_bfloat16*)malloc(32 * 128 * 2);
     __nv_bfloat16 *hM = (__nv_bfloat16*)malloc(128 * 128 * 2);
     float *hU = (float*)malloc(32 * 128 * 4), *ref = (float*)malloc(32 * 128 * 4);
@@ -832,7 +832,7 @@ int main() {
 
     // ---- v2: full chain at the calibrated dims (H=32, T=512, C=32) ----
     {
-        const int H = 32, T = 512, C = 32, D = 128, NC = (T + C - 1) / C;
+        const int H = 32, T = (argc > 1 ? atoi(argv[1]) : 512), C = 32, D = 128, NC = (T + C - 1) / C;
         size_t nk = (size_t)T * H * D, ng = (size_t)T * H, nu = (size_t)NC * H * C * D;
         float *k = (float*)malloc(nk * 4), *gc = (float*)malloc(ng * 4), *bt = (float*)malloc(ng * 4);
         float *U2 = (float*)malloc(nu * 4), *W2 = (float*)malloc(nu * 4);
@@ -870,7 +870,7 @@ int main() {
                     for (int i = 0; i < D; i++)
                         M[(size_t)col * D + i] = si[((size_t)h2 * D + col) * D + i];
                 for (int c2 = 0; c2 < NC; c2++) {
-                    const int t0 = c2 * C, Cc = C;
+                    const int t0 = c2 * C, Cc = (T - t0 < C) ? (T - t0) : C;
                     const float gC = gc[(size_t)(t0 + Cc - 1) * H + h2];
                     for (int j = 0; j < Cc; j++)
                         for (int col = 0; col < D; col++) {

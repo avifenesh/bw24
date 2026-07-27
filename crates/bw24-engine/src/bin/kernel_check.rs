@@ -411,6 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Hopper lane — both configs stay pinned regardless of the shipped default).
             // SAFETY: single-threaded gate binary; the seam reads the env per call.
             unsafe { std::env::set_var("BW24_GDN_MMA", "0"); }
+            unsafe { std::env::set_var("BW24_GDN_WGMMA", "0"); }
             e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut so_c, &mut o_c, h, t, scale, c, h)?;
             unsafe { std::env::remove_var("BW24_GDN_MMA"); }
             let (ro_s, rs_s) = (relerr(&o64, &e.dtoh(&o_s)?), relerr(&s64, &e.dtoh(&so_s)?));
@@ -429,12 +430,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 unsafe { std::env::set_var("BW24_GDN_MMA", "1"); }
                 let mut so_m = e.zeros(s_v * s_v * h)?; let mut o_m = e.zeros(s_v * h * t)?;
                 e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut so_m, &mut o_m, h, t, scale, c, h)?;
-                unsafe { std::env::remove_var("BW24_GDN_MMA"); }
                 let (ro_m, rs_m) = (relerr(&o64, &e.dtoh(&o_m)?), relerr(&s64, &e.dtoh(&so_m)?));
                 let okm = ro_m < 8e-2 && rs_m < 8e-1;
                 println!("gdn_chunked  T={t:3} C={c:3} MMA config pin: out={ro_m:.2e} state={rs_m:.2e} {}",
                          if okm { "OK" } else { fails += 1; "FAIL" });
+                // K4+K5 fused wgmma config pin (BW24_GDN_WGMMA, task #22): its OWN band.
+                // State shares the mma bf16 class (measured 5.3e-1 on these hostile
+                // synthetics, band 8e-1). OUT is a WIDER class than K5-mma: the fused
+                // phase 1 stages q/M as bf16 (wgmma) where K5-mma staged fp16 (2 fewer
+                // mantissa bits) — measured 2.19e-1 here, band 4e-1 (~2x headroom, the
+                // mma-pin precedent). Tail chunks verified separately (harness T=200
+                // in-band, O rel 5.6e-3); model-level gates: 3-seed greedy IDENTICAL,
+                // chunked-continuation IDENTICAL, argmax PASS (2026-07-27).
+                unsafe { std::env::set_var("BW24_GDN_WGMMA", "1"); }
+                let mut so_w = e.zeros(s_v * s_v * h)?; let mut o_w = e.zeros(s_v * h * t)?;
+                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut so_w, &mut o_w, h, t, scale, c, h)?;
+                unsafe { std::env::remove_var("BW24_GDN_MMA"); }
+                let (ro_w, rs_w) = (relerr(&o64, &e.dtoh(&o_w)?), relerr(&s64, &e.dtoh(&so_w)?));
+                let okw = ro_w < 4e-1 && rs_w < 8e-1;
+                println!("gdn_chunked  T={t:3} C={c:3} WGMMA-fused config pin: out={ro_w:.2e} state={rs_w:.2e} {}",
+                         if okw { "OK" } else { fails += 1; "FAIL" });
             }
+            unsafe { std::env::remove_var("BW24_GDN_WGMMA"); }
         }
     }
 
