@@ -1644,6 +1644,36 @@ impl HybridModel {
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
             let mut token_d = e.stream().clone_htod(
                 &[crate::forward::argmax(&last_logits) as u32])?;
+            // HYBRID GRAPH DOOR (round 35): graph_decode_loop over the batched-prime
+            // cache — the E4B graph-exec door's hybrid mirror. Counters (pos_d/token_d/
+            // len_d) synced above; event tracking is engine-default-OFF so capture over
+            // these buffers is legal. PROMOTED default-ON at budget >= 256 (the E4B
+            // door's amortization rule): official-shape A/B interleaved x5 = eager 190.3
+            // -> graph 220.7 tok/s (+16.0%, 5/5, spread ±0.1); 128-tok stream IDENTICAL;
+            // graph-decode-gate 256 steps x 16 buckets BIT-IDENTICAL. This REFUTES the
+            // 2026-07-15 "-11%" qwen-graph verdict — it predated the exec-update rework
+            // and the 07-26 FA family (stale-verdict law, round 35). =0 reverts.
+            let gen_graph = match std::env::var("BW24_GEN_GRAPH").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => budget >= 256,
+            };
+            if gen_graph && budget > 0 {
+                let head_dim = self.cfg.head_dim_k as usize;
+                let mut gs = GraphDecodeState::new(e)?;
+                gs.pos_d = pos_d;
+                gs.token_d = token_d;
+                let (out_cell, sampler_cell) = (&mut out, &mut *sampler);
+                let reason = self.graph_decode_loop(
+                    e, &mut gs, &mut cache, embd_gpu, qt, rb, head_dim, budget, |tok| {
+                        sampler_cell.accept(tok);
+                        out_cell.push(tok);
+                        if params.eos.contains(&tok) { return Some(StopReason::Eos); }
+                        if !on_token(tok) { return Some(StopReason::Callback); }
+                        None
+                    })?;
+                return Ok(GenOutput { tokens: out, stop_reason: reason });
+            }
             let mut next = e.dtoh_u32(&token_d)?[0];
             for _ in 0..budget {
                 sampler.accept(next);

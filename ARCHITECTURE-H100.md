@@ -1777,3 +1777,20 @@ buckets), dead gs.captures telemetry counter revived (both capture sites), and d
 + graph-decode + graph-session gates ADDED to validate-h100.sh. Law reinforced twice
 today: anything guarding a live lane must live in the battery, and thresholds/gates
 calibrated on old code must be re-swept when the code changes.
+
+## Hybrid graph door in generate_with: official decode +16% (2026-07-27, round 35)
+
+The graph-lane investigation exposed that the OFFICIAL protocol's decode number rode
+the dc-eager loop while a faster, bit-identical graph path existed. The qwen graph route
+carried a stale 2026-07-15 "-11%" verdict — measured BEFORE the exec-update rework
+(which killed per-bucket recapture) and the 07-26 FA family. The hybrid door is the E4B
+graph-exec pattern: after the batched prime, sync pos_d/token_d/len_d, then
+graph_decode_loop over the SAME cache (event tracking engine-default-OFF makes the
+capture legal; the tracking dance in generate_graph is belt-and-suspenders).
+Evidence: 128-token stream IDENTICAL door-vs-eager at the bench shape; graph-decode-gate
+256 steps x 16 fa buckets BIT-IDENTICAL; official-shape A/B interleaved x5: eager 190.3
+-> graph 220.7 tok/s (+16.0%, 5/5, spread ±0.1). PROMOTED default-ON at budget >= 256
+(E4B amortization rule); =0 reverts. Official decode = 220.6 median = 125-129% of
+vLLM's retested 171.6-176.4. VALIDATE-H100 (now incl. 3 graph gates) ALL GREEN.
+Stale-verdict law, third instance today: pb_maxt (320), the "-11%" graph verdict, and
+the graph-decode-gate alignment all rotted when the code under them moved.
