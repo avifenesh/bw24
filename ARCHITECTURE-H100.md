@@ -1574,3 +1574,24 @@ shipped mma 68.3µs at H=32 T=512 C=32: grid is 64 CTAs on 132 SMs (≤48% machi
 warpgroup serializes stage→wgmma→wait×2 per chunk. Optimization arc open: vectorized
 staging, W/k prefetch, m64n32 flip (j=32 real rows sit in the padded m-half), cluster
 DSMEM i-split for CTA doubling.
+
+## K4-wgmma v3/v4 optimization arc: 210.9 -> 70.3µs; micro-lever space exhausted (2026-07-27)
+
+Ladder (all in-band, class metric): v2 210.9 (64 CTAs, 1 wg) -> v3 116.6 (col-32 grid = 128
+CTAs + 16B staging vectorization) -> v4 82.3 (2 warpgroups x i-halves: per-wg step-A partials
++ smem exchange, split step-B atoms; ncu was 1.0 active warps/scheduler, no-eligible 86.5%)
+-> 73.7 (U register prefetch under staging shadow; phase probe: epilogue was 27.8µs of 82.4)
+-> 70.3 (cp.async W staging, real rows only, pad zeroed once). Shipped mma harness = 68.3µs.
+
+REFUTED (each ~+7..+36µs, this toolchain punishes form changes near wgmma):
+- staging under wgmma/epilogue shadows (x3: v3 hoist, v4 wg1-under-epilogue, lambda forms)
+- float2 exchange (bank replays), Ssnap smem-tile coalesced flush (global 2B scatter is NOT
+  the pole - fire-and-forget hides), split epilogue w/ bidirectional exchange (sW-overlay
+  aliasing), dedicated sP buffer + per-thread gk expf (+7).
+Phase map at 73.8: staging 27.2 (after uPre moved in), epilogue 19, wgmma A+B ~5, snap 1.2.
+
+VERDICT: v4-shape floor ~70µs = wash vs shipped mma K4. Tensor work is 1.5% of bf16 peak —
+K4 standalone is a latency problem, not a tensor problem. The wgmma play that PAYS is fusion:
+M lives in Macc registers at snapshot time -> fuse K5's per-chunk consumption of Ssnap into
+the persistent-M kernel and kill the Ssnap global round-trip on both sides (K5 = 3.1ms of the
+12.4ms stack; K4+K5 = 8.4ms of 12.4). Next: K5 semantics + fusion design.
