@@ -241,6 +241,11 @@ pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
 pub static RMS_BLOCK_DEFAULT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(256);
 /// gemma4 fa split ladder switch (set at model load; see fa_split_keys).
 pub static FA_SP_GEMMA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Per-model stream-k override for SPEC serving (-1 = unset → env/default; 0 = force
+/// tiling; 1 = force sk). Set by generate_spec_gemma per model tier — the sk autotune's
+/// per-process kernel coin made 12B-class spec cells bimodal, while the 26B's drafter
+/// measures BETTER under sk's fold order (2026-07-27). mmq_ffi reads this before the env.
+pub static MMQ_SK_FORCE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
 pub(crate) fn rms_block() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("BW24_RMS_BLOCK").ok()

@@ -526,8 +526,22 @@ impl Engine {
             // small-batch tail-wave fix — the sk entry itself falls back to (bit-identical)
             // tiling at >=90% wave efficiency. Band-class fold order below that. Gate: 12B
             // pp512 +3.3% (1.005x vs llama), pp1736 +1.0%; 31B +0.5%; D512 sentinel MATCH.
+            //
+            // SPEC-SERVING FLIP (2026-07-27, the f16pv/wkv acceptance-law pattern): with
+            // BW24_DRAFT set the default is OFF. Two mechanisms, both measured: (1) sk's
+            // fold order shifts PRIME numerics in the drafter's sub-argmax logit space
+            // (26B d1736 accept 0.846 w/o sk vs 0.826 — bisect row 0.861 vs 0.405-era);
+            // (2) the shape-keyed AUTOTUNE re-times both forms per process, so knife-edge
+            // shapes pick DIFFERENT kernels run-to-run — the 12B depth cell was BIMODAL
+            // (205 @ 0.756 / 260 @ 0.943 across identical invocations; sk-off x6 = stable
+            // 263-269 @ 0.953). Explicit BW24_MMQ_SK always wins; plain serving keeps sk.
             static SK_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let sk = *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK").as_deref() != Ok("0"));
+            let sk = match crate::MMQ_SK_FORCE.load(std::sync::atomic::Ordering::Relaxed) {
+                0 => false,
+                1 => true,
+                _ => *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK")
+                        .map(|v| v != "0").unwrap_or(true)),
+            };
             let rc = if sk {
                 let mut fx = MMQ_FIXUP_SLOT.lock().unwrap();
                 if fx.is_none() {

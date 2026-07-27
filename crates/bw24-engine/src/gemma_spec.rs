@@ -752,6 +752,8 @@ impl HybridModel {
         // E4B (n_embd < 2500) keeps floor=1 — unmeasured, cheap verify.
         let adapt_floor_default: usize = if self.cfg.n_embd >= 3500 { 4 }
             else if self.cfg.n_embd >= 2500 { 2 } else { 1 };
+        // (stream-k spec key lives in HybridModel::load_from_source_impl — it must be set
+        // before the PRIME's GEMMs autotune, not here.)
         let adapt_floor_env: Option<usize> = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
             .and_then(|v| v.parse().ok());
         let adapt_floor: usize = adapt_floor_env.unwrap_or(adapt_floor_default);

@@ -211,7 +211,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_FA512_W4=1` | 4-warp sp16 without head-pairing (GEMM0 split-K 4-way + cp.async) — measured net-negative on the 150W laptop (clock tax), superseded by the hp arm | opt-in probe arm 2026-07-23 |
 | `BW24_FA512_HP=0` | hd512 head-pair rollback to the 2-warp sp16 kernel | hp DEFAULT 2026-07-23 (laptop kernel 10.2->3.0ms) |
 | `BW24_FAW_HP=0` | SWA head-pair rollback to the per-head p1 stamp | hp DEFAULT 2026-07-23 (SWA kernel 870->677us) |
-| `BW24_MMQ_SK=0` | xy-tiling-only MMQ prefill GEMM (no stream-k below 90% wave efficiency) | stream-k DEFAULT 2026-07-23 (12B pp512 +3.3%, pp1736 +1.0%) |
+| `BW24_MMQ_SK` | stream-k MMQ prefill GEMM. Default: plain serving ON everywhere (12B pp512 +3.3%, pp1736 +1.0%); SPEC serving is per-model — big dense (n_embd≥3500) forces tiling, MoE/small keep sk. The sk autotune's per-process kernel coin made 12B spec cells BIMODAL (d1736 205 @ 0.756 / 260 @ 0.943 identical invocations; tiling ×6 stable 263-269 @ 0.953, chat +3%; 31B neutral) while the 26B drafter measures BETTER under sk's fold order (depth 305 @ 0.826 vs 293 @ 0.750). Explicit 0/1 wins | sk default 2026-07-23; per-model spec key 2026-07-27 |
 | `BW24_MOE_Q8=0` | Stage-A f32-dequant expert kernels — restores BYTE-identity for the MOE_GATE oracle | dp4a experts 2026-07-06 (+22%) |
 | `BW24_MOE_Q8_KQ=0` | exclude k-quant arms from the q8 expert dot set | 2026-07-06 (+9 tok/s 35B) |
 | `BW24_MOE_DEC=0` | `_em` per-token re-decode expert dot (no decode-once) | dec default 2026-07-05 (3.34x 35B prefill) |

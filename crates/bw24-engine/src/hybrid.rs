@@ -693,6 +693,19 @@ impl HybridModel {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let cfg = src.config();
         assert!(cfg.arch.is_hybrid(), "not a hybrid arch");
+        // SPEC-SERVING stream-k key, per model, set at LOAD so it governs the PRIME too
+        // (2026-07-27; explicit BW24_MMQ_SK wins): the sk autotune's per-process kernel
+        // coin flips knife-edge prime shapes between kernels run-to-run — the 12B depth
+        // spec cell was BIMODAL (205 @ 0.756 / 260 @ 0.943 identical invocations; tiling
+        // x6 = stable 263-269 @ 0.953, chat +3%; 31B neutral). The 26B is opposite: its
+        // drafter accepts BETTER under sk's fold order (depth 328 @ 0.826 vs 293 @ 0.750).
+        // Big dense (n_embd >= 3500) forces tiling under spec intent; MoE/small keep sk.
+        // An earlier attempt set this in generate_spec_gemma — too late, the prime's
+        // GEMMs had already autotuned.
+        if std::env::var("BW24_DRAFT").is_ok() && std::env::var("BW24_MMQ_SK").is_err() {
+            let force = if cfg.n_embd >= 3500 { 0i8 } else { -1i8 };
+            crate::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
+        }
 
         let embd = EmbedHost::from_source(src, "token_embd.weight");
         let output_norm = load_t(e, src, "output_norm.weight")?;
