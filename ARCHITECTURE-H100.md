@@ -1595,3 +1595,28 @@ K4 standalone is a latency problem, not a tensor problem. The wgmma play that PA
 M lives in Macc registers at snapshot time -> fuse K5's per-chunk consumption of Ssnap into
 the persistent-M kernel and kill the Ssnap global round-trip on both sides (K5 = 3.1ms of the
 12.4ms stack; K4+K5 = 8.4ms of 12.4). Next: K5 semantics + fusion design.
+
+## K4+K5 fusion (v5): proven in-band, 91.3µs fused vs 70.4 K4-only (2026-07-27)
+
+`gdn_k45_wgmma_v5` absorbs K5's output pass into the persistent-M chunk kernel:
+- phase 1 (o = exp(gcum_j)·q_j·M_pre[col]) rides step A's commit group — same B operand
+  (sM[wg]); partials exchanged via a second overlay (sQ) in the SAME barrier window.
+- phase 2 (o += P·Y) rides step B's group. KEY REWIRE: gk folds into sK staging (per-thread
+  expf at k-transpose time), so sYs holds PLAIN Y^T and serves step B's A AND phase 2's B.
+- Ssnap global round-trip DELETED on both sides (M already on-SM at snapshot time).
+Verdict: Y 1.071e-2, state 1.030e-2, O 1.077e-2 — IN-BAND (band 3e-2). 91.3µs at H=32
+T=512 C=32; marginal K5 absorption = 20.8µs vs ~32µs standalone K5 (T=512-scaled from the
+3.1ms/24-layer ledger figure) + Ssnap traffic + a launch.
+
+Findings en route:
+- C7519: wgmma inside a warpgroup-divergent path serializes (ptxas WG.AR). Run phase-2 on
+  BOTH wgs, discard wg1's result; gate only the stores. (C7515's sibling — goes in memory.)
+- Register-path staging of q (f32→bf16 canonical) + P (masked) was SUPER-ADDITIVE poison:
+  q-skip −53µs, P-skip −47µs, both-skip −69µs (145.7→76.9). Not spills (0B) — issue-window/
+  scheduling pathology. Fix: bf16 mirrors (qb16 like kb16; Pb16 pre-masked) + cp.async 16B
+  in the W commit group → 145.7 → 91.3. Engine seam: prep emits qb16; P producer emits
+  masked bf16 mirror (both precedented by kb16/dst16).
+- cp.async issued after a commit_group belongs to NO group — wait_group misses it (O inf
+  until a second commit_group after the q/P loop).
+Next: engine seam BW24_GDN_WGMMA (fused kernel into hybrid.cu, qb16/Pb16 mirrors in prep,
+Ssnap/K5-launch removal on the gated path), kernel-check + state battery + lane A/B ×5.
