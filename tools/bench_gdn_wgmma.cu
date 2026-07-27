@@ -175,6 +175,11 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
     }
 
     const int NC = (T + C - 1) / C;
+    // sW pad rows (j 32..63) never change: zero once
+    for (int seg = tid; seg < 32 * (D / 8); seg += 256) {
+        int r = 32 + seg / (D / 8), s8 = seg % (D / 8);
+        *(uint4*)((char*)sW[0] + canon_off(s8 / 2, r, (s8 % 2) * 8)) = make_uint4(0u, 0u, 0u, 0u);
+    }
     for (int c = 0; c < NC; c++) {
         const int t0 = c * C;
         const int Cc = min(C, T - t0);
@@ -202,15 +207,18 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
                 }
             }
         }
-        // stage W (cooperative 256) + own k^T half + gk
+        // stage W real rows via cp.async 16B (canonical block = direct copy; pad zeroed once),
+        // then own k^T half (register transpose) + gk under the async shadow
 #ifndef SKIP_STAGE
-        for (int seg = tid; seg < 64 * (D / 8); seg += 256) {
+        for (int seg = tid; seg < 32 * (D / 8); seg += 256) {
             int r = seg / (D / 8), s8 = seg % (D / 8);
             int st = s8 / 2, kk8 = (s8 % 2) * 8;
-            uint4 v = make_uint4(0u, 0u, 0u, 0u);
-            if (r < Cc) v = *(const uint4*)(Wb16 + (((size_t)c * H + h) * C + r) * D + st * 16 + kk8);
-            *(uint4*)((char*)sW[0] + canon_off(st, r, kk8)) = v;
+            unsigned dst = (unsigned)__cvta_generic_to_shared((char*)sW[0] + canon_off(st, r, kk8));
+            const void* src = Wb16 + (((size_t)c * H + h) * C + r) * D + st * 16 + kk8;
+            int sz = (r < Cc) ? 16 : 0;   // tail chunk: zero-fill
+            asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" :: "r"(dst), "l"(src), "r"(sz));
         }
+        asm volatile("cp.async.commit_group;");
         for (int idx = wtid; idx < 32 * 8; idx += 128) {
             int j = idx / 8, i8l = (idx % 8) * 8;
             __nv_bfloat16 kv8[8];
@@ -220,6 +228,7 @@ gdn_k4_wgmma_v4(const __nv_bfloat16* __restrict__ kb16, const float* __restrict_
             for (int e2 = 0; e2 < 8; e2++)
                 *(__nv_bfloat16*)((char*)sK[0][wg] + canon_off(j >> 4, i8l + e2, j & 15)) = kv8[e2];
         }
+        asm volatile("cp.async.wait_group 0;");
 #endif
         if (tid < 32) {
             float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
