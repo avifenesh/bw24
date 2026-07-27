@@ -55,6 +55,7 @@ pub(crate) struct GdnPrep {
     pub beta: cudarc::driver::CudaSlice<f32>,
     pub g_log: cudarc::driver::CudaSlice<f32>,
     pub kb16: Option<cudarc::driver::CudaSlice<u8>>,
+    pub qb16: Option<cudarc::driver::CudaSlice<u8>>,
 }
 
 /// Device scratch for the burst verify stream (see `verify_stream_scratch`).
@@ -1440,7 +1441,15 @@ impl HybridModel {
             e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         }
         let mut q_l2 = e.uninit(d_state * hk * t)?;
-        e.l2_norm_pp(&q_g, &mut q_l2, None, d_state, hk * t, eps)?;
+        // mirror-fold (round 35): q's bf16 twin (wgmma K45/K2 A-operand) in-epilogue too
+        let qb16 = if Engine::l2_v2_on(d_state) {
+            let mut qb = e.alloc_u8_uninit(d_state * hk * t * 2)?;
+            e.l2_norm_pp(&q_g, &mut q_l2, Some(&mut qb), d_state, hk * t, eps)?;
+            Some(qb)
+        } else {
+            e.l2_norm_pp(&q_g, &mut q_l2, None, d_state, hk * t, eps)?;
+            None
+        };
         let mut k_l2 = e.uninit(d_state * hk * t)?;
         // mirror-fold: emit k's bf16 twin (the chunked-scan kb16 mirror) in-epilogue
         let kb16 = if Engine::l2_v2_on(d_state) {
@@ -1458,7 +1467,7 @@ impl HybridModel {
         if let Some(len_d) = pad_len {
             e.gdn_pad_mask(&mut beta, &mut g_log, len_d, num_v, t)?;
         }
-        Ok(GdnPrep { hk, q_l2, k_l2, v_g, beta, g_log, kb16 })
+        Ok(GdnPrep { hk, q_l2, k_l2, v_g, beta, g_log, kb16, qb16 })
     }
 
     /// task #18: batched GDN mixer core — per-seq prep + K1-K3, then ONE varlen K4 and
@@ -1541,6 +1550,7 @@ impl HybridModel {
                 z: e.addr_f32v(&g4[1].slice(o * value_dim..(o + t) * value_dim)),
                 gn: e.addr_f32(&sb[s].gn), gn16: e.addr_u8(&sb[s].gn16),
                 kb16: if Engine::l2_v2_on(d_state) { e.addr_u8(&pres[s].kb16) } else { 0 },
+                qb16: if Engine::l2_v2_on(d_state) && e.gdn_wgmma_on(c) { e.addr_u8(&pres[s].qb16) } else { 0 },
                 t: t as i32, pad: 0,
             }
         }).collect();
@@ -1569,8 +1579,11 @@ impl HybridModel {
         }
         // task #22: wgmma-fused vl twins — qb16 mirrors + GdnWVl8 side-struct.
         let wq8: Option<crate::GdnWVl8> = if e.gdn_wgmma_on(c) {
-            for s in 0..b {
-                e.f32_to_bf16(&sb[s].q_l2, &mut pres[s].qb16, d_state * hk * ts[s])?;
+            // qb16 emitted by the vl l2 mirror-fold when l2-v2 serves; bulk cvt otherwise
+            if !Engine::l2_v2_on(d_state) {
+                for s in 0..b {
+                    e.f32_to_bf16(&sb[s].q_l2, &mut pres[s].qb16, d_state * hk * ts[s])?;
+                }
             }
             let mut wa = [crate::GdnWVl::default(); 8];
             for s in 0..b {
@@ -1633,7 +1646,7 @@ impl HybridModel {
         {
             let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
             e.gdn_scan_prefill(&prep.q_l2, &prep.k_l2, &prep.v_g, &prep.g_log, &prep.beta,
-                               prep.kb16.as_ref(), ssm_state, ssm_state_alt, &mut o, num_v, t, scale,
+                               prep.kb16.as_ref(), prep.qb16.as_ref(), ssm_state, ssm_state_alt, &mut o, num_v, t, scale,
                                prep.hk)?;
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
@@ -1791,7 +1804,7 @@ impl HybridModel {
         let state_in = e.zeros(d_state * d_state * num_v)?;  // zero state (prefill)
         let mut state_out = e.zeros(d_state * d_state * num_v)?;
         let mut o = e.uninit(d_state * num_v * t)?;
-        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, None, &state_in, &mut state_out, &mut o, num_v, t, scale, num_v)?;
+        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, None, None, &state_in, &mut state_out, &mut o, num_v, t, scale, num_v)?;
 
         // gated RMSNorm: dst = RMSNorm(o, ssm_norm[head_v]) * silu(z). o is [d_state, num_v, T];
         // rows of head_v=d_state, nrows = num_v*T. z must match row layout: z is [T, value_dim] token-major

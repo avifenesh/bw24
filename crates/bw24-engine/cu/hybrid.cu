@@ -1918,6 +1918,7 @@ typedef struct {
     const float* z;            // post-norm gate view (concat row offset)
     float* gn; __half* gn16;   // tail outputs
     __nv_bfloat16* kb16;       // k mirror emitted by the l2 v2 epilogue (mirror-fold)
+    __nv_bfloat16* qb16;       // q mirror likewise (task #22: wgmma-fused K45/K2 A-operand)
     int T; int pad_;
 } gdnprep_t;
 typedef struct { gdnprep_t s[8]; } gdnprepvl_t;
@@ -2050,9 +2051,10 @@ extern "C" __global__ void gdn_l2_v2_vl(gdnprepvl_t v, int ncols, int num_v, flo
     float scale = rsqrtf(sum + eps);
     float4 o4 = make_float4(val.x * scale, val.y * scale, val.z * scale, val.w * scale);
     *(float4*)(dst + (size_t)row * ncols + lane * 4) = o4;
-    // mirror-fold: the k side also emits its bf16 twin (the K4 kb16 mirror)
-    if (blockIdx.y == 1 && sq.kb16 != nullptr) {
-        __nv_bfloat16* h = sq.kb16 + (size_t)row * ncols + lane * 4;
+    // mirror-fold: both sides emit bf16 twins (k -> K4 kb16; q -> wgmma qb16)
+    __nv_bfloat16* m16 = blockIdx.y == 0 ? sq.qb16 : sq.kb16;
+    if (m16 != nullptr) {
+        __nv_bfloat16* h = m16 + (size_t)row * ncols + lane * 4;
         h[0] = __float2bfloat16(o4.x); h[1] = __float2bfloat16(o4.y);
         h[2] = __float2bfloat16(o4.z); h[3] = __float2bfloat16(o4.w);
     }

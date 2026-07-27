@@ -412,7 +412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // SAFETY: single-threaded gate binary; the seam reads the env per call.
             unsafe { std::env::set_var("BW24_GDN_MMA", "0"); }
             unsafe { std::env::set_var("BW24_GDN_WGMMA", "0"); }
-            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut so_c, &mut o_c, h, t, scale, c, h)?;
+            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut so_c, &mut o_c, h, t, scale, c, h)?;
             unsafe { std::env::remove_var("BW24_GDN_MMA"); }
             let (ro_s, rs_s) = (relerr(&o64, &e.dtoh(&o_s)?), relerr(&s64, &e.dtoh(&so_s)?));
             let (ro_c, rs_c) = (relerr(&o64, &e.dtoh(&o_c)?), relerr(&s64, &e.dtoh(&so_c)?));
@@ -429,7 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // SAFETY: single-threaded gate binary; the seam reads the env per call.
                 unsafe { std::env::set_var("BW24_GDN_MMA", "1"); }
                 let mut so_m = e.zeros(s_v * s_v * h)?; let mut o_m = e.zeros(s_v * h * t)?;
-                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut so_m, &mut o_m, h, t, scale, c, h)?;
+                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut so_m, &mut o_m, h, t, scale, c, h)?;
                 let (ro_m, rs_m) = (relerr(&o64, &e.dtoh(&o_m)?), relerr(&s64, &e.dtoh(&so_m)?));
                 let okm = ro_m < 8e-2 && rs_m < 8e-1;
                 println!("gdn_chunked  T={t:3} C={c:3} MMA config pin: out={ro_m:.2e} state={rs_m:.2e} {}",
@@ -444,7 +444,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // chunked-continuation IDENTICAL, argmax PASS (2026-07-27).
                 unsafe { std::env::set_var("BW24_GDN_WGMMA", "1"); }
                 let mut so_w = e.zeros(s_v * s_v * h)?; let mut o_w = e.zeros(s_v * h * t)?;
-                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut so_w, &mut o_w, h, t, scale, c, h)?;
+                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut so_w, &mut o_w, h, t, scale, c, h)?;
                 unsafe { std::env::remove_var("BW24_GDN_MMA"); }
                 let (ro_w, rs_w) = (relerr(&o64, &e.dtoh(&o_w)?), relerr(&s64, &e.dtoh(&so_w)?));
                 let okw = ro_w < 4e-1 && rs_w < 8e-1;

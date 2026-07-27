@@ -529,6 +529,7 @@ pub struct GdnPrepVl {
     pub beta_raw: u64, pub alpha: u64, pub beta: u64, pub g_log: u64,
     pub o: u64, pub z: u64, pub gn: u64, pub gn16: u64,
     pub kb16: u64,
+    pub qb16: u64,
     pub t: i32, pub pad: i32,
 }
 unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl {}
@@ -8053,6 +8054,7 @@ impl Engine {
     }
     pub fn gdn_scan_chunked(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                             g: &CudaSlice<f32>, beta: &CudaSlice<f32>, kb16_pre: Option<&CudaSlice<u8>>,
+                            qb16_pre: Option<&CudaSlice<u8>>,
                             state_in: &CudaSlice<f32>,
                             state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
                             n_head: usize, t: usize, scale: f32, c: usize, hk: usize)
@@ -8101,18 +8103,25 @@ impl Engine {
         let mut qb16: Option<CudaSlice<u8>> = None;
         let mut pb16: Option<CudaSlice<u8>> = None;
         if gdn_wgmma_pre {
-            let mut qb = self.alloc_u8_uninit(nk * 2)?;
-            let f = self.func("f32_to_bf16_bulk");
-            let n2 = nk as i64;
-            let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(&mut qb).arg(&n2);
-            unsafe { b.launch(cfg2)?; }
-            qb16 = Some(qb);
+            // mirror-fold (round 35): prep's l2 v2 emits qb16 in-epilogue (kb16 pattern);
+            // the standalone bulk cvt only serves callers without the prep mirror.
+            if qb16_pre.is_none() {
+                let mut qb = self.alloc_u8_uninit(nk * 2)?;
+                let f = self.func("f32_to_bf16_bulk");
+                let n2 = nk as i64;
+                let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(q).arg(&mut qb).arg(&n2);
+                unsafe { b.launch(cfg2)?; }
+                qb16 = Some(qb);
+            } else if let Some(qb) = qb16_pre {
+                assert!(qb.len() >= nk * 2, "qb16_pre too small");
+            }
             pb16 = Some(self.alloc_u8_uninit(nc * h * c * c * 2)?);
         }
+        let qb16_ref0: Option<&CudaSlice<u8>> = qb16.as_ref().or(qb16_pre);
         let k2w = if gdn_wgmma_pre {
-            Some((qb16.as_ref().unwrap() as &CudaSlice<u8>,
+            Some((*qb16_ref0.as_ref().unwrap(),
                   *kb16_ref0.as_ref().unwrap(),
                   pb16.as_mut().unwrap()))
         } else { None };
@@ -8152,7 +8161,7 @@ impl Engine {
             // official prefill lane +0.74% interleaved x5 (5/5 rounds). =0 reverts.
             if gdn_wgmma_pre {
                 // qb16/pb16 pre-built above K123 (K2-wgmma wrote the masked Pb16).
-                let qb16 = qb16.as_ref().unwrap();
+                let qb16 = qb16_ref0.unwrap();
                 let pb16 = pb16.as_ref().unwrap();
                 {
                     let f = self.func("gdn_k45_wgmma");
@@ -8218,8 +8227,10 @@ impl Engine {
     /// per-call (== per-layer, in call order) output/state error distribution, and keeps the
     /// SEQUENTIAL results so the run stays on the shipped path (stage-1 prototype evidence).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn gdn_scan_prefill(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                             g: &CudaSlice<f32>, beta: &CudaSlice<f32>, kb16_pre: Option<&CudaSlice<u8>>,
+                            qb16_pre: Option<&CudaSlice<u8>>,
                             state_in: &CudaSlice<f32>,
                             state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
                             n_head: usize, t: usize, scale: f32, hk: usize)
@@ -8229,7 +8240,7 @@ impl Engine {
             return self.gdn_scan_diff(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale);
         }
         if Self::gdn_chunked_enabled() && t >= 16 {
-            self.gdn_scan_chunked(q, k, v, g, beta, kb16_pre, state_in, state_out, o, n_head, t, scale,
+            self.gdn_scan_chunked(q, k, v, g, beta, kb16_pre, qb16_pre, state_in, state_out, o, n_head, t, scale,
                                   Self::gdn_chunk_size(), hk)
         } else {
             assert!(hk == n_head, "s128 scan is broadcast-only (prep guarantees by predicate)");
@@ -8248,7 +8259,7 @@ impl Engine {
         let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut o_c = self.uninit(o.len())?;
         let mut st_c = self.uninit(state_out.len())?;
-        self.gdn_scan_chunked(q, k, v, g, beta, None, state_in, &mut st_c, &mut o_c,
+        self.gdn_scan_chunked(q, k, v, g, beta, None, None, state_in, &mut st_c, &mut o_c,
                               n_head, t, scale, Self::gdn_chunk_size(), n_head)?;
         self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)?;
         let (oh_s, oh_c) = (self.dtoh(o)?, self.dtoh(&o_c)?);
