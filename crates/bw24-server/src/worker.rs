@@ -397,26 +397,31 @@ pub fn run(
                 // 1.03ms/tok graph saving). Short requests stay eager-batched.
                 let gs_min: usize = std::env::var("BW24_GS_MIN").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(384);
+                // POST-PREFILL promotion (round 35): the old cold promotion re-primed the
+                // prompt TOKEN-WISE inside graph_session_new — a live ~3x end-to-end LOSS
+                // for solo long prompts (measured 871-tok/400-gen: 6.4s vs ~2.2s eager).
+                // Now the normal chunked/batched prefill primes first; the graph session
+                // captures OVER that cache (graph_session_from_cache). TTFT pays only the
+                // one-time capture (~340ms), amortized by the gs_min budget gate.
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
                     && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
-                    && !s.prefill_done && s.fed.is_empty() && s.generated.is_empty()
+                    && s.prefill_done && s.generated.is_empty() && s.cache.is_some()
+                    && !s.last_logits.is_empty()
                 {
-                    let prompt: Vec<u32> = s.prefill_queue.drain(..).collect();
                     let lm = &loaded[&s.model];
-                    match lm.model.graph_session_new(&engine, &prompt, s.budget + 2) {
+                    let first = bw24_engine::forward::argmax(&s.last_logits) as u32;
+                    let cache = s.cache.take().unwrap();
+                    match lm.model.graph_session_from_cache(&engine, cache, first, s.budget + 2) {
                         Ok((g, first)) => {
-                            s.cache = None; // graph owns its cache now
                             s.graph = Some(g);
                             s.graph_pending = Some(first);
-                            s.prefill_done = true;
-                            for &t in &prompt { s.fed.push(t); s.sampler.accept(t); }
                         }
                         Err(err) => {
-                            // fall back to the normal chunked-prefill path
-                            eprintln!("[graph-serve] promote failed ({err}); eager path serves");
-                            s.prefill_queue = prompt.into_iter().collect();
-                            s.prefill_done = false;
+                            // capture failed with the cache consumed — degrade the session
+                            // via the graph-less error path (rare: capture-time errors only).
+                            let _ = s.tx.send(Event::Error(format!("graph promote failed: {err}")));
+                            finished.push(0);
                         }
                     }
                 }

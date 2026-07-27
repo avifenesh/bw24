@@ -985,7 +985,52 @@ impl HybridModel {
             next_in = e.dtoh_u32_one(&nt)?;
         }
         e.set_u32_one(&mut gs.token_d, next_in)?;
+        self.graph_session_capture(e, cache, gs, embd_gpu, max_new, qt, row_bytes, n_vocab)
+    }
 
+    /// GraphSession over an ALREADY-PRIMED cache (round 35): keeps the chunked-prefill
+    /// TTFT. graph_session_new's token-wise re-prime made solo long-prompt promotion a
+    /// net ~3x END-TO-END LOSS (measured live: 871-tok prompt + 400 gen = 6.4s vs ~2.2s
+    /// eager). Device counters sync from host state; capture recipe unchanged.
+    /// Requires event tracking OFF (engine default; BW24_EVT=1 callers must not use this
+    /// — the primed cache's buffers would carry events, illegal inside capture).
+    pub fn graph_session_from_cache(
+        &self,
+        e: &Engine,
+        mut cache: Cache,
+        first_token: u32,
+        max_new: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        if e.ctx().is_event_tracking() {
+            return Err("graph_session_from_cache requires event tracking OFF (BW24_EVT unset)".into());
+        }
+        let n_embd = self.cfg.n_embd as usize;
+        let (qt, row_bytes) = self.embd.qt_and_row_bytes(n_embd);
+        let n_vocab = self.output.out_features();
+        let embd_gpu = e.upload_u8(&self.embd.raw)?;
+        let mut gs = GraphDecodeState::new(e)?;
+        gs.pos_d = e.htod_i32(&[cache.pos as i32])?;
+        gs.token_d = e.stream().clone_htod(&[first_token])?;
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        self.graph_session_capture(e, cache, gs, embd_gpu, max_new, qt, row_bytes, n_vocab)
+    }
+
+    /// Shared capture tail: snapshot/rollback warmups, capture at bucket_max, fa_plan.
+    #[allow(clippy::too_many_arguments)]
+    fn graph_session_capture(
+        &self,
+        e: &Engine,
+        mut cache: Cache,
+        mut gs: GraphDecodeState,
+        embd_gpu_owned: CudaSlice<u8>,
+        max_new: usize,
+        qt: i32,
+        row_bytes: usize,
+        n_vocab: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        let embd_gpu = embd_gpu_owned;
         // capture ONCE at bucket_max (snapshot/rollback the warmup runs — the
         // graph_decode_loop recipe verbatim)
         let bucket_max = cache.pos + max_new + 1;

@@ -1794,3 +1794,17 @@ Evidence: 128-token stream IDENTICAL door-vs-eager at the bench shape; graph-dec
 vLLM's retested 171.6-176.4. VALIDATE-H100 (now incl. 3 graph gates) ALL GREEN.
 Stale-verdict law, third instance today: pb_maxt (320), the "-11%" graph verdict, and
 the graph-decode-gate alignment all rotted when the code under them moved.
+
+## Serving graph promotion fixed: capture over the primed cache (2026-07-27, round 35)
+
+Live defect found by extending the stale-verdict sweep to the server: the solo-session
+GraphSession promotion fired on budget >= 384 regardless of PROMPT length, and
+graph_session_new re-primed the prompt TOKEN-WISE — measured live: 871-tok prompt +
+400 gen = 6.40s wall vs ~2.2s eager (a 3x END-TO-END LOSS shipped as "+34% at B=1",
+which was true only for tiny prompts). Fix: `graph_session_from_cache` (capture recipe
+factored into graph_session_capture; counters synced from host state; refuses when
+BW24_EVT=1 since tracked buffers are illegal in capture) + the worker promotes AFTER
+prefill_done, so the chunked/batched prefill keeps its TTFT. Measured: 6.40 -> 2.81s
+(2.3x), 400-token text IDENTICAL to pure eager, VALIDATE-H100 ALL GREEN, burst
+unchanged (27,364). Solo long-prompt long-budget serving now gets chunked prefill AND
+graph decode.
