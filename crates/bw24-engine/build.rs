@@ -37,6 +37,7 @@ fn main() {
                        ("cu/qmatvec_gemm.cu", "BW24_GEMM_FATBIN"), ("cu/moe_router.cu", "BW24_ROUTER_FATBIN"),
                        ("cu/spec_sample.cu", "BW24_SAMPLE_FATBIN")] {
         println!("cargo:rerun-if-changed={src}");
+        println!("cargo:rerun-if-changed=cu/wgmma_common.cuh");
         let stem = src.split('/').last().unwrap().trim_end_matches(".cu");
         let fatbin = out.join(format!("{stem}.fatbin"));
         let mut args = vec!["-gencode", &gencode, "-O3", "--fatbin"];
