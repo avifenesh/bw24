@@ -93,6 +93,90 @@ extern "C" __global__ void s8_probe(const signed char* __restrict__ A,
     }
 }
 
+// ---- rescale-cost probe: the V1-exact question (round 36). 64x64 tile, k=4096:
+// (a) pure i32 chain: 128 wgmmas, scale_d=1 (the w8a8-class upper bound)
+// (b) per-block-exact: scale_d=0 each step, i32 fragment readback, f32 FMA accumulate
+//     with per-element scale product (Q8_0 x q8_1 exact math)
+// Verdict drives V1(exact) vs V2(gated w8a8-class config) for the prefill GEMM arc.
+extern "C" __global__ void __launch_bounds__(128, 1)
+s8_chain(const signed char* __restrict__ A, const signed char* __restrict__ B,
+         int* __restrict__ Cout, int K, int iters) {
+    __shared__ __align__(1024) signed char sA[64 * 128];   // 4 k32-steps resident
+    __shared__ __align__(1024) signed char sB[64 * 128];
+    const int tid = threadIdx.x;
+    for (int idx = tid; idx < 64 * 128; idx += 128) {
+        int r = idx / 128, kv = idx % 128;
+        sA[s8_off(kv / 32, r, kv % 32)] = A[r * 128 + kv];
+        sB[s8_off(kv / 32, r, kv % 32)] = B[r * 128 + kv];
+    }
+    __syncthreads();
+    asm volatile("fence.proxy.async.shared::cta;");
+    int acc[32];
+    for (int it = 0; it < iters; it++) {
+        wg_fence();
+        for (int kk = 0; kk < K / 32; kk++) {
+            int st = kk & 3;                       // cycle the resident tiles
+            unsigned long long da = make_desc((char*)sA + st * 2048, S8_LEAD, S8_STRIDE);
+            unsigned long long db = make_desc((char*)sB + st * 2048, S8_LEAD, S8_STRIDE);
+            wgmma_s8(acc, da, db, kk == 0 ? 0 : 1);
+        }
+        wg_commit();
+        wg_wait();
+    }
+    const int warp = tid / 32, lane = tid % 32;
+    Cout[warp * 32 + lane] = acc[0] + acc[31];
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+s8_rescale(const signed char* __restrict__ A, const signed char* __restrict__ B,
+           const float* __restrict__ scA, const float* __restrict__ scB,
+           float* __restrict__ Cout, int K, int iters) {
+    __shared__ __align__(1024) signed char sA[64 * 128];
+    __shared__ __align__(1024) signed char sB[64 * 128];
+    __shared__ float fsA[64 * 4], fsB[64 * 4];     // per-row per-k32-block scales (resident window)
+    const int tid = threadIdx.x;
+    for (int idx = tid; idx < 64 * 128; idx += 128) {
+        int r = idx / 128, kv = idx % 128;
+        sA[s8_off(kv / 32, r, kv % 32)] = A[r * 128 + kv];
+        sB[s8_off(kv / 32, r, kv % 32)] = B[r * 128 + kv];
+    }
+    for (int idx = tid; idx < 64 * 4; idx += 128) { fsA[idx] = scA[idx]; fsB[idx] = scB[idx]; }
+    __syncthreads();
+    asm volatile("fence.proxy.async.shared::cta;");
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float fac[32];
+    #pragma unroll
+    for (int q = 0; q < 32; q++) fac[q] = 0.0f;
+    int acc[32];
+    for (int it = 0; it < iters; it++) {
+        for (int kk = 0; kk < K / 32; kk++) {
+            int st = kk & 3;
+            unsigned long long da = make_desc((char*)sA + st * 2048, S8_LEAD, S8_STRIDE);
+            unsigned long long db = make_desc((char*)sB + st * 2048, S8_LEAD, S8_STRIDE);
+            wg_fence();
+            wgmma_s8(acc, da, db, 0);              // fresh i32 block-dot each step
+            wg_commit();
+            wg_wait();
+            // exact epilogue: fac[m,n] += i32 * sA[m,block] * sB[n,block]
+            float a0 = fsA[(r0 + 0) * 4 + st], a1 = fsA[(r0 + 8) * 4 + st];
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4;
+                int cc = c0 + n8 * 8;
+                float b0 = fsB[(cc + 0) * 4 + st], b1 = fsB[(cc + 1) * 4 + st];
+                fac[q + 0] += (float)acc[q + 0] * a0 * b0;
+                fac[q + 1] += (float)acc[q + 1] * a0 * b1;
+                fac[q + 2] += (float)acc[q + 2] * a1 * b0;
+                fac[q + 3] += (float)acc[q + 3] * a1 * b1;
+            }
+        }
+    }
+    Cout[warp * 32 + lane] = fac[0] + fac[31];
+}
+
+
 int main() {
     srand(23);
     signed char *hA = (signed char*)malloc(64 * 64), *hB = (signed char*)malloc(64 * 64);
@@ -120,5 +204,31 @@ int main() {
     for (int i = 0; i < 64 * 64; i++) if (hC[i] != ref[i]) total_bad++;
     printf("s8 m64n64k32 F=%d lead=%d stride=%d: %d/4096 bad %s\n",
            S8_F, S8_LEAD, S8_STRIDE, total_bad, total_bad == 0 ? "MATCH (EXACT)" : "MISMATCH");
-    return total_bad != 0;
+    if (total_bad) return 1;
+
+    // ---- rescale-cost probe (single CTA, k=4096, 100 iters) ----
+    {
+        signed char *dA2, *dB2; float *dsc, *dCo; int* dCi;
+        CK(cudaMalloc(&dA2, 64 * 128)); CK(cudaMalloc(&dB2, 64 * 128));
+        CK(cudaMalloc(&dsc, 64 * 4 * 4)); CK(cudaMalloc(&dCo, 128 * 4)); CK(cudaMalloc(&dCi, 128 * 4));
+        CK(cudaMemset(dA2, 1, 64 * 128)); CK(cudaMemset(dB2, 1, 64 * 128));
+        CK(cudaMemset(dsc, 0, 64 * 4 * 4));
+        cudaEvent_t a, b; CK(cudaEventCreate(&a)); CK(cudaEventCreate(&b));
+        const int K = 4096, IT = 100;
+        s8_chain<<<1, 128>>>(dA2, dB2, dCi, K, 3);
+        CK(cudaDeviceSynchronize());
+        CK(cudaEventRecord(a));
+        s8_chain<<<1, 128>>>(dA2, dB2, dCi, K, IT);
+        CK(cudaEventRecord(b)); CK(cudaEventSynchronize(b));
+        float ms1; CK(cudaEventElapsedTime(&ms1, a, b));
+        s8_rescale<<<1, 128>>>(dA2, dB2, dsc, dsc, dCo, K, 3);
+        CK(cudaDeviceSynchronize());
+        CK(cudaEventRecord(a));
+        s8_rescale<<<1, 128>>>(dA2, dB2, dsc, dsc, dCo, K, IT);
+        CK(cudaEventRecord(b)); CK(cudaEventSynchronize(b));
+        float ms2; CK(cudaEventElapsedTime(&ms2, a, b));
+        printf("rescale-cost: i32-chain %.1fus/iter vs per-block-exact %.1fus/iter = %.2fx overhead\n",
+               ms1 * 1000.0f / IT, ms2 * 1000.0f / IT, ms2 / ms1);
+    }
+    return 0;
 }

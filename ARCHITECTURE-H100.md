@@ -1842,3 +1842,23 @@ exact math, targeting the same INT8 TC throughput class as vLLM's Lt/nvjet stack
 27% prefill gap). Pieces in hand: TMA swizzled loads (FA3), s8 pairing (here), block-scale
 dequant (MMQ precedent), wgmma_common.cuh. Next: GEMM harness (bench_s8_gemm.cu) vs the
 shipped fp16-mirror nvjet numbers at the prefill shapes (m=2048, n/k = 4096/11008-class).
+
+## s8 prefill GEMM: exact route REFUTED; w8a8-class route BLOCKED ON OWNER (2026-07-27)
+
+Rescale-cost probe (probe_s8.cu, 64x64 tile, k=4096, 100 iters):
+- pure i32 wgmma chain (w8a8-class math): 2.5µs/iter — the int8 dtype ceiling is real.
+- per-32-block EXACT rescale (Q8_0 x q8_1: scale_d=0 per k32 step, i32 fragment readback,
+  f32 FMA with per-element scale product): 13.4µs/iter = 5.37x OVERHEAD.
+VERDICT: V1 (exact) is refuted — the chain-break costs ~2.7x MORE than int8's ~2x dtype
+advantage returns; a Q8_0-exact int8 GEMM cannot beat the fp16 mirrors on Hopper wgmma.
+(The scale product does not factor: per-32 weight blocks x per-32 activation blocks is
+rank-2 per step. Coarser-granularity rescale requires collapsing block scales = the
+w8a8 class.)
+V2 (w8a8-class: per-row/per-token scales, full i32 chain, one epilogue) is technically
+ready — but it CHANGES MODEL OUTPUTS (no greedy identity), which the standing
+owner-arbitrated accuracy law refused ("refused by the accuracy laws — per-block-scale
+walls", engine-decision RESULTS). Re-opening that quality point is an OWNER decision,
+not an engineering one. THE PREFILL LANE'S REMAINING ~27% IS THEREFORE: reachable only
+through the owner-gated w8a8 accuracy relaxation (all other routes carry measured
+mechanism refutations). Decode (122.8%), serving decode (graph), batched prime, and
+serving burst lanes stand on exact math.
