@@ -1509,3 +1509,10 @@ BW24_GDN_DB=0 reverts. Full battery green.
 OFFICIAL LANE: 29,257 tok/s = 94.3% of vLLM, TTFT 70ms (theirs 66).
 Remaining map: K4 Ssnap (~0.4ms), FA3 batched favl twin (serving), gap floor
 (segments re-refuted by construction — add_rms fusion made them 1-kernel spans).
+
+**FA3 batched vl twin (2026-07-27, round 31): +0.7% batched (5/5, median
+20993 vs 20850), gates green.** bw24_fa3_vl: per-seq tensor maps BY VALUE
+(3 x 8 x 128B param structs), grid.z = seq over the same v11 body — the last
+mma-favl consumer replaced. Serving FA now wgmma/TMA end to end. (Ops note:
+mid-round the box went unreachable — ISP rotated the egress IP; SG rule
+updated 147.235.193.113 -> 79.177.129.234, old rule revoked.)

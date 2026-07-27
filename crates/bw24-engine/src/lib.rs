@@ -464,12 +464,20 @@ impl Drop for PinnedStage {
 /// x 256 threads = 65536 threads covering the 248K-vocab scan in ~4 strided loads/thread.
 pub const ARGMAX_NB: usize = 256;
 
+/// crate-visible alias for the batched FA3 shim entry (hybrid_forward's batch arm).
+pub(crate) use bw24_fa3_vl as fa3_vl_raw;
+
 unsafe extern "C" {
     /// FA3 v10 shim (cu/fa3_prefill.cu): TMA-swizzled wgmma FA, fresh causal hd256.
     fn bw24_fa3_prefill(q16: *const core::ffi::c_void, k16: *const core::ffi::c_void,
                         v16: *const core::ffi::c_void, o: *mut f32,
                         t: i32, h: i32, hkv: i32, d: i32, scale: f32,
                         stream: *mut core::ffi::c_void) -> i32;
+    /// batched varlen twin: host arrays of device pointers per seq (B <= 8).
+    pub(crate) fn bw24_fa3_vl(q16s: *const *const core::ffi::c_void, k16s: *const *const core::ffi::c_void,
+                   v16s: *const *const core::ffi::c_void, os: *const *mut f32,
+                   ts: *const i32, b: i32, h: i32, hkv: i32, d: i32, scale: f32,
+                   stream: *mut core::ffi::c_void) -> i32;
 }
 
 /// STAGE-2 GROUPED DECODE: 8 expert weight-block device pointers passed BY VALUE as one kernel
@@ -7756,6 +7764,18 @@ impl Engine {
             o: self.uninit(D * h * t)?,
             t, nc,
         })
+    }
+
+    /// view-source twin of f32_to_bf16 (the batched FA3 v mirror reads a concat view).
+    pub fn f32_to_bf16_v(&self, x: &cudarc::driver::CudaView<f32>, dst: &mut CudaSlice<u8>, n: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("f32_to_bf16_bulk");
+        let ni = n as i64;
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
     }
 
     /// f32 -> bf16 bulk mirror into a caller buffer (the K4/K5 operand mirrors).

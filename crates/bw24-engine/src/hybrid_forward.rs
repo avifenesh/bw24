@@ -973,14 +973,59 @@ impl HybridModel {
                             let n = t * n_head_kv * head_dim;
                             mirrors.push((e.alloc_u8_uninit(n * 2)?, e.alloc_u8_uninit(n * 2)?));
                         }
-                        let fargs: Vec<crate::FaSeqVl> = (0..b).map(|s| crate::FaSeqVl {
-                            q: e.addr_f32(&aps[s].qn), k16: e.addr_u8(&mirrors[s].0),
-                            v16: e.addr_u8(&mirrors[s].1), o: e.addr_f32(&attns[s]),
-                            kf: e.addr_f32(&aps[s].kn),
-                            vf: e.addr_f32v(&g3[2].slice(offs[s] * vf_w..(offs[s] + ts[s]) * vf_w)),
-                            t: ts[s] as i32, pad: 0,
-                        }).collect();
-                        e.fa_prefill_vl8(&fargs, head_dim, n_head, n_head_kv, fa_scale)?;
+                        // FA3 batched twin (round 31): TMA-swizzled wgmma vl when the
+                        // promoted single-seq config is on; else the mma favl.
+                        let fa3_on = match std::env::var("BW24_FA3").as_deref() {
+                            Ok("0") => false,
+                            Ok("1") => true,
+                            _ => cfg!(bw24_hopper_mma),
+                        };
+                        if fa3_on {
+                            let mut q16s = Vec::with_capacity(b);
+                            let mut v16s = Vec::with_capacity(b);
+                            for s in 0..b {
+                                let t = ts[s];
+                                let mut q16 = e.alloc_u8_uninit(t * n_head * head_dim * 2)?;
+                                e.f32_to_bf16(&aps[s].qn, &mut q16, t * n_head * head_dim)?;
+                                let mut k16 = e.alloc_u8_uninit(t * n_head_kv * head_dim * 2)?;
+                                e.f32_to_bf16(&aps[s].kn, &mut k16, t * n_head_kv * head_dim)?;
+                                let mut v16 = e.alloc_u8_uninit(t * n_head_kv * head_dim * 2)?;
+                                e.f32_to_bf16_v(&g3[2].slice(offs[s] * vf_w..(offs[s] + t) * vf_w),
+                                                &mut v16, t * n_head_kv * head_dim)?;
+                                q16s.push(q16);
+                                v16s.push((k16, v16));
+                            }
+                            let mut qp = [core::ptr::null::<core::ffi::c_void>(); 8];
+                            let mut kp = qp;
+                            let mut vp = qp;
+                            let mut op = [core::ptr::null_mut::<f32>(); 8];
+                            let mut tsv = [0i32; 8];
+                            for s in 0..b {
+                                qp[s] = e.addr_u8(&q16s[s]) as *const core::ffi::c_void;
+                                kp[s] = e.addr_u8(&v16s[s].0) as *const core::ffi::c_void;
+                                vp[s] = e.addr_u8(&v16s[s].1) as *const core::ffi::c_void;
+                                op[s] = e.addr_f32(&attns[s]) as *mut f32;
+                                tsv[s] = ts[s] as i32;
+                            }
+                            let rc = unsafe {
+                                crate::fa3_vl_raw(qp.as_ptr(), kp.as_ptr(), vp.as_ptr(), op.as_ptr(),
+                                                  tsv.as_ptr(), b as i32, n_head as i32,
+                                                  n_head_kv as i32, head_dim as i32, fa_scale,
+                                                  e.stream().cu_stream() as *mut core::ffi::c_void)
+                            };
+                            if rc != 0 {
+                                return Err(format!("bw24_fa3_vl rc={rc}").into());
+                            }
+                        } else {
+                            let fargs: Vec<crate::FaSeqVl> = (0..b).map(|s| crate::FaSeqVl {
+                                q: e.addr_f32(&aps[s].qn), k16: e.addr_u8(&mirrors[s].0),
+                                v16: e.addr_u8(&mirrors[s].1), o: e.addr_f32(&attns[s]),
+                                kf: e.addr_f32(&aps[s].kn),
+                                vf: e.addr_f32v(&g3[2].slice(offs[s] * vf_w..(offs[s] + ts[s]) * vf_w)),
+                                t: ts[s] as i32, pad: 0,
+                            }).collect();
+                            e.fa_prefill_vl8(&fargs, head_dim, n_head, n_head_kv, fa_scale)?;
+                        }
                         for (s, attn) in attns.into_iter().enumerate() {
                             let (attn_g, ag16) = self.full_attn_prime_post_fa(
                                 e, attn, &aps[s].gate, ts[s], n_head, head_dim)?;
