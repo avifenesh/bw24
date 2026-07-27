@@ -1698,10 +1698,14 @@ impl HybridModel {
             // graph-decode-gate 256 steps x 16 buckets BIT-IDENTICAL. This REFUTES the
             // 2026-07-15 "-11%" qwen-graph verdict — it predated the exec-update rework
             // and the 07-26 FA family (stale-verdict law, round 35). =0 reverts.
+            // ARCH-GATED default (rig-divergence law): +16% measured on H100 x5; the
+            // sm_120a rig carries a 2026-07-15 "-11%" measurement for this route — the
+            // naked sm_120a build keeps its tuned dc-eager default. BW24_GEN_GRAPH=1
+            // opts in anywhere; =0 reverts anywhere.
             let gen_graph = match std::env::var("BW24_GEN_GRAPH").as_deref() {
                 Ok("1") => true,
                 Ok("0") => false,
-                _ => budget >= 256,
+                _ => budget >= 256 && cfg!(bw24_hopper_mma),
             };
             if gen_graph && budget > 0 {
                 let head_dim = self.cfg.head_dim_k as usize;

@@ -1441,8 +1441,10 @@ impl HybridModel {
             e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         }
         let mut q_l2 = e.uninit(d_state * hk * t)?;
-        // mirror-fold (round 35): q's bf16 twin (wgmma K45/K2 A-operand) in-epilogue too
-        let qb16 = if Engine::l2_v2_on(d_state) {
+        // mirror-fold (round 35): q's bf16 twin (wgmma K45/K2 A-operand) in-epilogue too.
+        // Emitted only where a consumer exists (the wgmma config) — on other arches the
+        // alloc + epilogue stores would be pure waste.
+        let qb16 = if Engine::l2_v2_on(d_state) && e.gdn_wgmma_on(32) {
             let mut qb = e.alloc_u8_uninit(d_state * hk * t * 2)?;
             e.l2_norm_pp(&q_g, &mut q_l2, Some(&mut qb), d_state, hk * t, eps)?;
             Some(qb)
