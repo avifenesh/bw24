@@ -1828,3 +1828,17 @@ math for Q8_0 (int8 x int8 -> i32 accumulate, scale at epilogue; the "W4A8 needs
 on Hopper" verdict aa8b51d pointed here). THE ARC THAT CROSSES THE PREFILL LANE: s8
 wgmma prefill GEMMs with per-32-block scale epilogues (the wgmma toolkit + canonical
 pairings from this session apply directly; s8 kind = m64n64k32.s32.s8.s8).
+
+## s8 wgmma pairing CRACKED — the canonical family is complete (2026-07-27)
+
+`wgmma.mma_async.sync.aligned.m64n64k32.s32.s8.s8` K-major canonical: element (r, kk of
+k32-step st) at `st*2048 + (r/8)*256 + (kk/16)*128 + (r%8)*16 + (kk%16)` — EXACT match
+0/4096 (integer accumulate, probe_s8.cu F=1). Descriptor (lead=128, stride=256) unchanged.
+THE FAMILY LAW: canonical core-matrix staging is byte-geometric — 16-BYTE row segments in
+128B sub-blocks in 2048B k-steps, independent of element width: bf16 k16 (8 elems/segment),
+tf32 k8 (4), s8 k32 (16). One formula, three kinds, all probed on this toolchain.
+Arc unlocked: s8 prefill GEMMs (m=2048-class) with per-32-block Q8_0 scale epilogues —
+exact math, targeting the same INT8 TC throughput class as vLLM's Lt/nvjet stack (the
+27% prefill gap). Pieces in hand: TMA swizzled loads (FA3), s8 pairing (here), block-scale
+dequant (MMQ precedent), wgmma_common.cuh. Next: GEMM harness (bench_s8_gemm.cu) vs the
+shipped fp16-mirror nvjet numbers at the prefill shapes (m=2048, n/k = 4096/11008-class).
