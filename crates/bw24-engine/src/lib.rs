@@ -508,6 +508,17 @@ unsafe impl cudarc::driver::DeviceRepr for GdnSeqVl {}
 pub struct GdnVl8(pub [GdnSeqVl; 8]);
 unsafe impl cudarc::driver::DeviceRepr for GdnVl8 {}
 
+/// task #22: per-seq wgmma-fused extras (CUDA `gdnw_t`/`gdnwvl_t`) — qb16 mirror +
+/// pre-masked Pb16, riding NEXT TO GdnSeqVl so the base struct stays untouched.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GdnWVl { pub qb16: u64, pub pb16: u64 }
+unsafe impl cudarc::driver::DeviceRepr for GdnWVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GdnWVl8(pub [GdnWVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for GdnWVl8 {}
+
 /// task #18 increment 3: per-seq PREP/TAIL args (CUDA `gdnprep_t`/`gdnprepvl_t`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -566,6 +577,8 @@ pub struct GdnChunkBufs {
     pub wb16: CudaSlice<u8>,
     pub y16: CudaSlice<u8>,
     pub ssnap16: CudaSlice<u8>,
+    pub qb16: CudaSlice<u8>,
+    pub pb16: CudaSlice<u8>,
     pub o: CudaSlice<f32>,
     pub t: usize,
     pub nc: usize,
@@ -7703,6 +7716,17 @@ impl Engine {
             }
     }
 
+    /// task #22: whether the fused K4+K5 (+K2) wgmma path serves (nested inside the
+    /// mma config; same per-call env read discipline).
+    pub fn gdn_wgmma_on(&self, c: usize) -> bool {
+        self.gdn_mma_enabled(c)
+            && match std::env::var("BW24_GDN_WGMMA").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            }
+    }
+
     /// task #18 conv-fuse: carried-ring conv + SiLU + GDN repack in ONE pass (the
     /// conv_out intermediate and its transposed re-read disappear — 11.8ms of the
     /// T=2048 prime). Ring update stays the separate follow-up launch (pad-aware).
@@ -7773,6 +7797,8 @@ impl Engine {
             wb16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
             y16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
             ssnap16: self.alloc_u8_uninit(nc * h * D * D * 2)?,
+            qb16: self.alloc_u8_uninit(t * hk * D * 2)?,
+            pb16: self.alloc_u8_uninit(nc * h * c * c * 2)?,
             o: self.uninit(D * h * t)?,
             t, nc,
         })
@@ -7804,7 +7830,8 @@ impl Engine {
 
     /// task #18 increment 2: varlen K1+K2+K3 — three launches run every sequence's
     /// cumgate/attn/solve (per-block math identical to the per-seq kernels).
-    pub fn gdn_chunk_k123_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, hk: usize)
+    pub fn gdn_chunk_k123_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, hk: usize,
+                              wq: Option<&GdnWVl8>)
                               -> Result<(), Box<dyn std::error::Error>> {
         let b = seqs.len();
         assert!(b >= 1 && b <= 8, "gdn_chunk_k123_vl8: 1..=8 sequences");
@@ -7821,7 +7848,13 @@ impl Engine {
             unsafe { lb.launch(cfg)?; }
         }
         let hki = hk as i32;
-        {
+        if let Some(w) = wq {   // K2-wgmma vl twin (writes A + pre-masked Pb16)
+            let f = self.func("gdn_k2_wgmma_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(w).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        } else {
             let f = self.func("gdn_chunk_attn_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut lb = self.gpu.stream.launch_builder(&f);
@@ -7980,7 +8013,8 @@ impl Engine {
     /// task #18: the varlen K4+K5 pair — TWO launches run every sequence's state pass
     /// and output pass (grid gains a seq dim; per-block math identical to the per-seq
     /// launches, so this is strictly bit-gateable against them).
-    pub fn gdn_chunk_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, scale: f32, hk: usize)
+    pub fn gdn_chunk_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, scale: f32, hk: usize,
+                         wq: Option<&GdnWVl8>)
                          -> Result<(), Box<dyn std::error::Error>> {
         const NSPLIT: u32 = 4;
         let b = seqs.len();
@@ -7991,6 +8025,16 @@ impl Engine {
         let (hi, ci) = (n_head as i32, 32i32);
         let max_nc = seqs.iter().map(|a| a.nc).max().unwrap() as u32;
         let hki = hk as i32;
+        if let Some(w) = wq {
+            // K4+K5 fused wgmma vl twin: one launch, Y/Ssnap never materialized.
+            let f = self.func("gdn_k45_wgmma_vl");
+            let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(w).arg(&scale).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+            let _ = max_nc;
+            return Ok(());
+        }
         {
             let f = self.func("gdn_chunk_state_mma_vl");
             let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };

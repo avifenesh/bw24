@@ -1567,8 +1567,19 @@ impl HybridModel {
         if !Engine::l2_v2_on(d_state) {
             e.gdn_mirror_vl8(&args, num_v, 0, hk)?;
         }
-        e.gdn_chunk_k123_vl8(&args, num_v, hk)?;
-        e.gdn_chunk_vl8(&args, num_v, scale, hk)?;
+        // task #22: wgmma-fused vl twins — qb16 mirrors + GdnWVl8 side-struct.
+        let wq8: Option<crate::GdnWVl8> = if e.gdn_wgmma_on(c) {
+            for s in 0..b {
+                e.f32_to_bf16(&sb[s].q_l2, &mut pres[s].qb16, d_state * hk * ts[s])?;
+            }
+            let mut wa = [crate::GdnWVl::default(); 8];
+            for s in 0..b {
+                wa[s] = crate::GdnWVl { qb16: e.addr_u8(&pres[s].qb16), pb16: e.addr_u8(&pres[s].pb16) };
+            }
+            Some(crate::GdnWVl8(wa))
+        } else { None };
+        e.gdn_chunk_k123_vl8(&args, num_v, hk, wq8.as_ref())?;
+        e.gdn_chunk_vl8(&args, num_v, scale, hk, wq8.as_ref())?;
         if f16o {
             e.gdn_tail_vl8(&prep_args, la.ssm_norm.float_data(), d_state, num_v, eps)?;
         }

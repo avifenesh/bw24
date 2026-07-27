@@ -2183,19 +2183,17 @@ extern "C" __global__ void gdn_p_bf16_masked(const float* __restrict__ p,
     out[i] = (j2 <= j) ? __float2bfloat16(p[i]) : __float2bfloat16(0.0f);
 }
 
-extern "C" __global__ void __launch_bounds__(256, 1)
-gdn_k45_wgmma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
-              const float* __restrict__ beta,
-              const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
-              const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ Pb16,
-              float* __restrict__ o, float scale,
-              const float* __restrict__ state_in, float* __restrict__ state_out,
-              int H, int T, int C, int hk) {
+__device__ __forceinline__ void
+gdn_k45_wgmma_body(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+                   const float* __restrict__ beta,
+                   const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+                   const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ Pb16,
+                   float* __restrict__ o, float scale,
+                   const float* __restrict__ state_in, float* __restrict__ state_out,
+                   int H, int T, int C, int hk, int h, int col0) {
 #ifdef BW24_K45_REAL
     constexpr int D = GDN_D;
-    const int h = blockIdx.x;
     const int hq = h % hk;
-    const int col0 = blockIdx.y * 32;
     const int tid = threadIdx.x;
     const int wg = tid >> 7, wtid = tid & 127;
     const int warp = wtid >> 5, lane = tid & 31;
@@ -2418,22 +2416,47 @@ gdn_k45_wgmma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ 
 #endif  // BW24_K45_REAL
 }
 
+extern "C" __global__ void __launch_bounds__(256, 1)
+gdn_k45_wgmma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+              const float* __restrict__ beta,
+              const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+              const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ Pb16,
+              float* __restrict__ o, float scale,
+              const float* __restrict__ state_in, float* __restrict__ state_out,
+              int H, int T, int C, int hk) {
+    gdn_k45_wgmma_body(kb16, gcum, beta, U, Wb16, qb16, Pb16, o, scale, state_in, state_out,
+                       H, T, C, hk, blockIdx.x, blockIdx.y * 32);
+}
+
+// varlen wgmma args (qb16/pb16 ride NEXT TO gdnseq_t — by value, Rust GdnWVl/GdnWVl8)
+typedef struct { const __nv_bfloat16* qb16; __nv_bfloat16* pb16; } gdnw_t;
+typedef struct { gdnw_t s[8]; } gdnwvl_t;
+
+extern "C" __global__ void __launch_bounds__(256, 1)
+gdn_k45_wgmma_vl(gdnvl_t v, gdnwvl_t wq, float scale, int H, int C, int hk) {
+    const gdnseq_t a = v.s[blockIdx.z];
+    const gdnw_t w = wq.s[blockIdx.z];
+    gdn_k45_wgmma_body(a.kb16, a.gcum, a.beta, a.U, a.Wb16, w.qb16, w.pb16, a.o, scale,
+                       a.state_in, a.state_out, H, a.T, C, hk, blockIdx.x, blockIdx.y * 32);
+}
+
 
 // K2 wgmma (BW24_GDN_WGMMA path): A[j,i] = b_i e^{gj-gi} (k_j.k_i) for i<j and
 // Pb16[j,i] = b_i e^{gj-gi} (q_j.k_i) for i<=j (zero elsewhere — the k45 staging
 // contract, replacing gdn_p_bf16_masked). Two 32x32x128 GEMMs per (chunk, head);
 // canonical A and B layouts coincide, so ONE staged k tile serves as A of k.k^T and
 // B of both. Operands ride cp.async straight from the kb16/qb16 mirrors.
-extern "C" __global__ void __launch_bounds__(128, 1)
-gdn_k2_wgmma(const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ kb16,
-             const float* __restrict__ gcum, const float* __restrict__ beta,
-             float* __restrict__ A, __nv_bfloat16* __restrict__ Pb16,
-             int H, int T, int C, int hk) {
+__device__ __forceinline__ void
+gdn_k2_wgmma_body(const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ kb16,
+                  const float* __restrict__ gcum, const float* __restrict__ beta,
+                  float* __restrict__ A, __nv_bfloat16* __restrict__ Pb16,
+                  int H, int T, int C, int hk, int c, int h) {
 #ifdef BW24_K45_REAL
     constexpr int D = GDN_D;
-    const int c = blockIdx.x, h = blockIdx.y, hq = h % hk;
+    const int hq = h % hk;
     const int t0 = c * C;              // C == 32 (dispatch contract)
     const int Cc = min(C, T - t0);
+    if (Cc <= 0) return;               // varlen: shorter seqs no-op past their nc
     const int tid = threadIdx.x;
     const int warp = tid >> 5, lane = tid & 31;
     const int fr = lane >> 2, fc = (lane & 3) * 2;
@@ -2492,4 +2515,20 @@ gdn_k2_wgmma(const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __rest
         }
     }
 #endif  // BW24_K45_REAL
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+gdn_k2_wgmma(const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ kb16,
+             const float* __restrict__ gcum, const float* __restrict__ beta,
+             float* __restrict__ A, __nv_bfloat16* __restrict__ Pb16,
+             int H, int T, int C, int hk) {
+    gdn_k2_wgmma_body(qb16, kb16, gcum, beta, A, Pb16, H, T, C, hk, blockIdx.x, blockIdx.y);
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1)
+gdn_k2_wgmma_vl(gdnvl_t v, gdnwvl_t wq, int H, int C, int hk) {
+    const gdnseq_t a = v.s[blockIdx.z];
+    const gdnw_t w = wq.s[blockIdx.z];
+    gdn_k2_wgmma_body(w.qb16, a.kb16, a.gcum, a.beta, a.a, w.pb16,
+                      H, a.T, C, hk, blockIdx.x, blockIdx.y);
 }

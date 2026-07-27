@@ -1650,3 +1650,16 @@ IDENTICAL; decode-batch green. Lane A/B interleaved x5 at pp2017: off 25648.9 ->
 26304.3 tok/s = +2.56%, on wins 5/5 (fusion alone was +0.74%; K2 added ~+1.8%).
 Chunk stack remaining: solve32 92µs (sequential-triangular, wgmma-hostile), conv ~160µs,
 k45 marginal (sO exchange, O store). Official-lane estimate: 94.3% -> ~96.7% of vLLM.
+
+## Varlen twins of the wgmma-fused pair: batched prime +3.8% (2026-07-27)
+
+`gdn_k45_wgmma_vl` + `gdn_k2_wgmma_vl` (bodies refactored out of the per-seq kernels;
+per-block math identical -> the vl-vs-per-seq relationship stays strictly bit-gateable).
+Per-seq wgmma extras ride a NEW side-struct `gdnw_t/gdnwvl_t` (Rust GdnWVl/GdnWVl8) so
+gdnseq_t stays untouched; GdnChunkBufs grows qb16/pb16; the batch driver builds qb16
+mirrors and hands Option<&GdnWVl8> through k123_vl8/chunk_vl8 (K2-vl replaces attn_vl;
+one fused launch replaces state_mma_vl + output_mma_vl; Y/Ssnap dead on this path too).
+Gates: prime-batch (B=3 uneven lengths — vl tails), decode-batch, kernel-check ALL GREEN.
+Batched prime interleaved x5 (--bench 1024, B=3): off 27074.7/27242.4/27288.3/27303.9/
+27307.4 -> on 28442.5/28041.9/28084.6/28323.5/28342.2 = +3.8% mean, on wins 5/5 (larger
+than single-seq's +2.56%: xB launch dilution also dies).
