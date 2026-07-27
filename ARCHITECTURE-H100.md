@@ -1688,3 +1688,17 @@ Solve remaining route: tensor-core inverse product (I−L)(I+L²)(I+L⁴)(I+L⁸
 needs tf32 wgmma probe first (bf16 through 5 chained products is a numerics risk).
 K45 remains the top kernel item (339µs/layer = 11% of lane): TMA swizzled-atom staging
 (FA3-proven descriptors) for sW/sQ + exchange redesign is the next arc.
+
+## v6 (exchange-free duplicate-full-k) REFUTED (2026-07-27)
+
+Hypothesis: tensor pipe at ~16% makes duplicating FULL-k step A + phase 1 on both wgs
+free -> exchange machinery (sS/sO overlays + 2 barriers) dies, epilogue/O-store split by
+column halves. Measured: 91.0 -> 114.1µs (in-band, bit-same class). Split commit groups
+with wait<1> under the epilogue changed nothing (114.2 -> 114.1). Mechanism: doubling
+per-wg wgmma chains doubles smem OPERAND traffic (both wgs stream all of sM/sQ instead
+of halves) — operand bandwidth, not accumulator waits, prices small-tile wgmma here.
+ptxas C7514/C7517 emitted on the dual-chain form. The v5 exchange design is the local
+optimum; current k45 phase map: O store 13.3, sO exchange 10.8, q cp.async 8.7, staging
+~0 (hidden), epilogue ~0 (uPre). Next candidates: tf32-wgmma probe (solve Route A
+prerequisite), FA3-style TMA/mbarrier ring rebuild of the chunk loop (high effort, form
+risk per the 10 refutations logged this arc).

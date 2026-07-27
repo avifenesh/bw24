@@ -616,6 +616,241 @@ gdn_k45_wgmma_v5(const __nv_bfloat16* __restrict__ kb16, const float* __restrict
     }
 }
 
+
+// ---- v6: exchange-free — BOTH wgs run FULL-k step A + phase 1 (tensor pipe ~16%,
+// duplication is free) -> no partial exchange, no sS/sO overlays, 5 -> 3 barriers.
+// Epilogue + O store split by column halves (wg0: n8 0..1 = cl 0..15, wg1: n8 2..3).
+// Step B / Macc stay per-i-half (the register-resident state partition, untouched).
+extern "C" __global__ void __launch_bounds__(256, 1)
+gdn_k45_wgmma_v6(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+                 const float* __restrict__ beta,
+                 const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+                 float* __restrict__ Y,
+                 const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ Pb16,
+                 float* __restrict__ o, float scale,
+                 const float* __restrict__ state_in, float* __restrict__ state_out,
+                 int H, int T, int C) {
+    constexpr int D = 128;
+    const int h = blockIdx.x;
+    const int col0 = blockIdx.y * 32;
+    const int tid = threadIdx.x;
+    const int wg = tid >> 7, wtid = tid & 127;
+    const int warp = wtid >> 5, lane = tid & 31;
+    const int fr = lane >> 2, fc = (lane & 3) * 2;
+    const int ih = wg * 64;
+    const int nlo = wg * 2;                        // this wg's n8 quads: {nlo, nlo+1}
+
+    __shared__ __align__(128) __nv_bfloat16 sM[2][64 * 64];
+    __shared__ __align__(128) __nv_bfloat16 sW[64 * 128];
+    __shared__ __align__(128) __nv_bfloat16 sK[2][64 * 32];
+    __shared__ __align__(128) __nv_bfloat16 sQ[2][64 * 64];
+    __shared__ __align__(128) __nv_bfloat16 sP2[64 * 32];
+    __shared__ __align__(128) __nv_bfloat16 sYs[64 * 32];
+    __shared__ float gk[32];
+
+    float Macc[32];
+    #pragma unroll
+    for (int q = 0; q < 32; q += 4) {
+        int n8 = q / 4;
+        int cll = warp * 16 + fr;
+        int il = fc + n8 * 8;
+        bool re0 = cll < 32, re1 = cll + 8 < 32;
+        Macc[q + 0] = re0 ? state_in[((size_t)h * D + col0 + cll) * D + ih + il + 0] : 0.0f;
+        Macc[q + 1] = re0 ? state_in[((size_t)h * D + col0 + cll) * D + ih + il + 1] : 0.0f;
+        Macc[q + 2] = re1 ? state_in[((size_t)h * D + col0 + cll + 8) * D + ih + il + 0] : 0.0f;
+        Macc[q + 3] = re1 ? state_in[((size_t)h * D + col0 + cll + 8) * D + ih + il + 1] : 0.0f;
+    }
+
+    const int NC = (T + C - 1) / C;
+    for (int seg = tid; seg < 32 * (D / 8); seg += 256) {
+        int r = 32 + seg / (D / 8), s8 = seg % (D / 8);
+        *(uint4*)((char*)sW + canon_off(s8 / 2, r, (s8 % 2) * 8)) = make_uint4(0u, 0u, 0u, 0u);
+    }
+    for (int seg = tid; seg < 32 * 4; seg += 256) {
+        int r = 32 + seg / 4, s8 = seg % 4;
+        *(uint4*)((char*)sP2 + canon_off(s8 / 2, r, (s8 % 2) * 8)) = make_uint4(0u, 0u, 0u, 0u);
+    }
+    for (int c = 0; c < NC; c++) {
+        const int t0 = c * C;
+        const int Cc = min(C, T - t0);
+        #pragma unroll
+        for (int q = 0; q < 32; q += 4) {
+            int n8 = q / 4;
+            int cll = warp * 16 + fr;
+            int il = fc + n8 * 8;
+            if (cll < 32) {
+                *(__nv_bfloat162*)((char*)sM[wg] + canon_off(il / 16, cll, il % 16)) =
+                    __floats2bfloat162_rn(Macc[q + 0], Macc[q + 1]);
+                *(__nv_bfloat162*)((char*)sM[wg] + canon_off(il / 16, cll + 8, il % 16)) =
+                    __floats2bfloat162_rn(Macc[q + 2], Macc[q + 3]);
+            }
+        }
+        for (int seg = tid; seg < 32 * (D / 8); seg += 256) {
+            int r = seg / (D / 8), s8 = seg % (D / 8);
+            int st = s8 / 2, kk8 = (s8 % 2) * 8;
+            unsigned dst = (unsigned)__cvta_generic_to_shared((char*)sW + canon_off(st, r, kk8));
+            const void* src = Wb16 + (((size_t)c * H + h) * C + r) * D + st * 16 + kk8;
+            asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" :: "r"(dst), "l"(src), "r"((r < Cc) ? 16 : 0));
+        }
+        asm volatile("cp.async.commit_group;");
+        {
+            const float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
+            for (int idx = wtid; idx < 32 * 8; idx += 128) {
+                int j = idx / 8, i8l = (idx % 8) * 8;
+                float gkj = 0.0f;
+                __nv_bfloat16 kv8[8];
+                if (j < Cc) {
+                    gkj = expf(gC - gcum[(size_t)(t0 + j) * H + h]) * beta[(size_t)(t0 + j) * H + h];
+                    *(uint4*)kv8 = *(const uint4*)(kb16 + ((size_t)(t0 + j) * H + h) * D + ih + i8l);
+                } else *(uint4*)kv8 = make_uint4(0u, 0u, 0u, 0u);
+                #pragma unroll
+                for (int e2 = 0; e2 < 8; e2++)
+                    *(__nv_bfloat16*)((char*)sK[wg] + canon_off(j >> 4, i8l + e2, j & 15)) =
+                        __float2bfloat16(gkj * __bfloat162float(kv8[e2]));
+            }
+        }
+        for (int seg = tid; seg < 2 * 32 * (D / 16); seg += 256) {
+            int half = seg / 256, rem = seg % 256;
+            int j = rem / 8, s8 = rem % 8;
+            int st = s8 / 2, kk8 = (s8 % 2) * 8;
+            unsigned dst = (unsigned)__cvta_generic_to_shared((char*)sQ[half] + canon_off(st, j, kk8));
+            const void* src = qb16 + ((size_t)(t0 + j) * H + h) * D + half * 64 + st * 16 + kk8;
+            asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" :: "r"(dst), "l"(src), "r"((j < Cc) ? 16 : 0));
+        }
+        for (int seg = tid; seg < 32 * 4; seg += 256) {
+            int j = seg / 4, s8 = seg % 4;
+            unsigned dst = (unsigned)__cvta_generic_to_shared((char*)sP2 + canon_off(s8 / 2, j, (s8 % 2) * 8));
+            const void* src = Pb16 + (((size_t)c * H + h) * C + j) * C + (s8 / 2) * 16 + (s8 % 2) * 8;
+            asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;" :: "r"(dst), "l"(src), "r"((j < Cc) ? 16 : 0));
+        }
+        if (tid < 32) {
+            float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
+            gk[tid] = (tid < Cc) ? expf(gC - gcum[(size_t)(t0 + tid) * H + h]) * beta[(size_t)(t0 + tid) * H + h] : 0.0f;
+        }
+        asm volatile("cp.async.commit_group;");
+        // U prefetch: OWN column quads only (n8 = nlo..nlo+1)
+        float2 uPre[8];
+        {
+            const int j0p = warp * 16 + fr;
+            #pragma unroll
+            for (int qq = 0; qq < 2; qq++) {
+                int cl = fc + (nlo + qq) * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0p + pr * 8;
+                    uPre[qq * 2 + pr] = (j < Cc && cl < 32)
+                        ? *(const float2*)(U + (((size_t)c * H + h) * C + j) * D + col0 + cl)
+                        : make_float2(0.0f, 0.0f);
+                }
+            }
+        }
+        asm volatile("cp.async.wait_group 0;");
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+
+        // step A + phase 1: FULL k on BOTH wgs (8 k-steps over sM[0..1])
+        float acc[32], Oacc[32];
+        wgmma_fence();
+        for (int st = 0; st < 8; st++) {
+            unsigned long long da = make_desc((char*)sW + st * 2048, 128, 256);
+            unsigned long long db = make_desc((char*)sM[st >> 2] + (st & 3) * 2048, 128, 256);
+            wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+        }
+        wgmma_commit();
+        for (int st = 0; st < 8; st++) {
+            unsigned long long dq = make_desc((char*)sQ[st >> 2] + (st & 3) * 2048, 128, 256);
+            unsigned long long db = make_desc((char*)sM[st >> 2] + (st & 3) * 2048, 128, 256);
+            wgmma_m64n64k16_bf16(Oacc, dq, db, st == 0 ? 0 : 1);
+        }
+        wgmma_commit();
+        wgmma_wait<1>();                            // acc ready; phase-1 group still in flight
+        const float bC = expf(gcum[(size_t)(t0 + Cc - 1) * H + h]);
+        // epilogue on OWN column quads: Y + plain Y^T staging; then b_j scale (no sums)
+        {
+            const int j0 = warp * 16 + fr;
+            const float b0 = (j0 < Cc) ? expf(gcum[(size_t)(t0 + j0) * H + h]) : 0.0f;
+            const float b1 = (j0 + 8 < Cc) ? expf(gcum[(size_t)(t0 + j0 + 8) * H + h]) : 0.0f;
+            #pragma unroll
+            for (int qq = 0; qq < 2; qq++) {
+                int n8 = nlo + qq;
+                int q = n8 * 4;
+                int cl = fc + n8 * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0 + pr * 8;
+                    float yv0 = 0.0f, yv1 = 0.0f;
+                    if (j < Cc && cl < 32) {
+                        float2 u2 = uPre[qq * 2 + pr];
+                        yv0 = u2.x - acc[q + pr * 2 + 0];
+                        yv1 = u2.y - acc[q + pr * 2 + 1];
+                        *(float2*)(Y + (((size_t)c * H + h) * C + j) * D + col0 + cl) = make_float2(yv0, yv1);
+                    }
+                    if (j0 < 32 && cl < 32) {
+                        *(__nv_bfloat16*)((char*)sYs + canon_off(j / 16, cl + 0, j % 16)) = __float2bfloat16(yv0);
+                        *(__nv_bfloat16*)((char*)sYs + canon_off(j / 16, cl + 1, j % 16)) = __float2bfloat16(yv1);
+                    }
+                }
+            }
+            wgmma_wait<0>();                        // phase-1 done under the epilogue
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                Oacc[q + 0] *= b0; Oacc[q + 1] *= b0;
+                Oacc[q + 2] *= b1; Oacc[q + 3] *= b1;
+            }
+        }
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+        // step B (per-wg i-half, Macc) + phase 2 (full, both wgs)
+        #pragma unroll
+        for (int q = 0; q < 32; q++) Macc[q] *= bC;
+        wgmma_fence();
+        for (int st = 0; st < 2; st++) {
+            unsigned long long da = make_desc((char*)sYs + st * 2048, 128, 256);
+            unsigned long long db = make_desc((char*)sK[wg] + st * 2048, 128, 256);
+            wgmma_m64n64k16_bf16(Macc, da, db, 1);
+        }
+        for (int st = 0; st < 2; st++) {
+            unsigned long long da = make_desc((char*)sP2 + st * 2048, 128, 256);
+            unsigned long long db = make_desc((char*)sYs + st * 2048, 128, 256);
+            wgmma_m64n64k16_bf16(Oacc, da, db, 1);
+        }
+        wgmma_commit();
+        wgmma_wait<0>();
+        // O store: OWN column quads
+        {
+            const int j0 = warp * 16 + fr;
+            #pragma unroll
+            for (int qq = 0; qq < 2; qq++) {
+                int n8 = nlo + qq;
+                int q = n8 * 4;
+                int cl = fc + n8 * 8;
+                #pragma unroll
+                for (int pr = 0; pr < 2; pr++) {
+                    int j = j0 + pr * 8;
+                    if (j < Cc && cl < 32)
+                        *(float2*)(o + ((size_t)(t0 + j) * H + h) * D + col0 + cl) =
+                            make_float2(scale * Oacc[q + pr * 2 + 0], scale * Oacc[q + pr * 2 + 1]);
+                }
+            }
+        }
+        __syncthreads();
+    }
+    #pragma unroll
+    for (int q = 0; q < 32; q += 4) {
+        int n8 = q / 4;
+        int cll = warp * 16 + fr;
+        int il = fc + n8 * 8;
+        if (cll < 32) {
+            state_out[((size_t)h * D + col0 + cll) * D + ih + il + 0] = Macc[q + 0];
+            state_out[((size_t)h * D + col0 + cll) * D + ih + il + 1] = Macc[q + 1];
+        }
+        if (cll + 8 < 32) {
+            state_out[((size_t)h * D + col0 + cll + 8) * D + ih + il + 0] = Macc[q + 2];
+            state_out[((size_t)h * D + col0 + cll + 8) * D + ih + il + 1] = Macc[q + 3];
+        }
+    }
+}
+
 // ---- v2: FULL K4 chain — CTA = (head, 64-col block); M(64col x 128i) lives in
 // acc[2 n-blocks... careful: step-B OUTPUT M'(col,i): m = col(64), n = i(128 = 2 n64)
 // -> Macc[2][32]. Step A consumes M as B (n = col 64, k = i 128) via a per-chunk
@@ -1036,6 +1271,32 @@ int main(int argc, char** argv) {
         CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
         CK(cudaEventElapsedTime(&ms, a, b2));
         printf("v5 timing: %.1fus/call (v4 K4-only above; fused replaces K4 + K5 + Ssnap traffic)\n", ms * 20.0f);
-        return (ok && ok4 && ok5) ? 0 : 1;
+
+        // ---- v6: exchange-free ----
+        CK(cudaMemset(dY, 0, nu * 4));
+        CK(cudaMemset(dO5, 0, nk * 4));
+        CK(cudaMemset(dso, 0, (size_t)H * D * D * 4));
+        gdn_k45_wgmma_v6<<<grid, 256>>>(dkb, dgc, dbt, dU, dwb, dY, dq5, dP5, dO5, scale5, dsi, dso, H, T, C);
+        CK(cudaGetLastError());
+        CK(cudaDeviceSynchronize());
+        CK(cudaMemcpy(hY2, dY, nu * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(hS2, dso, (size_t)H * D * D * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(hO5, dO5, nk * 4, cudaMemcpyDeviceToHost));
+        double mY6 = 0, mS6 = 0, mO6 = 0;
+        for (size_t i = 0; i < nu; i++) mY6 = fmax(mY6, fabs((double)hY2[i] - refY[i]));
+        for (size_t i = 0; i < (size_t)H * D * D; i++) mS6 = fmax(mS6, fabs((double)hS2[i] - refS[i]));
+        for (size_t i = 0; i < nk; i++) mO6 = fmax(mO6, fabs((double)hO5[i] - refO[i]));
+        double relY6 = mY6 / fmax(sY, 1e-3), relS6 = mS6 / fmax(sS, 1e-3), relO6 = mO6 / fmax(sO5, 1e-3);
+        int ok6 = relY6 < 3e-2 && relS6 < 3e-2 && relO6 < 3e-2;
+        printf("v6 nox: Y rel %.3e  state rel %.3e  O rel %.3e  %s (band 3e-2)\n",
+               relY6, relS6, relO6, ok6 ? "IN-BAND" : "OUT-OF-BAND");
+        for (int i = 0; i < 5; i++) gdn_k45_wgmma_v6<<<grid, 256>>>(dkb, dgc, dbt, dU, dwb, dY, dq5, dP5, dO5, scale5, dsi, dso, H, T, C);
+        CK(cudaDeviceSynchronize());
+        CK(cudaEventRecord(a));
+        for (int i = 0; i < 50; i++) gdn_k45_wgmma_v6<<<grid, 256>>>(dkb, dgc, dbt, dU, dwb, dY, dq5, dP5, dO5, scale5, dsi, dso, H, T, C);
+        CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
+        CK(cudaEventElapsedTime(&ms, a, b2));
+        printf("v6 timing: %.1fus/call\n", ms * 20.0f);
+        return (ok && ok4 && ok5 && ok6) ? 0 : 1;
     }
 }
