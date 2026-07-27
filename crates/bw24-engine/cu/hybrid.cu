@@ -1595,14 +1595,18 @@ gdn_k4_body(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gc
         // consumer and rounds them to bf16 anyway; writing bf16 directly is numerically
         // identical to the uncoupled chain and halves the K5-side traffic (harness: K5
         // 63.0 -> 35.3us). The f32 K4/K5 pair keeps f32 buffers (the seam switches both).
-        __half* sc_out = Ssnap + ((size_t)c * H + h) * D * D;
+        // Ssnap COLUMN-BLOCK layout (round 32): [4 col-blocks][128 rows][32 cols] per
+        // (c,h) — this CTA's 32-col slice writes one contiguous 8KB block (the fragment
+        // scatter's 256B-strided 4B pairs were the K4 tail slack). Same values; K5's
+        // ST stage reads the matching addressing below.
+        __half* sc_out = Ssnap + ((size_t)c * H + h) * D * D + (size_t)(col0 >> 5) * (D * 32);
         #pragma unroll
         for (int t4 = 0; t4 < 4; t4++)
             #pragma unroll
             for (int l = 0; l < 4; l++) {
                 int col = mh * 16 + fr + ((l < 2) ? 0 : 8);
                 int i = nq * 32 + t4 * 8 + fc + (l & 1);
-                sc_out[(size_t)i * D + col0 + col] = __float2half(Macc[t4].x[l]);
+                sc_out[(size_t)i * 32 + col] = __float2half(Macc[t4].x[l]);
                 Mb[col * MB_STR + i] = __float2bfloat16(Macc[t4].x[l]);
             }
         if (tid < Cc) {
@@ -1738,7 +1742,8 @@ gdn_k5_body(const float* __restrict__ q, const float* __restrict__ gcum,
         for (int idx = tid; idx < 32 * (D / 8); idx += 256) {                             \
             int r = idx / (D / 8), seg = idx % (D / 8);                                   \
             cp_async16_k5(&ts[buf_][r * D + seg * 8],                                     \
-                          stb + (size_t)((it0_) + r) * D + seg * 8, 16);                  \
+                          stb + (size_t)(seg >> 2) * (D * 32)                             \
+                              + (size_t)((it0_) + r) * 32 + (seg & 3) * 8, 16);           \
         }                                                                                 \
         cp_commit_k5();                                                                   \
     } while (0)

@@ -1516,3 +1516,14 @@ Remaining map: K4 Ssnap (~0.4ms), FA3 batched favl twin (serving), gap floor
 mma-favl consumer replaced. Serving FA now wgmma/TMA end to end. (Ops note:
 mid-round the box went unreachable — ISP rotated the egress IP; SG rule
 updated 147.235.193.113 -> 79.177.129.234, old rule revoked.)
+
+**K4 Ssnap column-block layout (2026-07-27, round 32): landed, honest-small
+(~0.3-0.4ms at the ms display floor; round-1 read 0.069 vs 0.070s).** The
+mapped fragment-scatter slack: Ssnap now [4 col-blocks][128r][32c] per (c,h)
+— each CTA's slice writes one contiguous 8KB block (was 256B-strided 4B
+pairs); K5's ST stage reads the matching addressing. Streams IDENTICAL vs the
+row layout; kernel-check (f64-truth K4/K5 pins) green; full battery green.
+The lane map is now EXHAUSTED above the ms floor: every mapped item landed or
+mechanism-refuted; the official lane stands at ~94.3-95% of vLLM with the
+residual being the int8-GEMM dtype edge (probed at m=512 AND m=2048, refused
+by the accuracy laws).
