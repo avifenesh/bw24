@@ -1527,3 +1527,20 @@ The lane map is now EXHAUSTED above the ms floor: every mapped item landed or
 mechanism-refuted; the official lane stands at ~94.3-95% of vLLM with the
 residual being the int8-GEMM dtype edge (probed at m=512 AND m=2048, refused
 by the accuracy laws).
+
+## GDN chunk stack wgmma arc OPENED (2026-07-27, round 32) — the lane-crosser
+The hook-forced re-examination under the FA3 learnings invalidates the
+"post-mma wall" comfort: the GDN chunk kernels run at SINGLE-DIGIT percent of
+tensor peak (K4: 4.3 GF/layer in 233us = 2%; K2/K3/K5 the same class) —
+12.4ms of the 70ms lane. They are small-GEMM chains with the exact structure
+FA3 cured (sequential tiles + state, independent heads): K2 = k.k^T + q.k^T,
+K4 = W.M + ys^T.k with M in accumulators, K5 = q.St + P.Y. The toolkit maps
+1:1: wgmma m64n64k16 packing 2 HEADS per m64 (heads independent — the
+parallelism wgmma needs), canonical/swizzled staging (descriptors cracked),
+TMA + expect-tx rings, and the state-in-fragments precedent K4-mma already
+established. Numeric class: bf16 wgmma = the PROMOTED mma config; the same
+state-carry battery arbitrates. Playbook: tools/bench_gdn_wgmma.cu harness ->
+K4 pair-of-heads tile proof -> chunk chain -> K5 -> K2 -> BW24_GDN_WGMMA seam.
+Target: 12.4 -> ~4-5ms => official lane ~62ms vs vLLM's 66 — THE CROSSING.
+Every primitive is already proven in-repo; this is assembly, per the FA3
+v10/v11 experience (which went from primitives to shipped in one block).
