@@ -1544,3 +1544,14 @@ K4 pair-of-heads tile proof -> chunk chain -> K5 -> K2 -> BW24_GDN_WGMMA seam.
 Target: 12.4 -> ~4-5ms => official lane ~62ms vs vLLM's 66 — THE CROSSING.
 Every primitive is already proven in-repo; this is assembly, per the FA3
 v10/v11 experience (which went from primitives to shipped in one block).
+
+**K4-wgmma design note (resolved before harness):** wgmma operands come from
+SMEM only — M cannot stay in accumulators across steps like the mma kernel
+does. Resolution: M lives as wgmma ACCUMULATOR for step B (+= ys^T.k,
+scale_d=1) and round-trips fragment->smem(bf16) once per chunk for step A's B
+operand — 32KB smem-local traffic per chunk (19TB/s on-SM, never HBM) = noise.
+Head packing in m64 is IMPOSSIBLE for step A (B = M is per-head); the m=32
+rows ride m64 with 50% pad — wgmma's 4-8x per-instruction rate over the mma
+path still nets 2-4x. Grid: (head, n-col-block) as today for fill. Harness
+first (tools/bench_gdn_wgmma.cu): CPU ref + current-kernel calibration +
+step-A tile proof with the proven canonical descriptors.
