@@ -1663,3 +1663,15 @@ Gates: prime-batch (B=3 uneven lengths — vl tails), decode-batch, kernel-check
 Batched prime interleaved x5 (--bench 1024, B=3): off 27074.7/27242.4/27288.3/27303.9/
 27307.4 -> on 28442.5/28041.9/28084.6/28323.5/28342.2 = +3.8% mean, on wins 5/5 (larger
 than single-seq's +2.56%: xB launch dilution also dies).
+
+## K3 solve32 arc — design note (2026-07-27, pre-work)
+
+Current: 92µs/layer f32 forward substitution, grid (NC, H) x 256 (1 col/thread, hist in
+regs, depth-32 serial FMA chain ~496 dependent FMAs). Latency-bound, not FLOP-bound.
+Route A (tensor-core): (I+L)^{-1} = (I−L)(I+L²)(I+L⁴)(I+L⁸)(I+L¹⁶) for strictly-lower
+L (nilpotent at 32): 4 squarings + 4 products (32x32x32) + 2 applications (32x128) per
+(chunk, head) — all GEMMs, 2016-way parallel. RISK: bf16 through 5 chained products vs
+f32 substitution — likely needs the tf32 wgmma kind (m64n64k8.f32.tf32, 4B canonical
+layout UNPROVEN on this toolchain — new probe required) or f32 accumulate splits.
+Route B (SIMT latency): merge 2 (c,h) pairs per CTA / raise CTAs-per-SM to cut waves.
+Decide by measuring wave count first (occupancy of gdn_chunk_solve32_f32).
