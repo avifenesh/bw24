@@ -1808,3 +1808,23 @@ prefill_done, so the chunked/batched prefill keeps its TTFT. Measured: 6.40 -> 2
 (2.3x), 400-token text IDENTICAL to pure eager, VALIDATE-H100 ALL GREEN, burst
 unchanged (27,364). Solo long-prompt long-budget serving now gets chunked prefill AND
 graph decode.
+
+## SAME-SESSION SHOWDOWN — scoreboard correction (2026-07-27, round 36)
+
+Back-to-back on-box, same hour, N=5 each (vLLM w8a8 then bw24, bench-vllm-vs-bw24 shape):
+- DECODE: bw24 220.5 vs vLLM 179.5 = 122.8% — BEATEN decisively (graph door landed today).
+- PREFILL: bw24 26,290 tok/s (pp1901; 2048-count convention 28,327) vs vLLM 35,986 = 73%
+  per-token (TTFT 72.3 vs 56.9ms = 79%). The 07-26 "31,036 retest" was the anomalous run;
+  today's N=5 reproduces the ORIGINAL ~35-36k tightly (35,781..36,602).
+CORRECTION: the "~96.7% of vLLM" scoreboard entries were computed against the stale 31k
+reference — the interleave law applies to the DENOMINATOR too. True single-seq prefill
+position: ~73-79%. All same-build relative gains this session stand as measured
+(interleaved); only the cross-engine ratio moves.
+CONSEQUENCE: the prefill gap is ~27%, not ~3% — dominated by the GEMM dtype edge (their
+nsys decomposition: INT8 Lt/nvjet GEMMs = 2x fp16 TC class on H100; ours ride fp16
+mirrors). The prior W8A8 refusal ("per-block-scale walls") refused cuBLASLt's epilogue
+limitations — NOT an int8-wgmma GEMM with a block-scale dequant epilogue, which is exact
+math for Q8_0 (int8 x int8 -> i32 accumulate, scale at epilogue; the "W4A8 needs wgmma
+on Hopper" verdict aa8b51d pointed here). THE ARC THAT CROSSES THE PREFILL LANE: s8
+wgmma prefill GEMMs with per-32-block scale epilogues (the wgmma toolkit + canonical
+pairings from this session apply directly; s8 kind = m64n64k32.s32.s8.s8).
