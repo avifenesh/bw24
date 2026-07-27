@@ -1,5 +1,5 @@
 {
- "updated": "2026-07-26",
+ "updated": "2026-07-27",
  "rig": "RTX 5090 Laptop",
  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18, Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
  "plain_decode": {
@@ -100,14 +100,20 @@
    "spec": true
   },
   {
+   "model": "Gemma-4 12B 1.7k ctx (K=4 MTP + trim)",
+   "bw24": 205.6,
+   "llama": 175.1,
+   "spec": true
+  },
+  {
    "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
    "bw24": 199.7,
    "llama": 187.6
   },
   {
    "model": "Gemma-4 26B-A4B 1.7k ctx (K=6 MTP + trim)",
-   "bw24": 297.7,
-   "llama": 286.1,
+   "bw24": 305.4,
+   "llama": 337.9,
    "spec": true
   },
   {

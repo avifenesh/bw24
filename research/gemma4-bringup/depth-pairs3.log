@@ -1,0 +1,18 @@
+build: 27c7d1e7
+== (a) llama 26B depth n-max 5/6
+llama 26Bn5 n-max=5 rep1: 321.10 tok/s
+llama 26Bn6 n-max=6 rep1: 337.88 tok/s
+== (b) bw24 26B depth K x floor grid
+26B K5 f2: spec: 293.66 tok/s accept-rate=0.836 
+26B K7 f2: spec: 300.32 tok/s accept-rate=0.827 
+26B K6 f3pin: spec: 291.98 tok/s accept-rate=0.788 
+26B K7 f3pin: spec: 301.00 tok/s accept-rate=0.780 
+26B K6 f2 ref: spec: 307.51 tok/s accept-rate=0.826 
+== (c) official 12B depth pair N=3
+llama 12Boff n-max=3 rep1: 175.11 tok/s
+llama 12Boff n-max=3 rep2: 175.23 tok/s
+llama 12Boff n-max=3 rep3: 174.02 tok/s
+12B K4 official r1: spec: 203.67 tok/s accept-rate=0.756 
+12B K4 official r2: spec: 205.77 tok/s accept-rate=0.756 
+12B K4 official r3: spec: 205.59 tok/s accept-rate=0.756 
+PHASE 3 COMPLETE Mon Jul 27 05:45:30 AM UTC 2026

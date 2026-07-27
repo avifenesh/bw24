@@ -1,0 +1,15 @@
+build: 27c7d1e7
+== phase 1: 12B depth K x floor probe (floor relaxes to 1 past 1024 by default; pin to test mild floors)
+12B K4 default: spec: 257.10 tok/s accept-rate=0.943 
+12B K4 f2pin: spec: 213.52 tok/s accept-rate=0.765 
+12B K4 f3pin: spec: 227.84 tok/s accept-rate=0.787 
+12B K3 default: spec: 232.48 tok/s accept-rate=0.950 
+12B K5 f2pin: spec: 257.73 tok/s accept-rate=0.897 
+== phase 2: llama depth n-max sweeps
+llama 12B n-max=2 rep1: 143.82 tok/s
+llama 12B n-max=3 rep1: 174.68 tok/s
+llama 12B n-max=4 rep1: 145.40 tok/s
+llama 26B n-max=2 rep1: 218.71 tok/s
+llama 26B n-max=3 rep1: 304.92 tok/s
+llama 26B n-max=4 rep1: 315.69 tok/s
+PHASES 1+2 COMPLETE Mon Jul 27 05:33:15 AM UTC 2026
