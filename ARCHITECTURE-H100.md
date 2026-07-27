@@ -1702,3 +1702,15 @@ optimum; current k45 phase map: O store 13.3, sO exchange 10.8, q cp.async 8.7, 
 ~0 (hidden), epilogue ~0 (uPre). Next candidates: tf32-wgmma probe (solve Route A
 prerequisite), FA3-style TMA/mbarrier ring rebuild of the chunk loop (high effort, form
 risk per the 10 refutations logged this arc).
+
+## tf32 wgmma canonical pairing CRACKED (2026-07-27, probe_tf32.cu)
+
+`wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32` with K-major canonical staging:
+element (r, kk in k8-step st) at `st*2048 + (r/8)*256 + (kk/4)*128 + (r%8)*16 + (kk%4)*4`
+(the bf16 formula with 4-element kk groups at 4B), descriptor (lead=128, stride=256) —
+IDENTICAL constants to the bf16 pairing. MATCH max_rel 7.9e-5 vs tf32-rounded f64 ref
+(operands pre-rounded via cvt.rna.tf32.f32; ref emulates +0x1000 & ~0x1FFF). Fragment
+layout = the standard f32-acc map. This unlocks f32-class GEMMs on tensor cores:
+K3 solve Route A ((I−L)(I+L²)(I+L⁴)(I+L⁸)(I+L¹⁶) inverse-product, 10 small GEMMs per
+(chunk, head)) is now PRICED FEASIBLE — tf32's 10 mantissa bits + f32 accumulate through
+5 chained products vs the bf16 risk that parked it.
