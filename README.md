@@ -107,8 +107,8 @@ Same protocol, own campaign log (`research/gemma4-bringup/rig5090-gemma4.jsonl`)
 | plain decode, 512 ctx | 92.6 | 92.4 | 1.00x |
 | prefill 512 | 4204 | 4161 | 1.01x |
 | prefill 1736 | 4123 | 3863 | 1.07x |
-| MTP spec, chat (K=4 + own-gen trim) | 235.0 | 172.4 | **1.36x** |
-| MTP spec, 1.7k ctx (K=4 + own-gen trim) | 205.6 | 175.1 | **1.17x** |
+| MTP spec, chat (K=4 + own-gen trim) | 240.9 | 172.4 | **1.40x** |
+| MTP spec, 1.7k ctx (K=4 + own-gen trim) | 269.3 | 175.1 | **1.54x** |
 
 **26B-A4B MoE:**
 
@@ -118,7 +118,7 @@ Same protocol, own campaign log (`research/gemma4-bringup/rig5090-gemma4.jsonl`)
 | plain, 1.7k ctx | 183.1 | 173.1 | 1.06x |
 | plain, 4.9k ctx | 162.6 | 142.0 | 1.14x (stale fa-off bar — re-pair pending) |
 | MTP spec, short ctx (K=4 + own-gen trim) | 328.1 | 298.0 | **1.10x** |
-| MTP spec, 1.7k ctx (K=6 + trim) | 305 | 338 | 0.90x |
+| MTP spec, 1.7k ctx (K=6 + trim) | 330 | 338 | 0.98x |
 
 **31B dense / E4B:**
 
@@ -142,7 +142,7 @@ Earlier published Gemma spec margins (1.37-1.54x, and the 31B 167.5/112.1 pair) 
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma plain margins are thin where both engines sit at the DRAM wall (31B 1.02-1.03x, 26B 1.06x; best kernel = 91% of measured wall, e2e 87-89%). Every mechanism class measured — ours plus llama/vLLM/SGLang current releases — is shipped or carries a falsification row in the campaign log. One open spec cell: 26B at 1.7k depth reads 0.90x — sweeping llama's draft depth (its 26B-depth optimum is n-max 6 at 338) revised this cell DOWN from a stale 1.04x, the same honesty pass that flipped 26B short UP from 0.99x to 1.10x; deep-K, floor-grid, and drafter-quant arms are all measured and negative (campaign log 2026-07-27). The new 12B 1.7k spec row is paired conservatively at its LOW mode (the cell is bimodal, 206-273 across identical runs — under investigation); even the low mode reads 1.17x.
+- Gemma plain margins are thin where both engines sit at the DRAM wall (31B 1.02-1.03x, 26B 1.06x; best kernel = 91% of measured wall, e2e 87-89%). Every mechanism class measured — ours plus llama/vLLM/SGLang current releases — is shipped or carries a falsification row in the campaign log. One near-parity spec cell: 26B at 1.7k depth reads 0.98x against llama's swept optimum (n-max 6 at 338). Two honesty passes moved this row twice in one day: sweeping llama's draft depth revised it from a stale 1.04x down to 0.90x, then root-causing a run-to-run bimodality recovered it to 0.98x — the stream-k GEMM autotune's per-process kernel coin was flipping prime numerics across the drafter's acceptance cliff on knife-edge shapes (it also had the 12B depth cell oscillating 206-273; pinned, that cell reads a stable 1.54x). Spec serving now keys stream-k per model at load; the autotuner never picks kernels on an evidence path again.
 - Hy3 native spill serves the Layer103.5 candidate at a 5.13 tok/s m=1 N=3 median (2026-07-26, same-day protocol — day-to-day regime drift makes cross-day numbers incomparable) and is being tuned toward a sustained 10 tok/s ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception.
 
