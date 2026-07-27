@@ -1555,3 +1555,22 @@ rows ride m64 with 50% pad — wgmma's 4-8x per-instruction rate over the mma
 path still nets 2-4x. Grid: (head, n-col-block) as today for fill. Harness
 first (tools/bench_gdn_wgmma.cu): CPU ref + current-kernel calibration +
 step-A tile proof with the proven canonical descriptors.
+
+## K4-wgmma v2: full chain IN-BAND, first timing 210.9µs (2026-07-27)
+
+Harness `tools/bench_gdn_wgmma.cu` v2 = full K4 chain (16 chunks, state carry, Ssnap
+column-block writes) per CTA = (head, 64-col block), 128 threads, M lives in Macc[2][32]
+fragments across chunks. Step A: canonical A(sW) × canonical B(sM, fragment→bf16 restage
+per chunk); step B: canonical A(sYs = gk-folded ys^T) × canonical B(sK = k transposed at
+stage time, n=i k=j). Two refutations en route:
+- trans_b with a NON-swizzled canonical descriptor is not a thing (PV pairing is proven
+  only for TMA swizzled atoms) — plus the nb·2048 offset collided with k-slices. k^T
+  canonical restage fixed both: state bad 521184 → in-band.
+- Harness inputs must follow the bench_gdn_k4 law (W scale 0.3, gcum continuous cumsum,
+  metric = maxdiff/max|ref| band 3e-2). The recurrence amplifies ×4/chunk by design of
+  that gate (scale reaches 6e8 — f32 Y mandatory; f16 Y overflows at chunk 8).
+Verdict: Y rel 1.036e-2, state rel 7.804e-3 — IN-BAND (bf16 class). Timing 210.9µs vs
+shipped mma 68.3µs at H=32 T=512 C=32: grid is 64 CTAs on 132 SMs (≤48% machine) and one
+warpgroup serializes stage→wgmma→wait×2 per chunk. Optimization arc open: vectorized
+staging, W/k prefetch, m64n32 flip (j=32 real rows sit in the padded m-half), cluster
+DSMEM i-split for CTA doubling.
