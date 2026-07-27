@@ -1675,3 +1675,16 @@ f32 substitution — likely needs the tf32 wgmma kind (m64n64k8.f32.tf32, 4B can
 layout UNPROVEN on this toolchain — new probe required) or f32 accumulate splits.
 Route B (SIMT latency): merge 2 (c,h) pairs per CTA / raise CTAs-per-SM to cut waves.
 Decide by measuring wave count first (occupancy of gdn_chunk_solve32_f32).
+
+## K3 solve32 Route B REFUTED; bit-identity mechanism found (2026-07-27)
+
+The ILP-split substitution (presums off the cross-j path, 4-way chains, last-term-only
+serial link) measured 48.8 -> 55.1µs at T=1101 — SLOWER (reg pressure/adds beat the chain
+relief) — AND broke prime-batch-gate: with reassociation freedom in the source, ptxas
+schedules the per-seq and vl instantiations of gdn_chunk_solve_kernel<32> DIFFERENTLY,
+breaking their bit-identity. The simple `acc -=` chain pins evaluation order, which is
+WHY the repo's vl-vs-per-seq bit-gates hold at all. Reverted; gates green again.
+Solve remaining route: tensor-core inverse product (I−L)(I+L²)(I+L⁴)(I+L⁸)(I+L¹⁶) —
+needs tf32 wgmma probe first (bf16 through 5 chained products is a numerics risk).
+K45 remains the top kernel item (339µs/layer = 11% of lane): TMA swizzled-atom staging
+(FA3-proven descriptors) for sW/sQ + exchange redesign is the next arc.
