@@ -177,6 +177,81 @@ s8_rescale(const signed char* __restrict__ A, const signed char* __restrict__ B,
 }
 
 
+// pipelined per-block-exact: ping-pong acc banks, wait<1> overlaps rescale with the
+// NEXT block's wgmma in flight (the drain in s8_rescale was the cost, not the FMAs)
+template<int N> __device__ __forceinline__ void wg_wait_n() {
+    asm volatile("wgmma.wait_group.sync.aligned %0;" :: "n"(N));
+}
+extern "C" __global__ void __launch_bounds__(128, 1)
+s8_rescale_pipe(const signed char* __restrict__ A, const signed char* __restrict__ B,
+                const float* __restrict__ scA, const float* __restrict__ scB,
+                float* __restrict__ Cout, int K, int iters) {
+    __shared__ __align__(1024) signed char sA[64 * 128];
+    __shared__ __align__(1024) signed char sB[64 * 128];
+    __shared__ float fsA[64 * 4], fsB[64 * 4];
+    const int tid = threadIdx.x;
+    for (int idx = tid; idx < 64 * 128; idx += 128) {
+        int r = idx / 128, kv = idx % 128;
+        sA[s8_off(kv / 32, r, kv % 32)] = A[r * 128 + kv];
+        sB[s8_off(kv / 32, r, kv % 32)] = B[r * 128 + kv];
+    }
+    for (int idx = tid; idx < 64 * 4; idx += 128) { fsA[idx] = scA[idx]; fsB[idx] = scB[idx]; }
+    __syncthreads();
+    asm volatile("fence.proxy.async.shared::cta;");
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float fac[32];
+    #pragma unroll
+    for (int q = 0; q < 32; q++) fac[q] = 0.0f;
+    int accA[32], accB[32];
+    for (int it = 0; it < iters; it++) {
+        for (int kk = 0; kk < K / 32; kk++) {
+            int st = kk & 3;
+            unsigned long long da = make_desc((char*)sA + st * 2048, S8_LEAD, S8_STRIDE);
+            unsigned long long db = make_desc((char*)sB + st * 2048, S8_LEAD, S8_STRIDE);
+            int* bank = (kk & 1) ? accB : accA;
+            wg_fence();
+            wgmma_s8(bank, da, db, 0);
+            wg_commit();
+            if (kk > 0) {
+                wg_wait_n<1>();                    // previous bank done; current in flight
+                int* prev = (kk & 1) ? accA : accB;
+                int pst = (kk - 1) & 3;
+                float a0 = fsA[(r0 + 0) * 4 + pst], a1 = fsA[(r0 + 8) * 4 + pst];
+                #pragma unroll
+                for (int q = 0; q < 32; q += 4) {
+                    int n8 = q / 4;
+                    int cc = c0 + n8 * 8;
+                    float b0 = fsB[(cc + 0) * 4 + pst], b1 = fsB[(cc + 1) * 4 + pst];
+                    fac[q + 0] += (float)prev[q + 0] * a0 * b0;
+                    fac[q + 1] += (float)prev[q + 1] * a0 * b1;
+                    fac[q + 2] += (float)prev[q + 2] * a1 * b0;
+                    fac[q + 3] += (float)prev[q + 3] * a1 * b1;
+                }
+            }
+        }
+        wg_wait_n<0>();
+        {   // drain the last bank
+            int last = (K / 32 - 1);
+            int* prev = (last & 1) ? accB : accA;
+            int pst = last & 3;
+            float a0 = fsA[(r0 + 0) * 4 + pst], a1 = fsA[(r0 + 8) * 4 + pst];
+            #pragma unroll
+            for (int q = 0; q < 32; q += 4) {
+                int n8 = q / 4;
+                int cc = c0 + n8 * 8;
+                float b0 = fsB[(cc + 0) * 4 + pst], b1 = fsB[(cc + 1) * 4 + pst];
+                fac[q + 0] += (float)prev[q + 0] * a0 * b0;
+                fac[q + 1] += (float)prev[q + 1] * a0 * b1;
+                fac[q + 2] += (float)prev[q + 2] * a1 * b0;
+                fac[q + 3] += (float)prev[q + 3] * a1 * b1;
+            }
+        }
+    }
+    Cout[warp * 32 + lane] = fac[0] + fac[31];
+}
+
 int main() {
     srand(23);
     signed char *hA = (signed char*)malloc(64 * 64), *hB = (signed char*)malloc(64 * 64);
@@ -229,6 +304,14 @@ int main() {
         float ms2; CK(cudaEventElapsedTime(&ms2, a, b));
         printf("rescale-cost: i32-chain %.1fus/iter vs per-block-exact %.1fus/iter = %.2fx overhead\n",
                ms1 * 1000.0f / IT, ms2 * 1000.0f / IT, ms2 / ms1);
+        s8_rescale_pipe<<<1, 128>>>(dA2, dB2, dsc, dsc, dCo, K, 3);
+        CK(cudaDeviceSynchronize());
+        CK(cudaEventRecord(a));
+        s8_rescale_pipe<<<1, 128>>>(dA2, dB2, dsc, dsc, dCo, K, IT);
+        CK(cudaEventRecord(b)); CK(cudaEventSynchronize(b));
+        float ms3; CK(cudaEventElapsedTime(&ms3, a, b));
+        printf("pipelined-exact: %.1fus/iter = %.2fx vs chain (V1 lives if ~1.2x)\n",
+               ms3 * 1000.0f / IT, ms3 / ms1);
     }
     return 0;
 }

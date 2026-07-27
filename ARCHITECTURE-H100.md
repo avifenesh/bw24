@@ -1862,3 +1862,15 @@ not an engineering one. THE PREFILL LANE'S REMAINING ~27% IS THEREFORE: reachabl
 through the owner-gated w8a8 accuracy relaxation (all other routes carry measured
 mechanism refutations). Decode (122.8%), serving decode (graph), batched prime, and
 serving burst lanes stand on exact math.
+
+## V1 exact-rescale: TRIPLE-REFUTED (2026-07-27 final)
+
+The pipelined challenge to the 5.37x verdict (ping-pong i32 accumulator banks, wait<1>,
+rescale the retired bank under the in-flight group) measured 42.1µs/iter = 17x WORSE:
+ptxas C7517 injects a full wait_group before ANY scalar read of GMMA-defined registers —
+hazard tracking is warpgroup-scoped, not bank-scoped, so the overlap is COMPILER-REFUSED
+on nvcc 13.1 (the C7514/15/17 family strikes again). Register-level exact Q8_0 rescale
+cannot be pipelined; the smem round-trip variant prices at ~16KB/step x 128 steps of
+i32 traffic (sYs-class per step) — over budget on the same evidence class. V1 verdict
+FINAL: naive 5.4x, pipelined 17x, drain-batched bounded >= 3x — all lose the 2x dtype
+edge. The prefill residual stands as the OWNER'S w8a8 accuracy decision.
