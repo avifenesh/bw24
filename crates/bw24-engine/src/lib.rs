@@ -7613,9 +7613,11 @@ impl Engine {
     /// task #18: K1-K3 of the chunked WY scan (shared by the per-seq path and the
     /// batched-prime varlen path). Returns (gcum, P, U, W); `A` is K3-internal.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
     pub fn gdn_chunk_k123(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                           g: &CudaSlice<f32>, beta: &CudaSlice<f32>, wb16: Option<&mut CudaSlice<u8>>,
-                          n_head: usize, t: usize, c: usize, hk: usize)
+                          n_head: usize, t: usize, c: usize, hk: usize,
+                          k2w: Option<(&CudaSlice<u8>, &CudaSlice<u8>, &mut CudaSlice<u8>)>)
                           -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         const D: usize = 128;
         let h = n_head;
@@ -7633,7 +7635,17 @@ impl Engine {
             b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
-        if c <= 64 && !portable_mma_gated() {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
+        if let Some((qb, kb, pb)) = k2w {
+            // K2-wgmma (BW24_GDN_WGMMA path, c==32): A + pre-masked Pb16 in one kernel;
+            // the P f32 buffer stays UNWRITTEN (its only wgmma-path consumer is Pb16).
+            assert!(c == 32, "gdn_k2_wgmma is a C==32 tile");
+            let f = self.func("gdn_k2_wgmma");
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+            let hki = hk as i32;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qb).arg(kb).arg(&gcum).arg(beta).arg(&mut a).arg(&mut *pb).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
+            unsafe { b.launch(cfg)?; }
+        } else if c <= 64 && !portable_mma_gated() {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
             let f = self.func("gdn_chunk_attn_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
@@ -8019,7 +8031,48 @@ impl Engine {
         let mut wb16_pre: Option<CudaSlice<u8>> = if gdn_mma_pre {
             Some(self.alloc_u8_uninit(nc * h * c * D * 2)?)
         } else { None };
-        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, wb16_pre.as_mut(), n_head, t, c, hk)?;
+        // K2-wgmma pre-work (BW24_GDN_WGMMA): the kb16/qb16 mirrors hoist ABOVE K123 so
+        // K2 rides them via cp.async; K2 writes the pre-masked Pb16 directly (the
+        // gdn_p_bf16_masked pass and the in-branch mirror builds disappear).
+        let gdn_wgmma_pre = gdn_mma_pre
+            && match std::env::var("BW24_GDN_WGMMA").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            };
+        let nk = t * hk * D;
+        let mut kb16_local: Option<CudaSlice<u8>> = None;
+        if gdn_mma_pre && kb16_pre.is_none() {
+            let mut kb = self.alloc_u8_uninit(nk * 2)?;
+            let f = self.func("f32_to_bf16_bulk");
+            let n2 = nk as i64;
+            let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(k).arg(&mut kb).arg(&n2);
+            unsafe { b.launch(cfg2)?; }
+            kb16_local = Some(kb);
+        }
+        let kb16_ref0: Option<&CudaSlice<u8>> = kb16_local.as_ref().or(kb16_pre);
+        if let Some(kb) = kb16_pre { assert!(kb.len() >= nk * 2, "kb16_pre too small"); }
+        let mut qb16: Option<CudaSlice<u8>> = None;
+        let mut pb16: Option<CudaSlice<u8>> = None;
+        if gdn_wgmma_pre {
+            let mut qb = self.alloc_u8_uninit(nk * 2)?;
+            let f = self.func("f32_to_bf16_bulk");
+            let n2 = nk as i64;
+            let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(&mut qb).arg(&n2);
+            unsafe { b.launch(cfg2)?; }
+            qb16 = Some(qb);
+            pb16 = Some(self.alloc_u8_uninit(nc * h * c * c * 2)?);
+        }
+        let k2w = if gdn_wgmma_pre {
+            Some((qb16.as_ref().unwrap() as &CudaSlice<u8>,
+                  *kb16_ref0.as_ref().unwrap(),
+                  pb16.as_mut().unwrap()))
+        } else { None };
+        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, wb16_pre.as_mut(), n_head, t, c, hk, k2w)?;
         let _ = &w;
         let mut y = self.uninit(nc * h * c * D)?;
         let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
@@ -8040,29 +8093,8 @@ impl Engine {
                 _ => cfg!(bw24_hopper_mma),
             };
         if gdn_mma {
-            let nk = t * hk * D;
             let wb16 = wb16_pre.take().expect("mma path pre-allocates wb16 (K3 store fold)");
-            let kb16 = match kb16_pre {
-                Some(kb) => {
-                    assert!(kb.len() >= nk * 2, "kb16_pre too small");
-                    None
-                }
-                None => {
-                    let mut kb = self.alloc_u8_uninit(nk * 2)?;
-                    let f = self.func("f32_to_bf16_bulk");
-                    let n2 = nk as i64;
-                    let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
-                    let mut b = self.gpu.stream.launch_builder(&f);
-                    b.arg(k).arg(&mut kb).arg(&n2);
-                    unsafe { b.launch(cfg2)?; }
-                    Some(kb)
-                }
-            };
-            let kb16_ref: &CudaSlice<u8> = match (&kb16, kb16_pre) {
-                (Some(kb), _) => kb,
-                (None, Some(kb)) => kb,
-                _ => unreachable!(),
-            };
+            let kb16_ref: &CudaSlice<u8> = kb16_ref0.expect("mma path pre-builds kb16 above K123");
             // K4+K5 FUSED wgmma seam (BW24_GDN_WGMMA, task #22; harness verdict
             // tools/bench_gdn_wgmma.cu v5, ledger 1f08b997: in-band Y 1.07e-2 / state
             // 1.03e-2 / O 1.08e-2, 91.3us vs 70.4 K4-only at H=32 T=512). K5's output
@@ -8074,39 +8106,16 @@ impl Engine {
             // in-band, argmax gate PASS, 3-seed greedy IDENTICAL after ~2k prime,
             // chunked-continuation IDENTICAL, kernel-check + decode-batch gates green,
             // official prefill lane +0.74% interleaved x5 (5/5 rounds). =0 reverts.
-            let gdn_wgmma = match std::env::var("BW24_GDN_WGMMA").as_deref() {
-                Ok("0") => false,
-                Ok("1") => true,
-                _ => cfg!(bw24_hopper_mma),
-            };
-            if gdn_wgmma {
-                let nq = t * hk * D;
-                let mut qb16 = self.alloc_u8_uninit(nq * 2)?;
-                {
-                    let f = self.func("f32_to_bf16_bulk");
-                    let n2 = nq as i64;
-                    let cfg2 = LaunchConfig::for_num_elems((nq as u32).div_ceil(4));
-                    let mut b = self.gpu.stream.launch_builder(&f);
-                    b.arg(q).arg(&mut qb16).arg(&n2);
-                    unsafe { b.launch(cfg2)?; }
-                }
-                let np = nc * h * c * c;
-                let mut pb16 = self.alloc_u8_uninit(np * 2)?;
-                {
-                    let f = self.func("gdn_p_bf16_masked");
-                    let n2 = np as i64;
-                    let ci32 = c as i32;
-                    let cfg2 = LaunchConfig::for_num_elems(np as u32);
-                    let mut b = self.gpu.stream.launch_builder(&f);
-                    b.arg(&p).arg(&mut pb16).arg(&ci32).arg(&n2);
-                    unsafe { b.launch(cfg2)?; }
-                }
+            if gdn_wgmma_pre {
+                // qb16/pb16 pre-built above K123 (K2-wgmma wrote the masked Pb16).
+                let qb16 = qb16.as_ref().unwrap();
+                let pb16 = pb16.as_ref().unwrap();
                 {
                     let f = self.func("gdn_k45_wgmma");
                     let cfg = LaunchConfig { grid_dim: (h as u32, 4, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
                     let hki = hk as i32;
                     let mut b = self.gpu.stream.launch_builder(&f);
-                    b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&qb16).arg(&pb16)
+                    b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(qb16).arg(pb16)
                      .arg(o).arg(&scale).arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
                     unsafe { b.launch(cfg)?; }
                 }

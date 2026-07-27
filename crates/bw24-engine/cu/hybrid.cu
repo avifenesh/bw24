@@ -2417,3 +2417,79 @@ gdn_k45_wgmma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ 
     }
 #endif  // BW24_K45_REAL
 }
+
+
+// K2 wgmma (BW24_GDN_WGMMA path): A[j,i] = b_i e^{gj-gi} (k_j.k_i) for i<j and
+// Pb16[j,i] = b_i e^{gj-gi} (q_j.k_i) for i<=j (zero elsewhere — the k45 staging
+// contract, replacing gdn_p_bf16_masked). Two 32x32x128 GEMMs per (chunk, head);
+// canonical A and B layouts coincide, so ONE staged k tile serves as A of k.k^T and
+// B of both. Operands ride cp.async straight from the kb16/qb16 mirrors.
+extern "C" __global__ void __launch_bounds__(128, 1)
+gdn_k2_wgmma(const __nv_bfloat16* __restrict__ qb16, const __nv_bfloat16* __restrict__ kb16,
+             const float* __restrict__ gcum, const float* __restrict__ beta,
+             float* __restrict__ A, __nv_bfloat16* __restrict__ Pb16,
+             int H, int T, int C, int hk) {
+#ifdef BW24_K45_REAL
+    constexpr int D = GDN_D;
+    const int c = blockIdx.x, h = blockIdx.y, hq = h % hk;
+    const int t0 = c * C;              // C == 32 (dispatch contract)
+    const int Cc = min(C, T - t0);
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5, lane = tid & 31;
+    const int fr = lane >> 2, fc = (lane & 3) * 2;
+    __shared__ __align__(128) __nv_bfloat16 sK[64 * 128];
+    __shared__ __align__(128) __nv_bfloat16 sQ[64 * 128];
+    __shared__ float gct[32], bt[32];
+    for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
+        int r = seg / (D / 8), s8 = seg % (D / 8);
+        int st = s8 / 2, kk8 = (s8 % 2) * 8;
+        int sz = (r < Cc) ? 16 : 0;    // pad rows + tail: zero-fill
+        k45_cp16((char*)sK + k45_canon(st, r, kk8),
+                 kb16 + ((size_t)(t0 + (r & 31)) * hk + hq) * D + st * 16 + kk8, sz);
+        k45_cp16((char*)sQ + k45_canon(st, r, kk8),
+                 qb16 + ((size_t)(t0 + (r & 31)) * hk + hq) * D + st * 16 + kk8, sz);
+    }
+    asm volatile("cp.async.commit_group;");
+    if (tid < 32) {
+        gct[tid] = (tid < Cc) ? gcum[(size_t)(t0 + tid) * H + h] : 0.0f;
+        bt[tid]  = (tid < Cc) ? beta[(size_t)(t0 + tid) * H + h] : 0.0f;
+    }
+    asm volatile("cp.async.wait_group 0;");
+    __syncthreads();
+    asm volatile("fence.proxy.async.shared::cta;");
+    float pacc[32], aacc[32];
+    k45_fence();
+    for (int st = 0; st < 8; st++) {
+        unsigned long long db  = k45_desc((char*)sK + st * 2048, 128, 256);
+        unsigned long long daq = k45_desc((char*)sQ + st * 2048, 128, 256);
+        k45_wgmma(pacc, daq, db, st == 0 ? 0 : 1);
+        k45_wgmma(aacc, db,  db, st == 0 ? 0 : 1);
+    }
+    k45_commit();
+    k45_wait();
+    const int j0 = warp * 16 + fr;
+    #pragma unroll
+    for (int q = 0; q < 32; q += 4) {
+        int n8 = q / 4;
+        int i0 = fc + n8 * 8;
+        if (i0 >= 32) continue;        // n pad cols
+        #pragma unroll
+        for (int pr = 0; pr < 2; pr++) {
+            int j = j0 + pr * 8;
+            if (j >= 32 || j >= Cc) continue;
+            const float gj = gct[j];
+            const float sc0 = bt[i0] * expf(gj - gct[i0]);
+            const float sc1 = bt[i0 + 1] * expf(gj - gct[i0 + 1]);
+            const float av0 = sc0 * aacc[q + pr * 2 + 0];
+            const float av1 = sc1 * aacc[q + pr * 2 + 1];
+            const float pv0 = (i0 <= j) ? sc0 * pacc[q + pr * 2 + 0] : 0.0f;
+            const float pv1 = (i0 + 1 <= j) ? sc1 * pacc[q + pr * 2 + 1] : 0.0f;
+            float* Arow = A + (((size_t)c * H + h) * C + j) * C;
+            if (i0 < j) Arow[i0] = av0;
+            if (i0 + 1 < j) Arow[i0 + 1] = av1;
+            *(__nv_bfloat162*)(Pb16 + (((size_t)c * H + h) * C + j) * C + i0) =
+                __floats2bfloat162_rn(pv0, pv1);
+        }
+    }
+#endif  // BW24_K45_REAL
+}

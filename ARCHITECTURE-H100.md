@@ -1636,3 +1636,17 @@ single-seq prefill lane interleaved x5 at pp2017: off mean 25604.7 -> on mean 25
 +0.74%, on wins 5/5 rounds. Promoted default-ON via cfg!(bw24_hopper_mma); =0 reverts.
 Chunk-stack arc continues: K2 cumgate + K3 solve remain; v5 marginal costs (sO exchange
 ~11µs, O store ~14µs at T=512 dims) are the next fusion-side targets.
+
+## K2-wgmma shipped inside BW24_GDN_WGMMA: lane +2.56% cumulative (2026-07-27)
+
+`gdn_k2_wgmma` replaces the 87µs/layer f32 K2: A = kk^T and P = qk^T as two m64n64k16
+chains per (chunk, head) CTA — canonical A and B layouts COINCIDE, so one cp.async-staged
+k tile serves as A of kk^T and B of both GEMMs; qb16/kb16 mirrors hoisted above K123; K2
+writes the pre-masked Pb16 directly (gdn_p_bf16_masked pass deleted). A keeps the old
+contract (only i<j written; upper stays stale for the solve). Battery: kernel-check ALL
+GREEN (fused pin out 2.19e-1 -> 2.32e-1, state 5.30e-1 -> 5.48e-1 — A-bf16 through the
+depth-32 solve barely widens the class); 3-seed greedy IDENTICAL; chunked-continuation
+IDENTICAL; decode-batch green. Lane A/B interleaved x5 at pp2017: off 25648.9 -> on
+26304.3 tok/s = +2.56%, on wins 5/5 (fusion alone was +0.74%; K2 added ~+1.8%).
+Chunk stack remaining: solve32 92µs (sequential-triangular, wgmma-hostile), conv ~160µs,
+k45 marginal (sO exchange, O store). Official-lane estimate: 94.3% -> ~96.7% of vLLM.
