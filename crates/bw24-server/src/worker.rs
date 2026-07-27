@@ -468,8 +468,13 @@ pub fn run(
                 // at T=152 — the per-seq core train no longer scales with B).
                 let pb_max: usize = std::env::var("BW24_PRIME_BATCH").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(6);
+                // 320 -> 2048 (2026-07-27): the old T=320 crossover ("above it, single
+                // primes win") was measured on the per-seq core train. With the wgmma
+                // varlen cores (task #22 vl twins) batched wins at EVERY tested T:
+                // +30.1% at T=320, +12.6% at 512, +5.9% at 937, +3.0% at 1536
+                // (prime-batch-gate --bench, B=3). budgets[0] still caps per-tick load.
                 let pb_maxt: usize = std::env::var("BW24_PRIME_BATCH_MAX_T").ok()
-                    .and_then(|v| v.parse().ok()).unwrap_or(320);
+                    .and_then(|v| v.parse().ok()).unwrap_or(2048);
                 let min_t = bw24_engine::hybrid_forward::PRIME_MIN_T.max(2);
                 let mut cand: Vec<usize> = Vec::new();
                 let mut cand_model: Option<String> = None;
