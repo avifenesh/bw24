@@ -904,6 +904,7 @@ impl HybridModel {
                                         cache_ref, n_vocab, bucket_max)
             })?
         };
+        gs.captures += 1;   // telemetry (dead since the exec-update rework; round 35 fix)
         cache.rollback(e, &snap, 0)?;
         e.set_i32_one(&mut gs.pos_d, pos_save)?;
         for (il, ls) in len_save.iter().enumerate() {
@@ -1002,6 +1003,7 @@ impl HybridModel {
                                         cache_ref, n_vocab, bucket_max)
             })?
         };
+        gs.captures += 1;   // telemetry (dead since the exec-update rework; round 35 fix)
         cache.rollback(e, &snap, 0)?;
         e.set_i32_one(&mut gs.pos_d, pos_save)?;
         for (il, ls) in len_save.iter().enumerate() {

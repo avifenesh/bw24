@@ -33,9 +33,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for &t in &prompt { ll = m.decode_step(&e, t, &mut cache_e)?; }
     let mut eager_in = argmax(&ll) as u32;
     let mut eager_tokens = Vec::with_capacity(n);
+    // stream convention (round 35): the FIRST generated token (argmax of the last prime
+    // step) is part of the stream — generate_graph emits it as out[0]; the eager arm
+    // must too. (The gate compared shifted streams since the graph_decode_loop
+    // extraction: 95/95 match at +1 shift, 171/256 "mismatches" — gate rot, not engine.)
+    eager_tokens.push(eager_in);
     let mut buckets_seen: Vec<(bool, usize)> = Vec::new();
     let head_dim = m.cfg.head_dim_k as usize;
-    for _ in 0..n {
+    for _ in 0..n.saturating_sub(1) {
         let t_kv = cache_e.kv.iter().filter_map(|k| k.as_ref()).map(|k| k.len + 1).next().unwrap_or(0);
         let key = e.fa_bucket_key(t_kv, head_dim, m.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
         if !buckets_seen.contains(&key) { buckets_seen.push(key); }
@@ -64,6 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mismatches += 1;
     }
 
+    // off-by-one probe (round 35): if the emission convention shifted when
+    // graph_decode_loop was extracted, a +/-1 shifted compare will match.
+    if mismatches > 0 && eager_tokens.len() > 2 {
+        let fwd = eager_tokens[1..].iter().zip(graph_tokens.iter())
+            .filter(|(a, b)| a == b).count();
+        let bwd = eager_tokens.iter().zip(graph_tokens[1..].iter())
+            .filter(|(a, b)| a == b).count();
+        println!("shift probe: eager[1..]==graph[..] {}/{}  eager[..]==graph[1..] {}/{}",
+                 fwd, eager_tokens.len() - 1, bwd, graph_tokens.len() - 1);
+    }
     println!("buckets crossed (fa_vec, n_splits): {:?}", buckets_seen);
     println!("graph (re)captures: {}", gs.captures);
 

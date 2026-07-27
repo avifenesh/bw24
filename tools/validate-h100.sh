@@ -37,6 +37,21 @@ BW24_MMVQ=0 BW24_NO_FUSE_NORMQ=1 ./target/release/decode-batch-gate "$MODEL" \
   --steps $STEPS --batch 4 --mode strict \
   | tail -1 | grep -q "ALL GREEN" || { echo "BATCH-GATE(strict) FAIL"; FAIL=1; }
 
+# GRAPH LANE gates (round 35: graph-decode-gate rotted OUTSIDE this battery for weeks —
+# an emission off-by-one in the gate masqueraded as 171/256 stream corruption. Everything
+# guarding a live lane belongs HERE.)
+echo "== gate: decode-dc (device counters, bit-identity) =="
+BW24_CUDA_ARCH=90a BW24_NVCC=$NVCC cargo build --release -p bw24-engine \
+  --bin decode-dc-gate --bin graph-decode-gate --bin graph-session-gate >/dev/null 2>&1
+./target/release/decode-dc-gate "$MODEL" 2>&1 | tail -1 | grep -q "PASS" \
+  || { echo "DC-GATE FAIL"; FAIL=1; }
+echo "== gate: graph-decode (capture/replay bit-identity) =="
+./target/release/graph-decode-gate "$MODEL" 2>&1 | tail -1 | grep -q "PASS" \
+  || { echo "GRAPH-DECODE-GATE FAIL"; FAIL=1; }
+echo "== gate: graph-session (serving GraphSession vs generate_graph) =="
+./target/release/graph-session-gate "$MODEL" 2>&1 | tail -1 | grep -q "ALL GREEN" \
+  || { echo "GRAPH-SESSION-GATE FAIL"; FAIL=1; }
+
 if [ -z "$QUICK" ] && [ $FAIL -eq 0 ]; then
   echo "== perf record: serving-regime curve (ctx=512, N=3) =="
   ./target/release/decode-batch-bench "$MODEL" --steps 96 --reps 3 --batches 1,2,4,8 --ctx 512 \

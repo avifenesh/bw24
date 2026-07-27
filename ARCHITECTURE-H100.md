@@ -1760,3 +1760,20 @@ form-sensitivity law. A TMA ring re-arranges costs that are either already hidde
 already shown to worsen under rearrangement. Task #22's kernel frontier is CLOSED: every
 item shipped, measured to optimum, or mechanism-refuted. Tools/harness helper copies stay
 frozen on purpose (reproduction stability) — extraction decision documented.
+
+## Graph-lane gate rot found + fixed; battery hardened (2026-07-27, round 35)
+
+Hook-forced re-sweep after the pb_maxt find surfaced graph-decode-gate FAILING 171/256
+"mismatches" — outside validate-h100.sh, so silent. Investigation chain (each hypothesis
+measured): promoted configs (pinned off — still fails), chunked-vs-tokenwise prime (P=8 —
+fails), split-ladder desync (BW24_FA_SPLIT=64 pin — fails), then a shift probe: eager[..]
+== graph[1..] at 95/95 — a pure EMISSION OFF-BY-ONE in the gate's eager arm, introduced
+when graph_decode_loop was extracted for GraphSession: generate_graph emits the first
+generated token as out[0]; the gate's eager arm consumed it as input only. The graph
+decode lane was ALWAYS bit-correct (server text == run-gen eager token-for-token; the
+serving GraphSession measures 233.6 tok/s vs eager 178.6, +30.8% — decode serving = 133%
+of vLLM). Fixes: gate stream aligned (PASS: 256 steps BIT-IDENTICAL across 16 fa
+buckets), dead gs.captures telemetry counter revived (both capture sites), and decode-dc
++ graph-decode + graph-session gates ADDED to validate-h100.sh. Law reinforced twice
+today: anything guarding a live lane must live in the battery, and thresholds/gates
+calibrated on old code must be re-swept when the code changes.
