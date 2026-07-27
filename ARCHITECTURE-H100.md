@@ -1714,3 +1714,21 @@ layout = the standard f32-acc map. This unlocks f32-class GEMMs on tensor cores:
 K3 solve Route A ((I−L)(I+L²)(I+L⁴)(I+L⁸)(I+L¹⁶) inverse-product, 10 small GEMMs per
 (chunk, head)) is now PRICED FEASIBLE — tf32's 10 mantissa bits + f32 accumulate through
 5 chained products vs the bf16 risk that parked it.
+
+## K3 solve Route A REFUTED on performance; K3 verdict: f32 substitution is optimal (2026-07-27)
+
+tools/bench_gdn_solve.cu: the tf32 inverse-product ((I−L)(I+L²)(I+L⁴)(I+L⁸)(I+L¹⁶), 2
+GEMM-rounds/stage: G = M·P_old under the P² group, then M += G·P_old; A+B dual-layout
+staging) is CORRECT first try — rel 4.19e-4 vs f64-of-f32 ref (tf32 band 5e-3) — but
+51.0µs vs the f32 substitution's 18.9µs at H=32 T=512. The 8-round serial GEMM chain
+(restage + 2 barriers per round, 1 warpgroup) costs 2.7x the depth-32 dependent-FMA
+chain it replaces. With Route B (ILP split) also refuted (+13% + bit-identity break),
+K3 f32 forward substitution stands as the measured structural optimum.
+
+CHUNK-STACK ARC STATUS after round 34: every kernel now measured to its refutation:
+K2 wgmma'd (+), K4+K5 fused (+, local optimum 91µs after 10 form refutations), K3
+double-refuted (f32 optimal), conv at 72% compute-SOL, cumgate/glog trivial. The
+"12.4 -> 4-5ms" target thesis is PARTIALLY refuted: these are small-tile latency-bound
+kernels, not tensor-starved ones — the FA3 disease applied to K2/K5 (fixed) but not
+K4-core/K3. Remaining unrefuted item: FA3-style TMA/mbarrier ring rebuild of the k45
+chunk loop (priced multi-hour, high form-risk). Banked tools: tf32 pairing (876cdcb7).
