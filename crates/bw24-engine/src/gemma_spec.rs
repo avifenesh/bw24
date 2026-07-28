@@ -729,6 +729,22 @@ impl HybridModel {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0.0);
+        // IN-ROUND confidence cut (2026-07-28): llama's draft-mtp stops drafting the
+        // moment a draft's top-1 prob falls below p-min; our BW24_SPEC_PMIN is one round
+        // LATE by design (zero-sync round). This arm pays one small dtoh sync per draft
+        // step (steps ~150µs; sync ~15µs) to cut the chain mid-round and verify at the
+        // shrunk width. Eager arm only — burst/graph arms draft fixed depth.
+        // DEFAULT is SELF-KEYED: active at depth (pos >= floor_ctx) and only in rounds
+        // following a MISS — measured: depth cells with sub-0.9 acceptance win (26B
+        // +1.4-3.2% @ 0.868-0.882 accept, 31B +2% @ 0.845-0.883), chat cells and the
+        // 0.95-accept 12B depth lose under an ALWAYS-on cut (-0.9 to -6%) but their
+        // rounds are mostly full-accept so the self-key idles there. Explicit
+        // BW24_SPEC_PMIN_INROUND pins the cut at every position/round; =0 disables.
+        let pmin_ir_env: Option<f32> = std::env::var("BW24_SPEC_PMIN_INROUND")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        const PMIN_IR_DEFAULT: f32 = 0.7;
+        let mut prev_full = true; // round 1: no miss evidence yet — draft at full depth
         let mut p_d = e.stream().alloc_zeros::<f32>(k.max(1))?;
 
         // ADAPTIVE DRAFT LENGTH (default ON 2026-07-10; BW24_SPEC_ADAPT=0 reverts): llama's
@@ -845,7 +861,7 @@ impl HybridModel {
                 && e.fa_rows_eligible(cache.pos, 256)
                 && cache.pos + horizon + k_cap + 2 <= cache.max_ctx
                 && out.len() + horizon <= max_new;
-            let kr = if burst_ok {
+            let mut kr = if burst_ok {
                 k_cap
             } else if adapt {
                 kc
@@ -879,8 +895,8 @@ impl HybridModel {
             // (eager: host-filled; graph: filled in-graph).
             let run_chain = |e: &Engine, d: &GemmaDraft, batch_d: &mut CudaSlice<u32>,
                              p_d: &mut CudaSlice<f32>, g_seed: &CudaSlice<f32>,
-                             pos_slots: &Vec<CudaSlice<i32>>|
-             -> Result<(), Box<dyn std::error::Error>> {
+                             pos_slots: &Vec<CudaSlice<i32>>, inround: f32|
+             -> Result<usize, Box<dyn std::error::Error>> {
                 // uninit+copy (NOT clone_dtod): clone_dtod's internal alloc bypasses the
                 // capture-retain hooks — its address got pool-reused between replays and the
                 // replayed chain read a corrupted seed (accept 0.52 vs 0.76).
@@ -900,7 +916,7 @@ impl HybridModel {
                     let ld = e.matmul(&d.head, &hn, 1)?;
                     e.argmax_token_device_col(&ld, 0, d.head.out_features(), batch_d, j + 1)?;
                     // confidence-adaptive depth (BW24_SPEC_PMIN): TRIM-space prob before d2t.
-                    if pmin > 0.0 {
+                    if pmin > 0.0 || inround > 0.0 {
                         e.prob_of_token_device_col(
                             &ld,
                             batch_d,
@@ -915,8 +931,16 @@ impl HybridModel {
                         e.u32_map_k(batch_d, map, j + 1)?;
                     }
                     hc = h_next;
+                    // IN-ROUND cut: one small dtoh sync per step; stop drafting the moment
+                    // confidence falls below the gate and verify at the shrunk width.
+                    if inround > 0.0 && j + 1 < kr {
+                        let ph = e.dtoh(p_d)?;
+                        if ph[j] < inround {
+                            return Ok(j + 1);
+                        }
+                    }
                 }
-                Ok(())
+                Ok(kr)
             };
             let over_win = {
                 let win = d.sliding_window;
@@ -1104,7 +1128,7 @@ impl HybridModel {
                     && !draft_graphs.contains_key(&key)
                 {
                     let g = e.capture_graph_retained(|e| {
-                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0).map(|_| ())
                     })?;
                     draft_graphs.insert(key, g);
                 }
@@ -1236,7 +1260,7 @@ impl HybridModel {
                     // each launch, like g_seed — the in-graph copy_add fills replayed one
                     // round stale, see jsonl).
                     let g = e.capture_graph_retained(|e| {
-                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0).map(|_| ())
                     })?;
                     draft_graphs.insert(key, g);
                 }
@@ -1253,7 +1277,7 @@ impl HybridModel {
                     for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
                         e.set_i32_one(slot, (cache.pos + j) as i32)?;
                     }
-                    run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
+                    run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0)?;
                     let etoks = e.dtoh_u32(&batch_d)?;
                     if gtoks[..=kr] != etoks[..=kr] {
                         eprintln!(
@@ -1270,7 +1294,12 @@ impl HybridModel {
                 for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
                     e.set_i32_one(slot, (cache.pos + j) as i32)?;
                 }
-                run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
+                let ir_now = match pmin_ir_env {
+                    Some(p) => p, // explicit pin (0 disables)
+                    None if cache.pos >= floor_ctx && !prev_full => PMIN_IR_DEFAULT,
+                    None => 0.0,
+                };
+                kr = run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, ir_now)?;
             }
             drafted += kr;
             rounds += 1;
@@ -1356,6 +1385,7 @@ impl HybridModel {
                     break;
                 }
             }
+            prev_full = m == k; // feeds the self-keyed in-round cut (miss → next round cuts)
             if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
                 let l0 = cache.kv.iter().flatten().next().map(|kv| kv.len).unwrap_or(0);
                 let hh = e.dtoh(&h)?;
