@@ -703,6 +703,13 @@ impl Model {
             cfg.full_attention_interval == 0,
             "model has linear-attn layers; use hybrid path"
         );
+        // FP8-KV per-model door: OFF everywhere by default (explicit BW24_KV_FP8 wins).
+        // The 2026-07-12 9B "+0.7-4% scaling with depth" did NOT reproduce on the
+        // 2026-07-28 build (12k A/B: fp8 117.0/118.2 vs q8 119.3/119.2 = −1%; d1736
+        // flat; the fa-v3/f16pv/PDL stack moved underneath it). Adoption reverted by
+        // measurement — fp8-KV's remaining value is bytes (~45% smaller KV) for
+        // ctx-limited serving, not speed. Gates all green under both formats.
+        crate::KV_FP8_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
 
         let embd = EmbedHost::from_source(src, "token_embd.weight");
         let output_norm = GpuTensor::load_from_source(e, src, "output_norm.weight")?;

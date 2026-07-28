@@ -706,6 +706,10 @@ impl HybridModel {
             let force = if cfg.n_embd >= 3500 { 0i8 } else { -1i8 };
             crate::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
         }
+        // FP8-KV door: OFF for every hybrid-path model (35B: fp8 format-gates its v3
+        // dp4a lane, −2% measured 2026-07-12; gemma keys its KV formats independently
+        // of this flag). The 9B dense loader is the only ON site.
+        crate::KV_FP8_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
 
         let embd = EmbedHost::from_source(src, "token_embd.weight");
         let output_norm = load_t(e, src, "output_norm.weight")?;

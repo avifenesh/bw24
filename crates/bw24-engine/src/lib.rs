@@ -246,6 +246,11 @@ pub static FA_SP_GEMMA: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// per-process kernel coin made 12B-class spec cells bimodal, while the 26B's drafter
 /// measures BETTER under sk's fold order (2026-07-27). mmq_ffi reads this before the env.
 pub static MMQ_SK_FORCE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+/// Per-model FP8-KV door (-1 = unset → env/default off; 0 = off; 1 = on). Set at qwen
+/// model load: the 2026-07-12 arc closed per-model — 9B +0.7-4% scaling with depth,
+/// 27B flat (weight-bound), 35B −2% (fp8 format-gates its v3 dp4a lane off). Explicit
+/// BW24_KV_FP8 wins. Adoption 2026-07-28 with the acceptance battery the arc deferred.
+pub static KV_FP8_FORCE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
 pub(crate) fn rms_block() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("BW24_RMS_BLOCK").ok()
@@ -630,14 +635,19 @@ impl Engine {
             .unwrap_or_else(|_| std::env::var("BW24_DRAFT").is_err()))
     }
 
-    /// QWEN FP8-KV switch (BW24_KV_FP8, default OFF — bring-up arc, HANDOVER "QWEN FP8-KV"):
-    /// non-gemma full-attn layers hold e4m3 K/V via the kf8vf8 module. The 2026-07-09
-    /// BW24_KV_K=fp8 block (acceptance 74->20.5%) predates the format-aware arms and the
-    /// v4-rows parity fix — this arm re-litigates it through the gemma recipe; the spec
-    /// K=1..8 + acceptance A/B battery arbitrates any default flip.
+    /// QWEN FP8-KV switch (BW24_KV_FP8 explicit; else the per-model KV_FP8_FORCE door set
+    /// at model load; else OFF). Non-gemma full-attn layers hold e4m3 K/V via the kf8vf8
+    /// module. Per-model verdict 2026-07-12: 9B +0.7-4% scaling with depth, 27B flat,
+    /// 35B −2% (fp8 format-gates its v3 dp4a lane) — so the 9B class defaults ON
+    /// (adopted 2026-07-28 with the deferred acceptance battery), others stay OFF.
     pub fn kv_fp8_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_KV_FP8").as_deref() == Ok("1"))
+        static ENV: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+        if let Some(v) = *ENV.get_or_init(|| std::env::var("BW24_KV_FP8").ok()
+            .map(|v| v == "1")) { return v; }
+        match KV_FP8_FORCE.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => true,
+            _ => false,
+        }
     }
 
     /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
