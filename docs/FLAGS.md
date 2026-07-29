@@ -128,7 +128,8 @@ HANDOVER.md sections from that date.
 | flag | default | what it does |
 |---|---|---|
 | `BW24_NVCC` | `nvcc` on PATH | nvcc binary override |
-| `BW24_CUDA_ARCH` | `120a` | build target. `89` builds the secondary correctness-first L40S eval lane: native-FP4 prefill is compiled off, tiled GDN uses its generic low-shared-memory fallback, and prompt attention dequants KV once into the generic f32 SDPA path. Portable int8/qmatvec and quantized decode kernels remain available. The default Blackwell build is unchanged |
+| `BW24_CUDA_ARCH` | auto-detected | build target: `120a` (Blackwell consumer), `90a` (Hopper), `100a` (B200), `89` (portable eval). Unset = probe the GPU via `nvidia-smi compute_cap` (12.x→120a, 9.0→90a, 10.0→100a, 8.9→89); GPU-less/unknown falls back to `120a` so the CI compile gate is unchanged. Explicit value always wins. `89` builds the secondary correctness-first eval lane: native-FP4 prefill compiled off, tiled GDN on its generic fallback, prompt attention through f32 SDPA |
+| `BW24_ARCH_CHECK` | on | `=0` skips the Engine::new device-vs-binary compute-capability guard (fatbins are single-arch SASS; the guard fails early with a rebuild hint on mismatch) |
 | `BW24_CUTLASS` | off | set = compile the CUTLASS sm120 NVFP4 GEMM (`cutlass_smoke`, `BW24_FP4_CUTLASS` door) |
 | `BW24_CUTLASS_ROOT` | flashinfer venv tree | CUTLASS header tree location |
 | `BW24_MMQ_X_Q45K` | 64 | k-quant MMQ X-tile (compile-time sweep seam) |
@@ -316,9 +317,10 @@ tools/acceptance_delta.py out-bf16.jsonl out-nvfp4.jsonl --json summary.json
 
 ---
 
-## 7. The H100 / sm_90a lane (`backend/sm90a-boot`, rounds 26-36)
+## 7. The H100 / sm_90a lane (merged from `backend/sm90a-boot`, rounds 26-36)
 
-Build with `BW24_CUDA_ARCH=90a`. Every promoted config below followed the repo law:
+On an H100 the arch auto-detects (`BW24_CUDA_ARCH=90a` forces it). Every promoted
+config below followed the repo law:
 harness proof -> engine seam -> full battery (kernel-check pins, greedy/stream identity,
 decode/prime/graph gates, interleaved x5 A/B) -> default-ON with a `=0` revert. The
 evidence ledger is [ARCHITECTURE-H100.md](../ARCHITECTURE-H100.md); the one-command

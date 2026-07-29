@@ -57,7 +57,9 @@ if [ -z "$QUICK" ] && [ $FAIL -eq 0 ]; then
   ./target/release/decode-batch-bench "$MODEL" --steps 96 --reps 3 --batches 1,2,4,8 --ctx 512 \
     | grep -E "B=|scale"
   echo "== perf record: single-seq prime+decode (N=3) =="
-  bash bench_bw24.sh "$MODEL" 3 512 2>/dev/null | grep -E "run 1|run 2|run 3|median"
+  # tee the raw log; never let the pipe swallow error output (evidence discipline)
+  bash tools/bench_bw24_protocol.sh "$MODEL" 3 512 2>&1 | tee bw24-single.log \
+    | grep -E "run [0-9]|median" || echo "single-seq bench produced no readings — see bw24-single.log"
 fi
 
 [ $FAIL -eq 0 ] && echo "VALIDATE-H100: ALL GATES GREEN" || echo "VALIDATE-H100: FAILURES ($FAIL)"

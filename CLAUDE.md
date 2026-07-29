@@ -105,9 +105,11 @@ artifact. Secondary backends must preserve the model bytes, default off at build
 disabled target-specific kernels, and pass a same-prompt golden-output gate before producing
 scored evidence. They do not change the naked sm_120a build or its performance defaults.
 
-### The sm_90a (Hopper/H100) lane — `backend/sm90a-boot`
+### The sm_90a (Hopper/H100) lane — merged into main 2026-07-30
 
-Build: `BW24_CUDA_ARCH=90a`. Evidence ledger: `ARCHITECTURE-H100.md` (append-only; every
+Build: arch auto-detects on an H100 (`BW24_CUDA_ARCH=90a` forces). Hopper promotions are
+compile-gated behind `bw24_hopper_mma` — the naked sm_120a build stays byte-identical.
+Evidence ledger: `ARCHITECTURE-H100.md` (append-only; every
 promoted config, every mechanism refutation). Gate battery: `tools/validate-h100.sh
 <model.gguf> [--quick]` — kernel-check config pins, decode-batch (config + strict),
 decode-dc, graph-decode, graph-session. LAWS learned the hard way on this lane (do not

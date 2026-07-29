@@ -1,5 +1,8 @@
 # bw24 on H100 — the serving lane (sm_90a)
 
+> **Merged into main 2026-07-30** (`lane/unified-engine`): one tree serves both arches,
+> auto-detected at build (`BW24_CUDA_ARCH` overrides). This ledger stays append-only.
+
 Companion to `ARCHITECTURE.md` (the sm_120 laptop engine). This document is the
 architecture for the **H100 serving lane**: multi-tenant, batched, lane-scheduled
 serving with every kernel driven to its sm_90a wall. It folds in three ground-truth
