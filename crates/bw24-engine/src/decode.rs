@@ -22,6 +22,58 @@ pub struct GraphDecodeState {
     pub captures: usize,                           // count of (re)captures, for reporting
 }
 
+/// Long-lived step-wise CUDA-graph decode session (see HybridModel::graph_session_new).
+/// One replay per step(); the only steady-state D2H is the 4-byte next-token read.
+pub struct GraphSession {
+    pub gs: GraphDecodeState,
+    pub cache: Cache,
+    /// LOAD-BEARING hold: the captured graph's embed-gather node references this
+    /// allocation — dropping it would free memory the graph still reads.
+    #[allow(dead_code)]
+    embd_gpu: CudaSlice<u8>,
+    graph: cudarc::driver::CudaGraph,
+    plan: Vec<crate::graph_update::FaMain>,
+    pub bucket_max: usize,
+}
+
+impl GraphSession {
+    /// One graph-replay decode step. Returns the next token (already fed back into the
+    /// resident token_d — the following step consumes it). Errors past bucket_max
+    /// (the caller sized max_new at capture; recapture-on-cross is a follow-up).
+    pub fn step(&mut self, e: &Engine) -> Result<u32, Box<dyn std::error::Error>> {
+        if self.cache.pos + 1 >= self.bucket_max {
+            return Err("GraphSession: past bucket_max (generation budget exceeded)".into());
+        }
+        crate::graph_update::fa_apply(&self.graph, &mut self.plan, self.cache.pos + 1,
+                                      crate::fa_split_keys)?;
+        self.graph.launch()?;
+        self.cache.pos += 1;
+        for kvl in self.cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+            kvl.len += 1;
+        }
+        e.dtoh_u32_one(&self.gs.token_d)
+    }
+
+    /// Profiling decomposition of step() (graph-session-gate BW24_GS_PROF): the three
+    /// phases exposed separately. prof_launch is ASYNC (no sync) — prof_read carries the
+    /// sync+D2H. Advances the session exactly like step().
+    pub fn prof_apply(&mut self, _e: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+        crate::graph_update::fa_apply(&self.graph, &mut self.plan, self.cache.pos + 1,
+                                      crate::fa_split_keys)
+    }
+    pub fn prof_launch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.graph.launch()?;
+        self.cache.pos += 1;
+        for kvl in self.cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+            kvl.len += 1;
+        }
+        Ok(())
+    }
+    pub fn prof_read(&mut self, e: &Engine) -> Result<u32, Box<dyn std::error::Error>> {
+        e.dtoh_u32_one(&self.gs.token_d)
+    }
+}
+
 impl GraphDecodeState {
     pub fn new(e: &Engine) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(GraphDecodeState {
@@ -1054,6 +1106,7 @@ impl HybridModel {
                                         cache_ref, n_vocab, bucket_max)
             })?
         };
+        gs.captures += 1;   // telemetry (dead since the exec-update rework; round 35 fix)
         cache.rollback(e, &snap, 0)?;
         e.set_i32_one(&mut gs.pos_d, pos_save)?;
         for (il, ls) in len_save.iter().enumerate() {
@@ -1081,6 +1134,136 @@ impl HybridModel {
             if let Some(r) = emit(tok) { return Ok(r); }
         }
         Ok(StopReason::MaxNew)
+    }
+
+    /// Step-wise CUDA-graph decode session (ARCHITECTURE-H100.md graph-serving lane,
+    /// 2026-07-26): generate_graph's prime+capture lifted into a long-lived session so a
+    /// SERVING scheduler can replay ONE step per tick instead of blocking a whole
+    /// generation. Serving policy (measured): graphs win only at B=1 (214 solo vs 425
+    /// aggregate batched-eager at B=4) — this is the single-interactive-session path.
+    /// Capture discipline is generate_graph's verbatim: event tracking must be OFF for
+    /// every buffer the graph references (new() toggles it), capture at bucket_max =
+    /// pos + max_new + 1, fa geometry retuned per step (fa_apply, FP lockstep with eager).
+    pub fn graph_session_new(
+        &self,
+        e: &Engine,
+        prompt: &[u32],
+        max_new: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let (qt, row_bytes) = self.embd.qt_and_row_bytes(n_embd);
+        let was_tracking = e.ctx().is_event_tracking();
+        if was_tracking {
+            unsafe { e.ctx().disable_event_tracking(); }
+        }
+        let r = self.graph_session_new_inner(e, prompt, max_new, qt, row_bytes);
+        if was_tracking {
+            unsafe { e.ctx().enable_event_tracking(); }
+        }
+        r
+    }
+
+    fn graph_session_new_inner(
+        &self,
+        e: &Engine,
+        prompt: &[u32],
+        max_new: usize,
+        qt: i32,
+        row_bytes: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        let n_vocab = self.output.out_features();
+        let embd_gpu = e.upload_u8(&self.embd.raw)?;
+        let max_ctx = prompt.len() + max_new + 8;
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+        let mut gs = GraphDecodeState::new(e)?;
+        gs.pos_d = e.htod_i32(&[0])?;
+        gs.token_d = e.stream().clone_htod(&[0u32])?;
+        // prime (dc path — device counters advance with the host)
+        let mut next_in = 0u32;
+        for &tok in prompt {
+            e.set_u32_one(&mut gs.token_d, tok)?;
+            let nt = self.decode_step_dc(e, &gs.token_d, &mut gs.pos_d, &embd_gpu,
+                                         qt, row_bytes, &mut cache, n_vocab)?;
+            next_in = e.dtoh_u32_one(&nt)?;
+        }
+        e.set_u32_one(&mut gs.token_d, next_in)?;
+        self.graph_session_capture(e, cache, gs, embd_gpu, max_new, qt, row_bytes, n_vocab)
+    }
+
+    /// GraphSession over an ALREADY-PRIMED cache (round 35): keeps the chunked-prefill
+    /// TTFT. graph_session_new's token-wise re-prime made solo long-prompt promotion a
+    /// net ~3x END-TO-END LOSS (measured live: 871-tok prompt + 400 gen = 6.4s vs ~2.2s
+    /// eager). Device counters sync from host state; capture recipe unchanged.
+    /// Requires event tracking OFF (engine default; BW24_EVT=1 callers must not use this
+    /// — the primed cache's buffers would carry events, illegal inside capture).
+    pub fn graph_session_from_cache(
+        &self,
+        e: &Engine,
+        mut cache: Cache,
+        first_token: u32,
+        max_new: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        if e.ctx().is_event_tracking() {
+            return Err("graph_session_from_cache requires event tracking OFF (BW24_EVT unset)".into());
+        }
+        let n_embd = self.cfg.n_embd as usize;
+        let (qt, row_bytes) = self.embd.qt_and_row_bytes(n_embd);
+        let n_vocab = self.output.out_features();
+        let embd_gpu = e.upload_u8(&self.embd.raw)?;
+        let mut gs = GraphDecodeState::new(e)?;
+        gs.pos_d = e.htod_i32(&[cache.pos as i32])?;
+        gs.token_d = e.stream().clone_htod(&[first_token])?;
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        self.graph_session_capture(e, cache, gs, embd_gpu, max_new, qt, row_bytes, n_vocab)
+    }
+
+    /// Shared capture tail: snapshot/rollback warmups, capture at bucket_max, fa_plan.
+    #[allow(clippy::too_many_arguments)]
+    fn graph_session_capture(
+        &self,
+        e: &Engine,
+        mut cache: Cache,
+        mut gs: GraphDecodeState,
+        embd_gpu_owned: CudaSlice<u8>,
+        max_new: usize,
+        qt: i32,
+        row_bytes: usize,
+        n_vocab: usize,
+    ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
+        let embd_gpu = embd_gpu_owned;
+        // capture ONCE at bucket_max (snapshot/rollback the warmup runs — the
+        // graph_decode_loop recipe verbatim)
+        let bucket_max = cache.pos + max_new + 1;
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+        let graph = {
+            let GraphDecodeState { token_d, pos_d, .. } = &mut gs;
+            let cache_ref = &mut cache;
+            let embd_ref = &embd_gpu;
+            e.capture_graph(|e| {
+                self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
+                                        cache_ref, n_vocab, bucket_max)
+            })?
+        };
+        gs.captures += 1;   // telemetry (dead since the exec-update rework; round 35 fix)
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(&mut gs.pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
+            }
+        }
+        e.set_u32_one(&mut gs.token_d, tok_save)?;
+        let plan = crate::graph_update::fa_plan(&graph)?;
+        let first = e.dtoh_u32_one(&gs.token_d)?;
+        Ok((GraphSession {
+            gs, cache, embd_gpu, graph, plan, bucket_max,
+        }, first))
     }
 
     /// Device-counter full-attention decode (CUDA-GRAPH-PLAN Phase 2): clone of `full_attn_decode`
@@ -1723,6 +1906,43 @@ impl HybridModel {
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
             let mut token_d = e.stream().clone_htod(
                 &[crate::forward::argmax(&last_logits) as u32])?;
+            // HYBRID GRAPH DOOR (round 35): graph_decode_loop over the batched-prime
+            // cache — the E4B graph-exec door's hybrid mirror. Counters (pos_d/token_d/
+            // len_d) synced above; event tracking is engine-default-OFF so capture over
+            // these buffers is legal. PROMOTED default-ON at budget >= 256 (the E4B
+            // door's amortization rule): official-shape A/B interleaved x5 = eager 190.3
+            // -> graph 220.7 tok/s (+16.0%, 5/5, spread ±0.1); 128-tok stream IDENTICAL;
+            // graph-decode-gate 256 steps x 16 buckets BIT-IDENTICAL. This REFUTES the
+            // 2026-07-15 "-11%" qwen-graph verdict — it predated the exec-update rework
+            // and the 07-26 FA family (stale-verdict law, round 35). =0 reverts.
+            // Default ON at budget >= 256 on BOTH arches (unified-merge resolution,
+            // 2026-07-30): main shipped this door budget-keyed on sm_120a (52222ddd,
+            // E4B graph door) and every 5090 board row since measured with it; the H100
+            // lane measured +16% x5. The branch-era arch-gate (79395a3e) cited the
+            // stale 2026-07-15 "-11%" verdict, which predates main's promotion — the
+            // rig-divergence law protects main's SHIPPED default, so the gate came off.
+            // BW24_GEN_GRAPH=1 opts in anywhere; =0 reverts anywhere.
+            let gen_graph = match std::env::var("BW24_GEN_GRAPH").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => budget >= 256,
+            };
+            if gen_graph && budget > 0 {
+                let head_dim = self.cfg.head_dim_k as usize;
+                let mut gs = GraphDecodeState::new(e)?;
+                gs.pos_d = pos_d;
+                gs.token_d = token_d;
+                let (out_cell, sampler_cell) = (&mut out, &mut *sampler);
+                let reason = self.graph_decode_loop(
+                    e, &mut gs, &mut cache, embd_gpu, qt, rb, head_dim, budget, |tok| {
+                        sampler_cell.accept(tok);
+                        out_cell.push(tok);
+                        if params.eos.contains(&tok) { return Some(StopReason::Eos); }
+                        if !on_token(tok) { return Some(StopReason::Callback); }
+                        None
+                    })?;
+                return Ok(GenOutput { tokens: out, stop_reason: reason });
+            }
             let mut next = e.dtoh_u32(&token_d)?[0];
             for _ in 0..budget {
                 sampler.accept(next);

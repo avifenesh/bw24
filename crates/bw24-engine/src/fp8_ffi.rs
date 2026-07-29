@@ -93,7 +93,9 @@ impl crate::Engine {
         m: usize,
     ) -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
-        if cfg!(bw24_portable_cuda) {
+        // H100 (sm_90) is the first-class FP8 arch: cuBLASLt e4m3 GEMM is native there,
+        // so the Hopper-MMA lane re-admits this path (Phase A5, ARCHITECTURE-H100.md).
+        if crate::portable_mma_gated() {
             return Ok(None);
         }
         // Two e4m3 operand sources, one GEMM:

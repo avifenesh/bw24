@@ -969,7 +969,13 @@ template <int n>
 static __device__ __forceinline__ void fa_cp_wait() { asm volatile("cp.async.wait_group %0;\n" :: "n"(n)); }
 
 
-template<int HD>
+// NW = warps per CTA (W2 lane, 2026-07-26): the ncu verdict pinned this kernel at 6.25%
+// achieved occupancy with grid (T/64, n_head) — at serving chunk sizes (T<=512) the grid
+// starves 132 SMs. NW=2 halves the CTA tile (32 query rows) and DOUBLES grid.x at
+// unchanged per-warp math: each query row still walks the same KV tiles in the same
+// order, so outputs are BIT-IDENTICAL to NW=4 — a pure coverage/occupancy trade
+// (K/V staging traffic doubles; mem SOL was 9.2%, plenty of headroom).
+template<int HD, int NW = N_WARPS, bool BF16KV = false>
 static __device__ __forceinline__ void fa_prefill_f32_pp_body(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
@@ -979,24 +985,28 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     constexpr int HEAD_DIM  = HD;
     constexpr int HD_KTILES = HD / K_STEP;
     constexpr int O_NBLK    = HD / N_KEYS;
+    constexpr int BQ        = M_ROWS * NW;   // CTA query-row tile (BQ at NW=4)
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;
     const int kv_head = head / (n_head / n_head_kv);
-    const int q_base  = blockIdx.x * BLOCK_Q;
+    const int q_base  = blockIdx.x * BQ;
     const int qrow_base = q_base + warp*M_ROWS;
     if (head >= n_head || q_base >= T) return;
     const int nqw = min(M_ROWS, T - qrow_base);
 
     extern __shared__ char smem_raw[];
-    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // BK*HEAD_DIM
-    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM
-    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // BLOCK_Q*BK
-    // sS retained ONLY as the alpha broadcast slot (BLOCK_Q f32 is enough but
+    // BF16KV ring (2026-07-26): two K/V stages so the next tile's cp.async lands behind
+    // the current tile's mma (bit-identical — only copy TIMING changes).
+    constexpr int KV_STAGES = BF16KV ? 2 : 1;
+    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // KV_STAGES*BK*HEAD_DIM
+    __nv_bfloat16* sV = sK + KV_STAGES*BK*HEAD_DIM;               // KV_STAGES*BK*HEAD_DIM
+    __nv_bfloat16* sP = sV + KV_STAGES*BK*HEAD_DIM;               // BQ*BK
+    // sS retained ONLY as the alpha broadcast slot (BQ f32 is enough but
     // keep the same layout offsets so the launcher smem calc is unchanged).
-    float* sS = (float*)(sP + BLOCK_Q*BK);                        // BLOCK_Q*BK f32
-    float* sM = sS + BLOCK_Q*BK;                                  // BLOCK_Q f32
-    float* sL = sM + BLOCK_Q;                                     // BLOCK_Q f32
+    float* sS = (float*)(sP + BQ*BK);                        // BQ*BK f32
+    float* sM = sS + BQ*BK;                                  // BQ f32
+    float* sL = sM + BQ;                                     // BQ f32
     __nv_bfloat16* sPw = sP + warp*M_ROWS*BK;
     float* sMw = sM + warp*M_ROWS;
     float* sLw = sL + warp*M_ROWS;
@@ -1009,6 +1019,24 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
         ATile Qf[HD_KTILES];
         load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();
+        if constexpr (BF16KV) {
+            // ring prologue: tile 0 into stage 0 (after the sync — Q staging reused sK smem).
+            const int nk0 = min(BK, T_kv);
+            const int bt0 = warp*WARP_SZ + lane;
+            const __nv_bfloat16* Kb = (const __nv_bfloat16*)K;
+            const __nv_bfloat16* Vb = (const __nv_bfloat16*)V;
+            for (int i8 = bt0; i8 < BK*HEAD_DIM/8; i8 += NW*WARP_SZ) {
+                int kk = (i8 * 8) / HEAD_DIM, d = (i8 * 8) % HEAD_DIM;
+                int ok = (kk < nk0) ? 16 : 0;
+                unsigned dk = (unsigned)__cvta_generic_to_shared(sK + i8*8);
+                unsigned dv = (unsigned)__cvta_generic_to_shared(sV + i8*8);
+                const void* srck = Kb + ((size_t)kk * n_head_kv + kv_head) * head_dim + d;
+                const void* srcv = Vb + ((size_t)kk * n_head_kv + kv_head) * head_dim + d;
+                asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dk), "l"(srck), "r"(ok));
+                asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dv), "l"(srcv), "r"(ok));
+            }
+            asm volatile("cp.async.commit_group;");
+        }
 
         CTile O_acc[O_NBLK];
         #pragma unroll
@@ -1021,20 +1049,48 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
 
         for (int k0 = 0; k0 < T_kv; k0 += BK) {
             const int nk = min(BK, T_kv - k0);
-            const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q - 1);
+            const int q_pos_max = (T_kv - T) + q_base + (BQ - 1);
             if (causal_i && k0 > q_pos_max) break;
             // window skip (same rule as the floor body): tile fully below every window.
             if (window > 0 && (k0 + BK) <= ((T_kv - T) + q_base) - (window - 1)) continue;
 
             const int bt = warp*WARP_SZ + lane;
-            for (int i = bt; i < BK*HEAD_DIM; i += N_WARPS*WARP_SZ) {
-                int kk = i / HEAD_DIM, d = i % HEAD_DIM;
-                float kv = (kk < nk) ? K[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
-                float vv = (kk < nk) ? V[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
-                sK[i] = __float2bfloat16(kv);
-                sV[i] = __float2bfloat16(vv);
+            if constexpr (BF16KV) {
+                // ring: current tile was prefetched (prologue / previous iter); wait, then
+                // issue the NEXT tile into the other stage before this tile's mma.
+                asm volatile("cp.async.wait_group 0;");
+                __syncthreads();
+                int nxt0 = k0 + BK;
+                if (nxt0 < T_kv && !(causal_i && nxt0 > q_pos_max)) {
+                    const int nnk = min(BK, T_kv - nxt0);
+                    __nv_bfloat16* nK = sK + ((k0 / BK + 1) & 1) * BK*HEAD_DIM;
+                    __nv_bfloat16* nV = sV + ((k0 / BK + 1) & 1) * BK*HEAD_DIM;
+                    const __nv_bfloat16* Kb = (const __nv_bfloat16*)K;
+                    const __nv_bfloat16* Vb = (const __nv_bfloat16*)V;
+                    for (int i8 = bt; i8 < BK*HEAD_DIM/8; i8 += NW*WARP_SZ) {
+                        int kk = (i8 * 8) / HEAD_DIM, d = (i8 * 8) % HEAD_DIM;
+                        int ok = (kk < nnk) ? 16 : 0;
+                        unsigned dk = (unsigned)__cvta_generic_to_shared(nK + i8*8);
+                        unsigned dv = (unsigned)__cvta_generic_to_shared(nV + i8*8);
+                        const void* srck = Kb + ((size_t)(nxt0 + kk) * n_head_kv + kv_head) * head_dim + d;
+                        const void* srcv = Vb + ((size_t)(nxt0 + kk) * n_head_kv + kv_head) * head_dim + d;
+                        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dk), "l"(srck), "r"(ok));
+                        asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dv), "l"(srcv), "r"(ok));
+                    }
+                    asm volatile("cp.async.commit_group;");
+                }
+            } else {
+                for (int i = bt; i < BK*HEAD_DIM; i += NW*WARP_SZ) {
+                    int kk = i / HEAD_DIM, d = i % HEAD_DIM;
+                    float kv = (kk < nk) ? K[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
+                    float vv = (kk < nk) ? V[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
+                    sK[i] = __float2bfloat16(kv);
+                    sV[i] = __float2bfloat16(vv);
+                }
             }
             __syncthreads();
+            const __nv_bfloat16* cK = BF16KV ? (sK + ((k0 / BK) & (KV_STAGES - 1)) * BK*HEAD_DIM) : sK;
+            const __nv_bfloat16* cV = BF16KV ? (sV + ((k0 / BK) & (KV_STAGES - 1)) * BK*HEAD_DIM) : sV;
 
             // ---- GEMM0: QK^T -> 4 score CTiles HELD IN REGISTERS (no sSw write) ----
             CTile Sc[BK/N_KEYS];                 // BK/8 = 4 CTiles, 8 cols each
@@ -1047,7 +1103,7 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
                 #pragma unroll
                 for (int kt = 0; kt < HD_KTILES; ++kt) {
                     ATile Kt;
-                    ld_A(Kt, sK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                    ld_A(Kt, cK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
                     BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
                     BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
                     mma_bf16(C0, Qf[kt], Blo);
@@ -1131,7 +1187,7 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
                 for (int kk = 0; kk < BK; kk += K_STEP) {
                     ATile A; ATile Bt;
                     ld_A(A, sPw + kk, BK/2);
-                    ld_A_trans(Bt, sV + kk*HEAD_DIM + d0, HEAD_DIM/2);
+                    ld_A_trans(Bt, cV + kk*HEAD_DIM + d0, HEAD_DIM/2);
                     BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
                     BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
                     mma_bf16(Clo, A, Blo);
@@ -1166,7 +1222,13 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     }
 }
 
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp(
+// FA_PP_MINBLOCKS occupancy seam (H100 ncu 2026-07-26: 255 regs -> 2 blocks/SM, 6.25%
+// achieved occupancy, 67% long-scoreboard on the K/V stage — latency-starved). Forcing
+// more resident blocks trades register spills for latency hiding; swept at build time.
+#ifndef FA_PP_MINBLOCKS
+#define FA_PP_MINBLOCKS 2
+#endif
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_f32_pp(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
@@ -3850,6 +3912,187 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_
         float scale, int causal)
 {
     fa_prefill_f32_pp_body<128>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+// W2 twins: 2 warps / 32-row CTA tile (see the NW doc on the body). Same math, bit-identical.
+extern "C" __global__ void __launch_bounds__(2*WARP_SZ, 2) fa_prefill_f32_pp_w2(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<256, 2>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+extern "C" __global__ void __launch_bounds__(2*WARP_SZ, 2) fa_prefill_f32_pp_w2_hd128(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<128, 2>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+// BF16-KV twins (bit-identical to the f32-staged kernel: producers pre-convert with the
+// same __float2bfloat16; staging becomes vectorized). K/V args carry bf16 bytes.
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_pp(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<256, N_WARPS, true>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_pp_hd128(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<128, N_WARPS, true>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+
+// ---- task #18 (attn side): varlen FA over B<=8 fresh sequences. One launch runs every
+// sequence's causal prefill attention (grid.z = seq; per-block math identical to the
+// per-seq launch — blockIdx.x/y semantics unchanged, tails guarded in-body). At serving
+// chunk sizes (T~152 -> 3 q-tiles x n_head CTAs) the per-seq grid starves the SMs; the
+// seq dim restores full-machine occupancy. fa_mirror_vl batches the bf16 K/V mirrors.
+typedef struct {
+    const float* q; const __nv_bfloat16* k16; const __nv_bfloat16* v16;
+    float* o; const float* kf; const float* vf;
+    int T; int pad_;
+} faseq_t;
+typedef struct { faseq_t s[8]; } favl_t;
+
+extern "C" __global__ void fa_mirror_vl(favl_t v, int elems_per_t, int which) {
+    const faseq_t sq = v.s[blockIdx.z];
+    long n = (long)sq.T * elems_per_t;
+    const float* x = which == 0 ? sq.kf : sq.vf;
+    __nv_bfloat16* o = (__nv_bfloat16*)(which == 0 ? sq.k16 : sq.v16);
+    long base = ((long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (base + 3 < n) {
+        float4 val = *(const float4*)(x + base);
+        o[base + 0] = __float2bfloat16(val.x);
+        o[base + 1] = __float2bfloat16(val.y);
+        o[base + 2] = __float2bfloat16(val.z);
+        o[base + 3] = __float2bfloat16(val.w);
+    } else {
+        for (long i = base; i < n; i++) o[i] = __float2bfloat16(x[i]);
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_vl(
+        favl_t v, int head_dim, int n_head, int n_head_kv, float scale) {
+    const faseq_t a = v.s[blockIdx.z];
+    fa_prefill_f32_pp_body<256, N_WARPS, true>(a.q, (const float*)a.k16, (const float*)a.v16, a.o,
+        head_dim, n_head, n_head_kv, a.T, a.T, scale, 1);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_vl_hd128(
+        favl_t v, int head_dim, int n_head, int n_head_kv, float scale) {
+    const faseq_t a = v.s[blockIdx.z];
+    fa_prefill_f32_pp_body<128, N_WARPS, true>(a.q, (const float*)a.k16, (const float*)a.v16, a.o,
+        head_dim, n_head, n_head_kv, a.T, a.T, scale, 1);
+}
+
+// ---- task #18 (attn pre-FA): varlen split/norm/rope/append — the last per-seq attn
+// launches. Inputs are VIEWS of the concat projections (removes the q/k/v split copies).
+// Every twin reproduces the per-seq kernel's per-element/per-block math exactly.
+typedef struct {
+    const float* qf;             // [T, n_head*2*head_dim] fused [q|gate] rows (view)
+    const float* kf;             // [T, n_head_kv*head_dim] raw k rows (view)
+    const float* vf;             // [T, n_head_kv*head_dim] raw v rows (view)
+    float* q; float* gate;       // split outputs
+    float* qn; float* kn;        // normed (rope applies in-place after)
+    unsigned char* kc; unsigned char* vc;   // per-seq KV cache bases
+    int T; int pad_;
+} attnpre_t;
+typedef struct { attnpre_t s[8]; } attnprevl_t;
+
+extern "C" __global__ void q_gate_split_vl(attnprevl_t v, int head_dim, int n_head) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)sq.T * n_head * head_dim;
+    if (idx >= total) return;
+    int d  = idx % head_dim;
+    int hh = (idx / head_dim) % n_head;
+    int tok = idx / ((long)head_dim * n_head);
+    int stride = 2 * head_dim;
+    long src = (long)tok * (n_head * stride) + (long)hh * stride;
+    sq.q[idx]    = sq.qf[src + d];
+    sq.gate[idx] = sq.qf[src + head_dim + d];
+}
+
+// fused q+k QK-norm (grid.y: 0 = q rows with wq, 1 = k rows with wk); the reduction body
+// is rms_norm_f32's — the launcher passes the SAME block size (rms_block()).
+extern "C" __global__ void attn_rms_vl(attnprevl_t v, const float* __restrict__ wq,
+                                       const float* __restrict__ wk,
+                                       int ncols, int n_head, int n_head_kv, float eps) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    int nrows = (blockIdx.y == 0 ? n_head : n_head_kv) * sq.T;
+    int row = blockIdx.x;
+    if (row >= nrows) return;
+    const float* x = blockIdx.y == 0 ? sq.q : sq.kf;
+    const float* w = blockIdx.y == 0 ? wq : wk;
+    float* dst = blockIdx.y == 0 ? sq.qn : sq.kn;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v2 = xr[i]; sum += v2 * v2; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+}
+
+// fused q+k RoPE (grid.y picks), FRESH positions (pos[tok] == tok — the batched prime is
+// fresh-only, so the iota position is computed in-kernel; identical value to pos_d[tok]).
+extern "C" __global__ void attn_rope_vl(attnprevl_t v, int head_dim, int n_dims,
+                                        int n_head, int n_head_kv,
+                                        float theta_scale, float freq_scale) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    int n_heads = blockIdx.y == 0 ? n_head : n_head_kv;
+    float* x = blockIdx.y == 0 ? sq.qn : sq.kn;
+    int hd2 = head_dim / 2;
+    int j = threadIdx.x;
+    if (j >= hd2) return;
+    int hr = blockIdx.x;
+    if (hr >= n_heads * sq.T) return;
+    int tok = hr / n_heads;
+    float* base = x + (size_t)hr * head_dim;
+    int half = n_dims / 2;
+    if (j >= half) return;
+    float theta = (float)tok * powf(theta_scale, (float)j) * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = base[j], x1 = base[j + half];
+    base[j]        = x0 * c - x1 * sn;
+    base[j + half] = x0 * sn + x1 * c;
+}
+
+// varlen KV append (fresh: t0 == 0). Per-block math == append_quantize_kv_q8_0_q5_1_rows.
+extern "C" __global__ void append_kv_vl(attnprevl_t v, int kv_dim_k, int kv_dim_v,
+                                        long k_tok_bytes, long v_tok_bytes) {
+    const attnpre_t sq = v.s[blockIdx.z];
+    const int b    = blockIdx.x;
+    const int tt   = blockIdx.y;
+    if (tt >= sq.T) return;
+    const int lane = threadIdx.x;
+    const int eidx = b * 32 + lane;
+    const int t    = tt;                    // fresh: t0 == 0
+    // K rows are the POST-ROPE kn; V rows are the raw vf view.
+    if (b * 32 < kv_dim_k) {
+        float x = (eidx < kv_dim_k) ? sq.kn[(size_t)tt * kv_dim_k + eidx] : 0.0f;
+        quant_K_block(x, lane, sq.kc + (size_t)t * k_tok_bytes + (size_t)b * K_BLK_B);
+    }
+    if (b * 32 < kv_dim_v) {
+        float x = (eidx < kv_dim_v) ? sq.vf[(size_t)tt * kv_dim_v + eidx] : 0.0f;
+        quant_V_block(x, lane, sq.vc + (size_t)t * v_tok_bytes + (size_t)b * V_BLK_B);
+    }
 }
 
 // ===================================================================== //

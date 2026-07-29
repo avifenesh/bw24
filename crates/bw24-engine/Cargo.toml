@@ -4,6 +4,9 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+bw24-sampling = { path = "../bw24-sampling" }
+bw24-validate = { path = "../bw24-validate" }
+bw24-kv = { path = "../bw24-kv" }
 bw24-gguf = { path = "../bw24-gguf" }
 bw24-runtime = { path = "../bw24-runtime" }
 bw24-tokenizer = { path = "../bw24-tokenizer" }
@@ -14,6 +17,18 @@ libc = "0.2"
 [[bin]]
 name = "gemma-gate"
 path = "src/bin/gemma_gate.rs"
+
+[[bin]]
+name = "prime-graph-gate"
+path = "src/bin/prime_graph_gate.rs"
+
+[[bin]]
+name = "prime-graph-smoke"
+path = "src/bin/prime_graph_smoke.rs"
+
+[[bin]]
+name = "prime-batch-gate"
+path = "src/bin/prime_batch_gate.rs"
 
 [[bin]]
 name = "kernel-check"
@@ -135,3 +150,15 @@ path = "src/bin/fa_ab_bench.rs"
 [[bin]]
 name = "frspec-rank"
 path = "src/bin/frspec_rank.rs"
+
+[[bin]]
+name = "decode-batch-gate"
+path = "src/bin/decode_batch_gate.rs"
+
+[[bin]]
+name = "decode-batch-bench"
+path = "src/bin/decode_batch_bench.rs"
+
+[[bin]]
+name = "graph-session-gate"
+path = "src/bin/graph_session_gate.rs"

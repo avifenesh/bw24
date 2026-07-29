@@ -2,40 +2,93 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Arch auto-detection (BW24_CUDA_ARCH unset): probe the first GPU's compute capability
+/// via nvidia-smi and pick the matching build arch. GPU-less machines (CI compile gate)
+/// and unrecognized caps fall back to 120a — the naked build stays the sm_120a build.
+/// An explicit BW24_CUDA_ARCH always wins (this fn is not called then).
+fn detect_arch() -> String {
+    let cap = Command::new("nvidia-smi")
+        .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+    let arch = match cap.as_deref() {
+        Some("12.0") | Some("12.1") => "120a",
+        Some("10.0") => "100a",
+        Some("9.0") => "90a",
+        Some("8.9") => "89",
+        _ => "120a",
+    };
+    match &cap {
+        Some(c) => println!("cargo:warning=BW24_CUDA_ARCH auto-detected {arch} (compute_cap {c}); set BW24_CUDA_ARCH to override"),
+        None => println!("cargo:warning=no GPU visible; defaulting BW24_CUDA_ARCH=120a (compile-only)"),
+    }
+    arch.to_string()
+}
+
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let nvcc = std::env::var("BW24_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
     println!("cargo:rerun-if-env-changed=BW24_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
     println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
+    println!("cargo:rustc-check-cfg=cfg(bw24_hopper_mma)");
     println!("cargo:rustc-check-cfg=cfg(bw24_cutlass)");
-    let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
-    assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "89"),
-            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), or 89 (portable eval)");
-    let portable = cuda_arch == "89";
+    let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| detect_arch());
+    assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "90a" | "89"),
+            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), 90a (Hopper), or 89 (portable eval)");
+    // Hopper boot arch rides the portable-CUDA correctness path: sm_90a SASS, no
+    // sm_120a/sm_100a MMA kinds. Tuned wgmma paths are a separate later lane.
+    // Phase A (ARCHITECTURE-H100.md): 90a additionally re-enables the portable-PTX
+    // tensor-core paths the boot lane gated off — int8 mma.m16n8k32/k16.s8, bf16
+    // m16n8k16, ldmatrix, cp.async are sm_80-class and run natively on Hopper.
+    // The sm_120a/sm_100a-only MMA kinds (mxf4nvf4, kind::f8f6f4) stay dead: their
+    // launchers remain fail-closed stubs on this arch.
+    let portable = matches!(cuda_arch.as_str(), "89" | "90a");
+    let hopper_mma = cuda_arch == "90a";
     assert!(!(cuda_arch != "120a" && std::env::var_os("BW24_CUTLASS").is_some()),
             "BW24_CUTLASS is sm_120a-only and cannot be enabled for this CUDA architecture");
     let gencode = format!("arch=compute_{cuda_arch},code=sm_{cuda_arch}");
     if portable {
         println!("cargo:rustc-cfg=bw24_portable_cuda");
     }
+    if hopper_mma {
+        println!("cargo:rustc-cfg=bw24_hopper_mma");
+    }
+    // Runtime arch guard reads this (Engine::new): fatbins are single-arch SASS, so the
+    // engine verifies the device's compute capability matches the built arch at init.
+    println!("cargo:rustc-env=BW24_BUILT_CUDA_ARCH={cuda_arch}");
 
     for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
                        ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN"), ("cu/flash_attn.cu", "BW24_FLASH_FATBIN"),
                        ("cu/qmatvec_gemm.cu", "BW24_GEMM_FATBIN"), ("cu/moe_router.cu", "BW24_ROUTER_FATBIN"),
                        ("cu/spec_sample.cu", "BW24_SAMPLE_FATBIN")] {
         println!("cargo:rerun-if-changed={src}");
+        println!("cargo:rerun-if-changed=cu/wgmma_common.cuh");
         let stem = src.split('/').last().unwrap().trim_end_matches(".cu");
         let fatbin = out.join(format!("{stem}.fatbin"));
         let mut args = vec!["-gencode", &gencode, "-O3", "--fatbin"];
         if portable {
             args.push("-DBW24_PORTABLE_CUDA=1");
         }
+        if hopper_mma {
+            args.push("-DBW24_HOPPER_MMA=1");
+        }
         // The hand-written mxf4nvf4 block-scale MMA in qmatvec_gemm.cu is an sm_120a
         // instruction encoding. B200 (sm_100a) uses the accuracy-safe NVFP4 W4A8 int8
         // path below instead, so omit only that unused opt-in kernel from its fatbin.
         if cuda_arch == "100a" && src == "cu/qmatvec_gemm.cu" {
             args.push("-DBW24_DISABLE_NATIVE_FP4=1");
+        }
+        // TUNE SEAM: BW24_FA_PP_MINBLOCKS sweeps fa_prefill_f32_pp's __launch_bounds__
+        // min-blocks (occupancy vs register-spill tradeoff; H100 ncu 2026-07-26).
+        println!("cargo:rerun-if-env-changed=BW24_FA_PP_MINBLOCKS");
+        let fa_mb = std::env::var("BW24_FA_PP_MINBLOCKS").ok();
+        let fa_mb_arg;
+        if let (Some(mb), "cu/flash_attn.cu") = (&fa_mb, src) {
+            fa_mb_arg = format!("-DFA_PP_MINBLOCKS={mb}");
+            args.push(&fa_mb_arg);
         }
         args.extend(["-o", fatbin.to_str().unwrap(), src]);
         let status = Command::new(&nvcc)
@@ -58,6 +111,9 @@ fn main() {
         ];
         if portable {
             args.push("-DBW24_PORTABLE_CUDA=1".to_string());
+        }
+        if hopper_mma {
+            args.push("-DBW24_HOPPER_MMA=1".to_string());
         }
         args.extend([
             format!("-DBW24_KV_KFMT={kfmt}"), format!("-DBW24_KV_VFMT={vfmt}"),
@@ -102,7 +158,8 @@ fn main() {
         // kernels for the BW24_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
-                        "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
+                        "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu",
+                        "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -133,6 +190,9 @@ fn main() {
             if mmq_src.ends_with("mmq_nvfp4_w4a8.cu") {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
+            }
+            if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
+                args.push("-DBW24_FA3_STUB".into());
             }
             args.extend(["-c".into(), compile_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
             let status = Command::new(&nvcc)
@@ -165,6 +225,8 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         // fp8_prefill.cu calls the cuBLASLt host API directly (same lib64 search path as cudart).
         println!("cargo:rustc-link-lib=dylib=cublasLt");
+        // fa3_prefill.cu calls the driver API (cuTensorMapEncodeTiled)
+        println!("cargo:rustc-link-lib=dylib=cuda");
     }
 
     // ---- CUTLASS sm_120a NVFP4 GEMM: a STATIC LIB (7th artifact, different kind), NOT a fatbin ----

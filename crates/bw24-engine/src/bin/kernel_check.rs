@@ -1,14 +1,8 @@
 //! M1 gate: validate each Stage-1 kernel against a CPU reference. Run before wiring the forward.
 
+use bw24_validate::{maxdiff, pr};
 use bw24_engine::Engine;
 
-fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
-}
-fn pr(i: usize) -> f32 {
-    let x = (i.wrapping_mul(2654435761) ^ 0x9E3779B9) as u32;
-    ((x >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let e = Engine::new(0)?;
@@ -448,7 +442,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut so_s = e.zeros(s_v * s_v * h)?; let mut o_s = e.zeros(s_v * h * t)?;
             e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_s, &mut o_s, h, t, scale)?;
             let mut so_c = e.zeros(s_v * s_v * h)?; let mut o_c = e.zeros(s_v * h * t)?;
-            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_c, &mut o_c, h, t, scale, c)?;
+            // pin the f32 chunked form explicitly (the default may be the mma config on the
+            // Hopper lane — both configs stay pinned regardless of the shipped default).
+            // SAFETY: single-threaded gate binary; the seam reads the env per call.
+            unsafe { std::env::set_var("BW24_GDN_MMA", "0"); }
+            unsafe { std::env::set_var("BW24_GDN_WGMMA", "0"); }
+            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut so_c, &mut o_c, h, t, scale, c, h)?;
+            unsafe { std::env::remove_var("BW24_GDN_MMA"); }
             let (ro_s, rs_s) = (relerr(&o64, &e.dtoh(&o_s)?), relerr(&s64, &e.dtoh(&so_s)?));
             let (ro_c, rs_c) = (relerr(&o64, &e.dtoh(&o_c)?), relerr(&s64, &e.dtoh(&so_c)?));
             let ok = ro_c < 1e-4 && rs_c < 2.5e-4
@@ -456,6 +456,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("gdn_chunked  T={t:3} C={c:3} vs f64-truth: out seq={ro_s:.2e}/chunk={ro_c:.2e} \
                       state seq={rs_s:.2e}/chunk={rs_c:.2e} {}",
                      if ok { "OK" } else { fails += 1; "FAIL" });
+            // K4-MMA config pin (BW24_GDN_MMA opt-in, c==32 only): its OWN band — bf16
+            // operand rounding measures ~4.3e-2 out / ~4.3e-1 state vs f64 truth on these
+            // hostile synthetics (2026-07-26). The band guards the mma config against
+            // REGRESSIONS; the f32 pin above stays the default's safety line.
+            if c == 32 && cfg!(bw24_hopper_mma) {
+                // SAFETY: single-threaded gate binary; the seam reads the env per call.
+                unsafe { std::env::set_var("BW24_GDN_MMA", "1"); }
+                let mut so_m = e.zeros(s_v * s_v * h)?; let mut o_m = e.zeros(s_v * h * t)?;
+                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut so_m, &mut o_m, h, t, scale, c, h)?;
+                let (ro_m, rs_m) = (relerr(&o64, &e.dtoh(&o_m)?), relerr(&s64, &e.dtoh(&so_m)?));
+                let okm = ro_m < 8e-2 && rs_m < 8e-1;
+                println!("gdn_chunked  T={t:3} C={c:3} MMA config pin: out={ro_m:.2e} state={rs_m:.2e} {}",
+                         if okm { "OK" } else { fails += 1; "FAIL" });
+                // K4+K5 fused wgmma config pin (BW24_GDN_WGMMA, task #22): its OWN band.
+                // State shares the mma bf16 class (measured 5.3e-1 on these hostile
+                // synthetics, band 8e-1). OUT is a WIDER class than K5-mma: the fused
+                // phase 1 stages q/M as bf16 (wgmma) where K5-mma staged fp16 (2 fewer
+                // mantissa bits) — measured 2.19e-1 here, band 4e-1 (~2x headroom, the
+                // mma-pin precedent). Tail chunks verified separately (harness T=200
+                // in-band, O rel 5.6e-3); model-level gates: 3-seed greedy IDENTICAL,
+                // chunked-continuation IDENTICAL, argmax PASS (2026-07-27).
+                unsafe { std::env::set_var("BW24_GDN_WGMMA", "1"); }
+                let mut so_w = e.zeros(s_v * s_v * h)?; let mut o_w = e.zeros(s_v * h * t)?;
+                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut so_w, &mut o_w, h, t, scale, c, h)?;
+                unsafe { std::env::remove_var("BW24_GDN_MMA"); }
+                let (ro_w, rs_w) = (relerr(&o64, &e.dtoh(&o_w)?), relerr(&s64, &e.dtoh(&so_w)?));
+                let okw = ro_w < 4e-1 && rs_w < 8e-1;
+                println!("gdn_chunked  T={t:3} C={c:3} WGMMA-fused config pin: out={ro_w:.2e} state={rs_w:.2e} {}",
+                         if okw { "OK" } else { fails += 1; "FAIL" });
+            }
+            unsafe { std::env::remove_var("BW24_GDN_WGMMA"); }
         }
     }
 
@@ -674,6 +705,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if t.ne.len() > 2 { continue; } // skip 3D MoE expert tensors here
             let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
             let wd = e.htod_bytes(raw)?;
+            // H100 wgmma arm (task 8): mirror built once per tensor; compared vs the mma
+            // kernel inside the T loop (same numeric class -> same rel<1e-3 band).
+            let wgmma_mirror = if cfg!(bw24_hopper_mma) && gt == bw24_engine::QT_Q8_0
+                && out_f % 64 == 0 && in_f % 32 == 0 {
+                Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?)
+            } else { None };
+            let f16_mirror = if gt == bw24_engine::QT_Q8_0 && in_f % 32 == 0 {
+                Some(e.build_q8_f16_raw(&wd, in_f, out_f)?)
+            } else { None };
             for tt in [16usize, 64, 128, 512] {
                 let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -690,6 +730,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let rel = d / scale;
                 println!("GEMM {tname} [{:?}] T={tt}: rel={rel:.2e} {}", t.ggml_type,
                          if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                if let Some(mirror) = &wgmma_mirror {
+                    let (aq, ad) = e.quantize_q8_1(&xd, tt, in_f)?;
+                    let yw = e.dtoh(&e.qmatvec_gemm_q8_0_wgmma_raw(mirror, &aq, &ad, tt, in_f, out_f)?)?;
+                    let dw = maxdiff(&yb, &yw);
+                    let relw = dw / scale;
+                    println!("GEMM {tname} wgmma T={tt}: rel={relw:.2e} {}",
+                             if relw < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+                if let Some(m16) = &f16_mirror {
+                    // FP16-mirror GEMM (BW24_PP_F16 numeric config): fp16 products + f32
+                    // accumulate vs the s32-exact + per-32 f32-fold law — a WIDER band than
+                    // the int8 arms by design (rounding at d*q and the activation cast).
+                    let yf = e.dtoh(&e.qmatvec_gemm_f16_raw(m16, &xd, tt, in_f, out_f)?)?;
+                    let df = maxdiff(&yb, &yf);
+                    let relf = df / scale;
+                    println!("GEMM {tname} f16 T={tt}: rel={relf:.2e} {}",
+                             if relf < 1e-2 { "OK" } else { fails += 1; "FAIL" });
+                }
             }
         }
     }

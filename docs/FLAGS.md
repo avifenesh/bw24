@@ -128,7 +128,8 @@ HANDOVER.md sections from that date.
 | flag | default | what it does |
 |---|---|---|
 | `BW24_NVCC` | `nvcc` on PATH | nvcc binary override |
-| `BW24_CUDA_ARCH` | `120a` | build target. `89` builds the secondary correctness-first L40S eval lane: native-FP4 prefill is compiled off, tiled GDN uses its generic low-shared-memory fallback, and prompt attention dequants KV once into the generic f32 SDPA path. Portable int8/qmatvec and quantized decode kernels remain available. The default Blackwell build is unchanged |
+| `BW24_CUDA_ARCH` | auto-detected | build target: `120a` (Blackwell consumer), `90a` (Hopper), `100a` (B200), `89` (portable eval). Unset = probe the GPU via `nvidia-smi compute_cap` (12.x→120a, 9.0→90a, 10.0→100a, 8.9→89); GPU-less/unknown falls back to `120a` so the CI compile gate is unchanged. Explicit value always wins. `89` builds the secondary correctness-first eval lane: native-FP4 prefill compiled off, tiled GDN on its generic fallback, prompt attention through f32 SDPA |
+| `BW24_ARCH_CHECK` | on | `=0` skips the Engine::new device-vs-binary compute-capability guard (fatbins are single-arch SASS; the guard fails early with a rebuild hint on mismatch) |
 | `BW24_CUTLASS` | off | set = compile the CUTLASS sm120 NVFP4 GEMM (`cutlass_smoke`, `BW24_FP4_CUTLASS` door) |
 | `BW24_CUTLASS_ROOT` | flashinfer venv tree | CUTLASS header tree location |
 | `BW24_MMQ_X_Q45K` | 64 | k-quant MMQ X-tile (compile-time sweep seam) |
@@ -315,6 +316,58 @@ tools/acceptance_delta.py out-bf16.jsonl out-nvfp4.jsonl --json summary.json
 ```
 
 ---
+
+## 7. The H100 / sm_90a lane (merged from `backend/sm90a-boot`, rounds 26-36)
+
+On an H100 the arch auto-detects (`BW24_CUDA_ARCH=90a` forces it). Every promoted
+config below followed the repo law:
+harness proof -> engine seam -> full battery (kernel-check pins, greedy/stream identity,
+decode/prime/graph gates, interleaved x5 A/B) -> default-ON with a `=0` revert. The
+evidence ledger is [ARCHITECTURE-H100.md](../ARCHITECTURE-H100.md); the one-command
+battery is `tools/validate-h100.sh <model.gguf> [--quick]`.
+
+### Promoted defaults (Hopper; `=0` reverts each)
+
+| flag | default | what it does |
+|---|---|---|
+| `BW24_GDN_MMA` | ON (90a) | GDN K4/K5 chunk pair on mma tensor cores (bf16 W/k mirrors); kernel-check pins both configs |
+| `BW24_GDN_WGMMA` | ON (90a) | K4+K5 FUSED wgmma kernel (`gdn_k45_wgmma`) + K2 on wgmma; Y/Ssnap tensors never materialized; qb16/Pb16 mirrors; nested inside the mma config. Official prefill +2.56%, batched prime +3.8% |
+| `BW24_FA3` | ON (90a) | FA3 full-attn prefill: TMA swizzled Q/K/V ring + wgmma, 4.8x the mma kernel (v11) |
+| `BW24_L2_V2` | ON | l2-norm v2 with in-epilogue bf16 mirror folds (kb16 + qb16 — the standalone mirror passes are gone) |
+| `BW24_GDN_DB` | ON | de-broadcast q/k at num_k heads (`hk` plumbed through the chunked chain) |
+| `BW24_EMBED_DEV` | ON | device-side embed gather (host dequant + htod per token gone; +12.4% official lane) |
+| `BW24_GEN_GRAPH` | ON at budget >= 256 | hybrid graph door in `generate_with`: capture/replay decode over the batched-prime cache. Official decode 190.3 -> 220.7 tok/s (+16%); bit-identical (graph-decode-gate, 256 steps x 16 fa buckets). `1` forces at any budget |
+| `BW24_CONV_FUSE` | ON | carried-ring conv + SiLU + GDN repack in one pass (bit-identical class) |
+| `BW24_GDN_VL` | ON | varlen batched cores: ONE launch per stage for all B sequences (bit-gateable vs per-seq) |
+
+### Serving (bw24-server)
+
+| flag | default | what it does |
+|---|---|---|
+| `BW24_PRIME_BATCH` | 6 | max sequences per cross-request prime batch (B=8 measured within spread of 6) |
+| `BW24_PRIME_BATCH_MAX_T` | 2048 | max per-seq tokens eligible for batch (raised 320 -> 2048 round 35: the old crossover was measured on pre-wgmma cores; batched now wins at every tested T) |
+| `BW24_PRIME_BATCH_HOLD_MS` | 4 | batch-formation hold for staggered arrivals |
+| `BW24_SERVE_GS` | ON | solo greedy interactive sessions ride GraphSession replay. Round 35: promotion happens AFTER chunked prefill (`graph_session_from_cache`) — the old token-wise re-prime was a 3x end-to-end loss on long prompts (6.4 -> 2.8s measured) |
+| `BW24_GS_MIN` | 384 | min generation budget for GraphSession promotion (capture amortization) |
+
+### Tuning / diagnostic seams (sm_90a lane)
+
+| flag | default | what it does |
+|---|---|---|
+| `BW24_CUDA_ARCH` | 120a | build arch: `90a` = the Hopper lane (wgmma/TMA kernels compile; portable-PTX correctness path rides along) |
+| `BW24_FA_SPLIT` | ctx-adaptive ladder | fixed FA-decode split size; ladder re-swept on 132-SM H100 round 35 — holds (sp32 +0.35% = noise) |
+| `BW24_PRIME_CHUNK` | 0 (monolithic) | prefill chunking size in tokens (cross-call state-carry battery leg) |
+| `BW24_EVT` | off | `1` re-enables cudarc cross-stream event tracking (blocks graph capture-over-primed-cache: `graph_session_from_cache` refuses) |
+
+### Refuted on this lane (mechanism in ARCHITECTURE-H100.md; no flag shipped)
+
+Monolithic + piecewise prime CUDA graphs (Lt address-variant kernels); W8A8/fp8/CUTLASS/
+Lt-autotune prefill GEMMs at m=512 AND m=2048; FA3 shapes v6-v9; 12 k45 scheduling forms;
+K3 solve ILP-split AND tf32 inverse-product; v6 exchange-free k45; Q8_0-EXACT int8 GEMM
+(triple-refuted: per-block rescale 5.4x naive, 17x pipelined — ptxas C7517 serializes
+cross-bank GMMA register reads); FA3-TMA-ring k45 rebuild (refuted by composition).
+The remaining single-seq prefill residual (~27% vs vLLM's INT8 GEMM class) is an
+owner-gated accuracy decision (w8a8-class numerics change model outputs).
 
 ## Removed in the 2026-07-08 flag audit (concluded flags — JSONL rows are the record)
 

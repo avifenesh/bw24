@@ -267,7 +267,7 @@ impl Engine {
     /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
     pub fn mmq_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if cfg!(bw24_portable_cuda) {
+        if crate::portable_mma_gated() {
             return false;
         }
         let mmq_opt_in = std::env::var("BW24_MMQ").is_ok();
@@ -276,12 +276,16 @@ impl Engine {
             // remap, bit-identical output — mmq_nvfp4_w4a8.cu load_tiles_nvfp4_w4a8<is_rp>).
             // The W4A4 loader (mmq_fp4.cu load_tiles_nvfp4_nvfp4) reads 36B GGUF blocks only,
             // so an rp weight with W4A8 disabled falls through to the rp-ported int8 GEMM.
+            // NVFP4 W4A8/W4A4 launchers use .kind::f8f6f4 / mxf4nvf4 tile MMA — sm_100a+/
+            // sm_120a-only. On every portable build (incl. the 90a Hopper-MMA lane) they are
+            // fail-closed link stubs (build.rs), so never offer them here.
             GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp => {
-                mmq_w4a8_enabled() && w.in_features() % 64 == 0
+                !cfg!(bw24_portable_cuda) && mmq_w4a8_enabled() && w.in_features() % 64 == 0
             }
             // GGUF-layout NVFP4 (BW24_RP=0): W4A8 (default-on) or the explicit W4A4 opt-in.
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 => {
-                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 64 == 0
+                !cfg!(bw24_portable_cuda) && (mmq_w4a8_enabled() || mmq_opt_in)
+                    && w.in_features() % 64 == 0
             }
             GpuTensor::Quant { qtype, .. }
                 if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>
@@ -350,6 +354,21 @@ impl Engine {
                 Ok(y)
             }
             q if q == crate::QT_Q8_0 => {
+                // wgmma arm (sm_90a, task 8): OPT-IN via BW24_WGMMA=1 — v0 measured 3845
+                // vs MMQ 8692 tok/s pp512 (2026-07-26 N=5), so MMQ stays the default until
+                // the pipelined wgmma wins. Reads the rp4 split-plane mirror + the engine's
+                // q8_1 activation planes. Same numeric class as MMQ (exact s32 per 32-block,
+                // one f32 fold per block, ascending K) — kernel-check tolerance-gated.
+                if cfg!(bw24_hopper_mma) && out_f % 64 == 0 && crate::wgmma_gemm_enabled() {
+                    if let GpuTensor::Quant { rp4: Some(m4), .. } = w {
+                        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+                        let mut y = self.qmatvec_gemm_q8_0_wgmma_raw(m4, &aq, &ad, m, in_f, out_f)?;
+                        if *scale != 1.0 {
+                            self.scale_inplace(&mut y, *scale, m * out_f)?;
+                        }
+                        return Ok(y);
+                    }
+                }
                 let mut y = self.qmatvec_mmq_q8_0_raw(bytes, x, m, in_f, out_f)?;
                 if *scale != 1.0 {
                     self.scale_inplace(&mut y, *scale, m * out_f)?;

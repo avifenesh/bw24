@@ -2,11 +2,9 @@
 // (the quant twin) with the SAME shapes/tolerances as kernel_check's FA section,
 // WITHOUT the unrelated SSM/other kernels that abort the full kernel_check under
 // compute-sanitizer. Run under: compute-sanitizer --tool memcheck|racecheck.
+use bw24_validate::maxdiff;
 use bw24_engine::Engine;
 
-fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
-}
 fn pr(i: usize) -> f32 { (((i.wrapping_mul(2654435761)) >> 8) & 0xffff) as f32 / 32768.0 - 1.0 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

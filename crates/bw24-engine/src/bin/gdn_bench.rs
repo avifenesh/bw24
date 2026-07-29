@@ -6,6 +6,7 @@
 //! Usage:  ./target/release/gdn-bench [T] [H] [iters]
 //! ncu  :  sudo ncu --kernel-name regex:gdn_scan --launch-skip 2 --launch-count 1 \
 //!              --set full ./target/release/gdn-bench 512 32 5
+use bw24_validate::maxdiff;
 use bw24_engine::Engine;
 use std::time::Instant;
 
@@ -45,9 +46,6 @@ fn cpu_ref(q: &[f32], k: &[f32], v: &[f32], g: &[f32], beta: &[f32],
     out
 }
 
-fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -81,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A4 chunked WY correctness vs the same CPU oracle (rel-err gate — chunked FP order differs)
     for c in [32usize, 64, 128] {
-        e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale, c)?;
+        e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut sod, &mut od, h, t, scale, c, h)?;
         let chunk_o = e.dtoh(&od)?;
         let rel = cpu_o.iter().zip(&chunk_o)
             .map(|(x, y)| (x - y).abs() / x.abs().max(y.abs()).max(1e-3))
@@ -111,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     for c in [32usize, 64, 128] {
         let m = bench(&format!("gdn_chunked C={c:3}    "), &mut |e: &Engine| {
-            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale, c)
+            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, None, &sid, &mut sod, &mut od, h, t, scale, c, h)
         })?;
         println!("  -> chunked C={c} speedup vs sequential: {:.2}x", seq_med / m);
     }

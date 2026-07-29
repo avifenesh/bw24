@@ -1,0 +1,7 @@
+run 0: generated 512 tokens in 2.321s = 220.55 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
+run 1: generated 512 tokens in 2.322s = 220.45 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
+run 2: generated 512 tokens in 2.323s = 220.45 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
+run 3: generated 512 tokens in 2.322s = 220.51 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
+run 4: generated 512 tokens in 2.322s = 220.49 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
+run 5: generated 512 tokens in 2.321s = 220.57 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
+median decode tok/s: 220.49

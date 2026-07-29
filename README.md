@@ -1,63 +1,107 @@
-# bw24 — from-scratch LLM inference for sm_120a (RTX 50-series Blackwell)
+# bw24 — from-scratch LLM inference for RTX 5090 (sm_120a) and H100 (sm_90a)
 
 [![ci](https://github.com/avifenesh/bw24/actions/workflows/ci.yml/badge.svg)](https://github.com/avifenesh/bw24/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-12.8%20%2F%2013.1-76B900.svg)
-![arch](https://img.shields.io/badge/arch-sm__120a%20(Blackwell)-black.svg)
+![arch](https://img.shields.io/badge/arch-sm__120a%20%2B%20sm__90a-black.svg)
 
 ![bw24 vs llama.cpp perf board](docs/perf-card.svg)
 
-From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
+From-scratch LLM inference engine in Rust + CUDA — no frameworks, no ggml. One codebase
+serves two architectures, auto-detected at build time: **RTX 50-series Blackwell
+(sm_120a)**, tuned single-user against llama.cpp, and **H100 Hopper (sm_90a)**, a
+multi-tenant serving lane measured against vLLM on the same box. Every kernel is
+hand-written against measured hardware limits, and exactness is the contract: speculative
+and graph-replay output is gated token-identical to plain decode, so speed never changes
+what the model says.
 
-The headline capability is **MTP speculative decoding**: up to 2.3x over llama.cpp's best spec config, leading on every supported Qwen model and prompt class (1.06-2.30x per cell), with trimmed drafter heads published ready-to-use ([huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench)) — behind a drop-in OpenAI-compatible server. Exactness is the contract: speculative output is gated token-identical to plain decode, so the speedup never changes what the model says.
+**Use bw24 when** you serve one model on an RTX 50-series card and want measured,
+exactness-gated speed, or you want a single-GPU H100 serving engine with lane scheduling
+and per-request accounting. **Use something else when** you have another GPU
+([llama.cpp](https://github.com/ggml-org/llama.cpp),
+[mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU serving
+(vLLM, SGLang).
 
-**Use bw24 when** you serve one model to one user on an RTX 50-series card and want measured, exactness-gated speed. **Use something else when** you have any other GPU ([llama.cpp](https://github.com/ggml-org/llama.cpp), [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU / batched serving (vLLM, SGLang).
+**Standing (2026-07-28):** seven supported models on the 5090, all fully gated, no plain
+cell below llama.cpp; Qwen leads every cell (plain 1.06–1.08x, MTP spec 1.06–2.30x),
+Gemma spec leads up to 1.54x. On the H100, decode beats vLLM w8a8 at 122.8% same-session;
+prefill stands at 73–79% with the remaining gap mechanism-priced (see below). Every
+number is a same-session interleaved measurement; trimmed MTP drafter heads are published
+ready-to-use at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench).
 
-Running bw24 on your own rig — desktop 50-series, older NVIDIA, anything? A [hardware validation report](.github/ISSUE_TEMPLATE/hardware-validation.md) is the fastest way to help: 50-series reports bless the rest of the family, older-card reports map the compatibility floor.
+Running bw24 on your own rig? A [hardware validation
+report](.github/ISSUE_TEMPLATE/hardware-validation.md) is the fastest way to help.
 
-**Current standing: seven supported models, all fully gated, and no plain cell anywhere below llama.cpp (2026-07-28; the 12B decode cell sits AT parity — three stamps read 1.0021x/0.9965x/0.9997x). Qwen leads on every cell (plain 1.06-1.08x, spec 1.06-2.30x). Gemma spec leads: 12B 1.7k MTP 1.54x, 12B chat 1.40x, 31B chat 1.26x, 31B 1.7k 1.16x, 26B short 1.10x, E4B ≥1.23x — one near-parity cell (26B 1.7k, 0.98x) — plus E4B plain 1.10x, and 1.00-1.07x elsewhere under the strictest best-vs-best pairing: both engines' draft depths swept, re-paired same-session (12B/31B/26B spec cells 2026-07-26..28; 26B/E4B plain re-audit 2026-07-15).** Every number below is a same-session, same-prompt, interleaved measurement against llama.cpp's best config; exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
+## One engine, two architectures
+
+```bash
+cargo build --release   # BW24_CUDA_ARCH auto-detected from the GPU (120a / 90a / 100a / 89)
+```
+
+The build probes the GPU's compute capability and selects the arch; `BW24_CUDA_ARCH`
+overrides. At startup the engine verifies the binary matches the device and fails early
+with a rebuild hint otherwise (`BW24_ARCH_CHECK=0` bypasses). Hopper-only promotions
+(wgmma/TMA kernels, graph serving defaults) are compile-gated — the naked sm_120a build
+is byte-for-byte the tuned 5090 engine.
+
+## The H100 lane (sm_90a)
+
+Multi-tenant serving on 1×H100 80GB against vLLM 0.26 w8a8, same box, same session
+(2026-07-27, N=5 medians, 2048-token prompt, 512 gen):
+
+| lane | bw24 | vLLM w8a8 | ratio |
+|---|---:|---:|---:|
+| decode tok/s | **220.5** | 179.5 | **122.8%** |
+| serving decode (GraphSession) | **233.6** | — | — |
+| single-seq prefill tok/s | 26,290 | 35,986 | 73% |
+| serving burst prefill (16× 937-tok) | 27,364 aggregate | — | — |
+
+Decode wins on exact math. The prefill gap is precisely priced: vLLM rides INT8
+tensor-core GEMMs; a Q8_0-exact int8 GEMM is mechanism-refuted on Hopper (per-32-block
+rescale costs 5.4x naive / 17x pipelined — ptxas serializes cross-bank GMMA register
+reads), so closing it means w8a8-class numerics that change model outputs — an
+accuracy-bar decision, not an engineering gap.
+
+Shipped on this lane: FA3-class prefill attention (TMA swizzled ring + wgmma, 4.8x the
+mma kernel), fused wgmma GDN chunk kernels with varlen twins, cross-request prefill
+batching, per-session CUDA-graph decode, lane scheduling (interactive/judge/harvest with
+per-lane prefill budgets), and the Hopper wgmma toolkit
+([`cu/wgmma_common.cuh`](crates/bw24-engine/cu/wgmma_common.cuh)) — canonical
+core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds.
+
+- Evidence ledger (every verdict and refutation): [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)
+- Flags + promoted defaults: [docs/FLAGS.md §7](docs/FLAGS.md)
+- One-command battery: `tools/validate-h100.sh <model.gguf> [--quick]`
 
 ## Model support
 
 | Tier | Models | State |
 |---|---|---|
-| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 12B dense, 26B-A4B MoE, 31B dense, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first; margins per model in the tables below |
-| **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Runs end-to-end through bw24-native CPU/GPU serving, correctness-gated on the 5090 target; see [docs/HY3-SPILL.md](docs/HY3-SPILL.md) |
-| **In progress** | MiniMax-M3 REAP50 (safetensors, VRAM→RAM→NVMe spill) | Loads + generates; hybrid/sigmoid-router tuning remains open |
+| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first |
+| **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Correctness-gated end-to-end; [docs/HY3-SPILL.md](docs/HY3-SPILL.md) |
+| **In progress** | MiniMax-M3 REAP50 (safetensors spill) | Loads + generates; router tuning open |
 
 ## Quick start
 
-Prebuilt Linux x86_64 binaries (sm_120a) ship with each [release](https://github.com/avifenesh/bw24/releases) — or build from source:
+Prebuilt Linux x86_64 binaries (sm_120a) ship with each
+[release](https://github.com/avifenesh/bw24/releases) — or build from source:
 
 ```bash
 cargo build --release
 ./target/release/kernel-check                     # every kernel vs CPU reference
 BW24_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches."
 BW24_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP speculative
-./target/release/run-gen hf:owner/repo:Q4_K_M --prompt "hi"        # auto-download from HF (needs `hf` CLI)
-./target/release/frspec-owngen model.gguf trim.gguf --validate     # build + validate an FR-Spec draft trim from the model's OWN generations
+./target/release/run-gen hf:owner/repo:Q4_K_M --prompt "hi"        # auto-download from HF
 ./target/release/bw24-server                      # OpenAI-compatible /v1
 ```
 
-Expected output — `kernel-check` ends with:
+`kernel-check` must end with `ALL GREEN`, and `run-gen` prints its argmax gate
+(`... MATCH`) before generating — a MISMATCH voids every number after it. Tuned paths
+are the defaults; flags exist only for runtime parameters, machine config, and rollback
+seams ([docs/FLAGS.md](docs/FLAGS.md)).
 
-```
-ALL GREEN: kernels match CPU reference.
-```
-
-and `run-gen` prints its correctness gate before any generation:
-
-```
-verify-prefill argmax=N  decode argmax=N  logit maxdiff=...  MATCH
-```
-
-Tuned paths are the defaults — no flags needed. Flags exist only for runtime parameters, machine config, and rollback seams (`docs/FLAGS.md`). A MISMATCH line from the gate voids every number after it.
-
-Serving Hy3 (a ~100 GB expert bank) on this 24 GB card uses a frozen HBM resident set, a bounded host cache, and positioned dual-NVMe reads — runbook, ABI safety notes, and current gate results in [docs/HY3-SPILL.md](docs/HY3-SPILL.md).
-The paired native AVX-VNNI Q2_K path raises the local N=32 median from 4.37 to 4.60 tok/s across three interleaved, correctness-identical pairs (+5.3% by arm medians; [receipt](research/per-expert-quant/evidence/local-5090-native-next-20260721/q2k-avxvnni-pair-win.md)).
-
-## Performance — Qwen (NVFP4 / IQ4_XS)
+## Performance — Qwen (NVFP4 / IQ4_XS), RTX 5090
 
 <!-- PERF-DATE:START (generated by tools/update-perf-board.py — do not hand-edit; edit research/tune-data/current-board.json instead) -->
 Measured 2026-07-27 on the target rig (RTX 5090 Laptop, N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18, Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)) against llama.cpp built on the same machine, same exact prompts, both engines re-baselined the same day. Boards move with the tuning campaign — `research/tune-data/rig5090.jsonl` is the running record; the README is refreshed with every board-moving merge.
@@ -73,7 +117,7 @@ Measured 2026-07-27 on the target rig (RTX 5090 Laptop, N=2+ medians, both engin
 | Qwen3.6-35B-A3B MoE (IQ4_XS) | 178.2 | 167.8 | **1.06x** |
 <!-- PERF-PLAIN:END -->
 
-Depth is part of the contract: at 6.3k-token context every lead holds (1.02-1.07x).
+Depth is part of the contract: at 6.3k-token context every lead holds (1.02–1.07x).
 
 **Speculative decoding** (MTP head, both engines at their measured best):
 
@@ -85,82 +129,81 @@ Depth is part of the contract: at 6.3k-token context every lead holds (1.02-1.07
 | Qwen3.6-35B-A3B (K=2 + own-gen trimmed draft) | 280.6 / 259.6 / 258.0 | 236.5 / 174.6 / 173.5 | **1.19x** / **1.49x** / **1.49x** |
 <!-- PERF-SPEC:END -->
 
-The three columns are three prompt classes: short code / medium code (both greedy) / long agentic, sampled at temp 0.7 with distribution-exact rejection sampling. One asterisk the log carries: the 35B short-code llama bar (236.5) rode an EOS-margin flip and is not a clean win basis — the other two 35B cells are. Every spec row uses **one trimmed draft file built by the standard regime** — the model's own-generation FR-Spec ranks, byte-verbatim MTP extraction, NVFP4 head + Q4_K_M block ([`docs/DRAFT-REGIME.md`](docs/DRAFT-REGIME.md)).
-
-**Drafts: use ours or build your own.** Prebuilt per-model drafts (exact pipeline, exact published bytes) live at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench) under `drafts/<model>/`. For any other model, requant, or finetune, build one in two commands (a finetune's distribution moved, so its draft must too):
+The three columns are three prompt classes: short code / medium code (greedy) / long
+agentic (temp 0.7, distribution-exact rejection sampling). One asterisk: the 35B
+short-code llama bar (236.5) rode an EOS-margin flip and is not a clean win basis. Every
+spec row uses one trimmed draft built by the standard regime
+([docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md)); prebuilt drafts live in the
+[bench repo](https://huggingface.co/Avifenesh/bw24-bench), or build your own:
 
 ```bash
 ./target/release/frspec-owngen model.gguf ranks.gguf 32768        # ranks from the model's OWN generations
 tools/make-trimmed-draft.sh model.gguf ranks.gguf.txt draft.gguf  # extract + trim + quantize
 ```
 
-Exact prompts and configs also in the bench repo; llama.cpp flags in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md).
+## Performance — Gemma-4 (QAT Q4_0), RTX 5090
 
-## Performance — Gemma-4 (QAT Q4_0)
-
-Same protocol, own campaign log (`research/gemma4-bringup/rig5090-gemma4.jsonl`); all cells re-paired 2026-07-15 under best-vs-best (llama server MTP at its swept-best flags, exact-token-id prompts, serialized same-window arms). Contexts are real prompt depths.
-
-**12B dense** (bring-up completed 2026-07-24 — every plain cell at or above llama; decode closed by a seven-lever launch-class stack, +2.4% in one day, each step argmax- and stream-gated):
-
-| Cell | bw24 | llama.cpp | Ratio |
-|---|---|---|---|
-| plain decode, 512 ctx | 92.6 | 92.4 | 1.00x |
-| prefill 512 | 4204 | 4161 | 1.01x |
-| prefill 1736 | 4123 | 3863 | 1.07x |
-| MTP spec, chat (K=4 + own-gen trim) | 240.9 | 172.4 | **1.40x** |
-| MTP spec, 1.7k ctx (K=4 + own-gen trim) | 269.3 | 175.1 | **1.54x** |
-
-**26B-A4B MoE:**
+Same protocol, own campaign log
+([`research/gemma4-bringup/rig5090-gemma4.jsonl`](research/gemma4-bringup/rig5090-gemma4.jsonl));
+cells re-paired best-vs-best with llama's own draft depth swept per cell. Highlights
+(full tables and the per-cell archaeology live in the campaign log):
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| plain, short ctx | 199.7 | 187.6 | 1.06x |
-| plain, 1.7k ctx | 183.1 | 173.1 | 1.06x |
-| plain, 4.9k ctx | 162.6 | 142.0 | 1.14x (stale fa-off bar — re-pair pending) |
-| MTP spec, short ctx (K=4 + own-gen trim) | 328.1 | 298.0 | **1.10x** |
-| MTP spec, 1.7k ctx (K=6 + trim) | 330 | 338 | 0.98x |
-
-**31B dense / E4B:**
-
-| Cell | bw24 | llama.cpp | Ratio |
-|---|---|---|---|
-| 31B plain, short | 40.8 | 40.2 | 1.02x |
-| 31B plain, 1.7k | 38.4 | 37.4 | 1.03x |
+| 12B MTP spec, 1.7k ctx (K=4 + own-gen trim) | 269.3 | 175.1 | **1.54x** |
+| 12B MTP spec, chat (K=4 + own-gen trim) | 240.9 | 172.4 | **1.40x** |
 | 31B MTP spec, chat (K=5 + own-gen trim) | 124.3 | 99.0 | **1.26x** |
 | 31B MTP spec, 1.7k (K=6 + FR trim) | 97.3 | 83.9 | **1.16x** |
-| E4B MTP spec (K=6 assistant) | 248 | no llama MTP for E4B — vs its plain 181.0 | **≥1.23x** |
+| 26B MTP spec, short ctx (K=4 + own-gen trim) | 328.1 | 298.0 | **1.10x** |
 | E4B plain, short | 199.9 | 181.0 | **1.10x** |
+| 26B plain, 4.9k ctx | 162.6 | 142.0 | 1.14x |
+| plain decode elsewhere | — | — | 1.00–1.07x |
 
-What buys the margins: an FP8 (e4m3) KV cache (half the bytes of llama's f16 KV at near-zero dequant cost), occupancy-tuned attention tiles, wide-load Q4_0 expert dots, and FR-Spec drafter-head trims (150 MB → 18 MB at unchanged 0.91-0.94 acceptance on the 26B). One structural finding worth knowing: FP8 noise in the *windowed* KV layers guts the MTP drafter's acceptance, so spec serving automatically keeps those layers at q8_0/q5_1 while plain serving keeps FP8 — a config discovery, not a kernel. The same FP8-KV lever exists for Qwen behind `BW24_KV_FP8` (correctness-proven, ~45% smaller KV — re-measured 2026-07-28 as speed-neutral-to-−1% on the current build, so it stays off by default and is a context-budget lever, not a speed one). Since 2026-07-19 an adaptive serve-time trim lifts the 31B spec cells a further ~2-5% solo (~105 short / ~104 at 1.7k); those runs are not yet llama-re-paired, so the table keeps the paired ratios.
-
-The chat-cell spec rows (12B and 31B, re-paired same-session 2026-07-26) are measured with **both** engines swept: bw24 at its K optimum (12B K=4, 31B K=5) against llama at its own `--spec-draft-n-max` optimum (12B 2, 31B 4). Sweeping the competitor's knob mattered — llama's 12B default of n-max 3 sits 12% below its own best, and pairing against it would have inflated the ratio. The margins come from two campaign artifacts: own-generation drafter trims (the 12B trim, `gemma4-12b-owngen-ranks-32768.gguf.txt`, buys +4.9% e2e over the untrimmed head), and a per-model **adaptive-K floor** (default; `BW24_SPEC_ADAPT_FLOOR` overrides). The floor-1 policy collapsed to shallow drafts after any miss and re-deepened one step per streak round; on expensive-verify models the deep-draft upside dwarfs the wasted-draft cost, so holding the floor at 4 moved 31B 103.8 → 124.3 (+20%) and 12B 200.7 → 240.9 (+20%) at unchanged exactness (stream agreement 128/128 at every grid point, both models). The floor is position-keyed — it applies below 1k context and relaxes past it, because depth acceptance is lower and forced-deep drafts turn net-negative there (measured both sides on the 31B). A third policy piece landed 2026-07-28: an in-round draft-confidence cut (llama's p-min class, mid-round instead of one round late) that self-keys to depth rounds following a miss — free where acceptance is high, +1-3% and +1.3-2.8 acceptance points on the low-acceptance depth cells. One honesty note from shipping this: a drafter's acceptance rides the *prime's* sub-argmax numerics, which no exactness gate sees — a prefill-kernel change silently cut the 26B depth cell's acceptance from 0.883 to 0.405 while every argmax and self-consistency gate stayed green. The perf-CI acceptance battery caught it; the fix (spec serving keeps f32 P/V in prefill, mirroring the FP8-KV acceptance law) restored 0.846 and the cell now reads above its pre-drift median.
-
-Earlier published Gemma spec margins (1.37-1.54x, and the 31B 167.5/112.1 pair) do not reproduce — even through era binaries — and are retired; the campaign log carries the full archaeology. llama's spec side is `--spec-type draft-mtp`, warm, at its measured best on the same box; E4B has no llama MTP arm at all (the 2026-06-30 freeze binary can't serve its drafter — fixed upstream later), so its spec row is floored against llama's plain. Correctness is structural, not statistical: decode, verify, and graph replay launch the same kernel symbols, so the verify gate reads a bit-exact 0.000e0 logit maxdiff at every depth.
-
-**Reproducing:** exact-token-id prompts and llama.cpp's swept-best flags in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); every row's raw run — and every retired number's archaeology — in [`research/gemma4-bringup/rig5090-gemma4.jsonl`](research/gemma4-bringup/rig5090-gemma4.jsonl).
+What buys the margins: an FP8 (e4m3) KV cache, occupancy-tuned attention tiles, wide-load
+Q4_0 expert dots, FR-Spec drafter trims (150 MB → 18 MB at unchanged acceptance), a
+per-model adaptive-K floor (+20% on 12B/31B spec at unchanged exactness), and an in-round
+draft-confidence cut. One near-parity cell remains (26B 1.7k spec, 0.98x). Exact prompts
+and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md).
 
 ## Known gaps
 
-- **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma plain margins are thin where both engines sit at the DRAM wall (31B 1.02-1.03x, 26B 1.06x; best kernel = 91% of measured wall, e2e 87-89%). Every mechanism class measured — ours plus llama/vLLM/SGLang current releases — is shipped or carries a falsification row in the campaign log. One near-parity spec cell: 26B at 1.7k depth reads 0.98x against llama's swept optimum (n-max 6 at 338). Two honesty passes moved this row twice in one day: sweeping llama's draft depth revised it from a stale 1.04x down to 0.90x, then root-causing a run-to-run bimodality recovered it to 0.98x — the stream-k GEMM autotune's per-process kernel coin was flipping prime numerics across the drafter's acceptance cliff on knife-edge shapes (it also had the 12B depth cell oscillating 206-273; pinned, that cell reads a stable 1.54x). Spec serving now keys stream-k per model at load; the autotuner never picks kernels on an evidence path again.
-- Hy3 native spill serves the Layer103.5 candidate at a 5.13 tok/s m=1 N=3 median (2026-07-26, same-day protocol — day-to-day regime drift makes cross-day numbers incomparable) and is being tuned toward a sustained 10 tok/s ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
-- Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception.
+- **5090 prefill** trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4
+  prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject.
+  Output quality outranks the prefill column.
+- **H100 prefill** stands at 73–79% of vLLM; the residual is the int8-GEMM dtype edge,
+  refused by the accuracy laws (full refutation ledger in
+  [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)).
+- Gemma plain margins are thin where both engines sit at the DRAM wall (1.02–1.06x).
+- Hy3 native spill serves at a 5.13 tok/s N=3 median, tuning toward 10
+  ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
 
 ## What's inside
 
-- **NVFP4 / Q4_0 decode** — split-plane repacked matvecs, warp-level dp4a, int8 W4A8 tensor-core prefill GEMM, per-shape auto-dispatch.
-- **MTP speculative decoding** — embedded draft head, one batched K+1 verify, zero-sync async rounds, adaptive draft depth; K=1..8 self-consistency gate.
-- **MoE on 24 GB** — expert-major CSR batching, decode-once dequant, frozen SLRU expert residency, bounded host LRU, and mirrored positioned reads across VRAM→RAM→NVMe.
-- **Quantized-KV attention** — fused prefill/decode FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3 KV per layer class), split-K, device-length counters for graph replay.
-- **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic.
-- **Hybrid + sigmoid-router architectures** — gated-delta-net mixes (Qwen3.6), MiniMax/DeepSeek-style routing.
-- **Safetensors loader** — modelopt NVFP4 repacks byte-exact; FP8/BF16 re-encode at load; disk-tier expert streaming.
+- **NVFP4 / Q4_0 / Q8_0 decode** — split-plane repacked matvecs, warp-level dp4a, int8
+  tensor-core prefill GEMM, per-shape auto-dispatch.
+- **MTP speculative decoding** — embedded draft head, one batched K+1 verify, adaptive
+  draft depth + confidence cut; K=1..8 self-consistency gate.
+- **Hopper wgmma/TMA kernels** — FA3-class prefill attention, fused GDN chunk family,
+  canonical descriptor pairings for bf16/tf32/s8.
+- **MoE on 24 GB** — expert-major CSR batching, frozen SLRU expert residency, bounded
+  host LRU, mirrored positioned reads across VRAM→RAM→NVMe.
+- **Quantized-KV attention** — fused FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3
+  KV per layer class), split-K, graph-replayable device-length counters.
+- **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic;
+  per-session capture for serving.
+- **Lane-scheduled serving** — OpenAI-compatible server with interactive/judge/harvest
+  admission, per-lane prefill budgets, cross-request prefill batching.
+- **Loaders** — GGUF (memory-mapped) and safetensors (modelopt NVFP4 byte-exact).
 
 ## Correctness discipline
 
-Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-gen` argmax gate, `run-spec` K=1..8 self-consistency — one command: `tools/local-ci.sh`. FP summation order is part of the contract — "faster" kernels that reduce in a different order get rejected when they flip argmax at tight margins.
-
-Exactness gates are structurally blind to numeric shifts where decode and verify move *together* — that class silently cost half a spec margin across ~40 green commits in July 2026. The local perf CI (`tools/local-ci.sh --perf`) closes it: every published cell re-measured per engine-touching push, speculative **acceptance and tokens/round tracked per cell** against a rolling baseline (`research/tune-data/perf-ci.jsonl`), enforced by the pre-push hook. Upstream engines are swept weekly for portable decode mechanisms (`tools/upstream-sweep.sh` → `research/upstream-sweeps.md`).
+Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-gen`
+argmax gate, `run-spec` K=1..8 self-consistency — one command: `tools/local-ci.sh`.
+FP summation order is part of the contract. Exactness gates are blind to numeric shifts
+where decode and verify move together, so the perf CI (`tools/local-ci.sh --perf`)
+re-measures every published cell per engine-touching push and tracks speculative
+acceptance per cell against a rolling baseline, enforced by the pre-push hook. On
+Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
 
 ## Workspace layout
 
@@ -170,38 +213,45 @@ Exactness gates are structurally blind to numeric shifts where decode and verify
 | `bw24-gguf` | GGUF parser + tensor loading (memory-mapped) |
 | `bw24-tokenizer` | BPE tokenizer + chat templates from GGUF metadata |
 | `bw24-runtime` | CUDA device/stream/memory primitives over cudarc |
-| `bw24-server` | OpenAI-compatible HTTP server (axum) |
+| `bw24-kv` | KV cache + format policy behind the KvDev device seam |
+| `bw24-lanes` | Lane types, admission policy, per-lane budgets (pure host logic) |
+| `bw24-sampling` | Host sampler + device Philox sampling behind one trait |
+| `bw24-validate` | Gate harness: tolerance policy, deterministic vectors, N-median runner |
+| `bw24-server` | OpenAI-compatible HTTP server (axum) with lane scheduling |
 | `bw24-probe` | Standalone hardware microbenches |
 
 ## Requirements
 
-- NVIDIA Blackwell consumer GPU (sm_120a); primary target RTX 5090 Laptop.
-- CUDA 13.1, plus 12.8 for the dual-toolkit build documented in [ARCHITECTURE.md](ARCHITECTURE.md) (`BW24_NVCC` overrides the nvcc path). Rust edition 2024, cudarc 0.19.
-- A model: GGUF or HF safetensors directory (pass either path). The optional Hy3 CPU-expert companion additionally needs a C++17 compiler with OpenMP.
+- NVIDIA GPU: RTX 50-series (sm_120a, primary target RTX 5090 Laptop), H100 (sm_90a),
+  B200 (sm_100a, compile-gated), or Ada (sm_89, portable eval).
+- CUDA 13.1 (plus 12.8 for the dual-toolkit build in [ARCHITECTURE.md](ARCHITECTURE.md);
+  `BW24_NVCC` overrides the nvcc path). Rust edition 2024, cudarc 0.19.
+- A model: GGUF or HF safetensors directory.
 
 ## Limitations
 
-- Built for sm_120a only; tuning assumes this exact memory/compute ratio. On any other GPU,
-  use [llama.cpp](https://github.com/ggml-org/llama.cpp) (broadest hardware coverage) or
-  [mistral.rs](https://github.com/EricLBuehler/mistral.rs) (multi-platform Rust) instead —
-  a `feat/portable-ada-correctness` branch exists for Ada (sm_89) but is untuned and its
-  L40S lane is closed.
-- Single GPU, single stream; no tensor parallelism or continuous batching.
+- Tuned for two exact memory/compute ratios (5090 Laptop, H100 SXM). Other GPUs compile
+  via the portable arch but are untuned — use
+  [llama.cpp](https://github.com/ggml-org/llama.cpp) or
+  [mistral.rs](https://github.com/EricLBuehler/mistral.rs) there.
+- Single GPU; no tensor parallelism. Batched serving exists on the Hopper lane only.
 - Moving research codebase; APIs and flags change without notice.
 
 ## Docs
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — tech stack + sm_120a feasibility ledger.
-- [`HANDOVER.md`](HANDOVER.md) — living state-of-work (standings, laws, open lanes).
-- [`docs/decisions/`](docs/decisions/) — design decision records.
-- [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak on this box.
-- [`docs/HY3-SPILL.md`](docs/HY3-SPILL.md) — Hy3 spill runbook + [overlay release](research/per-expert-quant/hy3-layer103p5-release.md).
-- [`research/tune-data/`](research/tune-data/) + [`research/gemma4-bringup/`](research/gemma4-bringup/) — every experiment as JSONL, wins and losses both.
-- [`research/benchmarks.md`](research/benchmarks.md) — the A/B measurement protocol.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — sm_120a tech stack + feasibility ledger.
+- [`ARCHITECTURE-H100.md`](ARCHITECTURE-H100.md) — the H100 lane's full evidence ledger.
+- [`HANDOVER.md`](HANDOVER.md) — living state-of-work.
+- [`docs/FLAGS.md`](docs/FLAGS.md) — the audited flag catalog.
+- [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.
+- [`docs/HY3-SPILL.md`](docs/HY3-SPILL.md) — Hy3 spill runbook.
+- [`research/`](research/) — every experiment as JSONL, wins and losses both;
+  [`research/benchmarks.md`](research/benchmarks.md) is the measurement protocol.
 
 ## Contributing
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Correctness gates run
+on real GPUs (`tools/local-ci.sh`); GitHub CI is compile-only.
 
 ## License
 
