@@ -1458,6 +1458,25 @@ extern "C" __global__ void reduce_slots_f32(
 // (the Rust seam guards). Numerics: bf16 operand rounding WITHIN the gated chunked
 // config — BW24_GDN_DIFF oracle + argmax battery arbitrate. mma helpers duplicated
 // from flash_attn.cu (k4-prefixed; cu TUs are separate fatbins, no shared header).
+
+// task #18 (varlen): per-seq args for the batched-prime varlen twins — one launch runs
+// ALL B sequences' K4/K5 (grid gains a seq dim; each block's math is IDENTICAL to the
+// per-seq launch, so the varlen path is strictly bit-gateable). Passed BY VALUE like
+// wptr8_t (Rust GdnSeqVl/GdnVl8, #[repr(C)]). UNGUARDED on purpose: the wgmma vl kernel
+// SIGNATURES below compile on every arch (fail-closed stub bodies off-Hopper), so these
+// param types must be visible even on the sm_89 portable build.
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+typedef struct {
+    const __nv_bfloat16* kb16; float* gcum; const float* beta;
+    float* U; const __nv_bfloat16* Wb16; __half* Y; __half* Ssnap;
+    const float* state_in; float* state_out;
+    const float* q; float* P; float* o;
+    const float* k; const float* v; const float* g; float* a; float* w;
+    int T; int nc;
+} gdnseq_t;
+typedef struct { gdnseq_t s[8]; } gdnvl_t;
+
 #if !defined(BW24_PORTABLE_CUDA) || defined(BW24_HOPPER_MMA)
 #include <cuda_bf16.h>
 namespace k4mma {
@@ -1524,20 +1543,6 @@ __device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_grou
 template<int N> __device__ __forceinline__ void cp_wait() {
     asm volatile("cp.async.wait_group %0;" :: "n"(N));
 }
-
-// task #18 (varlen): per-seq args for the batched-prime varlen twins — one launch runs
-// ALL B sequences' K4/K5 (grid gains a seq dim; each block's math is IDENTICAL to the
-// per-seq launch, so the varlen path is strictly bit-gateable). Passed BY VALUE like
-// wptr8_t (Rust GdnSeqVl/GdnVl8, #[repr(C)]).
-typedef struct {
-    const __nv_bfloat16* kb16; float* gcum; const float* beta;
-    float* U; const __nv_bfloat16* Wb16; __half* Y; __half* Ssnap;
-    const float* state_in; float* state_out;
-    const float* q; float* P; float* o;
-    const float* k; const float* v; const float* g; float* a; float* w;
-    int T; int nc;
-} gdnseq_t;
-typedef struct { gdnseq_t s[8]; } gdnvl_t;
 
 __device__ __forceinline__ void
 gdn_k4_body(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,

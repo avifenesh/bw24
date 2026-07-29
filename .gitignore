@@ -28,3 +28,4 @@ lane/
 probe/mxf4_transient_repack
 probe/kv_align_probe
 probe/pdl_probe
+target-*/
