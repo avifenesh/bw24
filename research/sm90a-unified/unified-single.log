@@ -5,3 +5,5 @@ run 3: generated 512 tokens in 2.322s = 220.51 tok/s (Stage-B int8 dp4a decode, 
 run 4: generated 512 tokens in 2.322s = 220.49 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
 run 5: generated 512 tokens in 2.321s = 220.57 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.067s) [stop: MaxNew]
 median decode tok/s: 220.49
+
+Measurement-window note (2026-07-30): all unified-tree box measurements in this dir ran with an IDLE leftover bw24-server (old tree, pid 373405) resident at 31.8GB of the 80GB card. Decode N=5 median read 220.49 == the branch record 220.5, so no contamination materialized; the server was killed after the battery and the idle watchdog re-armed.
