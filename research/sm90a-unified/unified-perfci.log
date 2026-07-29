@@ -1,0 +1,19 @@
+== local-ci: correctness stage ==
+kernel-check: GREEN
+run-gen argmax: MATCH (31B)
+VERIFY-GATE K=7 depth: PASS (31B)
+spec self-consistency 64/64: PASS (31B)
+run-gen argmax depth: MATCH (12B)
+VERIFY-GATE K=7 depth: PASS (12B)
+correctness stage: GREEN
+== local-ci: perf stage (--perf) ==
+  31b-plain-short: 41.30 tok/s [OK]
+  31b-plain-d1736: 37.91 tok/s [FAIL] — tok/s -3.29% vs median 39.20
+  31b-spec-short: 107.07 tok/s accept=0.798 [OK]
+  31b-spec-d1736: 101.26 tok/s accept=0.817 [OK]
+  26b-plain-short: 201.84 tok/s [OK]
+  26b-spec-d1736: 303.39 tok/s accept=0.839 [OK]
+  e4b-plain-short: 205.17 tok/s [OK]
+  e4b-spec-short: 275.51 tok/s accept=0.457 [OK]
+  qwen9b-plain-short: 137.12 tok/s [OK]
+perf stage: 1 fail, 0 warn
