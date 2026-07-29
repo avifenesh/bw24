@@ -548,7 +548,8 @@ struct QuantizedActivation {
 };
 
 std::int32_t dot_i8_16(
-        const std::int8_t * left, const std::int8_t * right, std::int32_t right_sum) {
+        const std::int8_t * left, const std::int8_t * right,
+        [[maybe_unused]] std::int32_t right_sum) {  // consumed only by the AVX-VNNI arm
 #if defined(__AVXVNNI__)
     const __m128i weights = _mm_loadu_si128(reinterpret_cast<const __m128i *>(left));
     const __m128i activations = _mm_loadu_si128(reinterpret_cast<const __m128i *>(right));
