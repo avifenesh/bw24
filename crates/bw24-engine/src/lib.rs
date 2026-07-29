@@ -11,15 +11,20 @@ pub mod model;
 pub mod forward;
 pub mod hybrid;
 pub mod hybrid_forward;
-pub mod cache;
+/// The dual cache lives in the shared `bw24-kv` crate (Phase D extraction); this
+/// re-export keeps every `crate::cache::` / `bw24_engine::cache::` path unchanged.
+pub mod cache {
+    pub use bw24_kv::*;
+}
 pub mod decode;
+pub mod decode_batch;
 pub mod spec;
 pub mod gemma_spec;
 pub mod round_stream;
 pub mod graph_update;
 pub mod dflash;
 pub mod eagle;
-pub mod sampler;
+pub use bw24_sampling as sampler;
 
 /// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
 /// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
@@ -39,6 +44,8 @@ mod spill_pread;
 #[cfg(bw24_cutlass)]
 pub mod cutlass_ffi;
 pub mod mmq_ffi;
+pub mod f16_ffi;
+pub mod prime_graph;
 pub mod fp8_ffi;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
@@ -56,16 +63,27 @@ const SAMPLE_FATBIN_PATH: &str = env!("BW24_SAMPLE_FATBIN");
 /// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
 /// compile-time default (zero behavior change).
 fn gemm_fatbin_path() -> String {
-    assert!(!(cfg!(bw24_portable_cuda) && std::env::var_os("BW24_GEMM_FATBIN").is_some()),
+    assert!(!(portable_mma_gated() && std::env::var_os("BW24_GEMM_FATBIN").is_some()),
             "BW24_GEMM_FATBIN overrides are not allowed in the portable CUDA lane");
     std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
 }
 
-/// The legacy quantized prefill GEMMs are tuned and validated for sm_120a.  Keep the policy in a
-/// pure helper so the portable dispatch guard can be regression-tested without constructing an
+/// Phase A (ARCHITECTURE-H100.md): sm_90a re-enables the portable-PTX tensor-core paths
+/// (int8 mma.m16n8k32/k16.s8, bf16 m16n8k16, ldmatrix, cp.async — all sm_80-class, native
+/// on Hopper) that the portable boot lane gates off. Dispatch guards that used to test
+/// `cfg!(bw24_portable_cuda)` test this instead; sm_89 keeps the pure-portable behavior.
+/// The sm_120a/sm_100a-only MMA kinds (mxf4nvf4, kind::f8f6f4) are NOT covered — their
+/// launchers stay fail-closed stubs on 90a and their dispatch arms stay arch-gated.
+pub(crate) const fn portable_mma_gated() -> bool {
+    cfg!(bw24_portable_cuda) && !cfg!(bw24_hopper_mma)
+}
+
+/// The legacy quantized prefill GEMMs are tuned and validated for sm_120a; sm_90a re-admits
+/// them through the Hopper-MMA lane (int8 m16n8k32.s8 is sm_80-class PTX).  Keep the policy
+/// in a pure helper so the dispatch guard can be regression-tested without constructing an
 /// Engine or allocating a GPU tensor.
-const fn legacy_quant_gemm_allowed(portable_cuda: bool, no_gemm: bool) -> bool {
-    !portable_cuda && !no_gemm
+const fn legacy_quant_gemm_allowed(portable_cuda: bool, hopper_mma: bool, no_gemm: bool) -> bool {
+    (!portable_cuda || hopper_mma) && !no_gemm
 }
 
 // ---- KV-cache format selection (kvbytes lane, 2026-07-08; default OFF = daily config) ----
@@ -81,37 +99,9 @@ const FLASH_FATBIN_KF8: &str = env!("BW24_FLASH_FATBIN_KF8");
 const FLASH_FATBIN_KF8VQ4: &str = env!("BW24_FLASH_FATBIN_KF8VQ4");
 const FLASH_FATBIN_KF8VF8: &str = env!("BW24_FLASH_FATBIN_KF8VF8");
 
-/// The (K, V) cache formats picked by env (cached; both the fatbin pick and every
-/// tok-bytes computation MUST come through here so they can never diverge).
-pub fn kv_cache_formats() -> (&'static str, &'static str) {
-    static F: std::sync::OnceLock<(&'static str, &'static str)> = std::sync::OnceLock::new();
-    *F.get_or_init(|| {
-        let k = match std::env::var("BW24_KV_K").as_deref() {
-            Ok("fp8") => "fp8",
-            Ok("q8_0") | Ok("") | Err(_) => "q8_0",
-            Ok(o) => panic!("BW24_KV_K={o} unsupported (q8_0 | fp8)"),
-        };
-        let v = match std::env::var("BW24_KV_V").as_deref() {
-            Ok("q4_0") => "q4_0",
-            Ok("fp8") => "fp8",
-            Ok("q5_1") | Ok("") | Err(_) => "q5_1",
-            Ok(o) => panic!("BW24_KV_V={o} unsupported (q5_1 | q4_0 | fp8)"),
-        };
-        if (k, v) != ("q8_0", "q5_1") {
-            eprintln!("[bw24] KV cache format: K={k} V={v} (non-default — new numeric config)");
-        }
-        (k, v)
-    })
-}
-
-/// Per-32-element block bytes for the selected (K, V) formats. Callers compute
-/// `tok_bytes = (kv_dim/32) * blk_bytes` (cache.rs, spec.rs, eagle.rs, gates, benches).
-pub fn kv_blk_bytes() -> (usize, usize) {
-    let (k, v) = kv_cache_formats();
-    let kb = match k { "fp8" => 32, _ => 34 };
-    let vb = match v { "q4_0" => 18, "fp8" => 32, _ => 24 };
-    (kb, vb)
-}
+/// KV format policy moved to the shared `bw24-kv` crate (Phase D); re-exported so the
+/// fatbin router below and every existing `crate::kv_blk_bytes()` call site is unchanged.
+pub use bw24_kv::{kv_blk_bytes, kv_cache_formats};
 
 /// The flash_attn fatbin matching the selected KV formats.
 fn flash_fatbin_path() -> &'static str {
@@ -139,6 +129,17 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
         let p: Vec<u32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
         match p.as_slice() { [bm, bn, w] => Some((*bm, *bn, *w)), _ => None }
     })
+}
+
+/// H100 wgmma prefill-GEMM seam (task 8, ARCHITECTURE-H100.md): OPT-IN (BW24_WGMMA=1).
+/// v0 verdict (2026-07-26, N=5 pp512 9B-Q8_0): wgmma 3845 tok/s vs MMQ 8692 — the
+/// standalone harness's "688us MMQ ref" was a pp2048-shape figure, so v0 (unpipelined,
+/// 64x64 tile, wait_group<0> every 32-K step) is ~3x SLOWER per launch at m=512 model
+/// shapes. Default stays MMQ until the pipelined version beats it N=5 (repo law).
+/// Correctness stays pinned regardless: kernel-check's wgmma case is cfg-gated, not env-gated.
+pub(crate) fn wgmma_gemm_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("BW24_WGMMA").as_deref() == Ok("1"))
 }
 
 /// TUNE SEAM: keys per FA-decode split (`BW24_FA_SPLIT` forces a fixed size; default 64). Smaller
@@ -246,11 +247,9 @@ pub static FA_SP_GEMMA: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// per-process kernel coin made 12B-class spec cells bimodal, while the 26B's drafter
 /// measures BETTER under sk's fold order (2026-07-27). mmq_ffi reads this before the env.
 pub static MMQ_SK_FORCE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
-/// Per-model FP8-KV door (-1 = unset → env/default off; 0 = off; 1 = on). Set at qwen
-/// model load: the 2026-07-12 arc closed per-model — 9B +0.7-4% scaling with depth,
-/// 27B flat (weight-bound), 35B −2% (fp8 format-gates its v3 dp4a lane off). Explicit
-/// BW24_KV_FP8 wins. Adoption 2026-07-28 with the acceptance battery the arc deferred.
-pub static KV_FP8_FORCE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+/// Per-model FP8-KV door — lives in bw24-kv next to the format policy it drives
+/// (re-export keeps `crate::KV_FP8_FORCE` setters in model.rs/hybrid.rs working).
+pub use bw24_kv::KV_FP8_FORCE;
 pub(crate) fn rms_block() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("BW24_RMS_BLOCK").ok()
@@ -415,6 +414,7 @@ pub struct Engine {
     fa_part_pool: Mutex<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
     /// name -> resolved CudaFunction (capture-safe lookups; see `func`).
     fn_cache: Mutex<std::collections::HashMap<String, CudaFunction>>,
+    f16_scratch: Mutex<Option<crate::f16_ffi::F16Scratch>>,
     /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
     /// allocated ONCE on first parallel-argmax call and reused. Stable pointers so the 2-pass argmax
     /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
@@ -523,6 +523,22 @@ impl Drop for PinnedStage {
 /// x 256 threads = 65536 threads covering the 248K-vocab scan in ~4 strided loads/thread.
 pub const ARGMAX_NB: usize = 256;
 
+/// crate-visible alias for the batched FA3 shim entry (hybrid_forward's batch arm).
+pub(crate) use bw24_fa3_vl as fa3_vl_raw;
+
+unsafe extern "C" {
+    /// FA3 v10 shim (cu/fa3_prefill.cu): TMA-swizzled wgmma FA, fresh causal hd256.
+    fn bw24_fa3_prefill(q16: *const core::ffi::c_void, k16: *const core::ffi::c_void,
+                        v16: *const core::ffi::c_void, o: *mut f32,
+                        t: i32, h: i32, hkv: i32, d: i32, scale: f32,
+                        stream: *mut core::ffi::c_void) -> i32;
+    /// batched varlen twin: host arrays of device pointers per seq (B <= 8).
+    pub(crate) fn bw24_fa3_vl(q16s: *const *const core::ffi::c_void, k16s: *const *const core::ffi::c_void,
+                   v16s: *const *const core::ffi::c_void, os: *const *mut f32,
+                   ts: *const i32, b: i32, h: i32, hkv: i32, d: i32, scale: f32,
+                   stream: *mut core::ffi::c_void) -> i32;
+}
+
 /// STAGE-2 GROUPED DECODE: 8 expert weight-block device pointers passed BY VALUE as one kernel
 /// param (matches the CUDA `wptr8_t` struct: 8x 64-bit pointers, `#[repr(C)]` => identical
 /// layout). The pointers are SLRU cache-slot base addresses — fixed for the engine's lifetime
@@ -531,6 +547,102 @@ pub const ARGMAX_NB: usize = 256;
 #[derive(Clone, Copy)]
 pub struct WPtr8(pub [u64; 8]);
 unsafe impl cudarc::driver::DeviceRepr for WPtr8 {}
+
+/// task #18 varlen GDN: per-seq args for gdn_chunk_{state,output}_mma_vl — one launch
+/// runs all B<=8 sequences' K4/K5 (CUDA `gdnseq_t`/`gdnvl_t`, layout-identical repr(C)).
+/// Raw addresses are valid for the launch: every referenced buffer outlives the call and
+/// all work is on the single compute stream (same discipline as the f16 GEMM FFI).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GdnSeqVl {
+    pub kb16: u64, pub gcum: u64, pub beta: u64, pub u: u64, pub wb16: u64,
+    pub y: u64, pub ssnap: u64, pub state_in: u64, pub state_out: u64,
+    pub q: u64, pub p: u64, pub o: u64,
+    pub k: u64, pub v: u64, pub g: u64, pub a: u64, pub w: u64,
+    pub t: i32, pub nc: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for GdnSeqVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GdnVl8(pub [GdnSeqVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for GdnVl8 {}
+
+/// task #22: per-seq wgmma-fused extras (CUDA `gdnw_t`/`gdnwvl_t`) — qb16 mirror +
+/// pre-masked Pb16, riding NEXT TO GdnSeqVl so the base struct stays untouched.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GdnWVl { pub qb16: u64, pub pb16: u64 }
+unsafe impl cudarc::driver::DeviceRepr for GdnWVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GdnWVl8(pub [GdnWVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for GdnWVl8 {}
+
+/// task #18 increment 3: per-seq PREP/TAIL args (CUDA `gdnprep_t`/`gdnprepvl_t`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GdnPrepVl {
+    pub qkv: u64, pub conv_state: u64, pub conv_out: u64,
+    pub q_g: u64, pub k_g: u64, pub v_g: u64,
+    pub q_l2: u64, pub k_l2: u64,
+    pub beta_raw: u64, pub alpha: u64, pub beta: u64, pub g_log: u64,
+    pub o: u64, pub z: u64, pub gn: u64, pub gn16: u64,
+    pub kb16: u64,
+    pub qb16: u64,
+    pub t: i32, pub pad: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GdnPrepVl8(pub [GdnPrepVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl8 {}
+
+/// task #18 (attn side): per-seq varlen FA args (CUDA `faseq_t`/`favl_t`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct FaSeqVl {
+    pub q: u64, pub k16: u64, pub v16: u64, pub o: u64, pub kf: u64, pub vf: u64,
+    pub t: i32, pub pad: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for FaSeqVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FaVl8(pub [FaSeqVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for FaVl8 {}
+
+/// task #18 (attn pre-FA): per-seq split/norm/rope/append args (CUDA `attnpre_t`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct AttnPreVl {
+    pub qf: u64, pub kf: u64, pub vf: u64,
+    pub q: u64, pub gate: u64, pub qn: u64, pub kn: u64,
+    pub kc: u64, pub vc: u64,
+    pub t: i32, pub pad: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for AttnPreVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AttnPreVl8(pub [AttnPreVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for AttnPreVl8 {}
+
+/// task #18 increment 2: one sequence's FULL chunk-buffer set (alloc-only; the
+/// varlen K1-K5 chain fills them).
+pub struct GdnChunkBufs {
+    pub gcum: CudaSlice<f32>,
+    pub a: CudaSlice<f32>,
+    pub p: CudaSlice<f32>,
+    pub u: CudaSlice<f32>,
+    pub w: CudaSlice<f32>,
+    pub kb16: CudaSlice<u8>,
+    pub wb16: CudaSlice<u8>,
+    pub y16: CudaSlice<u8>,
+    pub ssnap16: CudaSlice<u8>,
+    pub qb16: CudaSlice<u8>,
+    pub pb16: CudaSlice<u8>,
+    pub o: CudaSlice<f32>,
+    pub t: usize,
+    pub nc: usize,
+}
 
 /// STAGE-2 GROUPED DECODE: the 8 routed-expert weights by value (CUDA `f32x8_t`).
 #[repr(C)]
@@ -605,6 +717,7 @@ impl Engine {
                   fa_vf16_scratch: Mutex::new(None),
                   fa_part_pool: Mutex::new(None),
                   fn_cache: Mutex::new(Default::default()),
+                  f16_scratch: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -614,8 +727,7 @@ impl Engine {
     /// FP8-GLOBALS switch (BW24_GEMMA_GKV, default ON): gemma global (hd512) layers keep
     /// their KV in e4m3 — the dequant-latency arc (HANDOVER). Windowed layers stay q8_0/q5_1.
     pub fn gkv_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_GEMMA_GKV").map(|v| v != "0").unwrap_or(true))
+        bw24_kv::gkv_on()
     }
 
     /// FP8-WINDOWED switch (BW24_GEMMA_WKV — measured 2026-07-12 in a validity-gated
@@ -630,9 +742,7 @@ impl Engine {
     /// depth-plain +3% stands). Explicit BW24_GEMMA_WKV always wins. GKV (globals) stays
     /// ON for both — no acceptance cost measured.
     pub fn wkv_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v != "0")
-            .unwrap_or_else(|_| std::env::var("BW24_DRAFT").is_err()))
+        bw24_kv::wkv_on()
     }
 
     /// QWEN FP8-KV switch (BW24_KV_FP8 explicit; else the per-model KV_FP8_FORCE door set
@@ -641,13 +751,7 @@ impl Engine {
     /// 35B −2% (fp8 format-gates its v3 dp4a lane) — so the 9B class defaults ON
     /// (adopted 2026-07-28 with the deferred acceptance battery), others stay OFF.
     pub fn kv_fp8_on() -> bool {
-        static ENV: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
-        if let Some(v) = *ENV.get_or_init(|| std::env::var("BW24_KV_FP8").ok()
-            .map(|v| v == "1")) { return v; }
-        match KV_FP8_FORCE.load(std::sync::atomic::Ordering::Relaxed) {
-            1 => true,
-            _ => false,
-        }
+        bw24_kv::kv_fp8_on()
     }
 
     /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
@@ -839,7 +943,7 @@ impl Engine {
     pub fn set_verify_exact(&self, on: bool) {
         self.verify_exact.store(on, std::sync::atomic::Ordering::Relaxed);
     }
-    fn verify_exact_on(&self) -> bool {
+    pub(crate) fn verify_exact_on(&self) -> bool {
         self.verify_exact.load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -1748,6 +1852,35 @@ impl Engine {
         Ok(dst)
     }
 
+    /// D2D row extraction: copy a view (e.g. one row of a [B, n] batch buffer) into `dst`.
+    /// Stream-ordered, async — decode_batch's per-sequence row plumbing.
+    pub fn dtod_copy_view(&self, src: &cudarc::driver::CudaView<f32>, dst: &mut CudaSlice<f32>)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memcpy_dtod(src, dst)?;
+        Ok(())
+    }
+
+    /// D2D i8 twin of `dtod_copy_view` (q8_1 activation rows).
+    pub fn dtod_copy_view_i8(&self, src: &cudarc::driver::CudaView<i8>, dst: &mut CudaSlice<i8>)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memcpy_dtod(src, dst)?;
+        Ok(())
+    }
+
+    /// D2D row placement: copy `src` into `dst[offset .. offset+src.len()]`.
+    pub fn dtod_copy_into(&self, src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, offset: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let n = src.len();
+        let mut dv = dst.slice_mut(offset..offset + n);
+        self.gpu.stream.memcpy_dtod(src, &mut dv)?;
+        Ok(())
+    }
+
+    /// Uninitialized i8 device buffer (decode_batch q8_1 row scratch).
+    pub fn uninit_i8(&self, n: usize) -> Result<CudaSlice<i8>, Box<dyn std::error::Error>> {
+        self.alloc_uninit::<i8>(n)
+    }
+
     /// Resident-quantized linear (Stage-A: f32 dequant-in-kernel). y[m,out]=x[m,in]@W[out,in]^T.
     pub fn qmatvec(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize,
                    qtype: i32, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -2317,6 +2450,38 @@ impl Engine {
         unsafe { b.launch(cfg)?; }
         *rp4 = Some(dst);
         Ok(())
+    }
+
+    /// Q8_0 twin of `build_q4_rp4` (H100 coalescing fix, 2026-07-26 ncu: GGUF 34B-stride
+    /// weight loads hold Max Bandwidth at 41-46%; the split mirror makes them aligned 16B
+    /// ldcs). Raw bytes stay resident (prefill GEMM/MMQ/fused m=1 launches read GGUF layout);
+    /// the mmvq/batched decode arms prefer the mirror via `rp4`. Bit-identical outputs.
+    pub fn build_q8_rp4(&self, t: &mut crate::model::GpuTensor)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, qtype, row_bytes, ne, rp4, .. } = t else { return Ok(()) };
+        if *qtype != QT_Q8_0 || rp4.is_some() || ne.len() != 2 { return Ok(()); }
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        if in_f % 32 != 0 || *row_bytes != (in_f / 32) * 34 { return Ok(()); }
+        *rp4 = Some(self.build_q8_rp4_raw(bytes, in_f, out_f)?);
+        Ok(())
+    }
+
+    /// Raw rp-mirror build for gates/benches: split GGUF Q8_0 bytes into the qplane+dplane
+    /// mirror without a GpuTensor (same kernel the loader path above uses).
+    pub fn build_q8_rp4_raw(&self, bytes: &CudaSlice<u8>, in_f: usize, out_f: usize)
+                            -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(in_f % 32 == 0);
+        let nblk = in_f / 32;
+        let mut dst = self.alloc_uninit::<u8>(out_f * nblk * 34)?;
+        let f = self.func("q8_0_split_rp_build");
+        let cfg = LaunchConfig { grid_dim: (((out_f * nblk) as u32).div_ceil(256), 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (of, nb) = (out_f as i32, nblk as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
+        unsafe { b.launch(cfg)?; }
+        Ok(dst)
     }
 
     /// IN-PLACE split-plane swap (the 31B dense arc): build the split layout and REPLACE the
@@ -3398,7 +3563,24 @@ impl Engine {
 
     fn alloc_uninit<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, n: usize)
             -> Result<CudaSlice<T>, Box<dyn std::error::Error>> {
-        let s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        let mut s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        // BW24_DEBUG_ZERO_ALLOCS=1 (task #14 defect hunt): memset EVERY engine allocation —
+        // the global uninit-read discriminator (the prime-fn-scoped zeroing experiment could
+        // not cover engine-internal buffers). Debug-only: massive launch overhead.
+        {
+            static Z: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *Z.get_or_init(|| std::env::var("BW24_DEBUG_ZERO_ALLOCS").as_deref() == Ok("1")) {
+                // raw D8 memset (T lacks ValidAsZeroBits in the generic bound)
+                use cudarc::driver::DevicePtrMut;
+                let n_bytes = s.len() * std::mem::size_of::<T>();
+                let stream = &self.gpu.stream;
+                let (p_, _g) = s.device_ptr_mut(stream);
+                unsafe {
+                    cudarc::driver::sys::cuMemsetD8Async(p_, 0, n_bytes, stream.cu_stream())
+                        .result()?;
+                }
+            }
+        }
         self.keep_if_capturing(&s);
         Ok(s)
     }
@@ -4070,7 +4252,7 @@ impl Engine {
             ne: vec![w0.in_features() as u64, (o0 + o1 + o2) as u64], scale: 1.0, rp: false,
             #[cfg(bw24_cutlass)]
             cutlass: None,
-            fp8: None, rp4: None,
+            fp8: None, rp4: None, f16: None,
         }))
     }
 
@@ -4274,6 +4456,30 @@ impl Engine {
     }
 
     /// L2 norm per row (head_dim), no weight.
+    /// PREFILL l2 dispatch (round 27): the warp-per-row float4 v2 when the numeric-config
+    /// seam allows (BW24_L2_V2, default ON, d_state==128 only); else the strided kernel.
+    pub fn l2_v2_on(ncols: usize) -> bool {
+        ncols == 128 && std::env::var("BW24_L2_V2").as_deref() != Ok("0")
+    }
+
+    pub fn l2_norm_pp(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                      dst16: Option<&mut CudaSlice<u8>>, ncols: usize, nrows: usize,
+                      eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        if Self::l2_v2_on(ncols) {
+            let f = self.func("l2_norm_pp_v2_f32");
+            let rows_per_block = 8u32;   // 256 threads = 8 warps = 8 rows
+            let cfg = LaunchConfig { grid_dim: ((nrows as u32).div_ceil(rows_per_block), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (nc, nr, e) = (ncols as i32, nrows as i32, eps);
+            // mirror-fold: bf16 twin address by value (0 = skip; matches the nullable param)
+            let d16: u64 = match dst16 { Some(d) => self.addr_u8(d), None => 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(x).arg(dst).arg(&d16).arg(&nc).arg(&nr).arg(&e);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
+        self.l2_norm(x, dst, ncols, nrows, eps)
+    }
+
     pub fn l2_norm(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
                    eps: f32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("l2_norm_f32");
@@ -4373,10 +4579,25 @@ impl Engine {
     pub fn silu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                     -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("silu_mul_f32");
-        let cfg = LaunchConfig::for_num_elems(n as u32);
+        // float4 kernel: one thread per 4 elements (tail handled in-kernel)
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(gate).arg(up).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// f16out twin of `silu_mul` (task #17): the epilogue also emits the fp16 GEMM operand
+    /// for the down projection — kills the standalone convert pass. Bit-identical class.
+    pub fn silu_mul_f16out(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+                           dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>, n: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("silu_mul_f16out_f32");
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(dst).arg(dst16).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -4441,7 +4662,8 @@ impl Engine {
     pub fn add(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("add_f32");
-        let cfg = LaunchConfig::for_num_elems(n as u32);
+        // float4 kernel: one thread per 4 elements (tail handled in-kernel)
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
         let mut bld = self.gpu.stream.launch_builder(&f);
         bld.arg(a).arg(b_in).arg(dst).arg(&ni);
@@ -4505,6 +4727,9 @@ impl Engine {
         // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
+            // FP16-mirror prefill (BW24_PP_F16=1, probe 2026-07-26: 3.2-3.7x the MMQ class).
+            // Mirror presence IS the gate (only built under the env). Decode never reaches here.
+            if let Some(y) = self.try_f16_gemm(w, x, m)? { return Ok(y); }
         }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x, m);
@@ -4653,6 +4878,8 @@ impl Engine {
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
         if m >= 16 && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
+            // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
+            if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
         }
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind BW24_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
@@ -5556,6 +5783,31 @@ impl Engine {
                         -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(y.len() >= m * out_f);
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
+        // SMALL-SHAPE GRID FILL (H100 lane, 2026-07-26 microbench: attn qkv out_f=2048 =
+        // 0.97 waves at the 4-warp block -> 66% of peak). The g2 twin (2 warps/block)
+        // doubles the grid when the 4-warp launch would be sub-wave; per-row program
+        // identical -> bit-identical. BW24_Q80_G2=0 reverts.
+        if qtype == QT_Q8_0 && rp && m == 1 && out_f >= 64
+            && (out_f as u32).div_ceil(ROWS_PER_BLOCK) < 4 * self.sm_count() as u32
+            && {
+                static G2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *G2.get_or_init(|| std::env::var("BW24_Q80_G2").as_deref() != Ok("0"))
+            }
+        {
+            let f = self.func("qmatvec_q8_0_mmvq_rp_g2");
+            let mut y = self.alloc_uninit::<f32>(out_f)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((out_f as u32).div_ceil(2), 1, 1),
+                block_dim: (32, 2, 1),
+                shared_mem_bytes: 0,
+            };
+            let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, 1i32, row_bytes as i64);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            unsafe { b.launch(cfg)?; }
+            if scale != 1.0 { self.scale_inplace(&mut y, scale, out_f)?; }
+            return Ok(y);
+        }
         // Multi-row-per-warp (mr2) policy, fixed since the 2026-07 sweeps (the BW24_MMVQ_MR
         // override + mr4 kernel were retired 2026-07-08 — mr4 regressed on register pressure and
         // crashed under rp; q4_K/q6_K mr2 measured flat, "no gain = no change"):
@@ -5596,6 +5848,14 @@ impl Engine {
         // Q4_0 split-plane rp: mr2 default; BW24_Q40_MR=1 reaches the mr1 rp twin
         // (2026-07-13 — the tall-input/short-output tail-quantization probe).
         if qtype == QT_Q4_0 && rp && mr != 1 { mr = 2; }
+        // Q8_0 rp (H100 lane): mr1 default — the q4_0 mr2 recipe MEASURED NEGATIVE on H100
+        // (2026-07-26 N=3: mr1 186.2 vs mr2 171.5 tok/s; halving the grid on 132 SMs costs
+        // more than 2-row ILP buys). mr2 kernel stays behind BW24_Q80_MR=2 for the corpus.
+        if qtype == QT_Q8_0 && rp {
+            static Q80MR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            mr = *Q80MR.get_or_init(|| std::env::var("BW24_Q80_MR").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(1));
+        }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
@@ -5603,6 +5863,16 @@ impl Engine {
             (QT_Q4_0, 1, true)   => "qmatvec_q4_0_mmvq_rp",
             (QT_Q4_0, _, true)   => "qmatvec_q4_0_mmvq_mr2_rp",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
+            (QT_Q8_0, 2, true) => "qmatvec_q8_0_mmvq_mr2_rp",
+            // rpca (cp.async-staged weight ring): MEASURED NEGATIVE on H100 for Q8_0
+            // (2026-07-26 N=3: 181.8 vs plain rp 185.5 — the smem round-trip exceeds the
+            // latency it hides for 8-bit direct-dp4a; the NVFP4 win case overlaps table
+            // decode with half the bytes). OPT-IN via BW24_Q80_CA=1 for the corpus.
+            (QT_Q8_0, _, true) if in_f % 1024 == 0 && {
+                static CA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *CA.get_or_init(|| std::env::var("BW24_Q80_CA").as_deref() == Ok("1"))
+            } => "qmatvec_q8_0_mmvq_rpca",
+            (QT_Q8_0, _, true) => "qmatvec_q8_0_mmvq_rp",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q4_0, 2, false) => "qmatvec_q4_0_mmvq_mr2",
@@ -5743,8 +6013,24 @@ impl Engine {
     /// The variant the batched dispatch will pick for this (shape, m, mcols, layout) — exposed so
     /// gates can distinguish bit-identical variants (bit-bad==0 required) from the k-split family
     /// (deterministic but k-reduce-order-shifted: rel<1e-3 + run-to-run bit-identity required).
+    /// Device SM count (cached) — grid-fill policy input.
+    pub fn sm_count(&self) -> i32 {
+        static SMS: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+        *SMS.get_or_init(|| {
+            use cudarc::driver::sys::CUdevice_attribute_enum as A;
+            self.gpu.ctx.attribute(A::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT).unwrap_or(82)
+        })
+    }
+
     pub fn batched_variant(&self, _m: usize, in_f: usize, out_f: usize, qtype: i32,
                            row_bytes: usize, mcols: usize, rp: bool) -> &'static str {
+        // Q8_0 never joined the auto variant machinery (on sm_120 its only batched shapes
+        // were tiny aux tensors). On Q8_0-trunk models the layout is the whole game: the
+        // split-plane mirror (rp) routes to the _rp twins (H100 coalescing fix, 2026-07-26);
+        // GGUF layout stays "base". rp bytes MUST never reach the base kernel or vice versa.
+        if qtype == QT_Q8_0 {
+            return if rp { "rp" } else { "base" };
+        }
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {
             Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
@@ -5941,7 +6227,20 @@ impl Engine {
                                 mcols: usize, scale: f32, rp: bool)
                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
-        let variant = self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp);
+        // TUNE SEAM (H100 lane): BW24_BVAR forces the batched-variant pick for the whole
+        // process — the auto heuristics were tuned on sm_120 (82 SMs / 858 GB/s) and the
+        // sm_90a re-tune sweeps this seam empirically. Layout variants stay safe: an rp
+        // weight keeps its rp-layout kernel family regardless of the override.
+        let forced: Option<&'static str> = {
+            static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+            V.get_or_init(|| std::env::var("BW24_BVAR").ok())
+                .as_deref()
+                .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str)
+        };
+        let variant = match forced {
+            Some(v) if !rp || v.contains("rp") => v,
+            _ => self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp),
+        };
         let base_name = Self::batched_kernel_name(qtype, mcols)
             .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
         // b16 tier (t=9..16 verify): only base/_rp b16 kernels are compiled — the b2..b8
@@ -6050,6 +6349,151 @@ impl Engine {
         Ok(None)
     }
 
+    /// rms_norm + fused fp16 twin (task #14): f32 output verbatim `rms_norm` + the fp16
+    /// copy the f16-mirror GEMM group would otherwise produce with a standalone convert
+    /// launch. BIT-IDENTICAL end-to-end (same reduction, same __float2half values).
+    pub fn rms_norm_f16out(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                           dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>,
+                           ncols: usize, nrows: usize, eps: f32)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm_f16out_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(dst).arg(dst16).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// add+norm(+f16out) fusion for the prefill trunk (round 28; add_rms_norm precedent —
+    /// bit-identical to add_f32 -> rms_norm_f16out). block_dim matches rms_norm_f16out's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_rms_norm_f16out(&self, a: &CudaSlice<f32>, b: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                               res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                               dst16: &mut CudaSlice<u8>, ncols: usize, nrows: usize, eps: f32)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_rms_norm_f16out_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(a).arg(b).arg(w).arg(res).arg(dst).arg(dst16).arg(&nc).arg(&e);
+        unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// matmul_group with a PRE-EMITTED fp16 activation (task #14: the producer norm fused
+    /// the convert). Mirror-less members fall back to `matmul` on the f32 activation.
+    pub fn matmul_group_xh(&self, ws: &[&crate::model::GpuTensor], x: &CudaSlice<f32>,
+                           xh: &CudaSlice<u8>, m: usize)
+                           -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let mut out = Vec::with_capacity(ws.len());
+        let in_f = ws[0].in_features();
+        for w in ws {
+            if w.in_features() == in_f && m >= 16 && !self.verify_exact_on() {
+                if let Some(y) = self.try_f16_gemm_pre(w, xh, m)? {
+                    out.push(y);
+                    continue;
+                }
+            }
+            out.push(self.matmul(w, x, m)?);
+        }
+        Ok(out)
+    }
+
+    /// task #14 pad-proofing: zero beta/g_log at rows >= len_d[0] (pads become identity
+    /// GDN steps). Layouts [T, H].
+    pub fn gdn_pad_mask(&self, beta: &mut CudaSlice<f32>, g_log: &mut CudaSlice<f32>,
+                        len_d: &CudaSlice<i32>, h: usize, t: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_pad_mask_f32");
+        let cfg = LaunchConfig::for_num_elems((t * h) as u32);
+        let (hi, ti) = (h as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(beta).arg(g_log).arg(len_d).arg(&hi).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #14 pad-proofing: dst[ncols] = src row (len_d[0]-1) — device-indexed last-row
+    /// gather for the padded prime graph's h_seed/hlast.
+    pub fn row_gather_dev(&self, src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                          len_d: &CudaSlice<i32>, ncols: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("row_gather_dev_f32");
+        let cfg = LaunchConfig::for_num_elems(ncols as u32);
+        let nc = ncols as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(dst).arg(len_d).arg(&nc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Grouped matmul: several weights consuming ONE activation (hybrid layers: the GDN
+    /// 4-tuple wqkv/gate/beta/alpha, attention q/k/v, ffn gate/up). Semantics identical to
+    /// calling `matmul` per weight; the f16-mirror arm converts the activation ONCE for the
+    /// whole group instead of once per GEMM (the standalone converts were ~250 launches/prime
+    /// of small-kernel gap fuel — nsys 2026-07-26). Any member without a mirror (or with a
+    /// different in_f) falls back to its own `matmul` — behavior unchanged.
+    pub fn matmul_group(&self, ws: &[&crate::model::GpuTensor], x: &CudaSlice<f32>, m: usize)
+                        -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let mut out = Vec::with_capacity(ws.len());
+        let any_mirror = ws.iter().any(|w| matches!(w, GpuTensor::Quant { f16: Some(_), .. }));
+        if m >= 16 && any_mirror && !self.verify_exact_on() {
+            let in_f = ws[0].in_features();
+            let xh = self.f16_act(x, m * in_f)?;
+            for w in ws {
+                if w.in_features() == in_f {
+                    if let Some(y) = self.try_f16_gemm_pre(w, &xh, m)? {
+                        out.push(y);
+                        continue;
+                    }
+                }
+                out.push(self.matmul(w, x, m)?);
+            }
+            return Ok(out);
+        }
+        for w in ws {
+            out.push(self.matmul(w, x, m)?);
+        }
+        Ok(out)
+    }
+
+    /// Cross-request grouped matmul (task #13): run ONE projection group over the
+    /// CONCATENATION of several sequences' activations (m = sum of per-seq rows — the
+    /// GEMM-batch win vLLM gets from continuous batching), then split each output back
+    /// into per-seq buffers. Zero view plumbing: gather/scatter are stream-ordered D2D
+    /// copies (~us at prime sizes). NUMERIC CONFIG NOTE: a GEMM at m=sum tiles K
+    /// differently than per-seq GEMMs — argmax-gated like every prefill GEMM change.
+    pub fn matmul_group_multi(&self, ws: &[&crate::model::GpuTensor],
+                              xs: &[&CudaSlice<f32>], ms: &[usize])
+                              -> Result<Vec<Vec<CudaSlice<f32>>>, Box<dyn std::error::Error>> {
+        assert_eq!(xs.len(), ms.len());
+        let in_f = ws[0].in_features();
+        let total: usize = ms.iter().sum();
+        let mut xcat = self.uninit(total * in_f)?;
+        let mut off = 0usize;
+        for (x, &m) in xs.iter().zip(ms) {
+            self.copy_into(&mut xcat, off * in_f, x, m * in_f)?;
+            off += m;
+        }
+        let ys = self.matmul_group(ws, &xcat, total)?;
+        let mut out: Vec<Vec<CudaSlice<f32>>> = (0..xs.len()).map(|_| Vec::new()).collect();
+        for (w, y) in ws.iter().zip(ys) {
+            let out_f = w.out_features();
+            let mut off = 0usize;
+            for (s, &m) in ms.iter().enumerate() {
+                let mut ys_s = self.uninit(m * out_f)?;
+                let src = y.slice(off * out_f..(off + m) * out_f);
+                self.gpu.stream.memcpy_dtod(&src, &mut ys_s)?;
+                out[s].push(ys_s);
+                off += m;
+            }
+        }
+        Ok(out)
+    }
+
     /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).
     /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. NVFP4 needs in_f % 64 == 0.
     /// DEFAULT-ON (2026-06-28): measured pp512 9B-NVFP4 = 1413 tok/s WITH this GEMM vs 298 with the
@@ -6063,6 +6507,7 @@ impl Engine {
         use crate::model::GpuTensor;
         if !legacy_quant_gemm_allowed(
             cfg!(bw24_portable_cuda),
+            cfg!(bw24_hopper_mma),
             std::env::var_os("BW24_NO_GEMM").is_some(),
         ) {
             return false;
@@ -6090,6 +6535,18 @@ impl Engine {
             GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => unreachable!("gemm_supports guaranteed Quant"),
         };
+        // wgmma arm (sm_90a, task 8): the m64n64k32 warpgroup kernel reads the rp4 split-plane
+        // mirror AS-IS (qplane rows = its A operand, the half dplane its scales) and the same
+        // (aq, ad) activation planes. Same numeric class as the mma kernel below (exact s32 per
+        // 32-block, one f32 scale fold per block, ascending K) — argmax/tolerance gated like
+        // every prefill GEMM, not bit-gated. BW24_WGMMA=0 restores the portable kernel.
+        if cfg!(bw24_hopper_mma) && qtype == QT_Q8_0 && out_f % 64 == 0 && wgmma_gemm_enabled() {
+            if let GpuTensor::Quant { rp4: Some(m4), .. } = w {
+                let mut y = self.qmatvec_gemm_q8_0_wgmma_raw(m4, aq, ad, m, in_f, out_f)?;
+                if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+                return Ok(y);
+            }
+        }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
             QT_Q4_0 => if rp { "qmatvec_gemm_q4_0_rp" } else { "qmatvec_gemm_q4_0" },
@@ -6157,6 +6614,29 @@ impl Engine {
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(bytes).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// H100 warpgroup GEMM raw entry (task 8): launch `qmatvec_gemm_q8_0_wgmma` on an rp4
+    /// split-plane mirror + pre-quantized (aq, ad) activation planes. One warpgroup (128 thr)
+    /// owns a 64x64 C tile; grid (out_f/64, ceil(m/64)). out_f % 64 == 0 REQUIRED (row loads
+    /// and dplane scale reads are unguarded); the token edge is guarded in-kernel.
+    /// Standalone harness verdict (tools/bench_q8_gemm_wgmma.cu, 4096x4096x512): rel 1.6e-05
+    /// vs CPU ref, 179us vs the portable mma kernel's 688us (3.84x, unpipelined).
+    pub fn qmatvec_gemm_q8_0_wgmma_raw(&self, rp4: &CudaSlice<u8>, aq: &CudaSlice<i8>,
+                                       ad: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize)
+                                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(out_f % 64 == 0 && in_f % 32 == 0, "wgmma GEMM needs out_f%64==0, in_f%32==0");
+        let f = self.func("qmatvec_gemm_q8_0_wgmma");
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f / 64) as u32, (m as u32).div_ceil(64), 1),
+            block_dim: (128, 1, 1), shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi) = (in_f as i32, out_f as i32, m as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(rp4).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok(y)
     }
@@ -6372,9 +6852,53 @@ impl Engine {
                       o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                       t: usize, t_kv: usize, scale: f32, causal: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        if portable_mma_gated() {
             return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
                                    t, t_kv, scale, causal);
+        }
+        // FA3 v10 arm (task #20, OPT-IN BW24_FA3=1 — harness-proven 883us vs the shipped
+        // kernel's 993us at T=2048): TMA-swizzled wgmma FA, fresh causal hd256 only.
+        // NEW NUMERIC CONFIG (GDN-mma precedent): online softmax / bf16-P class — the
+        // run-gen argmax + greedy-stream batteries arbitrate; not bit-paired.
+        // PROMOTED default-ON hopper (2026-07-27): 3-seed 2048-prime -> 128-decode
+        // streams MATCH vs mma, full battery green, lane interleaved 5/5 (+2.4%).
+        // BW24_FA3=0 reverts; kernel-check pins the mma config regardless.
+        let fa3_on = head_dim == 256 && causal && t == t_kv
+            && match std::env::var("BW24_FA3").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            };
+        if fa3_on {
+            let n = t * n_head * head_dim;
+            let nkv = t * n_head_kv * head_dim;
+            let mut q16 = self.alloc_u8_uninit(n * 2)?;
+            let mut k16 = self.alloc_u8_uninit(nkv * 2)?;
+            let mut v16 = self.alloc_u8_uninit(nkv * 2)?;
+            self.f32_to_bf16(q, &mut q16, n)?;
+            self.f32_to_bf16(k, &mut k16, nkv)?;
+            self.f32_to_bf16(v, &mut v16, nkv)?;
+            let rc = {
+                use cudarc::driver::{DevicePtr, DevicePtrMut};
+                let stream = &self.gpu.stream;
+                let (qp, _g1) = q16.device_ptr(stream);
+                let (kp, _g2) = k16.device_ptr(stream);
+                let (vp, _g3) = v16.device_ptr(stream);
+                let (op, _g4) = o.device_ptr_mut(stream);
+                unsafe {
+                    bw24_fa3_prefill(qp as *const core::ffi::c_void,
+                                     kp as *const core::ffi::c_void,
+                                     vp as *const core::ffi::c_void,
+                                     op as *mut f32,
+                                     t as i32, n_head as i32, n_head_kv as i32,
+                                     head_dim as i32, scale,
+                                     stream.cu_stream() as *mut core::ffi::c_void)
+                }
+            };
+            if rc != 0 {
+                return Err(format!("bw24_fa3_prefill rc={rc}").into());
+            }
+            return Ok(());
         }
         // FLOOR PORT (P2+P0a+P0b+P1): 4 warps/CTA, BLOCK_Q=64 query rows, BK=32 KV tile,
         // Q-in-reg + register-O, grid.y=n_head_kv (4 Q-heads share staged K/V).
@@ -6409,26 +6933,66 @@ impl Engine {
         // 4.32->3.47, wait 1.99->1.45, per-call ~577us->~440us (1.31x) at flat 12.1% warps /
         // 255 regs / 2 CTAs (occupancy preserved). Bit-safe: 9B+27B argmax MATCH, rel 2.55e-3
         // vs floor 3.03e-3. BW24_FA_FLOOR reverts to the serialized-softmax floor kernel.
-        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        const BK: usize = 32;
+        // W2 lane (BW24_FA_PP_W2=1, ncu 2026-07-26): 2-warp/32-row CTA tile doubles grid.x —
+        // bit-identical per-row math, pure coverage trade for the 6.25%-occupancy starvation.
+        let w2 = std::env::var("BW24_FA_PP_W2").as_deref() == Ok("1");
+        let (block_q, warps, w2_sfx): (usize, u32, &str) =
+            if w2 { (32, 2, "_w2") } else { (64, 4, "") };
         // hd128 twins (2026-07-07): the prefill kernels are template-stamped at 256 (original
         // names, dispatch unchanged) and 128 (`_hd128`, the MiniMax-M3 class). Callers gate
         // other head_dims to sdpa_naive before reaching here.
         let hd_sfx = fa_hd_suffix(head_dim)?;
         let floor = std::env::var("BW24_FA_FLOOR").is_ok();
-        let f = self.func(&format!("fa_prefill_f32{}{hd_sfx}", if floor { "" } else { "_pp" }));
-        // persistent smem: bf16*(sK + sV + sP) + f32*(sS + sM + sL)
-        //   = bf16*(2*BK*hd + BLOCK_Q*BK) + f32*(BLOCK_Q*BK + 2*BLOCK_Q)
-        let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
-                   + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+        // BF16-KV staging lane (2026-07-26, default ON): the kernel converts K/V to bf16
+        // during staging anyway — pre-converting to bf16 mirrors is BIT-IDENTICAL (same
+        // __float2bfloat16 values into the same mma) and turns the 67%-of-stalls scalar
+        // staging into int4 vector copies. BW24_FA_BF16KV=0 reverts.
+        let bf16kv = !floor && !w2
+            && std::env::var("BW24_FA_BF16KV").as_deref() != Ok("0");
+        let (kb16, vb16) = if bf16kv {
+            let n = t_kv * n_head_kv * head_dim;
+            let mut kb = self.alloc_u8_uninit(n * 2)?;
+            let mut vb = self.alloc_u8_uninit(n * 2)?;
+            let fcv = self.func("f32_to_bf16_bulk");
+            let ni = n as i64;
+            let cfgc = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&fcv);
+            b.arg(k).arg(&mut kb).arg(&ni);
+            unsafe { b.launch(cfgc)?; }
+            let mut b = self.gpu.stream.launch_builder(&fcv);
+            b.arg(v).arg(&mut vb).arg(&ni);
+            unsafe { b.launch(cfgc)?; }
+            (Some(kb), Some(vb))
+        } else {
+            (None, None)
+        };
+        let f = self.func(&if bf16kv {
+            format!("fa_prefill_bf16kv_pp{hd_sfx}")
+        } else {
+            format!("fa_prefill_f32{}{}{hd_sfx}",
+                    if floor { "" } else { "_pp" },
+                    if floor { "" } else { w2_sfx })
+        });
+        // persistent smem: bf16*(KV_STAGES*(sK + sV) + sP) + f32*(sS + sM + sL);
+        // the bf16kv ring doubles the K/V stages (KV_STAGES=2).
+        let kv_stages = if bf16kv { 2 } else { 1 };
+        let shmem = (2 * (kv_stages * 2 * BK * head_dim + block_q * BK)
+                   + 4 * (block_q * BK + 2 * block_q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
         let cfg = LaunchConfig {
-            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
-            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            grid_dim: ((t as u32 + block_q as u32 - 1) / block_q as u32, n_head as u32, 1),
+            block_dim: (32, warps, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        b.arg(q);
+        match (&kb16, &vb16) {
+            (Some(kb), Some(vb)) => { b.arg(kb).arg(vb); }
+            _ => { b.arg(k).arg(v); }
+        }
+        b.arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -6911,6 +7475,106 @@ impl Engine {
         Ok(())
     }
 
+    /// task #18 (attn side): varlen FA — bf16 K/V mirrors (2 launches) + ONE
+    /// fa_prefill_bf16kv launch for every fresh sequence. Same per-block math as the
+    /// per-seq path (bit-gateable). Caller guarantees: fresh causal (T_kv == T),
+    /// head_dim in {256, 128}, bf16kv lane on.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_vl8(&self, seqs: &[FaSeqVl], head_dim: usize, n_head: usize,
+                          n_head_kv: usize, scale: f32)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        const BK: usize = 32;
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [FaSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = FaVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let ept = (n_head_kv * head_dim) as i32;
+        {
+            let f = self.func("fa_mirror_vl");
+            let max_n = (max_t as i64) * ept as i64;
+            let blocks = ((max_n as u32).div_ceil(4)).div_ceil(256);
+            for which in 0..2i32 {
+                let cfg = LaunchConfig { grid_dim: (blocks, 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let mut lb = self.gpu.stream.launch_builder(&f);
+                lb.arg(&v).arg(&ept).arg(&which);
+                unsafe { lb.launch(cfg)?; }
+            }
+        }
+        let hd_sfx = fa_hd_suffix(head_dim)?;
+        let f = self.func(&format!("fa_prefill_bf16kv_vl{hd_sfx}"));
+        let block_q = 64usize;
+        let kv_stages = 2usize;
+        let shmem = (2 * (kv_stages * 2 * BK * head_dim + block_q * BK)
+                   + 4 * (block_q * BK + 2 * block_q)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: (max_t.div_ceil(block_q as u32), n_head as u32, b as u32),
+            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(&v).arg(&hd).arg(&nh).arg(&nhkv).arg(&scale);
+        unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #18 (attn pre-FA): varlen split + QK-norm + RoPE + KV-append — FOUR launches
+    /// for every fresh sequence (was 6 x B, plus the q/k/v split copies which the view
+    /// inputs remove entirely). Fresh-only (append at t0=0, RoPE pos = token index).
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_pre_vl8(&self, seqs: &[AttnPreVl], wq: &CudaSlice<f32>, wk: &CudaSlice<f32>,
+                        head_dim: usize, rope_dims: usize, n_head: usize, n_head_kv: usize,
+                        eps: f32, freq_base: f32, freq_scale: f32,
+                        kv_dim_k: usize, kv_dim_v: usize,
+                        k_tok_bytes: usize, v_tok_bytes: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [AttnPreVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = AttnPreVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        {
+            let f = self.func("q_gate_split_vl");
+            let n = max_t * (n_head * head_dim) as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hd).arg(&nh);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("attn_rms_vl");
+            let cfg = LaunchConfig { grid_dim: (max_t * n_head as u32, 2, b as u32), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(wq).arg(wk).arg(&hd).arg(&nh).arg(&nhkv).arg(&eps);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("attn_rope_vl");
+            let theta_scale = freq_base.powf(-2.0 / rope_dims as f32);
+            let nd = rope_dims as i32;
+            let cfg = LaunchConfig { grid_dim: (max_t * n_head as u32, 2, b as u32), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hd).arg(&nd).arg(&nh).arg(&nhkv).arg(&theta_scale).arg(&freq_scale);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("append_kv_vl");
+            let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+            let cfg = LaunchConfig { grid_dim: (nblk, max_t, b as u32), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+            let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
     /// FA prefill where K/V are QUANTIZED CudaViews into the resident byte KV cache (the T=K verify
     /// path, MTP-PLAN §D.3). Uses `fa_prefill_q` (inline-dequant during stage-to-smem). The view's
     /// base+offset pointer is honored; the kernel reads [0..t_kv*tok_bytes). Q is the T fresh query
@@ -6921,7 +7585,7 @@ impl Engine {
                            t: usize, t_kv: usize, scale: f32, causal: bool,
                            k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                            -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        if portable_mma_gated() {
             return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
                                                   t, t_kv, scale, causal,
                                                   k_tok_bytes, v_tok_bytes);
@@ -6964,7 +7628,7 @@ impl Engine {
                               t: usize, t_kv: usize, scale: f32, causal: bool,
                               k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                               -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        if portable_mma_gated() {
             return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
                                                   t, t_kv, scale, causal,
                                                   k_tok_bytes, v_tok_bytes);
@@ -8183,6 +8847,17 @@ impl Engine {
                                w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
                                conv_dim: usize, t: usize, d_conv: usize)
                                -> Result<(), Box<dyn std::error::Error>> {
+        self.ssm_conv1d_tm_state_pad(qkv_tm, conv_state, w, y, conv_dim, t, d_conv, None)
+    }
+
+    /// task #14: `pad_len` = device true length for PADDED prime graphs — the ring update
+    /// reads rows [len-pad, len) instead of the pad tail. None = the classic host-T path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_tm_state_pad(&self, qkv_tm: &CudaSlice<f32>, conv_state: &mut CudaSlice<f32>,
+                               w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize,
+                               pad_len: Option<&CudaSlice<i32>>)
+                               -> Result<(), Box<dyn std::error::Error>> {
         assert!(t >= 1, "ssm_conv1d_tm_state requires T >= 1");
         // clone BEFORE the window kernel is issued is not required (stream-ordered: the dtod and
         // the window kernel both read the pre-roll ring; the roll launches after both) — but
@@ -8199,8 +8874,17 @@ impl Engine {
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
             unsafe { b.launch(cfg)?; }
         }
-        match ring_old {
-            None => {
+        match (ring_old, pad_len) {
+            (None, Some(len_d)) => {
+                let f = self.func("ssm_conv_ring_update_dev_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, dc) = (conv_dim as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            (None, None) => {
                 let f = self.func("ssm_conv_ring_update_f32");
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
@@ -8209,7 +8893,54 @@ impl Engine {
                 b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
-            Some(old) => self.ssm_conv_ring_rebuild(qkv_tm, &old, conv_state, conv_dim, t, d_conv)?,
+            (Some(old), _) => self.ssm_conv_ring_rebuild(qkv_tm, &old, conv_state, conv_dim, t, d_conv)?,
+        }
+        Ok(())
+    }
+
+    /// qkv-view twin (task #16): batched prime reads the concat GEMM output directly.
+    pub fn ssm_conv1d_tm_state_pad_v(&self, qkv_tm: &cudarc::driver::CudaView<f32>, conv_state: &mut CudaSlice<f32>,
+                               w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize,
+                               pad_len: Option<&CudaSlice<i32>>)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        assert!(t >= 1, "ssm_conv1d_tm_state requires T >= 1");
+        // clone BEFORE the window kernel is issued is not required (stream-ordered: the dtod and
+        // the window kernel both read the pre-roll ring; the roll launches after both) — but
+        // cloning first keeps the ordering trivially correct under any future stream split.
+        let ring_old = if t < d_conv - 1 { Some(self.clone_dtod(conv_state)?) } else { None };
+        {
+            let f = self.func("ssm_conv1d_tm_state_f32");
+            let cfg = LaunchConfig {
+                grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+                block_dim: (256, 1, 1), shared_mem_bytes: 0,
+            };
+            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
+            unsafe { b.launch(cfg)?; }
+        }
+        match (ring_old, pad_len) {
+            (None, Some(len_d)) => {
+                let f = self.func("ssm_conv_ring_update_dev_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, dc) = (conv_dim as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            (None, None) => {
+                let f = self.func("ssm_conv_ring_update_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            (Some(_), _) => unreachable!(
+                "ssm_conv1d_tm_state_pad_v: T < d_conv-1 has no view path (PRIME_MIN_T gates it)"),
         }
         Ok(())
     }
@@ -8311,6 +9042,72 @@ impl Engine {
         Ok(())
     }
 
+    // ==== B2' batched decode state ops (decode_batch.rs) ====
+    // Per-seq state pointers ride device u64 arrays (views into the per-step pointer table).
+    // Bodies are the single-seq kernels per sequence — bit-identical per row.
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_fused_decode_b(
+        &self, qkv_cols: &CudaSlice<f32>, conv_state_ptrs: &cudarc::driver::CudaView<u64>,
+        w: &CudaSlice<f32>, conv_outs: &mut CudaSlice<f32>, conv_dim: usize, d_conv: usize,
+        b_n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_fused_decode_b_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (((conv_dim + 255) / 256) as u32, 1, b_n as u32),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let (cd, dc) = (conv_dim as i32, d_conv as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_cols).arg(conv_state_ptrs).arg(w).arg(conv_outs).arg(&cd).arg(&dc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_prep_decode_b(
+        &self, conv_outs: &CudaSlice<f32>, beta_raws: &CudaSlice<f32>, alphas: &CudaSlice<f32>,
+        dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+        q_l2: &mut CudaSlice<f32>, k_l2: &mut CudaSlice<f32>, v_g: &mut CudaSlice<f32>,
+        beta: &mut CudaSlice<f32>, g_log: &mut CudaSlice<f32>,
+        d_state: usize, num_v: usize, num_k: usize, key_dim: usize, eps: f32,
+        conv_dim: usize, b_n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_prep_decode_b_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (num_v as u32, 1, b_n as u32),
+            block_dim: (32, 4, 1), shared_mem_bytes: 0,
+        };
+        let (ds, nv, nk, kd, cd) =
+            (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, conv_dim as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(conv_outs).arg(beta_raws).arg(alphas).arg(dt_bias).arg(a)
+         .arg(q_l2).arg(k_l2).arg(v_g).arg(beta).arg(g_log)
+         .arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&eps).arg(&cd);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_scan_s128_batched(
+        &self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+        g: &CudaSlice<f32>, beta: &CudaSlice<f32>,
+        state_in_ptrs: &cudarc::driver::CudaView<u64>,
+        state_out_ptrs: &cudarc::driver::CudaView<u64>,
+        o: &mut CudaSlice<f32>, n_head: usize, b_n: usize, scale: f32)
+        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_scan_s128_b");
+        const S_V: u32 = 128; const WARP: u32 = 32; const COLS_PER_BLOCK: u32 = 4;
+        let cfg = LaunchConfig {
+            grid_dim: (n_head as u32, b_n as u32, S_V / COLS_PER_BLOCK),
+            block_dim: (WARP, COLS_PER_BLOCK, 1), shared_mem_bytes: 0,
+        };
+        let h = n_head as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in_ptrs).arg(state_out_ptrs)
+         .arg(o).arg(&h).arg(&scale);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// A4 seam: chunked WY GDN prefill. DEFAULT ON (`BW24_GDN_CHUNKED=0` = rollback to the
     /// sequential scan). Flipped 2026-07-04 with the full battery green: kernel-check ALL
     /// GREEN x {9B, 27B} incl the f64-truth chunk gates; run-gen argmax 82==82 both models
@@ -8342,25 +9139,24 @@ impl Engine {
     /// NOT bit-identical to the sequential scan (chunked FP accumulation order); run-gen
     /// argmax + run-spec batteries are the accuracy authority. PREFILL callers only.
     #[allow(clippy::too_many_arguments)]
-    pub fn gdn_scan_chunked(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
-                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
-                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
-                            n_head: usize, t: usize, scale: f32, c: usize)
-                            -> Result<(), Box<dyn std::error::Error>> {
+    /// task #18: K1-K3 of the chunked WY scan (shared by the per-seq path and the
+    /// batched-prime varlen path). Returns (gcum, P, U, W); `A` is K3-internal.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_chunk_k123(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                          g: &CudaSlice<f32>, beta: &CudaSlice<f32>, wb16: Option<&mut CudaSlice<u8>>,
+                          n_head: usize, t: usize, c: usize, hk: usize,
+                          k2w: Option<(&CudaSlice<u8>, &CudaSlice<u8>, &mut CudaSlice<u8>)>)
+                          -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         const D: usize = 128;
-        const NSPLIT: u32 = 4;
-        assert!(c >= 1 && c <= 128, "gdn_scan_chunked: C must be in 1..=128");
         let h = n_head;
         let nc = (t + c - 1) / c;
         let (hi, ti, ci) = (h as i32, t as i32, c as i32);
-        // scratch (stream-ordered allocs; pool-reused across layers)
         let mut gcum = self.uninit(t * h)?;
         let mut a = self.uninit(nc * h * c * c)?;
         let mut p = self.uninit(nc * h * c * c)?;
         let mut u = self.uninit(nc * h * c * D)?;
         let mut w = self.uninit(nc * h * c * D)?;
-        let mut y = self.uninit(nc * h * c * D)?;
-        let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
         {   // K1
             let f = self.func("gdn_chunk_cumgate_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
@@ -8368,14 +9164,26 @@ impl Engine {
             b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
-        if c <= 64 && !cfg!(bw24_portable_cuda) {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
+        if let Some((qb, kb, pb)) = k2w {
+            // K2-wgmma (BW24_GDN_WGMMA path, c==32): A + pre-masked Pb16 in one kernel;
+            // the P f32 buffer stays UNWRITTEN (its only wgmma-path consumer is Pb16).
+            assert!(c == 32, "gdn_k2_wgmma is a C==32 tile");
+            let f = self.func("gdn_k2_wgmma");
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+            let hki = hk as i32;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qb).arg(kb).arg(&gcum).arg(beta).arg(&mut a).arg(&mut *pb).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
+            unsafe { b.launch(cfg)?; }
+        } else if c <= 64 && !portable_mma_gated() {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
             let f = self.func("gdn_chunk_attn_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let hki = hk as i32;
             let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
+            b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
             unsafe { b.launch(cfg)?; }
         } else {       // K2 generic (C = 128, or the portable target's low-smem fallback)
+            assert!(hk == h, "generic K2 is broadcast-only (de-broadcast rides C==32)");
             let f = self.func("gdn_chunk_attn_g_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 8, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);
@@ -8387,17 +9195,524 @@ impl Engine {
             match c {
                 32 | 64 => {
                     let f = self.func(if c == 32 { "gdn_chunk_solve32_f32" } else { "gdn_chunk_solve64_f32" });
+                    // mirror-fold: W's bf16 twin emitted on store (0 = skip)
+                    let wb: u64 = match wb16 { Some(d) => self.addr_u8(d), None => 0 };
+                    let hki = hk as i32;
                     let mut b = self.gpu.stream.launch_builder(&f);
-                    b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&hi).arg(&ti);
+                    b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&wb).arg(&hi).arg(&ti).arg(&hki);
                     unsafe { b.launch(cfg)?; }
                 }
                 _ => {
+                    assert!(hk == h, "generic K3 is broadcast-only");
                     let f = self.func("gdn_chunk_solve_f32");
                     let mut b = self.gpu.stream.launch_builder(&f);
                     b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&hi).arg(&ti).arg(&ci);
                     unsafe { b.launch(cfg)?; }
                 }
             }
+        }
+        Ok((gcum, p, u, w))
+    }
+
+    /// task #21 de-broadcast seam: q/k stored at num_k distinct GQA heads instead of
+    /// the num_v broadcast. BW24_GDN_DB=0 reverts. Only the chunked prefill path
+    /// consumes the compact layout (hk plumbed; hk == H reproduces broadcast exactly).
+    pub fn gdn_db_on() -> bool {
+        std::env::var("BW24_GDN_DB").as_deref() != Ok("0")
+    }
+
+    /// Whether the K4/K5 mma pair serves at chunk size `c` (mirrors gdn_scan_chunked's
+    /// seam read — env re-read per call ON PURPOSE, kernel-check pins both configs).
+    pub fn gdn_mma_enabled(&self, c: usize) -> bool {
+        !portable_mma_gated() && c == 32
+            && match std::env::var("BW24_GDN_MMA").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => cfg!(bw24_hopper_mma),
+            }
+    }
+
+    /// task #22: whether the fused K4+K5 (+K2) wgmma path serves (nested inside the
+    /// mma config; same per-call env read discipline).
+    pub fn gdn_wgmma_on(&self, c: usize) -> bool {
+        self.gdn_mma_enabled(c)
+            && match std::env::var("BW24_GDN_WGMMA").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            }
+    }
+
+    /// task #18 conv-fuse: carried-ring conv + SiLU + GDN repack in ONE pass (the
+    /// conv_out intermediate and its transposed re-read disappear — 11.8ms of the
+    /// T=2048 prime). Ring update stays the separate follow-up launch (pad-aware).
+    /// BIT-IDENTICAL values to ssm_conv1d_tm_state_pad + qkv_to_gdn_repack.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_gdn_state_pad(&self, qkv_tm: &cudarc::driver::CudaView<f32>,
+                               conv_state: &mut CudaSlice<f32>, w: &CudaSlice<f32>,
+                               q_g: &mut CudaSlice<f32>, k_g: &mut CudaSlice<f32>,
+                               v_g: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize,
+                               d_state: usize, num_v: usize, num_k: usize, key_dim: usize,
+                               hk: usize,
+                               pad_len: Option<&CudaSlice<i32>>)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        assert!(t >= d_conv - 1, "fused state conv requires T >= pad (PRIME_MIN_T gates)");
+        {
+            let f = self.func("ssm_conv1d_gdn_state_f32");
+            let cfg = LaunchConfig {
+                grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+                block_dim: (256, 1, 1), shared_mem_bytes: 0,
+            };
+            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+            let (ds, nv, nk, kd, hki) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, hk as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(q_g).arg(k_g).arg(v_g)
+             .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&hki);
+            unsafe { b.launch(cfg)?; }
+        }
+        match pad_len {
+            Some(len_d) => {
+                let f = self.func("ssm_conv_ring_update_dev_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, dc) = (conv_dim as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            None => {
+                let f = self.func("ssm_conv_ring_update_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+        }
+        Ok(())
+    }
+
+    /// task #18 increment 2: allocate ONE sequence's chunk buffers (no launches) —
+    /// K1-K5 all run varlen afterwards. `a`/`w` become struct members so the varlen
+    /// K2/K3 can write them.
+    pub fn gdn_chunk_alloc(&self, n_head: usize, t: usize, c: usize, hk: usize)
+                           -> Result<GdnChunkBufs, Box<dyn std::error::Error>> {
+        const D: usize = 128;
+        assert!(c == 32, "gdn_chunk_alloc: varlen chain is the C==32 mma pair");
+        let h = n_head;
+        let nc = (t + c - 1) / c;
+        Ok(GdnChunkBufs {
+            gcum: self.uninit(t * h)?,
+            a: self.uninit(nc * h * c * c)?,
+            p: self.uninit(nc * h * c * c)?,
+            u: self.uninit(nc * h * c * D)?,
+            w: self.uninit(nc * h * c * D)?,
+            kb16: self.alloc_u8_uninit(t * hk * D * 2)?,
+            wb16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
+            y16: self.alloc_u8_uninit(nc * h * c * D * 2)?,
+            ssnap16: self.alloc_u8_uninit(nc * h * D * D * 2)?,
+            qb16: self.alloc_u8_uninit(t * hk * D * 2)?,
+            pb16: self.alloc_u8_uninit(nc * h * c * c * 2)?,
+            o: self.uninit(D * h * t)?,
+            t, nc,
+        })
+    }
+
+    /// view-source twin of f32_to_bf16 (the batched FA3 v mirror reads a concat view).
+    pub fn f32_to_bf16_v(&self, x: &cudarc::driver::CudaView<f32>, dst: &mut CudaSlice<u8>, n: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("f32_to_bf16_bulk");
+        let ni = n as i64;
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// f32 -> bf16 bulk mirror into a caller buffer (the K4/K5 operand mirrors).
+    pub fn f32_to_bf16(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<u8>, n: usize)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("f32_to_bf16_bulk");
+        let ni = n as i64;
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #18 increment 2: varlen K1+K2+K3 — three launches run every sequence's
+    /// cumgate/attn/solve (per-block math identical to the per-seq kernels).
+    pub fn gdn_chunk_k123_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, hk: usize,
+                              wq: Option<&GdnWVl8>)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8, "gdn_chunk_k123_vl8: 1..=8 sequences");
+        let mut packed = [GdnSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnVl8(packed);
+        let (hi, ci) = (n_head as i32, 32i32);
+        let max_nc = seqs.iter().map(|a| a.nc).max().unwrap() as u32;
+        {
+            let f = self.func("gdn_chunk_cumgate_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        let hki = hk as i32;
+        if let Some(w) = wq {   // K2-wgmma vl twin (writes A + pre-masked Pb16)
+            let f = self.func("gdn_k2_wgmma_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(w).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        } else {
+            let f = self.func("gdn_chunk_attn_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_chunk_solve32_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
+    /// task #18 increment 3: varlen PREP chain — conv(+ring) / repack / fused-l2 /
+    /// fused gate-prep, 5 launches for every sequence (per-element math identical
+    /// to the per-seq kernels; l2/gate fusions write disjoint outputs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_prep_vl8(&self, seqs: &[GdnPrepVl], conv_w: &CudaSlice<f32>,
+                        dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+                        conv_dim: usize, d_conv: usize, d_state: usize,
+                        num_v: usize, num_k: usize, key_dim: usize, hk: usize, eps: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [GdnPrepVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnPrepVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let (cdi, dci) = (conv_dim as i32, d_conv as i32);
+        let conv_fuse = std::env::var("BW24_CONV_FUSE").as_deref() != Ok("0");
+        assert!(conv_fuse || hk == num_v, "de-broadcast requires the fused conv");
+        if conv_fuse {
+            let f = self.func("ssm_conv1d_gdn_state_vl");
+            let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi, nki, kdi, hki) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, hk as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        } else {
+            let f = self.func("ssm_conv1d_tm_state_vl");
+            let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("ssm_conv_ring_update_vl");
+            let n = (conv_dim * (d_conv - 1)) as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&cdi).arg(&dci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        if !conv_fuse {
+            let f = self.func("qkv_to_gdn_repack_vl");
+            let n = max_t * (num_v * d_state) as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi, nki, kdi) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi);
+            unsafe { lb.launch(cfg)?; }
+        }
+        if Self::l2_v2_on(d_state) {
+            let f = self.func("gdn_l2_v2_vl");
+            let cfg = LaunchConfig { grid_dim: ((max_t * hk as u32).div_ceil(8), 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi) = (d_state as i32, hk as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
+            unsafe { lb.launch(cfg)?; }
+        } else {
+            let f = self.func("gdn_l2_vl");
+            let cfg = LaunchConfig { grid_dim: (max_t * hk as u32, 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi) = (d_state as i32, hk as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_gate_prep_vl");
+            let n = max_t * num_v as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let nvi = num_v as i32;
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(dt_bias).arg(a).arg(&nvi);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
+    /// varlen bf16 mirrors over the gdnseq_t table (which: 0 = k_l2 -> kb16, 1 = w -> wb16).
+    pub fn gdn_mirror_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, which: i32, hk: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [GdnSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnVl8(packed);
+        let ept = (if which == 0 { hk } else { n_head } * 128) as i32;
+        let max_n = seqs.iter().map(|s| if which == 0 { s.t as i64 * ept as i64 }
+                                        else { s.nc as i64 * ept as i64 * 32 }).max().unwrap();
+        let f = self.func("gdn_mirror_vl");
+        let blocks = ((max_n as u32).div_ceil(4)).div_ceil(256);
+        let cfg = LaunchConfig { grid_dim: (blocks, 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(&v).arg(&ept).arg(&which);
+        unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// varlen gated-norm tail (+f16out) — one launch replaces B gated_rmsnorm calls.
+    pub fn gdn_tail_vl8(&self, seqs: &[GdnPrepVl], norm_w: &CudaSlice<f32>,
+                        d_state: usize, num_v: usize, eps: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [GdnPrepVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnPrepVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let f = self.func("gated_rmsnorm_f16out_vl");
+        // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
+        let cfg = LaunchConfig { grid_dim: (max_t * num_v as u32, 1, b as u32), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (dsi, nvi) = (d_state as i32, num_v as i32);
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(&v).arg(norm_w).arg(&dsi).arg(&nvi).arg(&eps);
+        unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Raw device address helpers for the varlen by-value arg struct (single-stream
+    /// launches; every buffer outlives the call — the f16 FFI discipline).
+    pub fn addr_f32(&self, x: &CudaSlice<f32>) -> u64 {
+        use cudarc::driver::DevicePtr;
+        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        p as u64
+    }
+    pub fn addr_f32_mut(&self, x: &mut CudaSlice<f32>) -> u64 {
+        use cudarc::driver::DevicePtrMut;
+        let (p, _g) = x.device_ptr_mut(&self.gpu.stream);
+        p as u64
+    }
+    pub fn addr_f32v(&self, x: &cudarc::driver::CudaView<f32>) -> u64 {
+        use cudarc::driver::DevicePtr;
+        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        p as u64
+    }
+    pub fn addr_u8(&self, x: &CudaSlice<u8>) -> u64 {
+        use cudarc::driver::DevicePtr;
+        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        p as u64
+    }
+
+    /// task #18: the varlen K4+K5 pair — TWO launches run every sequence's state pass
+    /// and output pass (grid gains a seq dim; per-block math identical to the per-seq
+    /// launches, so this is strictly bit-gateable against them).
+    pub fn gdn_chunk_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, scale: f32, hk: usize,
+                         wq: Option<&GdnWVl8>)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        const NSPLIT: u32 = 4;
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8, "gdn_chunk_vl8: 1..=8 sequences");
+        let mut packed = [GdnSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnVl8(packed);
+        let (hi, ci) = (n_head as i32, 32i32);
+        let max_nc = seqs.iter().map(|a| a.nc).max().unwrap() as u32;
+        let hki = hk as i32;
+        if let Some(w) = wq {
+            // K4+K5 fused wgmma vl twin: one launch, Y/Ssnap never materialized.
+            let f = self.func("gdn_k45_wgmma_vl");
+            let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(w).arg(&scale).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+            let _ = max_nc;
+            return Ok(());
+        }
+        {
+            let f = self.func("gdn_chunk_state_mma_vl");
+            let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_chunk_output_mma_vl");
+            let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&hi).arg(&ci).arg(&scale).arg(&hki);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
+    }
+    pub fn gdn_scan_chunked(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, kb16_pre: Option<&CudaSlice<u8>>,
+                            qb16_pre: Option<&CudaSlice<u8>>,
+                            state_in: &CudaSlice<f32>,
+                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                            n_head: usize, t: usize, scale: f32, c: usize, hk: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        const D: usize = 128;
+        const NSPLIT: u32 = 4;
+        assert!(c >= 1 && c <= 128, "gdn_scan_chunked: C must be in 1..=128");
+        let h = n_head;
+        let nc = (t + c - 1) / c;
+        let (hi, ti, ci) = (h as i32, t as i32, c as i32);
+        // mirror-fold (round 27): on the mma path W's bf16 twin is emitted by K3's store
+        // (wb16 pre-allocated and threaded through k123) and k's by the producer l2 when
+        // the caller hands `kb16_pre` — both standalone mirror passes disappear.
+        let gdn_mma_pre = !portable_mma_gated() && c == 32
+            && match std::env::var("BW24_GDN_MMA").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => cfg!(bw24_hopper_mma),
+            };
+        let mut wb16_pre: Option<CudaSlice<u8>> = if gdn_mma_pre {
+            Some(self.alloc_u8_uninit(nc * h * c * D * 2)?)
+        } else { None };
+        // K2-wgmma pre-work (BW24_GDN_WGMMA): the kb16/qb16 mirrors hoist ABOVE K123 so
+        // K2 rides them via cp.async; K2 writes the pre-masked Pb16 directly (the
+        // gdn_p_bf16_masked pass and the in-branch mirror builds disappear).
+        let gdn_wgmma_pre = gdn_mma_pre
+            && match std::env::var("BW24_GDN_WGMMA").as_deref() {
+                Ok("0") => false,
+                Ok("1") => true,
+                _ => cfg!(bw24_hopper_mma),
+            };
+        let nk = t * hk * D;
+        let mut kb16_local: Option<CudaSlice<u8>> = None;
+        if gdn_mma_pre && kb16_pre.is_none() {
+            let mut kb = self.alloc_u8_uninit(nk * 2)?;
+            let f = self.func("f32_to_bf16_bulk");
+            let n2 = nk as i64;
+            let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(k).arg(&mut kb).arg(&n2);
+            unsafe { b.launch(cfg2)?; }
+            kb16_local = Some(kb);
+        }
+        let kb16_ref0: Option<&CudaSlice<u8>> = kb16_local.as_ref().or(kb16_pre);
+        if let Some(kb) = kb16_pre { assert!(kb.len() >= nk * 2, "kb16_pre too small"); }
+        let mut qb16: Option<CudaSlice<u8>> = None;
+        let mut pb16: Option<CudaSlice<u8>> = None;
+        if gdn_wgmma_pre {
+            // mirror-fold (round 35): prep's l2 v2 emits qb16 in-epilogue (kb16 pattern);
+            // the standalone bulk cvt only serves callers without the prep mirror.
+            if qb16_pre.is_none() {
+                let mut qb = self.alloc_u8_uninit(nk * 2)?;
+                let f = self.func("f32_to_bf16_bulk");
+                let n2 = nk as i64;
+                let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(q).arg(&mut qb).arg(&n2);
+                unsafe { b.launch(cfg2)?; }
+                qb16 = Some(qb);
+            } else if let Some(qb) = qb16_pre {
+                assert!(qb.len() >= nk * 2, "qb16_pre too small");
+            }
+            pb16 = Some(self.alloc_u8_uninit(nc * h * c * c * 2)?);
+        }
+        let qb16_ref0: Option<&CudaSlice<u8>> = qb16.as_ref().or(qb16_pre);
+        let k2w = if gdn_wgmma_pre {
+            Some((*qb16_ref0.as_ref().unwrap(),
+                  *kb16_ref0.as_ref().unwrap(),
+                  pb16.as_mut().unwrap()))
+        } else { None };
+        let (gcum, p, u, w) = self.gdn_chunk_k123(q, k, v, g, beta, wb16_pre.as_mut(), n_head, t, c, hk, k2w)?;
+        let _ = &w;
+        let mut y = self.uninit(nc * h * c * D)?;
+        let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
+        // K4-MMA seam (BW24_GDN_MMA; harness verdict 1.75x — tools/bench_gdn_k4.cu, ledger
+        // 2026-07-26): M in mma accumulator fragments, bf16 W/k mirrors through a cp.async
+        // ring. C==32 only (the kernel's tile). PROMOTED default-ON on the Hopper lane
+        // after the STATE-CARRY battery (2026-07-26): 2048-token prime (64 in-kernel state
+        // carries) -> 256 greedy decode tokens IDENTICAL to f32 on 3 seeds, AND chunked-
+        // continuation prime (BW24_PRIME_CHUNK=512, 4 cross-call carries via cache.recur)
+        // IDENTICAL on 2 seeds; plus argmax MATCH, pp512 +3.5% (17286), oracle out
+        // mean_rel ~1e-4. kernel-check pins BOTH configs (f32 tight band forced =0; mma
+        // band 8e-2/8e-1 vs f64 truth). =0 reverts; portable stays f32. NOT read via
+        // OnceLock ON PURPOSE: kernel-check toggles the env per call to pin both forms.
+        let gdn_mma = !portable_mma_gated() && c == 32
+            && match std::env::var("BW24_GDN_MMA").as_deref() {
+                Ok("1") => true,
+                Ok("0") => false,
+                _ => cfg!(bw24_hopper_mma),
+            };
+        if gdn_mma {
+            let wb16 = wb16_pre.take().expect("mma path pre-allocates wb16 (K3 store fold)");
+            let kb16_ref: &CudaSlice<u8> = kb16_ref0.expect("mma path pre-builds kb16 above K123");
+            // K4+K5 FUSED wgmma seam (BW24_GDN_WGMMA, task #22; harness verdict
+            // tools/bench_gdn_wgmma.cu v5, ledger 1f08b997: in-band Y 1.07e-2 / state
+            // 1.03e-2 / O 1.08e-2, 91.3us vs 70.4 K4-only at H=32 T=512). K5's output
+            // pass runs inside the persistent-M kernel; Y and Ssnap are never
+            // materialized. New numeric class (gk folds into k^T instead of ys) —
+            // explicit opt-in until the state-carry battery promotes it. Env read per
+            // call (kernel-check pins configs by toggling env, GDN_MMA precedent).
+            // PROMOTED default-ON hopper (2026-07-27): full battery green — harness
+            // in-band, argmax gate PASS, 3-seed greedy IDENTICAL after ~2k prime,
+            // chunked-continuation IDENTICAL, kernel-check + decode-batch gates green,
+            // official prefill lane +0.74% interleaved x5 (5/5 rounds). =0 reverts.
+            if gdn_wgmma_pre {
+                // qb16/pb16 pre-built above K123 (K2-wgmma wrote the masked Pb16).
+                let qb16 = qb16_ref0.unwrap();
+                let pb16 = pb16.as_ref().unwrap();
+                {
+                    let f = self.func("gdn_k45_wgmma");
+                    let cfg = LaunchConfig { grid_dim: (h as u32, 4, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                    let hki = hk as i32;
+                    let mut b = self.gpu.stream.launch_builder(&f);
+                    b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(qb16).arg(pb16)
+                     .arg(o).arg(&scale).arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
+                    unsafe { b.launch(cfg)?; }
+                }
+                return Ok(());
+            }
+            // COUPLED PAIR: K4-mma writes Y and Ssnap as bf16 (their only consumer is
+            // K5-mma, which rounds to bf16 regardless — identical numerics, half the
+            // traffic; harness K5 63.0 -> 35.3us). Fresh bf16 buffers replace the f32 ones.
+            let mut y16 = self.alloc_u8_uninit(nc * h * c * D * 2)?;
+            let mut ssnap16 = self.alloc_u8_uninit(nc * h * D * D * 2)?;
+            {
+                let f = self.func("gdn_chunk_state_mma");
+                let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let hki = hk as i32;
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&mut y16).arg(&mut ssnap16)
+                 .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
+                unsafe { b.launch(cfg)?; }
+            }
+            {   // K5-mma (bf16 St/Y consumers)
+                let f = self.func("gdn_chunk_output_mma");
+                let jt = ((c + 31) / 32) as u32;
+                let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let hki = hk as i32;
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(q).arg(&gcum).arg(&p).arg(&y16).arg(&ssnap16).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale).arg(&hki);
+                unsafe { b.launch(cfg)?; }
+            }
+            return Ok(());
         }
         {   // K4 (sequential over chunks inside; blocks col-partition the state)
             let f = self.func("gdn_chunk_state_f32");
@@ -8427,18 +9742,23 @@ impl Engine {
     /// per-call (== per-layer, in call order) output/state error distribution, and keeps the
     /// SEQUENTIAL results so the run stays on the shipped path (stage-1 prototype evidence).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn gdn_scan_prefill(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
-                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, kb16_pre: Option<&CudaSlice<u8>>,
+                            qb16_pre: Option<&CudaSlice<u8>>,
+                            state_in: &CudaSlice<f32>,
                             state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
-                            n_head: usize, t: usize, scale: f32)
+                            n_head: usize, t: usize, scale: f32, hk: usize)
                             -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("BW24_GDN_DIFF").is_ok() && t >= 16 {
+            assert!(hk == n_head, "GDN_DIFF oracle is broadcast-only");
             return self.gdn_scan_diff(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale);
         }
         if Self::gdn_chunked_enabled() && t >= 16 {
-            self.gdn_scan_chunked(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale,
-                                  Self::gdn_chunk_size())
+            self.gdn_scan_chunked(q, k, v, g, beta, kb16_pre, qb16_pre, state_in, state_out, o, n_head, t, scale,
+                                  Self::gdn_chunk_size(), hk)
         } else {
+            assert!(hk == n_head, "s128 scan is broadcast-only (prep guarantees by predicate)");
             self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)
         }
     }
@@ -8454,8 +9774,8 @@ impl Engine {
         let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut o_c = self.uninit(o.len())?;
         let mut st_c = self.uninit(state_out.len())?;
-        self.gdn_scan_chunked(q, k, v, g, beta, state_in, &mut st_c, &mut o_c,
-                              n_head, t, scale, Self::gdn_chunk_size())?;
+        self.gdn_scan_chunked(q, k, v, g, beta, None, None, state_in, &mut st_c, &mut o_c,
+                              n_head, t, scale, Self::gdn_chunk_size(), n_head)?;
         self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)?;
         let (oh_s, oh_c) = (self.dtoh(o)?, self.dtoh(&o_c)?);
         let (sh_s, sh_c) = (self.dtoh(state_out)?, self.dtoh(&st_c)?);
@@ -8491,6 +9811,31 @@ impl Engine {
         Ok(())
     }
 
+    /// view twins (task #16): the batched prime's GDN core reads the CONCAT projection
+    /// buffers at row offsets (CudaView) — same kernels, same values, no split copies.
+    pub fn sigmoid_v(&self, x: &cudarc::driver::CudaView<f32>, y: &mut CudaSlice<f32>, n: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sigmoid_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(y).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    pub fn gdn_glog_v(&self, alpha: &cudarc::driver::CudaView<f32>, dt_bias: &CudaSlice<f32>,
+                      a: &CudaSlice<f32>, g_log: &mut CudaSlice<f32>, n_head: usize, t: usize)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_glog_f32");
+        let cfg = LaunchConfig::for_num_elems((n_head * t) as u32);
+        let (h, ti) = (n_head as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(alpha).arg(dt_bias).arg(a).arg(g_log).arg(&h).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn sigmoid(&self, x: &CudaSlice<f32>, y: &mut CudaSlice<f32>, n: usize)
                    -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("sigmoid_f32");
@@ -8498,6 +9843,20 @@ impl Engine {
         let ni = n as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(y).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// attn out-gate fused epilogue (task #17): dst = a * sigmoid(g) + fp16 twin, one launch
+    /// (replaces sigmoid + mul + convert). Bit-identical class.
+    pub fn sig_mul_f16out(&self, a: &CudaSlice<f32>, g: &CudaSlice<f32>,
+                          dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>, n: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sig_mul_f16out_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(g).arg(dst).arg(dst16).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -8511,6 +9870,22 @@ impl Engine {
         let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// f16out twin of `gated_rmsnorm` (task #17): epilogue also emits the fp16 operand for
+    /// the ssm_out GEMM. Bit-identical class (same floats + the cvt kernel's __float2half).
+    pub fn gated_rmsnorm_f16out(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
+                                dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>,
+                                ncols: usize, nrows: usize, eps: f32)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f16out_f32");
+        // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(dst16).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -8538,6 +9913,35 @@ impl Engine {
     /// gated RMSNorm emitting q8_1 directly (fused quantize epilogue) — the ssm_out matvec input.
     /// BIT-IDENTICAL bytes to gated_rmsnorm + quantize_q8_1 (ncols % 32 == 0; blocks never straddle
     /// rows). Saves one launch per linear-attn layer (36/token on the 9B).
+    /// z-view twins of gated_rmsnorm(+f16out) — task #16 batched-prime split removal.
+    pub fn gated_rmsnorm_zv(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                            z: &cudarc::driver::CudaView<f32>,
+                            dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    pub fn gated_rmsnorm_f16out_zv(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                                   z: &cudarc::driver::CudaView<f32>,
+                                   dst: &mut CudaSlice<f32>, dst16: &mut CudaSlice<u8>,
+                                   ncols: usize, nrows: usize, eps: f32)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f16out_f32");
+        // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(dst16).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn gated_rmsnorm_q8_1(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
                               ncols: usize, nrows: usize, eps: f32)
                               -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
@@ -8671,16 +10075,55 @@ mod target_dispatch_tests {
     use super::legacy_quant_gemm_allowed;
 
     #[test]
-    fn legacy_quant_gemm_is_blackwell_only_and_honors_the_escape_hatch() {
-        assert!(legacy_quant_gemm_allowed(false, false));
-        assert!(!legacy_quant_gemm_allowed(true, false));
-        assert!(!legacy_quant_gemm_allowed(false, true));
-        assert!(!legacy_quant_gemm_allowed(true, true));
+    fn legacy_quant_gemm_arch_policy_honors_the_escape_hatch() {
+        // sm_120a native lane
+        assert!(legacy_quant_gemm_allowed(false, false, false));
+        assert!(!legacy_quant_gemm_allowed(false, false, true));
+        // pure portable lane (sm_89): gated
+        assert!(!legacy_quant_gemm_allowed(true, false, false));
+        assert!(!legacy_quant_gemm_allowed(true, false, true));
+        // Hopper-MMA lane (sm_90a): portable build, int8-MMA GEMM re-admitted
+        assert!(legacy_quant_gemm_allowed(true, true, false));
+        assert!(!legacy_quant_gemm_allowed(true, true, true));
     }
 
-    #[cfg(bw24_portable_cuda)]
+    #[cfg(all(bw24_portable_cuda, not(bw24_hopper_mma)))]
     #[test]
     fn portable_build_disables_legacy_quant_gemm_without_an_env_override() {
-        assert!(!legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), false));
+        assert!(!legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), cfg!(bw24_hopper_mma), false));
+    }
+
+    #[cfg(bw24_hopper_mma)]
+    #[test]
+    fn hopper_mma_build_re_admits_legacy_quant_gemm() {
+        assert!(legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), cfg!(bw24_hopper_mma), false));
+        assert!(super::portable_mma_gated() == false);
+    }
+}
+
+/// The bw24-kv device seam (Phase D): the cache's 7 ops delegate to the engine's
+/// inherent methods (inherent methods win name resolution, so no recursion).
+impl bw24_kv::KvDev for Engine {
+    fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Engine::zeros(self, n)
+    }
+    fn uninit(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Engine::uninit(self, n)
+    }
+    fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        Engine::alloc_u8(self, n)
+    }
+    fn htod_i32(&self, v: &[i32]) -> Result<CudaSlice<i32>, Box<dyn std::error::Error>> {
+        Engine::htod_i32(self, v)
+    }
+    fn clone_dtod(&self, src: &CudaSlice<f32>) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Engine::clone_dtod(self, src)
+    }
+    fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
+                 -> Result<(), Box<dyn std::error::Error>> {
+        Engine::copy_into(self, dst, off, src, len)
+    }
+    fn set_i32_one(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
+        Engine::set_i32_one(self, d, v)
     }
 }

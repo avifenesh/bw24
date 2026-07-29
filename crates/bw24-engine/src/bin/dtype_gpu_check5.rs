@@ -17,17 +17,11 @@
 //!   IQ4_XS <- 35B-IQ4_XS blk.0.ffn_down_exps.weight   (3D MoE, slice expert 0)
 //!   Q3_K   <- 35B-IQ4_XS blk.40.ffn_gate_exps.weight  (3D MoE, slice expert 0)
 
+use bw24_validate::{maxdiff, pr};
 use bw24_engine::Engine;
 use bw24_gguf::{dequant, GgmlType, GgufFile};
 use bw24_runtime::cpu_linear;
 
-fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
-}
-fn pr(i: usize) -> f32 {
-    let x = (i.wrapping_mul(2654435761) ^ 0x9E3779B9) as u32;
-    ((x >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
-}
 
 const GGUF_9B: &str =
     "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";

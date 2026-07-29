@@ -199,7 +199,7 @@ impl DflashDraft {
                     row_bytes: in_f / 32 * 18, ne: shape.to_vec(), scale: 1.0, rp: false,
                     #[cfg(bw24_cutlass)]
                     cutlass: None,
-                    fp8: None, rp4: None,
+                    fp8: None, rp4: None, f16: None,
                 });
             }
             let q = encode_q8_0(&f32s);
@@ -208,7 +208,7 @@ impl DflashDraft {
                 row_bytes: in_f / 32 * 34, ne: shape.to_vec(), scale: 1.0, rp: false,
                 #[cfg(bw24_cutlass)]
                 cutlass: None,
-                fp8: None, rp4: None,
+                fp8: None, rp4: None, f16: None,
             })
         };
         let mut layers = Vec::with_capacity(cfg.n_layer);
@@ -243,7 +243,7 @@ impl DflashDraft {
                     scale: 1.0, rp: false,
                     #[cfg(bw24_cutlass)]
                     cutlass: None,
-                    fp8: None, rp4: None,
+                    fp8: None, rp4: None, f16: None,
                 },
                 rank, vocab,
             })

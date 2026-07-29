@@ -1,4 +1,6 @@
 // bw24 engine Stage-1 kernels: correctness-first, all f32, no tensor cores.
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 // Math matches llama.cpp ggml CUDA ops node-for-node (norm.cu, rope.cu).
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -217,6 +219,75 @@ extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+}
+
+// rms_norm + fused fp16 twin emission (task #14 launch diet, 2026-07-26): on the prefill
+// path the f32 output feeds nothing but the f16-mirror GEMM group, so emit the fp16 copy
+// here and kill the standalone bw24_f16_cvt launch (+ its full re-read of dst). The f32
+// math and store are VERBATIM rms_norm_f32 (same reduction tree); the fp16 value is the
+// same __float2half of the same f32 -> end-to-end BIT-IDENTICAL to norm-then-convert.
+extern "C" __global__ void rms_norm_f16out_f32(const float* __restrict__ x, const float* __restrict__ w,
+                                               float* __restrict__ dst, __half* __restrict__ dst16,
+                                               int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    __half* hr = dst16 + (size_t)row * ncols;
+
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = xr[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float o = xr[i] * scale * w[i];
+        dr[i] = o;
+        hr[i] = __float2half(o);
+    }
+}
+
+// f16out twin of add_rms_norm_f32 (round 28): the prefill trunk's residual+norm pair
+// in ONE kernel, norm epilogue also emitting the fp16 GEMM operand (task-#17 class).
+// BIT-IDENTICAL to add_f32 -> rms_norm_f16out_f32: same IEEE add, same reduction order,
+// same __float2half twin.
+extern "C" __global__ void add_rms_norm_f16out_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                                   const float* __restrict__ w, float* __restrict__ res,
+                                                   float* __restrict__ dst, __half* __restrict__ dst16,
+                                                   int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    __half* hr = dst16 + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i] + br[i]; rr[i] = v; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float o = rr[i] * scale * w[i];
+        dr[i] = o;
+        hr[i] = __float2half(o);
+    }
 }
 
 // ---- RANK3 LEVER (add+rmsnorm fuse): residual-add THEN RMSNorm in ONE kernel. ----
@@ -682,6 +753,36 @@ extern "C" __global__ void l2_norm_f32(const float* __restrict__ x, float* __res
     __syncthreads();
     float scale = rsqrtf(s[0] + eps);
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale;
+}
+
+// l2_norm PREFILL v2 (round 27): warp-per-row float4 — d_state=128 cols = exactly one
+// float4 per lane, warp-shuffle reduce, float4 store. The 256-block strided kernel ran
+// at 918GB/s (half the threads idle on 128-col rows). NUMERIC CONFIG (explicit+gated,
+// BW24_L2_V2, the GDN-chunked/mma precedent): the reduction tree order differs from
+// l2_norm_f32 — arbitration = greedy-stream/argmax battery, not bit-identity. The same
+// values feed K2/K4 either way at ~1e-7 relative. PREFILL-ONLY: decode keeps
+// l2_norm_decode (decode==verify law untouched).
+// dst16 (nullable): the bf16 twin of the row — the K4 kb16 mirror emitted in-epilogue
+// (same __float2bfloat16 values the standalone mirror pass would produce).
+extern "C" __global__ void l2_norm_pp_v2_f32(const float* __restrict__ x, float* __restrict__ dst,
+                                             __nv_bfloat16* __restrict__ dst16,
+                                             int ncols, int nrows, float eps) {
+    int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    if (row >= nrows) return;
+    int lane = threadIdx.x & 31;
+    const float* xr = x + (size_t)row * ncols;
+    float4 v = *(const float4*)(xr + lane * 4);
+    float sum = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+    float scale = rsqrtf(sum + eps);
+    float4 o4 = make_float4(v.x * scale, v.y * scale, v.z * scale, v.w * scale);
+    *(float4*)(dst + (size_t)row * ncols + lane * 4) = o4;
+    if (dst16 != nullptr) {
+        __nv_bfloat16* h = dst16 + (size_t)row * ncols + lane * 4;
+        h[0] = __float2bfloat16(o4.x); h[1] = __float2bfloat16(o4.y);
+        h[2] = __float2bfloat16(o4.z); h[3] = __float2bfloat16(o4.w);
+    }
 }
 
 // ---- RoPE NEOX (full or partial). Pairs x[i] with x[i+n_dims/2]; dims >= n_dims copied. ----
@@ -1497,10 +1598,57 @@ extern "C" __global__ void rope_neox_ff_f32(float* __restrict__ x, const int* __
 }
 
 // ---- elementwise ----
+// float4-vectorized (H100 sweep 2026-07-26: scalar version ran 43us at m=512 ffn width vs a
+// ~20us BW floor). Same op per element, same order — BIT-IDENTICAL to the scalar form; the
+// tail loop covers n % 4 (thread grid covers ceil(n/4) lanes of 4).
 extern "C" __global__ void silu_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,
                                         float* __restrict__ dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) { float g = gate[i]; dst[i] = (g / (1.0f + expf(-g))) * up[i]; }
+    int i4 = blockIdx.x * blockDim.x + threadIdx.x;
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 g = *(const float4*)(gate + base);
+        float4 u = *(const float4*)(up + base);
+        float4 o;
+        o.x = (g.x / (1.0f + expf(-g.x))) * u.x;
+        o.y = (g.y / (1.0f + expf(-g.y))) * u.y;
+        o.z = (g.z / (1.0f + expf(-g.z))) * u.z;
+        o.w = (g.w / (1.0f + expf(-g.w))) * u.w;
+        *(float4*)(dst + base) = o;
+    } else {
+        for (int i = base; i < n; i++) {
+            float g = gate[i];
+            dst[i] = (g / (1.0f + expf(-g))) * up[i];
+        }
+    }
+}
+// f16out twin (task #17, nsys round-26 gap anatomy): the SwiGLU epilogue also emits the fp16
+// GEMM operand for the down projection, removing the standalone bw24_f16_cvt pass (a full extra
+// HBM read+write of act). BIT-IDENTICAL class: dst gets the same floats as silu_mul_f32 and
+// dst16[i] = __float2half(dst[i]) == exactly what bw24_f16_cvt_kernel would have emitted.
+extern "C" __global__ void silu_mul_f16out_f32(const float* __restrict__ gate, const float* __restrict__ up,
+                                               float* __restrict__ dst, __half* __restrict__ dst16, int n) {
+    int i4 = blockIdx.x * blockDim.x + threadIdx.x;
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 g = *(const float4*)(gate + base);
+        float4 u = *(const float4*)(up + base);
+        float4 o;
+        o.x = (g.x / (1.0f + expf(-g.x))) * u.x;
+        o.y = (g.y / (1.0f + expf(-g.y))) * u.y;
+        o.z = (g.z / (1.0f + expf(-g.z))) * u.z;
+        o.w = (g.w / (1.0f + expf(-g.w))) * u.w;
+        *(float4*)(dst + base) = o;
+        __half2* h2 = (__half2*)(dst16 + base);
+        h2[0] = __halves2half2(__float2half(o.x), __float2half(o.y));
+        h2[1] = __halves2half2(__float2half(o.z), __float2half(o.w));
+    } else {
+        for (int i = base; i < n; i++) {
+            float g = gate[i];
+            float o = (g / (1.0f + expf(-g))) * up[i];
+            dst[i] = o;
+            dst16[i] = __float2half(o);
+        }
+    }
 }
 // FFN SwiGLU epilogue fusion (RANK3 LEVER 2). Folds the per-tensor NVFP4 macro-scale of the gate
 // and up matmuls INTO the silu*mul, removing the two separate `scale_f32` launches per dense FFN
@@ -1558,10 +1706,17 @@ extern "C" __global__ void silu_mul_scaled_q8_1(
     if (lane == 0) out_d[warp] = d;
 }
 
+// float4-vectorized (elementwise -> bit-identical; H100 sweep 2026-07-26). Tail in-kernel.
 extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __restrict__ b,
                                    float* __restrict__ dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = a[i] + b[i];
+    int base = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (base + 3 < n) {
+        float4 x = *(const float4*)(a + base);
+        float4 y = *(const float4*)(b + base);
+        *(float4*)(dst + base) = make_float4(x.x + y.x, x.y + y.y, x.z + y.z, x.w + y.w);
+    } else {
+        for (int i = base; i < n; i++) dst[i] = a[i] + b[i];
+    }
 }
 // y[i] *= s. NVFP4 per-tensor macro-scale broadcast over the whole matmul output.
 extern "C" __global__ void scale_f32(float* __restrict__ y, float s, int n) {
