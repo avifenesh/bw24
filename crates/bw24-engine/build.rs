@@ -2,6 +2,31 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Arch auto-detection (BW24_CUDA_ARCH unset): probe the first GPU's compute capability
+/// via nvidia-smi and pick the matching build arch. GPU-less machines (CI compile gate)
+/// and unrecognized caps fall back to 120a — the naked build stays the sm_120a build.
+/// An explicit BW24_CUDA_ARCH always wins (this fn is not called then).
+fn detect_arch() -> String {
+    let cap = Command::new("nvidia-smi")
+        .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
+    let arch = match cap.as_deref() {
+        Some("12.0") | Some("12.1") => "120a",
+        Some("10.0") => "100a",
+        Some("9.0") => "90a",
+        Some("8.9") => "89",
+        _ => "120a",
+    };
+    match &cap {
+        Some(c) => println!("cargo:warning=BW24_CUDA_ARCH auto-detected {arch} (compute_cap {c}); set BW24_CUDA_ARCH to override"),
+        None => println!("cargo:warning=no GPU visible; defaulting BW24_CUDA_ARCH=120a (compile-only)"),
+    }
+    arch.to_string()
+}
+
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let nvcc = std::env::var("BW24_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
@@ -10,9 +35,9 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
     println!("cargo:rustc-check-cfg=cfg(bw24_hopper_mma)");
     println!("cargo:rustc-check-cfg=cfg(bw24_cutlass)");
-    let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
+    let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| detect_arch());
     assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "90a" | "89"),
-            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), 90a (Hopper boot), or 89 (portable eval)");
+            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), 90a (Hopper), or 89 (portable eval)");
     // Hopper boot arch rides the portable-CUDA correctness path: sm_90a SASS, no
     // sm_120a/sm_100a MMA kinds. Tuned wgmma paths are a separate later lane.
     // Phase A (ARCHITECTURE-H100.md): 90a additionally re-enables the portable-PTX
@@ -31,6 +56,9 @@ fn main() {
     if hopper_mma {
         println!("cargo:rustc-cfg=bw24_hopper_mma");
     }
+    // Runtime arch guard reads this (Engine::new): fatbins are single-arch SASS, so the
+    // engine verifies the device's compute capability matches the built arch at init.
+    println!("cargo:rustc-env=BW24_BUILT_CUDA_ARCH={cuda_arch}");
 
     for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
                        ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN"), ("cu/flash_attn.cu", "BW24_FLASH_FATBIN"),

@@ -987,9 +987,9 @@ impl HybridModel {
                             for s in 0..b {
                                 let t = ts[s];
                                 let mut q16 = e.alloc_u8_uninit(t * n_head * head_dim * 2)?;
-                                e.f32_to_bf16(&aps[s].qn, &mut q16, t * n_head * head_dim)?;
+                                e.f32_to_bf16_into(&aps[s].qn, &mut q16, t * n_head * head_dim)?;
                                 let mut k16 = e.alloc_u8_uninit(t * n_head_kv * head_dim * 2)?;
-                                e.f32_to_bf16(&aps[s].kn, &mut k16, t * n_head_kv * head_dim)?;
+                                e.f32_to_bf16_into(&aps[s].kn, &mut k16, t * n_head_kv * head_dim)?;
                                 let mut v16 = e.alloc_u8_uninit(t * n_head_kv * head_dim * 2)?;
                                 e.f32_to_bf16_v(&g3[2].slice(offs[s] * vf_w..(offs[s] + t) * vf_w),
                                                 &mut v16, t * n_head_kv * head_dim)?;
@@ -1584,7 +1584,7 @@ impl HybridModel {
             // qb16 emitted by the vl l2 mirror-fold when l2-v2 serves; bulk cvt otherwise
             if !Engine::l2_v2_on(d_state) {
                 for s in 0..b {
-                    e.f32_to_bf16(&sb[s].q_l2, &mut pres[s].qb16, d_state * hk * ts[s])?;
+                    e.f32_to_bf16_into(&sb[s].q_l2, &mut pres[s].qb16, d_state * hk * ts[s])?;
                 }
             }
             let mut wa = [crate::GdnWVl::default(); 8];

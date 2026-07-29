@@ -658,6 +658,26 @@ pub static PRIME_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 impl Engine {
     pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let gpu = bw24_runtime::Gpu::new(ordinal)?;
+        // ARCH GUARD (unified dual-arch engine): the fatbins carry single-arch SASS, so a
+        // binary/device mismatch otherwise dies at first module load with an opaque CUDA
+        // error. Fail early with the rebuild hint instead. BW24_ARCH_CHECK=0 skips.
+        if std::env::var("BW24_ARCH_CHECK").as_deref() != Ok("0") {
+            use cudarc::driver::sys::CUdevice_attribute_enum as A;
+            let (maj, min) = cudarc::driver::result::device::get(ordinal as i32)
+                .and_then(|d| unsafe { Ok((
+                    cudarc::driver::result::device::get_attribute(d, A::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)?,
+                    cudarc::driver::result::device::get_attribute(d, A::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)?)) })
+                .unwrap_or((0, 0));
+            let built = env!("BW24_BUILT_CUDA_ARCH");
+            let ok = matches!((built, maj, min),
+                ("120a", 12, 0) | ("120a", 12, 1) | ("100a", 10, 0) | ("90a", 9, 0) | ("89", 8, 9));
+            if !ok {
+                return Err(format!(
+                    "bw24 was built for sm_{built} but device {ordinal} reports compute \
+                     capability {maj}.{min}. Rebuild on this machine (BW24_CUDA_ARCH \
+                     auto-detects the GPU) or set BW24_ARCH_CHECK=0 to bypass.").into());
+            }
+        }
         // Default async-pool RELEASE_THRESHOLD is 0: freed blocks return to the OS at every
         // sync, so cuMemAllocAsync NODES inside captured graphs re-map memory on EVERY
         // cuGraphLaunch (measured 226us/launch on the gemma graph door, 2026-07-23 osrt).
@@ -5795,7 +5815,6 @@ impl Engine {
             }
         {
             let f = self.func("qmatvec_q8_0_mmvq_rp_g2");
-            let mut y = self.alloc_uninit::<f32>(out_f)?;
             let cfg = LaunchConfig {
                 grid_dim: ((out_f as u32).div_ceil(2), 1, 1),
                 block_dim: (32, 2, 1),
@@ -5803,10 +5822,10 @@ impl Engine {
             };
             let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, 1i32, row_bytes as i64);
             let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
             unsafe { b.launch(cfg)?; }
-            if scale != 1.0 { self.scale_inplace(&mut y, scale, out_f)?; }
-            return Ok(y);
+            if scale != 1.0 { self.scale_inplace(y, scale, out_f)?; }
+            return Ok(());
         }
         // Multi-row-per-warp (mr2) policy, fixed since the 2026-07 sweeps (the BW24_MMVQ_MR
         // override + mr4 kernel were retired 2026-07-08 — mr4 regressed on register pressure and
@@ -6386,7 +6405,6 @@ impl Engine {
     pub fn matmul_group_xh(&self, ws: &[&crate::model::GpuTensor], x: &CudaSlice<f32>,
                            xh: &CudaSlice<u8>, m: usize)
                            -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
-        use crate::model::GpuTensor;
         let mut out = Vec::with_capacity(ws.len());
         let in_f = ws[0].in_features();
         for w in ws {
@@ -6875,9 +6893,9 @@ impl Engine {
             let mut q16 = self.alloc_u8_uninit(n * 2)?;
             let mut k16 = self.alloc_u8_uninit(nkv * 2)?;
             let mut v16 = self.alloc_u8_uninit(nkv * 2)?;
-            self.f32_to_bf16(q, &mut q16, n)?;
-            self.f32_to_bf16(k, &mut k16, nkv)?;
-            self.f32_to_bf16(v, &mut v16, nkv)?;
+            self.f32_to_bf16_into(q, &mut q16, n)?;
+            self.f32_to_bf16_into(k, &mut k16, nkv)?;
+            self.f32_to_bf16_into(v, &mut v16, nkv)?;
             let rc = {
                 use cudarc::driver::{DevicePtr, DevicePtrMut};
                 let stream = &self.gpu.stream;
@@ -9333,7 +9351,7 @@ impl Engine {
     }
 
     /// f32 -> bf16 bulk mirror into a caller buffer (the K4/K5 operand mirrors).
-    pub fn f32_to_bf16(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<u8>, n: usize)
+    pub fn f32_to_bf16_into(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<u8>, n: usize)
                        -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("f32_to_bf16_bulk");
         let ni = n as i64;
