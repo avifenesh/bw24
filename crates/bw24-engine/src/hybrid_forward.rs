@@ -6394,16 +6394,57 @@ impl HybridModel {
         let base_len = kvl.len - t;   // pre-append length (target appended this forward too)
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
-        // PRIME FA ARM (perf lane 3): fresh-prompt own-KV hd256 layers under the window run
-        // ONE f32 fa_prefill (full causal attention is exact there — the 26B prime pattern)
-        // instead of t per-row quantized-cache launches. Globals (hd512, no FA stamp) and
-        // KV-shared layers (no f32 k/v of their own) keep the per-row loop. Same numeric
-        // class split as the 26B prime (f32 prefill vs quantized decode); the run-gen argmax
-        // + chat gates arbitrate. BW24_NOFA=1 forces the per-row loop.
-        if let Some((kf, vf)) = &kv_f32 {
-            if t > 1 && hd == 256 && base_len == 0 && t <= win
-                && std::env::var("BW24_NOFA").is_err() {
-                e.fa_prefill(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        // PRIME FA ARMS (perf lane 3, completed 2026-07-31 — the H100 board pinned E4B
+        // prefill at 482 tok/s: the per-row loop ran the DECODE kernel once per token per
+        // layer). Fresh-prompt (base_len == 0) batched attention, one launch per layer:
+        //   - own-KV hd256 under the window: f32 fa_prefill (full causal exact — 26B pattern)
+        //   - own-KV hd256 above the window (swa): fa_prefill_w windowed twin (12B pattern)
+        //   - own-KV hd512 globals: fa_prefill_hd512 (12B/31B globals pattern)
+        //   - KV-shared layers (no f32 k/v): fa_prefill_view over the target's QUANTIZED
+        //     rows (the T=K verify kernel; the target appended this forward's rows already).
+        //     swa-shared above the window keeps the per-row loop (no windowed view twin).
+        // Same numeric class split as the 26B prime (f32/batched prefill vs per-row
+        // quantized decode); run-gen argmax + chat gates arbitrate. BW24_NOFA=1 reverts all.
+        if t > 1 && base_len == 0 && std::env::var("BW24_NOFA").is_err() {
+            if let Some((kf, vf)) = &kv_f32 {
+                if hd == 256 && t <= win {
+                    e.fa_prefill(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                    return Ok(e.matmul(&fa.wo, &attn, t)?);
+                }
+                if hd == 256 && swa && t > win {
+                    e.fa_prefill_w(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale, true,
+                                   win)?;
+                    return Ok(e.matmul(&fa.wo, &attn, t)?);
+                }
+                if hd == 512 && !swa {
+                    e.fa_prefill_hd512(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale,
+                                       true)?;
+                    return Ok(e.matmul(&fa.wo, &attn, t)?);
+                }
+            } else if share.is_some() {
+                let g = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+                let k_view = e.view_u8(&kvl.k, kvl.k.len());
+                let v_view = e.view_u8(&kvl.v, kvl.v.len());
+                if hd == 256 && (!swa || t <= win) {
+                    // inline-dequant quantized-view prefill (fa_prefill_q stamps 256/128)
+                    e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t, t,
+                                      scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes, g)?;
+                    return Ok(e.matmul(&fa.wo, &attn, t)?);
+                }
+                // remaining shared classes (swa above the window; hd512 globals): dequant
+                // the target's t rows ONCE to f32, then the same f32 twins as own-KV.
+                let kv_dim = nkv * hd;
+                let mut kf = e.uninit(t * kv_dim)?;
+                let mut vf = e.uninit(t * kv_dim)?;
+                e.fa_dequant_kv_view_f32(&k_view, &v_view, &mut kf, &mut vf, kv_dim, kv_dim,
+                                         t, kvl.k_tok_bytes, kvl.v_tok_bytes, g)?;
+                if hd == 512 {
+                    e.fa_prefill_hd512(&q, &kf, &vf, &mut attn, hd, nh, nkv, t, t, scale,
+                                       true)?;
+                } else {
+                    e.fa_prefill_w(&q, &kf, &vf, &mut attn, hd, nh, nkv, t, t, scale, true,
+                                   win)?;
+                }
                 return Ok(e.matmul(&fa.wo, &attn, t)?);
             }
         }

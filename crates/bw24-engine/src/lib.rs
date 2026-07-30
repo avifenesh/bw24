@@ -6817,6 +6817,30 @@ impl Engine {
     /// Correctness fallback for quantized resident K/V views. Dequantizes K and V once into f32
     /// workspaces, then calls `sdpa_naive`. This is an explicit API: the optimized prefill view
     /// dispatch remains unchanged, so callers can use it as a reference or compatibility path.
+    /// Dequant a quantized KV view into caller-owned f32 buffers (one grid-stride launch).
+    /// `g` picks the kf8vf8-module stamp for e4m3 caches (same flag contract as fa_decode/
+    /// fa_prefill_view). Used by the E4B shared-KV prefill arms (2026-07-31) to feed the
+    /// f32 fa_prefill_w / fa_prefill_hd512 twins from the target layer's quantized rows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_dequant_kv_view_f32(&self, k: &cudarc::driver::CudaView<u8>,
+                                  v: &cudarc::driver::CudaView<u8>,
+                                  kf: &mut CudaSlice<f32>, vf: &mut CudaSlice<f32>,
+                                  kv_dim_k: usize, kv_dim_v: usize, t_kv: usize,
+                                  k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
+                                  -> Result<(), Box<dyn std::error::Error>> {
+        let f = if g { self.func_g("fa_dequant_kv_ws_f32") } else { self.func("fa_dequant_kv_ws_f32") };
+        let total = (t_kv * (kv_dim_k + kv_dim_v)) as u64;
+        let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let (kdk, kdv, tkvi) = (kv_dim_k as i32, kv_dim_v as i32, t_kv as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k).arg(v).arg(&mut *kf).arg(&mut *vf).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn sdpa_naive_quantized_view(
         &self,
