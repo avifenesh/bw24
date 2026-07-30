@@ -990,15 +990,10 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;
     const int kv_head = head / (n_head / n_head_kv);
-#ifdef FA_PP_REVX
-    // FA4-class causal grid swizzle (2026-07-30, BW24_FA_REVX seam): launch the LAST
-    // query tiles first — under a causal mask they carry the most KV work, so reversing
-    // the x-mapping packs the wave tail (FA3/FA4 use the same trick; per-tile math is
-    // untouched -> bit-identical).
-    const int q_base  = ((int)gridDim.x - 1 - (int)blockIdx.x) * BQ;
-#else
+    // (FA4-class reversed-x causal swizzle probed FLAT here 2026-07-30: −0.2% pp1736
+    // 31B / +0.1% pp512 9B x3 interleaved — the grid is fully waved at prefill shapes
+    // on 82 SMs, no tail to pack. Seam removed per flags doctrine.)
     const int q_base  = blockIdx.x * BQ;
-#endif
     const int qrow_base = q_base + warp*M_ROWS;
     if (head >= n_head || q_base >= T) return;
     const int nqw = min(M_ROWS, T - qrow_base);

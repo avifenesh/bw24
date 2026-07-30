@@ -90,12 +90,6 @@ fn main() {
             fa_mb_arg = format!("-DFA_PP_MINBLOCKS={mb}");
             args.push(&fa_mb_arg);
         }
-        // TUNE SEAM: BW24_FA_REVX=1 reverses the FA prefill x-tile mapping (FA4-class
-        // causal wave-tail packing; bit-identical per tile — interleaved A/B arbitrates).
-        println!("cargo:rerun-if-env-changed=BW24_FA_REVX");
-        if std::env::var("BW24_FA_REVX").as_deref() == Ok("1") && src == "cu/flash_attn.cu" {
-            args.push("-DFA_PP_REVX=1");
-        }
         args.extend(["-o", fatbin.to_str().unwrap(), src]);
         let status = Command::new(&nvcc)
             .args(args)
