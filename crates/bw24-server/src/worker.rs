@@ -83,7 +83,7 @@ pub enum Cmd {
 /// (GDN state cannot roll back without checkpoints); a non-extending prompt takes the cold path.
 /// NOTE chat-template callers: templates that rewrite history (e.g. stripping think blocks from
 /// prior assistant turns) break exact-extension and simply miss the pool — raw `prompt_ids`
-/// callers (agent loops) always hit. Pool: at most REUSE_POOL_PER_MODEL entries per model, LRU.
+/// callers (agent loops) always hit. Pool: at most BW24_REUSE_POOL entries per model, LRU.
 struct ReuseEntry {
     fed: Vec<u32>,
     cache: Cache,
@@ -104,7 +104,18 @@ struct SpecReuseEntry {
     /// full-retok — committed tokens stay authoritative, spec==greedy exactness is untouched.
     committed_text: String,
 }
-const REUSE_POOL_PER_MODEL: usize = 2;
+/// Parked-cache pool cap per model (BW24_REUSE_POOL, default 2 — each parked cache holds
+/// its full KV, ~119MB at ctx 8192 on the 9B, so the cap is a VRAM budget knob).
+/// KNOWN CASCADE at the default (pinned 2026-07-31): park-on-retire evicts LRU
+/// unconditionally, so a SEQUENTIAL multi-turn workload of N>cap sessions evicts each
+/// next request's entry one step ahead of its arrival (0/N resumes), while the same
+/// requests arriving CONCURRENTLY all probe the intact pool first (hit). Raise the cap
+/// to >= the expected concurrent-session count when VRAM allows.
+fn reuse_pool_per_model() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::env::var("BW24_REUSE_POOL").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(2))
+}
 /// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
 const REUSE_MIN_PREFIX: usize = 16;
 
@@ -756,13 +767,13 @@ pub fn run(
                         .map(|b| toks.first() == Some(&b)).unwrap_or(false) as usize;
                     let committed_text = loaded[&s.model].tok.decode_special(&toks[skip..], true);
                     let pool = spec_reuse.entry(s.model.clone()).or_default();
-                    if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); }
+                    if pool.len() >= reuse_pool_per_model() { pool.remove(0); }
                     pool.push(SpecReuseEntry { sess, committed_text });
                 }
             } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
                 if let Some(cache) = s.cache {
                     let pool = reuse.entry(s.model.clone()).or_default();
-                    if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); } // LRU: oldest first
+                    if pool.len() >= reuse_pool_per_model() { pool.remove(0); } // LRU: oldest first
                     let cap = cache.max_ctx;
                     pool.push(ReuseEntry {
                         fed: s.fed, cache, last_logits: s.last_logits, cap,
