@@ -4053,8 +4053,9 @@ extern "C" __global__ void attn_rms_vl(attnprevl_t v, const float* __restrict__ 
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
 }
 
-// fused q+k RoPE (grid.y picks), FRESH positions (pos[tok] == tok — the batched prime is
-// fresh-only, so the iota position is computed in-kernel; identical value to pos_d[tok]).
+// fused q+k RoPE (grid.y picks). Position = pad_ + tok: pad_ carries the per-seq pos0
+// for CONTINUATION primes (increment (b), 2026-07-30); fresh passes pad_ == 0, making
+// the value bit-identical to the original in-kernel iota (pos[tok] == tok).
 extern "C" __global__ void attn_rope_vl(attnprevl_t v, int head_dim, int n_dims,
                                         int n_head, int n_head_kv,
                                         float theta_scale, float freq_scale) {
@@ -4070,7 +4071,7 @@ extern "C" __global__ void attn_rope_vl(attnprevl_t v, int head_dim, int n_dims,
     float* base = x + (size_t)hr * head_dim;
     int half = n_dims / 2;
     if (j >= half) return;
-    float theta = (float)tok * powf(theta_scale, (float)j) * freq_scale;
+    float theta = (float)(sq.pad_ + tok) * powf(theta_scale, (float)j) * freq_scale;
     float c = cosf(theta), sn = sinf(theta);
     float x0 = base[j], x1 = base[j + half];
     base[j]        = x0 * c - x1 * sn;

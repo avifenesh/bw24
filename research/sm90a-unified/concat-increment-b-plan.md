@@ -74,8 +74,8 @@ Steps:
    (the (a) protocol), serve-smoke, battery; judge-profile A/B both rigs.
 
 ## Status
-- [ ] hybrid_forward pos0 plumbing
-- [ ] attn_pre_vl8 pos0 kernel param
+- [ ] hybrid_forward pos0 plumbing (NEXT: relax fresh asserts at hybrid_forward.rs:874-878, pos_ds from pos0, kc/vc addr +len0*tok_bytes in pargs, pad=pos0)
+- [x] attn_rope_vl pos0 via pad_ (DONE 2026-07-30, builds clean; fresh bit-identical)
 - [ ] FA vl carried mask twin
 - [ ] worker filter extension
 - [ ] parity + A/B receipts
