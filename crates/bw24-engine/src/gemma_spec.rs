@@ -908,12 +908,8 @@ impl HybridModel {
             // (eager: host-filled; graph: filled in-graph).
             let run_chain = |e: &Engine, d: &GemmaDraft, batch_d: &mut CudaSlice<u32>,
                              p_d: &mut CudaSlice<f32>, g_seed: &CudaSlice<f32>,
-                             pos_slots: &Vec<CudaSlice<i32>>, inround: f32,
-                             ds: Option<(f64, f64)>|
+                             pos_slots: &Vec<CudaSlice<i32>>, inround: f32|
              -> Result<usize, Box<dyn std::error::Error>> {
-                // DSpark marginal-rate state (ds = Some((t_draft, t_verify)) engages it)
-                let mut surv = 1.0f64;
-                let mut etok = 1.0f64;
                 // uninit+copy (NOT clone_dtod): clone_dtod's internal alloc bypasses the
                 // capture-retain hooks — its address got pool-reused between replays and the
                 // replayed chain read a corrupted seed (accept 0.52 vs 0.76).
@@ -933,7 +929,7 @@ impl HybridModel {
                     let ld = e.matmul(&d.head, &hn, 1)?;
                     e.argmax_token_device_col(&ld, 0, d.head.out_features(), batch_d, j + 1)?;
                     // confidence-adaptive depth (BW24_SPEC_PMIN): TRIM-space prob before d2t.
-                    if pmin > 0.0 || inround > 0.0 || ds.is_some() {
+                    if pmin > 0.0 || inround > 0.0 {
                         e.prob_of_token_device_col(
                             &ld,
                             batch_d,
@@ -949,22 +945,14 @@ impl HybridModel {
                     }
                     hc = h_next;
                     // IN-ROUND cut: one small dtoh sync per step; stop drafting the moment
-                    // confidence falls below the gate (fixed threshold) or, under the
-                    // DSpark door, the moment the marginal expected rate of one more
-                    // draft token drops below the round's average rate.
-                    if (inround > 0.0 || ds.is_some()) && j + 1 < kr {
+                    // confidence falls below the gate and verify at the shrunk width.
+                    // (A DSpark-class marginal-rate window — S_{j+1}*T(j) > E[tok](j)*t_d
+                    // with profiled t_draft/t_verify EMAs — measured FLAT here 2026-07-30:
+                    // never cuts at accept >= 0.8, par-to-noise on 26B/31B depth x3
+                    // interleaved; arm removed per flags doctrine, jsonl row is the record.)
+                    if inround > 0.0 && j + 1 < kr {
                         let ph = e.dtoh(p_d)?;
-                        if let Some((td, tv)) = ds {
-                            let p = (ph[j] as f64).clamp(0.0, 1.0);
-                            surv *= p;
-                            etok += surv;
-                            // estimate next survival with the current conditional as proxy
-                            let s_next = surv * p;
-                            let t_j = tv + (j as f64 + 1.0) * td;
-                            if s_next * t_j <= etok * td {
-                                return Ok(j + 1);
-                            }
-                        } else if ph[j] < inround {
+                        if ph[j] < inround {
                             return Ok(j + 1);
                         }
                     }
@@ -1157,7 +1145,7 @@ impl HybridModel {
                     && !draft_graphs.contains_key(&key)
                 {
                     let g = e.capture_graph_retained(|e| {
-                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0, None).map(|_| ())
+                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0).map(|_| ())
                     })?;
                     draft_graphs.insert(key, g);
                 }
@@ -1289,7 +1277,7 @@ impl HybridModel {
                     // each launch, like g_seed — the in-graph copy_add fills replayed one
                     // round stale, see jsonl).
                     let g = e.capture_graph_retained(|e| {
-                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0, None).map(|_| ())
+                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0).map(|_| ())
                     })?;
                     draft_graphs.insert(key, g);
                 }
@@ -1306,7 +1294,7 @@ impl HybridModel {
                     for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
                         e.set_i32_one(slot, (cache.pos + j) as i32)?;
                     }
-                    run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0, None)?;
+                    run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, 0.0)?;
                     let etoks = e.dtoh_u32(&batch_d)?;
                     if gtoks[..=kr] != etoks[..=kr] {
                         eprintln!(
@@ -1328,25 +1316,10 @@ impl HybridModel {
                     None if cache.pos >= floor_ctx && !prev_full => PMIN_IR_DEFAULT,
                     None => 0.0,
                 };
-                // DSpark door: marginal-rate window (needs >= 3 profiled rounds); the
-                // fixed-threshold self-key is bypassed while it drives.
-                let ds = if dspark_on && ds_rounds >= 3 && ds_td > 0.0 && ds_tv > 0.0 {
-                    Some((ds_td, ds_tv))
-                } else {
-                    None
-                };
-                let t0 = std::time::Instant::now();
-                kr = run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots,
-                               if ds.is_some() { 0.0 } else { ir_now }, ds)?;
-                if dspark_on && kr > 0 {
-                    // the in-chain dtoh syncs make wall time meaningful per step
-                    let per = t0.elapsed().as_secs_f64() / kr as f64;
-                    ds_td = if ds_rounds == 0 { per } else { 0.8 * ds_td + 0.2 * per };
-                }
+                kr = run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots, ir_now)?;
             }
             drafted += kr;
             rounds += 1;
-            let ds_v0 = std::time::Instant::now();
             let pos0 = cache.pos;
             // BW24_BURST_VCHECK=1: run the STREAM verify first on the same batch/state and
             // diff its argmaxes against the eager verify (bisect harness — the stream append
@@ -1414,13 +1387,6 @@ impl HybridModel {
             }
             e.u32_pack2(&batch_d, 1, kr, &vam_d, kr + 1, &mut packed)?;
             let host = e.dtoh_u32(&packed)?; // the round's ONE sync
-            if dspark_on {
-                // verify+accept wall for the DSpark profile (chain time excluded — ds_v0
-                // starts after run_chain returns; the dtoh above is the round sync).
-                let tv = ds_v0.elapsed().as_secs_f64();
-                ds_tv = if ds_rounds == 0 { tv } else { 0.8 * ds_tv + 0.2 * tv };
-                ds_rounds += 1;
-            }
             let k = kr;
             let dtoks: Vec<u32> = host[..k].to_vec();
             let vam: Vec<u32> = host[k..2 * k + 1].to_vec();
