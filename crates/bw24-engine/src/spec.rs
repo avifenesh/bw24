@@ -1026,6 +1026,17 @@ impl HybridModel {
                             }
                         }
                         if let (Some(ck), Some(cs)) = (ckpt.as_deref_mut(), col_states) {
+                            // ReplaySSM-assessment instrumentation (2026-07-30): the
+                            // per-column clones are the only true state snapshots left in
+                            // the verify (the batched path stashes INPUTS and replays).
+                            if std::env::var("BW24_SPEC_STATS").as_deref() == Ok("1") {
+                                static ONCE: std::sync::Once = std::sync::Once::new();
+                                let bytes: usize = cs.iter()
+                                    .map(|(c, s)| (c.len() + s.len()) * 4).sum();
+                                ONCE.call_once(|| eprintln!(
+                                    "[verify-ckpt] per-column layer il={il}: {} clones, {:.2} MB/layer/round",
+                                    cs.len(), bytes as f64 / 1e6));
+                            }
                             ck.cols[il] = Some(cs);
                         }
                         out

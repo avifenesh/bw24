@@ -50,3 +50,4 @@
 {"ts":"2026-07-30T01:20:05Z","git":"85ab7b96","cell":"q27-spec-p1-code-short","arm":"bw24","toks":110.63,"profile":"performance"}
 {"ts":"2026-07-30T01:20:05Z","git":"85ab7b96","cell":"q27-spec-p1-code-short","arm":"llama","toks":73.49,"accept_note":"draft_accept=0.760","profile":"performance"}
 {"ts":"2026-07-30T01:20:05Z","git":"85ab7b96","cell":"q27-spec-p1-code-short","arm":"bw24","toks":111.62,"profile":"performance"}
+{"ts":"2026-07-30T01:20:05Z","git":"85ab7b96","cell":"q35-spec-p1-code-short","arm":"bw24","toks":288.04,"profile":"performance"}
