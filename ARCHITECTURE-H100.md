@@ -1923,3 +1923,39 @@ Harness wins are receipts of headroom, not shippable artifacts. Production adopt
 requires a per-TU search with a production-kernel objective (thin cubin-loader runner
 per kernel — future round). Raw: research/sm90a-unified/acf-20260730/ (scripts, CSVs,
 winner ACFs, logs).
+
+## Round 39 — H100 full board vs vLLM 0.26 (2026-07-30/31, owner-directed)
+
+Owner call: vLLM is the correct H100 comparison (what H100 users deploy), llama.cpp
+demoted to bridge. Protocol = the pinned showdown shape per model (bench_vllm.py:
+single-stream p~2048/g512, N=5+warmup, decode/prefill medians, same-session blocks).
+Cross-artifact BY DESIGN: vLLM serves HF checkpoints (w8a8/FP8-dynamic/bf16 — it
+rejects these GGUFs), bw24 serves its GGUF artifacts; every row carries both names.
+
+| model | vLLM decode/prefill (artifact) | bw24 decode/prefill (artifact) | decode | prefill |
+|---|---|---|---|---|
+| q9  | 180.05 / 36,149 (w8a8)     | 219.28 / 26,335 (Q8_0)    | **1.22x** | 0.73x |
+| q35 | 230.85 / 17,927 (FP8)      | 181.19 / 4,608 (IQ4_XS)   | **0.79x** | 0.26x |
+| g12 | 81.63 / 25,650 (bf16)      | 153.23 / 8,262 (q4_0 QAT) | **1.88x** | 0.32x |
+| g26 | 194.13 / 44,219 (FP8-dyn)  | FAILED — gate panic       | — | — |
+| g31 | 64.83 / 14,335 (FP8-dyn)   | 79.94 / 3,236 (q4_0 QAT)  | **1.23x** | 0.23x |
+| e4b | 170.31 / 52,244 (bf16)     | 355.32 / 482 (q4_0 QAT)   | **2.09x** | 0.0092x |
+
+Reads (decode wins carry a quant-advantage caveat on the bf16 rows — g12/e4b vLLM
+arms move 4x the bytes):
+1. Decode: bw24 wins 4/5 completed models. The q35 MoE LOSS (0.79x) is the new
+   H100 decode front — vLLM's fused FP8 MoE vs our untuned-on-Hopper IQ4_XS path
+   (the H100 campaign tuned the 9B only).
+2. Prefill: bw24 loses EVERY cell (0.23-0.73x) — the known w8a8-gated gap, now
+   quantified board-wide. e4b prefill 482 tok/s = first-light path, not a bench
+   artifact (105x gap).
+3. g26 (MoE a4b) bw24 run-gen GATE PANIC on sm_90a ("decode-step diverges from
+   prefill", decode argmax 255999 = garbage logits) — 26B MoE never brought up on
+   Hopper. Filed as its own bug arc.
+4. Board infra receipts: vLLM GGUF rejection reconfirmed; flashinfer JIT on the box
+   needs ninja + CUDA headers/libs from the pip nvidia-cu13 wheel (CPATH +
+   libnvrtc.so symlink into $CUDA_HOME/lib64) — first-run failures were env, three
+   attempt jsonls kept in the logs dir.
+
+Raw: research/sm90a-unified/h100board-20260730/ (jsonl, per-cell vllm json + logs,
+bw24 logs, three failed-attempt jsonls). Harness: tools/h100-vllm-board.sh.

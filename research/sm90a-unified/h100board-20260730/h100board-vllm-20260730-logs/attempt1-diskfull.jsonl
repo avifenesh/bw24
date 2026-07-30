@@ -1,0 +1,2 @@
+{"ts":"2026-07-30T19:31:32Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q9-p2048g512","arm":"vllm","artifact":"RedHatAI/Qwen3.5-9B-quantized.w8a8","decode_tps":0,"prefill_tps":0}
+{"ts":"2026-07-30T19:31:32Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q9-p2048g512","arm":"bw24","artifact":"Qwen3.5-9B-Q8_0.gguf","decode_tps":219.20,"prefill_tps":26339.6}

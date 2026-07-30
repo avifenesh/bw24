@@ -1,0 +1,12 @@
+=== H100 vLLM BOARD 2026-07-30T21:09:30Z git=rsync-tree filter=q35|g26|g31 ===
+== q35 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [q35/vllm] FAILED —     raise RuntimeError(
+  [q35/vllm] decode 0 tok/s prefill 0 tok/s (Qwen/Qwen3.6-35B-A3B-FP8)
+  [q35/bw24] decode 181.35 tok/s prefill 4618.8 tok/s (Qwen3.6-35B-A3B-UD-IQ4_XS.gguf)
+== g26 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [g26/vllm] decode 194.13 tok/s prefill 44218.9 tok/s (RedHatAI/gemma-4-26b-a4b-it-FP8-dynamic)
+  [g26/bw24] decode 0 tok/s prefill 0 tok/s (gemma-4-26B_q4_0-it.gguf)
+== g31 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [g31/vllm] decode 64.83 tok/s prefill 14334.7 tok/s (RedHatAI/gemma-4-31b-it-FP8-dynamic)
+  [g31/bw24] decode 79.94 tok/s prefill 3235.9 tok/s (gemma-4-31B_q4_0-it.gguf)
+=== H100 vLLM BOARD DONE 21:27:22Z — rows in research/tune-data/h100board-vllm-20260730.jsonl ===
