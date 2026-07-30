@@ -1,0 +1,12 @@
+[gemma4-e4b] per-layer-embed model detected (n_epl=256, row 10752) — first-light forward (eager decode + prime); dc/graph/spec unwired (HANDOVER-E4B.md)
+[q4rp] split-plane decode mirrors built: 402 trunk tensors
+[q4rp] split-plane IN-PLACE swap: 294 dense trunk tensors
+spec K=6 n_new=128 prompt=19 toks
+[gemma-spec] rounds=60 drafted=151 accepted=69                    accept-rate=0.457 tok/round=2.15
+spec: 276.23 tok/s (spec-only)
+[gemma4-e4b] per-layer-embed model detected (n_epl=256, row 10752) — first-light forward (eager decode + prime); dc/graph/spec unwired (HANDOVER-E4B.md)
+[q4rp] split-plane decode mirrors built: 402 trunk tensors
+[q4rp] split-plane IN-PLACE swap: 294 dense trunk tensors
+spec K=6 n_new=128 prompt=19 toks
+[gemma-spec] rounds=60 drafted=151 accepted=69                    accept-rate=0.457 tok/round=2.15
+spec: 276.37 tok/s (spec-only)

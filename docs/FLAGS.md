@@ -371,6 +371,13 @@ owner-gated accuracy decision (w8a8-class numerics change model outputs).
 
 ## Removed in the 2026-07-08 flag audit (concluded flags — JSONL rows are the record)
 
+`BW24_SPEC_DSPARK` (lived hours, 2026-07-30): DSpark-class marginal-rate verify window
+(arXiv 2607.05147) — S_{j+1}·T(j) > E[tok](j)·t_draft with profiled t_draft/t_verify EMAs.
+Measured FLAT: never cuts at accept ≥ 0.8 (31B depth: identical rounds/accepts, −0.4%
+noise), par on the 26B depth high mode (278 vs 281, −1.2%); the fixed 0.7 self-keyed cut
+already covers the low-accept case. Arm deleted; note: the survival estimator used the
+current-conditional-as-proxy — a learned estimator (the paper) could cut smarter.
+
 | flag | verdict | record |
 |---|---|---|
 | `BW24_FA_PPOOL` | micro −5–12% but e2e +0.5–0.8% at d6257, under bar | rig5090 2026-07-08 (fadepth) |

@@ -1,0 +1,14 @@
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+[gemma-draft] FR head trim: 32768 rows + 512 adaptive (27 MB vs 220 MB full)
+[trim-adapt] 19 learned rows pre-filled from research/gemma4-bringup/gemma4-31b-owngen-ranks-32768.txt.learned
+spec K=3 n_new=128 prompt=19 toks
+[gemma-spec] rounds=38 drafted=114 accepted=91                    accept-rate=0.798 tok/round=3.37
+[trim-adapt] 19/512 spare slots learned
+spec: 109.14 tok/s (spec-only)
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+[gemma-draft] FR head trim: 32768 rows + 512 adaptive (27 MB vs 220 MB full)
+[trim-adapt] 19 learned rows pre-filled from research/gemma4-bringup/gemma4-31b-owngen-ranks-32768.txt.learned
+spec K=3 n_new=128 prompt=19 toks
+[gemma-spec] rounds=38 drafted=114 accepted=91                    accept-rate=0.798 tok/round=3.37
+[trim-adapt] 19/512 spare slots learned
+spec: 109.10 tok/s (spec-only)

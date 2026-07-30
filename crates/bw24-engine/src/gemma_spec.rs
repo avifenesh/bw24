@@ -745,6 +745,19 @@ impl HybridModel {
             .and_then(|v| v.parse().ok());
         const PMIN_IR_DEFAULT: f32 = 0.7;
         let mut prev_full = true; // round 1: no miss evidence yet — draft at full depth
+        // DSpark-class verify-window policy (BW24_SPEC_DSPARK=1, opt-in door, 2026-07-30;
+        // arXiv 2607.05147): replace the fixed in-round threshold with a MARGINAL-RATE
+        // stop rule — extend the chain to depth j+1 only while the expected marginal
+        // accepted-token rate beats the round's average rate:
+        //   S_{j+1} * T(j) > E[tok](j) * t_draft,  T(j) = t_verify + j*t_draft,
+        //   E[tok](j) = 1 + sum_i S_i,  S = running prefix-survival (product of draft
+        // top-1 probs). t_draft / t_verify are per-generation EMAs measured on this
+        // engine+model (the DSpark "throughput profile"); the rule engages after 3
+        // profiled rounds. Exactness-neutral (verify still arbitrates every token).
+        let dspark_on = std::env::var("BW24_SPEC_DSPARK").as_deref() == Ok("1");
+        let mut ds_td = 0.0f64; // EMA: seconds per draft step
+        let mut ds_tv = 0.0f64; // EMA: seconds per verify+accept round
+        let mut ds_rounds = 0u32;
         let mut p_d = e.stream().alloc_zeros::<f32>(k.max(1))?;
 
         // ADAPTIVE DRAFT LENGTH (default ON 2026-07-10; BW24_SPEC_ADAPT=0 reverts): llama's
@@ -933,6 +946,10 @@ impl HybridModel {
                     hc = h_next;
                     // IN-ROUND cut: one small dtoh sync per step; stop drafting the moment
                     // confidence falls below the gate and verify at the shrunk width.
+                    // (A DSpark-class marginal-rate window — S_{j+1}*T(j) > E[tok](j)*t_d
+                    // with profiled t_draft/t_verify EMAs — measured FLAT here 2026-07-30:
+                    // never cuts at accept >= 0.8, par-to-noise on 26B/31B depth x3
+                    // interleaved; arm removed per flags doctrine, jsonl row is the record.)
                     if inround > 0.0 && j + 1 < kr {
                         let ph = e.dtoh(p_d)?;
                         if ph[j] < inround {

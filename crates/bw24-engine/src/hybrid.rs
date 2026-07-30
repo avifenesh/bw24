@@ -496,10 +496,15 @@ impl MtpHead {
         let src = GgufSource(g);
         let dcfg = src.config();
         // NextN block index INSIDE THE DRAFT FILE (its block_count includes the trunk numbering).
-        assert!(
-            dcfg.nextn_predict_layers > 0,
-            "draft GGUF has no nextn_predict_layers"
-        );
+        // Graceful error, not assert: the server's `+draft` attach path surfaces this to the
+        // user (a gemma-assistant draft or any non-NextN GGUF lands here; a panic killed the
+        // whole worker — serve-smoke find, 2026-07-30).
+        if dcfg.nextn_predict_layers == 0 {
+            return Err(format!(
+                "draft GGUF has no nextn_predict_layers (arch {:?}) — not a NextN/MTP regime \
+                 draft; gemma assistant drafters attach via BW24_DRAFT, not '+draft'",
+                g.arch()).into());
+        }
         let n = dcfg.n_layer - dcfg.nextn_predict_layers;
         let p = |s: &str| format!("blk.{n}.{s}");
 

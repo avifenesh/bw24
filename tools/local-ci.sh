@@ -109,6 +109,13 @@ else
     echo "12B run-gen/VERIFY-GATE: SKIP (no 12B model at $G12)"
 fi
 echo "correctness stage: GREEN"
+
+# normal-usage serving battery (2026-07-30): OpenAI surface, streaming, determinism,
+# concurrency, lanes, spec==plain serving exactness. BW24_CI_SERVE=0 skips.
+if [ "${BW24_CI_SERVE:-1}" = "1" ] && [ -x tools/serve-smoke.sh ]; then
+    tools/serve-smoke.sh || { echo "serve-smoke FAIL"; exit 1; }
+fi
+
 [ "$MODE" = "--correctness" ] && exit 0
 
 echo "== local-ci: perf stage ($MODE) =="

@@ -990,6 +990,9 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;
     const int kv_head = head / (n_head / n_head_kv);
+    // (FA4-class reversed-x causal swizzle probed FLAT here 2026-07-30: −0.2% pp1736
+    // 31B / +0.1% pp512 9B x3 interleaved — the grid is fully waved at prefill shapes
+    // on 82 SMs, no tail to pack. Seam removed per flags doctrine.)
     const int q_base  = blockIdx.x * BQ;
     const int qrow_base = q_base + warp*M_ROWS;
     if (head >= n_head || q_base >= T) return;

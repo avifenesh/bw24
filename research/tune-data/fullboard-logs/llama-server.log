@@ -1,0 +1,27 @@
+0.00.023.487 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.123.716 I srv    load_model: loading model '/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf'
+0.00.554.570 E llama_init_from_model: failed to initialize the context: Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)
+0.00.612.361 W srv    load_model: [spec] failed to measure draft model memory: failed to create llama_context from model
+0.01.345.227 W load: override 'tokenizer.ggml.add_bos_token' to 'true' for Gemma4
+0.01.408.362 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.01.408.823 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.01.436.230 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+0.03.635.394 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.03.635.865 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.03.662.599 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+0.03.711.648 W llama_kv_cache: layer   3: sharing with layer 59. k = 0x741600000000, v = 0x741604000000
+0.03.711.664 W llama_kv_cache: layer   0: sharing with layer 58. k = 0x7415b5800000, v = 0x7415b6400000
+0.03.711.664 W llama_kv_cache: layer   1: sharing with layer 58. k = 0x7415b5800000, v = 0x7415b6400000
+0.03.711.664 W llama_kv_cache: layer   2: sharing with layer 58. k = 0x7415b5800000, v = 0x7415b6400000
+0.03.760.402 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.03.784.272 I srv  llama_server: model loaded
+0.03.784.277 I srv  llama_server: listening on http://127.0.0.1:8099
+0.04.008.537 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.04.008.566 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.05.870.963 I slot print_timing: id  0 | task 0 | prompt eval time =    1513.61 ms /  1736 tokens (    0.87 ms per token,  1146.93 tokens per second)
+0.05.870.967 I slot print_timing: id  0 | task 0 |        eval time =     348.75 ms /    25 tokens (   13.95 ms per token,    71.69 tokens per second)
+0.05.870.967 I slot print_timing: id  0 | task 0 |       total time =    1862.36 ms /  1761 tokens
+0.05.870.971 I slot print_timing: id  0 | task 0 |    graphs reused =          6
+0.05.870.973 I slot print_timing: id  0 | task 0 | draft acceptance = 0.50000 (   18 accepted /    36 generated), mean len =  4.00
+0.05.871.045 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1760, truncated = 0
+0.05.878.711 I srv    operator(): operator(): cleaning up before exit...

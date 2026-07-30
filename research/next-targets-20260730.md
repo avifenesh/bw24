@@ -88,3 +88,64 @@ standard battery.
   the ecosystem's FP4-KV-with-full-precision-linear-state split is the template if a
   prefill/judge-lane door ever opens.
 - Dual-batch overlap: all current activity is multi-rank EP — nothing single-GPU adopts.
+
+## Ledger addendum (2026-07-30, post full-board bench)
+
+### q9 synthetic-512 argmax flake — ROOT-CAUSED CLASS, pre-existing, prompt retired
+run-gen's prefill-vs-decode argmax gate MISMATCHes on the 9B NVFP4 with the synthetic
+512-id prompt (ids `100+(i*7)%900`), bit-stable per environment, flipped by unrelated
+env-string changes (PATH/GGML exports together). Kill-list: NGEN sweep (8..128 all
+MATCH bare), BW24_MMQ_SK 0/1 pins (both MATCH in the passing regime), hot-GPU x3
+(MATCH), llama-bench-preceding (MATCH), CUBLAS_WORKSPACE_CONFIG pin (still MISMATCH),
+BW24_DEBUG_ZERO_ALLOCS (diffs BYTE-IDENTICAL — contents-independent, allocation-
+LAYOUT-dependent, the Hopper Lt-lottery discriminator verdict). The PRE-MERGE binary
+fails bit-identically under the failing env — NOT a merge regression. Oracle
+(BW24_FAST=0) stable at argmax 220; the fast path's two layout regimes read 268/268
+(gate MATCH) or 72/220 (gate MISMATCH) — top-2 logit gap 0.02 at |l|~9: the prompt is
+a knife-edge degenerate input where argmax is not stable across ANY legitimate numeric
+class. All real-text gates green (q9 spec p1/p2/p3 self-consistency PASS same session).
+DISPOSITION: synthetic-id prompts retired from evidence cells (full-board-bench now
+feeds run-gen real text via BW24_PROMPT_FILE); the layout-sensitivity of the fast
+prefill path on degenerate inputs is documented here as a known class, with this repro.
+
+### 35B llama spec arm — llama rejects trimmed drafts
+`-md draft-35b-owntrim` fails llama's check_tensor_dims (output.weight 32768 vs vocab
+248320): llama needs full-vocab draft heads. The board's llama 35B arm was SELF-MTP
+(embedded NextN, no -md) per the 2026-07-18 regime-rollout row; harness fixed.
+
+## Research-item verdicts (2026-07-30 session, all measured)
+
+1. **CUDA 13.3U1 + CompileIQ**: 13.3 re-probe CONCLUDED — FA3 ladder and s8 rescale
+   byte-equal to 13.1 on H100; C7515/C7517 walls stand (ledger receipts). ACF infra
+   VERIFIED: 13.3 ptxas has --apply-controls (staged local + box), CompileIQ installed
+   on the box (~/compileiq-venv, py3.12; local py3.14 unsupported). QUEUED CAMPAIGN:
+   evolutionary ACF search per kernel (fa3_prefill v11, gdn_k45_wgmma, mmq q8) with the
+   existing harnesses as objectives; winners re-pass the full battery; ACFs commit
+   per-kernel per-toolkit.
+2. **ReplaySSM ring verify**: ALREADY-EQUIVALENT — VerifyCkpt (2026-07-03) stashes
+   verify inputs + replays gdn_scan bit-identically (the ReplaySSM mechanism);
+   instrumented 27B+9B spec runs show the per-column snapshot fallback never engages.
+   Nothing to reclaim at B=1. Closed.
+3. **FA4 scheduling**: reversed-x causal swizzle implemented + measured FLAT on the
+   5090 prefill body (x3 interleaved, two shapes) — grids fully wave 82 SMs; seam
+   removed, jsonl row d0fb9354. H100 prefill rides fa3_prefill.cu (no target). The
+   exp2-FMA/conditional-rescale pieces remain unassessed (whole-engine numeric config).
+4. **DSpark window policy**: implemented + measured FLAT (never cuts at accept>=0.8;
+   the 0.7 self-key covers low-accept) — arm removed, jsonl row is the record; a
+   LEARNED survival estimator is the only route left for the idea.
+5. **Concat prefill scheduler (H100)**: worker already batches fresh interactive
+   primes (B<=6, T<=2048, rounds+hold — tasks #13/#16/#18 campaign). Remaining
+   increments mapped: (a) judge-lane prime batching inside phase (d) — NOT phase (b),
+   the 282ms-p99 lesson keeps dark primes out of the interactive path; (b) continuation
+   primes need carried-pos varlen twins (per-seq pos0/t0 params + T_kv>T FA vl);
+   (c) mixed prefill+decode ticks. Unimplemented this session — the next serving arc.
+
+## Full-board summary (research/tune-data/fullboard-20260730.jsonl, interleaved)
+
+Spec: q9 1.62-2.18x, q27 1.27-1.51x, q35 1.32-1.37x (p1 llama arm needs ignore_eos),
+g12 1.40/2.21x, g26 1.33x short, g31 1.13/1.46x, e4b 1.59x — every spec cell >= 1.13x.
+Plain: q9 1.12x, q35 1.11x, e4b 1.10x AT/ABOVE the 1.1x bar; q27 1.08x, g26 1.05-1.07x,
+g12 1.00x, g31 1.00-1.01x at the DRAM wall; g12-plain-d1736 0.97x (new cell, WKV
+re-verdicted — fp8 windowed KV still wins 3/3; the 3% lives elsewhere: OPEN TARGET)
+and g26-spec-d1736 0.97x (known knife-edge) below par. H100: decode 122.6% of vLLM 0.26
+same-session; prefill standing unchanged (owner-gated w8a8).
