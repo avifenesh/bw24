@@ -1,0 +1,14 @@
+0.00.024.432 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.115.175 I srv    load_model: loading model '/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf'
+0.02.764.054 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 16384, kv_unified = 'false'
+0.02.921.959 I srv  llama_server: model loaded
+0.02.921.964 I srv  llama_server: listening on http://127.0.0.1:8099
+0.04.013.731 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.04.013.786 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.07.524.526 I slot print_timing: id  0 | task 0 | prompt eval time =    1995.52 ms /  6257 tokens (    0.32 ms per token,  3135.53 tokens per second)
+0.07.524.531 I slot print_timing: id  0 | task 0 |        eval time =    1515.17 ms /   256 tokens (    5.92 ms per token,   168.96 tokens per second)
+0.07.524.531 I slot print_timing: id  0 | task 0 |       total time =    3510.68 ms /  6513 tokens
+0.07.524.535 I slot print_timing: id  0 | task 0 |    graphs reused =         97
+0.07.524.544 I slot print_timing: id  0 | task 0 | draft acceptance = 0.52881 (  156 accepted /   295 generated), mean len =  2.58
+0.07.524.747 I slot      release: id  0 | task 0 | stop processing: n_tokens = 6512, truncated = 0
+0.07.532.343 I srv    operator(): operator(): cleaning up before exit...

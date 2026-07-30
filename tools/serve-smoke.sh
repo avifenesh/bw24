@@ -9,8 +9,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-MODEL="${1:-/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf}"
-DRAFT="${2:-/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/drafter/MTP/gemma-4-E4B-it-assistant.Q8_0.gguf}"
+# Default = the 9B NVFP4 + its regime draft (full serving support; E4B's serve path is
+# first-light only — dc/graph/spec unwired — and gemma assistant drafts use BW24_DRAFT,
+# not the '+draft' NextN attach).
+MODEL="${1:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf}"
+DRAFT="${2:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf}"
 [ -f "$MODEL" ] || { echo "serve-smoke: SKIP (no model at $MODEL)"; exit 0; }
 ADDR=127.0.0.1:8177
 BASE=http://$ADDR
@@ -21,7 +24,9 @@ FAIL() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 [ -x target/release/bw24-server ] || cargo build --release -p bw24-server
 
 start_server() {  # extra env via prefix, e.g. start_server "smoke=/path.gguf"
-  BW24_MODELS="$1" BW24_ADDR=$ADDR target/release/bw24-server > /tmp/serve-smoke.log 2>&1 &
+  # BW24_COMPAT=openai: this battery tests the OpenAI-compatible surface the README
+  # sells (the default native /v1/completions shape is a different contract).
+  BW24_COMPAT=openai BW24_MODELS="$1" BW24_ADDR=$ADDR target/release/bw24-server > /tmp/serve-smoke.log 2>&1 &
   SPID=$!
   for _ in $(seq 120); do curl -sf $BASE/health >/dev/null 2>&1 && return 0; sleep 2; done
   echo "server did not come up; log tail:"; tail -5 /tmp/serve-smoke.log; return 1
@@ -71,7 +76,6 @@ B=$(chat "Explain what a mutex is in one sentence." 64 | python3 -c 'import json
 [ -n "$A" ] && [ "$A" = "$B" ] && PASS "greedy determinism (2 runs identical)" || FAIL "greedy determinism"
 
 # 6. concurrency: 3 parallel chats all complete non-empty
-for i 1 2 3; do :; done 2>/dev/null || true
 pids=(); outs=()
 for i in 1 2 3; do
   o=/tmp/serve-smoke-conc-$i.json

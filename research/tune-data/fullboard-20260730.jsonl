@@ -103,3 +103,16 @@
 {"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q9-plain","arm":"llama","toks":126.56,"profile":"performance"}
 {"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q9-plain","arm":"bw24","toks":140.91,"profile":"performance"}
 {"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q9-plain","arm":"llama","toks":125.78,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q9-plain","arm":"bw24","toks":140.58,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p1-code-short","arm":"llama","toks":1000000.00,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p1-code-short","arm":"bw24","toks":286.64,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p1-code-short","arm":"llama","toks":1000000.00,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p1-code-short","arm":"bw24","toks":286.85,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p2-code-medium","arm":"llama","toks":175.01,"accept_note":"draft_accept=0.529","profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p2-code-medium","arm":"bw24","toks":240.80,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p2-code-medium","arm":"llama","toks":176.44,"accept_note":"draft_accept=0.529","profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p2-code-medium","arm":"bw24","toks":240.55,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"llama","toks":168.96,"accept_note":"draft_accept=0.529","profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"bw24","toks":223.56,"profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"llama","toks":170.16,"accept_note":"draft_accept=0.529","profile":"performance"}
+{"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"bw24","toks":223.31,"profile":"performance"}
