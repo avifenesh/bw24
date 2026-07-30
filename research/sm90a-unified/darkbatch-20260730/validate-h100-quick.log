@@ -1,0 +1,84 @@
+== build (sm_90a; cu sources touched to defeat rsync-stale fatbins) ==
+   Compiling bw24-engine v0.0.0 (/home/ubuntu/bw24-unified/crates/bw24-engine)
+warning: unused doc comment
+   --> crates/bw24-engine/src/cpu_experts.rs:520:1
+    |
+520 | / /// Per-executor OMP width, set on the executor thread so `execute` can size its team to the
+521 | | /// core group that thread is pinned to (heterogeneous groups want different widths).
+    | |_------------------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> crates/bw24-engine/src/gemma_spec.rs:1529:13
+     |
+1529 |         let mut pos_ctr = e.htod_i32(&[cache.pos as i32])?;
+     |             ----^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `private_scratch` is never read
+  --> crates/bw24-engine/src/prime_graph.rs:35:5
+   |
+23 | pub struct PrimeGraph {
+   |            ---------- field in this struct
+...
+35 |     private_scratch: Option<crate::f16_ffi::F16Scratch>,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bw24-engine` (lib) generated 3 warnings (run `cargo fix --lib -p bw24-engine` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 3m 37s
+warning: unused doc comment
+   --> crates/bw24-engine/src/cpu_experts.rs:520:1
+    |
+520 | / /// Per-executor OMP width, set on the executor thread so `execute` can size its team to the
+521 | | /// core group that thread is pinned to (heterogeneous groups want different widths).
+    | |_------------------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> crates/bw24-engine/src/gemma_spec.rs:1529:13
+     |
+1529 |         let mut pos_ctr = e.htod_i32(&[cache.pos as i32])?;
+     |             ----^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `private_scratch` is never read
+  --> crates/bw24-engine/src/prime_graph.rs:35:5
+   |
+23 | pub struct PrimeGraph {
+   |            ---------- field in this struct
+...
+35 |     private_scratch: Option<crate::f16_ffi::F16Scratch>,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bw24-engine` (lib) generated 3 warnings (run `cargo fix --lib -p bw24-engine` to apply 1 suggestion)
+   Compiling bw24-server v0.0.0 (/home/ubuntu/bw24-unified/crates/bw24-server)
+    Finished `release` profile [optimized] target(s) in 2.85s
+== gate: policy tests ==
+
+== gate: kernel-check ==
+== gate: decode-batch (config B=8) ==
+[q8rp] split-plane decode mirrors built: 249 tensors
+== gate: decode-batch (strict, equalized composition) ==
+[q8rp] split-plane decode mirrors built: 249 tensors
+== gate: decode-dc (device counters, bit-identity) ==
+== gate: graph-decode (capture/replay bit-identity) ==
+== gate: graph-session (serving GraphSession vs generate_graph) ==
+VALIDATE-H100: ALL GATES GREEN

@@ -35,7 +35,8 @@ for i in $(seq 1 $N); do
     -d "{\"model\":\"m\",\"prompt\":$(prompt $i | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),\"max_tokens\":$GEN,\"temperature\":0}" \
     | python3 -c 'import json,sys;print(json.load(sys.stdin)["choices"][0]["text"])' > /tmp/darkbatch-out/dark-$i.txt &
 done
-wait
+# NOT bare `wait`: that also waits the backgrounded server job and hangs until it dies.
+wait $(jobs -pr | grep -v "^$SRV\$")
 T1=$(date +%s.%N)
 kill -9 $SRV 2>/dev/null
 

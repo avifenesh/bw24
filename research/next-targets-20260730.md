@@ -144,7 +144,10 @@ prefill path on degenerate inputs is documented here as a known class, with this
    9B NVFP4, 6 concurrent 36-tok harvest prompts + 1 interactive gen-128 mid-flight):
    harvest wall 0.854s -> 0.699s median (1.22x), interactive wall 1.861 -> 1.706s
    (no p99 regression — improves), one B=6/216-tok batch per trial, greedy text
-   3/3 identical to sequential interactive runs. Raw: sm90a-unified/darkbatch-20260730/.
+   3/3 identical to sequential interactive runs. H100 (same protocol, 9B Q8_0,
+   interleaved x5): harvest wall 0.584 -> 0.538s median (1.086x), interactive
+   1.590 -> 1.543s, 1-2 batches/trial (admission split across ticks), functional
+   3/3 exact. Raw: sm90a-unified/darkbatch-20260730/ (h100-* = box arm logs).
    Remaining increments: (b) continuation primes need carried-pos varlen twins
    (per-seq pos0/t0 params + T_kv>T FA vl); (c) mixed prefill+decode ticks.
 
