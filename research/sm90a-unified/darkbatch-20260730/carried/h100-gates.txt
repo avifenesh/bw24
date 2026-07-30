@@ -1,0 +1,4 @@
+H100 (darklanes-bench, Qwen3.5-9B-Q8_0, 2026-07-30):
+prime-batch-gate --carried: suffix argmax MATCH x3, decode-16 streams MATCH x3,
+fresh gate MATCH x3 — ALL GREEN.
+validate-h100 --quick with the (b) build: VALIDATE-H100: ALL GATES GREEN.
