@@ -1,0 +1,16 @@
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[gemma-draft] FR head trim: 32768 rows + 512 adaptive (36 MB vs 285 MB full)
+[trim-adapt] 6 learned rows pre-filled from research/gemma4-bringup/gemma4-12b-owngen-ranks-32768.gguf.txt.learned
+spec K=4 n_new=128 prompt=1736 toks
+[gemma-spec] rounds=28 drafted=103 accepted=101                    accept-rate=0.981 tok/round=4.57
+[trim-adapt] 6/512 spare slots learned
+spec: 261.82 tok/s (spec-only)
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[gemma-draft] FR head trim: 32768 rows + 512 adaptive (36 MB vs 285 MB full)
+[trim-adapt] 6 learned rows pre-filled from research/gemma4-bringup/gemma4-12b-owngen-ranks-32768.gguf.txt.learned
+spec K=4 n_new=128 prompt=1736 toks
+[gemma-spec] rounds=28 drafted=103 accepted=101                    accept-rate=0.981 tok/round=4.57
+[trim-adapt] 6/512 spare slots learned
+spec: 261.42 tok/s (spec-only)

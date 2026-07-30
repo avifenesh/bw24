@@ -88,3 +88,27 @@ standard battery.
   the ecosystem's FP4-KV-with-full-precision-linear-state split is the template if a
   prefill/judge-lane door ever opens.
 - Dual-batch overlap: all current activity is multi-rank EP — nothing single-GPU adopts.
+
+## Ledger addendum (2026-07-30, post full-board bench)
+
+### q9 synthetic-512 argmax flake — ROOT-CAUSED CLASS, pre-existing, prompt retired
+run-gen's prefill-vs-decode argmax gate MISMATCHes on the 9B NVFP4 with the synthetic
+512-id prompt (ids `100+(i*7)%900`), bit-stable per environment, flipped by unrelated
+env-string changes (PATH/GGML exports together). Kill-list: NGEN sweep (8..128 all
+MATCH bare), BW24_MMQ_SK 0/1 pins (both MATCH in the passing regime), hot-GPU x3
+(MATCH), llama-bench-preceding (MATCH), CUBLAS_WORKSPACE_CONFIG pin (still MISMATCH),
+BW24_DEBUG_ZERO_ALLOCS (diffs BYTE-IDENTICAL — contents-independent, allocation-
+LAYOUT-dependent, the Hopper Lt-lottery discriminator verdict). The PRE-MERGE binary
+fails bit-identically under the failing env — NOT a merge regression. Oracle
+(BW24_FAST=0) stable at argmax 220; the fast path's two layout regimes read 268/268
+(gate MATCH) or 72/220 (gate MISMATCH) — top-2 logit gap 0.02 at |l|~9: the prompt is
+a knife-edge degenerate input where argmax is not stable across ANY legitimate numeric
+class. All real-text gates green (q9 spec p1/p2/p3 self-consistency PASS same session).
+DISPOSITION: synthetic-id prompts retired from evidence cells (full-board-bench now
+feeds run-gen real text via BW24_PROMPT_FILE); the layout-sensitivity of the fast
+prefill path on degenerate inputs is documented here as a known class, with this repro.
+
+### 35B llama spec arm — llama rejects trimmed drafts
+`-md draft-35b-owntrim` fails llama's check_tensor_dims (output.weight 32768 vs vocab
+248320): llama needs full-vocab draft heads. The board's llama 35B arm was SELF-MTP
+(embedded NextN, no -md) per the 2026-07-18 regime-rollout row; harness fixed.

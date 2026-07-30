@@ -1,0 +1,16 @@
+[moe] resident-experts decision: per-layer 428MB x 30 layers = 12.8GB vs budget 19.1GB -> RESIDENT
+[q4rp] split-plane decode mirrors built: 210 trunk tensors
+[gemma-draft] FR head trim: 32768 rows + 512 adaptive (19 MB vs 150 MB full)
+[trim-adapt] 20 learned rows pre-filled from research/gemma4-bringup/gemma4-26b-owngen-ranks-32768.gguf.txt.learned
+spec K=6 n_new=128 prompt=1736 toks
+[gemma-spec] rounds=29 drafted=118 accepted=99                    accept-rate=0.839 tok/round=4.41
+[trim-adapt] 20/512 spare slots learned
+spec: 307.24 tok/s (spec-only)
+[moe] resident-experts decision: per-layer 428MB x 30 layers = 12.8GB vs budget 19.1GB -> RESIDENT
+[q4rp] split-plane decode mirrors built: 210 trunk tensors
+[gemma-draft] FR head trim: 32768 rows + 512 adaptive (19 MB vs 150 MB full)
+[trim-adapt] 20 learned rows pre-filled from research/gemma4-bringup/gemma4-26b-owngen-ranks-32768.gguf.txt.learned
+spec K=6 n_new=128 prompt=1736 toks
+[gemma-spec] rounds=29 drafted=118 accepted=99                    accept-rate=0.839 tok/round=4.41
+[trim-adapt] 20/512 spare slots learned
+spec: 308.36 tok/s (spec-only)

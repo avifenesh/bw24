@@ -67,23 +67,33 @@ llama_bench_tg() {  # cell model depth extra_flags...
     | grep -E "tg128" | grep -oE '[0-9.]+ ±' | grep -oE '^[0-9.]+' | tail -1
 }
 
-bw24_plain() {  # cell model promptfile ngen
+bw24_plain() {  # cell model promptfile ngen  (pf ending .txt+ids = token ids as args;
+                # anything else = TEXT via BW24_PROMPT_FILE — knife-edge synthetic-id
+                # prompts flake the argmax gate on address-lottery ULPs, ledger 2026-07-30)
   local cell=$1 model=$2 pf=$3 ngen=$4
   local log="$LOGD/$cell-bw24.log"
-  # shellcheck disable=SC2046
-  BW24_NGEN="$ngen" timeout 600 $BW/run-gen "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
-    | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
+  if echo "$pf" | grep -q 'ids'; then
+    # shellcheck disable=SC2046
+    BW24_NGEN="$ngen" timeout 600 $BW/run-gen "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
+      | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
+  else
+    BW24_NGEN="$ngen" BW24_PROMPT_FILE="$pf" timeout 600 $BW/run-gen "$model" 2>&1 | tee -a "$log" \
+      | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
+  fi
 }
 
 llama_server_start() {  # model draft nmax pmin kvflags...
   local model=$1 draft=$2 nmax=$3 pmin=$4; shift 4
   local args=(-m "$model" -ngl 999 -fa on -c 16384 --parallel 1 --temp 0
               --host 127.0.0.1 --port $PORT "$@")
-  if [ -n "$draft" ]; then
+  if [ "$draft" = "self" ]; then
+    # embedded NextN head (35B class): spec flags, no -md
+    args+=(--spec-type draft-mtp --spec-draft-n-max "$nmax" --spec-draft-p-min "$pmin")
+  elif [ -n "$draft" ]; then
     args+=(-md "$draft" --spec-type draft-mtp --spec-draft-n-max "$nmax"
            --spec-draft-p-min "$pmin" -ngld 999)
   fi
-  "$LS" "${args[@]}" > "$LOGD/llama-server.log" 2>&1 &
+  "$LS" "${args[@]}" > "$LOGD/llama-server-$(date +%s).log" 2>&1 &
   SPID=$!
   for _ in $(seq 240); do curl -sf http://127.0.0.1:$PORT/health >/dev/null 2>&1 && return 0; sleep 2; done
   echo "SERVER FAILED to come up"; kill $SPID 2>/dev/null; return 1
@@ -178,9 +188,9 @@ awk 'BEGIN{for(i=0;i<512;i++){printf "%d ", 100+(i*7)%900}}' > "$QP"
 echo "=== FULL BOARD $TS git=$GIT_SHA profile=$PROFILE filter=$FILTER ==="
 
 # ---------------- PLAIN CELLS ----------------
-plain_cell q9-plain   "$M/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"      "$QP" 128 0 -fa 1 -ctk q8_0 -ctv q5_1
-plain_cell q27-plain  "$M/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf"   "$QP" 128 0 -fa 1 -ctk q8_0 -ctv q5_1
-plain_cell q35-plain  "$M/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"            "$QP" 128 0 -fa 1 -ctk q8_0 -ctv q5_1
+plain_cell q9-plain   "$M/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"      "$PDIR/pp512.txt" 128 0 -fa 1 -ctk q8_0 -ctv q5_1
+plain_cell q27-plain  "$M/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf"   "$PDIR/pp512.txt" 128 0 -fa 1 -ctk q8_0 -ctv q5_1
+plain_cell q35-plain  "$M/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"            "$PDIR/pp512.txt" 128 0 -fa 1 -ctk q8_0 -ctv q5_1
 plain_cell g12-plain-short "/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf" "$GDIR/e4b-chat-watercycle-ids.txt" 128 0 -fa 1
 plain_cell g12-plain-d1736 "/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf" "$GDIR/depth-prompt-1736-ids.txt" 128 1736 -fa 1
 plain_cell g26-plain-short "$M/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf"    "$GDIR/e4b-chat-watercycle-ids.txt" 128 0 -fa 1
@@ -197,7 +207,7 @@ for P in p1-code-short p2-code-medium p3-agentic-long; do
     "$M/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-NVFP4.gguf" 3 0.1 \
     "$M/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf" 3 "$PDIR/$P.txt" 256
   spec_cell_qwen "q35-spec-$P" "$M/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf" \
-    "$M/qwen36-35b-moe/draft-35b-owntrim-nvfp4head-q4blk.gguf" 3 0.1 \
+    "self" 3 0.1 \
     "$M/qwen36-35b-moe/draft-35b-owntrim-nvfp4head-q4blk.gguf" 2 "$PDIR/$P.txt" 256
 done
 
