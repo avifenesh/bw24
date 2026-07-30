@@ -648,7 +648,75 @@ pub fn run(
             let prime_tok_per_ms: f32 = std::env::var("BW24_PRIME_TOK_PER_MS").ok()
                 .and_then(|v| v.parse().ok()).unwrap_or(8.0);
             let adaptive_cap = (headroom_ms * prime_tok_per_ms) as usize;
+            // task #17 increment (2026-07-30): CONCAT small FRESH dark prefills — the
+            // harvest profile (many short prompts) previously burned one tick per
+            // session; a single prime_cache_batch serves them together at m = sum_T,
+            // INSIDE the same headroom budget (sum_T <= lane budget AND adaptive cap,
+            // so the 282ms-p99 lesson holds: dark work never exceeds the SLO headroom).
+            // Same lane + same model only (budget accounting stays per-lane); >= 2
+            // candidates, else the single-chunk path below serves as before.
+            let mut dark_batched = false;
+            {
+                let min_t = bw24_engine::hybrid_forward::PRIME_MIN_T.max(2);
+                let mut dcand: Vec<usize> = Vec::new();
+                let mut dmodel: Option<String> = None;
+                let mut dlane: Option<usize> = None;
+                let mut dsum = 0usize;
+                for i in 0..active.len() {
+                    if finished.contains(&i) { continue; }
+                    let s = &active[i];
+                    let li = s.lane.idx();
+                    let ql = s.prefill_queue.len();
+                    if li == 0 || budgets[li] == 0 { continue; }
+                    if s.spec.is_some() || s.prefill_done || s.graph.is_some()
+                        || !s.fed.is_empty()
+                        || !s.cache.as_ref().is_some_and(|c| c.pos == 0) { continue; }
+                    let cap = budgets[li].min(adaptive_cap);
+                    if ql < min_t || dsum + ql > cap { continue; }
+                    if dlane.is_some_and(|l| l != li) { continue; }
+                    if dmodel.as_ref().is_some_and(|m| *m != s.model) { continue; }
+                    dlane.get_or_insert(li);
+                    dmodel.get_or_insert_with(|| s.model.clone());
+                    dsum += ql;
+                    dcand.push(i);
+                }
+                if dcand.len() >= 2 {
+                    let prompts: Vec<Vec<u32>> = dcand.iter()
+                        .map(|&i| active[i].prefill_queue.drain(..).collect())
+                        .collect();
+                    let prompt_refs: Vec<&[u32]> = prompts.iter().map(|p| p.as_slice()).collect();
+                    let mut cache_refs: Vec<&mut bw24_engine::cache::Cache> = active.iter_mut()
+                        .enumerate()
+                        .filter(|(i, _)| dcand.contains(i))
+                        .map(|(_, s)| s.cache.as_mut().unwrap())
+                        .collect();
+                    let lm = &loaded[dmodel.as_ref().unwrap()];
+                    match lm.model.prime_cache_batch(&engine, &prompt_refs, &mut cache_refs) {
+                        Ok(outs) => {
+                            eprintln!("[prime-batch dark] lane={} B={} tokens={dsum}",
+                                      dlane.unwrap(), dcand.len());
+                            for ((&i, prompt), (l, _h, _x)) in
+                                dcand.iter().zip(&prompts).zip(outs)
+                            {
+                                let s = &mut active[i];
+                                s.last_logits = l;
+                                for &tok in prompt { s.fed.push(tok); s.sampler.accept(tok); }
+                                s.prefill_done = true;
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[prime-batch dark] failed ({err}); chunks serve");
+                            for (&i, prompt) in dcand.iter().zip(&prompts) {
+                                active[i].prefill_queue = prompt.iter().copied().collect();
+                            }
+                            dcand.clear();
+                        }
+                    }
+                    dark_batched = !dcand.is_empty(); // the batch WAS this tick's dark action
+                }
+            }
             for i in 0..active.len() {
+                if dark_batched { break; }
                 if finished.contains(&i) { continue; }
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }

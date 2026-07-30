@@ -134,11 +134,19 @@ prefill path on degenerate inputs is documented here as a known class, with this
    the 0.7 self-key covers low-accept) — arm removed, jsonl row is the record; a
    LEARNED survival estimator is the only route left for the idea.
 5. **Concat prefill scheduler (H100)**: worker already batches fresh interactive
-   primes (B<=6, T<=2048, rounds+hold — tasks #13/#16/#18 campaign). Remaining
-   increments mapped: (a) judge-lane prime batching inside phase (d) — NOT phase (b),
-   the 282ms-p99 lesson keeps dark primes out of the interactive path; (b) continuation
-   primes need carried-pos varlen twins (per-seq pos0/t0 params + T_kv>T FA vl);
-   (c) mixed prefill+decode ticks. Unimplemented this session — the next serving arc.
+   primes (B<=6, T<=2048, rounds+hold — tasks #13/#16/#18 campaign). Increment (a)
+   IMPLEMENTED 2026-07-30: dark-lane FRESH prime batching inside phase (d) — same
+   lane + same model, sum_T <= lane budget AND adaptive headroom cap (282ms-p99
+   lesson holds: dark work stays inside the SLO budget), >= 2 candidates else the
+   single-chunk path serves as before. Spec-attached sessions excluded (SpecSession
+   primes through its own path — MTP models batch only under BW24_SERVE_SPEC=0;
+   gemma-class serving batches naturally). Measured rig5090 (interleaved x5 pairs,
+   9B NVFP4, 6 concurrent 36-tok harvest prompts + 1 interactive gen-128 mid-flight):
+   harvest wall 0.854s -> 0.699s median (1.22x), interactive wall 1.861 -> 1.706s
+   (no p99 regression — improves), one B=6/216-tok batch per trial, greedy text
+   3/3 identical to sequential interactive runs. Raw: sm90a-unified/darkbatch-20260730/.
+   Remaining increments: (b) continuation primes need carried-pos varlen twins
+   (per-seq pos0/t0 params + T_kv>T FA vl); (c) mixed prefill+decode ticks.
 
 ## Full-board summary (research/tune-data/fullboard-20260730.jsonl, interleaved)
 
