@@ -1,0 +1,5 @@
+=== H100 vLLM BOARD 2026-07-30T21:29:55Z git=rsync-tree filter=q35 ===
+== q35 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [q35/vllm] decode 230.85 tok/s prefill 17926.8 tok/s (Qwen/Qwen3.6-35B-A3B-FP8)
+  [q35/bw24] decode 181.19 tok/s prefill 4607.7 tok/s (Qwen3.6-35B-A3B-UD-IQ4_XS.gguf)
+=== H100 vLLM BOARD DONE 21:36:11Z — rows in research/tune-data/h100board-vllm-20260730.jsonl ===

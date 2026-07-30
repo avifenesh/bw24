@@ -1,0 +1,23 @@
+=== H100 vLLM BOARD 2026-07-30T20:21:13Z git=rsync-tree filter=. ===
+== q9 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [q9/vllm] decode 180.05 tok/s prefill 36148.6 tok/s (RedHatAI/Qwen3.5-9B-quantized.w8a8)
+  [q9/bw24] decode 219.28 tok/s prefill 26335.1 tok/s (Qwen3.5-9B-Q8_0.gguf)
+== q35 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [q35/vllm] FAILED —     raise RuntimeError(
+  [q35/vllm] decode 0 tok/s prefill 0 tok/s (Qwen/Qwen3.6-35B-A3B-FP8)
+  [q35/bw24] decode 181.27 tok/s prefill 4611.6 tok/s (Qwen3.6-35B-A3B-UD-IQ4_XS.gguf)
+== g12 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [g12/vllm] decode 81.63 tok/s prefill 25649.7 tok/s (unsloth/gemma-4-12b-it)
+  [g12/bw24] decode 153.23 tok/s prefill 8262.2 tok/s (gemma-4-12b-it-qat-q4_0.gguf)
+== g26 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [g26/vllm] FAILED —     raise RuntimeError(
+  [g26/vllm] decode 0 tok/s prefill 0 tok/s (unsloth/gemma-4-26b-a4b-it)
+  [g26/bw24] decode 0 tok/s prefill 0 tok/s (gemma-4-26B_q4_0-it.gguf)
+== g31 (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [g31/vllm] FAILED —     raise RuntimeError(
+  [g31/vllm] decode 0 tok/s prefill 0 tok/s (unsloth/gemma-4-31b-it)
+  [g31/bw24] decode 80.00 tok/s prefill 3236.6 tok/s (gemma-4-31B_q4_0-it.gguf)
+== e4b (vllm vs bw24, p2048/g512, N=5 medians) ==
+  [e4b/vllm] decode 170.31 tok/s prefill 52243.6 tok/s (unsloth/gemma-4-E4B-it)
+  [e4b/bw24] decode 355.32 tok/s prefill 482.2 tok/s (gemma-4-E4B_q4_0-it.gguf)
+=== H100 vLLM BOARD DONE 20:57:18Z — rows in research/tune-data/h100board-vllm-20260730.jsonl ===
