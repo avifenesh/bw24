@@ -225,7 +225,11 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         // fp8_prefill.cu calls the cuBLASLt host API directly (same lib64 search path as cudart).
         println!("cargo:rustc-link-lib=dylib=cublasLt");
-        // fa3_prefill.cu calls the driver API (cuTensorMapEncodeTiled)
+        // fa3_prefill.cu calls the driver API (cuTensorMapEncodeTiled). GPU-less build
+        // machines (CI compile gate, release matrix) have no driver libcuda.so — the
+        // toolkit's stubs dir satisfies the link; at runtime ld.so resolves the real
+        // libcuda.so.1 from the driver (the stubs dir is not on any runtime path).
+        println!("cargo:rustc-link-search=native={}/stubs", cuda_lib.display());
         println!("cargo:rustc-link-lib=dylib=cuda");
     }
 
