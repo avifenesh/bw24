@@ -77,6 +77,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("seq {s}: decode-{steps} stream {}", if ok { "MATCH" } else { fails += 1; "DIVERGED" });
     }
 
+    // --carried: CONTINUATION batch gate (increment (b), 2026-07-30). Per seq: fresh
+    // single prime of a prefix, then the SUFFIX primed (1) single continuation
+    // (prime_cache, pos>0 — the session-gate-validated arm) vs (2) batched continuation
+    // (prime_cache_batch with pos>0 caches). Same standard as the fresh gate above:
+    // suffix argmax + 16-step decode stream must MATCH per sequence.
+    if rest.iter().any(|a| a == "--carried") {
+        let prefixes: Vec<Vec<u32>> = (0..b)
+            .map(|i| (0..40 + i as u32 * 13).map(|j| 61 + i as u32 * 89 + j * 29).collect())
+            .collect();
+        let suffixes: Vec<Vec<u32>> = (0..b)
+            .map(|i| (0..18 + i as u32 * 7).map(|j| 77 + i as u32 * 53 + j * 37).collect())
+            .collect();
+        // reference: single continuation per seq
+        let mut ref_streams: Vec<Vec<u32>> = Vec::with_capacity(b);
+        let mut ref_argmax: Vec<u32> = Vec::with_capacity(b);
+        for s in 0..b {
+            let mut c = Cache::new(&e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(&e, &prefixes[s], &mut c)?;
+            let (logits, _, _) = model.prime_cache(&e, &suffixes[s], &mut c)?;
+            let mut t = argmax(&logits) as u32;
+            ref_argmax.push(t);
+            let mut stream = Vec::with_capacity(steps);
+            for _ in 0..steps {
+                let (l, _) = model.decode_step_h(&e, t, &mut c)?;
+                t = argmax(&l) as u32;
+                stream.push(t);
+            }
+            ref_streams.push(stream);
+        }
+        // batched continuation: fresh prefix primes (single), then ONE batched suffix prime
+        let mut caches: Vec<Cache> = (0..b).map(|_| Cache::new(&e, &model.cfg, ctx)).collect::<Result<_, _>>()?;
+        for s in 0..b {
+            let _ = model.prime_cache(&e, &prefixes[s], &mut caches[s])?;
+        }
+        {
+            let suffix_refs: Vec<&[u32]> = suffixes.iter().map(|p| p.as_slice()).collect();
+            let mut cache_refs: Vec<&mut Cache> = caches.iter_mut().collect();
+            let outs = model.prime_cache_batch(&e, &suffix_refs, &mut cache_refs)?;
+            for (s, (logits, _, _)) in outs.iter().enumerate() {
+                let a = argmax(logits) as u32;
+                let ok = a == ref_argmax[s];
+                println!("carried seq {s} (P={},S={}): suffix argmax batched={a} single={} {}",
+                         prefixes[s].len(), suffixes[s].len(), ref_argmax[s],
+                         if ok { "MATCH" } else { fails += 1; "MISMATCH" });
+            }
+        }
+        for (s, c) in caches.iter_mut().enumerate() {
+            let mut t = ref_argmax[s];
+            let mut stream = Vec::with_capacity(steps);
+            for _ in 0..steps {
+                let (l, _) = model.decode_step_h(&e, t, c)?;
+                t = argmax(&l) as u32;
+                stream.push(t);
+            }
+            let ok = stream == ref_streams[s];
+            println!("carried seq {s}: decode-{steps} stream {}", if ok { "MATCH" } else { fails += 1; "DIVERGED" });
+        }
+    }
+
     // --bench T: N=5 medians, B x T-token prompts, sequential vs batched wall time
     if let Some(bt) = rest.iter().position(|a| a == "--bench")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse::<usize>().ok()) {

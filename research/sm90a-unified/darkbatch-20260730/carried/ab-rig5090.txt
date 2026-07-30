@@ -1,0 +1,12 @@
+base-1: r2 wall 0.434s resumes=2 batches: 
+/tmp/cont-ab.sh: line 23: 262873 Killed                     BW24_SERVE_SPEC=0 BW24_COMPAT=openai BW24_MODELS="m=$MODEL" BW24_ADDR=$ADDR "$2" > "$log" 2>&1
+new-1: r2 wall 0.360s resumes=2 batches: [prime-batch dark] lane=2 B=3 tokens=88 carried=2
+/tmp/cont-ab.sh: line 23: 267495 Killed                     BW24_SERVE_SPEC=0 BW24_COMPAT=openai BW24_MODELS="m=$MODEL" BW24_ADDR=$ADDR "$2" > "$log" 2>&1
+base-2: r2 wall 0.429s resumes=2 batches: 
+/tmp/cont-ab.sh: line 23: 272363 Killed                     BW24_SERVE_SPEC=0 BW24_COMPAT=openai BW24_MODELS="m=$MODEL" BW24_ADDR=$ADDR "$2" > "$log" 2>&1
+new-2: r2 wall 0.360s resumes=2 batches: [prime-batch dark] lane=2 B=3 tokens=88 carried=2
+/tmp/cont-ab.sh: line 23: 276768 Killed                     BW24_SERVE_SPEC=0 BW24_COMPAT=openai BW24_MODELS="m=$MODEL" BW24_ADDR=$ADDR "$2" > "$log" 2>&1
+base-3: r2 wall 0.431s resumes=2 batches: 
+/tmp/cont-ab.sh: line 23: 281322 Killed                     BW24_SERVE_SPEC=0 BW24_COMPAT=openai BW24_MODELS="m=$MODEL" BW24_ADDR=$ADDR "$2" > "$log" 2>&1
+new-3: r2 wall 0.360s resumes=2 batches: [prime-batch dark] lane=2 B=3 tokens=88 carried=2
+cross-arm exactness: 9/9
