@@ -1901,3 +1901,25 @@ Assembled 13.3.73 from redist (nvcc+libnvvm+ptxas; local + box). On-box, same se
   prefill remains triple-refuted; the prefill residual stays the owner's w8a8 decision.
 Verdict: no free lunch from 13.3U1 for these kernels. Remaining 13.3 item of interest is
 CompileIQ/ACF scheduling search (orthogonal to the serialization family), unassessed.
+
+## Round 38 — CompileIQ/ACF search campaign (2026-07-30, unified tree)
+
+Evolutionary search over ptxas 13.3 Advanced Controls (`--apply-controls`), CompileIQ
+1.0.0.dev1 on-box (`~/compileiq-venv`; core binaries were git-LFS pointers in the pip
+install — real blobs pulled via `git lfs` clone and copied over). Search: pool 32 x 8
+generations, PtxasSearchSpace(13.3), objective = harness kernel time gated on the
+harness correctness lines, GPU runs flock-serialized across 5-6 native workers.
+
+| kernel (harness)                  | baseline | best ACF | verdict                       |
+|-----------------------------------|----------|----------|-------------------------------|
+| fa3 v11 (bench_fa3.cu, T=2048)    | 205us    | 201us    | -2.0%, CONFIRMED x5 interleaved, MATCH x5 |
+| gdn v2 (bench_gdn_k5.cu)          | 35.1us   | 34.65us  | -1.3%, CONFIRMED x5, OK x3    |
+| MMQ q8 (bench_q8_gemm_wgmma.cu)   | 1032us   | 1033us   | FLAT — 13.3 ptxas defaults already optimal for MMQ |
+
+**Transfer law (the finding that matters):** the fa3 winner ACF applied to the
+PRODUCTION TU (`cu/fa3_prefill.cu`, `bw24_fa3_vl_kernel`) produces byte-identical SASS —
+controls are keyed to the searched TU's functions and do NOT transfer across TUs.
+Harness wins are receipts of headroom, not shippable artifacts. Production adoption
+requires a per-TU search with a production-kernel objective (thin cubin-loader runner
+per kernel — future round). Raw: research/sm90a-unified/acf-20260730/ (scripts, CSVs,
+winner ACFs, logs).

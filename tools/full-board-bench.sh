@@ -24,7 +24,7 @@ GDIR=research/gemma4-bringup
 LOGD=research/tune-data/fullboard-logs
 OUT=research/tune-data/fullboard-20260730.jsonl
 FILTER="${1:-.}"
-N_PAIRS=2
+N_PAIRS="${N_PAIRS:-2}"
 PORT=8099
 mkdir -p "$LOGD"
 
@@ -108,7 +108,7 @@ raw = open(src).read()
 prompt = [int(t) for t in raw.split()] if kind == "ids" else raw
 req = urllib.request.Request('http://127.0.0.1:8099/completion',
   data=json.dumps({'prompt': prompt, 'n_predict': ngen, 'temperature': 0,
-                   'cache_prompt': False}).encode(),
+                   'cache_prompt': False, 'ignore_eos': True}).encode(),
   headers={'Content-Type':'application/json'})
 r = json.loads(urllib.request.urlopen(req, timeout=900).read())
 t = r['timings']

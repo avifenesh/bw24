@@ -117,7 +117,7 @@ prefill path on degenerate inputs is documented here as a known class, with this
 
 1. **CUDA 13.3U1 + CompileIQ**: 13.3 re-probe CONCLUDED — FA3 ladder and s8 rescale
    byte-equal to 13.1 on H100; C7515/C7517 walls stand (ledger receipts). ACF infra
-   VERIFIED: 13.3 ptxas has --apply-controls (staged local + box), CompileIQ installed
+   VERIFIED and EXECUTED (session 3): fa3 v11 -2.0% / gdn v2 -1.3% harness-level (x5 confirmed), MMQ q8 flat; ACFs do NOT transfer across TUs (SASS-identical on production fa3_prefill.cu) — production adoption needs per-TU searches; ARCHITECTURE-H100.md round 38. CompileIQ installed
    on the box (~/compileiq-venv, py3.12; local py3.14 unsupported). QUEUED CAMPAIGN:
    evolutionary ACF search per kernel (fa3_prefill v11, gdn_k45_wgmma, mmq q8) with the
    existing harnesses as objectives; winners re-pass the full battery; ACFs commit
@@ -157,6 +157,12 @@ Spec: q9 1.62-2.18x, q27 1.27-1.51x, q35 1.32-1.37x (p1 llama arm needs ignore_e
 g12 1.40/2.21x, g26 1.33x short, g31 1.13/1.46x, e4b 1.59x — every spec cell >= 1.13x.
 Plain: q9 1.12x, q35 1.11x, e4b 1.10x AT/ABOVE the 1.1x bar; q27 1.08x, g26 1.05-1.07x,
 g12 1.00x, g31 1.00-1.01x at the DRAM wall; g12-plain-d1736 0.97x (new cell, WKV
-re-verdicted — fp8 windowed KV still wins 3/3; the 3% lives elsewhere: OPEN TARGET)
+re-verdicted — fp8 windowed KV still wins 3/3; MECHANISM PINNED 2026-07-30 session 3:
+re-pin x5 = 0.973x real; nsys decode-loop accounting puts the deficit in the hd512
+GLOBALS decode lane (tb512 30.8us/layer vs llama ~14.7 deflated — they pack gqa=8
+q-heads as mma columns; 0.13ms/step) + launch cadence (~0.13ms/step; graphs closed
+-5.6%, PDL already on); windowed lane is PARITY. FA_SPW/FA_SPLIT/V512/TB512 seams all
+flat-or-worse (interleaved+cooldown receipts, rig5090.jsonl 3 rows). Next lever =
+gqa-packed mma hd512 decode kernel: OPEN TARGET)
 and g26-spec-d1736 0.97x (known knife-edge) below par. H100: decode 122.6% of vLLM 0.26
 same-session; prefill standing unchanged (owner-gated w8a8).
