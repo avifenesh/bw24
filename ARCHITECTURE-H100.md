@@ -1877,3 +1877,14 @@ cannot be pipelined; the smem round-trip variant prices at ~16KB/step x 128 step
 i32 traffic (sYs-class per step) — over budget on the same evidence class. V1 verdict
 FINAL: naive 5.4x, pipelined 17x, drain-batched bounded >= 3x — all lose the 2x dtype
 edge. The prefill residual stands as the OWNER'S w8a8 accuracy decision.
+
+## Unified-tree same-session showdown (2026-07-30, post-merge re-pin)
+
+Back-to-back on-box, N=5 each, 2048-token prompt / 512 gen, vLLM 0.26.0 w8a8:
+- **decode: bw24 220.33 vs vLLM 179.73 = 122.6%** — the merge holds the branch record
+  (220.5) exactly; vLLM re-pinned at 0.26.0 (Model Runner V2 era).
+- prefill: bw24 prime 0.067 s (~28.4k tok/s at the ~1900-token protocol prompt) vs vLLM
+  35.5-37k — the 73-79% standing unchanged; the residual remains the owner-gated w8a8
+  accuracy decision.
+- Raw logs: research/sm90a-unified/showdown-{vllm,bw24}.log. Measured with the idle
+  leftover server killed and the dead-man watchdog re-armed.

@@ -1,0 +1,16 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           pp512 |     4209.50 ± 133.10 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           tg128 |         94.03 ± 0.26 |
+
+build: c818263f2 (9833)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           pp512 |     4212.04 ± 118.93 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           tg128 |         93.85 ± 0.56 |
+
+build: c818263f2 (9833)

@@ -1,0 +1,24 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 E4B Q4_0                |   4.79 GiB |     7.46 B | CUDA       | 999 |   1 |           pp512 |     8615.89 ± 933.94 |
+| gemma4 E4B Q4_0                |   4.79 GiB |     7.46 B | CUDA       | 999 |   1 |           tg128 |        187.49 ± 0.57 |
+
+build: c818263f2 (9833)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 E4B Q4_0                |   4.79 GiB |     7.46 B | CUDA       | 999 |   1 |           pp512 |     8751.72 ± 776.69 |
+| gemma4 E4B Q4_0                |   4.79 GiB |     7.46 B | CUDA       | 999 |   1 |           tg128 |        187.59 ± 0.59 |
+
+build: c818263f2 (9833)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 E4B Q4_0                |   4.79 GiB |     7.46 B | CUDA       | 999 |   1 |           pp512 |     8674.83 ± 889.76 |
+| gemma4 E4B Q4_0                |   4.79 GiB |     7.46 B | CUDA       | 999 |   1 |           tg128 |        187.12 ± 0.53 |
+
+build: c818263f2 (9833)
