@@ -1,0 +1,5 @@
+/home/ubuntu/darkbatch-test.sh: line 38: 542429 Killed                  BW24_SERVE_SPEC=${SPEC:-0} BW24_COMPAT=openai BW24_MODELS="m=$MODEL" BW24_ADDR=$ADDR "$BIN" > "$LOG" 2>&1
+== [prime-batch dark] lines: 1 (during-seq: 0) ==
+[prime-batch dark] lane=2 B=2 tokens=72
+== exactness: 3/3 match sequential greedy; wall 935.75s ==
+PASS
