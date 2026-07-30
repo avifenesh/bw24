@@ -668,9 +668,12 @@ pub fn run(
                     let li = s.lane.idx();
                     let ql = s.prefill_queue.len();
                     if li == 0 || budgets[li] == 0 { continue; }
+                    // FRESH (pos==0, nothing fed) or CONTINUATION (cache primed exactly
+                    // through fed — increment (b)): both prime from cache.pos. Carried
+                    // gemma4 stays single-chunk (no continuation prime; engine rejects).
                     if s.spec.is_some() || s.prefill_done || s.graph.is_some()
-                        || !s.fed.is_empty()
-                        || !s.cache.as_ref().is_some_and(|c| c.pos == 0) { continue; }
+                        || !s.cache.as_ref().is_some_and(|c| c.pos == s.fed.len()) { continue; }
+                    if !s.fed.is_empty() && loaded[&s.model].model.cfg.gemma4.is_some() { continue; }
                     let cap = budgets[li].min(adaptive_cap);
                     if ql < min_t || dsum + ql > cap { continue; }
                     if dlane.is_some_and(|l| l != li) { continue; }
@@ -693,7 +696,9 @@ pub fn run(
                     let lm = &loaded[dmodel.as_ref().unwrap()];
                     match lm.model.prime_cache_batch(&engine, &prompt_refs, &mut cache_refs) {
                         Ok(outs) => {
-                            eprintln!("[prime-batch dark] lane={} B={} tokens={dsum}",
+                            let ncar = dcand.iter()
+                                .filter(|&&i| !active[i].fed.is_empty()).count();
+                            eprintln!("[prime-batch dark] lane={} B={} tokens={dsum} carried={ncar}",
                                       dlane.unwrap(), dcand.len());
                             for ((&i, prompt), (l, _h, _x)) in
                                 dcand.iter().zip(&prompts).zip(outs)

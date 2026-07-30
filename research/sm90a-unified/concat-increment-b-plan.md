@@ -74,8 +74,8 @@ Steps:
    (the (a) protocol), serve-smoke, battery; judge-profile A/B both rigs.
 
 ## Status
-- [ ] hybrid_forward pos0 plumbing (NEXT: relax fresh asserts at hybrid_forward.rs:874-878, pos_ds from pos0, kc/vc addr +len0*tok_bytes in pargs, pad=pos0)
+- [x] hybrid_forward pos0 plumbing (carried asserts relaxed, pos_ds from pos0, fresh fast paths gated !carried)
 - [x] attn_rope_vl pos0 via pad_ (DONE 2026-07-30, builds clean; fresh bit-identical)
-- [ ] FA vl carried mask twin
-- [ ] worker filter extension
-- [ ] parity + A/B receipts
+- [x] FA vl carried: NOT NEEDED v1 (per-seq continuation cores; b2 if measured)
+- [x] worker filter: pos==fed.len() invariant, gemma4 carried excluded
+- [x] parity + A/B: prime-batch-gate --carried ALL GREEN; serving 9/9 exact cross-binary, 1.20x r2 wall x3

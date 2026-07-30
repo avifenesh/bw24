@@ -861,7 +861,14 @@ impl HybridModel {
     /// the serving-lane bench attributed the remaining vLLM gap to. The stateful mixer
     /// CORES (QK-norm/RoPE/FA/append, conv/GDN scans) run per sequence on split projection
     /// buffers (D2D row copies; the mixers' own out-projections stay per-seq this
-    /// increment). FRESH primes only (cache.pos == 0 asserted; continuation stays single).
+    /// increment). CONTINUATION primes (increment (b), 2026-07-30): cache.pos > 0 seqs
+    /// batch the projections/FFN/lm_head exactly like fresh; the mixer cores take the
+    /// per-seq CONTINUATION arms (Full: core_inner with carried pos_d + fa_prefill_view
+    /// over the quantized past; Linear: the stateful pad_view twin — the same state
+    /// carry the chunked single-seq prime rides). The fresh-only favl/gdn-vl fast paths
+    /// stay byte-identical (gated on !carried). gemma4 models have no continuation
+    /// prime (v0 monolithic fresh) — carried gemma4 batches return Err (caller falls
+    /// back to single-chunk serving).
     /// NUMERIC CONFIG: a concat GEMM tiles K differently than per-seq GEMMs — same class
     /// as every prefill GEMM change; prime_batch_gate arbitrates (argmax + stream battery).
     pub fn prime_cache_batch(&self, e: &Engine, prompts: &[&[u32]], caches: &mut [&mut Cache])
@@ -871,16 +878,21 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let b = prompts.len();
         assert!(b >= 1 && b == caches.len());
-        for c in caches.iter() {
-            assert!(c.pos == 0, "prime_cache_batch: FRESH primes only (continuation stays single)");
+        let pos0s: Vec<usize> = caches.iter().map(|c| c.pos).collect();
+        let carried = pos0s.iter().any(|&p| p > 0);
+        if carried && cfg.gemma4.is_some() {
+            return Err("prime_cache_batch: gemma4 has no continuation prime (v0 fresh-only)".into());
         }
         let ts: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
         for &t in &ts { assert!(t >= PRIME_MIN_T, "prime_cache_batch needs T >= {PRIME_MIN_T}"); }
+        for (s, c) in caches.iter().enumerate() {
+            assert!(c.pos + ts[s] <= c.max_ctx, "prime_cache_batch: prompt exceeds cache max_ctx");
+        }
         let total: usize = ts.iter().sum();
         let offs: Vec<usize> = ts.iter().scan(0usize, |a, &t| { let o = *a; *a += t; Some(o) }).collect();
-        // per-seq positions (fresh: 0..T_s)
-        let pos_ds: Vec<CudaSlice<i32>> = ts.iter()
-            .map(|&t| e.htod_i32(&(0..t as i32).collect::<Vec<_>>()))
+        // per-seq positions (fresh: 0..T_s; continuation: pos0..pos0+T_s)
+        let pos_ds: Vec<CudaSlice<i32>> = ts.iter().zip(&pos0s)
+            .map(|(&t, &p0)| e.htod_i32(&(p0 as i32..(p0 + t) as i32).collect::<Vec<_>>()))
             .collect::<Result<_, _>>()?;
         // split a concat [total, dim] buffer into per-seq copies
         let split = |e: &Engine, y: &CudaSlice<f32>, dim: usize|
@@ -913,7 +925,8 @@ impl HybridModel {
                     let (n_head, n_head_kv, head_dim) =
                         (self.cfg.n_head as usize, self.cfg.n_head_kv as usize, self.cfg.head_dim_k as usize);
                     let fa_scale = 1.0 / (head_dim as f32).sqrt();
-                    let use_favl = (2..=8).contains(&b)
+                    let use_favl = !carried
+                        && (2..=8).contains(&b)
                         && (head_dim == 256 || head_dim == 128)
                         && self.cfg.attn_out_gate()
                         && std::env::var("BW24_NOFA").is_err()
@@ -1492,7 +1505,11 @@ impl HybridModel {
         let scale = 1.0 / (d_state as f32).sqrt();
         let b = ts.len();
         let c = Engine::gdn_chunk_size();
-        let use_vl = (2..=8).contains(&b)
+        // CONTINUATION batches (increment (b)) take the per-seq stateful pad_view twin
+        // below — the varlen K4/K5 chain is fresh-only (zero initial state assumed).
+        let carried = caches.iter().any(|c| c.pos > 0);
+        let use_vl = !carried
+            && (2..=8).contains(&b)
             && Engine::gdn_chunked_enabled() && ts.iter().all(|&t| t >= 16)
             && e.gdn_mma_enabled(c)
             && std::env::var("BW24_GDN_VL").as_deref() != Ok("0");
