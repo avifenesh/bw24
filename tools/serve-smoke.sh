@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Normal-usage serving battery: boots bw24-server like a user would and exercises the
 # real API surface — chat (stream + non-stream), plain completions, concurrency, greedy
-# determinism, lane header, and spec-vs-plain greedy identity (the exactness contract at
+# determinism, and spec-vs-plain greedy identity (the exactness contract at
 # the SERVING level, not just the kernel gates).
 #
 # Usage: tools/serve-smoke.sh [model.gguf [draft.gguf]]
@@ -34,10 +34,9 @@ start_server() {  # extra env via prefix, e.g. start_server "smoke=/path.gguf"
 stop_server() { kill "${SPID:-0}" 2>/dev/null; wait "${SPID:-0}" 2>/dev/null || true; }
 trap stop_server EXIT
 
-chat() {  # prompt max_tokens [stream] [lane] -> body to stdout
-  local prompt=$1 maxtok=$2 stream=${3:-false} lane=${4:-}
+chat() {  # prompt max_tokens [stream] -> body to stdout
+  local prompt=$1 maxtok=$2 stream=${3:-false}
   curl -sf -m 300 $BASE/v1/chat/completions -H 'Content-Type: application/json' \
-    ${lane:+-H "x-lane: $lane"} \
     -d "{\"model\":\"smoke\",\"messages\":[{\"role\":\"user\",\"content\":\"$prompt\"}],
          \"max_tokens\":$maxtok,\"temperature\":0,\"stream\":$stream}"
 }
@@ -89,13 +88,7 @@ for i in 0 1 2; do
 done
 [ $okc -eq 3 ] && PASS "3 concurrent chats" || FAIL "concurrency ($okc/3)"
 
-# 7. lane header accepted (judge lane; response still served or shed with 429, never 5xx)
-code=$(curl -s -m 300 -o /dev/null -w '%{http_code}' $BASE/v1/chat/completions \
-  -H 'Content-Type: application/json' -H 'x-lane: judge' \
-  -d '{"model":"smoke","messages":[{"role":"user","content":"hi"}],"max_tokens":8,"temperature":0}')
-{ [ "$code" = 200 ] || [ "$code" = 429 ]; } && PASS "x-lane header ($code)" || FAIL "x-lane header ($code)"
-
-# 8. long generation (exercises the graph door at budget >= 256)
+# 7. long generation (exercises the graph door at budget >= 256)
 R=$(chat "Tell a short story about a lighthouse keeper." 300)
 echo "$R" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["usage"]["completion_tokens"] >= 100' \
   && PASS "long generation (>=100 tok)" || FAIL "long generation"
@@ -103,7 +96,7 @@ echo "$R" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["usage
 PLAIN_MUTEX=$A
 stop_server
 
-# 9. spec serving: same greedy prompt must produce IDENTICAL text to plain serving
+# 8. spec serving: same greedy prompt must produce IDENTICAL text to plain serving
 if [ -f "$DRAFT" ]; then
   echo "== serve-smoke: spec serving (draft attached) =="
   start_server "smoke=$MODEL+$DRAFT" || exit 1

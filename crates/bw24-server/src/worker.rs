@@ -28,8 +28,14 @@ use bw24_engine::sampler::{Sampler, SamplerConfig};
 use bw24_gguf::GgufFile;
 use bw24_tokenizer::Tokenizer;
 
-/// Max concurrently-active sessions the scheduler interleaves. Admits beyond this queue (FIFO).
+/// Max concurrently-active sessions in legacy round-robin mode (BW24_SERVE_BATCH=0).
+/// Batched scheduling caps at BW24_MAX_SESSIONS (default 64). Admits beyond the cap queue (FIFO).
 pub const MAX_ACTIVE: usize = 4;
+
+/// Per-tick prefill chunk cap: tokens primed per scheduler tick per session. Priming runs at
+/// prefill throughput instead of tokenwise decode, while the per-tick cap keeps round-robin
+/// latency for concurrent sessions bounded.
+const PREFILL_TICK_T: usize = 1024;
 
 /// A model loaded resident on the worker thread: weights + its own tokenizer + config snapshot.
 struct LoadedModel {
@@ -60,8 +66,6 @@ pub struct Request {
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
     pub trace_id: Option<String>,
-    /// yield lane (x-lane header; default interactive). Drives admission + prefill budgets.
-    pub lane: crate::lanes::Lane,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -70,6 +74,58 @@ pub struct Request {
 /// served from the cached model-name list captured at spawn (no need to round-trip the worker).
 pub enum Cmd {
     Generate(Box<Request>),
+}
+
+/// Serving counters + engine-truth step latency, published every 32nd tick.
+#[derive(Clone, Default)]
+pub struct Metrics {
+    pub admitted: u64,
+    pub completed: u64,
+    pub tokens_out: u64,
+    pub step_p50_ms: f32,
+    pub step_p99_ms: f32,
+}
+pub type SharedMetrics = std::sync::Arc<std::sync::Mutex<Metrics>>;
+
+/// Windowed percentile over decode-step latencies (ms). Engine ground truth: the worker
+/// records the wall time of each batched decode tick that advanced at least one session —
+/// that IS the client-visible TPOT for that tick.
+struct StepStats {
+    window: std::collections::VecDeque<(Instant, f32)>,
+    window_s: f32,
+}
+
+impl StepStats {
+    fn new(window_s: f32) -> Self {
+        Self { window: std::collections::VecDeque::with_capacity(4096), window_s }
+    }
+    fn record(&mut self, ms: f32) {
+        self.window.push_back((Instant::now(), ms));
+        if self.window.len() > 16384 {
+            self.window.pop_front();
+        }
+    }
+    fn evict(&mut self) {
+        let cutoff = self.window_s;
+        while let Some(&(t, _)) = self.window.front() {
+            if t.elapsed().as_secs_f32() > cutoff {
+                self.window.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+    /// q in [0,100]. None until the window has signal.
+    fn p(&mut self, q: f32) -> Option<f32> {
+        self.evict();
+        if self.window.is_empty() {
+            return None;
+        }
+        let mut v: Vec<f32> = self.window.iter().map(|&(_, g)| g).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let i = ((q / 100.0) * (v.len() - 1) as f32).round() as usize;
+        Some(v[i.min(v.len() - 1)])
+    }
 }
 
 /// Live per-session state on the worker thread. One `Session` per in-flight generation.
@@ -121,8 +177,6 @@ const REUSE_MIN_PREFIX: usize = 16;
 
 struct Session {
     model: String,
-    /// yield lane — admission class + prefill budget bucket + batch priority.
-    lane: crate::lanes::Lane,
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
     /// double-alloc cost 2GB/128k-session and OOM'd the 27B serve — fixed 2026-07-05).
     cache: Option<Cache>,
@@ -172,7 +226,7 @@ pub fn run(
     models: Vec<(String, String, Option<String>)>,
     rx: Receiver<Cmd>,
     ready_tx: Sender<Result<Vec<String>, String>>,
-    metrics: crate::lanes::SharedMetrics,
+    metrics: SharedMetrics,
 ) {
     // ---- one-time init on the worker thread: Engine + all models resident ----
     let engine = match Engine::new(0) {
@@ -268,17 +322,11 @@ pub fn run(
     let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
     let mut spec_reuse: HashMap<String, Vec<SpecReuseEntry>> = HashMap::new();
 
-    // ---- lane machinery (ARCHITECTURE-H100.md B3): policy from env, engine-truth step stats ----
-    let policy = crate::lanes::LanePolicy::from_env();
-    let mut step_stats = crate::lanes::StepStats::new(
-        std::env::var("BW24_LANE_WINDOW_S").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0));
-    let mut lane_admitted = [0u64; 3];
-    let mut lane_shed = [0u64; 3];
-    let mut lane_completed = [0u64; 3];
-    let mut lane_tokens = [0u64; 3];
-    let mut last_batch = 0usize;
-    // Starvation sentinel (estimator blind spot): last time an interactive session decoded.
-    let mut last_interactive_decode = Instant::now();
+    // ---- serving counters + engine-truth step stats (30s percentile window) ----
+    let mut step_stats = StepStats::new(30.0);
+    let mut n_admitted = 0u64;
+    let mut n_completed = 0u64;
+    let mut n_tokens_out = 0u64;
     let mut tick_n: u64 = 0;
 
     loop {
@@ -300,59 +348,36 @@ pub fn run(
             }
         }
 
-        // 2. LANE ADMISSION (yield gate, engine-side): interactive always admitted up to its
-        //    cap; judge/harvest gated on the measured interactive step p99 vs their SLO
-        //    fraction. Shed = immediate retryable error (HTTP 429 at the handler) — dark-lane
-        //    work is NEVER queued inside the engine (the B2 lesson: the engine queue is where
-        //    the tail dies). Legacy MAX_ACTIVE applies to the interactive lane.
+        // 2. ADMISSION: sessions admit up to the cap; requests over the cap wait in FIFO
+        //    order (never rejected). Batched scheduling decouples concurrency from batch
+        //    width (decode runs ceil(N/8) chunks per tick), so its cap is a session-count
+        //    knob (BW24_MAX_SESSIONS); the legacy MAX_ACTIVE bound applies only in
+        //    round-robin mode (BW24_SERVE_BATCH=0).
         let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
         let mut requeue: std::collections::VecDeque<Box<Request>> = Default::default();
         while let Some(req) = queue.pop_front() {
-            let lane = req.lane;
-            let lane_count = active.iter().filter(|s| s.lane == lane).count();
-            // Batched scheduling decouples concurrency from batch width (decode runs
-            // ceil(N/8) chunks per tick) — the lane policy owns the cap. The legacy
-            // MAX_ACTIVE bound applies only in round-robin mode (BW24_SERVE_BATCH=0).
             let batching_on = std::env::var("BW24_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
-            let cap = if lane == crate::lanes::Lane::Interactive && !batching_on {
-                max_active.min(policy.max_sessions[0])
+            let cap = if batching_on {
+                std::env::var("BW24_MAX_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64)
             } else {
-                policy.max_sessions[lane.idx()]
+                max_active
             };
-            if lane_count >= cap {
-                if lane == crate::lanes::Lane::Interactive {
-                    requeue.push_back(req);   // interactive waits (FIFO), never shed
-                } else {
-                    lane_shed[lane.idx()] += 1;
-                    let _ = req.tx.send(Event::Error(format!(
-                        "shed:{}:lane at capacity, retry", lane.as_str())));
-                }
-                continue;
-            }
-            let interactive_waiting = active.iter()
-                .any(|s| s.lane == crate::lanes::Lane::Interactive);
-            let starved = interactive_waiting
-                && last_interactive_decode.elapsed().as_secs_f32() * 1000.0 > policy.slo_p99_ms;
-            if !policy.admit(lane, &mut step_stats, starved) {
-                lane_shed[lane.idx()] += 1;
-                let _ = req.tx.send(Event::Error(format!(
-                    "shed:{}:interactive p99 over budget, retry", lane.as_str())));
+            if active.len() >= cap {
+                requeue.push_back(req);   // waits (FIFO), never rejected
                 continue;
             }
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
-                Ok(s) => { lane_admitted[lane.idx()] += 1; active.push(s); }
+                Ok(s) => { n_admitted += 1; active.push(s); }
                 Err((tx, msg)) => { let _ = tx.send(Event::Error(msg)); }
             }
         }
         queue = requeue;
 
         // 3. The tick. Three phases (BW24_SERVE_BATCH=0 restores legacy round-robin):
-        //    (a) spec sessions burst solo (spec x batch composition is a later lane);
-        //    (b) prefilling sessions prime under PER-LANE token budgets — interactive at the
-        //        full tick chunk, judge/harvest only within their dark-lane budgets (this
-        //        replaces vLLM's single global chunked-prefill knob and its baseline-p99 tax);
+        //    (a) spec sessions burst solo (spec x batch composition is a later step);
+        //    (b) prefilling sessions prime at the full tick chunk (PREFILL_TICK_T);
         //    (c) decoding sessions advance through BATCHED steps: sample+emit host-side, then
-        //        decode_step_batch over survivors in chunks of <= 8, interactive rows first.
+        //        decode_step_batch over survivors in chunks of <= 8.
         let batching = {
             static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *B.get_or_init(|| std::env::var("BW24_SERVE_BATCH").map(|v| v != "0").unwrap_or(true))
@@ -370,7 +395,7 @@ pub fn run(
                 }
             }
         } else {
-            // (a0) SINGLE-SESSION GRAPH LANE (BW24_SERVE_GS=0 disables). Promote a lone cold
+            // (a0) SINGLE-SESSION GRAPH PATH (BW24_SERVE_GS=0 disables). Promote a lone cold
             // greedy interactive session to GraphSession replay (+34% at B=1); degrade back
             // to batched-eager the moment concurrency arrives (dc==eager bit-identity makes
             // the cache handoff seamless).
@@ -415,7 +440,6 @@ pub fn run(
                 // captures OVER that cache (graph_session_from_cache). TTFT pays only the
                 // one-time capture (~340ms), amortized by the gs_min budget gate.
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
-                    && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
                     && s.prefill_done && s.generated.is_empty() && s.cache.is_some()
                     && !s.last_logits.is_empty()
@@ -450,9 +474,8 @@ pub fn run(
                             Ok(next) => { s.graph_pending = Some(next); }
                             Err(_) => { finish(s, StopReason::MaxNew); finished.push(0); }
                         }
-                        lane_tokens[0] += 1;
+                        n_tokens_out += 1;
                         step_stats.record(t_g.elapsed().as_secs_f32() * 1000.0);
-                        last_interactive_decode = Instant::now();
                     }
                 }
             }
@@ -469,11 +492,8 @@ pub fn run(
                     }
                 }
             }
-            // (b) INTERACTIVE prefill only (TTFT priority, full tick chunk). Dark-lane
-            // prefill runs AFTER decode (phase d) so a judge prime can never sit between
-            // an interactive stream and its next token (the 282ms-p99 lesson, 2026-07-26).
-            let budgets = policy.prefill_budget;
-            // task #13 (2026-07-26): BATCH fresh short interactive primes across sessions —
+            // (b) prefill (TTFT priority, full tick chunk).
+            // task #13 (2026-07-26): BATCH fresh short primes across sessions —
             // one concat trunk, GEMMs at m = sum_T. Measured regime (prime-batch-gate --bench):
             // +80% at B=8 T=64, +44-49% at T=128, crossover ~T=320 (above it, single primes
             // win — per-seq m already at the GEMM plateau). Gate: prime-batch-gate ALL GREEN
@@ -488,7 +508,7 @@ pub fn run(
                 // primes win") was measured on the per-seq core train. With the wgmma
                 // varlen cores (task #22 vl twins) batched wins at EVERY tested T:
                 // +30.1% at T=320, +12.6% at 512, +5.9% at 937, +3.0% at 1536
-                // (prime-batch-gate --bench, B=3). budgets[0] still caps per-tick load.
+                // (prime-batch-gate --bench, B=3). PREFILL_TICK_T still caps per-tick load.
                 let pb_maxt: usize = std::env::var("BW24_PRIME_BATCH_MAX_T").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(2048);
                 let min_t = bw24_engine::hybrid_forward::PRIME_MIN_T.max(2);
@@ -500,10 +520,9 @@ pub fn run(
                         let s = &active[i];
                         let ql = s.prefill_queue.len();
                         if s.spec.is_none() && !s.prefill_done && s.graph.is_none()
-                            && s.lane == crate::lanes::Lane::Interactive
                             && s.fed.is_empty()
                             && s.cache.as_ref().is_some_and(|c| c.pos == 0)
-                            && ql >= min_t && ql <= pb_maxt && ql <= budgets[0]
+                            && ql >= min_t && ql <= pb_maxt && ql <= PREFILL_TICK_T
                             && cand_model.as_ref().is_none_or(|m| *m == s.model)
                         {
                             cand_model.get_or_insert_with(|| s.model.clone());
@@ -573,8 +592,7 @@ pub fn run(
                 if held && cand.first() == Some(&i) { continue; }   // batch-formation hold
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
-                if s.lane != crate::lanes::Lane::Interactive { continue; }
-                match prefill_tick(&engine, &loaded, s, budgets[0]) {
+                match prefill_tick(&engine, &loaded, s, PREFILL_TICK_T) {
                     Ok(_) => {}
                     Err(err) => {
                         let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
@@ -582,15 +600,14 @@ pub fn run(
                     }
                 }
             }
-            // (c) batched decode, interactive rows first
+            // (c) batched decode
             let t_decode = Instant::now();
-            let mut decoding: Vec<usize> = (0..active.len())
+            let decoding: Vec<usize> = (0..active.len())
                 .filter(|&i| !finished.contains(&i)
                         && active[i].spec.is_none() && active[i].prefill_done
                         && active[i].cache.is_some())
                 .collect();
-            decoding.sort_by_key(|&i| active[i].lane.idx());
-            let mut had_interactive = false;
+            let mut had_decode = false;
             // sample + emit + stop checks (host); survivors carry their next token
             let mut ready: Vec<(usize, u32)> = Vec::new();
             for &i in &decoding {
@@ -598,7 +615,7 @@ pub fn run(
                 match (cont, next) {
                     (false, _) => finished.push(i),
                     (true, Some(t)) => {
-                        had_interactive |= active[i].lane == crate::lanes::Lane::Interactive;
+                        had_decode = true;
                         ready.push((i, t));
                     }
                     (true, None) => {} // nothing to do this tick
@@ -626,7 +643,7 @@ pub fn run(
                         for (k, &i) in idxs.iter().enumerate() {
                             active[i].last_logits = rows[k].clone();
                             active[i].fed.push(toks[k]);
-                            lane_tokens[active[i].lane.idx()] += 1;
+                            n_tokens_out += 1;
                         }
                     }
                     Err(err) => {
@@ -637,117 +654,15 @@ pub fn run(
                     }
                 }
             }
-            if had_interactive {
-                last_interactive_decode = Instant::now();
-            }
-            last_batch = ready.len();
             // BW24_TICK_TRACE=1: per-tick phase timing to stderr (diagnosis only).
             if std::env::var("BW24_TICK_TRACE").as_deref() == Ok("1") {
-                let n_int = active.iter().filter(|s| s.lane == crate::lanes::Lane::Interactive).count();
-                let n_j = active.iter().filter(|s| s.lane == crate::lanes::Lane::Judge).count();
                 let n_pref = active.iter().filter(|s| !s.prefill_done).count();
-                eprintln!("[tick] act={} int={} judge={} priming={} ready={} decode_ms={:.1}",
-                          active.len(), n_int, n_j, n_pref, ready.len(),
+                eprintln!("[tick] act={} priming={} ready={} decode_ms={:.1}",
+                          active.len(), n_pref, ready.len(),
                           t_decode.elapsed().as_secs_f32() * 1000.0);
             }
-            // (d) dark-lane prefill, ADAPTIVE: the tick period IS the client TPOT, so dark
-            // primes may only consume the SLO headroom decode left over (2026-07-26 yield
-            // battery: fixed 256-tok chunks pushed client p99 42 -> 91ms while the
-            // decode-only estimator read 44ms). Chunk tokens = headroom_ms x prime rate.
-            let decode_ms = t_decode.elapsed().as_secs_f32() * 1000.0;
-            let headroom_ms = (policy.slo_p99_ms - decode_ms).max(0.0);
-            let prime_tok_per_ms: f32 = std::env::var("BW24_PRIME_TOK_PER_MS").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(8.0);
-            let adaptive_cap = (headroom_ms * prime_tok_per_ms) as usize;
-            // task #17 increment (2026-07-30): CONCAT small FRESH dark prefills — the
-            // harvest profile (many short prompts) previously burned one tick per
-            // session; a single prime_cache_batch serves them together at m = sum_T,
-            // INSIDE the same headroom budget (sum_T <= lane budget AND adaptive cap,
-            // so the 282ms-p99 lesson holds: dark work never exceeds the SLO headroom).
-            // Same lane + same model only (budget accounting stays per-lane); >= 2
-            // candidates, else the single-chunk path below serves as before.
-            let mut dark_batched = false;
-            {
-                let min_t = bw24_engine::hybrid_forward::PRIME_MIN_T.max(2);
-                let mut dcand: Vec<usize> = Vec::new();
-                let mut dmodel: Option<String> = None;
-                let mut dlane: Option<usize> = None;
-                let mut dsum = 0usize;
-                for i in 0..active.len() {
-                    if finished.contains(&i) { continue; }
-                    let s = &active[i];
-                    let li = s.lane.idx();
-                    let ql = s.prefill_queue.len();
-                    if li == 0 || budgets[li] == 0 { continue; }
-                    // FRESH (pos==0, nothing fed) or CONTINUATION (cache primed exactly
-                    // through fed — increment (b)): both prime from cache.pos. Carried
-                    // gemma4 stays single-chunk (no continuation prime; engine rejects).
-                    if s.spec.is_some() || s.prefill_done || s.graph.is_some()
-                        || !s.cache.as_ref().is_some_and(|c| c.pos == s.fed.len()) { continue; }
-                    if !s.fed.is_empty() && loaded[&s.model].model.cfg.gemma4.is_some() { continue; }
-                    let cap = budgets[li].min(adaptive_cap);
-                    if ql < min_t || dsum + ql > cap { continue; }
-                    if dlane.is_some_and(|l| l != li) { continue; }
-                    if dmodel.as_ref().is_some_and(|m| *m != s.model) { continue; }
-                    dlane.get_or_insert(li);
-                    dmodel.get_or_insert_with(|| s.model.clone());
-                    dsum += ql;
-                    dcand.push(i);
-                }
-                if dcand.len() >= 2 {
-                    let prompts: Vec<Vec<u32>> = dcand.iter()
-                        .map(|&i| active[i].prefill_queue.drain(..).collect())
-                        .collect();
-                    let prompt_refs: Vec<&[u32]> = prompts.iter().map(|p| p.as_slice()).collect();
-                    let mut cache_refs: Vec<&mut bw24_engine::cache::Cache> = active.iter_mut()
-                        .enumerate()
-                        .filter(|(i, _)| dcand.contains(i))
-                        .map(|(_, s)| s.cache.as_mut().unwrap())
-                        .collect();
-                    let lm = &loaded[dmodel.as_ref().unwrap()];
-                    match lm.model.prime_cache_batch(&engine, &prompt_refs, &mut cache_refs) {
-                        Ok(outs) => {
-                            let ncar = dcand.iter()
-                                .filter(|&&i| !active[i].fed.is_empty()).count();
-                            eprintln!("[prime-batch dark] lane={} B={} tokens={dsum} carried={ncar}",
-                                      dlane.unwrap(), dcand.len());
-                            for ((&i, prompt), (l, _h, _x)) in
-                                dcand.iter().zip(&prompts).zip(outs)
-                            {
-                                let s = &mut active[i];
-                                s.last_logits = l;
-                                for &tok in prompt { s.fed.push(tok); s.sampler.accept(tok); }
-                                s.prefill_done = true;
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("[prime-batch dark] failed ({err}); chunks serve");
-                            for (&i, prompt) in dcand.iter().zip(&prompts) {
-                                active[i].prefill_queue = prompt.iter().copied().collect();
-                            }
-                            dcand.clear();
-                        }
-                    }
-                    dark_batched = !dcand.is_empty(); // the batch WAS this tick's dark action
-                }
-            }
-            for i in 0..active.len() {
-                if dark_batched { break; }
-                if finished.contains(&i) { continue; }
-                let s = &mut active[i];
-                if s.spec.is_some() || s.prefill_done { continue; }
-                let li = s.lane.idx();
-                if li == 0 || budgets[li] == 0 { continue; }
-                let chunk = budgets[li].min(adaptive_cap);
-                if chunk < bw24_engine::hybrid_forward::PRIME_MIN_T { break; }
-                if let Err(err) = prefill_tick(&engine, &loaded, s, chunk) {
-                    let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
-                    finished.push(i);
-                }
-                break; // one dark chunk per tick — the headroom budget is tick-global
-            }
-            // Engine-truth TPOT = the FULL client-visible tick (decode + any dark prime).
-            if had_interactive {
+            // Engine-truth TPOT = the client-visible decode tick.
+            if had_decode {
                 step_stats.record(t_decode.elapsed().as_secs_f32() * 1000.0);
             }
         }
@@ -757,7 +672,7 @@ pub fn run(
         finished.dedup();
         for &i in finished.iter().rev() {
             let s = active.remove(i);
-            lane_completed[s.lane.idx()] += 1;
+            n_completed += 1;
             if let Some(sess) = s.spec {
                 if sess.committed.len() >= REUSE_MIN_PREFIX && sess.next_pred.is_some() {
                     // skip the leading BOS when rendering: the client's prompt STRING never
@@ -781,18 +696,16 @@ pub fn run(
                 }
             }
         }
-        // publish lane metrics (worker owns the counters; axum reads the snapshot).
+        // publish serving metrics (worker owns the counters; axum reads the snapshot).
         // THROTTLED: the per-tick mutex+percentile cost ~1.7ms/token of B=1 TPOT
         // (2026-07-26 live A/B) — publish every 32nd tick.
         tick_n = tick_n.wrapping_add(1);
         if tick_n % 32 == 0 { if let Ok(mut m) = metrics.lock() {
-            m.admitted = lane_admitted;
-            m.shed = lane_shed;
-            m.completed = lane_completed;
-            m.tokens_out = lane_tokens;
+            m.admitted = n_admitted;
+            m.completed = n_completed;
+            m.tokens_out = n_tokens_out;
             m.step_p50_ms = step_stats.p(50.0).unwrap_or(0.0);
             m.step_p99_ms = step_stats.p(99.0).unwrap_or(0.0);
-            m.batch_size_last = last_batch;
         } }
         if !finished.is_empty() && std::env::var("BW24_SPILL_STATS").as_deref() == Ok("1") {
             if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
@@ -1005,7 +918,6 @@ fn admit(
     };
     Ok(Session {
         model: req.model,
-        lane: req.lane,
         cache,
         sampler,
         spec,
@@ -1074,7 +986,7 @@ fn utf8_delta(decoded: &[u8], emitted_bytes: &mut usize) -> String {
 ///   - prefill phase: consume ONE prompt token via decode_step, accept it into the sampler.
 ///   - decode phase: sample from last_logits, accept, stream the token, check EOS/stop/ctx, then
 ///     run ONE decode_step to produce the next logits.
-/// One prefill tick for a session under a lane token budget. Returns tokens consumed.
+/// One prefill tick for a session under a token budget. Returns tokens consumed.
 /// Same chunking laws as step_session's prefill phase (PRIME_MIN_T floor, tail handling).
 fn prefill_tick(
     engine: &Engine,
@@ -1149,7 +1061,7 @@ fn advance_sample_emit(
     (true, Some(next))
 }
 
-/// Token-driven twin of `advance_sample_emit` for the graph lane: the token was produced
+/// Token-driven twin of `advance_sample_emit` for the graph path: the token was produced
 /// by the DEVICE argmax (greedy), so there is no sampling — accept, emit, stop battery.
 /// Returns (continue?, ()).
 fn advance_token_emit(
@@ -1275,7 +1187,6 @@ fn step_session(
     // while the per-tick cap keeps round-robin latency for concurrent sessions bounded.
     // Tails below PRIME_MIN_T keep the tokenwise decode_step path (prime_cache floor).
     if !s.prefill_done {
-        const PREFILL_TICK_T: usize = 1024;
         let q = s.prefill_queue.len();
         if !confidence_trace_enabled() && q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2) {
             // leave a tail chunk >= PRIME_MIN_T if this tick doesn't finish the queue
@@ -1423,10 +1334,10 @@ fn finish(s: &Session, reason: StopReason) {
 /// Convenience: spawn the worker thread and block until it reports ready (or fails). Returns the
 /// command Sender (clone into the axum state) + the list of loaded model names.
 pub fn spawn(models: Vec<(String, String, Option<String>)>)
-    -> Result<(Sender<Cmd>, Arc<Vec<String>>, crate::lanes::SharedMetrics), String> {
+    -> Result<(Sender<Cmd>, Arc<Vec<String>>, SharedMetrics), String> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<Vec<String>, String>>();
-    let metrics: crate::lanes::SharedMetrics = Default::default();
+    let metrics: SharedMetrics = Default::default();
     let m2 = metrics.clone();
     std::thread::Builder::new()
         .name("bw24-gpu-worker".into())
