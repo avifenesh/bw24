@@ -64,15 +64,14 @@ GGUFs); memra serves its GGUF artifacts.
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
 | Qwen3.6-35B MoE | 197 | 214 (FP8) | 0.92x |
-| Gemma-4 26B MoE | 159 | 191 (FP8-dyn) | 0.83x |
+| Gemma-4 26B MoE | 171 | 191 (FP8-dyn) | 0.89x |
 
 Wins on exact math (the bf16-row wins carry a quant-advantage caveat — those vLLM arms
 move 4x the weight bytes). Decode alone wins 5 of 6 cells (1.07–1.85x; the 35B MoE
 decode loss flipped to a win when its per-layer shared-expert gate left cuBLASLt).
-The two e2e losses are MoE expert-prefill cells: both MoE models already route their
-expert GEMMs through an int8-MMA expert kernel, and that kernel's ~16 TF rate — 60x
-off the CUTLASS int8 roofline — is the single mapped rung between here and those rows
-flipping. The dense-model prefill gaps are the int8-GEMM dtype edge — a Q8_0-exact
+The two e2e losses are MoE expert-prefill cells, and they are moving: the expert
+GEMM's async-data-movement rebuild doubled the 26B's expert prefill in one release
+(0.83x → 0.89x e2e), with the remaining kernel rungs mapped in the ledger. The dense-model prefill gaps are the int8-GEMM dtype edge — a Q8_0-exact
 int8 GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x naive / 17x
 pipelined; ptxas serializes cross-bank GMMA register reads), so crossing it means
 w8a8-class numerics that change model outputs — an accuracy-bar decision with measured

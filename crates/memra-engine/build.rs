@@ -149,6 +149,11 @@ fn main() {
         // warps_active 16.7%, tensor pipe 53% — the same occupancy ceiling q45k hit.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_W4A8");
         let w4a8_x = std::env::var("MEMRA_MMQ_X_W4A8").ok();
+        // TUNE SEAM: MEMRA_MMQ_X_IQEXP=<n> rebuilds the expert-segmented MMQ with an n-token
+        // tile (the round-45 kernel-rate dig: 128 costs 64 accumulator regs/thread at
+        // occupancy 12.5%; smaller tiles trade MMA j-reuse for CTAs/SM).
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_IQEXP");
+        let iqexp_x = std::env::var("MEMRA_MMQ_X_IQEXP").ok();
         // TUNE SEAM: MEMRA_MMQ_Y_W4A8=64 halves the row tile AND warp count together (mmq_y =
         // nwarps*16) — 42KB->21KB tile_x, 2 CTA/SM. Unlike MMQ_X, this axis doesn't duplicate
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
@@ -190,6 +195,9 @@ fn main() {
             if mmq_src.ends_with("mmq_nvfp4_w4a8.cu") {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
+            }
+            if mmq_src.ends_with("mmq_iq_experts.cu") {
+                if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());
