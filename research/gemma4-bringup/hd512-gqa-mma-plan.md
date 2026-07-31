@@ -1,5 +1,14 @@
 # hd512 globals decode kernel — gqa-packed mma port (campaign plan, 2026-07-30)
 
+**CORRECTION (2026-07-31, supersedes the geometry below):** the 12B globals are MQA —
+nkv=1, gqa=16 (not nkv=2/gqa=8), and the tb512 launch sees t_kv ~520 (a bounded view,
+not the full 1736): grid (1,17,1) = 17 blocks on 82 SMs, SP512 default 32. The split
+axis is COMBINE-BOUND (sp512 sweep receipts, rig5090.jsonl 2026-07-31) — the port's win
+must come from in-kernel efficiency (mma + in-kernel stream-k fixup replacing the
+separate combine), not more splits. Projected win ~+1% on the g12-plain-d1736 cell
+(0.13ms of an 11.4ms step). PRIORITY NOTE: the H100 fronts (gemma prefill MMQ 0.23-0.32x,
+q9 w8a8 0.73x) are 10-50x larger prizes — do those first (2026-07-31 goal order).
+
 The g12-plain-d1736 0.973x mechanism (pinned, rig5090.jsonl 2026-07-30 rows): the hd512
 GLOBALS decode lane costs 30.8us/layer (tb512 24.5 + combine_dc 6.3) vs llama's ~14.7
 deflated — 8 global layers = 0.13ms/step, half the cell's gap. Windowed lane is parity.
