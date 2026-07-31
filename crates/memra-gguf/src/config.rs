@@ -27,6 +27,10 @@ impl Arch {
             "qwen3moe" => Arch::Qwen3Moe,
             "qwen35" => Arch::Qwen35,
             "qwen35moe" => Arch::Qwen35Moe,
+            // upstream llama.cpp writes the hybrid class as qwen3next (round 46: needed to
+            // load public 27B GGUFs on the sm_90a board — same layer stack as qwen35).
+            "qwen3next" => Arch::Qwen35,
+            "qwen3nextmoe" => Arch::Qwen35Moe,
             "olmoe" => Arch::Olmoe,
             "minimax-m3" => Arch::MinimaxM3,
             "hy3" => Arch::Hy3,

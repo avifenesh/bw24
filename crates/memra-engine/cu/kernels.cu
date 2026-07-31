@@ -1916,6 +1916,16 @@ extern "C" __global__ void sigmoid_dot_rows_f32(
     }
 }
 
+// f32 row permute: dst[idx[i]] = src[i] (the grouped-GEMM lane's CSR -> pair-id reorder).
+extern "C" __global__ void rows_permute_f32(const float* __restrict__ src,
+                                            const int* __restrict__ idx,
+                                            float* __restrict__ dst, int ncols, int nrows){
+    int i = blockIdx.x; if(i>=nrows) return;
+    const float* s = src + (size_t)i*ncols;
+    float* d = dst + (size_t)idx[i]*ncols;
+    for(int c=threadIdx.x;c<ncols;c+=blockDim.x) d[c]=s[c];
+}
+
 // ROUND-STREAM stage (c) draft-chain pack: (tok, p) into slot j of a u32[2K] buffer — the
 // host (or the assemble kernel) reads the whole chain in one go instead of 2 DtoHs per token.
 extern "C" __global__ void pack_tok_p(const unsigned int* __restrict__ tok,

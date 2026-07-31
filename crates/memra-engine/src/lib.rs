@@ -29,6 +29,14 @@ pub use memra_sampling as sampler;
 /// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
 /// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
 /// ~240 per-column cuBLAS gemv launches/round). MEMRA_ROUTER_KERNEL=0 is the rollback seam.
+/// MoE grouped f16 GEMM door (MEMRA_MOE_F16G=1, round 46 arc 2, experimental until gated):
+/// per-layer expert dequant to f16 + cublasGemmGroupedBatchedEx over the CSR groups.
+/// f16-mirror numeric class.
+pub fn moe_f16g_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_MOE_F16G").as_deref() == Ok("1"))
+}
+
 pub fn router_kernel_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -1222,6 +1230,20 @@ impl Engine {
         b.arg(w).arg(x).arg(&mut y).arg(&ne).arg(&nx).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(y)
+    }
+
+    /// f32 row permute: dst[idx[i], :] = src[i, :] (grouped-GEMM CSR -> pair-id reorder).
+    pub fn rows_permute(&self, src: &CudaSlice<f32>, idx: &CudaSlice<i32>, nrows: usize,
+                        ncols: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut dst = self.alloc_uninit::<f32>(nrows * ncols)?;
+        let f = self.func("rows_permute_f32");
+        let (nc, nr) = (ncols as i32, nrows as i32);
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(idx).arg(&mut dst).arg(&nc).arg(&nr);
+        unsafe { b.launch(cfg)?; }
+        Ok(dst)
     }
 
     /// shexp gate fused dot: g[tok] = sigmoid(dot(x[tok,:], w)) — replaces the per-layer

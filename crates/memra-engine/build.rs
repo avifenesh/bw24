@@ -164,7 +164,7 @@ fn main() {
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu",
-                        "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu"] {
+                        "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu", "cu/moe_f16_grouped.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit MEMRA_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -233,6 +233,8 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=stdc++");
         // fp8_prefill.cu calls the cuBLASLt host API directly (same lib64 search path as cudart).
         println!("cargo:rustc-link-lib=dylib=cublasLt");
+        // plain cublas: the MoE grouped f16 GEMM (cublasGemmGroupedBatchedEx, CUDA >= 12.5)
+        println!("cargo:rustc-link-lib=dylib=cublas");
         // fa3_prefill.cu calls the driver API (cuTensorMapEncodeTiled). GPU-less build
         // machines (CI compile gate, release matrix) have no driver libcuda.so — the
         // toolkit's stubs dir satisfies the link; at runtime ld.so resolves the real
