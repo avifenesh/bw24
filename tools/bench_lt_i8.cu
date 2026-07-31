@@ -40,7 +40,7 @@ extern "C" __global__ void dequant_rc(const int* __restrict__ s, const float* __
 struct ShapeRef { int in_f, out_f; float f16_us; const char* tag; };
 
 int main() {
-    const int m = 512;
+    const int m = getenv("BENCH_M") ? atoi(getenv("BENCH_M")) : 512;
     // f16_us = shipped fp16-mirror per-launch medians (nsys/probe 2026-07-26)
     ShapeRef shapes[] = {
         {4096, 12288, 78.4f, "wqkv (lin)"},
@@ -92,9 +92,32 @@ int main() {
         CK(cudaEventElapsedTime(&ms, a, b));
         double e_us = ms * 10.0;
         double tops = 2.0 * out_f * in_f * m / (g_us * 1e6);
-        printf("%-12s in=%5d out=%6d | i8 gemm %6.1fus (%4.0f TOP)  epi %5.1fus  net %6.1fus  vs f16 %5.1fus  net-speedup %.2fx\n",
-               sh.tag, in_f, out_f, g_us, tops, e_us, g_us + e_us, sh.f16_us,
-               sh.f16_us / (g_us + e_us));
+        // MEASURED f16 reference at THIS m (2026-07-31: the hardcoded table is m=512-only;
+        // the m=2048 crossing decision needs a live fp16 GemmEx run, same reps protocol).
+        __half *fW, *fX; float* fY;
+        CK(cudaMalloc(&fW, (size_t)out_f * in_f * 2));
+        CK(cudaMalloc(&fX, (size_t)m * in_f * 2));
+        CK(cudaMalloc(&fY, (size_t)m * out_f * 4));
+        CK(cudaMemset(fW, 0x3c, (size_t)out_f * in_f * 2));
+        CK(cudaMemset(fX, 0x3c, (size_t)m * in_f * 2));
+        float falpha = 1.0f, fbeta = 0.0f;
+        auto fgemm = [&]() {
+            CB(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, out_f, m, in_f,
+                            &falpha, fW, CUDA_R_16F, in_f, fX, CUDA_R_16F, in_f,
+                            &fbeta, fY, CUDA_R_32F, out_f,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+        };
+        for (int i = 0; i < 10; i++) fgemm();
+        CK(cudaDeviceSynchronize());
+        CK(cudaEventRecord(a));
+        for (int i = 0; i < 100; i++) fgemm();
+        CK(cudaEventRecord(b)); CK(cudaEventSynchronize(b));
+        CK(cudaEventElapsedTime(&ms, a, b));
+        double f_us = ms * 10.0;
+        printf("%-12s in=%5d out=%6d | i8 gemm %6.1fus (%4.0f TOP)  epi %5.1fus  net %6.1fus  vs f16(m=%d) %6.1fus  net-speedup %.2fx  [table512 %5.1fus]\n",
+               sh.tag, in_f, out_f, g_us, tops, e_us, g_us + e_us, m, f_us,
+               f_us / (g_us + e_us), sh.f16_us);
+        cudaFree(fW); cudaFree(fX); cudaFree(fY);
         cudaFree(dW); cudaFree(dX); cudaFree(dS); cudaFree(dY); cudaFree(dAs); cudaFree(dWs);
     }
     return 0;

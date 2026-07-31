@@ -1973,3 +1973,24 @@ PASS); the gemma-4 26B's knife-edge gate flips on the twin (same class as its st
 verdict) so gemma4 loading keeps the lone-warp form (ROUTER_W8_DEFAULT=false at load;
 BW24_ROUTER_V2 forces either way). Remaining q35 gap vs vLLM 230.9: ~162.6/230.9 = 0.70
 of the FP8 arm — cublasLt mystery op + moe gate/up/down dev kernels are the next rungs.
+
+## Round 41 — w8a8 crossing re-probe at m=2048 (2026-07-31, owner gate opened)
+
+bench_lt_i8 grew BENCH_M; at m=2048 the picture INVERTS vs the m=512 refutation:
+i8 GEMM rates 1251-1444 TOP (vs 655-891 at m=512 — launch/tail overhead amortized),
+and net-vs-f16 estimated at ~1.4-1.6x across the six shapes even with the UNFUSED
+dequant epilogue (26-71us), using linearly-scaled m=512 f16 references (f16 78.4us
+x4 etc — approximate; measured f16-at-2048 references are the next step, then the
+CUTLASS-EVT fused epilogue eats the remaining 25-35% tax). Decision band was
+net >= 1.4x — the crossing is live at prefill-realistic m. Raw run in this round's
+session log; harness change committed (BENCH_M env).
+
+Round 41 addendum — MEASURED f16 references (live GemmEx at BENCH_M, not the m=512
+table): m=2048 net-speedups WITH the unfused epilogue: wqkv 1.14x, mid 1.12x, square
+1.05x, ffn_down 1.26x, gate/up 1.21x, small 0.77x (stays f16). m=512 cross-check
+reproduces the original refutation (0.79-0.90x) — the inversion is m-driven, exactly
+the launch/tail amortization. Epilogue is 12-33% of net at 2048 -> CUTLASS-EVT fusion
+projects the big shapes to ~1.3-1.6x. OWNER DECISION PACKAGE: rate receipt above +
+accuracy pilot (per-row W x per-token act requant, argmax-flip count vs greedy
+baseline) = the two numbers the w8a8 crossing needs. Next increments: EVT fused probe
+(bench_cutlass_i8.cu), then the pilot.

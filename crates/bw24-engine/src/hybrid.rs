@@ -1212,12 +1212,13 @@ impl HybridModel {
                 // bytes BEFORE the in-place rp swap destroys that layout. Same Lt lane and
                 // budget env as the qwen Q8_0 mirrors (BW24_PP_F16 / BW24_PP_F16_BUDGET_MB;
                 // Hopper default ON, sm_120a default OFF — the 24GB card can't carry them).
-                // Per-model (battery-keyed, 2026-07-31): the 12B passes argmax MATCH with
-                // the f16 lane (pp2152 8256 -> 17731, x3) — default ON there. The 31B's
-                // gate FLIPS under the f16 class (argmax 107 vs 236770, maxdiff 1.96 —
-                // knife-edge; partial 249-tensor mirror) — OFF until its own battery
-                // passes. BW24_Q4F16=1|0 forces either way.
-                let q4f16_model_ok = cfg.n_embd == 3840; // 12B geometry; 31B awaits battery
+                // Per-model (battery-keyed, 2026-07-31, REAL-prompt gates — the fox-repeat
+                // family is layout-lottery degenerate and was retired from campaign gates):
+                // 12B pp1736 8.3k -> 17.1k MATCH; 31B pp1736 4.8k -> 7.6k MATCH but ONLY
+                // with the full-trunk mirror (420 tensors ~53GB — set
+                // BW24_PP_F16_BUDGET_MB=57344 on 80GB boxes; the default 32GB partial
+                // mirror measured FLAT there). BW24_Q4F16=1|0 forces either way.
+                let q4f16_model_ok = matches!(cfg.n_embd, 3840 | 5376); // 12B | 31B geometry
                 let f16_on = match std::env::var("BW24_Q4F16").as_deref() {
                     Ok("1") => crate::f16_ffi::pp_f16_enabled(),
                     Ok("0") => false,
