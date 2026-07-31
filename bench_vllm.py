@@ -26,8 +26,11 @@ def main():
     kwargs = {}
     if args.model.endswith(".gguf"):
         kwargs["tokenizer"] = args.tokenizer
+    # max_num_seqs: the protocol is single-stream; hybrid (Mamba/GDN) models cap decode
+    # sequences by Mamba cache blocks (27B FP8: 784 < the 1024 default -> engine init fail).
     llm = LLM(model=args.model, max_model_len=args.prompt_tokens + args.ngen + 64,
-              gpu_memory_utilization=0.90, enable_prefix_caching=False, **kwargs)
+              gpu_memory_utilization=0.90, enable_prefix_caching=False, max_num_seqs=8,
+              **kwargs)
     tok = llm.get_tokenizer()
     # REAL-TEXT prompt (round 45): the fox-repeat prompt is the ledgered degenerate class —
     # its flat next-token distribution flips argmax across numeric arms (g26 prefill-vs-

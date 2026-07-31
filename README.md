@@ -23,14 +23,15 @@ against vLLM are published per model. **Use something else when** you have anoth
 [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU serving
 (vLLM, SGLang).
 
-**Standing (2026-07-31):** seven supported models on the 5090, all fully gated; every
+**Standing (2026-08-01):** seven supported models on the 5090, all fully gated; every
 MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
 wall or above. On the H100, a full per-model board against vLLM 0.26: end-to-end wins
-on 4 of 6 models (1.14–1.81x), decode wins on 5 of 6 (the 35B MoE decode loss flipped
-to a 1.07x win this release); the two e2e losses (0.92x, 0.83x) are MoE expert-prefill
-cells with the remaining kernel-rate rung mapped. Every number is a same-session
-interleaved measurement on a real-text prompt with the argmax exactness gate green;
-trimmed MTP drafter heads are published ready-to-use at
+on 5 of 7 models (1.02–1.81x), decode wins on 6 of 7 (the 27B hybrid joined the board
+this release and edges vLLM's FP8 untuned); the two e2e losses (0.92x, 0.89x) are MoE
+expert-prefill cells, moving release-by-release (the 26B's expert prefill doubled in
+one release). Every number is a same-session interleaved measurement on a real-text
+prompt with the argmax exactness gate green; trimmed MTP drafter heads are published
+ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
 
 Running memra on your own rig? A [hardware validation
@@ -63,6 +64,7 @@ GGUFs); memra serves its GGUF artifacts.
 | Gemma-4 31B | **75** | 64 (FP8-dyn) | **1.18x** |
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
+| Qwen3.6-27B | **74** | 73 (FP8) | **1.02x** |
 | Qwen3.6-35B MoE | 197 | 214 (FP8) | 0.92x |
 | Gemma-4 26B MoE | 171 | 191 (FP8-dyn) | 0.89x |
 

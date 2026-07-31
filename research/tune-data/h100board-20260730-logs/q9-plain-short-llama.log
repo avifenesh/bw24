@@ -1,0 +1,24 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 81081 MiB):
+  Device 0: NVIDIA H100 80GB HBM3, compute capability 9.0, VMM: yes, VRAM: 81081 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |           pp512 |        605.43 ± 4.67 |
+| qwen35 9B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |           tg128 |        148.66 ± 0.37 |
+
+build: unknown (0)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 81081 MiB):
+  Device 0: NVIDIA H100 80GB HBM3, compute capability 9.0, VMM: yes, VRAM: 81081 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |           pp512 |        595.50 ± 3.55 |
+| qwen35 9B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |           tg128 |        148.92 ± 0.39 |
+
+build: unknown (0)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 81081 MiB):
+  Device 0: NVIDIA H100 80GB HBM3, compute capability 9.0, VMM: yes, VRAM: 81081 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |           pp512 |        596.79 ± 3.95 |
+| qwen35 9B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |           tg128 |        148.99 ± 0.39 |
+
+build: unknown (0)

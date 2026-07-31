@@ -1,0 +1,24 @@
+[moe] resident-experts decision: per-layer 373MB x 40 layers = 14.9GB vs budget 67.2GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 190 tensors
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=198  decode argmax=198  logit maxdiff=1.069e0  MATCH
+prefill 19 tok in 0.0648s = 293.1 tok/s (pp19)
+generated 128 tokens in 0.806s = 158.73 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.065s) [stop: MaxNew]
+tokens: [198, 2, 5, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16]
+[moe] resident-experts decision: per-layer 373MB x 40 layers = 14.9GB vs budget 67.2GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 190 tensors
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=198  decode argmax=198  logit maxdiff=1.069e0  MATCH
+prefill 19 tok in 0.0645s = 294.8 tok/s (pp19)
+generated 128 tokens in 0.785s = 163.09 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.064s) [stop: MaxNew]
+tokens: [198, 2, 5, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16]
+[moe] resident-experts decision: per-layer 373MB x 40 layers = 14.9GB vs budget 67.2GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 190 tensors
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=198  decode argmax=198  logit maxdiff=1.069e0  MATCH
+prefill 19 tok in 0.0646s = 294.3 tok/s (pp19)
+generated 128 tokens in 0.788s = 162.49 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.064s) [stop: MaxNew]
+tokens: [198, 2, 5, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16, 13, 220, 16]

@@ -3165,6 +3165,36 @@ impl HybridModel {
             && q8_expert_dec_supported(m.down_exps.qtype)
             && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
         if use_mma {
+            // GROUPED f16 LANE (MEMRA_MOE_F16G=1, round 46 arc 2, experimental door): dequant
+            // the active experts ONCE per projection to f16 and run one grouped f16 GEMM over
+            // the CSR groups. f16-mirror numeric class — argmax/spec gated before promotion.
+            // NOTE: the pair-gather kernel needs pair p ordered EXPERT-MAJOR (ex_pairs order);
+            // the y rows come back in that same CSR order, so gate/up/down all stay pair-major
+            // in ex_pairs order — but moe_pairs_silu_mul and the scatter consume PAIR-ID order.
+            // We therefore gather activations per ex_pairs and scatter y back through ex_pairs.
+            let f16g = crate::moe_f16g_on()
+                && matches!(m.gate_exps.qtype, 5 | 12) && matches!(m.up_exps.qtype, 5 | 12)
+                && matches!(m.down_exps.qtype, 5 | 12);
+            let y_down = if f16g {
+                // CSR order end-to-end: gather z rows by the pair's TOKEN (pair p's token is
+                // p / n_used — the trivial CSR above), silu in CSR order (elementwise), one
+                // permute at the very end back to pair-id order for the scatter.
+                let csr_tok: Vec<i32> = ex_pairs.iter().map(|&p| p / n_used as i32).collect();
+                let csr_tok_d = e.htod_i32(&csr_tok)?;
+                let (z_f16, z_s) = e.moe_f16g_act(z, Some(&csr_tok_d), n_embd, n_pairs)?;
+                let g_csr = e.moe_f16_grouped(&dev.ptr_row, 0, n_expert, &exi, &ex_off, &z_f16,
+                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                                              m.gate_exps.qtype, rbg_d)?;
+                let u_csr = e.moe_f16_grouped(&dev.ptr_row, 1, n_expert, &exi, &ex_off, &z_f16,
+                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                                              m.up_exps.qtype, rbu_d)?;
+                let act_csr = e.moe_pairs_silu_mul(&g_csr, &u_csr, n_pairs * n_ff_exp)?;
+                let (a_f16, a_s) = e.moe_f16g_act(&act_csr, None, n_ff_exp, n_pairs)?;
+                let d_csr = e.moe_f16_grouped(&dev.ptr_row, 2, n_expert, &exi, &ex_off, &a_f16,
+                                              &a_s, n_ff_exp, n_embd, n_active, n_pairs,
+                                              m.down_exps.qtype, m.down_exps.row_bytes)?;
+                e.rows_permute(&d_csr, &exp_d, n_pairs, n_embd)?
+            } else {
             // gate/up: activation = z, token-major over t tokens; pair_tok gathers the routed row.
             let z_scr = e.mmq_iq_quantize_act(z, n_embd, t)?;
             let gate = e.mmq_iq_experts(&dev.ptr_row, 0, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
@@ -3178,9 +3208,10 @@ impl HybridModel {
             let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
             let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
             let pself = e.htod_i32(&pair_self)?;
-            let y_down = e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
-                                          n_ff_exp, n_embd, n_active, n_pairs, n_pairs,
-                                          m.down_exps.qtype, m.down_exps.row_bytes)?;
+            e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
+                             n_ff_exp, n_embd, n_active, n_pairs, n_pairs,
+                             m.down_exps.qtype, m.down_exps.row_bytes)?
+            };
             let mut moe_out = e.uninit(t * n_embd)?;
             e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
             if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
@@ -4606,6 +4637,39 @@ impl HybridModel {
             let exi = e.htod_i32(&ex_ids)?;
             let exo = e.htod_i32(&ex_off)?;
             let exp_d = e.htod_i32(&ex_pairs)?;
+            // GROUPED f16 LANE (MEMRA_MOE_F16G=1, round 46 arc 2): dequant active experts to
+            // f16 once per projection + one grouped f16 GEMM over the CSR groups; CSR order
+            // end-to-end (gelu is elementwise), one row permute before the scatter. The
+            // ragged down k (704) needs no padding here — cublas takes any k.
+            // f16-mirror numeric class, argmax/spec gated.
+            if crate::moe_f16g_on()
+                && matches!(m.gate_exps.qtype, 5 | 12) && matches!(m.up_exps.qtype, 5 | 12)
+                && matches!(m.down_exps.qtype, 5 | 12) {
+                let csr_tok: Vec<i32> = ex_pairs.iter().map(|&p| p / n_used as i32).collect();
+                let csr_tok_d = e.htod_i32(&csr_tok)?;
+                let (z_f16, z_s) = e.moe_f16g_act(moe_in, Some(&csr_tok_d), n_embd, n_pairs)?;
+                let g_csr = e.moe_f16_grouped(&dev.ptr_row, 0, n_expert, &exi, &ex_off, &z_f16,
+                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                                              m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                let u_csr = e.moe_f16_grouped(&dev.ptr_row, 1, n_expert, &exi, &ex_off, &z_f16,
+                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                                              m.up_exps.qtype, m.up_exps.row_bytes)?;
+                let act_csr = e.moe_pairs_gelu_mul(&g_csr, &u_csr, n_pairs * n_ff_exp)?;
+                let (a_f16, a_s) = e.moe_f16g_act(&act_csr, None, n_ff_exp, n_pairs)?;
+                let d_csr = e.moe_f16_grouped(&dev.ptr_row, 2, n_expert, &exi, &ex_off, &a_f16,
+                                              &a_s, n_ff_exp, n_embd, n_active, n_pairs,
+                                              m.down_exps.qtype, m.down_exps.row_bytes)?;
+                let y_down = e.rows_permute(&d_csr, &exp_d, n_pairs, n_embd)?;
+                let mut moe_out = e.uninit(t * n_embd)?;
+                e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
+                if std::env::var("MEMRA_F16G_DEBUG").is_ok() {
+                    let scan = |v: &[f32]| v.iter().filter(|x| !x.is_finite()).count();
+                    let (yd, mo) = (e.dtoh(&y_down)?, e.dtoh(&moe_out)?);
+                    eprintln!("[f16g-debug] post-permute bad={} post-scatter bad={}",
+                              scan(&yd), scan(&mo));
+                }
+                return Ok(moe_out);
+            }
             // gate/up: int8-MMA expert GEMM (in_f = n_embd 2816 = 11x256 tiles ok); down keeps
             // the decode-once dp4a (in_f 704 fails the 256-superblock tiling).
             let mma = n_embd % 256 == 0
@@ -4978,7 +5042,9 @@ impl HybridModel {
         let probe = std::env::var("MEMRA_GEMMA_PROBE").is_ok();
         let stat = |e: &Engine, x: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
             let h = e.dtoh(x)?;
-            eprintln!("[gemma-probe] {tag}: tok0_first3={:?}", &h[..3]);
+            let bad = h.iter().filter(|v| !v.is_finite()).count();
+            let mx = h.iter().filter(|v| v.is_finite()).fold(0.0f32, |m, v| m.max(v.abs()));
+            eprintln!("[gemma-probe] {tag}: tok0_first3={:?} bad={bad} max={mx:.3e}", &h[..3]);
             Ok(())
         };
         if probe { stat(e, &x, "embed")?; }
