@@ -1013,6 +1013,9 @@ impl HybridModel {
             // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
             crate::FA_SP512_DEFAULT.store(if real_moe { 16 } else { 32 },
                                           std::sync::atomic::Ordering::Relaxed);
+            // gemma4 keeps the lone-warp router (the 26B's knife-edge gate flips on the
+            // w8 twin's fold order — 2026-07-31 on-box receipts; qwen-class keeps w8).
+            crate::ROUTER_W8_DEFAULT.store(false, std::sync::atomic::Ordering::Relaxed);
             // fused t=1 pair/triple mr1 per variant (2026-07-14 DRAM-duty arc: dense +1.1%
             // short / +0.6% depth on 31B; MoE 26B −1.2% — stays mr2).
             crate::FUSED_MR1_DEFAULT.store(!real_moe,

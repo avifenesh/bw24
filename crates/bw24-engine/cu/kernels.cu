@@ -1858,6 +1858,35 @@ extern "C" __global__ void router_gemv_f32(
     if (threadIdx.x == 0) y[(size_t) tok * n_experts + e] = s;
 }
 
+// 8-warp twin (2026-07-31, the H100 q35 decode dig): the warp-per-(expert,token) form is
+// LATENCY-bound at t=1 — 128 lone-warp CTAs each walking n_embd/32 serial load steps put
+// the router at 19.9us/layer = 14.8% of the whole decode step on the 132-SM part. Eight
+// warps split the row (n_embd/256 steps) and tree-reduce through smem. NEW FP ORDER vs
+// the warp twin (near-tie routing can flip) — battery-gated numeric config; the host
+// picks this twin per BW24_ROUTER_V2 with the warp form as the rollback seam.
+extern "C" __global__ void router_gemv_f32_w8(
+        const float* __restrict__ w, const float* __restrict__ x, float* __restrict__ y,
+        int n_embd, int n_experts, int t) {
+    const int e = blockIdx.x;
+    const int tok = blockIdx.y;
+    if (e >= n_experts || tok >= t) return;
+    const float* wr = w + (size_t) e * n_embd;
+    const float* xr = x + (size_t) tok * n_embd;
+    float s = 0.0f;
+    for (int i = threadIdx.x + threadIdx.y * 32; i < n_embd; i += 256) s += wr[i] * xr[i];
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xFFFFFFFF, s, off);
+    __shared__ float ps[8];
+    if (threadIdx.x == 0) ps[threadIdx.y] = s;
+    __syncthreads();
+    if (threadIdx.y == 0 && threadIdx.x == 0) {
+        float acc = 0.0f;
+#pragma unroll
+        for (int wi = 0; wi < 8; ++wi) acc += ps[wi];
+        y[(size_t) tok * n_experts + e] = acc;
+    }
+}
+
 // ROUND-STREAM stage (c) draft-chain pack: (tok, p) into slot j of a u32[2K] buffer — the
 // host (or the assemble kernel) reads the whole chain in one go instead of 2 DtoHs per token.
 extern "C" __global__ void pack_tok_p(const unsigned int* __restrict__ tok,
