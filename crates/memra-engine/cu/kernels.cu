@@ -1887,6 +1887,35 @@ extern "C" __global__ void router_gemv_f32_w8(
     }
 }
 
+// SHEXP GATE dot (2026-07-31, the q35 "cublasLt 40/step" decode dig): qwen35moe's shared-
+// expert sigmoid gate is a 1-output dot per token per layer; cuBLASLt served it as an
+// m=1,n=t,k=n_embd GEMM whose splitKreduce_kernel ran 40x/step at 14.3us (~10% of the H100
+// decode step). One fused launch replaces linear+sigmoid: g[tok] = sigmoid(dot(x[tok],w)).
+// Used for BOTH t=1 decode and small-t spec verify, so the two chains match per row by
+// construction (one fold order). sigmoid form matches sigmoid_f32 (expf).
+extern "C" __global__ void sigmoid_dot_rows_f32(
+        const float* __restrict__ x,   // [t, n_embd]
+        const float* __restrict__ w,   // [n_embd]
+        float* __restrict__ g,         // [t]
+        int n_embd, int t) {
+    const int tok = blockIdx.x;
+    if (tok >= t) return;
+    const float* xr = x + (size_t) tok * n_embd;
+    float s = 0.0f;
+    for (int i = threadIdx.x + threadIdx.y * 32; i < n_embd; i += 256) s += xr[i] * w[i];
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xFFFFFFFF, s, off);
+    __shared__ float ps[8];
+    if (threadIdx.x == 0) ps[threadIdx.y] = s;
+    __syncthreads();
+    if (threadIdx.y == 0 && threadIdx.x == 0) {
+        float acc = 0.0f;
+#pragma unroll
+        for (int wi = 0; wi < 8; ++wi) acc += ps[wi];
+        g[tok] = 1.0f / (1.0f + expf(-acc));
+    }
+}
+
 // ROUND-STREAM stage (c) draft-chain pack: (tok, p) into slot j of a u32[2K] buffer — the
 // host (or the assemble kernel) reads the whole chain in one go instead of 2 DtoHs per token.
 extern "C" __global__ void pack_tok_p(const unsigned int* __restrict__ tok,

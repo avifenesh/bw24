@@ -1224,6 +1224,32 @@ impl Engine {
         Ok(y)
     }
 
+    /// shexp gate fused dot: g[tok] = sigmoid(dot(x[tok,:], w)) — replaces the per-layer
+    /// cuBLASLt m=1 GEMM + separate sigmoid launch on the qwen35moe decode path (the
+    /// splitKreduce x40/step dig, 2026-07-31). One fold order for every t, so the t=1
+    /// decode chain and the small-t spec-verify chain match per row by construction.
+    pub fn sigmoid_dot_rows(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, n_embd: usize,
+                            t: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // MEMRA_SHEXP_DOT=0: rollback seam to the cuBLASLt linear + sigmoid pair (numeric
+        // config; same class as MEMRA_ROUTER_V2).
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var("MEMRA_SHEXP_DOT").as_deref() == Ok("0")) {
+            let gs = self.linear(x, w, t, n_embd, 1)?;
+            let mut g = self.uninit(t)?;
+            self.sigmoid(&gs, &mut g, t)?;
+            return Ok(g);
+        }
+        let mut g = self.alloc_uninit::<f32>(t)?;
+        let f = self.func("sigmoid_dot_rows_f32");
+        let (ne, ti) = (n_embd as i32, t as i32);
+        let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (32, 8, 1),
+                                 shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(&mut g).arg(&ne).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(g)
+    }
+
     /// ROUND-STREAM stream rollback: all counters <- pos_start + base + n_acc.
     pub fn spec_rollback_stream(&self, len_ptrs: &CudaSlice<u64>, pos_start: &CudaSlice<i32>,
                                 acc: &CudaSlice<u32>, base: usize, n_rows: usize)
@@ -4910,9 +4936,15 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // Every raw-f32 arm below (fp8/f16/MMQ/fp4) reads m*in_f from x_fallback. Callers that
+        // pre-quantized and dropped the f32 input pass an EMPTY x_fallback (E4B's fusion port:
+        // h = zeros(0)) — the length guard keeps those on the aq/ad GEMM instead of feeding a
+        // 0-byte buffer to a convert kernel (illegal address -> cublasLt status 13; the E4B
+        // rc=30013 dig, 2026-07-31).
+        let x_raw_ok = x_fallback.len() >= m * w.in_features();
         // FP8-ACT PREFILL (MEMRA_PP_FP8=1): same arm as `matmul` — the fp8 operand needs the RAW
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
-        if m >= 16 && !self.verify_exact_on() {
+        if m >= 16 && x_raw_ok && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
             // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
             if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
@@ -4920,16 +4952,14 @@ impl Engine {
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind MEMRA_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
         // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not
-        // aq/ad. Callers that pre-quantized and dropped the f32 input pass an EMPTY x_fallback
-        // (E4B's fusion port: h = zeros(0)) — the length guard keeps those on the aq/ad GEMM
-        // below instead of feeding the MMQ quantizer a 0-byte buffer (illegal address).
+        // aq/ad.
         if m >= 16 && w.out_features() >= 128 && self.mmq_supports(w) && !self.verify_exact_on()
-            && x_fallback.len() >= m * w.in_features() {
+            && x_raw_ok {
             return self.qmatvec_mmq(w, x_fallback, m);
         }
         // Stage-C FP4 prefill (MEMRA_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs
         // from q8_1), so re-quantize from x_fallback rather than reuse aq/ad. NVFP4 only, m>=16.
-        if m >= 16 && !self.verify_exact_on() {
+        if m >= 16 && x_raw_ok && !self.verify_exact_on() {
             if let Some(y) = self.try_fp4_gemm(w, x_fallback, m, w.in_features(), w.out_features())? {
                 return Ok(y);
             }

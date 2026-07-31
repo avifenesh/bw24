@@ -41,6 +41,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("rms_norm     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- shexp gate fused sigmoid-dot (qwen35moe decode: g[tok] = sigmoid(dot(x[tok],w))) ---
+    {
+        let (n_embd, t) = (2048usize, 3usize);
+        let x: Vec<f32> = (0..t * n_embd).map(|i| pr(i + 13) - 0.5).collect();
+        let w: Vec<f32> = (0..n_embd).map(|i| pr(i + 41) - 0.5).collect();
+        let mut cpu = vec![0f32; t];
+        for r in 0..t {
+            let s: f32 = (0..n_embd).map(|i| x[r * n_embd + i] * w[i]).sum();
+            cpu[r] = 1.0 / (1.0 + (-s).exp());
+        }
+        let xd = e.htod(&x)?; let wd = e.htod(&w)?;
+        let gd = e.sigmoid_dot_rows(&xd, &wd, n_embd, t)?;
+        let gpu = e.dtoh(&gd)?;
+        let d = maxdiff(&cpu, &gpu);
+        println!("sigmoid_dot  maxdiff={d:.2e} {}", if d < 1e-5 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- warp-per-row qkv norm (MEMRA_QKVNORM_W, prefill rows>=64): CPU-oracle gate on the
     // rms_norm_qkv dispatch at prefill depth (picks rms_norm_qkv_w4_f32). Own numeric config
     // (float4-lane reduce order) -> f32-band tolerance vs CPU, not bit-identity. ---
