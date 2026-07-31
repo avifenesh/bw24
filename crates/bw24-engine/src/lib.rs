@@ -233,6 +233,13 @@ pub static FA_SPW_DEFAULT: std::sync::atomic::AtomicUsize =
 /// its shared-expert fused2 shapes lose to the finer grid). BW24_Q40_MR env still wins.
 pub static FUSED_MR1_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+/// Per-model router-GEMV form (2026-07-31): the 8-warp twin is +8.8% on the H100 q35
+/// decode step (router was 14.8% of it) with argmax + spec self-consistency green on
+/// qwen-class MoE both rigs; the gemma-4 26B's knife-edge prefill-vs-decode gate flips
+/// on ANY router fold-order change (same class as its stream-K verdict), so gemma4
+/// loading stores false. BW24_ROUTER_V2 env overrides either way.
+pub static ROUTER_W8_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(16);
 /// Per-model rms_norm block size (per-model numeric-config law: the per-thread partial-sum
@@ -1199,9 +1206,18 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(t * n_experts)?;
         // float4 v2 probed 2026-07-14: +0.25% but flips near-tie routing (new FP order,
         // stream differs) — too small to justify a numeric config change; deleted.
-        let f = self.func("router_gemv_f32");
+        // w8 twin (2026-07-31): on the 132-SM H100 the lone-warp form is 14.8% of the q35
+        // decode step (latency-bound) — the calculus flipped. BW24_ROUTER_V2=0 reverts to
+        // the warp form (rollback seam; new FP order, battery-arbitrated per model).
+        let w8 = match std::env::var("BW24_ROUTER_V2").as_deref() {
+            Ok("0") => false,
+            Ok(_) => true,
+            Err(_) => ROUTER_W8_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        let f = if w8 { self.func("router_gemv_f32_w8") } else { self.func("router_gemv_f32") };
         let (ne, nx, ti) = (n_embd as i32, n_experts as i32, t as i32);
-        let cfg = LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1),
+                                 block_dim: (32, if w8 { 8 } else { 1 }, 1), shared_mem_bytes: 0 };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(w).arg(x).arg(&mut y).arg(&ne).arg(&nx).arg(&ti);
         unsafe { b.launch(cfg)?; }

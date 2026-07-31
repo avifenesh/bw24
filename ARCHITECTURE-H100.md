@@ -1959,3 +1959,17 @@ arms move 4x the bytes):
 
 Raw: research/sm90a-unified/h100board-20260730/ (jsonl, per-cell vllm json + logs,
 bw24 logs, three failed-attempt jsonls). Harness: tools/h100-vllm-board.sh.
+
+## Round 40 — q35 MoE decode: the router chain (2026-07-31)
+
+Board loss q35 0.79x decomposed by nsys (decode loop, 128 steps): the ROUTER chain ate
+~30% of the 5.6ms step — router_gemv_f32 19.9us x 40 layers (lone-warp CTA per
+(expert,token): 128 one-warp blocks, 64 serial load iters — pure latency on 132 SMs) +
+a cublasLt splitK pair (unidentified 40/step f32 op, still open) + topk 5.3us x 40.
+Fix: router_gemv_f32_w8 (8 warps split the row, smem tree reduce). +8.8% whole-model
+decode (149.4 -> 162.6 median, x3 interleaved on-box). NEW FP ORDER, battery-gated per
+model: qwen-class MoE defaults to w8 (argmax MATCH both rigs + K=4 spec self-consistency
+PASS); the gemma-4 26B's knife-edge gate flips on the twin (same class as its stream-K
+verdict) so gemma4 loading keeps the lone-warp form (ROUTER_W8_DEFAULT=false at load;
+BW24_ROUTER_V2 forces either way). Remaining q35 gap vs vLLM 230.9: ~162.6/230.9 = 0.70
+of the FP8 arm — cublasLt mystery op + moe gate/up/down dev kernels are the next rungs.
