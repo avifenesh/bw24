@@ -2156,3 +2156,24 @@ arbitration: f16-vs-int8 gap 0.67 maxdiff flips a real-prompt top-tie, determini
 x5; gemma + MoE hybrids hold MATCH and keep mirrors) — q9 prefill 10.9k gate-clean,
 row still a 1.16x e2e win. NEXT RUNG unchanged: mmq_iq_experts kernel rate (~16 TF,
 60x off CUTLASS int8) gates BOTH remaining losses.
+
+## Round 46 — the expert-GEMM kernel rate: 2.01x from async data movement (2026-07-31)
+
+mmq_iq_experts (the wall under BOTH remaining board losses) profiled and rebuilt:
+occupancy 12.5% (Block Limit Registers=1 — minblocks=1 lets ptxas take 255 regs), SM
+13-20%, DRAM 3%, long_scoreboard = 66% of stalls. Occupancy levers REFUTED by interleaved
+A/B (minblocks=2: -4.7%, reg spills; MMQ_X=64: -9.1%, j-reuse loss). The win was async
+data movement, three increments, each gated: (1) the Y gather's 4B ld-reg-st chain ->
+16B cp.async chunks (+34.4%); (2) raw W kb-slices cp.async'd into a smem ring one kb
+ahead, dequant reads resident smem — the qmatvec_gemm FIX-A pattern (+41.3%); (3) Y
+half ping-pong: both halves' gathers issue as ordered groups, wait_group 1 leaves h1 in
+flight behind h0's mma (+5.8%). **g26 pp1736 5041 -> 10117 tok/s (2.01x)**; kernel
+3.85 -> <2.0ms; long_scoreboard 123.5k -> 9.3k samples. Byte-identical numerics (same
+tiles, same mma order): argmax MATCH with constant maxdiff, kernel-check ALL GREEN.
+q35 prefill +0.85% (its wall is elsewhere — next capture needed). Raw receipts:
+research/sm90a-unified/expert-kernel-20260731/. First-time-gating note: the g26 battery
+also surfaced decode-batch + graph gates red on gemma-MoE — lockstep decode rejects
+gemma4 BY DESIGN (decode.rs) and the gemma graph door on MoE was never Hopper-gated;
+decode-dc PASSES. Pre-existing, not this arc (base tree graph gate = the pre-routing
+illegal address). Remaining kernel rungs: `wait` dep-chains at 2 warps/scheduler
+(register diet for occupancy), W-ring depth with counted waits, IQ3_S staging.

@@ -150,6 +150,25 @@ namespace ggml_cuda_mma {
 using namespace ggml_cuda_mma;
 static constexpr __device__ int mmq_get_granularity_device(int mmq_x){ return mmq_x>=48?16:8; }
 
+// 16B async global->smem copy (the qmatvec_gemm.cu helper; cp.async.cg native on sm_80+).
+// The Y gather was 4B ld.global -> reg -> st.shared per int — every load serialized on its
+// register return. cp.async carries no register dependency, so the whole 144B/token gather
+// is in flight at once (ncu round 45: long_scoreboard = 66% of stall samples).
+__device__ __forceinline__ void cp_async16(void* smem, const void* g){
+    unsigned s = (unsigned)__cvta_generic_to_shared(smem);
+    asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s), "l"(g));
+}
+__device__ __forceinline__ void cp_async4(void* smem, const void* g){
+    unsigned s = (unsigned)__cvta_generic_to_shared(smem);
+    asm volatile("cp.async.ca.shared.global [%0],[%1],4;" :: "r"(s), "l"(g));
+}
+__device__ __forceinline__ void cp_async_commit_wait_all(){
+    asm volatile("cp.async.commit_group;");
+    asm volatile("cp.async.wait_group 0;");
+}
+// staged W row stride: superblock slice padded to 16B (144 covers q4_0's 144 and iq4_xs's 136).
+#define W_STAGE_STRIDE 144
+
 // ======================= tile loaders (decode-at-load -> int8 x_qs + per-32 float scale) =======================
 // x_qs int-column c (0..63) holds 4 int8 for values [4c..4c+4). Per-32 scale (group c>>3) replicated
 // into the 2 per-16 x_df slots of that group. Both IQ4_XS and IQ3_S emit weights in NATURAL k-order
@@ -307,6 +326,9 @@ static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, f
 // group (ex_off[seg]..ex_off[seg+1]) in 128-token tiles. Activation is GATHERED per token via
 // pair_tok[ex_pairs[base+j]] from the pre-quantized token-major q8_1_mmq buffer. Output row = the
 // pair id (pair-major y, [n_pairs, out_f]) — matches moe_pairs_matvec_q8_dec's y layout.
+// minblocks=2 (round 45, the kernel-rate dig): minblocks=1 let ptxas take 255 regs/thread —
+// Block Limit Registers 1, occupancy 12.5%, SM 13-20% / DRAM 3% (pure latency underfill,
+// ncu 2026-07-31). Two CTAs/SM caps regs at 128; grid supplies 546-2002 CTAs on 132 SMs.
 template<int mmq_x, bool nc>
 __global__ void __launch_bounds__(MMQ_WARP_SIZE*MMQ_NWARPS,1)
 mmq_iq_experts_kernel(
@@ -328,8 +350,44 @@ mmq_iq_experts_kernel(
 
     extern __shared__ int smem[];
     int* ids = smem;                                // mmq_x pair ids for this token-tile
-    int* tile_y = smem + mmq_x;
-    int* tile_x = tile_y + GGML_PAD(mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE);
+    int* tile_y = smem + mmq_x;                     // 2 half-buffers (ping-pong)
+    int* tile_x = tile_y + 2*GGML_PAD(mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE);
+    uint8_t* w_stage = (uint8_t*)(tile_x + mmq_y*MMQ_MMA_TILE_X_K);   // 2 x mmq_y x 144B ring
+
+    // W kb-slice STAGING (round 45 increment 2): the raw superblock slice cp.asyncs into a
+    // smem ring one kb AHEAD; dequant then reads RESIDENT smem (the qmatvec_gemm FIX-A
+    // pattern — the long-scoreboard global weight read leaves the dequant chain). 16B
+    // chunks when every (row, kb) offset stays 16B-aligned (q4_0's 144B slices on 16B rows),
+    // 4B otherwise (iq4_xs 136B slices; q4_0 down's 396B rows). IQ3_S (110B, non-4B-multiple)
+    // keeps the direct global loader. nc row-clamp happens at stage time.
+    const int sb_bytes = (qtype==QT_Q4_0) ? 144 : (qtype==QT_IQ4_XS) ? 136 : 0;
+    const bool w16 = qtype==QT_Q4_0 && (row_bytes % 16 == 0);
+    auto stage_w = [&](int kb, int buf){
+        uint8_t* dst0 = w_stage + (size_t)buf*mmq_y*W_STAGE_STRIDE;
+        if(w16){
+            const int npr = sb_bytes/16;
+            const int tot = mmq_y*npr;
+            for(int c0=0;c0<tot;c0+=MMQ_NWARPS*MMQ_WARP_SIZE){
+                int c=c0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x; if(c>=tot) break;
+                int r=c/npr, k=c%npr;
+                int rr = nc ? min(r,i_max) : r;
+                cp_async16(dst0+(size_t)r*W_STAGE_STRIDE+k*16,
+                           W+(long)rr*row_bytes+(long)kb*sb_bytes+k*16);
+            }
+        } else {
+            const int npr = sb_bytes/4;
+            const int tot = mmq_y*npr;
+            for(int c0=0;c0<tot;c0+=MMQ_NWARPS*MMQ_WARP_SIZE){
+                int c=c0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x; if(c>=tot) break;
+                int r=c/npr, k=c%npr;
+                int rr = nc ? min(r,i_max) : r;
+                cp_async4(dst0+(size_t)r*W_STAGE_STRIDE+k*4,
+                          W+(long)rr*row_bytes+(long)kb*sb_bytes+k*4);
+            }
+        }
+        asm volatile("cp.async.commit_group;");
+    };
+    const bool staged = sb_bytes != 0;
 
     for(int base=lo; base<hi; base+=mmq_x){
         int cnt = min(mmq_x, hi-base);
@@ -341,24 +399,46 @@ mmq_iq_experts_kernel(
         }
         __syncthreads();
         float sum[mmq_x*mmq_y/(MMQ_NWARPS*MMQ_WARP_SIZE)] = {0.0f};
+        if(staged) stage_w(0, 0);
         for(int kb=0;kb<nsblk;kb++){
-            if(qtype==QT_IQ4_XS)      load_tiles_iq4xs<mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
-            else if(qtype==QT_Q4_0)   load_tiles_q4_0 <mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
+            if(staged){
+                asm volatile("cp.async.wait_group 0;");
+                __syncthreads();                       // W[kb&1] resident for every warp
+                const uint8_t* Ws = w_stage + (size_t)(kb&1)*mmq_y*W_STAGE_STRIDE;
+                // rows were clamped at stage time -> loaders run the nc=false form.
+                if(qtype==QT_Q4_0) load_tiles_q4_0 <mmq_y,false>(Ws, tile_x, 0, i_max, W_STAGE_STRIDE);
+                else               load_tiles_iq4xs<mmq_y,false>(Ws, tile_x, 0, i_max, W_STAGE_STRIDE);
+                if(kb+1<nsblk) stage_w(kb+1, (kb+1)&1);   // in flight behind the halves' mma
+            }
             else                      load_tiles_iq3s <mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
+            // Y GATHER PING-PONG (round 45 increment 3): both halves' gathers issue as
+            // separate cp.async groups at kb top; groups complete IN ORDER, so wait_group 1
+            // leaves h1's gather in flight behind h0's mma. 16B chunks (9/token: sz=36 ints
+            // = 144B, 16B-aligned both sides) — no register dependency per load.
+            constexpr int CH = 4;                                      // ints per 16B chunk
+            const int ybuf_stride = GGML_PAD(mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE);
             #pragma unroll
             for(int half=0;half<2;half++){
                 int blockk = kb*2 + half;              // 128-value chunk index (block_q8_1_mmq)
-                // gather: token-column token_c -> real token via pair_tok[ids[token_c]]
-                for(int l0=0;l0<mmq_x*MMQ_TILE_Y_K;l0+=MMQ_NWARPS*MMQ_WARP_SIZE){
-                    int l=l0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x;
-                    int token_c = l / sz, ii = l % sz;
+                int* ty = tile_y + half*ybuf_stride;
+                for(int c0=0;c0<mmq_x*(sz/CH);c0+=MMQ_NWARPS*MMQ_WARP_SIZE){
+                    int c=c0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x;
+                    if(c>=mmq_x*(sz/CH)) break;
+                    int token_c = c / (sz/CH), ii = (c % (sz/CH))*CH;
                     int src_tok = pair_tok[ids[token_c]];
-                    tile_y[l] = Yq[((size_t)blockk*n_tokens + src_tok)*sz + ii];
+                    cp_async16(&ty[token_c*sz+ii],
+                               &Yq[((size_t)blockk*n_tokens + src_tok)*sz + ii]);
                 }
-                __syncthreads();
-                vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y, sum, half*MMQ_TILE_NE_K);
-                __syncthreads();
+                asm volatile("cp.async.commit_group;");
             }
+            // pending groups (issue order): [W(kb+1) if staged], Y(h0), Y(h1).
+            asm volatile("cp.async.wait_group 1;");    // W(kb+1)+Y(h0) done; Y(h1) in flight
+            __syncthreads();
+            vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y, sum, 0*MMQ_TILE_NE_K);
+            asm volatile("cp.async.wait_group 0;");    // Y(h1) done (overlapped the h0 mma)
+            __syncthreads();
+            vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y + ybuf_stride, sum, 1*MMQ_TILE_NE_K);
+            __syncthreads();
         }
         // write-back (nvfp4_w4a8 machinery): row = ids[j] (pair id), col = it*mmq_y + i.
         {
@@ -431,8 +511,9 @@ int memra_mmq_iq_experts(const unsigned long long* table, int proj, int n_expert
     dim3 grid((unsigned)nty, (unsigned)n_active, 1);
     dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
     size_t smem = (size_t)MMQ_X*sizeof(int)
-        + GGML_PAD((size_t)MMQ_X*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)
-        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int);
+        + 2*GGML_PAD((size_t)MMQ_X*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)  // Y ping-pong
+        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int)
+        + 2*(size_t)MMQ_Y*W_STAGE_STRIDE;              // W kb-slice staging ring
     const int* Yq = (const int*)act_scratch;
     const bool nc = (out_f % MMQ_Y) != 0;
     if(nc){
