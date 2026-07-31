@@ -7047,7 +7047,9 @@ impl Engine {
                         o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                         t: usize, t_kv: usize, scale: f32, causal: bool, window: usize)
                         -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        // sm_90a rides the mma twins (portable_mma_gated, 2026-07-31 — the raw
+        // portable_cuda gate was stale-conservative on Hopper; fa_prefill already flipped).
+        if portable_mma_gated() {
             return self.sdpa_naive_w(q, k, v, o, head_dim, n_head, n_head_kv,
                                      t, t_kv, scale, causal, window);
         }
@@ -7263,7 +7265,8 @@ impl Engine {
                             o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
                             n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool)
                             -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        // sm_90a rides the mma twins (portable_mma_gated, 2026-07-31 — same flip as _w).
+        if portable_mma_gated() {
             return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
                                    t, t_kv, scale, causal);
         }

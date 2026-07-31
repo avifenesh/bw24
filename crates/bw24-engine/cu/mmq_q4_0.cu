@@ -747,6 +747,17 @@ static int mmq_gemm_autotuned(const char * W, const char * W_d, const int * y_q,
                 W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
         }
     }
+    // BW24_MMQ_SK_FORM=sk|tile bypasses the timing pick entirely (diagnostics: the
+    // #23 hunt found the timing coin can mask a broken form from correctness gates).
+    static int form_force = -2;
+    if (form_force == -2) {
+        const char * ev = getenv("BW24_MMQ_SK_FORM");
+        form_force = (ev == nullptr) ? -1 : (ev[0] == 's' ? 1 : 0);
+    }
+    if (form_force >= 0) {
+        return mmq_launch_either<need_check, is_rp>(form_force == 1,
+            W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+    }
     // miss: time both (3 reps each after 1 warmup), cache, re-run the winner last.
     float ms_tile = 0.0f, ms_sk = 0.0f;
     cudaEvent_t e0, e1;
@@ -798,6 +809,17 @@ int bw24_mmq_q4_0_gemm_sk(const void * W_q4_0, const void * act_scratch, float *
                           int in_f, int out_f, int n_tokens, void * stream, int rp) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
     const bool need_check = (out_f % MMQ_Y) != 0;
+    // STREAM-K CONTRACT (#23, 2026-07-31): the kbc work-split is defined in whole
+    // MMQ_ITER_K units. A ragged weight row (in_f % MMQ_ITER_K != 0, e.g. the 26B
+    // shared-MLP down 2112 -> 66 blocks vs 8-block iters) produces sub-iter segments
+    // the walk was never defined for — measured rel ~1.0 corruption on H100 while the
+    // xy-tiling form is exact (kernel-check MMQ-Q4_0-RAGK pins this). Upstream llama
+    // never hits this (its activation padding keeps rows iter-aligned); callers here
+    // are also gated (mmq_supports in_f % 256), so this is defense-in-depth: ragged
+    // shapes take the exact tiling form regardless of autotune or force knobs.
+    if ((in_f / QK4_0) % (MMQ_ITER_K / QK4_0) != 0) {
+        fixup_scratch = nullptr;
+    }
     const int * y_q = (const int *) act_scratch;
     const char * W  = (const char *) W_q4_0;
     const char * W_d = W + (size_t) out_f * (size_t) (in_f / QK4_0) * 16;

@@ -797,9 +797,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
-            if cfg!(bw24_portable_cuda) {
+            // sm_89 (pure portable) skips everything here. sm_90a (portable + hopper_mma)
+            // SKIPS only the NVFP4-family checks (fail-closed stubs there) but MUST run the
+            // Q4_K/Q8_0/Q4_0 MMQ checks — those kernels are live on Hopper through the
+            // hopper_mma re-admission, and the old whole-section skip left the battery
+            // blind to the #23 stream-K corruption (2026-07-31).
+            let nvfp4_checks = !cfg!(bw24_portable_cuda);
+            if cfg!(bw24_portable_cuda) && !cfg!(bw24_hopper_mma) {
                 println!("portable CUDA: native FP4 and static-MMQ model-backed checks — SKIP");
             } else {
+            if nvfp4_checks {
             // Stage-C FP4 (mxf4nvf4 block-scale tensor-core) vs the f32 dequant oracle on NVFP4.
             // FP4 is LOSSY (e2m1 activations + e2m1 weights; scale side is lossless ue4m3) — NOT
             // bit-equivalent. Compare to cpu_linear(dequant(W)) and expect rel ~1e-2..6e-2.
@@ -886,6 +893,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            } // nvfp4_checks
             // --- VENDORED llama Q4_K/Q5_K MMQ GEMM vs the f32 dequant oracle. ---
             // W-exact (int8 tile-load dequant is lossless for k-quants) + q8_1 int8 activation ->
             // rel should sit in the int8-activation band (~1e-3..1e-2). A layout/scale bug shows as
@@ -1066,6 +1074,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+            // #23 regression (2026-07-31): the 26B a4b shared-MLP shape (in=2816, out=2112 —
+            // out % 128 != 0 -> need_check=true clamped last row-tile) through the FORCED
+            // stream-K arm. On the H100 board this shape+SK produced garbage prefill logits
+            // above the mb=256 autotune bucket while the xy-tiling form was exact; the
+            // timing-picked autotune hid the arm from the 5090 battery. Force both forms
+            // deterministically and pin each against the CPU reference.
+            {
+                let g26_path = ["/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf",
+                                &format!("{}/models/gemma-4-26B_q4_0-it.gguf", std::env::var("HOME").unwrap_or_default())]
+                    .iter().map(|s| s.to_string()).find(|p| std::path::Path::new(p).exists());
+                if let Some(g26_path) = g26_path {
+                    let g26 = GgufFile::open(&g26_path)?;
+                    use bw24_gguf::dequant;
+                    use bw24_runtime::cpu_linear;
+                    // synthetic ragged-k, nc=false twin (in=2112 -> 66 blocks, out=2560 = 20*128):
+                    // separates the ragged-k mechanism from the clamped-last-row (need_check) one.
+                    {
+                        let (in_f, out_f) = (2112usize, 2560usize);
+                        let nblk = in_f / 32 * out_f;
+                        let mut raw = vec![0u8; nblk * 18];
+                        for (bi, b) in raw.chunks_mut(18).enumerate() {
+                            b[0] = 0x00; b[1] = 0x3C;   // d = f16 1.0
+                            for k in 0..16 { b[2 + k] = ((bi * 31 + k * 7) % 251) as u8; }
+                        }
+                        let w_f32 = dequant::dequantize(GgmlType::Q4_0, &raw, in_f * out_f);
+                        let wd = e.htod_bytes(&raw)?;
+                        for tt in [103usize, 479] {
+                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
+                            let xd = e.htod(&x)?;
+                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            for (force, label) in [(0i8, "TILE"), (1, "SK")] {
+                                bw24_engine::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
+                                let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let rel = maxdiff(&cpu, &yb) / scale;
+                                println!("MMQ-Q4_0-RAGK {label} [in={in_f} out={out_f} nc=false] T={tt}: rel={rel:.2e} {}",
+                                         if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                            }
+                            bw24_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    for tname in ["blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.0.attn_v.weight",
+                                  "blk.0.attn_output.weight", "blk.0.ffn_gate.weight",
+                                  "blk.0.ffn_down.weight"] {
+                        let Some(t) = g26.find(tname).filter(|t| t.ggml_type == GgmlType::Q4_0) else { continue };
+                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                        let raw = g26.tensor_data(t);
+                        let w_f32 = dequant::dequantize(GgmlType::Q4_0, raw, in_f * out_f);
+                        let wd = e.htod_bytes(raw)?;
+                        for tt in [103usize, 229, 479, 1024, 2048, 2151] {
+                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
+                            let xd = e.htod(&x)?;
+                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            for (force, label) in [(0i8, "TILE"), (1, "SK")] {
+                                bw24_engine::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
+                                let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let rel = maxdiff(&cpu, &yb) / scale;
+                                println!("MMQ-Q4_0-NC26 {tname} {label} [in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
+                                         if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                            }
+                            bw24_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
     }
 
     // --- PERF-3 MMVQ (warp-per-row decode) vs dp4a matvec: BIT-EQUIVALENCE gate. ---
