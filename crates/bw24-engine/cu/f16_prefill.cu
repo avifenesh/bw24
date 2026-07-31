@@ -74,6 +74,39 @@ extern "C" int bw24_q8_0_dequant_f16(const void* w_q8, void* w_f16, long out_f, 
     return ce == cudaSuccess ? 0 : 10000 + (int)ce;
 }
 
+// GGUF Q4_0 (18B blocks: half d + 16 nibble bytes) -> row-major fp16 (campaign A, 2026-07-31:
+// the gemma QAT trunk's f16 mirror — int4 magnitudes are exact in fp16, rounding only at d*q;
+// same accuracy class as the promoted Q8_0 mirror). One thread per 32-block.
+extern "C" __global__ void bw24_q4f16_dequant_kernel(const unsigned char* __restrict__ src,
+                                                     __half* __restrict__ dst,
+                                                     size_t nblk_total, int nblk_row) {
+    size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (i >= nblk_total) return;
+    const unsigned char* b = src + i * 18;
+    float d = __half2float(*(const __half*)b);
+    const unsigned char* qs = b + 2;
+    __half* o = dst + i * 32;
+    #pragma unroll
+    for (int k = 0; k < 16; k++) {
+        const int lo = (qs[k] & 0x0F) - 8;
+        const int hi = (qs[k] >> 4) - 8;
+        o[k]      = __float2half(d * (float)lo);
+        o[k + 16] = __float2half(d * (float)hi);
+    }
+}
+
+extern "C" int bw24_q4_0_dequant_f16(const void* w_q4, void* w_f16, long out_f, long nblk_row,
+                                     void* stream_v) {
+    cudaStream_t stream = (cudaStream_t)stream_v;
+    size_t nblk_total = (size_t)out_f * (size_t)nblk_row;
+    int threads = 256;
+    size_t blocks = (nblk_total + threads - 1) / threads;
+    bw24_q4f16_dequant_kernel<<<(unsigned)blocks, threads, 0, stream>>>(
+        (const unsigned char*)w_q4, (__half*)w_f16, nblk_total, (int)nblk_row);
+    cudaError_t ce = cudaGetLastError();
+    return ce == cudaSuccess ? 0 : 10000 + (int)ce;
+}
+
 // ---- host: cached cuBLASLt plans (fp8_prefill.cu pattern) ------------------------------------
 
 namespace {

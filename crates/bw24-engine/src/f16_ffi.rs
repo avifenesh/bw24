@@ -58,6 +58,14 @@ unsafe extern "C" {
         nblk_row: i64,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+    /// GGUF Q4_0 18B blocks -> row-major fp16 mirror (campaign A, 2026-07-31).
+    fn bw24_q4_0_dequant_f16(
+        w_q4: *const core::ffi::c_void,
+        w_f16: *mut core::ffi::c_void,
+        out_f: i64,
+        nblk_row: i64,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
 }
 
 /// BW24_PP_F16 gate, read once. DEFAULT ON on the Hopper lane (80GB — the mirror costs
@@ -434,11 +442,14 @@ impl crate::Engine {
         else {
             return Ok(());
         };
-        if *qtype != crate::QT_Q8_0 || f16.is_some() || ne.len() != 2 {
+        // Q4_0 admitted 2026-07-31 (campaign A): the gemma QAT trunk rides the same Lt
+        // f16 lane — int4 magnitudes exact in fp16, same rounding class as Q8_0.
+        let q4 = *qtype == crate::QT_Q4_0;
+        if (*qtype != crate::QT_Q8_0 && !q4) || f16.is_some() || ne.len() != 2 {
             return Ok(());
         }
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
-        if in_f % 32 != 0 || *row_bytes != (in_f / 32) * 34 {
+        if in_f % 32 != 0 || *row_bytes != (in_f / 32) * (if q4 { 18 } else { 34 }) {
             return Ok(());
         }
         // Budget (layer-order prefix, BW24_PP_FP8_BUDGET_MB pattern): default 32GB — the whole
@@ -458,7 +469,38 @@ impl crate::Engine {
             SPENT.fetch_sub(sz, Ordering::Relaxed);
             return Ok(());
         }
-        *f16 = Some(self.build_q8_f16_raw(bytes, in_f, out_f)?);
+        *f16 = Some(if q4 { self.build_q4_f16_raw(bytes, in_f, out_f)? }
+                    else { self.build_q8_f16_raw(bytes, in_f, out_f)? });
         Ok(())
+    }
+
+    /// Q4_0 twin of `build_q8_f16_raw` (18B blocks, campaign A 2026-07-31).
+    pub fn build_q4_f16_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(in_f % 32 == 0);
+        let nblk = in_f / 32;
+        let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
+        let rc = {
+            let stream = &self.gpu.stream;
+            let (s_p, _gs) = bytes.device_ptr(stream);
+            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            unsafe {
+                bw24_q4_0_dequant_f16(
+                    s_p as *const core::ffi::c_void,
+                    d_p as *mut core::ffi::c_void,
+                    out_f as i64,
+                    nblk as i64,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!("bw24_q4_0_dequant_f16 rc={rc}").into());
+        }
+        Ok(dst)
     }
 }
