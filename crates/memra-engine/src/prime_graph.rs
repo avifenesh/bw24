@@ -32,6 +32,8 @@ pub struct PrimeGraph {
     /// f16 scratch's cvt/Lt pointers; sharing them with eager GEMMs cross-contaminates
     /// replays. This scratch was resident DURING capture and is swapped back in around
     /// every replay so the baked pointers always address graph-owned memory.
+    // held for lifetime only: resident during capture, swapped around replays
+    #[allow(dead_code)]
     private_scratch: Option<crate::f16_ffi::F16Scratch>,
     scratch: Cache,
     x_in: CudaSlice<f32>,

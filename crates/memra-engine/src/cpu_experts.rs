@@ -517,8 +517,8 @@ fn execute_token(job: CpuExpertJob) -> Result<Vec<f32>, String> {
     Ok(output)
 }
 
-/// Per-executor OMP width, set on the executor thread so `execute` can size its team to the
-/// core group that thread is pinned to (heterogeneous groups want different widths).
+// Per-executor OMP width, set on the executor thread so `execute` can size its team to the
+// core group that thread is pinned to (heterogeneous groups want different widths).
 thread_local! {
     static EXECUTOR_THREADS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
