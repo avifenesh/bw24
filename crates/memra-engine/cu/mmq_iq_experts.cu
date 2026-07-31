@@ -425,6 +425,11 @@ mmq_iq_experts_kernel(
                     int c=c0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x;
                     if(c>=mmq_x*(sz/CH)) break;
                     int token_c = c / (sz/CH), ii = (c % (sz/CH))*CH;
+                    // clamped tail columns (token_c > j_max) are DISCARDED at write-back —
+                    // skip their gather entirely (q35 gate/up groups average ~65 pairs:
+                    // ~half of every 128-tile was duplicate gather traffic, round 46 inc4).
+                    // Their mma consumes stale smem; the products never leave the registers.
+                    if(token_c > j_max) continue;
                     int src_tok = pair_tok[ids[token_c]];
                     cp_async16(&ty[token_c*sz+ii],
                                &Yq[((size_t)blockk*n_tokens + src_tok)*sz + ii]);
