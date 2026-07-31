@@ -897,6 +897,16 @@ impl HybridModel {
         cache: &mut Cache,
         n_vocab: usize,
     ) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        // Route gemma4 to ITS dc twin (mirrors decode_step_h): the generic walk below is the
+        // qwen-class layer stack — running gemma weights through it produced the argmax-INIT
+        // passthrough the round-45 g12 gate caught (first Hopper gating of this lane).
+        if self.is_gemma4_e4b() {
+            return Err("e4b has no device-counter decode step (dc/graph unwired)".into());
+        }
+        if self.cfg.gemma4.is_some() {
+            return self.gemma4_decode_step_dc(e, token_d, pos_d, embd_gpu, embd_qt,
+                                              embd_row_bytes, cache, n_vocab, None);
+        }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -1063,6 +1073,16 @@ impl HybridModel {
         }
         // gs.token_d now must hold the first generated INPUT token (= argmax of the last prime step).
         e.set_u32_one(&mut gs.token_d, next_in)?;
+
+        // gemma4 rides ITS graph machinery (per-bucket captures + alloc-free slots; same token
+        // stream convention: first generated token is out[0]) — graph_decode_loop below captures
+        // the qwen-class dc step (the round-45 g12 illegal-address find).
+        if self.cfg.gemma4.is_some() {
+            let (toks, _reason) = self.gemma4_generate_graph(
+                e, cache.pos, next_in, &mut cache, max_new, &[], |_| true)?;
+            gs.captures += 1;
+            return Ok(toks);
+        }
 
         let mut out = Vec::with_capacity(max_new);
         self.graph_decode_loop(e, gs, &mut cache, &embd_gpu, qt, row_bytes, head_dim, max_new,

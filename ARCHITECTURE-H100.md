@@ -2098,3 +2098,13 @@ contract. MEMRA_GATE_SEED added for future sweeps.
   (eager chain green; mirrors/q8rp ruled out by env isolation). The lane was built and
   gated on the 5090 and had never been gated on Hopper. OPEN.
 Both stay red in validate-h100 until fixed — gates live inside the battery (LAW 3).
+
+Round 45 update — gemma dc lane on sm_90a FIXED at the router (2026-07-31): decode_step_dc
+and generate_graph had NO gemma4 routing — the g12 "dead lane" was gemma weights walking the
+qwen-class dc step (argmax-INIT passthrough in the dc gate; illegal address in the graph
+gate's prime). Routed to gemma4_decode_step_dc / gemma4_generate_graph (decode_step_h's
+pattern; e4b errors explicitly — its dc/graph stay unwired). g12 decode-dc:
+**PASS BIT-IDENTICAL 256 steps** (buckets 2..5). g12 graph-decode: no longer crashes; the
+gemma graph machinery now runs on Hopper but the stream diverges from eager at step 14
+(224/256) — the per-bucket capture map's Hopper geometry is the remaining suspect
+(lane's stream-identity was proven on the 5090 only). OPEN (narrowed).
