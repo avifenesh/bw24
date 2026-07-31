@@ -1207,6 +1207,22 @@ impl HybridModel {
             let fast_on = std::env::var("BW24_FAST").as_deref() != Ok("0");
             if fast_on {
                 let mut nswap = 0usize;
+                let mut nf16 = 0usize;
+                // f16 prefill mirrors (campaign A, 2026-07-31): built from the GGUF Q4_0
+                // bytes BEFORE the in-place rp swap destroys that layout. Same Lt lane and
+                // budget env as the qwen Q8_0 mirrors (BW24_PP_F16 / BW24_PP_F16_BUDGET_MB;
+                // Hopper default ON, sm_120a default OFF — the 24GB card can't carry them).
+                // Per-model (battery-keyed, 2026-07-31): the 12B passes argmax MATCH with
+                // the f16 lane (pp2152 8256 -> 17731, x3) — default ON there. The 31B's
+                // gate FLIPS under the f16 class (argmax 107 vs 236770, maxdiff 1.96 —
+                // knife-edge; partial 249-tensor mirror) — OFF until its own battery
+                // passes. BW24_Q4F16=1|0 forces either way.
+                let q4f16_model_ok = cfg.n_embd == 3840; // 12B geometry; 31B awaits battery
+                let f16_on = match std::env::var("BW24_Q4F16").as_deref() {
+                    Ok("1") => crate::f16_ffi::pp_f16_enabled(),
+                    Ok("0") => false,
+                    _ => crate::f16_ffi::pp_f16_enabled() && q4f16_model_ok,
+                };
                 for layer in layers.iter_mut() {
                     let dense_gemma = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_none());
                     if !dense_gemma {
@@ -1214,6 +1230,12 @@ impl HybridModel {
                     }
                     if let Mixer::Full(fa) = &mut layer.mixer {
                         for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] {
+                            if f16_on {
+                                e.build_q8_f16(w)?;
+                                if matches!(w, crate::model::GpuTensor::Quant { f16: Some(_), .. }) {
+                                    nf16 += 1;
+                                }
+                            }
                             if e.build_q4_rp_swap(w)? {
                                 nswap += 1;
                             }
@@ -1226,6 +1248,12 @@ impl HybridModel {
                     } = &mut layer.ffn
                     {
                         for w in [ffn_gate, ffn_up, ffn_down] {
+                            if f16_on {
+                                e.build_q8_f16(w)?;
+                                if matches!(w, crate::model::GpuTensor::Quant { f16: Some(_), .. }) {
+                                    nf16 += 1;
+                                }
+                            }
                             if e.build_q4_rp_swap(w)? {
                                 nswap += 1;
                             }
@@ -1234,6 +1262,9 @@ impl HybridModel {
                 }
                 if nswap > 0 {
                     eprintln!("[q4rp] split-plane IN-PLACE swap: {nswap} dense trunk tensors");
+                }
+                if nf16 > 0 {
+                    eprintln!("[q4f16] prefill fp16 mirrors built: {nf16} dense trunk tensors");
                 }
             }
         }
