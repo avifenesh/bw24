@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     out.push(first);
     let t0 = std::time::Instant::now();
     for _ in 1..steps {
-        out.push(sess.step(&e)?);
+        out.push(sess.step(&e, &model)?);
     }
     let dt = t0.elapsed().as_secs_f64();
     let sess_tps = (steps - 1) as f64 / dt;

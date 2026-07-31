@@ -2108,3 +2108,19 @@ pattern; e4b errors explicitly — its dc/graph stay unwired). g12 decode-dc:
 gemma graph machinery now runs on Hopper but the stream diverges from eager at step 14
 (224/256) — the per-bucket capture map's Hopper geometry is the remaining suspect
 (lane's stream-identity was proven on the 5090 only). OPEN (narrowed).
+
+Round 45 update 2 — graph exec-update SEGMENTED at kernel-class boundaries (2026-07-31):
+the q35 graph divergence root-caused and FIXED. Exec-update replay retunes split counts
+(fa_apply) but cannot swap kernels — a session spanning an eager KERNEL-CLASS boundary
+(the fa_vec floor; also the v4 max and fa512 floor) replayed the capture-time vec kernel
+against eager's scalar kernel below the floor: valid softmax, different fold order, and
+the first near-tie flipped the stream (deterministic 144/256 from step 110 = exactly the
+crossing; regime pinned either way was BIT-IDENTICAL — the isolating experiment).
+graph_decode_loop and GraphSession now capture per kernel-class segment
+(fa_class_of/fa_segment_end/graph_capture_segment; GraphSession::step takes &model and
+recaptures transparently). Receipts: q35 graph-decode PASS BIT-IDENTICAL 2/2 (captures=2);
+q9 PASS 2/2 — q9's session crossed the same floor and passed by near-tie luck, so its
+latent gap is closed too; q9 graph bench 222.7 tok/s (record 220.49 — no capture tax);
+validate-h100 --quick q35 ALL GATES GREEN (first time for q35). g12 graph gate:
+7/7 PASS post-routing-fix; the two divergent invocations right after the first rebuild
+remain unexplained (stale-binary class suspected) — monitored, not closed.
