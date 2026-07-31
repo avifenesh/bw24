@@ -1,0 +1,14 @@
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q9-p2048g512","arm":"vllm","artifact":"RedHatAI/Qwen3.5-9B-quantized.w8a8","decode_tps":179.32,"prefill_tps":35541.5}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q9-p2048g512","arm":"memra","artifact":"Qwen3.5-9B-Q8_0.gguf","decode_tps":0,"prefill_tps":0}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q35-p2048g512","arm":"vllm","artifact":"Qwen/Qwen3.6-35B-A3B-FP8","decode_tps":224.57,"prefill_tps":18686.3}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q35-p2048g512","arm":"memra","artifact":"Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","decode_tps":240.21,"prefill_tps":4407.4}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"g12-p2048g512","arm":"vllm","artifact":"unsloth/gemma-4-12b-it","decode_tps":81.66,"prefill_tps":25164.6}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"g12-p2048g512","arm":"memra","artifact":"gemma-4-12b-it-qat-q4_0.gguf","decode_tps":151.15,"prefill_tps":17726.5}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"g26-p2048g512","arm":"vllm","artifact":"RedHatAI/gemma-4-26b-a4b-it-FP8-dynamic","decode_tps":194.56,"prefill_tps":44350.2}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"g26-p2048g512","arm":"memra","artifact":"gemma-4-26B_q4_0-it.gguf","decode_tps":180.87,"prefill_tps":5378.5}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"g31-p2048g512","arm":"vllm","artifact":"RedHatAI/gemma-4-31b-it-FP8-dynamic","decode_tps":64.78,"prefill_tps":14259.3}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"g31-p2048g512","arm":"memra","artifact":"gemma-4-31B_q4_0-it.gguf","decode_tps":80.08,"prefill_tps":4714.7}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"e4b-p2048g512","arm":"vllm","artifact":"unsloth/gemma-4-E4B-it","decode_tps":170.66,"prefill_tps":52618.3}
+{"ts":"2026-07-31T14:19:45Z","git":"rsync-tree","rig":"h100-darklanes","cell":"e4b-p2048g512","arm":"memra","artifact":"gemma-4-E4B_q4_0-it.gguf","decode_tps":200.83,"prefill_tps":18859.5}
+{"ts":"2026-07-31T14:57:26Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q9-p2048g512","arm":"vllm","artifact":"RedHatAI/Qwen3.5-9B-quantized.w8a8","decode_tps":179.53,"prefill_tps":35567.8}
+{"ts":"2026-07-31T14:57:26Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q9-p2048g512","arm":"memra","artifact":"Qwen3.5-9B-Q8_0.gguf","decode_tps":219.83,"prefill_tps":10931.3}

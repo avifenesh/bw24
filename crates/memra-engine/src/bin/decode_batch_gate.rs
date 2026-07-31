@@ -60,49 +60,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Distinct prompts per lane so caches/states genuinely diverge; length >= 16
     // (PRIME_MIN_T floor) and deliberately uneven so positions differ across the batch.
+    // MEMRA_GATE_SEED offsets the token pattern — the cross-config drift class is a
+    // near-tie roulette on any single synthetic prompt, so calibration sweeps need
+    // several draws (the 2026-07-31 shexp-dot re-sweep; default 0 = the historic prompt).
+    let seed: u32 = std::env::var("MEMRA_GATE_SEED").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(0);
     let prompts: Vec<Vec<u32>> = (0..b_n.max(2))
-        .map(|i| (0..20 + i as u32 * 5).map(|j| 55 + i as u32 * 97 + j * 31).collect())
+        .map(|i| (0..20 + i as u32 * 5).map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
         .collect();
     let ctx = 512 + steps + 64;
 
-    // ---- Gate 1: B=1 bit-identity ----
-    let mut c_ref = Cache::new(&e, &model.cfg, ctx)?;
-    let mut c_bat = Cache::new(&e, &model.cfg, ctx)?;
-    let _ = model.prime_cache(&e, &prompts[0], &mut c_ref)?;
-    let _ = model.prime_cache(&e, &prompts[0], &mut c_bat)?;
-    let mut t_ref = *prompts[0].last().unwrap();
-    let mut t_bat = t_ref;
+    // ---- Gate 1: B=1 vs decode_step_h ----
+    // strict: bit-identity on the seed prompt (run under the EQUALIZED env).
+    // config: MULTI-SEED calibration (re-swept 2026-07-31, the shexp-dot dig): the two
+    // decode configs carry an ACCEPTED FP-composition gap, and on any single synthetic
+    // prompt the first argmax divergence is a near-tie roulette — a 6-seed sweep of the
+    // PRE-change tree failed the old single-prompt step-16 rule on 3/6 draws (steps
+    // 7/8/15), so that rule detected the dice, not the plumbing. Plumbing bugs (wrong
+    // token fed, KV misindexed) diverge at step 0-2 on EVERY draw; observed numeric-tie
+    // flips start at step 6+. FAIL iff any seed diverges before step 3.
     let mut g1_fail = 0usize;
-    for s in 0..steps {
-        let (l_ref, _) = model.decode_step_h(&e, t_ref, &mut c_ref)?;
-        let l_bat = {
-            let mut caches = [&mut c_bat];
-            model.decode_step_batch(&e, &[t_bat], &mut caches)?.remove(0)
-        };
-        if strict {
-            let bits_equal = l_ref.len() == l_bat.len()
-                && l_ref.iter().zip(l_bat.iter()).all(|(a, b)| a.to_bits() == b.to_bits());
-            if !bits_equal {
-                let md = l_ref.iter().zip(l_bat.iter())
-                    .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-                println!("gate1 step {s}: BIT-DIFF (maxdiff {md:.3e}) FAIL");
-                g1_fail += 1;
-                if g1_fail > 3 { break; }
+    let g1_seeds: u32 = if strict { 1 } else { 6 };
+    for gs in 0..g1_seeds {
+        let p0: Vec<u32> = (0..20).map(|j| 55 + (seed + gs) * 13 + j * 31).collect();
+        let mut c_ref = Cache::new(&e, &model.cfg, ctx)?;
+        let mut c_bat = Cache::new(&e, &model.cfg, ctx)?;
+        let _ = model.prime_cache(&e, &p0, &mut c_ref)?;
+        let _ = model.prime_cache(&e, &p0, &mut c_bat)?;
+        let mut t_ref = *p0.last().unwrap();
+        let mut t_bat = t_ref;
+        let mut diverged: Option<usize> = None;
+        for s in 0..steps {
+            let (l_ref, _) = model.decode_step_h(&e, t_ref, &mut c_ref)?;
+            let l_bat = {
+                let mut caches = [&mut c_bat];
+                model.decode_step_batch(&e, &[t_bat], &mut caches)?.remove(0)
+            };
+            if strict {
+                let bits_equal = l_ref.len() == l_bat.len()
+                    && l_ref.iter().zip(l_bat.iter()).all(|(a, b)| a.to_bits() == b.to_bits());
+                if !bits_equal {
+                    let md = l_ref.iter().zip(l_bat.iter())
+                        .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    println!("gate1 step {s}: BIT-DIFF (maxdiff {md:.3e}) FAIL");
+                    g1_fail += 1;
+                    if g1_fail > 3 { break; }
+                }
             }
+            t_ref = argmax(&l_ref) as u32;
+            t_bat = argmax(&l_bat) as u32;
+            if t_ref != t_bat { diverged = Some(s); break; }
         }
-        t_ref = argmax(&l_ref) as u32;
-        t_bat = argmax(&l_bat) as u32;
-        if t_ref != t_bat {
-            if strict || s < 16 {
-                println!("gate1 step {s}: token diverged FAIL");
+        match diverged {
+            Some(s) if strict || s < 3 => {
+                println!("gate1 seed {gs} step {s}: token diverged FAIL");
                 g1_fail += 1;
-            } else {
-                println!("gate1 step {s}: token diverged — accepted cross-config drift (WARN)");
             }
-            break;
+            Some(s) => println!("gate1 seed {gs} step {s}: token diverged — accepted \
+                                 cross-config drift (WARN)"),
+            None => println!("gate1 seed {gs}: agreement all {steps} steps"),
         }
     }
-    println!("gate1 (B=1 {} vs decode_step_h, {steps} steps): {}",
+    println!("gate1 (B=1 {} vs decode_step_h, {steps} steps, {g1_seeds} seed(s)): {}",
              if strict { "bit-identity" } else { "argmax agreement" },
              if g1_fail == 0 { "PASS" } else { "FAIL" });
 

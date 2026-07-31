@@ -469,8 +469,9 @@ pub fn run(
                         finished.push(0);
                     } else {
                         s.fed.push(pend);
+                        let lm = &loaded[&s.model];
                         let g = s.graph.as_mut().unwrap();
-                        match g.step(&engine) {
+                        match g.step(&engine, &lm.model) {
                             Ok(next) => { s.graph_pending = Some(next); }
                             Err(_) => { finish(s, StopReason::MaxNew); finished.push(0); }
                         }

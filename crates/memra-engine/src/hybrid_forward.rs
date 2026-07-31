@@ -2646,17 +2646,20 @@ impl HybridModel {
                      else { e.matmul(down_shexp, &sa, t)? };     // [T, n_embd]
 
             // shexp gate: qwen35moe sigmoid-gates via ffn_gate_inp_shexp (1-D ne=[n_embd] ->
-            // out_f=1, e.linear NOT matmul); M3 has no gate tensor -> weight 1.0.
+            // out_f=1); M3 has no gate tensor -> weight 1.0. Decode + verify ride the fused
+            // sigmoid-dot kernel (one fold order for both chains; kills the per-layer
+            // cuBLASLt m=1 splitK GEMM — 40x/step, ~10% of the H100 q35 decode step).
+            // Real prefill keeps the batched cuBLASLt linear (large-t GEMV, negligible).
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    let gs = if verify_t {
-                        e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
+                    if t < PRIME_MIN_T {
+                        e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
                     } else {
-                        e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?  // [T, 1]
-                    };
-                    let mut g = e.uninit(t)?;  // sigmoid fully overwrites
-                    e.sigmoid(&gs, &mut g, t)?;
-                    g
+                        let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                        let mut g = e.uninit(t)?;  // sigmoid fully overwrites
+                        e.sigmoid(&gs, &mut g, t)?;
+                        g
+                    }
                 }
                 None => e.htod(&vec![1.0f32; t])?,
             };
@@ -3516,16 +3519,18 @@ impl HybridModel {
             let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
                      else { e.matmul(down_shexp, &sa, t)? };
             // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+            // Same fused sigmoid-dot as moe_ffn_sequential step 3 (byte-identity contract
+            // between the two arms; prefill keeps the batched cuBLASLt linear).
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    let gs = if verify_t {
-                e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
-            } else {
-                e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
-            };
-                    let mut g = e.uninit(t)?;
-                    e.sigmoid(&gs, &mut g, t)?;
-                    g
+                    if t < PRIME_MIN_T {
+                        e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
+                    } else {
+                        let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                        let mut g = e.uninit(t)?;
+                        e.sigmoid(&gs, &mut g, t)?;
+                        g
+                    }
                 }
                 None => e.htod(&vec![1.0f32; t])?,
             };
@@ -4041,12 +4046,18 @@ impl HybridModel {
             Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
             // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+            // Fused sigmoid-dot below PRIME_MIN_T — one fold order with the sequential and
+            // dev decode arms (dispatch choice must not change bits).
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
-                    let mut g = e.uninit(t)?;
-                    e.sigmoid(&gs, &mut g, t)?;
-                    g
+                    if t < PRIME_MIN_T {
+                        e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
+                    } else {
+                        let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                        let mut g = e.uninit(t)?;
+                        e.sigmoid(&gs, &mut g, t)?;
+                        g
+                    }
                 }
                 None => e.htod(&vec![1.0f32; t])?,
             };
@@ -4276,12 +4287,11 @@ impl HybridModel {
             let mut sa = e.zeros(mrows * n_ff_sh)?;
             Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, mrows * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, mrows)?;
+            // lockstep rows ARE decode tokens: fused sigmoid-dot per row so batched serving
+            // decode matches the single-sequence decode chain bit-for-bit.
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    let gs = e.linear(zbatch, gate_inp_shexp.float_data(), mrows, n_embd, 1)?;
-                    let mut g = e.uninit(mrows)?;
-                    e.sigmoid(&gs, &mut g, mrows)?;
-                    g
+                    e.sigmoid_dot_rows(zbatch, gate_inp_shexp.float_data(), n_embd, mrows)?
                 }
                 None => e.htod(&vec![1.0f32; mrows])?,
             };
@@ -4618,12 +4628,27 @@ impl HybridModel {
                                            m.up_exps.qtype, m.up_exps.row_bytes)?)
             };
             let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
-            let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
             let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
             let pself = e.htod_i32(&pair_self)?;
-            let y_down = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
-                                                   n_ff_exp, n_embd, n_expert, n_active, n_pairs,
-                                                   m.down_exps.qtype, m.down_exps.row_bytes)?;
+            // DOWN through the int8-MMA expert GEMM (2026-07-31, g26 prefill lever): the
+            // ragged k (n_ff_exp=704 on the 26B) rides a PADDED k-walk — in_f rounds up
+            // to the 256-val superblock (768) while the act quantizer's zero padding
+            // makes every padded-k product exactly zero (weight overread bytes multiply
+            // zero int8 act values; the dev slab carries 144B tail slack for the OOB).
+            // The old dp4a matvec was 11.3ms/call at m=T (the 0.07x prefill wall).
+            // MEMRA_GEMMA_MOE_MMA=0 reverts down together with gate/up.
+            let y_down = if mma {
+                let in_pad = n_ff_exp.div_ceil(256) * 256;
+                let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
+                e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
+                                 in_pad, n_embd, n_active, n_pairs, n_pairs,
+                                 m.down_exps.qtype, m.down_exps.row_bytes)?
+            } else {
+                let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+                e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
+                                          n_ff_exp, n_embd, n_expert, n_active, n_pairs,
+                                          m.down_exps.qtype, m.down_exps.row_bytes)?
+            };
             let mut moe_out = e.uninit(t * n_embd)?;
             e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
             return Ok(moe_out);
@@ -6519,7 +6544,8 @@ impl HybridModel {
     /// per-layer-embedding tail + layer scale) -> output_norm. Returns (softcapped logits
     /// device [t, n_vocab], pre-output_norm hidden [t, n_embd]). Appends t rows per own-KV
     /// layer; does NOT advance cache.pos (caller owns pos).
-    fn gemma4_e4b_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
+    fn gemma4_e4b_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                        head_last: bool)
                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
@@ -6528,7 +6554,7 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
-        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true)
+        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true, head_last)
     }
 
     /// Layer stack + head over prebuilt (x_scaled, inp_pl, device pos) — everything below
@@ -6536,7 +6562,7 @@ impl HybridModel {
     /// eager chain by construction: SAME functions, not twins).
     fn gemma4_e4b_trunk_core(&self, e: &Engine, x_in: CudaSlice<f32>, inp_pl: CudaSlice<f32>,
                              pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
-                             dc_bucket: Option<usize>, cap_logits: bool)
+                             dc_bucket: Option<usize>, cap_logits: bool, head_last: bool)
                              -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -6618,18 +6644,31 @@ impl HybridModel {
             h_carry = Some(pair);
             x = xn;
         }
-        // the head consumes the last layer's fused (output_norm) emit.
+        // the head consumes the last layer's fused (output_norm) emit. head_last callers
+        // (prime, last_only forward) need only the final row's logits — the all-T head is
+        // t*n_vocab of discarded work (E4B prime: ~134ms GEMM + a 2.26GB dtoh kept 1 row).
         let (oq, odq) = h_carry.take().unwrap();
         let h0 = e.zeros(0)?;
-        let mut ld = e.matmul_pre(&self.output, &oq, &odq, &h0, t)?;
+        let hm = if head_last { 1 } else { t };
+        let (hq, hd) = if head_last && t > 1 {
+            let mut q1 = e.uninit_i8(n_embd)?;
+            e.dtod_copy_view_i8(&oq.slice((t - 1) * n_embd..t * n_embd), &mut q1)?;
+            let nb = n_embd / 32;
+            let mut d1 = e.uninit(nb)?;
+            e.dtod_copy_view(&odq.slice((t - 1) * nb..t * nb), &mut d1)?;
+            (q1, d1)
+        } else {
+            (oq, odq)
+        };
+        let mut ld = e.matmul_pre(&self.output, &hq, &hd, &h0, hm)?;
         // softcap is strictly monotonic — greedy (argmax-only) consumers skip it, matching
         // the 26B/31B dc precedent (their dc head goes matmul -> argmax with no cap).
         // Logit-returning callers (host logits / spec prime) keep the capped emit.
         if cap_logits {
             let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-            e.softcap(&mut ld, cap, t * self.output.out_features())?;
+            e.softcap(&mut ld, cap, hm * self.output.out_features())?;
         }
-        self.gemma4_suppress(e, &mut ld, t)?;   // mask both capped and argmax-only consumers
+        self.gemma4_suppress(e, &mut ld, hm)?;  // mask both capped and argmax-only consumers
         Ok((ld, x))
     }
 
@@ -6653,7 +6692,8 @@ impl HybridModel {
         let mut x = e.embed_gather_device_td(embd_gpu, tok_d, t, n_embd, qt, rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, tok_d, &x, t)?;
-        let (ld, xp) = self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true)?;
+        let (ld, xp) = self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true,
+                                                  false)?;
         // softcap is monotonic — the per-row argmax is invariant to it (the trunk's head
         // emit is already capped, matching the eager chain bit-for-bit).
         let n_vocab = self.output.out_features();
@@ -6675,7 +6715,7 @@ impl HybridModel {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
-        let (ld, xp) = self.gemma4_e4b_trunk(e, tokens, pos0, cache)?;
+        let (ld, xp) = self.gemma4_e4b_trunk(e, tokens, pos0, cache, false)?;
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&xp, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         cache.pos += t;
@@ -6696,7 +6736,8 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket), false)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket),
+                                                  false, false)?;
         e.argmax_token_device_into(&ld, token_d, n_vocab)?;
         e.inc_seqlen(pos_d)?;
         Ok(())
@@ -6720,7 +6761,8 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None, false)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None, false,
+                                                  false)?;
         let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
         e.argmax_token_device_into(&ld, &mut tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;
@@ -6733,7 +6775,7 @@ impl HybridModel {
     /// pre-output_norm hidden). Advances cache.pos.
     pub(crate) fn gemma4_e4b_decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
                                            -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        let (ld, x) = self.gemma4_e4b_trunk(e, &[token], cache.pos, cache)?;
+        let (ld, x) = self.gemma4_e4b_trunk(e, &[token], cache.pos, cache, false)?;
         let logits = e.dtoh(&ld)?;
         cache.pos += 1;
         Ok((logits, x))
@@ -6747,11 +6789,9 @@ impl HybridModel {
         assert_eq!(cache.pos, 0, "e4b prime is fresh-prompt only (v0)");
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
-        let n_vocab = self.output.out_features();
-        let (ld, x) = self.gemma4_e4b_trunk(e, tokens, 0, cache)?;
+        let (ld, x) = self.gemma4_e4b_trunk(e, tokens, 0, cache, true)?;
         cache.pos += t;
-        let lh = e.dtoh(&ld)?;
-        let last = lh[(t - 1) * n_vocab..t * n_vocab].to_vec();
+        let last = e.dtoh(&ld)?;   // head_last: ld is already the final row only
         let xv = e.view(&x, t * n_embd);
         let row = xv.slice((t - 1) * n_embd..t * n_embd);
         let mut h_seed = e.uninit(n_embd)?;
@@ -6763,15 +6803,8 @@ impl HybridModel {
     pub(crate) fn gemma4_e4b_forward(&self, e: &Engine, tokens: &[u32], last_only: bool)
                                      -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let mut cache = Cache::new(e, &self.cfg, tokens.len() + 8)?;
-        let (ld, _x) = self.gemma4_e4b_trunk(e, tokens, 0, &mut cache)?;
-        let lh = e.dtoh(&ld)?;
-        let n_vocab = self.output.out_features();
-        if last_only {
-            let t = tokens.len();
-            Ok(lh[(t - 1) * n_vocab..t * n_vocab].to_vec())
-        } else {
-            Ok(lh)
-        }
+        let (ld, _x) = self.gemma4_e4b_trunk(e, tokens, 0, &mut cache, last_only)?;
+        Ok(e.dtoh(&ld)?)   // head_last already reduced to the final row when last_only
     }
 }
 

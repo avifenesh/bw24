@@ -33,16 +33,29 @@ pub struct GraphSession {
     embd_gpu: CudaSlice<u8>,
     graph: cudarc::driver::CudaGraph,
     plan: Vec<crate::graph_update::FaMain>,
+    /// session budget: last valid t_kv (pos + max_new + 1 at creation).
     pub bucket_max: usize,
+    /// current capture's kernel-class segment end — step() recaptures past it
+    /// (round 45: exec-update retunes splits, it cannot swap kernels; see
+    /// graph_decode_loop's SEGMENTS note).
+    seg_end: usize,
+    qt: i32,
+    row_bytes: usize,
+    n_vocab: usize,
 }
 
 impl GraphSession {
     /// One graph-replay decode step. Returns the next token (already fed back into the
     /// resident token_d — the following step consumes it). Errors past bucket_max
-    /// (the caller sized max_new at capture; recapture-on-cross is a follow-up).
-    pub fn step(&mut self, e: &Engine) -> Result<u32, Box<dyn std::error::Error>> {
+    /// (the caller sized max_new at capture). Transparently recaptures when the eager
+    /// kernel class changes (fa_vec floor / v4 max / fa512 floor crossings).
+    pub fn step(&mut self, e: &Engine, m: &crate::hybrid::HybridModel)
+                -> Result<u32, Box<dyn std::error::Error>> {
         if self.cache.pos + 1 >= self.bucket_max {
             return Err("GraphSession: past bucket_max (generation budget exceeded)".into());
+        }
+        if self.cache.pos + 1 > self.seg_end {
+            m.graph_session_recapture(e, self)?;
         }
         crate::graph_update::fa_apply(&self.graph, &mut self.plan, self.cache.pos + 1,
                                       crate::fa_split_keys)?;
@@ -897,6 +910,16 @@ impl HybridModel {
         cache: &mut Cache,
         n_vocab: usize,
     ) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        // Route gemma4 to ITS dc twin (mirrors decode_step_h): the generic walk below is the
+        // qwen-class layer stack — running gemma weights through it produced the argmax-INIT
+        // passthrough the round-45 g12 gate caught (first Hopper gating of this lane).
+        if self.is_gemma4_e4b() {
+            return Err("e4b has no device-counter decode step (dc/graph unwired)".into());
+        }
+        if self.cfg.gemma4.is_some() {
+            return self.gemma4_decode_step_dc(e, token_d, pos_d, embd_gpu, embd_qt,
+                                              embd_row_bytes, cache, n_vocab, None);
+        }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -1064,6 +1087,16 @@ impl HybridModel {
         // gs.token_d now must hold the first generated INPUT token (= argmax of the last prime step).
         e.set_u32_one(&mut gs.token_d, next_in)?;
 
+        // gemma4 rides ITS graph machinery (per-bucket captures + alloc-free slots; same token
+        // stream convention: first generated token is out[0]) — graph_decode_loop below captures
+        // the qwen-class dc step (the round-45 g12 illegal-address find).
+        if self.cfg.gemma4.is_some() {
+            let (toks, _reason) = self.gemma4_generate_graph(
+                e, cache.pos, next_in, &mut cache, max_new, &[], |_| true)?;
+            gs.captures += 1;
+            return Ok(toks);
+        }
+
         let mut out = Vec::with_capacity(max_new);
         self.graph_decode_loop(e, gs, &mut cache, &embd_gpu, qt, row_bytes, head_dim, max_new,
                                |tok| { out.push(tok); None })?;
@@ -1071,12 +1104,22 @@ impl HybridModel {
     }
 
     /// The CUDA-graph EXEC-UPDATE replay loop over an already-primed cache (2026-07-15,
-    /// the E4B graph-exec pattern generalized): capture the dc step ONCE at
-    /// bucket_max = final t_kv, classify its fa nodes (`graph_update::fa_plan` — symbol
-    /// list is model-generic), then per token retune the fa split geometry to the LIVE
-    /// eager ladder (`fa_apply` keeps graph and eager in FP lockstep — bit-exact) and
-    /// replay. The previous per-bucket-key capture map recaptured on every ladder rung
+    /// the E4B graph-exec pattern generalized): capture the dc step per KERNEL-CLASS
+    /// SEGMENT, classify its fa nodes (`graph_update::fa_plan` — symbol list is
+    /// model-generic), then per token retune the fa split geometry to the LIVE eager
+    /// ladder (`fa_apply` keeps graph and eager in FP lockstep — bit-exact) and replay.
+    /// The previous per-bucket-key capture map recaptured on every ladder rung
     /// (32 recaptures/256 tokens = 97 vs 128 tok/s eager; decode-bench 2026-07-15).
+    ///
+    /// SEGMENTS (round 45, the q35 graph-gate dig): exec-update can retune split counts
+    /// but can NOT swap kernels — a session spanning an eager KERNEL-CLASS boundary
+    /// (fa_vec floor, the v4 max, the fa512 floor) replayed the capture-time kernel
+    /// against a different eager kernel below the boundary: valid softmax, different
+    /// fold order, and the first near-tie flips the stream (q35: deterministic 144/256
+    /// from step 110, exactly the scalar->vec crossing; regime pinned either way =
+    /// BIT-IDENTICAL 256/256). One capture per crossed class boundary (2-3/session,
+    /// not per rung) keeps graph and eager on the SAME kernel at every t_kv.
+    ///
     /// Callers must have synced gs.token_d (= the FIRST generated token), gs.pos_d
     /// (= cache.pos) and every kvl.len_d (= kvl.len). Event tracking must be OFF.
     #[allow(clippy::too_many_arguments)]
@@ -1087,51 +1130,30 @@ impl HybridModel {
                                     -> Result<StopReason, Box<dyn std::error::Error>> {
         let _ = head_dim;
         let n_vocab = self.output.out_features();
-        let bucket_max = cache.pos + max_new + 1;
-
-        // --- capture ONCE at bucket_max (snapshot/rollback the 3 warmup runs) ---
-        let snap = cache.snapshot(e)?;
-        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
-        let len_save: Vec<Option<i32>> = cache.kv.iter()
-            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
-        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
-        let graph = {
-            let GraphDecodeState { token_d, pos_d, .. } = gs;
-            let token_d: &mut CudaSlice<u32> = token_d;
-            let pos_d: &mut CudaSlice<i32> = pos_d;
-            let cache_ref = &mut *cache;
-            let embd_ref = embd_gpu;
-            e.capture_graph(|e| {
-                self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
-                                        cache_ref, n_vocab, bucket_max)
-            })?
-        };
-        gs.captures += 1;   // telemetry (dead since the exec-update rework; round 35 fix)
-        cache.rollback(e, &snap, 0)?;
-        e.set_i32_one(&mut gs.pos_d, pos_save)?;
-        for (il, ls) in len_save.iter().enumerate() {
-            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
-                e.set_i32_one(&mut kvl.len_d, *v)?;
-            }
-        }
-        e.set_u32_one(&mut gs.token_d, tok_save)?;
-        let mut plan = crate::graph_update::fa_plan(&graph)?;
+        let final_max = cache.pos + max_new + 1;
 
         // first generated token = argmax of the last prime step (emit before replay 1).
         let first = e.dtoh_u32_one(&gs.token_d)?;
         if let Some(r) = emit(first) { return Ok(r); }
-        for _ in 1..max_new {
-            // retune fa geometry to the live t_kv AFTER this replay's in-graph append.
-            crate::graph_update::fa_apply(&graph, &mut plan, cache.pos + 1,
-                                          crate::fa_split_keys)?;
-            graph.launch()?;
-            cache.pos += 1;
-            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
-                kvl.len += 1;
+        let mut done = 1usize;
+        while done < max_new {
+            let (graph, mut plan, seg_end) = self.graph_capture_segment(
+                e, cache, gs, embd_gpu, qt, row_bytes, n_vocab, final_max)?;
+
+            while done < max_new && cache.pos + 1 <= seg_end {
+                // retune fa geometry to the live t_kv AFTER this replay's in-graph append.
+                crate::graph_update::fa_apply(&graph, &mut plan, cache.pos + 1,
+                                              crate::fa_split_keys)?;
+                graph.launch()?;
+                cache.pos += 1;
+                for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+                    kvl.len += 1;
+                }
+                // read back the [1] u32 next token (the only D2H in steady state).
+                let tok = e.dtoh_u32_one(&gs.token_d)?;
+                done += 1;
+                if let Some(r) = emit(tok) { return Ok(r); }
             }
-            // read back the [1] u32 next token (the only D2H in steady state).
-            let tok = e.dtoh_u32_one(&gs.token_d)?;
-            if let Some(r) = emit(tok) { return Ok(r); }
         }
         Ok(StopReason::MaxNew)
     }
@@ -1219,7 +1241,94 @@ impl HybridModel {
         self.graph_session_capture(e, cache, gs, embd_gpu, max_new, qt, row_bytes, n_vocab)
     }
 
-    /// Shared capture tail: snapshot/rollback warmups, capture at bucket_max, fa_plan.
+    /// Eager fa kernel-class fingerprint at a given t_kv: the fa_vec pick plus the
+    /// intra-vec variant switches (v4 max, fa512 floor). fa_apply handles split-count
+    /// changes WITHIN a class; anything that changes this tuple needs a fresh capture
+    /// (bucket_max drives the capture-time kernel pick). Round 45.
+    pub(crate) fn fa_class_of(&self, e: &Engine, t_kv: usize) -> (bool, bool, bool) {
+        let head_dim = self.cfg.head_dim_k as usize;
+        let nkv = self.cfg.n_head_kv as usize;
+        let g_fp8 = Engine::kv_fp8_on();
+        (e.fa_geom_eager(t_kv, head_dim, nkv, g_fp8).0,
+         crate::fa_v4_at_pub(t_kv),
+         head_dim == 512 && t_kv >= crate::fa512_min_tkv())
+    }
+
+    /// Last t_kv (clamped to `final_max`) sharing `start`'s eager kernel class.
+    pub(crate) fn fa_segment_end(&self, e: &Engine, start: usize, final_max: usize) -> usize {
+        let cls = self.fa_class_of(e, start);
+        let mut end = start;
+        while end < final_max && self.fa_class_of(e, end + 1) == cls { end += 1; }
+        end
+    }
+
+    /// Capture one kernel-class segment: snapshot/rollback the warmup runs, capture the
+    /// dc step at bucket_max = the segment's last t_kv, fa_plan. Shared by the session
+    /// creation, the session's recapture-on-cross, and graph_decode_loop.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn graph_capture_segment(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        gs: &mut GraphDecodeState,
+        embd_gpu: &CudaSlice<u8>,
+        qt: i32,
+        row_bytes: usize,
+        n_vocab: usize,
+        final_max: usize,
+    ) -> Result<(cudarc::driver::CudaGraph, Vec<crate::graph_update::FaMain>, usize),
+                Box<dyn std::error::Error>> {
+        let t0 = cache.pos + 1;
+        let seg_end = self.fa_segment_end(e, t0, final_max);
+        let bucket_max = seg_end;
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+        let graph = {
+            let GraphDecodeState { token_d, pos_d, .. } = gs;
+            let token_d: &mut CudaSlice<u32> = token_d;
+            let pos_d: &mut CudaSlice<i32> = pos_d;
+            let cache_ref = &mut *cache;
+            e.capture_graph(|e| {
+                self.decode_step_dc_cap(e, token_d, pos_d, embd_gpu, qt, row_bytes,
+                                        cache_ref, n_vocab, bucket_max)
+            })?
+        };
+        gs.captures += 1;
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(&mut gs.pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
+            }
+        }
+        e.set_u32_one(&mut gs.token_d, tok_save)?;
+        let plan = crate::graph_update::fa_plan(&graph)?;
+        if std::env::var("MEMRA_GRAPH_CENSUS").as_deref() == Ok("1") {
+            eprintln!("[graph-census] segment t_kv {t0}..={seg_end} fa_plan mains: {}",
+                      plan.len());
+            if let Ok(c) = crate::graph_update::node_census(&graph) {
+                eprintln!("[graph-census] {c:?}");
+            }
+        }
+        Ok((graph, plan, seg_end))
+    }
+
+    /// Session recapture at a kernel-class boundary (called by GraphSession::step).
+    pub(crate) fn graph_session_recapture(&self, e: &Engine, sess: &mut GraphSession)
+                                          -> Result<(), Box<dyn std::error::Error>> {
+        let (graph, plan, seg_end) = self.graph_capture_segment(
+            e, &mut sess.cache, &mut sess.gs, &sess.embd_gpu,
+            sess.qt, sess.row_bytes, sess.n_vocab, sess.bucket_max)?;
+        sess.graph = graph;
+        sess.plan = plan;
+        sess.seg_end = seg_end;
+        Ok(())
+    }
+
+    /// Shared capture tail: capture the FIRST kernel-class segment, build the session.
     #[allow(clippy::too_many_arguments)]
     fn graph_session_capture(
         &self,
@@ -1233,36 +1342,12 @@ impl HybridModel {
         n_vocab: usize,
     ) -> Result<(GraphSession, u32), Box<dyn std::error::Error>> {
         let embd_gpu = embd_gpu_owned;
-        // capture ONCE at bucket_max (snapshot/rollback the warmup runs — the
-        // graph_decode_loop recipe verbatim)
         let bucket_max = cache.pos + max_new + 1;
-        let snap = cache.snapshot(e)?;
-        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
-        let len_save: Vec<Option<i32>> = cache.kv.iter()
-            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
-        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
-        let graph = {
-            let GraphDecodeState { token_d, pos_d, .. } = &mut gs;
-            let cache_ref = &mut cache;
-            let embd_ref = &embd_gpu;
-            e.capture_graph(|e| {
-                self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
-                                        cache_ref, n_vocab, bucket_max)
-            })?
-        };
-        gs.captures += 1;   // telemetry (dead since the exec-update rework; round 35 fix)
-        cache.rollback(e, &snap, 0)?;
-        e.set_i32_one(&mut gs.pos_d, pos_save)?;
-        for (il, ls) in len_save.iter().enumerate() {
-            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
-                e.set_i32_one(&mut kvl.len_d, *v)?;
-            }
-        }
-        e.set_u32_one(&mut gs.token_d, tok_save)?;
-        let plan = crate::graph_update::fa_plan(&graph)?;
+        let (graph, plan, seg_end) = self.graph_capture_segment(
+            e, &mut cache, &mut gs, &embd_gpu, qt, row_bytes, n_vocab, bucket_max)?;
         let first = e.dtoh_u32_one(&gs.token_d)?;
         Ok((GraphSession {
-            gs, cache, embd_gpu, graph, plan, bucket_max,
+            gs, cache, embd_gpu, graph, plan, bucket_max, seg_end, qt, row_bytes, n_vocab,
         }, first))
     }
 

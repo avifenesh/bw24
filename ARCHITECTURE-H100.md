@@ -2030,3 +2030,129 @@ fused variant at parity (round 41 addendum). e2e context: at the board's p2048/g
 shape, q9 prefill is ~3% of wall — the real payoff is prefill-heavy serving
 (summarization/RAG shapes). Implementation of the production int8 lane is justified
 for those workloads; the sims + harnesses in-tree are the receipts.
+
+## Round 44 — g26 MoE prefill wall pinned (2026-07-31)
+
+The 0.76x g26 e2e cell is prefill-driven (2.9k vs vLLM 44.2k). nsys on the 1738-token
+prime: the expert DOWN projection (in_f=704 — fails the mmq_iq_experts %256 k-rule)
+runs moe_pairs_matvec_q8_dec (dp4a per-pair matvec) at m=T: 11.3ms/call x 120 = 1.36s;
+the gate/up expert MMA (mmq_iq_experts<128,true>) is the second wall at 3.4ms x 240.
+Ranked levers: (1) CHEAP — zero-pad expert down weights k 704->768 at load (+9% expert
+bytes, %256-eligible -> MMA path; pad the gelu output rows to match); (2) grouped
+per-expert Lt/f16 GEMMs over the CSR token groups (the vLLM shape); (3) a k64-tile
+expert GEMM kernel. q35's prefill (0.26x) is the sibling front (its experts pass %256
+— its wall needs its own capture). Implementation = next arc; capture receipts in this
+round's session log.
+
+Round 44 update — g26 expert-down MMA SHIPPED (2026-07-31): the ragged-k (704) down
+projection rides mmq_iq_experts with a padded k-walk (in_f rounds to the 256-val
+superblock = 768; the act quantizer's zero padding nulls every padded-k product;
+144B dev-slab tail slack absorbs the final overread). g26 pp1736: 2901 -> 5042 tok/s
+(1.74x; full-dp4a reference 1723), run-gen argmax MATCH, kernel-check ALL GREEN, q35
+gate MATCH. e2e cell ~0.76x -> ~0.84x. NEXT RUNG: mmq_iq_experts itself runs ~16 TF
+(3.45ms/call, nc=true) — 60x off the CUTLASS int8 rate; the expert GEMM kernel is the
+remaining prefill wall, and the g26 DECODE router (lone-warp, 25.4us x 30 layers —
+the w8 twin is knife-edge-blocked on this model) is the decode rung.
+
+## Round 45 — q35 shexp splitK kill, E4B prime head fix, and the first-time-gate harvest (2026-07-31)
+
+**q35 "cublasLt 40/step" decode mystery SOLVED.** The splitKreduce_kernel x40/step in the
+q35 decode capture was the shared-expert sigmoid gate: `ffn_gate_inp_shexp` (1-D, out_f=1)
+served per layer per step through cuBLASLt as an m=1,n=1,k=2048 GEMM (~14.3us + a separate
+sigmoid launch; 40 layers confirmed by the loader). Fix: `sigmoid_dot_rows_f32` — one fused
+8-warp block-reduce dot + sigmoid launch, wired into every decode-class arm (sequential/dev/
+grouped at t<PRIME_MIN_T, lockstep unconditionally) so dispatch choice cannot change bits;
+prefill keeps the batched cuBLASLt linear. Receipts: kernel-check `sigmoid_dot` maxdiff=0 vs
+CPU; run-gen argmax MATCH (d1736 real prompt); decode-batch STRICT bit-gate PASS; **decode
+d1736 160.0 -> 181.9 tok/s (+13.7%, N=5 interleaved same-session)**. Rollback seam:
+`MEMRA_SHEXP_DOT=0` (numeric-config class, same as MEMRA_ROUTER_V2).
+
+**E4B prime head-last-only.** gemma4_e4b_trunk_core computed the lm_head for ALL T rows
+(t x 262k logits + softcap + a 2.26GB dtoh) and prime kept one row — ~2152x overcompute.
+`head_last` now slices the final row of the fused output_norm q8 emit and runs the head at
+m=1 (the 26B prime pattern); verify/decode callers keep the all-rows head. With the guard
+fix below, **e4b pp1736: ~180 (first-light) -> 20,012 tok/s**; argmax MATCH short + d1736.
+
+**matmul_pre empty-fallback guard (the ledgered landmine, now a crash fixed).** E4B run-gen
+died `memra_f16_pp_gemm rc=30013 (m=1736 n=2048 k=2560)` — the Hopper Q8RP mirror walk
+builds f16 mirrors ungated, campaign A taught build_q8_f16 to admit Q4_0, and E4B's fusion
+port passes an EMPTY x_fallback to matmul_pre, whose fp8/f16/fp4 arms had no length guard
+(the MMQ arm did): a 0-byte buffer fed the convert kernel -> illegal address -> cublasLt
+status 13. One `x_raw_ok` guard now covers all raw-f32 arms.
+
+**decode-batch gate1 re-calibrated (LAW 2 applied to ourselves).** The config-mode step-16
+single-prompt rule failed the PRE-change tree on 3/6 prompt seeds (first divergence steps
+7/8/15) — it detected the near-tie dice of the accepted cross-config FP gap, not plumbing.
+gate1-config now sweeps 6 seeds and FAILs only on divergence before step 3 on any seed
+(plumbing class: wrong token/KV shows at step 0-2 on every draw; observed tie flips start
+at 6+). Bit strength unchanged: strict gate1 + gate2 + decode-dc carry the exactness
+contract. MEMRA_GATE_SEED added for future sweeps.
+
+**First-time-gate harvest (pre-existing, confirmed at base = 3e871640):**
+- **q35 graph-decode diverges from eager** (144/256 mismatches, first @ step ~110, right
+  where the fa regime crosses; buckets (false,1),(true,6..20); 1 capture). q9 graph gate is
+  bit-identical 256/256 on the same tree — qwen-dense is fine; the hybrid's fa-kernel
+  switchover under exec-update replay is the suspect. OPEN.
+- **gemma dc/graph lane is dead on sm_90a**: g12 decode-dc returns the device-argmax INIT
+  value (2147483647) from step 0; graph-decode ILLEGAL ADDRESS inside generate_graph
+  (eager chain green; mirrors/q8rp ruled out by env isolation). The lane was built and
+  gated on the 5090 and had never been gated on Hopper. OPEN.
+Both stay red in validate-h100 until fixed — gates live inside the battery (LAW 3).
+
+Round 45 update — gemma dc lane on sm_90a FIXED at the router (2026-07-31): decode_step_dc
+and generate_graph had NO gemma4 routing — the g12 "dead lane" was gemma weights walking the
+qwen-class dc step (argmax-INIT passthrough in the dc gate; illegal address in the graph
+gate's prime). Routed to gemma4_decode_step_dc / gemma4_generate_graph (decode_step_h's
+pattern; e4b errors explicitly — its dc/graph stay unwired). g12 decode-dc:
+**PASS BIT-IDENTICAL 256 steps** (buckets 2..5). g12 graph-decode: no longer crashes; the
+gemma graph machinery now runs on Hopper but the stream diverges from eager at step 14
+(224/256) — the per-bucket capture map's Hopper geometry is the remaining suspect
+(lane's stream-identity was proven on the 5090 only). OPEN (narrowed).
+
+Round 45 update 2 — graph exec-update SEGMENTED at kernel-class boundaries (2026-07-31):
+the q35 graph divergence root-caused and FIXED. Exec-update replay retunes split counts
+(fa_apply) but cannot swap kernels — a session spanning an eager KERNEL-CLASS boundary
+(the fa_vec floor; also the v4 max and fa512 floor) replayed the capture-time vec kernel
+against eager's scalar kernel below the floor: valid softmax, different fold order, and
+the first near-tie flipped the stream (deterministic 144/256 from step 110 = exactly the
+crossing; regime pinned either way was BIT-IDENTICAL — the isolating experiment).
+graph_decode_loop and GraphSession now capture per kernel-class segment
+(fa_class_of/fa_segment_end/graph_capture_segment; GraphSession::step takes &model and
+recaptures transparently). Receipts: q35 graph-decode PASS BIT-IDENTICAL 2/2 (captures=2);
+q9 PASS 2/2 — q9's session crossed the same floor and passed by near-tie luck, so its
+latent gap is closed too; q9 graph bench 222.7 tok/s (record 220.49 — no capture tax);
+validate-h100 --quick q35 ALL GATES GREEN (first time for q35). g12 graph gate:
+7/7 PASS post-routing-fix; the two divergent invocations right after the first rebuild
+remain unexplained (stale-binary class suspected) — monitored, not closed.
+
+Round 45 update 3 — the board prompt was the ledgered degenerate class (2026-07-31): the
+h100-vllm-board harness (both arms) primed on fox-repeat 2048. On g26 that flat next-token
+distribution flips the prefill-vs-decode argmax on EVERY dispatch arm (MMA lever, dp4a
+fallback, f16-mirrors-off — maxdiff ~11 each; the two chains are different numeric classes
+by design and the degenerate distribution sits inside the gap), so run-gen's gate panics
+and the cell records 0. Yesterday's g26 rows were 0/0 BOTH runs — the g26 board cell never
+had a valid memra measurement (raw rows recovered into research/tune-data/ from the box's
+old tree; they were never committed — harness + rows are in-repo from now). Board prompt
+swapped to REAL TEXT (research/e2e/prompts/board-2048.txt, ~2100 tok, both arms same file):
+g26 gate MATCH (maxdiff 1.7). Full 6-cell board re-running on the real prompt for one
+consistent table. Interim same-session receipts (fox, gate-passing cells only): q35 decode
+240.0 vs vLLM 224.5 (decode WIN, was 0.79x); e4b decode 365.6 vs 170.5 + prefill 19.3k vs
+52.3k (e2e ~2.0x, was 1.05x).
+
+Round 45 update 4 — the REAL-TEXT full board (2026-07-31, the round's scoreboard):
+all six cells re-measured on board-2048 (real text, ~2100 tok, both arms same file,
+N=5 medians, argmax gate green on every published row; raw rows
+research/tune-data/h100board-vllm-20260731-realtext.jsonl). e2e (512 gen wall):
+g12 146 vs 81 (1.81x) | g31 75 vs 64 (1.18x) | q9 204 vs 176 (1.16x) |
+e4b 193 vs 168 (1.14x) | q35 197 vs 214 (0.92x) | g26 159 vs 191 (0.83x).
+Decode-only: 5/6 wins (q9 1.22x, q35 1.07x — the FP8-MoE decode loss FLIPPED via the
+shexp fused dot; g12 1.85x, g31 1.24x, e4b 1.18x; g26 0.93x the one decode loss).
+Board-motion attribution: q35 0.71x -> 0.92x (shexp dot + real-prompt basis);
+e4b 1.05x -> 1.14x (head-last prime + the empty-fallback crash fix; fox had inflated
+e4b decode ~365 via degenerate per-layer-embed locality — real text says 201);
+g26 0.76x-row was UNSOUND (yesterday's memra rows were 0/0) -> first valid cell 0.83x.
+q9 f16 prefill mirrors DEFAULTED OFF for the Q8_0 dense class (per-model argmax-gate
+arbitration: f16-vs-int8 gap 0.67 maxdiff flips a real-prompt top-tie, deterministic
+x5; gemma + MoE hybrids hold MATCH and keep mirrors) — q9 prefill 10.9k gate-clean,
+row still a 1.16x e2e win. NEXT RUNG unchanged: mmq_iq_experts kernel rate (~16 TF,
+60x off CUTLASS int8) gates BOTH remaining losses.

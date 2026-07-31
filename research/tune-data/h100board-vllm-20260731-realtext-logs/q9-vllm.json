@@ -1,0 +1,39 @@
+{
+ "engine": "vllm",
+ "model": "RedHatAI/Qwen3.5-9B-quantized.w8a8",
+ "ngen": 512,
+ "prompt_tokens": 2048,
+ "runs": [
+  {
+   "run": 1,
+   "prefill_tps": 35567.8,
+   "decode_tps": 179.52,
+   "ttft_s": 0.0576
+  },
+  {
+   "run": 2,
+   "prefill_tps": 35263.2,
+   "decode_tps": 179.53,
+   "ttft_s": 0.0581
+  },
+  {
+   "run": 3,
+   "prefill_tps": 35175.6,
+   "decode_tps": 179.56,
+   "ttft_s": 0.0582
+  },
+  {
+   "run": 4,
+   "prefill_tps": 35811.2,
+   "decode_tps": 179.53,
+   "ttft_s": 0.0572
+  },
+  {
+   "run": 5,
+   "prefill_tps": 36138.4,
+   "decode_tps": 179.49,
+   "ttft_s": 0.0567
+  }
+ ],
+ "decode_tps_median": 179.53
+}
