@@ -2030,3 +2030,16 @@ fused variant at parity (round 41 addendum). e2e context: at the board's p2048/g
 shape, q9 prefill is ~3% of wall — the real payoff is prefill-heavy serving
 (summarization/RAG shapes). Implementation of the production int8 lane is justified
 for those workloads; the sims + harnesses in-tree are the receipts.
+
+## Round 44 — g26 MoE prefill wall pinned (2026-07-31)
+
+The 0.76x g26 e2e cell is prefill-driven (2.9k vs vLLM 44.2k). nsys on the 1738-token
+prime: the expert DOWN projection (in_f=704 — fails the mmq_iq_experts %256 k-rule)
+runs moe_pairs_matvec_q8_dec (dp4a per-pair matvec) at m=T: 11.3ms/call x 120 = 1.36s;
+the gate/up expert MMA (mmq_iq_experts<128,true>) is the second wall at 3.4ms x 240.
+Ranked levers: (1) CHEAP — zero-pad expert down weights k 704->768 at load (+9% expert
+bytes, %256-eligible -> MMA path; pad the gelu output rows to match); (2) grouped
+per-expert Lt/f16 GEMMs over the CSR token groups (the vLLM shape); (3) a k64-tile
+expert GEMM kernel. q35's prefill (0.26x) is the sibling front (its experts pass %256
+— its wall needs its own capture). Implementation = next arc; capture receipts in this
+round's session log.
