@@ -49,28 +49,30 @@ is byte-for-byte the tuned 5090 engine.
 
 ## The H100 build (sm_90a)
 
-The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, same session
-(single-stream, ~2048-token prompt, 512 gen, N=5 medians). Cross-artifact by design:
+The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, same session.
+One number per arm: **end-to-end tok/s** — 512 tokens generated on a ~2048-token
+prompt, single request, total wall time (N=5 medians). Cross-artifact by design:
 vLLM serves what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it
-rejects these GGUFs); memra serves its GGUF artifacts. Decode / prefill in tok/s:
+rejects these GGUFs); memra serves its GGUF artifacts.
 
-| model | memra | vLLM 0.26 (artifact) | decode | prefill |
-|---|---:|---:|---:|---:|
-| Qwen3.5-9B | 219 / 26,335 | 180 / 36,149 (w8a8) | **1.22x** | 0.73x |
-| Qwen3.6-35B MoE | 181 / 4,608 | 231 / 17,927 (FP8) | 0.79x | 0.26x |
-| Gemma-4 12B | 153 / 17,094 | 82 / 25,650 (bf16) | **1.88x** | 0.67x |
-| Gemma-4 26B MoE | 183 / 2,902 | 194 / 44,219 (FP8-dyn) | 0.94x | 0.07x |
-| Gemma-4 31B | 80 / 7,589 | 65 / 14,335 (FP8-dyn) | **1.23x** | 0.53x |
-| Gemma-4 E4B | 355 / 1,401 | 170 / 52,244 (bf16) | **2.09x** | 0.03x |
+| model | memra e2e | vLLM 0.26 e2e (artifact) | ratio |
+|---|---:|---:|---:|
+| Gemma-4 12B | **148** | 81 (bf16) | **1.83x** |
+| Qwen3.5-9B | **212** | 177 (w8a8) | **1.20x** |
+| Gemma-4 31B | **77** | 64 (FP8-dyn) | **1.20x** |
+| Gemma-4 E4B | **176** | 168 (bf16) | **1.05x** |
+| Gemma-4 26B MoE | 146 | 191 (FP8-dyn) | 0.76x |
+| Qwen3.6-35B MoE | 157 | 220 (FP8) | 0.71x |
 
-Decode wins on exact math (bf16-row wins carry a quant-advantage caveat — those vLLM
-arms move 4x the bytes). The losses are published, mechanism-priced, and moving: the
-12B/31B prefill columns jumped 2.1x/1.6x in one release (Q4_0→fp16 prefill mirrors),
-and the remaining Qwen prefill gap is the int8-GEMM dtype edge — a Q8_0-exact int8
-GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x naive / 17x
-pipelined; ptxas serializes cross-bank GMMA register reads), so crossing it means
-w8a8-class numerics that change model outputs — an accuracy-bar decision with measured
-receipts (net 1.05–1.26x at prefill shapes), not an engineering unknown.
+Wins on exact math (the bf16-row wins carry a quant-advantage caveat — those vLLM arms
+move 4x the weight bytes). The losses are published, mechanism-priced, and moving:
+both losing cells are MoE prefill/expert paths with mapped levers, and the 12B/31B
+rows each gained double-digit e2e in one release (Q4_0→fp16 prefill mirrors). The
+remaining Qwen prefill deficit inside these numbers is the int8-GEMM dtype edge — a
+Q8_0-exact int8 GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x
+naive / 17x pipelined; ptxas serializes cross-bank GMMA register reads), so crossing
+it means w8a8-class numerics that change model outputs — an accuracy-bar decision with
+measured receipts, not an engineering unknown.
 
 Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4.8x the
 mma kernel), fused wgmma GDN chunk kernels with varlen twins, Q4_0/Q8_0→fp16 prefill

@@ -1526,7 +1526,7 @@ impl HybridModel {
         let mut scr = self.verify_stream_scratch(e, 1)?;
         let mut tok_d = e.stream().alloc_zeros::<u32>(1)?;
         e.u32_set_k(&mut tok_d, last, 0)?;
-        let mut pos_ctr = e.htod_i32(&[cache.pos as i32])?;
+        let pos_ctr = e.htod_i32(&[cache.pos as i32])?;
         let mut pos_start_d = e.htod_i32(&[cache.pos as i32])?;
         let acc0 = e.stream().alloc_zeros::<u32>(2)?;          // acc[0] = 0 -> counters +1
         let mut ring = e.stream().alloc_zeros::<u32>(ring_cap)?;
