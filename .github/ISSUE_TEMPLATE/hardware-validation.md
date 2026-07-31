@@ -1,10 +1,10 @@
 ---
 name: Hardware validation report
-about: You ran bw24 on your rig — share the results, whatever the card
+about: You ran memra on your rig — share the results, whatever the card
 ---
 
 <!--
-bw24 is tuned on ONE machine: an RTX 5090 Laptop (82 SMs, ~847 GB/s). Reports from EVERY
+memra is tuned on ONE machine: an RTX 5090 Laptop (82 SMs, ~847 GB/s). Reports from EVERY
 end-user rig are wanted:
 
 - Other sm_120 cards (desktop 5090, 5080, 5070 Ti, 5070) share the architecture — kernels
@@ -36,7 +36,7 @@ If you have a supported model with an MTP drafter, also paste the `run-spec` PAS
 
 ## Performance cells (optional, but the valuable part)
 
-If you have the models locally: `BW24_MODELS_DIR=<your model root> tools/local-ci.sh --perf`
+If you have the models locally: `MEMRA_MODELS_DIR=<your model root> tools/local-ci.sh --perf`
 — paste the per-cell verdict lines. Cells whose models you don't have skip cleanly.
 
 For a llama.cpp comparison, follow the interleaved protocol in

@@ -5,10 +5,10 @@
 //   c++ -O3 -march=native tools/bench_vulkan_expert.cpp \
 //     -I/path/llama.cpp/ggml/include -L/path/vulkan-build/bin \
 //     -Wl,-rpath,/path/vulkan-build/bin \
-//     -lggml-vulkan -lggml-cpu -lggml -lggml-base -o /tmp/bw24-bench-vulkan-expert
+//     -lggml-vulkan -lggml-cpu -lggml -lggml-base -o /tmp/memra-bench-vulkan-expert
 //
 // Run with GGML_VK_VISIBLE_DEVICES=0:
-//   bw24-bench-vulkan-expert FILE OFFSET QTYPE IN_F OUT_F ROW_BYTES ITERATIONS
+//   memra-bench-vulkan-expert FILE OFFSET QTYPE IN_F OUT_F ROW_BYTES ITERATIONS
 
 #include "ggml-backend.h"
 #include "ggml-cpu.h"

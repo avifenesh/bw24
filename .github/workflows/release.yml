@@ -39,17 +39,17 @@ jobs:
       - name: Build
         run: cargo build --release --bins
         env:
-          BW24_NVCC: /usr/local/cuda-13.1/bin/nvcc
-          BW24_CUDA_ARCH: ${{ matrix.cuda_arch }}
+          MEMRA_NVCC: /usr/local/cuda-13.1/bin/nvcc
+          MEMRA_CUDA_ARCH: ${{ matrix.cuda_arch }}
 
       - name: Package binaries
         run: |
           glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
-          pkg="bw24-$GITHUB_REF_NAME-linux-x86_64-glibc$glibc-sm${{ matrix.cuda_arch }}"
+          pkg="memra-$GITHUB_REF_NAME-linux-x86_64-glibc$glibc-sm${{ matrix.cuda_arch }}"
           mkdir -p "/tmp/$pkg"
-          cp target/release/{run-gen,run-spec,bw24-server,kernel-check} "/tmp/$pkg/"
+          cp target/release/{run-gen,run-spec,memra-server,kernel-check} "/tmp/$pkg/"
           {
-            echo "bw24 $GITHUB_REF_NAME — prebuilt Linux x86_64 binaries (sm_${{ matrix.cuda_arch }} fatbin)"
+            echo "memra $GITHUB_REF_NAME — prebuilt Linux x86_64 binaries (sm_${{ matrix.cuda_arch }} fatbin)"
             echo ""
             echo "Requirements: NVIDIA driver with CUDA 13.x runtime support, the CUDA 13.1"
             echo "runtime libraries (cudart, cublas), and glibc >= $glibc."
@@ -57,7 +57,7 @@ jobs:
             echo "(compiles and runs, NOT performance-tuned — see README Limitations)."
             echo ""
             echo "Quick start: ./kernel-check   # expect: ALL GREEN: kernels match CPU reference."
-            echo "Docs: https://github.com/avifenesh/bw24"
+            echo "Docs: https://github.com/avifenesh/memra"
           } > "/tmp/$pkg/README.txt"
           tar -C /tmp -czf "/tmp/$pkg.tar.gz" "$pkg"
           echo "PKG_NAME=$pkg" >> "$GITHUB_ENV"

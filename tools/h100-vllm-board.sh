@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # H100 board vs vLLM (task #22, 2026-07-30) — runs ON the darklanes-bench box.
 # Per model, the pinned showdown protocol (bench_vllm.py): single-stream p~2048/g512,
-# N=5 + warmup, decode_tps median + prefill_tps. bw24 arm = run-gen, same shape,
+# N=5 + warmup, decode_tps median + prefill_tps. memra arm = run-gen, same shape,
 # 5 invocations. Same-session blocks per model (H100 SXM clocks are stable; the
 # 122.6% decode pin was measured this way).
 #
 # ARTIFACT NOTE (honest row semantics): vLLM serves what an H100 user deploys
-# (w8a8 / FP8 / bf16 HF checkpoints — vLLM rejects these GGUFs); bw24 serves its
+# (w8a8 / FP8 / bf16 HF checkpoints — vLLM rejects these GGUFs); memra serves its
 # GGUF artifacts. Rows carry the artifact name; this is a cross-artifact,
 # same-model comparison BY DESIGN (the user-facing question), not same-bytes.
 #
@@ -17,14 +17,14 @@ FILTER="${1:-.}"
 OUT="${2:-research/tune-data/h100board-vllm-20260730.jsonl}"
 LOGD="${OUT%.jsonl}-logs"; mkdir -p "$LOGD" "$(dirname "$OUT")"
 VP=$HOME/vllm-env/bin/python
-BV=$HOME/bw24/bench_vllm.py
+BV=$HOME/memra/bench_vllm.py
 BW=target/release/run-gen
 M=$HOME/models
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 GIT_SHA=$(git -C . rev-parse --short HEAD 2>/dev/null || echo rsync-tree)
 NGEN=512
 
-# ~2048-token prompt for bw24 (per-model tokenizer variance is a few %; prefill
+# ~2048-token prompt for memra (per-model tokenizer variance is a few %; prefill
 # normalizes by the actual token count run-gen prints; decode is shape-independent).
 FOX=/tmp/fox2048.txt
 python3 -c 'print("The quick brown fox jumps over the lazy dog. " * 215, end="")' > "$FOX"
@@ -58,13 +58,13 @@ vllm_arm() { # name model_id tokenizer(optional)
     || { echo "  [$name/vllm] FAILED — $(tail -2 "$LOGD/$name-vllm.log" | head -1)"; row "$name" vllm "$mid" 0 0; }
 }
 
-bw24_arm() { # name gguf
+memra_arm() { # name gguf
   local name=$1 gguf=$2
-  local log="$LOGD/$name-bw24.log"
+  local log="$LOGD/$name-memra.log"
   local decs=() pres=()
   for r in 1 2 3 4 5; do
     wait_idle
-    BW24_NGEN=$NGEN BW24_PROMPT_FILE="$FOX" timeout 1800 $BW "$gguf" >> "$log" 2>&1
+    MEMRA_NGEN=$NGEN MEMRA_PROMPT_FILE="$FOX" timeout 1800 $BW "$gguf" >> "$log" 2>&1
     local d p
     d=$(grep -oE "= [0-9.]+ tok/s \((Stage|graph)" "$log" | tail -1 | grep -oE "[0-9.]+" | head -1)
     [ -z "$d" ] && d=$(grep -oE "generated $NGEN tokens in [0-9.]+s = [0-9.]+" "$log" | tail -1 | grep -oE "[0-9.]+$")
@@ -74,15 +74,15 @@ bw24_arm() { # name gguf
   local dec pre
   dec=$(printf '%s\n' "${decs[@]}" | sort -n | sed -n 3p)
   pre=$(printf '%s\n' "${pres[@]}" | sort -n | sed -n 3p)
-  row "$name" bw24 "$(basename "$gguf")" "$dec" "$pre"
+  row "$name" memra "$(basename "$gguf")" "$dec" "$pre"
 }
 
-cell() { # name vllm_id bw24_gguf [tokenizer]
+cell() { # name vllm_id memra_gguf [tokenizer]
   echo "$1" | grep -qE "$FILTER" || return 0
   [ -f "$3" ] || { echo "== $1 SKIP (no gguf $3)"; return 0; }
-  echo "== $1 (vllm vs bw24, p2048/g512, N=5 medians) =="
+  echo "== $1 (vllm vs memra, p2048/g512, N=5 medians) =="
   vllm_arm "$1" "$2" "${4:-}"
-  bw24_arm "$1" "$3"
+  memra_arm "$1" "$3"
 }
 
 echo "=== H100 vLLM BOARD $TS git=$GIT_SHA filter=$FILTER ==="

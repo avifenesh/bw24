@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# bw24 vs llama.cpp vs vLLM vs SGLang — FAIR single-stream prefill+decode, N=5 medians.
+# memra vs llama.cpp vs vLLM vs SGLang — FAIR single-stream prefill+decode, N=5 medians.
 # Protocol is defined in COMPETITOR-SETUP.md section 5 and MUST stay identical across all 4 engines:
 #   same prompt (P=512), same gen length (N_GEN=128, greedy/temp0), single stream, 1 warmup,
 #   N timed runs -> MEDIAN, gpu-full-power on, GPU otherwise idle (SERIAL).
 #
 # SERIAL by design: each engine runs ALONE. vLLM/SGLang GPU-memory profiling RACES if other GPU
-# procs allocate/free during init. NEVER run two engines (or a bench + bw24) concurrently.
-# This script auto-runs ONLY llama.cpp (llama-bench, llama-server+MTP) and bw24 (both release the GPU
+# procs allocate/free during init. NEVER run two engines (or a bench + memra) concurrently.
+# This script auto-runs ONLY llama.cpp (llama-bench, llama-server+MTP) and memra (both release the GPU
 # fully between steps). vLLM/SGLang are PRINTED as exact serial commands (their init race is the reason).
 set -euo pipefail
 export PATH=/usr/local/cuda-13.1/bin:$PATH
@@ -78,7 +78,7 @@ else
 fi
 
 # ------------------------------------------------------------------ #
-# 3. bw24 run-gen — decode tok/s (no-spec; prefill timing N/A yet)     #
+# 3. memra run-gen — decode tok/s (no-spec; prefill timing N/A yet)     #
 #    1 warmup discarded, then N timed; median printed.                #
 #    Prompt = fixed P token ids of the SAME content for both models.  #
 #    NOTE: run_gen.rs times DECODE only (loops decode_step over the    #
@@ -88,24 +88,24 @@ fi
 # Fixed 512-id prompt (repeat a deterministic id pattern to length P).
 PROMPT_IDS=$(awk -v n="$P" 'BEGIN{for(i=0;i<n;i++){printf "%d ", 100+(i*7)%900}}')
 
-run_bw24() {  # $1=label  $2=model
-  echo "### bw24 $1 decode (warmup+$N timed, median; prefill=N/A) ###"
+run_memra() {  # $1=label  $2=model
+  echo "### memra $1 decode (warmup+$N timed, median; prefill=N/A) ###"
   if [ ! -f "$2" ]; then echo "  SKIP: model missing: $2"; return; fi
   # warmup (discarded)
-  BW24_NGEN="$NGEN" cargo run -q --release -p bw24-engine --bin run-gen -- "$2" $PROMPT_IDS >/dev/null 2>&1 || \
-    { echo "  bw24 run-gen failed (model may use a dtype not yet validated — see ROADMAP debt)"; return; }
+  MEMRA_NGEN="$NGEN" cargo run -q --release -p memra-engine --bin run-gen -- "$2" $PROMPT_IDS >/dev/null 2>&1 || \
+    { echo "  memra run-gen failed (model may use a dtype not yet validated — see ROADMAP debt)"; return; }
   for i in $(seq 1 "$N"); do
-    BW24_NGEN="$NGEN" cargo run -q --release -p bw24-engine --bin run-gen -- "$2" $PROMPT_IDS 2>/dev/null \
+    MEMRA_NGEN="$NGEN" cargo run -q --release -p memra-engine --bin run-gen -- "$2" $PROMPT_IDS 2>/dev/null \
       | grep -oE "[0-9.]+ tok/s" | grep -oE "[0-9.]+" | head -1
-  done | median | awk '{print "  bw24 decode median: " $1 " tok/s (no-spec, native KV)"}'
+  done | median | awk '{print "  memra decode median: " $1 " tok/s (no-spec, native KV)"}'
 }
-# bw24 runs the fast int8-dp4a path under BW24_FAST (Stage-B). Q6_K dp4a fixed (commit 11bcc84)
+# memra runs the fast int8-dp4a path under MEMRA_FAST (Stage-B). Q6_K dp4a fixed (commit 11bcc84)
 # so 9B-NVFP4 (Q6_K lm_head) now argmax=268 == llama.cpp. NVFP4 decode is currently ALU-bound
 # (~19% of 164 tok/s ceiling) — codebook-lookup kernel is the open perf debt, not correctness.
-export BW24_FAST=1
-run_bw24 "9B Q8_0"  "$M9_Q8"
-run_bw24 "9B NVFP4" "$M9_NVFP4"
-run_bw24 "27B NVFP4" "$M27_NVFP4"
+export MEMRA_FAST=1
+run_memra "9B Q8_0"  "$M9_Q8"
+run_memra "9B NVFP4" "$M9_NVFP4"
+run_memra "27B NVFP4" "$M27_NVFP4"
 
 # ------------------------------------------------------------------ #
 # 4. vLLM + 5. SGLang — RUN SERIALLY (printed; not auto-run: init race)#
@@ -140,5 +140,5 @@ echo "=================================================================="
 echo " Headline bars to beat (24GB sm_120, single-stream, MEASURED llama.cpp):"
 echo "   9B decode 126.6 t/s | 27B decode no-spec 42.1 / peak(MTP) 66.6 t/s"
 echo "   9B prefill 6220 pp$P | 27B prefill 1980 pp$P"
-echo " bw24 now: 9B Q8_0 decode 59.6 t/s (no-spec). Ranking table in COMPETITOR-SETUP.md section 6."
+echo " memra now: 9B Q8_0 decode 59.6 t/s (no-spec). Ranking table in COMPETITOR-SETUP.md section 6."
 echo "=================================================================="

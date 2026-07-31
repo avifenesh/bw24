@@ -25,8 +25,8 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import coo_array
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-SCORE_FORMAT = "bw24-expert-retention-scores-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+SCORE_FORMAT = "memra-expert-retention-scores-v1"
 TENSOR_RE = re.compile(
     r"^blk\.(?P<layer>\d+)\.ffn_(?P<projection>gate|up|down)_exps\."
     r"(?P<expert>\d+)\.weight$"
@@ -302,7 +302,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-exact-budget-plan-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-exact-budget-plan-") as tmp:
         root = Path(tmp)
         manifest_path, scores_path, plan_path = (
             root / "manifest.json", root / "scores.json", root / "plan.json"

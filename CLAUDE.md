@@ -1,4 +1,4 @@
-# bw24 — project instructions
+# memra — project instructions
 
 ## Branch isolation
 
@@ -42,10 +42,10 @@ the other, and report spill performance separately from model-quality comparison
 - Model loading, spill correctness, research measurements, artifact generation, and public evals
   run on the provisioned G7e research machine. Do not merge or tag this lane until its remote raw logs
   and five-arm eval report exist.
-- The local RTX 5090 rig remains bw24's deployment and final performance target. Treat G7e results
+- The local RTX 5090 rig remains memra's deployment and final performance target. Treat G7e results
   as research evidence, not a default-flip decision; re-run correctness, memory, and throughput gates
   on the 5090 before shipping any runtime default.
-- GGUF remains bw24's primary runtime and delivery format. Hy3 safetensors are a pinned source for
+- GGUF remains memra's primary runtime and delivery format. Hy3 safetensors are a pinned source for
   this quantization study, and per-expert repack directories are experimental artifacts, not a
   format pivot. Put spill/cache improvements in shared paths and preserve GGUF gates and behavior.
 - Optimize expert serving as one storage-to-compute pipeline: mmap fallback, explicit positioned
@@ -56,7 +56,7 @@ the other, and report spill performance separately from model-quality comparison
   regression.
 - Keep durable model/artifact copies under `/data`, but stage byte-identical scored artifacts onto
   the G7e local NVMe (`/scratch`) for calibration, public evals, and spill benchmarks. Record the
-  staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as bw24 spill speed.
+  staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as memra spill speed.
 
 Why: a projection-wide dtype silently decodes some experts with the wrong block layout; routing a
 pruned id dereferences nonexistent weights; and a G7e-only performance win may not transfer to the
@@ -99,16 +99,16 @@ K=1..8 self-consistency. A kernel change without before/after numbers measured p
 
 ## Additional accelerator backends
 
-Blackwell remains bw24's primary optimized target. When research or deployment needs another
-accelerator, prefer an explicitly gated bw24 backend over changing the model or quantization
+Blackwell remains memra's primary optimized target. When research or deployment needs another
+accelerator, prefer an explicitly gated memra backend over changing the model or quantization
 artifact. Secondary backends must preserve the model bytes, default off at build time, document
 disabled target-specific kernels, and pass a same-prompt golden-output gate before producing
 scored evidence. They do not change the naked sm_120a build or its performance defaults.
 
 ### The sm_90a (Hopper/H100) lane — merged into main 2026-07-30
 
-Build: arch auto-detects on an H100 (`BW24_CUDA_ARCH=90a` forces). Hopper promotions are
-compile-gated behind `bw24_hopper_mma` — the naked sm_120a build stays byte-identical.
+Build: arch auto-detects on an H100 (`MEMRA_CUDA_ARCH=90a` forces). Hopper promotions are
+compile-gated behind `memra_hopper_mma` — the naked sm_120a build stays byte-identical.
 Evidence ledger: `ARCHITECTURE-H100.md` (append-only; every
 promoted config, every mechanism refutation). Gate battery: `tools/validate-h100.sh
 <model.gguf> [--quick]` — kernel-check config pins, decode-batch (config + strict),
@@ -154,6 +154,6 @@ self-consistency PASS. Never tag a commit without the target-rig battery.
 
 Winners are defaults — no flag needed to get the tuned path (naked commands = full speed).
 Environment variables exist only for: runtime parameters (prompt/gen/spec knobs), machine-specific
-config (VRAM budgets, KV formats, spill), rollback seams (`BW24_FAST=0` oracle path), diagnostics,
+config (VRAM budgets, KV formats, spill), rollback seams (`MEMRA_FAST=0` oracle path), diagnostics,
 and explicitly-blocked experimental doors. Catalog: `docs/FLAGS.md`. When an experiment concludes
 negative or flat, kill its flag and dispatch arm — the JSONL row is the record, not dead code.

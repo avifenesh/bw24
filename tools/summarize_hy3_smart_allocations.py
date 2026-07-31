@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-OUTPUT_FORMAT = "bw24-hy3-smart-allocation-comparison-v1"
-RECEIPT_FORMAT = "bw24-hy3-allocation-analysis-receipt-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+OUTPUT_FORMAT = "memra-hy3-smart-allocation-comparison-v1"
+RECEIPT_FORMAT = "memra-hy3-allocation-analysis-receipt-v1"
 PROJECTIONS = ("gate", "up", "down")
 
 
@@ -246,7 +246,7 @@ def self_test() -> None:
             }],
         }
 
-    with tempfile.TemporaryDirectory(prefix="bw24-smart-allocation-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-smart-allocation-") as tmp:
         root = Path(tmp)
         paths = []
         for name, payload in (

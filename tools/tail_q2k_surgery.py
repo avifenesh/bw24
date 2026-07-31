@@ -7,10 +7,11 @@ screen is the quality gate."""
 import ctypes, json, os, struct, sys, hashlib
 import numpy as np
 
-SRC_RT = '/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme'
+SRC_RT = '/home/avifenesh/.local/share/memra-models/hy3-layer103p5-dual-nvme'
 OUT_RT = '/data/ai-ml/hf-models/hy3-tailq2k-runtime'
 BF16 = '/data/ai-ml/hf-models/hy3-tail-bf16'
-DEMOTE = '/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/tail-q2k-demote-set.json'
+DEMOTE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                      'research/per-expert-quant/tail-q2k-demote-set.json')
 GGML = os.path.expanduser('~/projects/llama.cpp/build/bin/libggml-base.so')
 GGML_TYPE_Q2_K = 10
 

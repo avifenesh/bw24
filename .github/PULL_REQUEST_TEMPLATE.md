@@ -37,7 +37,7 @@ days) — cross-session ratios have been measured to drift up to ~10% from clock
 
 - [ ] `run-gen` on a real model, full output attached/pasted, argmax line included
 - [ ] `run-spec` (required if this touches attention, GEMM, MoE dispatch, or KV cache)
-- [ ] `bw24-server` request/response (required if this touches request handling or batching)
+- [ ] `memra-server` request/response (required if this touches request handling or batching)
 
 ## Scope check
 

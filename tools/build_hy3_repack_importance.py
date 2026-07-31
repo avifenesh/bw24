@@ -72,7 +72,7 @@ def build(
         for qtype in ("IQ3_S", "IQ4_XS", "Q4_K")
     }
     result = {
-        "format": "bw24-hy3-repack-importance-v1",
+        "format": "memra-hy3-repack-importance-v1",
         "purpose": "encode frozen qtypes only; never select experts or precision",
         "public_eval_data_used_for_selection": False,
         "source_plan": {"path": str(plan_path.resolve()), "sha256": sha256(plan_path)},
@@ -92,11 +92,11 @@ def build(
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-repack-importance-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-repack-importance-") as tmp:
         root = Path(tmp)
         plan = root / "plan.json"
         plan.write_text(json.dumps({
-            "format": "bw24-expert-tier-plan-v2",
+            "format": "memra-expert-tier-plan-v2",
             "model": {"moe_layers": [1, 2], "expert_count": 3},
             "calibration": {"public_eval_data_used_for_selection": False},
         }))

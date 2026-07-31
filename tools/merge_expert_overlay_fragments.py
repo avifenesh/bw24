@@ -124,11 +124,11 @@ def merge(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-overlay-fragments-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-overlay-fragments-") as tmp:
         root = Path(tmp)
         plan_path = root / "plan.json"
         plan = {
-            "format": "bw24-expert-tier-plan-v2",
+            "format": "memra-expert-tier-plan-v2",
             "model": {"expert_count": 2, "moe_layers": [1, 2]},
             "pruned_experts": {"1": [1], "2": []},
             "assignments": [
@@ -178,7 +178,7 @@ def self_test() -> None:
 
     # Integration gate: the same plan built sequentially or as disjoint layer fragments must
     # produce byte-identical expert payloads and identical final tensor/tier inventories.
-    with tempfile.TemporaryDirectory(prefix="bw24-overlay-fragment-integration-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-overlay-fragment-integration-") as tmp:
         root = Path(tmp)
         source, sequential, parallel = root / "source", root / "sequential", root / "parallel"
         source.mkdir()
@@ -200,7 +200,7 @@ def self_test() -> None:
         (source / "config.json").write_text("{}\n")
         plan_path = root / "real-plan.json"
         plan_path.write_text(json.dumps({
-            "format": "bw24-expert-tier-plan-v2",
+            "format": "memra-expert-tier-plan-v2",
             "model": {"expert_count": 2, "moe_layers": [1, 2]},
             "pruned_experts": {},
             "assignments": [

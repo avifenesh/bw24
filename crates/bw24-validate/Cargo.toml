@@ -1,6 +1,0 @@
-[package]
-name = "bw24-validate"
-version = "0.0.0"
-edition = "2021"
-
-[dependencies]

@@ -1,4 +1,4 @@
-# FORMAT-DECISION.md — what bw24 optimizes for (2026-07-04)
+# FORMAT-DECISION.md — what memra optimizes for (2026-07-04)
 
 **User's criterion (verbatim intent):** the decision is NOT what we already built and NOT the
 current daily models — models change daily, the RIG doesn't. Optimize for the fastest possible
@@ -9,7 +9,7 @@ rework is acceptable; this is a long-running inference project, not a weekend bu
 ## Decision: RIG-NATIVE internal layout; GGUF and safetensors are both just IMPORT formats
 
 Neither GGUF blocks nor HF/modelopt safetensors layouts are the optimization target. The target is
-a **bw24-internal weight layout chosen per weight-class by what the sm_120a datapath wants**, with
+a **memra-internal weight layout chosen per weight-class by what the sm_120a datapath wants**, with
 BOTH file formats repacked into it at load (one-time cost, irrelevant at serve time).
 
 Why not GGUF-first: GGUF block layouts were designed for llama's dp4a/MMQ kernels. The FASTEST

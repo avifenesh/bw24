@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-FORMAT = "bw24-expert-tier-plan-v2"
-CONFIDENCE_FORMAT = "bw24-token-confidence-v1"
+FORMAT = "memra-expert-tier-plan-v2"
+CONFIDENCE_FORMAT = "memra-token-confidence-v1"
 
 
 def sha256(path: Path) -> str:
@@ -314,7 +314,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-confidence-plan-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-confidence-plan-") as tmp:
         root = Path(tmp)
         requests = root / "requests.jsonl"
         confidence = root / "confidence.jsonl"

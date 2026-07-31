@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Normal-usage serving battery: boots bw24-server like a user would and exercises the
+# Normal-usage serving battery: boots memra-server like a user would and exercises the
 # real API surface — chat (stream + non-stream), plain completions, concurrency, greedy
 # determinism, and spec-vs-plain greedy identity (the exactness contract at
 # the SERVING level, not just the kernel gates).
@@ -10,7 +10,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # Default = the 9B NVFP4 + its regime draft (full serving support; E4B's serve path is
-# first-light only — dc/graph/spec unwired — and gemma assistant drafts use BW24_DRAFT,
+# first-light only — dc/graph/spec unwired — and gemma assistant drafts use MEMRA_DRAFT,
 # not the '+draft' NextN attach).
 MODEL="${1:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf}"
 DRAFT="${2:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf}"
@@ -21,12 +21,12 @@ FAILS=0
 PASS() { echo "  ok: $1"; }
 FAIL() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
-[ -x target/release/bw24-server ] || cargo build --release -p bw24-server
+[ -x target/release/memra-server ] || cargo build --release -p memra-server
 
 start_server() {  # extra env via prefix, e.g. start_server "smoke=/path.gguf"
-  # BW24_COMPAT=openai: this battery tests the OpenAI-compatible surface the README
+  # MEMRA_COMPAT=openai: this battery tests the OpenAI-compatible surface the README
   # sells (the default native /v1/completions shape is a different contract).
-  BW24_COMPAT=openai BW24_MODELS="$1" BW24_ADDR=$ADDR target/release/bw24-server > /tmp/serve-smoke.log 2>&1 &
+  MEMRA_COMPAT=openai MEMRA_MODELS="$1" MEMRA_ADDR=$ADDR target/release/memra-server > /tmp/serve-smoke.log 2>&1 &
   SPID=$!
   for _ in $(seq 120); do curl -sf $BASE/health >/dev/null 2>&1 && return 0; sleep 2; done
   echo "server did not come up; log tail:"; tail -5 /tmp/serve-smoke.log; return 1

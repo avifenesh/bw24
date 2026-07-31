@@ -20,8 +20,8 @@ from typing import Any
 import numpy as np
 
 
-FORMAT = "bw24-expert-retention-scores-v1"
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
+FORMAT = "memra-expert-retention-scores-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
 
 
 def sha256(path: Path) -> str:
@@ -138,7 +138,7 @@ def build_scores(source: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-coverage-complement-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-coverage-complement-") as tmp:
         root = Path(tmp)
         source = {
             "format": FORMAT,

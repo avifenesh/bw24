@@ -135,7 +135,7 @@ def main() -> int:
             print(f"prepared {index}/{len(files)} expert files", flush=True)
 
     receipt = {
-        "format": "bw24-dual-nvme-expert-view-v1",
+        "format": "memra-dual-nvme-expert-view-v1",
         "source_runtime": str(source_runtime),
         "view": str(output),
         "source_device": source_device,

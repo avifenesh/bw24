@@ -4,13 +4,13 @@
 #
 #   1. build + run tools/ggml_dequant_ref (links libggml) -> /tmp/dq/<name>.{raw,ref}
 #      = exact quant bytes + ggml dequantize_row_<type> (via to_float) f32.
-#   2. cargo run dequant_oracle_diff           -> diff bw24 CPU dequant vs ggml .ref
-#   3. cargo run --bin dtype_gpu_check5        -> diff bw24 GPU (Stage-A + dp4a) vs
-#      cpu_linear(bw24_dequant(W),x), which step 2 proved == ggml.
+#   2. cargo run dequant_oracle_diff           -> diff memra CPU dequant vs ggml .ref
+#   3. cargo run --bin dtype_gpu_check5        -> diff memra GPU (Stage-A + dp4a) vs
+#      cpu_linear(memra_dequant(W),x), which step 2 proved == ggml.
 set -euo pipefail
 
 LL=/home/avifenesh/projects/llama.cpp
-BW=/home/avifenesh/projects/bw24
+BW=/home/avifenesh/projects/memra
 G9B=/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
 G35B=/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
 export LD_LIBRARY_PATH="$LL/build/bin:${LD_LIBRARY_PATH:-}"
@@ -29,8 +29,8 @@ REF="$BW/tools/ggml_dequant_ref"
 
 echo
 echo "### 2/3 CPU dequant vs ggml byte-for-byte ###"
-cargo run -q -p bw24-gguf --example dequant_oracle_diff
+cargo run -q -p memra-gguf --example dequant_oracle_diff
 
 echo
 echo "### 3/3 GPU qmatvec (Stage-A + dp4a) vs ggml-equivalent oracle ###"
-cargo run -q -p bw24-engine --bin dtype_gpu_check5
+cargo run -q -p memra-engine --bin dtype_gpu_check5

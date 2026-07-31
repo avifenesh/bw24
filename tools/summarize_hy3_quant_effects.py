@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 
-FORMAT = "bw24-hy3-quant-sensitivity-v1"
-OUTPUT_FORMAT = "bw24-hy3-quant-effects-map-v1"
+FORMAT = "memra-hy3-quant-sensitivity-v1"
+OUTPUT_FORMAT = "memra-hy3-quant-effects-map-v1"
 PROJECTIONS = ("gate", "up", "down")
 DEFAULT_QTYPES = ("Q8_0", "NVFP4", "Q3_K", "Q2_K")
 

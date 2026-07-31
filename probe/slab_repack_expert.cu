@@ -31,7 +31,7 @@
 // 7MB layer looped would measure L2 bandwidth, not the real decode DRAM regime where 40 MoE
 // layers stream through). Gate: bit-identity of act/dst arrays (memcmp) + interleaved A/B/A
 // timing, N=5 reps, median. Decision per brief: rp kernel win < 15% => record NEGATIVE and close
-// the direction; >= 15% => integrate behind BW24_MOE_RP.
+// the direction; >= 15% => integrate behind MEMRA_MOE_RP.
 //
 // Build:
 //   nvcc -O3 -arch=compute_120a -code=sm_120a probe/slab_repack_expert.cu -o probe/slab_repack_expert

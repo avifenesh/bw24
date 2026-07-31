@@ -22,10 +22,10 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import coo_array
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-RETENTION_FORMAT = "bw24-expert-retention-scores-v1"
-SENSITIVITY_FORMAT = "bw24-hy3-quant-sensitivity-v1"
-LAYER_CONSTRAINTS_FORMAT = "bw24-hy3-layer-constraints-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+RETENTION_FORMAT = "memra-expert-retention-scores-v1"
+SENSITIVITY_FORMAT = "memra-hy3-quant-sensitivity-v1"
+LAYER_CONSTRAINTS_FORMAT = "memra-hy3-layer-constraints-v1"
 PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
     "Q8_0": (32, 34),
@@ -602,7 +602,7 @@ def self_test() -> None:
         {"IQ3_S": 1.0, "Q3_K": 2.0, "Q2_K": 3.0},
         {"IQ3_S": 110, "Q3_K": 110, "Q2_K": 84},
     ) == {"Q3_K": "IQ3_S"}
-    with tempfile.TemporaryDirectory(prefix="bw24-smart-budget-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-smart-budget-") as tmp:
         root = Path(tmp); layers = [1, 2]; experts = range(3)
         qtypes = ["Q8_0", "NVFP4", "IQ3_S", "Q3_K", "Q2_K"]
         retention = {

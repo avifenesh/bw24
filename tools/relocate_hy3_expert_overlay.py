@@ -82,8 +82,8 @@ def prepare_sparse_source_view(overlay: Path, source: Path, output: Path) -> dic
     output = _new_output_path(output)
     manifest_path = overlay / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("format") != "bw24-expert-overlay-v2":
-        raise ValueError("sparse source views require a bw24 expert overlay v2")
+    if manifest.get("format") != "memra-expert-overlay-v2":
+        raise ValueError("sparse source views require a memra expert overlay v2")
     _verify_source_fingerprints(manifest, source)
 
     index_path = source / "model.safetensors.index.json"
@@ -175,7 +175,7 @@ def prepare_sparse_source_view(overlay: Path, source: Path, output: Path) -> dic
 
     real_bytes = sum((source / shard).stat().st_size for shard in real_shards)
     receipt = {
-        "format": "bw24-sparse-hf-source-view-v1",
+        "format": "memra-sparse-hf-source-view-v1",
         "overlay_manifest_sha256": sha256(manifest_path),
         "source": str(source),
         "source_index_sha256": sha256(index_path),
@@ -200,8 +200,8 @@ def relocate(overlay: Path, source: Path, output: Path) -> dict[str, object]:
     manifest_path = overlay / "manifest.json"
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
-    if manifest.get("format") not in {"bw24-expert-overlay-v1", "bw24-expert-overlay-v2"}:
-        raise ValueError("input is not a bw24 expert overlay")
+    if manifest.get("format") not in {"memra-expert-overlay-v1", "memra-expert-overlay-v2"}:
+        raise ValueError("input is not a memra expert overlay")
     if not (overlay / "experts").is_dir():
         raise ValueError("overlay experts directory is missing")
 
@@ -217,7 +217,7 @@ def relocate(overlay: Path, source: Path, output: Path) -> dict[str, object]:
     runtime_manifest = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
     (output / "manifest.json").write_bytes(runtime_manifest)
     receipt = {
-        "format": "bw24-relocated-expert-overlay-v1",
+        "format": "memra-relocated-expert-overlay-v1",
         "overlay": str(overlay),
         "published_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "runtime_manifest_sha256": hashlib.sha256(runtime_manifest).hexdigest(),
@@ -231,7 +231,7 @@ def relocate(overlay: Path, source: Path, output: Path) -> dict[str, object]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-relocate-overlay-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-relocate-overlay-") as tmp:
         root = Path(tmp)
         overlay = root / "overlay"
         source = root / "source"
@@ -246,7 +246,7 @@ def self_test() -> None:
         overlay.joinpath("manifest.json").write_text(
             json.dumps(
                 {
-                    "format": "bw24-expert-overlay-v2",
+                    "format": "memra-expert-overlay-v2",
                     "source_dir": "/build/source",
                     "quant_source_dir": "/build/source",
                     "source_fingerprints": fingerprints,
@@ -312,7 +312,7 @@ def self_test() -> None:
         # must ignore them rather than treating them as missing HF expert tensors.
         sparse_tensors["blk.1.ffn_gate_inp.weight"] = {"source": "healed-router"}
         sparse_manifest = {
-            "format": "bw24-expert-overlay-v2",
+            "format": "memra-expert-overlay-v2",
             "source_fingerprints": sparse_fingerprints,
             "fallback_fingerprints": sparse_fingerprints,
             "pruned_experts": {"1": [1]},

@@ -39,7 +39,7 @@ class NvmeBuilderPathSafetyTests(unittest.TestCase):
                         module.payload_name(unsafe)
 
     def test_contained_path_rejects_parent_escape(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="bw24-nvme-path-test-") as temp:
+        with tempfile.TemporaryDirectory(prefix="memra-nvme-path-test-") as temp:
             root = Path(temp) / "artifact"
             root.mkdir()
             for module_name in ("build_dual_nvme_expert_view", "build_expert_mirror_map"):

@@ -3,7 +3,7 @@
 
 Reads two JSONL files emitted by acceptance_battery.sh (rows: arm/prompt/k/run/acc_rate/per_slot/...)
 and prints, per (prompt, K), the median acceptance of each arm and the delta. The delta (ceiling minus
-quant) IS the quant hit on drafting — the MTP-heal protocol deliverable (HANDOVER "BW24 DUAL-SHAPE").
+quant) IS the quant hit on drafting — the MTP-heal protocol deliverable (HANDOVER "MEMRA DUAL-SHAPE").
 First file = ceiling (bf16), second = quant (NVFP4), unless --a-arm/--b-arm pin labels.
 
 Usage:

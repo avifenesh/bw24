@@ -5,7 +5,7 @@
 //
 // Playbook (the K4/K5 harness discipline): v1 proves ONE warpgroup QK^T tile against the
 // CPU reference (descriptor layout iterated via -D knobs), then softmax+PV, then the
-// pipelined kernel, then engine integration behind BW24_FA3.
+// pipelined kernel, then engine integration behind MEMRA_FA3.
 //
 // Shapes: qwen35 attn — T=2048, H=16, HKV=4 (GQA 4:1), D=256, causal.
 // Layouts (engine): Q/O [T, H, D] token-major; K/V [T, HKV, D] token-major (bf16 mirrors).

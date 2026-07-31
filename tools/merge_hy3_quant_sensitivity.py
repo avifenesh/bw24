@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-FORMAT = "bw24-hy3-quant-sensitivity-v1"
+FORMAT = "memra-hy3-quant-sensitivity-v1"
 
 
 def sha256(path: Path) -> str:
@@ -165,7 +165,7 @@ def merge_qtypes(paths: list[Path]) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-merge-quant-sensitivity-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-merge-quant-sensitivity-") as tmp:
         root = Path(tmp); paths = []
         for layer in (1, 2):
             path = root / f"lane-{layer}.json"; paths.append(path)

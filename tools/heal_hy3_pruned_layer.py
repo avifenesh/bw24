@@ -23,9 +23,9 @@ from safetensors.torch import save_file
 from ggml_quant_bridge import EXTERNAL_QTYPES, GgmlQuantBridge, load_importance_sidecar
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-SCORE_FORMAT = "bw24-expert-retention-scores-v1"
-CHECKPOINT_FORMAT = "bw24-hy3-prune-heal-layer-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+SCORE_FORMAT = "memra-expert-retention-scores-v1"
+CHECKPOINT_FORMAT = "memra-hy3-prune-heal-layer-v1"
 
 
 def sha256(path: Path) -> str:
@@ -598,7 +598,7 @@ def self_test() -> None:
     q2 = quantized_base(probe, "Q2_K")
     assert q2.dtype == torch.bfloat16 and q2.shape == probe.shape
     assert not torch.equal(q2, probe)
-    with tempfile.TemporaryDirectory(prefix="bw24-hy3-layer-heal-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-hy3-layer-heal-") as tmp:
         root = Path(tmp)
         source, trace, targets = root / "source", root / "trace", root / "targets"
         source.mkdir(); trace.mkdir(); targets.mkdir()

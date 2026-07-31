@@ -16,8 +16,8 @@ from safetensors.torch import save_file
 import torch
 
 
-RECEIPT_FORMAT = "bw24-hy3-prune-heal-layer-v1"
-LOCK_FORMAT = "bw24-hy3-prune-heal-overlay-v1"
+RECEIPT_FORMAT = "memra-hy3-prune-heal-layer-v1"
+LOCK_FORMAT = "memra-hy3-prune-heal-overlay-v1"
 
 
 def sha256(path: Path) -> str:
@@ -198,7 +198,7 @@ def verify_lock(path: Path) -> dict:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-heal-merge-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-heal-merge-") as tmp:
         root = Path(tmp)
         source, overlay, receipt_dir = root / "source", root / "overlay", root / "receipts"
         source.mkdir()

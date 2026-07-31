@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Parse ONE run-spec invocation's merged stdout+stderr into a single JSONL acceptance row.
 
-Contract: the caller runs run-spec with BW24_SPEC_K=<k> (exactly one K) and BW24_SPEC_STATS=1,
+Contract: the caller runs run-spec with MEMRA_SPEC_K=<k> (exactly one K) and MEMRA_SPEC_STATS=1,
 merges stderr into stdout (2>&1), and pipes it here. Metadata (arm/prompt/run/model/...) comes via
 flags; the numeric acceptance/per-slot/tok-s fields are scraped from the output. The row is APPENDED
 to --out. Used by acceptance_battery.sh and agent_loop_acceptance.sh — the bf16-vs-nvfp4 deliverable
-(MTP-heal protocol, see HANDOVER "BW24 DUAL-SHAPE").
+(MTP-heal protocol, see HANDOVER "MEMRA DUAL-SHAPE").
 
-run-spec lines consumed (see crates/bw24-engine/src/bin/run_spec.rs + spec.rs [spec-stats]):
+run-spec lines consumed (see crates/memra-engine/src/bin/run_spec.rs + spec.rs [spec-stats]):
   [generate]   31 tok in 0.500s = 62.00 tok/s (gen-only; this run's prime 0.100s)
   [generate_spec K=3] 32 tok in 0.400s = 77.50 tok/s (1.25x vs generate; this run's prime 0.100s)
     acceptance: 27/40 = 67.5%   self-consistency: PASS (identical to generate)

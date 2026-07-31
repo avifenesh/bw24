@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge disjoint bw24 expert-retention score shards into one frozen score file."""
+"""Merge disjoint memra expert-retention score shards into one frozen score file."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-FORMAT = "bw24-expert-retention-scores-v1"
+FORMAT = "memra-expert-retention-scores-v1"
 
 
 def sha256(path: Path) -> str:
@@ -99,7 +99,7 @@ def merge(paths: list[Path]) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-score-merge-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-score-merge-") as tmp:
         root = Path(tmp)
         paths = []
         for layer in (1, 2):

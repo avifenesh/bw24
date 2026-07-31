@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# H100 full-board bench (task #22, 2026-07-30): every model bw24 serves on sm_90a,
+# H100 full-board bench (task #22, 2026-07-30): every model memra serves on sm_90a,
 # interleaved same-session vs llama.cpp (same fork, same GGUF artifacts — the 5090
 # board protocol). Runs ON the darklanes-bench box.
 #
@@ -45,15 +45,15 @@ llama_tg() { # cell model depth extra...
     | grep -E "tg128" | grep -oE '[0-9.]+ ±' | grep -oE '^[0-9.]+' | tail -1
 }
 
-bw24_plain() { # cell model promptfile ngen
+memra_plain() { # cell model promptfile ngen
   local cell=$1 model=$2 pf=$3 ngen=$4
-  local log="$LOGD/$cell-bw24.log"
+  local log="$LOGD/$cell-memra.log"
   if echo "$pf" | grep -q 'ids'; then
     # shellcheck disable=SC2046
-    BW24_NGEN="$ngen" timeout 900 $BW/run-gen "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
+    MEMRA_NGEN="$ngen" timeout 900 $BW/run-gen "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
       | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
   else
-    BW24_NGEN="$ngen" BW24_PROMPT_FILE="$pf" timeout 900 $BW/run-gen "$model" 2>&1 | tee -a "$log" \
+    MEMRA_NGEN="$ngen" MEMRA_PROMPT_FILE="$pf" timeout 900 $BW/run-gen "$model" 2>&1 | tee -a "$log" \
       | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
   fi
 }
@@ -65,7 +65,7 @@ plain_cell() { # cell model bwprompt ngen depth llama_extra...
   echo "== $cell (plain, interleaved x$N_PAIRS) =="
   for _ in $(seq 1 $N_PAIRS); do
     wait_idle; t=$(llama_tg "$cell" "$model" "$depth" "$@"); row "$cell" llama "${t:-0}"
-    wait_idle; t=$(bw24_plain "$cell" "$model" "$pf" "$ngen"); row "$cell" bw24 "${t:-0}"
+    wait_idle; t=$(memra_plain "$cell" "$model" "$pf" "$ngen"); row "$cell" memra "${t:-0}"
   done
 }
 

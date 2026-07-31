@@ -43,7 +43,7 @@ def main() -> None:
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     plan = manifest.get("plan")
-    if not isinstance(plan, dict) or plan.get("format") != "bw24-expert-tier-plan-v2":
+    if not isinstance(plan, dict) or plan.get("format") != "memra-expert-tier-plan-v2":
         raise SystemExit("manifest lacks a v2 allocation plan")
     if manifest.get("plan_sha256") != args.expected_plan_sha256:
         raise SystemExit("manifest plan receipt does not match the expected frozen hash")

@@ -11,19 +11,19 @@ QUICK=""
 [ "${2:-}" = "--quick" ] && QUICK=1
 cd "$(dirname "$0")/.."
 export PATH=$HOME/.cargo/bin:$PATH
-NVCC="${BW24_NVCC:-/usr/local/cuda-13.1/bin/nvcc}"
+NVCC="${MEMRA_NVCC:-/usr/local/cuda-13.1/bin/nvcc}"
 STEPS=$([ -n "$QUICK" ] && echo 16 || echo 32)
 FAIL=0
 
 echo "== build (sm_90a; cu sources touched to defeat rsync-stale fatbins) =="
-touch crates/bw24-engine/cu/*.cu crates/bw24-engine/build.rs
-BW24_CUDA_ARCH=90a BW24_NVCC=$NVCC cargo build --release -p bw24-engine \
+touch crates/memra-engine/cu/*.cu crates/memra-engine/build.rs
+MEMRA_CUDA_ARCH=90a MEMRA_NVCC=$NVCC cargo build --release -p memra-engine \
   --bin kernel-check --bin run-gen --bin decode-batch-gate --bin decode-batch-bench \
   || exit 1
-BW24_CUDA_ARCH=90a BW24_NVCC=$NVCC cargo build --release -p bw24-server || exit 1
+MEMRA_CUDA_ARCH=90a MEMRA_NVCC=$NVCC cargo build --release -p memra-server || exit 1
 
 echo "== gate: policy tests =="
-BW24_CUDA_ARCH=90a BW24_NVCC=$NVCC cargo test --release -p bw24-engine --lib 2>&1 | tail -1
+MEMRA_CUDA_ARCH=90a MEMRA_NVCC=$NVCC cargo test --release -p memra-engine --lib 2>&1 | tail -1
 
 echo "== gate: kernel-check =="
 ./target/release/kernel-check | tail -1 | grep -q "ALL GREEN" || { echo "KERNEL-CHECK FAIL"; FAIL=1; }
@@ -33,7 +33,7 @@ echo "== gate: decode-batch (config B=8) =="
   | tail -1 | grep -q "ALL GREEN" || { echo "BATCH-GATE(config) FAIL"; FAIL=1; }
 
 echo "== gate: decode-batch (strict, equalized composition) =="
-BW24_MMVQ=0 BW24_NO_FUSE_NORMQ=1 ./target/release/decode-batch-gate "$MODEL" \
+MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1 ./target/release/decode-batch-gate "$MODEL" \
   --steps $STEPS --batch 4 --mode strict \
   | tail -1 | grep -q "ALL GREEN" || { echo "BATCH-GATE(strict) FAIL"; FAIL=1; }
 
@@ -41,7 +41,7 @@ BW24_MMVQ=0 BW24_NO_FUSE_NORMQ=1 ./target/release/decode-batch-gate "$MODEL" \
 # an emission off-by-one in the gate masqueraded as 171/256 stream corruption. Everything
 # guarding a live lane belongs HERE.)
 echo "== gate: decode-dc (device counters, bit-identity) =="
-BW24_CUDA_ARCH=90a BW24_NVCC=$NVCC cargo build --release -p bw24-engine \
+MEMRA_CUDA_ARCH=90a MEMRA_NVCC=$NVCC cargo build --release -p memra-engine \
   --bin decode-dc-gate --bin graph-decode-gate --bin graph-session-gate >/dev/null 2>&1
 ./target/release/decode-dc-gate "$MODEL" 2>&1 | tail -1 | grep -q "PASS" \
   || { echo "DC-GATE FAIL"; FAIL=1; }
@@ -58,8 +58,8 @@ if [ -z "$QUICK" ] && [ $FAIL -eq 0 ]; then
     | grep -E "B=|scale"
   echo "== perf record: single-seq prime+decode (N=3) =="
   # tee the raw log; never let the pipe swallow error output (evidence discipline)
-  bash tools/bench_bw24_protocol.sh "$MODEL" 3 512 2>&1 | tee bw24-single.log \
-    | grep -E "run [0-9]|median" || echo "single-seq bench produced no readings — see bw24-single.log"
+  bash tools/bench_memra_protocol.sh "$MODEL" 3 512 2>&1 | tee memra-single.log \
+    | grep -E "run [0-9]|median" || echo "single-seq bench produced no readings — see memra-single.log"
 fi
 
 [ $FAIL -eq 0 ] && echo "VALIDATE-H100: ALL GATES GREEN" || echo "VALIDATE-H100: FAILURES ($FAIL)"
