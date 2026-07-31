@@ -2177,3 +2177,11 @@ gemma4 BY DESIGN (decode.rs) and the gemma graph door on MoE was never Hopper-ga
 decode-dc PASSES. Pre-existing, not this arc (base tree graph gate = the pre-routing
 illegal address). Remaining kernel rungs: `wait` dep-chains at 2 warps/scheduler
 (register diet for occupancy), W-ring depth with counted waits, IQ3_S staging.
+
+Round 46 addendum — inc4 + the q35 form verdict (2026-07-31): clamped-column gather skip
+shipped (+0.3% both cells — free, correct, not a win). q35's two kernel forms priced:
+down (16,256) at SM 59.9% short-scoreboard = near the structure's ceiling; gate/up (4,252)
+= tiny per-expert GEMMs (~65-pair groups, one half-empty tile x 8 k-blocks) — the 64-tile
+variant REFUTED on paper (avg 65 -> half the groups double their W dequant). That shape's
+fix class is expert-batched GEMM (CUTLASS grouped int8), a separate arc with bounded e2e
+leverage (q35 prime ~15% of wall). The kernel-rate arc closes at 2.01x g26 / board 0.89x.

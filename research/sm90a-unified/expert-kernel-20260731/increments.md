@@ -30,3 +30,17 @@ kernels in the trace are the argmax gate's per-token decode-verify pass, not the
 NEXT RUNGS (measured): `wait` dep-chain stalls at 2 warps/scheduler — occupancy via
 register diet (accumulator tiling) or deeper ILP; W-ring depth 2+ with group-counted
 waits; IQ3_S staging (110B rows need 2B tail handling).
+
+## inc4 + the q35 form (post-v0.56.0 addendum)
+
+| increment | cell | result |
+|---|---|---|
+| inc4: skip clamped-column gathers | q35 5447->5461, g26 10130->10169 | +0.3% both — kept (free, correct), not a win |
+
+q35 ncu: TWO kernel forms. Down (16,256): SM 59.9%, short_scoreboard-dominant — near this
+structure's ceiling. Gate/up (4,252): 3.11ms, long_scoreboard — groups average ~65 pairs
+so every CTA runs ONE half-empty 128-token tile over 8 k-blocks; the whole shape is a tiny
+per-expert GEMM (512 out x 65 tok x 2048 k). 64-token tile REFUTED ON PAPER: avg 65 > 64
+means half the groups take 2 passes = 2x W dequant for the same mma. The fix class for
+this shape is expert-BATCHED GEMM (CUTLASS grouped int8 / the vLLM shape) — a separate
+arc; prime is ~15% of the q35 e2e wall, so the e2e leverage is bounded (~2-3%).
