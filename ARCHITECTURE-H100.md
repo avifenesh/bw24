@@ -2124,3 +2124,17 @@ latent gap is closed too; q9 graph bench 222.7 tok/s (record 220.49 — no captu
 validate-h100 --quick q35 ALL GATES GREEN (first time for q35). g12 graph gate:
 7/7 PASS post-routing-fix; the two divergent invocations right after the first rebuild
 remain unexplained (stale-binary class suspected) — monitored, not closed.
+
+Round 45 update 3 — the board prompt was the ledgered degenerate class (2026-07-31): the
+h100-vllm-board harness (both arms) primed on fox-repeat 2048. On g26 that flat next-token
+distribution flips the prefill-vs-decode argmax on EVERY dispatch arm (MMA lever, dp4a
+fallback, f16-mirrors-off — maxdiff ~11 each; the two chains are different numeric classes
+by design and the degenerate distribution sits inside the gap), so run-gen's gate panics
+and the cell records 0. Yesterday's g26 rows were 0/0 BOTH runs — the g26 board cell never
+had a valid memra measurement (raw rows recovered into research/tune-data/ from the box's
+old tree; they were never committed — harness + rows are in-repo from now). Board prompt
+swapped to REAL TEXT (research/e2e/prompts/board-2048.txt, ~2100 tok, both arms same file):
+g26 gate MATCH (maxdiff 1.7). Full 6-cell board re-running on the real prompt for one
+consistent table. Interim same-session receipts (fox, gate-passing cells only): q35 decode
+240.0 vs vLLM 224.5 (decode WIN, was 0.79x); e4b decode 365.6 vs 170.5 + prefill 19.3k vs
+52.3k (e2e ~2.0x, was 1.05x).

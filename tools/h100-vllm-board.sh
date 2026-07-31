@@ -24,10 +24,12 @@ TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 GIT_SHA=$(git -C . rev-parse --short HEAD 2>/dev/null || echo rsync-tree)
 NGEN=512
 
-# ~2048-token prompt for memra (per-model tokenizer variance is a few %; prefill
-# normalizes by the actual token count run-gen prints; decode is shape-independent).
-FOX=/tmp/fox2048.txt
-python3 -c 'print("The quick brown fox jumps over the lazy dog. " * 215, end="")' > "$FOX"
+# ~2048-token REAL-TEXT prompt for memra (round 45: fox-repeat is the ledgered degenerate
+# class — flat distribution flips argmax across numeric arms; g26 gate MISMATCH at maxdiff
+# ~11 on every dispatch arm, real prompts MATCH). Same file feeds bench_vllm.py. Per-model
+# tokenizer variance is a few %; prefill normalizes by the actual token count run-gen
+# prints; decode is shape-independent.
+FOX=research/e2e/prompts/board-2048.txt
 
 wait_idle() {
   for _ in $(seq 90); do

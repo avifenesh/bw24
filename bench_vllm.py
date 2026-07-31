@@ -29,7 +29,13 @@ def main():
     llm = LLM(model=args.model, max_model_len=args.prompt_tokens + args.ngen + 64,
               gpu_memory_utilization=0.90, enable_prefix_caching=False, **kwargs)
     tok = llm.get_tokenizer()
-    ids = tok("The quick brown fox jumps over the lazy dog. " * 800)["input_ids"]
+    # REAL-TEXT prompt (round 45): the fox-repeat prompt is the ledgered degenerate class —
+    # its flat next-token distribution flips argmax across numeric arms (g26 prefill-vs-
+    # decode MISMATCH at maxdiff ~11 on EVERY dispatch arm; real prompts MATCH). Both board
+    # arms read the same file; ids truncate to prompt_tokens.
+    text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "research/e2e/prompts/board-2048.txt")).read()
+    ids = tok(text * 4)["input_ids"]
     prompt = tok.decode(ids[:args.prompt_tokens])
 
     rows = []
