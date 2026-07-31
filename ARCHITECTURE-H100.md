@@ -2208,3 +2208,17 @@ q27 board bring-up started: qwen3next arch alias added (upstream-converted GGUFs
 artifacts = unsloth Q4_K_M MTP-baked GGUF (17GB) + Qwen/Qwen3.6-27B-FP8 (31GB) onto the
 box's empty 3.5TB NVMe (EBS at 93%). The 20260730 bw24-vs-llama board rows recovered
 into the repo (the box-only-evidence lesson, second find).
+
+Round 47 update — q27 ON THE BOARD (2026-08-01): the 27B hybrid was "honestly absent"
+(NVFP4-only artifact, sm_120a-only kernels). Bring-up = one arch alias (qwen3next) +
+public artifacts (unsloth Q4_K_M MTP-baked GGUF; Qwen/Qwen3.6-27B-FP8 for the vLLM arm;
+both on the box NVMe) + a bench_vllm max_num_seqs cap (hybrid Mamba cache blocks reject
+the 1024 default). First light loaded and generated coherently on the first run; argmax
+gate MATCH; **validate-h100 --quick ALL GATES GREEN on the first battery** (decode-batch,
+decode-dc, graph-decode with kernel-class segments, graph-session — a fresh hybrid
+through the whole harness). Board cell (N=5, real text, same-session): memra decode
+87.5 / prefill 1965 -> e2e 74.3 vs vLLM FP8 74.3 / 15054 -> 72.9. **e2e 1.02x WIN,
+decode 1.18x, UNTUNED** (no per-model FA defaults swept, Q4_K decode as-is; prefill
+0.13x = the known dense int8-GEMM dtype edge + zero tuning). Board: 7 models, e2e 5/7,
+decode 6/7. 5090 battery: correctness + serve-smoke GREEN (alias additive, F16G door
+default-off).

@@ -90,6 +90,9 @@ cell() { # name vllm_id memra_gguf [tokenizer]
 echo "=== H100 vLLM BOARD $TS git=$GIT_SHA filter=$FILTER ==="
 cell q9  RedHatAI/Qwen3.5-9B-quantized.w8a8 "$M/Qwen3.5-9B-Q8_0.gguf"
 cell q35 Qwen/Qwen3.6-35B-A3B-FP8          "$M/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+# q27 artifacts live on the box NVMe (EBS at 93%); the FP8 HF cache needs HF_HOME set to
+# /opt/dlami/nvme/hf (the round-47 bring-up download location).
+cell q27 Qwen/Qwen3.6-27B-FP8              "${Q27_GGUF:-/opt/dlami/nvme/models/Qwen3.6-27B-Q4_K_M.gguf}"
 cell g12 unsloth/gemma-4-12b-it            "$M/gemma-4-12b-it-qat-q4_0.gguf"
 cell g26 RedHatAI/gemma-4-26b-a4b-it-FP8-dynamic        "$M/gemma-4-26B_q4_0-it.gguf"
 cell g31 RedHatAI/gemma-4-31b-it-FP8-dynamic            "$M/gemma-4-31B_q4_0-it.gguf"
