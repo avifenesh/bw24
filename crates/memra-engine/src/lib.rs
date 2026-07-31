@@ -6476,7 +6476,7 @@ impl Engine {
         let any_mirror = ws.iter().any(|w| matches!(w, GpuTensor::Quant { f16: Some(_), .. }));
         if m >= 16 && any_mirror && !self.verify_exact_on() {
             let in_f = ws[0].in_features();
-            let xh = self.f16_act(x, m * in_f)?;
+            let xh = self.f16_act(x, m * in_f, in_f)?;
             for w in ws {
                 if w.in_features() == in_f {
                     if let Some(y) = self.try_f16_gemm_pre(w, &xh, m)? {

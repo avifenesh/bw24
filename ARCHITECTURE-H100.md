@@ -2014,3 +2014,19 @@ choice: build with BW24_NVCC=~/cuda-13.3.1/bin/nvcc + the winner ACF
 (research/sm90a-unified/acf-20260730/prod/acf-fa3-prod-best.acf) passed through
 -Xptxas; the default 13.1 build is unchanged. The same runner pattern extends to any
 TU (gdn/hybrid/mmq) — recipe: runner links the TU, objective = time + fingerprint.
+
+## Round 43 — w8a8 accuracy pilot: ZERO greedy divergence (2026-07-31)
+
+The decision package's accuracy half, measured through fake-quant sims in the unchanged
+f16 lane (MEMRA_W8A8_SIM=1 weights / =2 weights+activations; fire-once stderr confirms
+the act hook ran): per-ROW int8 weight requant x per-TOKEN int8 activation quant on
+EVERY prefill GEMM, decode untouched — the exact proposed w8a8 prefill crossing.
+Result: 6/6 greedy 128-token streams IDENTICAL to the default config (5 real chat
+prompts + the depth-1736 prompt) on the 9B Q8_0.
+
+VERDICT (both halves now measured): the crossing is SAFE on greedy output and worth
+net 1.05-1.26x on the big prefill GEMMs (round 41), with a deterministic CUTLASS-EVT
+fused variant at parity (round 41 addendum). e2e context: at the board's p2048/g512
+shape, q9 prefill is ~3% of wall — the real payoff is prefill-heavy serving
+(summarization/RAG shapes). Implementation of the production int8 lane is justified
+for those workloads; the sims + harnesses in-tree are the receipts.
