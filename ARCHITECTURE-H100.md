@@ -1984,3 +1984,13 @@ x4 etc — approximate; measured f16-at-2048 references are the next step, then 
 CUTLASS-EVT fused epilogue eats the remaining 25-35% tax). Decision band was
 net >= 1.4x — the crossing is live at prefill-realistic m. Raw run in this round's
 session log; harness change committed (BENCH_M env).
+
+Round 41 addendum — MEASURED f16 references (live GemmEx at BENCH_M, not the m=512
+table): m=2048 net-speedups WITH the unfused epilogue: wqkv 1.14x, mid 1.12x, square
+1.05x, ffn_down 1.26x, gate/up 1.21x, small 0.77x (stays f16). m=512 cross-check
+reproduces the original refutation (0.79-0.90x) — the inversion is m-driven, exactly
+the launch/tail amortization. Epilogue is 12-33% of net at 2048 -> CUTLASS-EVT fusion
+projects the big shapes to ~1.3-1.6x. OWNER DECISION PACKAGE: rate receipt above +
+accuracy pilot (per-row W x per-token act requant, argmax-flip count vs greedy
+baseline) = the two numbers the w8a8 crossing needs. Next increments: EVT fused probe
+(bench_cutlass_i8.cu), then the pilot.
