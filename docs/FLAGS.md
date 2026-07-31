@@ -62,6 +62,7 @@ HANDOVER.md sections from that date.
 | `BW24_COMPAT` | native (`openai` when API_KEY set) | response shape: `openai` = OpenAI completions SSE |
 | `BW24_CTX` | 8192 | session-cache context floor (KV @8192 ≈ 119MB/session on the 9B) |
 | `BW24_KV_REUSE` | on | `0` disables the KV prefix-reuse pool (session-gate validated; 42.6x turn-start at 40k) |
+| `BW24_REUSE_POOL` | 2 | parked-cache pool cap per model (VRAM budget: ~119MB/entry at ctx 8192 on the 9B). At the default, sequential multi-turn workloads of >2 sessions hit the park-evicts-next-entry cascade (0/N resumes; pinned 2026-07-31) — raise to the expected concurrent-session count when VRAM allows |
 | `BW24_SERVE_SPEC` | on | `0` disables the spec-decode serve path (greedy + MTP-head requests) |
 | `BW24_SPEC_BURST` | 32 | tokens per spec burst — round-robin latency vs per-burst fixed cost (throughput-neutral, 2026-07-06 A/B null) |
 

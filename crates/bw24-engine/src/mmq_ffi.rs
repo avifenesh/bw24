@@ -554,12 +554,20 @@ impl Engine {
             // shapes pick DIFFERENT kernels run-to-run — the 12B depth cell was BIMODAL
             // (205 @ 0.756 / 260 @ 0.943 across identical invocations; sk-off x6 = stable
             // 263-269 @ 0.953). Explicit BW24_MMQ_SK always wins; plain serving keeps sk.
+            // HOPPER DEFAULT OFF (2026-07-31, #23): on sm_90a the SK arm computes WRONG
+            // values for the 26B a4b's non-rp Q4_0 shapes once the autotune m-bucket
+            // crosses 256 (prefill argmax garbage, maxdiff ~10; BW24_MMQ_SK=0 -> MATCH,
+            // one-variable kill x confirmed on-box). The winner is timing-picked and the
+            // SK split/fixup are SM-count dependent (132 vs 170) — until the kernel is
+            // fixed for that class, Hopper fails CLOSED to the bit-identical xy-tiling
+            // (cost on the healthy models: g12 -1.4%, g31 -0.6% prefill, N=3 on-box).
+            // sm_120a keeps SK on (rig-divergence law). BW24_MMQ_SK=1 still forces.
             static SK_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let sk = match crate::MMQ_SK_FORCE.load(std::sync::atomic::Ordering::Relaxed) {
                 0 => false,
                 1 => true,
                 _ => *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK")
-                        .map(|v| v != "0").unwrap_or(true)),
+                        .map(|v| v != "0").unwrap_or(!cfg!(bw24_hopper_mma))),
             };
             let rc = if sk {
                 let mut fx = MMQ_FIXUP_SLOT.lock().unwrap();
