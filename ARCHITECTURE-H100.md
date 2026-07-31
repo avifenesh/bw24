@@ -1994,3 +1994,11 @@ projects the big shapes to ~1.3-1.6x. OWNER DECISION PACKAGE: rate receipt above
 accuracy pilot (per-row W x per-token act requant, argmax-flip count vs greedy
 baseline) = the two numbers the w8a8 crossing needs. Next increments: EVT fused probe
 (bench_cutlass_i8.cu), then the pilot.
+
+Round 41 WIP note: the CUTLASS EVT fused-epilogue probe compiles under SCHED_COOP
+(EpilogueScheduleAuto rejects fusion — static assert) but can_implement returns
+status 7 with the hand-built Sm90EVT arg tree (bench_cutlass_i8.cu, FUSED_EVT
+define). Next session: mirror the arg-struct layout from CUTLASS example 63
+(hopper_gemm_with_epilogue_visitor) or switch to the named
+fusion::LinCombPerColBias-family op that matches acc*row*col. The UNFUSED numbers
+already justify the arc (1.05-1.26x net at m=2048); fusion is the 1.3-1.6x upside.

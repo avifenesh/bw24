@@ -68,6 +68,29 @@ using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder
     cutlass::gemm::collective::StageCountAuto,
     KSched>::CollectiveOp;
 
+#ifdef FUSED_EVT
+// w8a8 fused epilogue (2026-07-31, round-41 arc): y = acc * act_scale[m] * w_scale[n]
+// as an EVT tree — the per-token (row) and per-out-row (col) scales fold into the
+// epilogue, deleting the separate dequant_rc launch the Lt route pays.
+#include "cutlass/epilogue/fusion/operations.hpp"
+using FusionOp = cutlass::epilogue::fusion::Sm90EVT<
+    cutlass::epilogue::fusion::Sm90Compute<cutlass::multiplies, float, float,
+                                           cutlass::FloatRoundStyle::round_to_nearest>,
+    cutlass::epilogue::fusion::Sm90ColBroadcast<0, TileShape, float>,   // act_scale[m]
+    cutlass::epilogue::fusion::Sm90EVT<
+        cutlass::epilogue::fusion::Sm90Compute<cutlass::multiplies, float, float,
+                                               cutlass::FloatRoundStyle::round_to_nearest>,
+        cutlass::epilogue::fusion::Sm90RowBroadcast<0, TileShape, float>, // w_scale[n]
+        cutlass::epilogue::fusion::Sm90AccFetch>>;
+using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
+    cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
+    TileShape, ClusterShape,
+    cutlass::epilogue::collective::EpilogueTileAuto,
+    int32_t, float,
+    float, LayoutC, 4,
+    float, LayoutC, 4,
+    ESched, FusionOp>::CollectiveOp;
+#else
 using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
     cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
     TileShape, ClusterShape,
@@ -76,6 +99,7 @@ using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBui
     float, LayoutC, 4,
     float, LayoutC, 4,
     ESched>::CollectiveOp;
+#endif
 
 using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
     Shape<int, int, int, int>, CollectiveMainloop, CollectiveEpilogue>;
@@ -86,7 +110,8 @@ using StrideB = typename Gemm::GemmKernel::StrideB;
 using StrideC = typename Gemm::GemmKernel::StrideC;
 using StrideD = typename Gemm::GemmKernel::StrideD;
 
-static void run_gemm(void* w, void* x, float* y, int m, int n, int k, void* ws) {
+static void run_gemm(void* w, void* x, float* y, int m, int n, int k, void* ws,
+                     float* act_s = nullptr, float* w_s = nullptr) {
     auto sA = cutlass::make_cute_packed_stride(StrideA{}, {m, k, 1});
     auto sB = cutlass::make_cute_packed_stride(StrideB{}, {n, k, 1});
     auto sC = cutlass::make_cute_packed_stride(StrideC{}, {m, n, 1});
@@ -94,8 +119,23 @@ static void run_gemm(void* w, void* x, float* y, int m, int n, int k, void* ws) 
         cutlass::gemm::GemmUniversalMode::kGemm,
         {m, n, k, 1},
         {(ElementA*)x, sA, (ElementB*)w, sB},
-        {{1.0f, 0.0f}, y, sC, y, sC},
+        {{}, y, sC, y, sC},
     };
+#ifdef FUSED_EVT
+    // EVT arg tree mirrors the FusionOp nesting: mul(col_bcast(act_s), mul(row_bcast(w_s), acc))
+    args.epilogue.thread = {
+        {act_s},                    // Sm90ColBroadcast: per-m activation scale
+        {                           // inner EVT
+            {w_s},                  // Sm90RowBroadcast: per-n weight scale
+            {},                     // Sm90AccFetch
+            {}                      // inner compute
+        },
+        {}                          // outer compute
+    };
+#else
+    args.epilogue.thread = {1.0f, 0.0f};
+    (void)act_s; (void)w_s;
+#endif
     Gemm gemm;
     CT(gemm.can_implement(args));
     CT(gemm.initialize(args, (uint8_t*)ws));
@@ -105,7 +145,7 @@ static void run_gemm(void* w, void* x, float* y, int m, int n, int k, void* ws) 
 struct ShapeRef { int in_f, out_f; float lt_us; const char* tag; };
 
 int main() {
-    const int m = 512;
+    const int m = getenv("BENCH_M") ? atoi(getenv("BENCH_M")) : 512;
     ShapeRef shapes[] = {
         {4096, 12288, 57.8f, "wqkv"},   // Lt column = cublasGemmEx int8 (the refuted probe)
         {4096, 8192, 40.4f, "mid"},
@@ -138,8 +178,19 @@ int main() {
             CK(cudaMemcpy(x1 + 256, hx, xb, cudaMemcpyHostToDevice));
             free(hw); free(hx);
         }
-        run_gemm(w0, x0, y0, m, n, k, ws);
-        run_gemm(w1 + 256, x1 + 256, y1, m, n, k, ws);
+        // scale vectors for the fused-EVT variant (1.0f = neutral; the fused epilogue's
+        // COST is what we measure — value-correctness is pinned by the diff harness)
+        float *sc_a, *sc_w;
+        CK(cudaMalloc(&sc_a, m * 4)); CK(cudaMalloc(&sc_w, n * 4));
+        {
+            float* h1f = (float*)malloc((m > n ? m : n) * 4);
+            for (int i = 0; i < (m > n ? m : n); i++) h1f[i] = 1.0f;
+            CK(cudaMemcpy(sc_a, h1f, m * 4, cudaMemcpyHostToDevice));
+            CK(cudaMemcpy(sc_w, h1f, n * 4, cudaMemcpyHostToDevice));
+            free(h1f);
+        }
+        run_gemm(w0, x0, y0, m, n, k, ws, sc_a, sc_w);
+        run_gemm(w1 + 256, x1 + 256, y1, m, n, k, ws, sc_a, sc_w);
         CK(cudaDeviceSynchronize());
         float *h0 = (float*)malloc(yb), *h1 = (float*)malloc(yb);
         CK(cudaMemcpy(h0, y0, yb, cudaMemcpyDeviceToHost));
@@ -148,10 +199,10 @@ int main() {
         for (size_t i = 0; i < (size_t)m * n; i++) if (h0[i] != h1[i]) nd++;
         // rate
         cudaEvent_t a, b; CK(cudaEventCreate(&a)); CK(cudaEventCreate(&b));
-        for (int i = 0; i < 10; i++) run_gemm(w0, x0, y0, m, n, k, ws);
+        for (int i = 0; i < 10; i++) run_gemm(w0, x0, y0, m, n, k, ws, sc_a, sc_w);
         CK(cudaDeviceSynchronize());
         CK(cudaEventRecord(a));
-        for (int i = 0; i < 100; i++) run_gemm(w0, x0, y0, m, n, k, ws);
+        for (int i = 0; i < 100; i++) run_gemm(w0, x0, y0, m, n, k, ws, sc_a, sc_w);
         CK(cudaEventRecord(b)); CK(cudaEventSynchronize(b));
         float ms; CK(cudaEventElapsedTime(&ms, a, b));
         double us = ms * 10.0;
