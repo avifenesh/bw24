@@ -2002,3 +2002,15 @@ define). Next session: mirror the arg-struct layout from CUTLASS example 63
 (hopper_gemm_with_epilogue_visitor) or switch to the named
 fusion::LinCombPerColBias-family op that matches acc*row*col. The UNFUSED numbers
 already justify the arc (1.05-1.26x net at m=2048); fusion is the 1.3-1.6x upside.
+
+## Round 42 — ACF production-TU search (carry-over 8 closed, 2026-07-31)
+
+The round-38 transfer law answered with a production runner: tools/acf_fa3_runner.cu
+links bw24_fa3_prefill (the REAL TU) under -Xptxas --apply-controls, with an output
+fingerprint as the correctness gate (scheduling controls must not change results).
+Search (pool 24 x 6, 13.3 space): production fa3_prefill T=2048 207 -> 203us/call
+(-2%, x5 stable, fingerprint identical to no-ACF baseline). Adoption is a deployment
+choice: build with BW24_NVCC=~/cuda-13.3.1/bin/nvcc + the winner ACF
+(research/sm90a-unified/acf-20260730/prod/acf-fa3-prod-best.acf) passed through
+-Xptxas; the default 13.1 build is unchanged. The same runner pattern extends to any
+TU (gdn/hybrid/mmq) — recipe: runner links the TU, objective = time + fingerprint.
