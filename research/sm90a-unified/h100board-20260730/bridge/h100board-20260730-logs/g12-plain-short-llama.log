@@ -1,0 +1,24 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 81081 MiB):
+  Device 0: NVIDIA H100 80GB HBM3, compute capability 9.0, VMM: yes, VRAM: 81081 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           pp512 |     6102.22 ± 427.60 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           tg128 |        157.11 ± 0.60 |
+
+build: unknown (0)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 81081 MiB):
+  Device 0: NVIDIA H100 80GB HBM3, compute capability 9.0, VMM: yes, VRAM: 81081 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           pp512 |     6097.44 ± 429.07 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           tg128 |        156.92 ± 0.58 |
+
+build: unknown (0)
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 81081 MiB):
+  Device 0: NVIDIA H100 80GB HBM3, compute capability 9.0, VMM: yes, VRAM: 81081 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           pp512 |     6099.47 ± 432.02 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       | 999 |   1 |           tg128 |        157.53 ± 0.63 |
+
+build: unknown (0)
