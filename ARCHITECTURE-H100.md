@@ -2053,3 +2053,48 @@ gate MATCH. e2e cell ~0.76x -> ~0.84x. NEXT RUNG: mmq_iq_experts itself runs ~16
 (3.45ms/call, nc=true) — 60x off the CUTLASS int8 rate; the expert GEMM kernel is the
 remaining prefill wall, and the g26 DECODE router (lone-warp, 25.4us x 30 layers —
 the w8 twin is knife-edge-blocked on this model) is the decode rung.
+
+## Round 45 — q35 shexp splitK kill, E4B prime head fix, and the first-time-gate harvest (2026-07-31)
+
+**q35 "cublasLt 40/step" decode mystery SOLVED.** The splitKreduce_kernel x40/step in the
+q35 decode capture was the shared-expert sigmoid gate: `ffn_gate_inp_shexp` (1-D, out_f=1)
+served per layer per step through cuBLASLt as an m=1,n=1,k=2048 GEMM (~14.3us + a separate
+sigmoid launch; 40 layers confirmed by the loader). Fix: `sigmoid_dot_rows_f32` — one fused
+8-warp block-reduce dot + sigmoid launch, wired into every decode-class arm (sequential/dev/
+grouped at t<PRIME_MIN_T, lockstep unconditionally) so dispatch choice cannot change bits;
+prefill keeps the batched cuBLASLt linear. Receipts: kernel-check `sigmoid_dot` maxdiff=0 vs
+CPU; run-gen argmax MATCH (d1736 real prompt); decode-batch STRICT bit-gate PASS; **decode
+d1736 160.0 -> 181.9 tok/s (+13.7%, N=5 interleaved same-session)**. Rollback seam:
+`MEMRA_SHEXP_DOT=0` (numeric-config class, same as MEMRA_ROUTER_V2).
+
+**E4B prime head-last-only.** gemma4_e4b_trunk_core computed the lm_head for ALL T rows
+(t x 262k logits + softcap + a 2.26GB dtoh) and prime kept one row — ~2152x overcompute.
+`head_last` now slices the final row of the fused output_norm q8 emit and runs the head at
+m=1 (the 26B prime pattern); verify/decode callers keep the all-rows head. With the guard
+fix below, **e4b pp1736: ~180 (first-light) -> 20,012 tok/s**; argmax MATCH short + d1736.
+
+**matmul_pre empty-fallback guard (the ledgered landmine, now a crash fixed).** E4B run-gen
+died `memra_f16_pp_gemm rc=30013 (m=1736 n=2048 k=2560)` — the Hopper Q8RP mirror walk
+builds f16 mirrors ungated, campaign A taught build_q8_f16 to admit Q4_0, and E4B's fusion
+port passes an EMPTY x_fallback to matmul_pre, whose fp8/f16/fp4 arms had no length guard
+(the MMQ arm did): a 0-byte buffer fed the convert kernel -> illegal address -> cublasLt
+status 13. One `x_raw_ok` guard now covers all raw-f32 arms.
+
+**decode-batch gate1 re-calibrated (LAW 2 applied to ourselves).** The config-mode step-16
+single-prompt rule failed the PRE-change tree on 3/6 prompt seeds (first divergence steps
+7/8/15) — it detected the near-tie dice of the accepted cross-config FP gap, not plumbing.
+gate1-config now sweeps 6 seeds and FAILs only on divergence before step 3 on any seed
+(plumbing class: wrong token/KV shows at step 0-2 on every draw; observed tie flips start
+at 6+). Bit strength unchanged: strict gate1 + gate2 + decode-dc carry the exactness
+contract. MEMRA_GATE_SEED added for future sweeps.
+
+**First-time-gate harvest (pre-existing, confirmed at base = 3e871640):**
+- **q35 graph-decode diverges from eager** (144/256 mismatches, first @ step ~110, right
+  where the fa regime crosses; buckets (false,1),(true,6..20); 1 capture). q9 graph gate is
+  bit-identical 256/256 on the same tree — qwen-dense is fine; the hybrid's fa-kernel
+  switchover under exec-update replay is the suspect. OPEN.
+- **gemma dc/graph lane is dead on sm_90a**: g12 decode-dc returns the device-argmax INIT
+  value (2147483647) from step 0; graph-decode ILLEGAL ADDRESS inside generate_graph
+  (eager chain green; mirrors/q8rp ruled out by env isolation). The lane was built and
+  gated on the 5090 and had never been gated on Hopper. OPEN.
+Both stay red in validate-h100 until fixed — gates live inside the battery (LAW 3).

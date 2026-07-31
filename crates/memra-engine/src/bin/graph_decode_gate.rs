@@ -30,7 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- EAGER reference: prime + generate N greedy tokens via decode_step ----
     let mut cache_e = memra_engine::cache::Cache::new(&e, &m.cfg, p + n + 8)?;
     let mut ll = Vec::new();
+    eprintln!("[gate] eager prime start");
     for &t in &prompt { ll = m.decode_step(&e, t, &mut cache_e)?; }
+    eprintln!("[gate] eager prime done");
     let mut eager_in = argmax(&ll) as u32;
     let mut eager_tokens = Vec::with_capacity(n);
     // stream convention (round 35): the FIRST generated token (argmax of the last prime
@@ -51,8 +53,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---- GRAPH path: prime + generate N via capture/replay ----
+    eprintln!("[gate] eager gen done; graph path start");
     let mut gs = GraphDecodeState::new(&e)?;
     let graph_tokens = m.generate_graph(&e, &mut gs, &prompt, n)?;
+    eprintln!("[gate] graph path done");
 
     // ---- compare token-by-token ----
     let mut mismatches = 0usize;
