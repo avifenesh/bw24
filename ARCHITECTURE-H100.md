@@ -2222,3 +2222,21 @@ decode 1.18x, UNTUNED** (no per-model FA defaults swept, Q4_K decode as-is; pref
 0.13x = the known dense int8-GEMM dtype edge + zero tuning). Board: 7 models, e2e 5/7,
 decode 6/7. 5090 battery: correctness + serve-smoke GREEN (alias additive, F16G door
 default-off).
+
+Round 47 update 2 — q27 win-harder arc (2026-08-01, "most-used model" directive):
+1. MTP SPEC WORKS ON sm_90a: the unsloth artifact's baked-in NextN head rides run-spec
+   green — K sweep (128 tok, real prompt): K=2 107.7 (76.5% accept) / K=3 113.0 (67.4%) /
+   K=4 106.2 (60.5%). K=3 = 1.45x plain decode; a spec board row would read ~92 e2e vs
+   vLLM 72.9 (1.26x) — needs the spec-vs-vLLM-best harness (vLLM MTP support TBD).
+2. Q6_K f16 MIRRORS: the q27 prefill wall was qmatvec_gemm_q6_K at 6.7ms/call (the
+   Q4_K_M mix packs attn_v/ffn_down/head as Q6_K; no MMQ arm exists for Q6_K; Q4_K
+   already rides mul_mat_q_q45k). Dequant kernel verified against qmatvec.cu's q6_K
+   indexing; admission model-class-agnostic (the round-45 qwen flip evidence was Q8_0-
+   specific). q27 pp2048 1963 -> 3225 (+64%, x3 interleaved), argmax MATCH (maxdiff
+   0.85). Board cell re-measured: e2e 78.5 vs 72.9 = 1.08x (from 1.02x).
+3. Research sweep banked (research/moe-levers-20260801/): 6-agent recon of
+   vLLM/SGLang/llama.cpp/KTransformers/LMCache/arxiv + AWS scaling. Ranked lever queue
+   in task #32 (ragged token-tiles first — the 2-4x tile-padding waste at 20-65
+   tok/expert is the direct attack on both remaining losses). Infra verdict in #33:
+   bench box stays bench-only, spot p5.4x us-east-1 $2.63/hr for dev, quota headroom
+   +47 boxes, skip MIG.

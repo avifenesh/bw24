@@ -107,6 +107,52 @@ extern "C" int memra_q4_0_dequant_f16(const void* w_q4, void* w_f16, long out_f,
     return ce == cudaSuccess ? 0 : 10000 + (int)ce;
 }
 
+// GGUF Q6_K (210B superblocks: ql[128] qh[64] i8 scales[16] fp16 d, 256 vals) -> row-major
+// fp16 (round 47: the q27 Q4_K_M mix packs attn_v/ffn_down/head as Q6_K — its 6.7ms/call
+// dequant-GEMMs were the prefill wall; no Q6_K MMQ exists in the vendored set). Indexing
+// verified against qmatvec.cu's q6_K decode (line ~144). One thread per superblock
+// (load-time only).
+extern "C" __global__ void memra_q6kf16_dequant_kernel(const unsigned char* __restrict__ src,
+                                                       __half* __restrict__ dst,
+                                                       size_t nsb_total, int nsb_row) {
+    size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (i >= nsb_total) return;
+    const unsigned char* b = src + i * 210;
+    const unsigned char* ql = b;
+    const unsigned char* qh = b + 128;
+    const signed char* sc = (const signed char*)(b + 192);
+    float d = __half2float(*(const __half*)(b + 208));
+    __half* o = dst + i * 256;
+    #pragma unroll
+    for (int n = 0; n < 2; n++) {
+        #pragma unroll
+        for (int l = 0; l < 32; l++) {
+            int is = l >> 4;
+            int q1 = (int)((ql[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+            int q2 = (int)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+            int q3 = (int)((ql[l +  0] >>  4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+            int q4 = (int)((ql[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+            o[l +  0] = __float2half(d * (float)sc[is + 0] * (float)q1);
+            o[l + 32] = __float2half(d * (float)sc[is + 2] * (float)q2);
+            o[l + 64] = __float2half(d * (float)sc[is + 4] * (float)q3);
+            o[l + 96] = __float2half(d * (float)sc[is + 6] * (float)q4);
+        }
+        o += 128; ql += 64; qh += 32; sc += 8;
+    }
+}
+
+extern "C" int memra_q6_K_dequant_f16(const void* w_q6, void* w_f16, long out_f, long nsb_row,
+                                      void* stream_v) {
+    cudaStream_t stream = (cudaStream_t)stream_v;
+    size_t nsb_total = (size_t)out_f * (size_t)nsb_row;
+    int threads = 256;
+    size_t blocks = (nsb_total + threads - 1) / threads;
+    memra_q6kf16_dequant_kernel<<<(unsigned)blocks, threads, 0, stream>>>(
+        (const unsigned char*)w_q6, (__half*)w_f16, nsb_total, (int)nsb_row);
+    cudaError_t ce = cudaGetLastError();
+    return ce == cudaSuccess ? 0 : 10000 + (int)ce;
+}
+
 // ---- host: cached cuBLASLt plans (fp8_prefill.cu pattern) ------------------------------------
 
 namespace {

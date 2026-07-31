@@ -1119,7 +1119,13 @@ impl HybridModel {
                 let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
                     let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
                     e_ref.build_q8_rp4(w)?;
-                    if crate::f16_ffi::pp_f16_enabled() && f16_model_ok {
+                    // Q6_K mirrors are model-CLASS-agnostic (round 47): no MMQ arm exists for
+                    // Q6_K — the fallback dequant-GEMM is ~10x the f16 lane (q27's prefill
+                    // wall). The qwen-dense argmax-flip evidence (round 45) was the Q8_0
+                    // mirror specifically; Q6_K admission is arbitrated by its own gate runs.
+                    let q6k = matches!(w, crate::model::GpuTensor::Quant { qtype, .. }
+                                       if *qtype == crate::QT_Q6_K);
+                    if crate::f16_ffi::pp_f16_enabled() && (f16_model_ok || q6k) {
                         e_ref.build_q8_f16(w)?;
                     }
                     if !before && matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. }) {
