@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and lock a BW24_MOE_INPUT_TRACE_DIR capture."""
+"""Validate and lock a MEMRA_MOE_INPUT_TRACE_DIR capture."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from typing import Any
 import numpy as np
 
 
-FORMAT = "bw24-moe-input-trace-v1"
-LOCK_FORMAT = "bw24-moe-input-trace-lock-v1"
+FORMAT = "memra-moe-input-trace-v1"
+LOCK_FORMAT = "memra-moe-input-trace-lock-v1"
 
 
 def sha256(path: Path) -> str:
@@ -146,7 +146,7 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-moe-input-trace-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-moe-input-trace-") as tmp:
         root = Path(tmp)
         requests = root / "requests.jsonl"
         requests.write_text("\n".join(json.dumps(row) for row in [

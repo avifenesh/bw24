@@ -1,4 +1,4 @@
-# bw24 Build Roadmap — full scope, no shortcuts (week+ project)
+# memra Build Roadmap — full scope, no shortcuts (week+ project)
 
 Working method (per user): **A. research every component via workflow. B. implement via workflow** —
 main thread orchestrates + reviews; agents write code. Don't inline-code everything (saves context).
@@ -14,7 +14,7 @@ algorithmic improvements adapted to sm_120 (FA3/FA4 binaries don't run here: no 
 
 ## UPDATE 2 (post-MoE)
 - HYBRID FA shipped (FA-2 + FA-3/FA-4 improvements scoped to sm_120, validated 11/11 vs oracle, argmax 268).
-- **MoE + EDGE-1 VALIDATED**: 35B-A3B argmax=1178 == llama.cpp; bw24 fits 24GB (~4GB peak) where
+- **MoE + EDGE-1 VALIDATED**: 35B-A3B argmax=1178 == llama.cpp; memra fits 24GB (~4GB peak) where
   llama.cpp full-offload OOMs (30.5GB). Selective per-token expert staging proven.
 - Q4_K/Q6_K fast int8 dp4a landed. ALL daily targets run correct: 9B/27B hybrid + 35B MoE.
 - **DISCIPLINE DEBT (must fix): new dtypes Q5_K/Q3_K/IQ4_XS/IQ3_S/NVFP4 added to dequant.rs+qmatvec.cu
@@ -65,13 +65,13 @@ algorithmic improvements adapted to sm_120 (FA3/FA4 binaries don't run here: no 
 
 ### Web-sweep ranked techniques (folded 2026-07-03 from the web-sweep agent output)
 11. **DFlash-style spec decode integration** — vLLM's scheduler reserves `num_speculative_tokens+1`
-    lookahead slots for DFlash drafts (vllm.md:60). For bw24: the MTP verify band already exists;
+    lookahead slots for DFlash drafts (vllm.md:60). For memra: the MTP verify band already exists;
     the DFlash lever is block-diffusion drafting (parallel draft of K tokens in one pass) — evaluate
     AFTER MTP re-measure (run-spec) since acceptance-rate lift is the profitable axis (DECODE-GAP L6).
 12. **TCQ KV quant** (per-token/channel quant): our KV is q8_0/q5_1 per-token already; TCQ's win is
     per-CHANNEL K scales at low bit. Only worth it below q8 K — pairs with KVQUANT-PLAN.md, not before.
 13. **FR-Spec vocab trim** — draft head scores only the top-frequency vocab slice (~25% lm_head cost
-    in draft). bw24 hook: striped-vocab MTP head (mtp-tail work) + q6_K lm_head is 1.07ms/tok — a
+    in draft). memra hook: striped-vocab MTP head (mtp-tail work) + q6_K lm_head is 1.07ms/tok — a
     frequency-sliced draft head skips most of it per draft token. MED value, needs MTP live first.
 14. **NVFP4 tensor-split fix** (llama PR) — multi-GPU tensor-split only; DEAD for the single-GPU
     local rig, note for L40S/fleet mirrors if they ever go multi-card.

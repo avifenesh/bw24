@@ -20,8 +20,8 @@ from build_hy3_reap_scores import parse_layers
 from heal_hy3_pruned_layer import bias_name, router_name
 
 
-FORMAT = "bw24-hy3-post-heal-routing-audit-v1"
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
+FORMAT = "memra-hy3-post-heal-routing-audit-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
 
 
 def sha256(path: Path) -> str:
@@ -123,7 +123,7 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-routing-audit-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-routing-audit-") as tmp:
         root = Path(tmp); overlay = root / "overlay"; trace = root / "trace"
         overlay.mkdir(); trace.mkdir()
         hidden = np.eye(4, dtype="<f4").repeat(4, axis=0)

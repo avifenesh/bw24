@@ -1,4 +1,4 @@
-# Contributing to bw24
+# Contributing to memra
 
 Issues welcome anytime. PRs welcome **only when they carry proof**, per the rules below — no CI runner on sm_120a hardware, so a human reviewer is the only gate between claim and merged code. Unproven PRs (no gates run, no numbers, "should be faster", AI-generated diffs with no on-device verification) will be closed, not debated. This is not gatekeeping: every accepted kernel becomes load-bearing in a correctness contract (see [Correctness discipline](README.md#correctness-discipline)), and reverting a bad merge costs far more than rejecting an unproven one.
 
@@ -43,9 +43,9 @@ its last 5 rows (`research/tune-data/perf-ci.jsonl`). FAIL = >3% tok/s drop or >
 acceptance drop. Acceptance drift is invisible to every exactness gate (decode and verify
 shift *together*, bit-consistently) and silently cost this repo half its 31B short-spec
 margin across ~40 green-gated commits in July 2026 — hence the battery. Cells whose model
-files are absent on your machine skip cleanly; set `BW24_MODELS_DIR` to your model root.
+files are absent on your machine skip cleanly; set `MEMRA_MODELS_DIR` to your model root.
 The pre-push hook requires a battery row newer than your newest engine-touching commit
-(warn-only on machines without models; `BW24_SKIP_PERF_CI=1` overrides — say why in the PR).
+(warn-only on machines without models; `MEMRA_SKIP_PERF_CI=1` overrides — say why in the PR).
 
 ### 2. Performance: prefill AND decode, both, never just one
 
@@ -67,7 +67,7 @@ Benchmark binaries alone (`decode-bench`, `mvq-msweep`) prove a kernel is fast i
   smoke test), full output shown, prefill/decode argmax line included.
 - `run-spec` — if your change touches anything upstream of speculative decoding's target forward
   (attention, GEMM, MoE dispatch, KV cache), run this too, not just `run-gen`.
-- `bw24-server` — if your change touches request handling, batching, or anything server-side, one
+- `memra-server` — if your change touches request handling, batching, or anything server-side, one
   real request/response through the OpenAI-compatible endpoint.
 
 "It compiles and the unit-level gate passed" is not evidence the runners still produce sane
@@ -94,13 +94,13 @@ codebase assume this exact memory/compute ratio.
 
 ## Validation reports from your rig are the easiest contribution
 
-bw24 is tuned on one RTX 5090 Laptop, and reports from **every end-user rig** are wanted —
+memra is tuned on one RTX 5090 Laptop, and reports from **every end-user rig** are wanted —
 filing a [hardware validation report](.github/ISSUE_TEMPLATE/hardware-validation.md) is
 genuinely useful even if you never touch the code:
 
 - **Desktop 50-series (5090/5080/5070 Ti/5070):** same sm_120 architecture, different
   SM-count/bandwidth ratios — kernels are expected to work, nobody has blessed the numbers.
-  A perf battery (`BW24_MODELS_DIR=... tools/local-ci.sh --perf`) plus an interleaved
+  A perf battery (`MEMRA_MODELS_DIR=... tools/local-ci.sh --perf`) plus an interleaved
   llama.cpp pairing (protocol: [`research/benchmarks.md`](research/benchmarks.md)) is exactly
   the evidence that moves those cards from "should work" to "supported".
 - **Older NVIDIA (Ada/Ampere):** the main build targets sm_120a; `arch/sm89-l40s` exists for

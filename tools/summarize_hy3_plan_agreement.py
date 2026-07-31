@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-SCORE_FORMAT = "bw24-expert-retention-scores-v1"
-OUTPUT_FORMAT = "bw24-hy3-smart-plan-agreement-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+SCORE_FORMAT = "memra-expert-retention-scores-v1"
+OUTPUT_FORMAT = "memra-hy3-smart-plan-agreement-v1"
 PROJECTIONS = ("gate", "up", "down")
 PRUNED = "PRUNE"
 
@@ -340,7 +340,7 @@ def self_test() -> None:
             "assignments": assignments,
         }))
 
-    with tempfile.TemporaryDirectory(prefix="bw24-plan-agreement-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-plan-agreement-") as tmp:
         root = Path(tmp)
         make_plan(root / "a.json", {1: [2], 2: []}, {(2, 1, "down"): "Q3_K"})
         make_plan(root / "b.json", {1: [2], 2: []}, {(2, 1, "down"): "Q8_0"})

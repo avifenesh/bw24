@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCORE_FORMAT = "bw24-expert-retention-scores-v1"
-HEAL_FORMAT = "bw24-hy3-prune-heal-layer-v1"
+SCORE_FORMAT = "memra-expert-retention-scores-v1"
+HEAL_FORMAT = "memra-hy3-prune-heal-layer-v1"
 
 
 def sha256(path: Path) -> str:
@@ -117,7 +117,7 @@ def common_receipt(args: argparse.Namespace, layers: list[int], outputs: list[di
             "scores": {"path": str(args.scores.resolve()), "sha256": sha256(args.scores)},
         })
     return {
-        "format": "bw24-hy3-layer-lane-v1",
+        "format": "memra-hy3-layer-lane-v1",
         "command": args.command,
         "lane_index": args.lane_index,
         "lane_count": args.lane_count,
@@ -269,7 +269,7 @@ def parse_args() -> argparse.Namespace:
 def self_test() -> None:
     assert lane_layers(list(range(1, 10)), 0, 3) == [1, 4, 7]
     assert lane_layers(list(range(1, 10)), 2, 3) == [3, 6, 9]
-    with tempfile.TemporaryDirectory(prefix="bw24-layer-lane-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-layer-lane-") as tmp:
         root = Path(tmp)
         target = root / "target.f32"; target.write_bytes(b"target")
         score = root / "score.json"

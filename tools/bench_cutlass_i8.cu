@@ -59,19 +59,16 @@ using KSched = cutlass::gemm::collective::KernelScheduleAuto;
 using ESched = cutlass::epilogue::collective::EpilogueScheduleAuto;
 #endif
 
-using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
-    cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
-    ElementA, LayoutA, 16,
-    ElementB, LayoutB, 16,
-    int32_t,
-    TileShape, ClusterShape,
-    cutlass::gemm::collective::StageCountAuto,
-    KSched>::CollectiveOp;
-
 #ifdef FUSED_EVT
 // w8a8 fused epilogue (2026-07-31, round-41 arc): y = acc * act_scale[m] * w_scale[n]
 // as an EVT tree — the per-token (row) and per-out-row (col) scales fold into the
 // epilogue, deleting the separate dequant_rc launch the Lt route pays.
+// No named fusion op covers per-M AND per-N multiplicative scale vectors together
+// (ScaledLinComb* = scalar scale_a/scale_b; PerRow/PerColLinComb* = one axis), so the
+// tree is hand-built. Axis convention (D[M,N] row-major): Sm90ColBroadcast is the
+// column vector Stride<_1,_0,_0> — varies with M = per-token act scale;
+// Sm90RowBroadcast is the row vector Stride<_0,_1,_0> — varies with N = per-out-feature
+// weight scale.
 #include "cutlass/epilogue/fusion/operations.hpp"
 using FusionOp = cutlass::epilogue::fusion::Sm90EVT<
     cutlass::epilogue::fusion::Sm90Compute<cutlass::multiplies, float, float,
@@ -82,15 +79,39 @@ using FusionOp = cutlass::epilogue::fusion::Sm90EVT<
                                                cutlass::FloatRoundStyle::round_to_nearest>,
         cutlass::epilogue::fusion::Sm90RowBroadcast<0, TileShape, float>, // w_scale[n]
         cutlass::epilogue::fusion::Sm90AccFetch>>;
+// Epilogue is built FIRST so the mainloop stage count can carve out its smem. With
+// plain StageCountAuto the mainloop claimed the full capacity on top of the EVT
+// epilogue's real TensorStorage -> SharedStorageSize 296960B > the H100's 227KB
+// dynamic-smem cap -> cudaFuncSetAttribute "invalid argument" -> initialize()
+// status 7 (kErrorInternal). ElementC=void: the tree never fetches C, so drop the
+// C smem tiles entirely (beta path unused anyway).
 using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
     cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
     TileShape, ClusterShape,
     cutlass::epilogue::collective::EpilogueTileAuto,
     int32_t, float,
-    float, LayoutC, 4,
+    void, LayoutC, 4,
     float, LayoutC, 4,
     ESched, FusionOp>::CollectiveOp;
+using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+    cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
+    ElementA, LayoutA, 16,
+    ElementB, LayoutB, 16,
+    int32_t,
+    TileShape, ClusterShape,
+    cutlass::gemm::collective::StageCountAutoCarveout<
+        static_cast<int>(sizeof(typename CollectiveEpilogue::SharedStorage))>,
+    KSched>::CollectiveOp;
 #else
+using CollectiveMainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+    cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
+    ElementA, LayoutA, 16,
+    ElementB, LayoutB, 16,
+    int32_t,
+    TileShape, ClusterShape,
+    cutlass::gemm::collective::StageCountAuto,
+    KSched>::CollectiveOp;
+
 using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
     cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp,
     TileShape, ClusterShape,

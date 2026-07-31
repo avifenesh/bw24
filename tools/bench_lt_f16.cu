@@ -2,7 +2,7 @@
 // weights get a RESIDENT fp16 mirror at load, prefill projections become plain fp16
 // tensor-core GEMMs (f32 accumulate, ZERO per-block folds — the thing wgmma-int8 can't
 // have). This measures cublasGemmEx fp16 at the real m=512 shapes vs the MMQ medians.
-// Numerics: new config, opt-in seam + argmax/tolerance gate (BW24_PP_FP8 precedent).
+// Numerics: new config, opt-in seam + argmax/tolerance gate (MEMRA_PP_FP8 precedent).
 //
 // Build (box): nvcc -O3 -arch=sm_90a -lcublas -o /tmp/ltf16 tools/bench_lt_f16.cu
 #include <cstdio>

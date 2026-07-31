@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MTP-heal ACCEPTANCE BATTERY (§item 3, HANDOVER "BW24 DUAL-SHAPE").
+# MTP-heal ACCEPTANCE BATTERY (§item 3, HANDOVER "MEMRA DUAL-SHAPE").
 #
 # Measures MTP draft-head acceptance for ONE arm across a fixed prompt set + the 8-turn agent loop,
 # N>=3 runs each, one JSONL row per (prompt,K,run). Run it twice — once for the bf16 full-precision
@@ -16,13 +16,13 @@
 #
 # Env knobs:
 #   ARM=<label>              row tag (default: bf16-fullprec if FULL_PREC=1 else nvfp4)
-#   FULL_PREC=0|1            sets BW24_FULL_PREC (bf16 ST ceiling arm) — default 0
+#   FULL_PREC=0|1            sets MEMRA_FULL_PREC (bf16 ST ceiling arm) — default 0
 #   N=3                      runs per (prompt,K) for the static prompts
 #   KS="1 2 3 4 6 8"         K values (one run-spec invocation per K, for clean per-K parsing)
 #   NGEN=128                 tokens generated per run
 #   PROMPTS="p1 p2 p3"       which fixed prompts (files research/e2e/prompts/<id>-*.txt)
 #   RUN_AGENTLOOP=1          also run the 8-turn accumulative agent loop (default 1)
-#   EXTRA_ENV="..."          extra env words passed to run-spec (e.g. "BW24_SPEC_HPOST=1")
+#   EXTRA_ENV="..."          extra env words passed to run-spec (e.g. "MEMRA_SPEC_HPOST=1")
 #   CORPUS_DIR=<dir>         save a copy of every prompt payload sent to the model (corpus for head retraining)
 #   RUNSPEC=./target/release/run-spec   TIMEOUT=1800   PYBIN=python3
 set -euo pipefail
@@ -73,9 +73,9 @@ for pid in $PROMPTS; do
     for run in $(seq 1 "$N"); do
       echo "[battery]   $ARM $pid K=$k run=$run/$N ..."
       OUTLOG="$(env "${EXTRA_ENV_ARR[@]}" \
-          ${FULL_PREC:+BW24_FULL_PREC=$FULL_PREC} \
-          BW24_NGEN="$NGEN" BW24_SPEC_K="$k" BW24_SPEC_STATS=1 \
-          BW24_PROMPT_FILE="$PF" \
+          ${FULL_PREC:+MEMRA_FULL_PREC=$FULL_PREC} \
+          MEMRA_NGEN="$NGEN" MEMRA_SPEC_K="$k" MEMRA_SPEC_STATS=1 \
+          MEMRA_PROMPT_FILE="$PF" \
           timeout "$TIMEOUT" "$RUNSPEC" "$MODEL" 2>&1 || true)"
       printf '%s\n' "$OUTLOG" | "$PYBIN" "$PARSE" --out "$OUT" --arm "$ARM" \
           --prompt "$pid" --k "$k" --run "$run" --model "$MODEL" --ngen "$NGEN" $FP_FLAG \

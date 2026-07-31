@@ -23,7 +23,7 @@ MODEL="${1:?usage: agent_loop_acceptance.sh <model> <out.jsonl> <arm> [extra env
 OUT="${2:?missing out.jsonl}"
 ARM="${3:?missing arm label}"
 shift 3 || true
-EXTRA_ENV=("$@")   # e.g. BW24_RP=0 BW24_MMQ=1
+EXTRA_ENV=("$@")   # e.g. MEMRA_RP=0 MEMRA_MMQ=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -62,9 +62,9 @@ for i in "${!TURNS[@]}"; do
   # snapshot the exact prompt payload this turn sends (corpus for head retraining)
   [ -n "$CORPUS_DIR" ] && cp "$W" "$CORPUS_DIR/${ARM}-agentloop-t${turn}-prompt.txt"
   OUTLOG="$(env "${EXTRA_ENV[@]}" \
-      ${FULL_PREC:+BW24_FULL_PREC=$FULL_PREC} \
-      BW24_NGEN="$NGEN" BW24_SPEC_K="$K" BW24_SPEC_STATS=1 BW24_SPEC_HPOST=1 \
-      BW24_PRINT_TEXT=1 BW24_PROMPT_FILE="$W" \
+      ${FULL_PREC:+MEMRA_FULL_PREC=$FULL_PREC} \
+      MEMRA_NGEN="$NGEN" MEMRA_SPEC_K="$K" MEMRA_SPEC_STATS=1 MEMRA_SPEC_HPOST=1 \
+      MEMRA_PRINT_TEXT=1 MEMRA_PROMPT_FILE="$W" \
       timeout "$TIMEOUT" "$RUNSPEC" "$MODEL" 2>&1 || true)"
   # append the model's reply to the growing transcript (self-conditioning)
   awk '/^--- generated text ---$/{f=1;next} /^--- end ---$/{f=0} f' <<<"$OUTLOG" >> "$W"

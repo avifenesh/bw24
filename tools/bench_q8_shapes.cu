@@ -2,13 +2,13 @@
 // Benches qmatvec_q8_0_mmvq_rp standalone on the Qwen3.5-9B trunk shapes with
 // synthetic data: reports achieved GB/s (weight bytes only) vs device peak, per shape.
 // Build (on box):
-//   nvcc -gencode arch=compute_90a,code=sm_90a -O3 -DBW24_PORTABLE_CUDA=1 -DBW24_HOPPER_MMA=1 \
+//   nvcc -gencode arch=compute_90a,code=sm_90a -O3 -DMEMRA_PORTABLE_CUDA=1 -DMEMRA_HOPPER_MMA=1 \
 //     -o /tmp/bench_q8_shapes tools/bench_q8_shapes.cu
 // The production kernels are #included (bench_mapped_qmatvec.cu pattern).
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
-#include "../crates/bw24-engine/cu/qmatvec.cu"
+#include "../crates/memra-engine/cu/qmatvec.cu"
 
 #define CK(x) do { cudaError_t e = (x); if (e) { printf("CUDA %s @%d\n", cudaGetErrorString(e), __LINE__); exit(1);} } while (0)
 
@@ -20,7 +20,7 @@ extern "C" __global__ void bench_q8_rp_ldg(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     (void)row_bytes;
-    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + threadIdx.y;
     int t = blockIdx.y;
     if (o >= out_f || t >= m) return;
     int lane = threadIdx.x;
@@ -59,9 +59,9 @@ extern "C" __global__ void bench_q8_rp_pers(
     int nblk = in_f / 32;
     const signed char* arow = aq;
     const float* adrow = ad;
-    int ngroups = (out_f + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int ngroups = (out_f + MEMRA_MMVQ_ROWS - 1) / MEMRA_MMVQ_ROWS;
     for (int rg = blockIdx.x; rg < ngroups; rg += gridDim.x) {
-        int o = rg * BW24_MMVQ_ROWS + threadIdx.y;
+        int o = rg * MEMRA_MMVQ_ROWS + threadIdx.y;
         if (o >= out_f) continue;
         const unsigned char* wq; const unsigned short* wd;
         q8_0_rp_planes(W, out_f, o, nblk, &wq, &wd);
@@ -113,8 +113,8 @@ int main() {
         CK(cudaMemset(ad, 0, nblk * 4));
         float* y; CK(cudaMalloc(&y, s.out_f * 4));
 
-        dim3 block(32, BW24_MMVQ_ROWS, 1);
-        dim3 grid((s.out_f + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS, 1, 1);
+        dim3 block(32, MEMRA_MMVQ_ROWS, 1);
+        dim3 grid((s.out_f + MEMRA_MMVQ_ROWS - 1) / MEMRA_MMVQ_ROWS, 1, 1);
         // warm
         for (int i = 0; i < 20; i++)
             qmatvec_q8_0_mmvq_rp<<<grid, block>>>(W, aq, ad, y, s.in_f, s.out_f, 1, 0);

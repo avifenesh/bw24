@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build frozen Hy3 REAP, traffic, diversity, and rare-stratum retention scores.
 
-Inputs are a validated tokenwise BW24 MoE-input trace, the matched runtime weighted-route trace,
+Inputs are a validated tokenwise MEMRA MoE-input trace, the matched runtime weighted-route trace,
 and the pinned high-precision Hugging Face checkpoint. Public evaluation data must not be present.
 The tool may process a layer subset so independent GPU workers can run in parallel.
 """
@@ -25,8 +25,8 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 
-FORMAT = "bw24-expert-retention-scores-v1"
-TRACE_LOCK_FORMAT = "bw24-moe-input-trace-lock-v1"
+FORMAT = "memra-expert-retention-scores-v1"
+TRACE_LOCK_FORMAT = "memra-moe-input-trace-lock-v1"
 REAP_REFERENCE_COMMIT = "1970473c51ca3caeb98c10392f15b3a08a672974"
 
 
@@ -259,7 +259,7 @@ def score_layer(
         teacher_target.flush()
         del teacher_target
         target_receipt = {
-            "format": "bw24-hy3-layer-teacher-target-v1",
+            "format": "memra-hy3-layer-teacher-target-v1",
             "layer": layer,
             "tokens": total_tokens,
             "hidden_size": hidden_size,
@@ -468,7 +468,7 @@ def build_scores(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-hy3-reap-scores-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-hy3-reap-scores-") as tmp:
         root = Path(tmp)
         source, trace = root / "source", root / "trace"
         source.mkdir(); trace.mkdir()

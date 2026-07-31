@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert bw24 routing traces into frozen per-layer expert quantization plans."""
+"""Convert memra routing traces into frozen per-layer expert quantization plans."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-FORMAT = "bw24-expert-tier-plan-v2"
+FORMAT = "memra-expert-tier-plan-v2"
 RECIPES = (
     "uniform-nvfp4", "usage-pyramid", "reap50-plus25", "quartile-prune",
     "traffic-ladder",
@@ -98,7 +98,7 @@ def read_trace(
 
 def read_mask(path: Path, layers: list[int], n_expert: int) -> dict[int, set[int]]:
     payload = json.loads(path.read_text())
-    if payload.get("format") != "bw24-hy3-reap-mask-v1":
+    if payload.get("format") != "memra-hy3-reap-mask-v1":
         raise ValueError(f"{path}: unsupported expert mask format {payload.get('format')!r}")
     specs = payload.get("layers")
     if not isinstance(specs, dict):
@@ -327,7 +327,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-tier-plan-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-tier-plan-") as tmp:
         root = Path(tmp)
         trace = root / "usage.trace"
         trace.write_text("1 2 0,0,1,2\n1 2 0,1,2,3\n")
@@ -370,7 +370,7 @@ def self_test() -> None:
         reap_trace.write_text("1 12 " + ",".join(str(x) for x in range(0, 192, 2)) + "\n")
         reap_mask = root / "reap-mask.json"
         reap_mask.write_text(json.dumps({
-            "format": "bw24-hy3-reap-mask-v1",
+            "format": "memra-hy3-reap-mask-v1",
             "layers": {"1": {
                 "retained_experts": list(range(0, 192, 2)),
                 "pruned_experts": list(range(1, 192, 2)),

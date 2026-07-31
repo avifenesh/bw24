@@ -81,7 +81,7 @@ def main() -> None:
         previous = decode_pass
 
     result = {
-        "format": "bw24-hy3-route-transition-analysis-v1",
+        "format": "memra-hy3-route-transition-analysis-v1",
         "trace": str(args.trace),
         "decode_passes": len(passes),
         "train_passes": args.train,

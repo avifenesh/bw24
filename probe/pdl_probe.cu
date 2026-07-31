@@ -1,7 +1,7 @@
 // PDL (Programmatic Dependent Launch) win-probe for sm_120 laptop.
-// Chain of N dependent tiny kernels (the bw24 MoE decode launch pattern: 2-8us kernels,
+// Chain of N dependent tiny kernels (the memra MoE decode launch pattern: 2-8us kernels,
 // each reading the previous one's output). Three arms:
-//   A: plain stream-ordered launches (cudaLaunchKernel, the bw24 status quo)
+//   A: plain stream-ordered launches (cudaLaunchKernel, the memra status quo)
 //   B: PDL launches (cudaLaunchKernelEx + PROGRAMMATIC_STREAM_SERIALIZATION; kernel does
 //      griddepcontrol wait before its first read and launch_dependents after last write)
 //   C: PDL with the sync placed late (overlap prolog with predecessor tail)

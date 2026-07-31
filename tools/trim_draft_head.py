@@ -52,7 +52,7 @@ def main():
         writer.add_key_value(field.name, field.contents(), val_type, sub_type=sub_type)
 
     # trimmed output.weight: byte-level row gather (rows are independent in every
-    # row-aligned quant; same gather the engine's BW24_FRSPEC_TRIM loader does).
+    # row-aligned quant; same gather the engine's MEMRA_FRSPEC_TRIM loader does).
     out_t = next(t for t in reader.tensors if t.name == "output.weight")
     n_vocab = int(out_t.shape[-1]) if len(out_t.shape) > 1 else int(out_t.shape[0])
     row_bytes = out_t.n_bytes // n_vocab

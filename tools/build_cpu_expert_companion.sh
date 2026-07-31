@@ -8,12 +8,12 @@ fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd -- "$script_dir/.." && pwd)
-output=${1:-$repo_dir/target/release/libbw24-cpu-experts.so}
+output=${1:-$repo_dir/target/release/libmemra-cpu-experts.so}
 
 mkdir -p -- "$(dirname -- "$output")"
 "${CXX:-c++}" -std=c++17 -O3 -march=native -fPIC -shared -fopenmp \
   -Wall -Wextra -Wpedantic -Werror \
-  "$repo_dir/tools/bw24_cpu_experts.cpp" \
+  "$repo_dir/tools/memra_cpu_experts.cpp" \
   -o "$output"
 
 if ldd -- "$output" | grep -Eqi 'llama|ggml'; then

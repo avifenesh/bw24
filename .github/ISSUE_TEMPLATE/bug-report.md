@@ -4,7 +4,7 @@ about: Wrong output, crash, gate failure, or performance regression
 ---
 
 <!--
-Read CONTRIBUTING.md first. This isn't red tape — bw24 has no CI on sm_120a hardware, so a
+Read CONTRIBUTING.md first. This isn't red tape — memra has no CI on sm_120a hardware, so a
 report without the details below usually can't be reproduced or actioned at all, and will
 sit or get closed rather than fixed. For a security vulnerability, do NOT use this template —
 see SECURITY.md instead.

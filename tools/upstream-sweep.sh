@@ -7,7 +7,7 @@
 # fa=auto behavior for two weeks).
 #
 # Install (weekly, Monday 09:17):
-#   (crontab -l; echo '17 9 * * 1 cd ~/projects/bw24 && tools/upstream-sweep.sh >> /tmp/bw24-upstream-sweep.log 2>&1') | crontab -
+#   (crontab -l; echo '17 9 * * 1 cd ~/projects/memra && tools/upstream-sweep.sh >> /tmp/memra-upstream-sweep.log 2>&1') | crontab -
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

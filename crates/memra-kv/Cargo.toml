@@ -1,0 +1,8 @@
+[package]
+name = "memra-kv"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
+memra-gguf = { path = "../memra-gguf" }

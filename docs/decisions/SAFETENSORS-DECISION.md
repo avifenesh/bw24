@@ -1,6 +1,6 @@
 # SAFETENSORS-DECISION.md
 
-Decision doc + build spec for adding SafeTensors (HF) weight loading to the bw24 engine.
+Decision doc + build spec for adding SafeTensors (HF) weight loading to the memra engine.
 This is the spec the loader is built against. Everything below is verified against the
 on-disk models at `/home/avifenesh/ai-ml/hf-models/{qwen35-9b-hf, qwen35-4b-hf, eagle3-qwen35-9b}`,
 the safetensors spec/crate, the local llama.cpp conversion source, and the current engine code.
@@ -38,7 +38,7 @@ Two shapes of work:
 
 The GGUF hand-roll was justified (custom KV binary + quant-block sizing). SafeTensors is just
 `u64 len + JSON header + blob`; the crate is ~400 lines Apache-2.0 and is the reference impl.
-Add to `crates/bw24-gguf/Cargo.toml` (or a new `bw24-safetensors` crate — see below):
+Add to `crates/memra-gguf/Cargo.toml` (or a new `memra-safetensors` crate — see below):
 
 ```toml
 safetensors = "0.4"
@@ -129,9 +129,9 @@ For safetensors, `find_bytes` does the name-map (part 2), the transforms (part 3
 materializes those transformed tensors once (owned `Vec<u8>`/`Vec<f32>`) rather than borrowing the
 mmap for them. Pure pass-through tensors (q/k/v/o/gate/up/down) stay zero-copy from the mmap.
 
-Recommendation: put it in a new module `crates/bw24-gguf/src/safetensors.rs` (reuses `dequant`,
-`GgmlType`, `ModelConfig`) OR a sibling crate `bw24-safetensors`. Module is simpler; the crate name
-`bw24-gguf` is then a misnomer but the dependency graph stays flat.
+Recommendation: put it in a new module `crates/memra-gguf/src/safetensors.rs` (reuses `dequant`,
+`GgmlType`, `ModelConfig`) OR a sibling crate `memra-safetensors`. Module is simpler; the crate name
+`memra-gguf` is then a misnomer but the dependency graph stays flat.
 
 ---
 
@@ -452,12 +452,12 @@ as the bf16-resident `GpuTensor` lands (small, well-scoped — same shape as the
   `gguf-py/gguf/constants.py` TENSOR_NAMES :1099-1200; `gguf-py/gguf/gguf_writer.py:265-268`
   (dim-reverse on write = proof no byte transpose); `convert_hf_to_gguf.py` (298-line CLI shim:
   `--mtp/--no-mtp` :120-127, `--target-model-dir` EAGLE3 :156-163, arch dispatch :238-245).
-- bw24 consumer: `crates/bw24-engine/src/model.rs:14-57` (GpuTensor + load, in=ne[0]/out=ne[1],
+- memra consumer: `crates/memra-engine/src/model.rs:14-57` (GpuTensor + load, in=ne[0]/out=ne[1],
   Q8_0/Q4_K/Q6_K only resident; else dequant->f32), `:68-90` (EmbedHost per-row gather);
-  `crates/bw24-engine/src/hybrid.rs:53-99` (all ggml names the forward loads);
-  `crates/bw24-gguf/src/config.rs:87-171` (ModelConfig::from_gguf + layer_kind);
-  `crates/bw24-gguf/src/dequant.rs:8-61` (fp16/bf16 -> f32, dispatch);
-  `crates/bw24-gguf/src/lib.rs:122-129` (TensorInfo.ne, ne[0] fastest); kernels.cu rms_norm (no +1).
+  `crates/memra-engine/src/hybrid.rs:53-99` (all ggml names the forward loads);
+  `crates/memra-gguf/src/config.rs:87-171` (ModelConfig::from_gguf + layer_kind);
+  `crates/memra-gguf/src/dequant.rs:8-61` (fp16/bf16 -> f32, dispatch);
+  `crates/memra-gguf/src/lib.rs:122-129` (TensorInfo.ne, ne[0] fastest); kernels.cu rms_norm (no +1).
 - on-disk (verified this session): qwen35-9b-hf index (775 tensors, 4 dash-named shards,
   total_size 19306216416, non-contiguous-by-layer; `model.language_model.*` prefix + top-level
   `lm_head.weight`), 9b/4b config.json (head_dim 256 explicit, rope_theta 1e7, partial_rotary 0.25,

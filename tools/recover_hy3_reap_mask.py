@@ -28,7 +28,7 @@ from hy3_mlx_to_q4k import (
 )
 
 
-FORMAT = "bw24-hy3-reap-mask-v1"
+FORMAT = "memra-hy3-reap-mask-v1"
 
 
 def parse_layers(raw: str) -> list[int]:
@@ -192,7 +192,7 @@ def self_test() -> None:
     assert np.array_equal(matched, expected)
     assert float(rmse.max()) < 2e-4
     assert float(margin.min()) > 100
-    with tempfile.TemporaryDirectory(prefix="bw24-reap-mask-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-reap-mask-") as tmp:
         path = Path(tmp) / "mask.json"
         path.write_text(json.dumps({"retained": matched.tolist()}))
         assert json.loads(path.read_text())["retained"] == expected.tolist()

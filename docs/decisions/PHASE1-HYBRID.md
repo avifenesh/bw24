@@ -10,11 +10,11 @@ there) and at the FLA / vLLM references. **Copy, do not invent.** This doc gives
 ranges, shapes, and the order to build them.
 
 The repo already has the spine pieces in place — build on them, do not duplicate:
-- `crates/bw24-gguf/src/lib.rs` — GGUF v3 mmap reader (`GgufFile::open`, `find`, `tensor_data`, `meta_arch`), `GgmlType` block sizes incl. MXFP4(39)/NVFP4(40).
-- `crates/bw24-gguf/src/config.rs` — `ModelConfig::from_gguf`, `Arch`, `LayerKind`, `SsmConfig`, `MoeConfig`, `layer_kind(il)`, `n_full_attn_layers()`. **Already classifies layers correctly** (`(il+1)%full_attention_interval==0` ⇒ FullAttention).
-- `crates/bw24-gguf/src/dequant.rs` — CPU dequant oracle: `fp16_to_f32`, `bf16_to_f32`, `dequantize(ty, raw, n)` for F32/F16/BF16/Q8_0/Q4_K/Q6_K (extend as needed). This is the correctness oracle for GPU dequant.
-- `crates/bw24-gguf/src/bin/inspect.rs` — `gguf-inspect` (built at `target/release/gguf-inspect`), and a `rope_dump` binary already exist.
-- `crates/bw24-probe` — the proven sm_120a nvcc→fatbin + cudarc launch spine (FP16/FP8/block-FP4 mma.sync verified). Reuse its `build.rs` nvcc pattern for all `.cu` kernels.
+- `crates/memra-gguf/src/lib.rs` — GGUF v3 mmap reader (`GgufFile::open`, `find`, `tensor_data`, `meta_arch`), `GgmlType` block sizes incl. MXFP4(39)/NVFP4(40).
+- `crates/memra-gguf/src/config.rs` — `ModelConfig::from_gguf`, `Arch`, `LayerKind`, `SsmConfig`, `MoeConfig`, `layer_kind(il)`, `n_full_attn_layers()`. **Already classifies layers correctly** (`(il+1)%full_attention_interval==0` ⇒ FullAttention).
+- `crates/memra-gguf/src/dequant.rs` — CPU dequant oracle: `fp16_to_f32`, `bf16_to_f32`, `dequantize(ty, raw, n)` for F32/F16/BF16/Q8_0/Q4_K/Q6_K (extend as needed). This is the correctness oracle for GPU dequant.
+- `crates/memra-gguf/src/bin/inspect.rs` — `gguf-inspect` (built at `target/release/gguf-inspect`), and a `rope_dump` binary already exist.
+- `crates/memra-probe` — the proven sm_120a nvcc→fatbin + cudarc launch spine (FP16/FP8/block-FP4 mma.sync verified). Reuse its `build.rs` nvcc pattern for all `.cu` kernels.
 
 Verified daily-target geometry (Qwen3.5-9B, Q8_0 GGUF `/home/avifenesh/ai-ml/models/qwen3.5-9b-judge-q8_0.gguf`):
 n_embd=4096, n_layer=32 (8 full-attn at il=3,7,11,15,19,23,27,31; 24 linear), n_head=16, n_head_kv=4,
@@ -27,13 +27,13 @@ head_k_dim=head_v_dim=128, key_dim=2048, value_dim=4096, conv_dim=8192.
 
 ## 1. Rust module layout
 
-New crate `crates/bw24-engine` (add to workspace `members`). Depends on `bw24-gguf`, `cudarc = "0.19.8"`.
-Kernels are `.cu` compiled by `build.rs` (clone the `bw24-probe` nvcc→`-gencode arch=compute_120a,code=sm_120a`
+New crate `crates/memra-engine` (add to workspace `members`). Depends on `memra-gguf`, `cudarc = "0.19.8"`.
+Kernels are `.cu` compiled by `build.rs` (clone the `memra-probe` nvcc→`-gencode arch=compute_120a,code=sm_120a`
 fatbin pattern) and loaded as cudarc modules.
 
 ```
-crates/bw24-engine/
-  build.rs                      # nvcc each .cu -> sm_120a fatbin, embed via include_bytes!/OUT_DIR (copy bw24-probe/build.rs)
+crates/memra-engine/
+  build.rs                      # nvcc each .cu -> sm_120a fatbin, embed via include_bytes!/OUT_DIR (copy memra-probe/build.rs)
   cu/                           # raw CUDA C++ kernels (ported, see §4/§5)
     rmsnorm.cu                  # rms_norm_f32, l2_norm_f32 (norm.cu port)
     rope_neox.cu                # partial NEOX rope (IMRoPE-collapsed; rope.cu port)
@@ -216,7 +216,7 @@ scale=1/sqrtf(128). g passed RAW (kernel does expf), beta pre-sigmoid'd, q/k pre
 `keep_rs_t=false`. Feed state from `recur[il].ssm_state` (transposed layout) and write it back.
 
 ### STAGE 2 — sm_120-FAST (only after Stage-1 logits match)
-- **GEMM:** replace cuBLASLt with the proven sm_120a mma.sync paths (block-FP8 381 TFLOP / MXFP4 762 TFLOP / FP16 117) from the `bw24-probe` spine — MMQ-style (quant×quant) for Q8_0/Q4_K, Marlin-style or NVFP4 for the NVFP4 GGUFs. Keep cuBLASLt as the fallback/oracle.
+- **GEMM:** replace cuBLASLt with the proven sm_120a mma.sync paths (block-FP8 381 TFLOP / MXFP4 762 TFLOP / FP16 117) from the `memra-probe` spine — MMQ-style (quant×quant) for Q8_0/Q4_K, Marlin-style or NVFP4 for the NVFP4 GGUFs. Keep cuBLASLt as the fallback/oracle.
 - **GDN prefill:** chunked WY form (delta-net-base.cpp:16-287, CS=64 for GDA / FLA `chunk.py`): g cumsum → decay_mask exp → kkt → solve_tri (per-chunk forward-substitution in smem) → v_new → sequential cross-chunk state recurrence + intra/inter outputs. Tiles 64×64 and 128×64 → sm_120 `mma.sync.m16n8k16` FP16/TF32 (verified). Keep the recurrent kernel for T==1.
 - **Attention prefill:** port `fattn-mma-f16.cuh` DKQ=DV=256 (uses only `mma.sync.m16n8k16`, Ampere-class PTX — sm_120-safe; **no wgmma/tcgen05/CUTLASS**). Cast K/V to f16, pad KV%FATTN_KQ_STRIDE. Reference fast hand-written sm_120 FA: gau-nernst fa-5090 `07_attention@e83c256` (head_dim 128 → split into 2×128 K-tiles for 256).
 - **Attention decode:** port `fattn-vec.cuh` D=256 instance (plain CUDA warp-per-KV-tile, 128 threads, no TC).

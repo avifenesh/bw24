@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# FULL-BOARD interleaved bench — every supported model, bw24 vs llama.cpp, both arms
+# FULL-BOARD interleaved bench — every supported model, memra vs llama.cpp, both arms
 # alternated inside one session/thermal window (post-unified-merge picture, 2026-07-30).
 #
 # Protocol: SERIAL (one engine on the GPU at a time), idle-gate between arms, N_PAIRS
 # alternations per cell, tee'd raw logs + JSONL rows. llama at its documented swept-best
 # per COMPETITOR-SETUP.md (qwen: -fa 1 -ctk q8_0 -ctv q5_1 + MTP server; gemma: -fa 1
-# f16 KV + MTP server at per-model n-max optimum). bw24 at naked defaults + the board's
-# documented spec configs (BW24_MTP_DRAFT owntrim for qwen, gemma-gate manifest configs).
+# f16 KV + MTP server at per-model n-max optimum). memra at naked defaults + the board's
+# documented spec configs (MEMRA_MTP_DRAFT owntrim for qwen, gemma-gate manifest configs).
 #
 # Usage: tools/full-board-bench.sh [cell-regex]
 set -uo pipefail
@@ -67,17 +67,17 @@ llama_bench_tg() {  # cell model depth extra_flags...
     | grep -E "tg128" | grep -oE '[0-9.]+ ±' | grep -oE '^[0-9.]+' | tail -1
 }
 
-bw24_plain() {  # cell model promptfile ngen  (pf ending .txt+ids = token ids as args;
-                # anything else = TEXT via BW24_PROMPT_FILE — knife-edge synthetic-id
+memra_plain() {  # cell model promptfile ngen  (pf ending .txt+ids = token ids as args;
+                # anything else = TEXT via MEMRA_PROMPT_FILE — knife-edge synthetic-id
                 # prompts flake the argmax gate on address-lottery ULPs, ledger 2026-07-30)
   local cell=$1 model=$2 pf=$3 ngen=$4
-  local log="$LOGD/$cell-bw24.log"
+  local log="$LOGD/$cell-memra.log"
   if echo "$pf" | grep -q 'ids'; then
     # shellcheck disable=SC2046
-    BW24_NGEN="$ngen" timeout 600 $BW/run-gen "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
+    MEMRA_NGEN="$ngen" timeout 600 $BW/run-gen "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
       | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
   else
-    BW24_NGEN="$ngen" BW24_PROMPT_FILE="$pf" timeout 600 $BW/run-gen "$model" 2>&1 | tee -a "$log" \
+    MEMRA_NGEN="$ngen" MEMRA_PROMPT_FILE="$pf" timeout 600 $BW/run-gen "$model" 2>&1 | tee -a "$log" \
       | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
   fi
 }
@@ -121,32 +121,32 @@ print(f"{t['predicted_per_second']:.2f}{extra}")
 PY
 }
 
-bw24_spec_qwen() {  # cell model trim k promptfile ngen
+memra_spec_qwen() {  # cell model trim k promptfile ngen
   local cell=$1 model=$2 trim=$3 k=$4 pf=$5 ngen=$6
-  local log="$LOGD/$cell-bw24.log"
-  BW24_MTP_DRAFT="$trim" BW24_SPEC_K="$k" BW24_NGEN="$ngen" BW24_PROMPT="$(cat "$pf")" \
+  local log="$LOGD/$cell-memra.log"
+  MEMRA_MTP_DRAFT="$trim" MEMRA_SPEC_K="$k" MEMRA_NGEN="$ngen" MEMRA_PROMPT="$(cat "$pf")" \
     timeout 900 $BW/run-spec "$model" 2>&1 | tee -a "$log" \
     | grep -oE "[0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+"
 }
 
-bw24_spec_gemma() {  # cell model draft k ranks promptfile ngen
+memra_spec_gemma() {  # cell model draft k ranks promptfile ngen
   local cell=$1 model=$2 draft=$3 k=$4 ranks=$5 pf=$6 ngen=$7
-  local log="$LOGD/$cell-bw24.log"
-  local envs=(BW24_SPEC_ONLY=1 "BW24_SPEC=$k" "BW24_DRAFT=$draft" "BW24_NGEN=$ngen")
-  [ -n "$ranks" ] && envs+=("BW24_GEMMA_DRAFT_RANKS=$ranks")
+  local log="$LOGD/$cell-memra.log"
+  local envs=(MEMRA_SPEC_ONLY=1 "MEMRA_SPEC=$k" "MEMRA_DRAFT=$draft" "MEMRA_NGEN=$ngen")
+  [ -n "$ranks" ] && envs+=("MEMRA_GEMMA_DRAFT_RANKS=$ranks")
   # shellcheck disable=SC2046
   env "${envs[@]}" timeout 900 $BW/gemma-gate "$model" $(cat "$pf") 2>&1 | tee -a "$log" \
     | grep -oE "spec: [0-9.]+" | grep -oE "[0-9.]+" | tail -1
 }
 
-# ---------- cell drivers (interleaved: llama arm then bw24 arm, x N_PAIRS) ----------
+# ---------- cell drivers (interleaved: llama arm then memra arm, x N_PAIRS) ----------
 plain_cell() {  # cell model bwprompt ngen depth llama_extra...
   local cell=$1 model=$2 pf=$3 ngen=$4 depth=$5; shift 5
   echo "$cell" | grep -qE "$FILTER" || return 0
   echo "== $cell (plain, interleaved x$N_PAIRS) =="
   for _ in $(seq 1 $N_PAIRS); do
     wait_idle; t=$(llama_bench_tg "$cell" "$model" "$depth" "$@"); row "$cell" llama "${t:-0}"
-    wait_idle; t=$(bw24_plain "$cell" "$model" "$pf" "$ngen"); row "$cell" bw24 "${t:-0}"
+    wait_idle; t=$(memra_plain "$cell" "$model" "$pf" "$ngen"); row "$cell" memra "${t:-0}"
   done
 }
 
@@ -160,7 +160,7 @@ spec_cell_qwen() {  # cell model llama_draft nmax pmin trim k promptfile ngen
       out=$(llama_completion_tps "$pf" text "$ngen"); llama_server_stop
       row "$cell" llama "${out%% *}" "$(echo "$out" | grep -oE 'draft_accept=[0-9.]+' | sed 's/^/,"accept_note":"/;s/$/"/' )"
     fi
-    wait_idle; t=$(bw24_spec_qwen "$cell" "$model" "$trim" "$k" "$pf" "$ngen"); row "$cell" bw24 "${t:-0}"
+    wait_idle; t=$(memra_spec_qwen "$cell" "$model" "$trim" "$k" "$pf" "$ngen"); row "$cell" memra "${t:-0}"
   done
 }
 
@@ -174,7 +174,7 @@ spec_cell_gemma() {  # cell model llama_draft nmax bwdraft k ranks idsfile ngen
       out=$(llama_completion_tps "$pf" ids "$ngen"); llama_server_stop
       row "$cell" llama "${out%% *}" "$(echo "$out" | grep -oE 'draft_accept=[0-9.]+' | sed 's/^/,"accept_note":"/;s/$/"/' )"
     fi
-    wait_idle; t=$(bw24_spec_gemma "$cell" "$model" "$bwdraft" "$k" "$ranks" "$pf" "$ngen"); row "$cell" bw24 "${t:-0}"
+    wait_idle; t=$(memra_spec_gemma "$cell" "$model" "$bwdraft" "$k" "$ranks" "$pf" "$ngen"); row "$cell" memra "${t:-0}"
   done
 }
 

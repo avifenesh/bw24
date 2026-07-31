@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
-OUTPUT_FORMAT = "bw24-hy3-quant-research-conclusion-v1"
-RECEIPT_FORMAT = "bw24-hy3-quant-research-conclusion-receipt-v1"
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
+OUTPUT_FORMAT = "memra-hy3-quant-research-conclusion-v1"
+RECEIPT_FORMAT = "memra-hy3-quant-research-conclusion-receipt-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
 PLAN_ARMS = {
     "uncentered": "smart100_iq3_iq4_q4_empirical",
     "centered": "smart100_iq3_iq4_q4_centered",
@@ -310,7 +310,7 @@ def effect_map_summary(effects: dict[str, Any]) -> dict[str, Any]:
 
 
 def healing_ablation_summary(frontier: dict[str, Any]) -> dict[str, Any]:
-    if frontier.get("format") != "bw24-cross-run-expanded-capability-frontier-v1":
+    if frontier.get("format") != "memra-cross-run-expanded-capability-frontier-v1":
         raise ValueError("wrong healing frontier format")
     arms = frontier.get("arms")
     if not isinstance(arms, dict) or any(name not in arms for name in HEALING_ARMS):
@@ -420,7 +420,7 @@ def healing_ablation_summary(frontier: dict[str, Any]) -> dict[str, Any]:
 
 
 def directional_frontier_summary(frontier: dict[str, Any]) -> dict[str, Any]:
-    if frontier.get("format") != "bw24-cross-run-expanded-capability-frontier-v1":
+    if frontier.get("format") != "memra-cross-run-expanded-capability-frontier-v1":
         raise ValueError("wrong directional frontier format")
     arms = frontier.get("arms")
     pareto = frontier.get("point_estimate_pareto")
@@ -482,7 +482,7 @@ def practical_comparison_paths(practical: dict[str, Any]) -> list[Path]:
 
 def practical_screen_summary(practical: dict[str, Any]) -> dict[str, Any]:
     """Validate and expose the normalized SWE/Terminal promotion evidence."""
-    if practical.get("format") != "bw24-practical-promotion-v1":
+    if practical.get("format") != "memra-practical-promotion-v1":
         raise ValueError("wrong practical-promotion format")
     executed = practical.get("executed_practical_arms")
     trusted = practical.get("trusted_full_arms")
@@ -509,7 +509,7 @@ def practical_screen_summary(practical: dict[str, Any]) -> dict[str, Any]:
             comparison_path = Path(verdict["comparison"]["path"])
             report = load(comparison_path)
             if (
-                report.get("format") != "bw24-practical-comparison-v1"
+                report.get("format") != "memra-practical-comparison-v1"
                 or report.get("panel") != panel
                 or int(report.get("n_tasks", 0)) != 12
                 or len(report.get("tasks", [])) != 12
@@ -672,7 +672,7 @@ def full_agentic_summary(full: dict[str, Any]) -> dict[str, Any]:
         report = full.get(panel)
         if (
             not isinstance(report, dict)
-            or report.get("format") != "bw24-full-practical-comparison-v1"
+            or report.get("format") != "memra-full-practical-comparison-v1"
             or int(report.get("n_tasks", 0)) != expected_n
             or report.get("baseline", {}).get("arm") != baseline
             or report.get("candidate", {}).get("arm") != candidate
@@ -950,11 +950,11 @@ def apply_method_damage(
     """Bind traffic and layer-aware methods to one independently scored metric."""
     report = load(report_path)
     receipt = load(receipt_path)
-    if report.get("format") != "bw24-hy3-quant-plan-damage-v1":
+    if report.get("format") != "memra-hy3-quant-plan-damage-v1":
         raise ValueError("wrong four-way method-damage format")
     if report.get("public_eval_data_used") is not False:
         raise ValueError("four-way method damage used public eval")
-    if receipt.get("format") != "bw24-hy3-quant-plan-damage-receipt-v1":
+    if receipt.get("format") != "memra-hy3-quant-plan-damage-receipt-v1":
         raise ValueError("wrong four-way method-damage receipt format")
     if receipt.get("public_eval_data_used") is not False or not re.fullmatch(
         r"[0-9a-f]{40}", str(receipt.get("analysis_commit", ""))
@@ -1165,7 +1165,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     trusted = load(args.trusted_report)
     full = load(args.full_agentic)
-    if effects.get("format") != "bw24-hy3-quant-effects-map-v1":
+    if effects.get("format") != "memra-hy3-quant-effects-map-v1":
         raise ValueError("wrong effects format")
     if effects.get("public_eval_data_used_for_selection") is not False:
         raise ValueError("effects map is not private-only")
@@ -1174,26 +1174,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     }:
         raise ValueError("effects map is not the seven-format study")
     expected_formats = (
-        (damage, "bw24-hy3-quant-plan-damage-v1"),
-        (frontier, "bw24-cross-run-expanded-capability-frontier-v1"),
-        (practical, "bw24-practical-promotion-v1"),
-        (trusted, "bw24-promoted-candidate-v1"),
-        (full, "bw24-full-agentic-comparison-v1"),
+        (damage, "memra-hy3-quant-plan-damage-v1"),
+        (frontier, "memra-cross-run-expanded-capability-frontier-v1"),
+        (practical, "memra-practical-promotion-v1"),
+        (trusted, "memra-promoted-candidate-v1"),
+        (full, "memra-full-agentic-comparison-v1"),
     )
     for payload, expected in expected_formats:
         if payload.get("format") != expected:
             raise ValueError(f"expected {expected}, got {payload.get('format')}")
     if directional.get("format") not in {
-        "bw24-smart100-directional-promotion-v1",
-        "bw24-layer-balanced-bridge-directional-promotion-v1",
+        "memra-smart100-directional-promotion-v1",
+        "memra-layer-balanced-bridge-directional-promotion-v1",
     }:
         raise ValueError("wrong directional-promotion format")
     if trusted_selection.get("format") not in {
-        "bw24-practical-promotion-v1",
-        "bw24-effective-trusted-full-selection-v1",
+        "memra-practical-promotion-v1",
+        "memra-effective-trusted-full-selection-v1",
     }:
         raise ValueError("wrong effective trusted-selection format")
-    if trusted_selection.get("format") == "bw24-effective-trusted-full-selection-v1":
+    if trusted_selection.get("format") == "memra-effective-trusted-full-selection-v1":
         if trusted_selection.get("base_trusted_full_arms") != practical.get(
             "trusted_full_arms"
         ):
@@ -1731,7 +1731,7 @@ def parse_plan(value: str) -> tuple[str, Path]:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-hy3-conclusion-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-hy3-conclusion-") as tmp:
         root = Path(tmp)
         paths: dict[str, Path] = {}
 
@@ -1834,7 +1834,7 @@ def self_test() -> None:
             for projection in ("gate", "up", "down")
         }}
         effects = write("effects.json", {
-            "format": "bw24-hy3-quant-effects-map-v1", "public_eval_data_used_for_selection": False,
+            "format": "memra-hy3-quant-effects-map-v1", "public_eval_data_used_for_selection": False,
             "measurement": {"qtypes": ["Q8_0","NVFP4","IQ4_XS","Q4_K","IQ3_S","Q3_K","Q2_K"]},
             "format_totals": format_totals, "format_pairwise": [], "equal_byte_pair_summary": [],
             "projection_damage": projection_damage, "layer_damage": layer_damage,
@@ -1854,7 +1854,7 @@ def self_test() -> None:
                 "error_reduction": 3.0, "error_reduction_per_gb": 6.0,
             }],
         })
-        damage = write("damage.json", {"format":"bw24-hy3-quant-plan-damage-v1",
+        damage = write("damage.json", {"format":"memra-hy3-quant-plan-damage-v1",
             "public_eval_data_used":False,"lowest_private_damage_plan":"pareto",
             "plans":damage_plans,"pairwise":{}})
         arm_rows = {"plain_quant":{"logical_model_bytes":200,"domain_macro":.8,"question_weighted":.8},
@@ -1865,10 +1865,10 @@ def self_test() -> None:
                     PLAN_ARMS["layer_balanced"]:{"logical_model_bytes":97,"domain_macro":.73,"question_weighted":.73},
                     PLAN_ARMS["layer_balanced120"]:{"logical_model_bytes":120,"domain_macro":.74,"question_weighted":.74},
                     PLAN_ARMS["layer_balanced137"]:{"logical_model_bytes":137,"domain_macro":.75,"question_weighted":.75}}
-        frontier = write("frontier.json", {"format":"bw24-cross-run-expanded-capability-frontier-v1",
+        frontier = write("frontier.json", {"format":"memra-cross-run-expanded-capability-frontier-v1",
             "arms":arm_rows,"point_estimate_pareto":["plain_quant",PLAN_ARMS["pareto"]]})
         healing_frontier = write("healing-frontier.json", {
-            "format":"bw24-cross-run-expanded-capability-frontier-v1",
+            "format":"memra-cross-run-expanded-capability-frontier-v1",
             "arms": {
                 "prune100_unhealed": {
                     "logical_model_bytes": 97, "total_correct": 66, "total_questions": 115,
@@ -1897,7 +1897,7 @@ def self_test() -> None:
             },
         })
         directional = write("directional.json", {
-            "format":"bw24-layer-balanced-bridge-directional-promotion-v1",
+            "format":"memra-layer-balanced-bridge-directional-promotion-v1",
             "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",
                               PLAN_ARMS["pareto"],PLAN_ARMS["layer_balanced"]]})
         practical_comparisons = {}
@@ -1916,7 +1916,7 @@ def self_test() -> None:
                     "candidate_timed_out": False,
                 })
             practical_comparisons[panel] = write(f"practical-{panel}.json", {
-                "format": "bw24-practical-comparison-v1", "panel": panel,
+                "format": "memra-practical-comparison-v1", "panel": panel,
                 "n_tasks": 12,
                 "baseline": {
                     "arm": TRAFFIC_ARM, "logical_model_bytes": 137,
@@ -1933,7 +1933,7 @@ def self_test() -> None:
                 "exact_sign_p": 1.0, "tasks": tasks,
             })
         practical = write("practical.json", {
-            "format":"bw24-practical-promotion-v1",
+            "format":"memra-practical-promotion-v1",
             "directional_practical_arms": [
                 "plain_quant", TRAFFIC_ARM, PLAN_ARMS["layer_balanced"]
             ],
@@ -1963,7 +1963,7 @@ def self_test() -> None:
             ],
         })
         trusted_selection = write("trusted-selection.json", {
-            "format":"bw24-effective-trusted-full-selection-v1",
+            "format":"memra-effective-trusted-full-selection-v1",
             "trusted_full_arms":["plain_quant", TRAFFIC_ARM,
                                  PLAN_ARMS["layer_balanced"]],
             "base_trusted_full_arms":["plain_quant", TRAFFIC_ARM,
@@ -2001,7 +2001,7 @@ def self_test() -> None:
             }
             for arm, values in trusted_arms.items() if arm != "plain_quant"
         }
-        trusted = write("trusted.json", {"format":"bw24-promoted-candidate-v1",
+        trusted = write("trusted.json", {"format":"memra-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
             "baseline":"plain_quant","arms":trusted_arms,
             "paired_vs_baseline":trusted_pairs,
@@ -2015,7 +2015,7 @@ def self_test() -> None:
             baseline_solved = n // 4
             candidate_solved = baseline_solved + delta
             return {
-                "format": "bw24-full-practical-comparison-v1", "panel": panel,
+                "format": "memra-full-practical-comparison-v1", "panel": panel,
                 "n_tasks": n,
                 "baseline": {"arm": "plain_quant", "solved": baseline_solved,
                              "raw_verifier_solved": baseline_solved,
@@ -2029,7 +2029,7 @@ def self_test() -> None:
                 "paired_ties": n - abs(delta), "tasks": [{} for _ in range(n)],
             }
 
-        full = write("full.json", {"format":"bw24-full-agentic-comparison-v1",
+        full = write("full.json", {"format":"memra-full-agentic-comparison-v1",
             "baseline":"plain_quant","candidate":PLAN_ARMS["layer_balanced"],"total_tasks":589,
             "swe": full_panel("swe", 500, 1),
             "terminal": full_panel("terminal", 89, 0),
@@ -2053,7 +2053,7 @@ def self_test() -> None:
             "layer137": 50.0,
         }
         method_damage = write("method-damage.json", {
-            "format": "bw24-hy3-quant-plan-damage-v1",
+            "format": "memra-hy3-quant-plan-damage-v1",
             "sensitivity": source(effects),
             "public_eval_data_used": False,
             "plans": {
@@ -2081,7 +2081,7 @@ def self_test() -> None:
             "lowest_private_damage_plan": "layer137",
         })
         method_damage_receipt = write("method-damage.receipt.json", {
-            "format": "bw24-hy3-quant-plan-damage-receipt-v1",
+            "format": "memra-hy3-quant-plan-damage-receipt-v1",
             "analysis_commit": "b" * 40,
             "public_eval_data_used": False,
             "sensitivity": source(effects),
@@ -2129,20 +2129,20 @@ def self_test() -> None:
         )
         assert "Cross-method alignment to measured sensitivity" in markdown(result)
         traffic_trusted = write("traffic-trusted.json", {
-            "format":"bw24-promoted-candidate-v1",
+            "format":"memra-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
             "baseline":"plain_quant","arms":trusted_arms,
             "paired_vs_baseline":trusted_pairs,
             "selection":{"selected_finalist":TRAFFIC_ARM,
                          "full_eval_arms":["plain_quant", TRAFFIC_ARM]}})
         traffic_full = write("traffic-full.json", {
-            "format":"bw24-full-agentic-comparison-v1",
+            "format":"memra-full-agentic-comparison-v1",
             "baseline":"plain_quant","candidate":TRAFFIC_ARM,"total_tasks":589,
             "swe": full_panel("swe", 500, 0, TRAFFIC_ARM),
             "terminal": full_panel("terminal", 89, 0, TRAFFIC_ARM),
             "candidate_total_solved_delta":0})
         traffic_selection = write("traffic-selection.json", {
-            "format":"bw24-effective-trusted-full-selection-v1",
+            "format":"memra-effective-trusted-full-selection-v1",
             "trusted_full_arms":["plain_quant", TRAFFIC_ARM,
                                  PLAN_ARMS["layer_balanced"]],
             "base_trusted_full_arms":["plain_quant", TRAFFIC_ARM,

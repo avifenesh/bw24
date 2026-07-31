@@ -1,4 +1,4 @@
-# bw24 — Best-of-all-worlds map + our edges
+# memra — Best-of-all-worlds map + our edges
 
 Philosophy (user 2026-06-26): rewrite everything that can be done better. Take the best idea for each
 component from each engine, port it to our format (mostly reading+writing, not inventing algorithms),

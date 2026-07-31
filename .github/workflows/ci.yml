@@ -31,14 +31,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build and verify bw24-native CPU expert backend
+      - name: Build and verify memra-native CPU expert backend
         run: |
           tools/build_cpu_expert_companion.sh
-          BW24_CPU_EXPERT_LIB=target/release/libbw24-cpu-experts.so \
-            cargo run --release -p bw24-engine --bin cpu_native_check
-          cargo test -p bw24-engine cpu_experts --lib
+          MEMRA_CPU_EXPERT_LIB=target/release/libmemra-cpu-experts.so \
+            cargo run --release -p memra-engine --bin cpu_native_check
+          cargo test -p memra-engine cpu_experts --lib
 
       - name: Build (all bins, release — compiles every CUDA fatbin)
         run: cargo build --release --bins
         env:
-          BW24_NVCC: /usr/local/cuda-13.1/bin/nvcc
+          MEMRA_NVCC: /usr/local/cuda-13.1/bin/nvcc

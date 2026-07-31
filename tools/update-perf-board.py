@@ -30,8 +30,8 @@ def load_board():
     return json.loads(BOARD_PATH.read_text())
 
 
-def fmt_ratio(bw24, llama, threshold):
-    ratio = bw24 / llama
+def fmt_ratio(memra, llama, threshold):
+    ratio = memra / llama
     text = f"{ratio:.2f}x"
     return f"**{text}**" if ratio >= threshold else text
 
@@ -48,23 +48,23 @@ def render_date_block(board):
 
 def render_plain_table(board):
     threshold = board["bold_ratio_threshold"]
-    lines = ["| Model | bw24 plain | llama.cpp plain | Ratio |", "|---|---|---|---|"]
+    lines = ["| Model | memra plain | llama.cpp plain | Ratio |", "|---|---|---|---|"]
     for row in board["plain_decode"]["rows"]:
-        ratio = fmt_ratio(row["bw24"], row["llama"], threshold)
-        lines.append(f"| {row['model']} | {row['bw24']} | {row['llama']} | {ratio} |")
+        ratio = fmt_ratio(row["memra"], row["llama"], threshold)
+        lines.append(f"| {row['model']} | {row['memra']} | {row['llama']} | {ratio} |")
     return "\n".join(lines)
 
 
 def render_spec_table(board):
     threshold = board["bold_ratio_threshold"]
-    lines = ["| Model | bw24 spec | llama.cpp spec-best | Ratio |", "|---|---|---|---|"]
+    lines = ["| Model | memra spec | llama.cpp spec-best | Ratio |", "|---|---|---|---|"]
     for row in board["speculative"]["rows"]:
-        bw24_cells = " / ".join(str(v) for v in row["bw24"])
+        memra_cells = " / ".join(str(v) for v in row["memra"])
         llama_cells = " / ".join(str(v) for v in row["llama"])
         ratios = " / ".join(
-            fmt_ratio(b, l, threshold) for b, l in zip(row["bw24"], row["llama"])
+            fmt_ratio(b, l, threshold) for b, l in zip(row["memra"], row["llama"])
         )
-        lines.append(f"| {row['model']} | {bw24_cells} | {llama_cells} | {ratios} |")
+        lines.append(f"| {row['model']} | {memra_cells} | {llama_cells} | {ratios} |")
     return "\n".join(lines)
 
 
@@ -91,7 +91,7 @@ def render_svg(board):
     spec_rows = board["speculative"]["rows"]
 
     def ratio_of(row):
-        return row["bw24"][0] / row["llama"][0] if isinstance(row["bw24"], list) else row["bw24"] / row["llama"]
+        return row["memra"][0] / row["llama"][0] if isinstance(row["memra"], list) else row["memra"] / row["llama"]
 
     row_height = 34
     top = 168
@@ -99,7 +99,7 @@ def render_svg(board):
         (r["model"] + " (spec)", ratio_of(r)) for r in spec_rows
     ]
     # card-only rows (families whose table lives outside the generated blocks, e.g. Gemma):
-    # {model, bw24, llama, spec?: true} — appended in order, "(spec)" suffix when spec.
+    # {model, memra, llama, spec?: true} — appended in order, "(spec)" suffix when spec.
     for r in board.get("extra_card_rows", []):
         label = r["model"] + (" (spec)" if r.get("spec") else "")
         all_rows.append((label, ratio_of(r)))
@@ -120,7 +120,7 @@ def render_svg(board):
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="{height}" viewBox="0 0 1280 {height}">
   <rect width="1280" height="{height}" fill="#171613"/>
-  <text x="64" y="72" font-family="ui-sans-serif,Arial,sans-serif" font-weight="800" font-size="52" fill="#eee7da">bw24</text>
+  <text x="64" y="72" font-family="ui-sans-serif,Arial,sans-serif" font-weight="800" font-size="52" fill="#eee7da">memra</text>
   <text x="64" y="104" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" letter-spacing="0.06em" fill="#978f80">{board["rig"]}</text>
   <text x="1216" y="104" text-anchor="end" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" fill="#978f80">vs llama.cpp · updated {board["updated"]}</text>
   {"".join(row_svg)}

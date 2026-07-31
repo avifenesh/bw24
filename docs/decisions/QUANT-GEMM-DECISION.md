@@ -1,6 +1,6 @@
 # QUANT-GEMM-DECISION.md
 
-Resident-quantized GEMM strategy for the bw24 engine (RTX 5090 Laptop, sm_120, GB203, 24 GB, 847 GB/s, 82 SMs).
+Resident-quantized GEMM strategy for the memra engine (RTX 5090 Laptop, sm_120, GB203, 24 GB, 847 GB/s, 82 SMs).
 
 Status: decision for Task #8 (unblock OOM). Decisive, copy-oriented. Grounded in the live engine code and the local llama.cpp checkout (`/home/avifenesh/projects/llama.cpp/ggml/src/ggml-cuda/`, all line numbers below verified against that tree on 2026-06-26).
 
@@ -8,7 +8,7 @@ Status: decision for Task #8 (unblock OOM). Decisive, copy-oriented. Grounded in
 
 ## 0. The bug we are killing (verified, exact location)
 
-`crates/bw24-engine/src/model.rs` dequantizes **every** weight to f32 on load:
+`crates/memra-engine/src/model.rs` dequantizes **every** weight to f32 on load:
 
 ```rust
 // model.rs:49 and :56
@@ -82,7 +82,7 @@ The fastest *correct* thing that stops the OOM is **not** "port all of MMQ." MMV
    - `mul_mat_vec_q<type, ncols_dst>` (mmvq.cu) — the decode kernel, templated `ncols_dst` 1..8.
    Wire `e.linear` to: if dtype is quantized -> quantize activation to q8_1, call MMVQ (loop columns in chunks of ≤8 for prefill M>8 as the stopgap); else -> existing `linear_f32`.
 
-3. **Validate** every ported decoder against the existing CPU oracle (`crates/bw24-gguf/src/dequant.rs`, which already byte-matches ggml for Q8_0/Q4_K/Q6_K). Add an NVFP4 dequant to `dequant.rs` and bit-validate `vec_dot_nvfp4_q8_1`.
+3. **Validate** every ported decoder against the existing CPU oracle (`crates/memra-gguf/src/dequant.rs`, which already byte-matches ggml for Q8_0/Q4_K/Q6_K). Add an NVFP4 dequant to `dequant.rs` and bit-validate `vec_dot_nvfp4_q8_1`.
 
 After Stage A: 9B Q8_0 resident = 8.9 GB, 27B Q4_K_M = 15.8 GB — both fit 24 GB with headroom. The hybrid forward (Task #6) and the generation loop (Task #7) can run.
 
@@ -123,10 +123,10 @@ All paths relative to `/home/avifenesh/projects/llama.cpp/ggml/src/ggml-cuda/`. 
 - `quantize.cu` — `quantize_mmq_fp4_cuda` (:422), `quantize_mmq_nvfp4` (:78).
 
 ### Engine side (Rust)
-- `crates/bw24-engine/src/model.rs` — change `GpuTensor` to bytes+dtype (§2.1).
-- `crates/bw24-runtime/src/lib.rs` — add `mul_mat_vec_q` / `mul_mat_q` cudarc launch wrappers next to `linear_f32`; add `htod_bytes`.
-- `crates/bw24-engine/src/forward.rs` — `e.linear(...)` dispatches on `weight.ggml_type` and M.
-- Reuse `crates/bw24-gguf/src/dequant.rs` as the per-kernel bit-validation oracle (add NVFP4).
+- `crates/memra-engine/src/model.rs` — change `GpuTensor` to bytes+dtype (§2.1).
+- `crates/memra-runtime/src/lib.rs` — add `mul_mat_vec_q` / `mul_mat_q` cudarc launch wrappers next to `linear_f32`; add `htod_bytes`.
+- `crates/memra-engine/src/forward.rs` — `e.linear(...)` dispatches on `weight.ggml_type` and M.
+- Reuse `crates/memra-gguf/src/dequant.rs` as the per-kernel bit-validation oracle (add NVFP4).
 
 Do **not** port `mmid.cu` / MoE / stream-k fixup (daily models are dense/hybrid, not MoE). Do **not** port `convert.cu` for the quant-resident path (only if you want the f16 fallback for the BF16 embed/lm_head, which `dequant.rs` already covers on CPU).
 
@@ -143,19 +143,19 @@ The CUDA 13.x nvcc `-O3` miscompile of MMQ/MXFP4 on sm_120 is real and confirmed
 | `engine.fatbin` (existing) | `kernels.cu`, `hybrid.cu`, MMVQ + q8_1-quant TU, NVFP4-generic-int8 | 13.1 | `-O3` | MMVQ is light (DP4A, no block-scale mma); tolerates 13.1. cuBLASLt f32 path stays 13.1. |
 | `mmq.fatbin` (new) | MMQ TU (`mmq.cu`/`mmq.cuh`), the native-FP4 TU (`mma_block_scaled_fp4`, `quantize_mmq_fp4`) | **12.8** | **`-O2`** (belt-and-suspenders) | The exact TUs that miscompile under 13.1 `-O3`. 12.8 is llama.cpp's own documented Blackwell requirement. |
 
-Both fatbins use the same `-gencode arch=compute_120a,code=sm_120a` already proven on-device. Link both via cudarc (`cudarc::nvrtc`/module-load by path, same as the existing `BW24_ENGINE_FATBIN` env-var pattern).
+Both fatbins use the same `-gencode arch=compute_120a,code=sm_120a` already proven on-device. Link both via cudarc (`cudarc::nvrtc`/module-load by path, same as the existing `MEMRA_ENGINE_FATBIN` env-var pattern).
 
 Concrete `build.rs` change (the file already shells out to nvcc per-TU; just add a per-TU nvcc + flags):
 
 ```rust
 // build.rs — extend the loop to carry (src, env, nvcc_path, opt)
-let nvcc_13 = std::env::var("BW24_NVCC").unwrap_or("/usr/local/cuda-13.1/bin/nvcc".into());
-let nvcc_12 = std::env::var("BW24_NVCC_128").unwrap_or("/usr/local/cuda-12.8/bin/nvcc".into());
+let nvcc_13 = std::env::var("MEMRA_NVCC").unwrap_or("/usr/local/cuda-13.1/bin/nvcc".into());
+let nvcc_12 = std::env::var("MEMRA_NVCC_128").unwrap_or("/usr/local/cuda-12.8/bin/nvcc".into());
 for (src, env, nvcc, opt) in [
-    ("cu/kernels.cu",     "BW24_ENGINE_FATBIN", &nvcc_13, "-O3"),
-    ("cu/hybrid.cu",      "BW24_HYBRID_FATBIN", &nvcc_13, "-O3"),
-    ("cu/mmvq.cu",        "BW24_MMVQ_FATBIN",   &nvcc_13, "-O3"),  // Stage A
-    ("cu/mmq.cu",         "BW24_MMQ_FATBIN",    &nvcc_12, "-O2"),  // Stage B/C: 12.8 + O2
+    ("cu/kernels.cu",     "MEMRA_ENGINE_FATBIN", &nvcc_13, "-O3"),
+    ("cu/hybrid.cu",      "MEMRA_HYBRID_FATBIN", &nvcc_13, "-O3"),
+    ("cu/mmvq.cu",        "MEMRA_MMVQ_FATBIN",   &nvcc_13, "-O3"),  // Stage A
+    ("cu/mmq.cu",         "MEMRA_MMQ_FATBIN",    &nvcc_12, "-O2"),  // Stage B/C: 12.8 + O2
 ] {
     // ... nvcc -gencode arch=compute_120a,code=sm_120a {opt} --fatbin -o {fatbin} {src}
 }

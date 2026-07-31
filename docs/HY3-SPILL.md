@@ -1,10 +1,10 @@
 # Hy3 spill profile on a 24 GB GPU
 
-Hy3's expert bank exceeds both VRAM and ordinary host-RAM budgets. bw24 freezes a profiled HBM
+Hy3's expert bank exceeds both VRAM and ordinary host-RAM budgets. memra freezes a profiled HBM
 resident set, keeps a bounded LRU projection cache in normal RAM, reads misses with positioned
 direct I/O, and can split each large read across byte-identical copies on two NVMe devices. The
-optional CPU-expert companion is also bw24 code: it implements Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
-Q6_K, IQ3_S, IQ4_XS, NVFP4, Q4_0, BF16, and F32 row dots with a bw24 Q8/16 activation format and
+optional CPU-expert companion is also memra code: it implements Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
+Q6_K, IQ3_S, IQ4_XS, NVFP4, Q4_0, BF16, and F32 row dots with a memra Q8/16 activation format and
 AVX2/AVX-VNNI kernels. It does not compile, link, or load llama.cpp, ggml, or another inference
 runtime.
 
@@ -12,18 +12,18 @@ runtime.
 
 ```bash
 tools/build_cpu_expert_companion.sh
-BW24_CPU_EXPERT_LIB=target/release/libbw24-cpu-experts.so \
-  cargo run -p bw24-engine --bin cpu_native_check
+MEMRA_CPU_EXPERT_LIB=target/release/libmemra-cpu-experts.so \
+  cargo run -p memra-engine --bin cpu_native_check
 tools/run_hy3_local_5090.sh \
   /path/to/hy3-layer103p5-dual-nvme \
-  target/release/libbw24-cpu-experts.so \
+  target/release/libmemra-cpu-experts.so \
   /path/to/expert-mirror/inode-alternates.tsv
 ```
 
 The companion ABI is versioned and fails closed: the engine requires native ABI v2, so a stale
 legacy v1 library cannot be loaded accidentally. `cpu_native_check` compares every supported
-packed row dot against bw24's independent Rust dequantization oracle. `dlopen` executes library
-constructors before the ABI check, so `BW24_CPU_EXPERT_LIB` must always point to a trusted build.
+packed row dot against memra's independent Rust dequantization oracle. `dlopen` executes library
+constructors before the ABI check, so `MEMRA_CPU_EXPERT_LIB` must always point to a trusted build.
 
 ## Dual-NVMe mirror view
 
@@ -52,7 +52,7 @@ Current state (v0.42.0, measured 2026-07-26): the served Layer103.5 candidate de
 regime drift is real — the same artifact and methodology measured 4.29 the previous day — so
 cross-arm comparisons are only made same-day. Step budget at last decomposition: io ~39%,
 CPU compute ~47%, GPU ~14%. Mixed multi-request concurrency gains +13% from pinned per-executor
-core groups (`BW24_CPU_EXPERT_EXECUTOR_CPUSETS="0-7;8-15"`, see `docs/FLAGS.md`). Raw triads:
+core groups (`MEMRA_CPU_EXPERT_EXECUTOR_CPUSETS="0-7;8-15"`, see `docs/FLAGS.md`). Raw triads:
 `research/per-expert-quant/evidence/local-5090-plain-arm-20260725/tp-*.log`.
 
 Closed lanes, each with receipts: speculative/MTP decode (verify positions route disjoint

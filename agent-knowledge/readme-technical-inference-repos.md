@@ -129,7 +129,7 @@ For inference engines, **hardware compatibility isn't a nice-to-have—it's core
 **Pros:** Minimal text  
 **Cons:** Doesn't disclose tier-2 platforms, no negative space
 
-**For single-target repos** (e.g., "RTX 5090 optimized CUDA kernels"), state the constraint **in the title** or first sentence: "bw24: LLM inference for sm_120 (RTX 50-series)". Don't make readers guess scope.
+**For single-target repos** (e.g., "RTX 5090 optimized CUDA kernels"), state the constraint **in the title** or first sentence: "memra: LLM inference for sm_120 (RTX 50-series)". Don't make readers guess scope.
 
 ## Scoping and Limitations: The Trust Moat
 
@@ -656,7 +656,7 @@ If your project targets **one specific GPU or architecture** (e.g., "Optimized f
 
 **Example:**
 ```markdown
-# bw24-inference — RTX 50-series LLM Inference
+# memra-inference — RTX 50-series LLM Inference
 
 Inference engine for NVIDIA sm_120 GPUs (RTX 5090 laptop/desktop).
 Leverages block-FP4 instructions not available in prior generations.

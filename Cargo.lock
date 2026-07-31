@@ -97,89 +97,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bw24-engine"
-version = "0.0.0"
-dependencies = [
- "bw24-gguf",
- "bw24-kv",
- "bw24-runtime",
- "bw24-sampling",
- "bw24-tokenizer",
- "bw24-validate",
- "cudarc",
- "libc",
- "memmap2",
-]
-
-[[package]]
-name = "bw24-gguf"
-version = "0.0.0"
-dependencies = [
- "memmap2",
-]
-
-[[package]]
-name = "bw24-kv"
-version = "0.0.0"
-dependencies = [
- "bw24-gguf",
- "cudarc",
-]
-
-[[package]]
-name = "bw24-lanes"
-version = "0.0.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "bw24-probe"
-version = "0.0.0"
-dependencies = [
- "cudarc",
-]
-
-[[package]]
-name = "bw24-runtime"
-version = "0.0.0"
-dependencies = [
- "bw24-gguf",
- "cudarc",
-]
-
-[[package]]
-name = "bw24-sampling"
-version = "0.0.0"
-
-[[package]]
-name = "bw24-server"
-version = "0.0.0"
-dependencies = [
- "async-stream",
- "axum",
- "bw24-engine",
- "bw24-gguf",
- "bw24-lanes",
- "bw24-tokenizer",
- "futures-core",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "bw24-tokenizer"
-version = "0.0.0"
-dependencies = [
- "bw24-gguf",
-]
-
-[[package]]
-name = "bw24-validate"
-version = "0.0.0"
-
-[[package]]
 name = "bytes"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -380,6 +297,81 @@ checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "memra-engine"
+version = "0.0.0"
+dependencies = [
+ "cudarc",
+ "libc",
+ "memmap2",
+ "memra-gguf",
+ "memra-kv",
+ "memra-runtime",
+ "memra-sampling",
+ "memra-tokenizer",
+ "memra-validate",
+]
+
+[[package]]
+name = "memra-gguf"
+version = "0.0.0"
+dependencies = [
+ "memmap2",
+]
+
+[[package]]
+name = "memra-kv"
+version = "0.0.0"
+dependencies = [
+ "cudarc",
+ "memra-gguf",
+]
+
+[[package]]
+name = "memra-probe"
+version = "0.0.0"
+dependencies = [
+ "cudarc",
+]
+
+[[package]]
+name = "memra-runtime"
+version = "0.0.0"
+dependencies = [
+ "cudarc",
+ "memra-gguf",
+]
+
+[[package]]
+name = "memra-sampling"
+version = "0.0.0"
+
+[[package]]
+name = "memra-server"
+version = "0.0.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "futures-core",
+ "memra-engine",
+ "memra-gguf",
+ "memra-tokenizer",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "memra-tokenizer"
+version = "0.0.0"
+dependencies = [
+ "memra-gguf",
+]
+
+[[package]]
+name = "memra-validate"
+version = "0.0.0"
 
 [[package]]
 name = "mime"

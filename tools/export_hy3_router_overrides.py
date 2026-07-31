@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export healed Hy3 router and selection-bias tensors as a bw24 F32 overlay blob."""
+"""Export healed Hy3 router and selection-bias tensors as a memra F32 overlay blob."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from safetensors.torch import save_file
 import torch
 
 
-FORMAT = "bw24-tensor-overrides-v1"
+FORMAT = "memra-tensor-overrides-v1"
 
 
 def sha256(path: Path) -> str:
@@ -58,7 +58,7 @@ def load_verified_shard_hashes(
     lock_path: Path, overlay_dir: Path, index_path: Path, hash_file=sha256
 ) -> tuple[dict[str, str], dict[str, str]]:
     lock = json.loads(lock_path.read_text())
-    if lock.get("format") != "bw24-hy3-prune-heal-overlay-v1":
+    if lock.get("format") != "memra-hy3-prune-heal-overlay-v1":
         raise ValueError(f"unsupported overlay lock format in {lock_path}")
     resolved_overlay = overlay_dir.resolve()
     if Path(lock["overlay"]["directory"]).resolve() != resolved_overlay:
@@ -177,7 +177,7 @@ def export(args: argparse.Namespace, hash_file=sha256) -> dict:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-router-overrides-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-router-overrides-") as tmp:
         root = Path(tmp)
         overlay = root / "overlay"
         overlay.mkdir()
@@ -215,7 +215,7 @@ def self_test() -> None:
 
         lock = root / "overlay.lock.json"
         lock.write_text(json.dumps({
-            "format": "bw24-hy3-prune-heal-overlay-v1",
+            "format": "memra-hy3-prune-heal-overlay-v1",
             "overlay": {
                 "directory": str(overlay.resolve()),
                 "index_sha256": sha256(index),

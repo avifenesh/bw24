@@ -1,73 +1,82 @@
-# bw24 — from-scratch LLM inference for RTX 5090 (sm_120a) and H100 (sm_90a)
+# memra — from-scratch LLM inference for RTX 5090 (sm_120a) and H100 (sm_90a)
 
-[![ci](https://github.com/avifenesh/bw24/actions/workflows/ci.yml/badge.svg)](https://github.com/avifenesh/bw24/actions/workflows/ci.yml)
+[![ci](https://github.com/avifenesh/memra/actions/workflows/ci.yml/badge.svg)](https://github.com/avifenesh/memra/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-12.8%20%2F%2013.1-76B900.svg)
 ![arch](https://img.shields.io/badge/arch-sm__120a%20%2B%20sm__90a-black.svg)
 
-![bw24 vs llama.cpp perf board](docs/perf-card.svg)
+![memra vs llama.cpp perf board](docs/perf-card.svg)
 
 From-scratch LLM inference engine in Rust + CUDA — no frameworks, no ggml. One codebase
 serves two architectures, auto-detected at build time: **RTX 50-series Blackwell
-(sm_120a)**, tuned single-user against llama.cpp, and **H100 Hopper (sm_90a)**, a
-multi-tenant serving lane measured against vLLM on the same box. Every kernel is
-hand-written against measured hardware limits, and exactness is the contract: speculative
-and graph-replay output is gated token-identical to plain decode, so speed never changes
-what the model says.
+(sm_120a)**, tuned single-user against llama.cpp, and **H100 Hopper (sm_90a)**, measured
+model-by-model against vLLM on the same box. Every kernel is hand-written against
+measured hardware limits, and exactness is the contract: speculative and graph-replay
+output is gated token-identical to plain decode, so speed never changes what the model
+says.
 
-**Use bw24 when** you serve one model on an RTX 50-series card and want measured,
-exactness-gated speed, or you want a single-GPU H100 serving engine with lane scheduling
-and per-request accounting. **Use something else when** you have another GPU
+**Use memra when** you serve one model on an RTX 50-series card and want measured,
+exactness-gated speed, or you want a single-GPU H100 engine whose wins *and* losses
+against vLLM are published per model. **Use something else when** you have another GPU
 ([llama.cpp](https://github.com/ggml-org/llama.cpp),
 [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU serving
 (vLLM, SGLang).
 
-**Standing (2026-07-28):** seven supported models on the 5090, all fully gated, no plain
-cell below llama.cpp; Qwen leads every cell (plain 1.06–1.08x, MTP spec 1.06–2.30x),
-Gemma spec leads up to 1.54x. On the H100, decode beats vLLM w8a8 at 122.8% same-session;
-prefill stands at 73–79% with the remaining gap mechanism-priced (see below). Every
-number is a same-session interleaved measurement; trimmed MTP drafter heads are published
-ready-to-use at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench).
+**Standing (2026-07-31):** seven supported models on the 5090, all fully gated; every
+MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
+wall or above. On the H100, a full per-model board against vLLM 0.26: decode wins 5 of
+6 models (1.2–2.1x), loses one honestly (35B MoE, 0.79x — mechanism priced); prefill
+gaps are published per model and shrinking release-by-release (12B 2.1x and 31B 1.6x
+prefill landed this week). Every number is a same-session interleaved measurement;
+trimmed MTP drafter heads are published ready-to-use at
+[huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
 
-Running bw24 on your own rig? A [hardware validation
+Running memra on your own rig? A [hardware validation
 report](.github/ISSUE_TEMPLATE/hardware-validation.md) is the fastest way to help.
 
 ## One engine, two architectures
 
 ```bash
-cargo build --release   # BW24_CUDA_ARCH auto-detected from the GPU (120a / 90a / 100a / 89)
+cargo build --release   # MEMRA_CUDA_ARCH auto-detected from the GPU (120a / 90a / 100a / 89)
 ```
 
-The build probes the GPU's compute capability and selects the arch; `BW24_CUDA_ARCH`
+The build probes the GPU's compute capability and selects the arch; `MEMRA_CUDA_ARCH`
 overrides. At startup the engine verifies the binary matches the device and fails early
-with a rebuild hint otherwise (`BW24_ARCH_CHECK=0` bypasses). Hopper-only promotions
+with a rebuild hint otherwise (`MEMRA_ARCH_CHECK=0` bypasses). Hopper-only promotions
 (wgmma/TMA kernels, graph serving defaults) are compile-gated — the naked sm_120a build
 is byte-for-byte the tuned 5090 engine.
 
-## The H100 lane (sm_90a)
+## The H100 build (sm_90a)
 
-Multi-tenant serving on 1×H100 80GB against vLLM 0.26 w8a8, same box, same session
-(2026-07-27, N=5 medians, 2048-token prompt, 512 gen):
+The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, same session
+(single-stream, ~2048-token prompt, 512 gen, N=5 medians). Cross-artifact by design:
+vLLM serves what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it
+rejects these GGUFs); memra serves its GGUF artifacts. Decode / prefill in tok/s:
 
-| lane | bw24 | vLLM w8a8 | ratio |
-|---|---:|---:|---:|
-| decode tok/s | **220.5** | 179.5 | **122.8%** |
-| serving decode (GraphSession) | **233.6** | — | — |
-| single-seq prefill tok/s | 26,290 | 35,986 | 73% |
-| serving burst prefill (16× 937-tok) | 27,364 aggregate | — | — |
+| model | memra | vLLM 0.26 (artifact) | decode | prefill |
+|---|---:|---:|---:|---:|
+| Qwen3.5-9B | 219 / 26,335 | 180 / 36,149 (w8a8) | **1.22x** | 0.73x |
+| Qwen3.6-35B MoE | 181 / 4,608 | 231 / 17,927 (FP8) | 0.79x | 0.26x |
+| Gemma-4 12B | 153 / 17,094 | 82 / 25,650 (bf16) | **1.88x** | 0.67x |
+| Gemma-4 26B MoE | 183 / 2,902 | 194 / 44,219 (FP8-dyn) | 0.94x | 0.07x |
+| Gemma-4 31B | 80 / 7,589 | 65 / 14,335 (FP8-dyn) | **1.23x** | 0.53x |
+| Gemma-4 E4B | 355 / 1,401 | 170 / 52,244 (bf16) | **2.09x** | 0.03x |
 
-Decode wins on exact math. The prefill gap is precisely priced: vLLM rides INT8
-tensor-core GEMMs; a Q8_0-exact int8 GEMM is mechanism-refuted on Hopper (per-32-block
-rescale costs 5.4x naive / 17x pipelined — ptxas serializes cross-bank GMMA register
-reads), so closing it means w8a8-class numerics that change model outputs — an
-accuracy-bar decision, not an engineering gap.
+Decode wins on exact math (bf16-row wins carry a quant-advantage caveat — those vLLM
+arms move 4x the bytes). The losses are published, mechanism-priced, and moving: the
+12B/31B prefill columns jumped 2.1x/1.6x in one release (Q4_0→fp16 prefill mirrors),
+and the remaining Qwen prefill gap is the int8-GEMM dtype edge — a Q8_0-exact int8
+GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x naive / 17x
+pipelined; ptxas serializes cross-bank GMMA register reads), so crossing it means
+w8a8-class numerics that change model outputs — an accuracy-bar decision with measured
+receipts (net 1.05–1.26x at prefill shapes), not an engineering unknown.
 
-Shipped on this lane: FA3-class prefill attention (TMA swizzled ring + wgmma, 4.8x the
-mma kernel), fused wgmma GDN chunk kernels with varlen twins, cross-request prefill
-batching, per-session CUDA-graph decode, lane scheduling (interactive/judge/harvest with
-per-lane prefill budgets), and the Hopper wgmma toolkit
-([`cu/wgmma_common.cuh`](crates/bw24-engine/cu/wgmma_common.cuh)) — canonical
+Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4.8x the
+mma kernel), fused wgmma GDN chunk kernels with varlen twins, Q4_0/Q8_0→fp16 prefill
+mirrors on the cuBLASLt lane, cross-request prefill batching, per-session CUDA-graph
+decode, and the Hopper wgmma toolkit
+([`cu/wgmma_common.cuh`](crates/memra-engine/cu/wgmma_common.cuh)) — canonical
 core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds.
 
 - Evidence ledger (every verdict and refutation): [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)
@@ -85,15 +94,15 @@ core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds
 ## Quick start
 
 Prebuilt Linux x86_64 binaries (sm_120a) ship with each
-[release](https://github.com/avifenesh/bw24/releases) — or build from source:
+[release](https://github.com/avifenesh/memra/releases) — or build from source:
 
 ```bash
 cargo build --release
 ./target/release/kernel-check                     # every kernel vs CPU reference
-BW24_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches."
-BW24_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP speculative
+MEMRA_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches."
+MEMRA_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP speculative
 ./target/release/run-gen hf:owner/repo:Q4_K_M --prompt "hi"        # auto-download from HF
-./target/release/bw24-server                      # OpenAI-compatible /v1
+./target/release/memra-server                      # OpenAI-compatible /v1
 ```
 
 `kernel-check` must end with `ALL GREEN`, and `run-gen` prints its argmax gate
@@ -110,7 +119,7 @@ Measured 2026-07-27 on the target rig (RTX 5090 Laptop, N=2+ medians, both engin
 **Plain decode** (no speculation, tg128 at 512-token context):
 
 <!-- PERF-PLAIN:START (generated by tools/update-perf-board.py — do not hand-edit; edit research/tune-data/current-board.json instead) -->
-| Model | bw24 plain | llama.cpp plain | Ratio |
+| Model | memra plain | llama.cpp plain | Ratio |
 |---|---|---|---|
 | Qwen3.5-9B NVFP4 (GGUF) | 135.7 | 126.7 | **1.07x** |
 | Qwen3.6-27B NVFP4 (GGUF) | 48.4 | 44.9 | **1.08x** |
@@ -122,7 +131,7 @@ Depth is part of the contract: at 6.3k-token context every lead holds (1.02–1.
 **Speculative decoding** (MTP head, both engines at their measured best):
 
 <!-- PERF-SPEC:START (generated by tools/update-perf-board.py — do not hand-edit; edit research/tune-data/current-board.json instead) -->
-| Model | bw24 spec | llama.cpp spec-best | Ratio |
+| Model | memra spec | llama.cpp spec-best | Ratio |
 |---|---|---|---|
 | Qwen3.5-9B (K=3 + own-gen trimmed draft) | 281.0 / 211.7 / 187.1 | 122.2 / 121.5 / 117.7 | **2.30x** / **1.74x** / **1.59x** |
 | Qwen3.6-27B (K=3 + own-gen trimmed draft) | 116.4 / 101.2 / 86.0 | 91.7 / 93.3 / 81.5 | **1.27x** / **1.08x** / **1.06x** |
@@ -134,7 +143,7 @@ agentic (temp 0.7, distribution-exact rejection sampling). One asterisk: the 35B
 short-code llama bar (236.5) rode an EOS-margin flip and is not a clean win basis. Every
 spec row uses one trimmed draft built by the standard regime
 ([docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md)); prebuilt drafts live in the
-[bench repo](https://huggingface.co/Avifenesh/bw24-bench), or build your own:
+[bench repo](https://huggingface.co/Avifenesh/memra-bench), or build your own:
 
 ```bash
 ./target/release/frspec-owngen model.gguf ranks.gguf 32768        # ranks from the model's OWN generations
@@ -148,7 +157,7 @@ Same protocol, own campaign log
 cells re-paired best-vs-best with llama's own draft depth swept per cell. Highlights
 (full tables and the per-cell archaeology live in the campaign log):
 
-| Cell | bw24 | llama.cpp | Ratio |
+| Cell | memra | llama.cpp | Ratio |
 |---|---|---|---|
 | 12B MTP spec, 1.7k ctx (K=4 + own-gen trim) | 269.3 | 175.1 | **1.54x** |
 | 12B MTP spec, chat (K=4 + own-gen trim) | 240.9 | 172.4 | **1.40x** |
@@ -168,7 +177,7 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
 ## Known gaps
 
 - **5090 prefill** trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4
-  prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject.
+  prefill at W4A4 (FP4 activations), a numeric class memra's exactness gates reject.
   Output quality outranks the prefill column.
 - **H100 prefill** stands at 73–79% of vLLM; the residual is the int8-GEMM dtype edge,
   refused by the accuracy laws (full refutation ledger in
@@ -191,8 +200,8 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
   KV per layer class), split-K, graph-replayable device-length counters.
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic;
   per-session capture for serving.
-- **Lane-scheduled serving** — OpenAI-compatible server with interactive/judge/harvest
-  admission, per-lane prefill budgets, cross-request prefill batching.
+- **Serving** — OpenAI-compatible server with batched decode, cross-request prefill
+  batching, KV prefix reuse, speculative serving, and a flat `/metrics` endpoint.
 - **Loaders** — GGUF (memory-mapped) and safetensors (modelopt NVFP4 byte-exact).
 
 ## Correctness discipline
@@ -209,23 +218,22 @@ Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
 
 | Crate | What it does |
 |---|---|
-| `bw24-engine` | CUDA kernels (`cu/`), forward passes, speculative decoding, MoE cache, graph decode |
-| `bw24-gguf` | GGUF parser + tensor loading (memory-mapped) |
-| `bw24-tokenizer` | BPE tokenizer + chat templates from GGUF metadata |
-| `bw24-runtime` | CUDA device/stream/memory primitives over cudarc |
-| `bw24-kv` | KV cache + format policy behind the KvDev device seam |
-| `bw24-lanes` | Lane types, admission policy, per-lane budgets (pure host logic) |
-| `bw24-sampling` | Host sampler + device Philox sampling behind one trait |
-| `bw24-validate` | Gate harness: tolerance policy, deterministic vectors, N-median runner |
-| `bw24-server` | OpenAI-compatible HTTP server (axum) with lane scheduling |
-| `bw24-probe` | Standalone hardware microbenches |
+| `memra-engine` | CUDA kernels (`cu/`), forward passes, speculative decoding, MoE cache, graph decode |
+| `memra-gguf` | GGUF parser + tensor loading (memory-mapped) |
+| `memra-tokenizer` | BPE tokenizer + chat templates from GGUF metadata |
+| `memra-runtime` | CUDA device/stream/memory primitives over cudarc |
+| `memra-kv` | KV cache + format policy behind the KvDev device seam |
+| `memra-sampling` | Host sampler + device Philox sampling behind one trait |
+| `memra-validate` | Gate harness: tolerance policy, deterministic vectors, N-median runner |
+| `memra-server` | OpenAI-compatible HTTP server (axum): batched decode, prefill batching, KV reuse |
+| `memra-probe` | Standalone hardware microbenches |
 
 ## Requirements
 
 - NVIDIA GPU: RTX 50-series (sm_120a, primary target RTX 5090 Laptop), H100 (sm_90a),
   B200 (sm_100a, compile-gated), or Ada (sm_89, portable eval).
 - CUDA 13.1 (plus 12.8 for the dual-toolkit build in [ARCHITECTURE.md](ARCHITECTURE.md);
-  `BW24_NVCC` overrides the nvcc path). Rust edition 2024, cudarc 0.19.
+  `MEMRA_NVCC` overrides the nvcc path). Rust edition 2024, cudarc 0.19.
 - A model: GGUF or HF safetensors directory.
 
 ## Limitations
@@ -234,13 +242,13 @@ Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
   via the portable arch but are untuned — use
   [llama.cpp](https://github.com/ggml-org/llama.cpp) or
   [mistral.rs](https://github.com/EricLBuehler/mistral.rs) there.
-- Single GPU; no tensor parallelism. Batched serving exists on the Hopper lane only.
+- Single GPU; no tensor parallelism. Batched decode serving on both architectures.
 - Moving research codebase; APIs and flags change without notice.
 
 ## Docs
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — sm_120a tech stack + feasibility ledger.
-- [`ARCHITECTURE-H100.md`](ARCHITECTURE-H100.md) — the H100 lane's full evidence ledger.
+- [`ARCHITECTURE-H100.md`](ARCHITECTURE-H100.md) — the H100 build's full evidence ledger.
 - [`HANDOVER.md`](HANDOVER.md) — living state-of-work.
 - [`docs/FLAGS.md`](docs/FLAGS.md) — the audited flag catalog.
 - [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.

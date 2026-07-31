@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bw24 local CI — the real gate (GitHub CI is compile-only; the rig is the test machine).
+# memra local CI — the real gate (GitHub CI is compile-only; the rig is the test machine).
 #
 #   tools/local-ci.sh                correctness stage only (~3 min)
 #   tools/local-ci.sh --perf         correctness + full perf battery (~15 min)
@@ -17,7 +17,7 @@
 #
 # Contributor machines: cells whose model file is absent are SKIPPED cleanly; the
 # correctness stage runs wherever a GPU + at least one model exists. Set
-# BW24_MODELS_DIR to your model root (default /data/ai-ml/hf-models).
+# MEMRA_MODELS_DIR to your model root (default /data/ai-ml/hf-models).
 #
 # Window discipline (recorded per row, enforced where it can be): no other compute
 # process on the GPU (co-resident engines spill experts and read 10x low), host load
@@ -26,7 +26,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MODELS="${BW24_MODELS_DIR:-/data/ai-ml/hf-models}"
+MODELS="${MEMRA_MODELS_DIR:-/data/ai-ml/hf-models}"
 MANIFEST=research/tune-data/perf-cells.json
 OUT=research/tune-data/perf-ci.jsonl
 MODE="${1:---correctness}"
@@ -75,17 +75,17 @@ echo "kernel-check: GREEN"
 G31="$MODELS/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf"
 DEPTH=research/gemma4-bringup/depth-prompt-1736-ids.txt
 if [ -f "$G31" ]; then
-    out=$(BW24_NGEN=8 target/release/run-gen "$G31" 55 2>&1)
+    out=$(MEMRA_NGEN=8 target/release/run-gen "$G31" 55 2>&1)
     echo "$out" | grep -q "MATCH" || { echo "run-gen argmax FAIL (31B)"; exit 1; }
     echo "run-gen argmax: MATCH (31B)"
     # shellcheck disable=SC2046
-    out=$(BW24_VERIFY_GATE=7 target/release/gemma-gate "$G31" $(cat "$DEPTH") 2>&1)
+    out=$(MEMRA_VERIFY_GATE=7 target/release/gemma-gate "$G31" $(cat "$DEPTH") 2>&1)
     echo "$out" | grep -q "VERIFY-GATE K=7: PASS" || { echo "VERIFY-GATE FAIL (31B depth)"; exit 1; }
     echo "VERIFY-GATE K=7 depth: PASS (31B)"
     D31="$MODELS/gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf"
     if [ -f "$D31" ]; then
         # shellcheck disable=SC2046
-        out=$(BW24_SPEC=6 BW24_DRAFT="$D31" BW24_NGEN=64 target/release/gemma-gate "$G31" \
+        out=$(MEMRA_SPEC=6 MEMRA_DRAFT="$D31" MEMRA_NGEN=64 target/release/gemma-gate "$G31" \
             $(cat research/gemma4-bringup/e4b-chat-watercycle-ids.txt) 2>&1)
         echo "$out" | grep -qE "stream agreement 64/64" || { echo "spec self-consistency FAIL (31B)"; exit 1; }
         echo "spec self-consistency 64/64: PASS (31B)"
@@ -95,14 +95,14 @@ else
 fi
 
 # gemma-4-12B (dense, MQA globals nkv=1 — the gqa=16 hd512 lane 31B never exercises).
-G12="${BW24_G12_MODEL:-/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf}"
+G12="${MEMRA_G12_MODEL:-/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf}"
 if [ -f "$G12" ]; then
     # shellcheck disable=SC2046
-    out=$(BW24_NGEN=8 target/release/run-gen "$G12" $(cat "$DEPTH") 2>&1)
+    out=$(MEMRA_NGEN=8 target/release/run-gen "$G12" $(cat "$DEPTH") 2>&1)
     echo "$out" | grep -q "MATCH" || { echo "run-gen argmax FAIL (12B depth)"; exit 1; }
     echo "run-gen argmax depth: MATCH (12B)"
     # shellcheck disable=SC2046
-    out=$(BW24_VERIFY_GATE=7 target/release/gemma-gate "$G12" $(cat "$DEPTH") 2>&1)
+    out=$(MEMRA_VERIFY_GATE=7 target/release/gemma-gate "$G12" $(cat "$DEPTH") 2>&1)
     echo "$out" | grep -q "VERIFY-GATE K=7: PASS" || { echo "VERIFY-GATE FAIL (12B depth)"; exit 1; }
     echo "VERIFY-GATE K=7 depth: PASS (12B)"
 else
@@ -111,8 +111,8 @@ fi
 echo "correctness stage: GREEN"
 
 # normal-usage serving battery (2026-07-30): OpenAI surface, streaming, determinism,
-# concurrency, lanes, spec==plain serving exactness. BW24_CI_SERVE=0 skips.
-if [ "${BW24_CI_SERVE:-1}" = "1" ] && [ -x tools/serve-smoke.sh ]; then
+# concurrency, lanes, spec==plain serving exactness. MEMRA_CI_SERVE=0 skips.
+if [ "${MEMRA_CI_SERVE:-1}" = "1" ] && [ -x tools/serve-smoke.sh ]; then
     tools/serve-smoke.sh || { echo "serve-smoke FAIL"; exit 1; }
 fi
 
@@ -135,11 +135,11 @@ run_cell() {
         local out toks
         if [ "$mode" = "plain" ]; then
             # shellcheck disable=SC2046
-            out=$(BW24_NGEN="$ngen" timeout 420 target/release/run-gen "$mp" $(cat "$pfile") 2>&1 || true)
+            out=$(MEMRA_NGEN="$ngen" timeout 420 target/release/run-gen "$mp" $(cat "$pfile") 2>&1 || true)
             toks=$(echo "$out" | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+" || echo 0)
         else
-            local envs=(BW24_SPEC_ONLY=1 "BW24_SPEC=$k" "BW24_DRAFT=$MODELS/$draft" "BW24_NGEN=$ngen")
-            [ -n "$ranks" ] && [ "$ranks" != "null" ] && envs+=("BW24_GEMMA_DRAFT_RANKS=$ranks")
+            local envs=(MEMRA_SPEC_ONLY=1 "MEMRA_SPEC=$k" "MEMRA_DRAFT=$MODELS/$draft" "MEMRA_NGEN=$ngen")
+            [ -n "$ranks" ] && [ "$ranks" != "null" ] && envs+=("MEMRA_GEMMA_DRAFT_RANKS=$ranks")
             # shellcheck disable=SC2046
             out=$(env "${envs[@]}" timeout 420 target/release/gemma-gate "$mp" $(cat "$pfile") 2>&1 || true)
             toks=$(echo "$out" | grep -oE "spec: [0-9.]+" | grep -oE "[0-9.]+" || echo 0)
@@ -196,9 +196,9 @@ run_cell() {
 while read -r cell; do
     id=$(echo "$cell" | jq -r .id)
     if [ "$MODE" = "--perf-quick" ] && [[ "$id" != 31b-* ]]; then continue; fi
-    # BW24_CI_CELLS: extended-regex cell-id filter (e.g. "26b-|e4b-") — run a subset
+    # MEMRA_CI_CELLS: extended-regex cell-id filter (e.g. "26b-|e4b-") — run a subset
     # without touching the manifest; verdicts/rows behave exactly like a full run.
-    if [ -n "${BW24_CI_CELLS:-}" ] && ! echo "$id" | grep -qE "$BW24_CI_CELLS"; then continue; fi
+    if [ -n "${MEMRA_CI_CELLS:-}" ] && ! echo "$id" | grep -qE "$MEMRA_CI_CELLS"; then continue; fi
     run_cell "$id" "$(echo "$cell" | jq -r .model)" "$(echo "$cell" | jq -r .mode)" \
              "$(echo "$cell" | jq -r .prompt)" "$(echo "$cell" | jq -r .ngen)" \
              "$(echo "$cell" | jq -r '.k // 0')" "$(echo "$cell" | jq -r '.draft // ""')" \

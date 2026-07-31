@@ -27,9 +27,9 @@ SSH per the private ops runbook (lifecycle + dead-man switch live there).
    `mma.sync.m16n8k32.s8`, `m16n8k16.s8`, bf16 `m16n8k16`, `ldmatrix`,
    `cp.async` are sm_80-class PTX. The 90a build disables them by **Rust-side
    gate only** (build.rs "portable boot" decision), not silicon:
-   - `legacy_quant_gemm_allowed = !portable` → `crates/bw24-engine/src/lib.rs:65-70`
-   - `mmq_supports` → `false` on portable → `crates/bw24-engine/src/mmq_ffi.rs:194`
-   - `try_fp8_gemm` → `Ok(None)` on portable → `crates/bw24-engine/src/fp8_ffi.rs:96`
+   - `legacy_quant_gemm_allowed = !portable` → `crates/memra-engine/src/lib.rs:65-70`
+   - `mmq_supports` → `false` on portable → `crates/memra-engine/src/mmq_ffi.rs:194`
+   - `try_fp8_gemm` → `Ok(None)` on portable → `crates/memra-engine/src/fp8_ffi.rs:96`
    - FA prefill → `sdpa_naive` (single-thread softmax oracle) → `lib.rs:5580-5583, 5625-5631`
    - GDN chunked prefill compiled out → `cu/hybrid.cu:420`
    - NVFP4-W4A8 → link stub on portable → `build.rs:118-121` (main arm is

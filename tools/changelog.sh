@@ -26,4 +26,4 @@ other=$(git log --no-merges --format='- %s' "$FROM..$TO" \
         | grep -vE '^- (perf|feat|fix|config|docs|data|chore|wip|probe)(\([^)]*\))?!?:' || true)
 [ -n "$other" ] && printf '## Other\n%s\n\n' "$other" || true
 
-echo "Boards + reproduction artifacts: https://huggingface.co/Avifenesh/bw24-bench · full experiment log in research/tune-data/"
+echo "Boards + reproduction artifacts: https://huggingface.co/Avifenesh/memra-bench · full experiment log in research/tune-data/"

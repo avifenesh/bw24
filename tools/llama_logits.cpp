@@ -1,5 +1,5 @@
 // Ground-truth logit dumper: feed explicit token IDs, print argmax + top-k of the
-// last-token logits. Used to validate bw24-engine's forward against llama.cpp exactly
+// last-token logits. Used to validate memra-engine's forward against llama.cpp exactly
 // (same token IDs => no tokenizer ambiguity).
 //
 // build: see tools/build_llama_logits.sh

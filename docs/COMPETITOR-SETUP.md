@@ -1,6 +1,6 @@
 # COMPETITOR-SETUP.md — peak single-stream setups on RTX 5090 Laptop
 
-Beat-target reference for the bw24 benchmark. Every competitor is tuned to its **best** runnable single-stream config on this box (consumer Blackwell GB203, sm_120, 24 GB, 858 GB/s measured read wall, 82 SMs, thermal-bound). We beat them at their peak, not their defaults.
+Beat-target reference for the memra benchmark. Every competitor is tuned to its **best** runnable single-stream config on this box (consumer Blackwell GB203, sm_120, 24 GB, 858 GB/s measured read wall, 82 SMs, thermal-bound). We beat them at their peak, not their defaults.
 
 _Measured tok/s values are point-in-time records from the tuning session — both engines move. The current board lives in the README performance section and `research/tune-data/rig5090.jsonl`; this file documents configs (build flags, serve lines, model files), which change rarely._
 
@@ -12,7 +12,7 @@ export PATH=/usr/local/cuda-13.1/bin:$PATH
 gpu-full-power on                 # /home/avifenesh/.local/bin/gpu-full-power
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader   # MUST be empty (serial!)
 ```
-**SERIAL RULE:** never run two engines (or a bench + bw24) at once. vLLM/SGLang GPU-memory
+**SERIAL RULE:** never run two engines (or a bench + memra) at once. vLLM/SGLang GPU-memory
 profiling RACES any other allocator during init. One engine on the GPU at a time, period.
 
 ---
@@ -199,7 +199,7 @@ python -m sglang.launch_server \
   cannot serve the 27B at all on this box.
 - **SGLang GGUF (any daily model):** cannot load — GGUFModelLoader has no tensor-name mapping for the
   GatedDeltaNet/mamba conv1d/conv_state/A_log weights. Daily GGUFs (Q8_0/NVFP4/IQ4_XS/Q6_K) are
-  llama.cpp/bw24-only. SGLang requires HF safetensors.
+  llama.cpp/memra-only. SGLang requires HF safetensors.
 - **vLLM GGUF:** loads but is the slow dequant path with no qwen3_5 hybrid GGUF loader — not used; HF
   modelopt-NVFP4 required. 27B/35B bf16 cannot be loaded to quantize on-the-fly (won't fit to start).
 - **vLLM/SGLang FlashAttention / FA3 / FA4:** prebuilt kernels are sm_80-only and do not run on sm_120;
@@ -209,16 +209,16 @@ python -m sglang.launch_server \
 
 ---
 
-## 5. FAIR BENCHMARK PROTOCOL (identical across all 4 engines incl bw24)
+## 5. FAIR BENCHMARK PROTOCOL (identical across all 4 engines incl memra)
 
 Fair benchmark requires: **same prompt, same generation length, single-stream, with warmup, N=5 medians, gpu-full-power on**, and prefill/decode tok/s extracted identically. Driver: `tools/bench.sh`.
 
 ### 5.1 Invariants (held identical for all 4)
 - **Hardware state:** `gpu-full-power on`; `--prio 3` where supported; GPU otherwise idle (serial).
 - **Single stream:** parallelism = 1 everywhere (llama `--parallel 1`; vLLM `--max-num-seqs 1`;
-  SGLang `--max-running-requests 1` + bench `--max-concurrency 1`; bw24 is inherently single-stream).
+  SGLang `--max-running-requests 1` + bench `--max-concurrency 1`; memra is inherently single-stream).
 - **Prompt:** ONE fixed prompt of **P = 512 tokens** (prefill workload). Use the same tokenized prompt
-  string for the server engines; for bw24 (token-id CLI) use a fixed 512-id list of the SAME content.
+  string for the server engines; for memra (token-id CLI) use a fixed 512-id list of the SAME content.
 - **Generation length:** **N_GEN = 128** new tokens, **greedy / temp 0** (`ignore_eos`/`-n 128`), so
   acceptance and length are deterministic and the decode count is identical.
 - **Context depth sweep:** `d = 0` for the headline; optionally `d = 4096, 8192` (llama-bench `-d`,
@@ -227,7 +227,7 @@ Fair benchmark requires: **same prompt, same generation length, single-stream, w
 - **Repetitions:** **N = 5** timed runs; report the **median** (thermal-bound laptop drifts down under
   sustained load → median, not peak). `N` is overridable via `N=...` env.
 - **KV quant:** matched where the engine supports it — llama `q8_0/q5_1`, vLLM/SGLang `fp8(_e4m3)`.
-  bw24 currently uses its native KV (KV-quant kernels are task #2, not yet landed); note this in results.
+  memra currently uses its native KV (KV-quant kernels are task #2, not yet landed); note this in results.
 
 ### 5.2 What we measure and HOW (identical definition)
 - **Prefill tok/s = P / prefill_time**, where `prefill_time` is wall-clock from prompt submission to the
@@ -235,7 +235,7 @@ Fair benchmark requires: **same prompt, same generation length, single-stream, w
 - **Decode tok/s = (N_GEN − 1) / decode_time**, where `decode_time` is wall-clock from the first to the
   last generated token (excludes prefill), for `N_GEN=128` greedy tokens.
 - **Two decode numbers per engine** that supports spec: **(a) no-spec** (apples-to-apples kernel speed)
-  and **(b) MTP/NEXTN-on** (peak tuned). Report both; bw24 must be compared against the no-spec number
+  and **(b) MTP/NEXTN-on** (peak tuned). Report both; memra must be compared against the no-spec number
   for kernel fairness and against the spec number for the headline "beat them at peak".
 
 Extraction per engine:
@@ -244,32 +244,32 @@ Extraction per engine:
 | llama.cpp | `llama-bench -p 512 -n 128 -r 5` | `pp512` t/s | `tg128` t/s (no-spec). MTP via `llama-server` `prompt eval`/`eval` lines (`tg` with `--spec-type draft-mtp`). |
 | vLLM | `vllm bench` / Python `LLM.generate` w/ `SamplingParams(max_tokens=128, ignore_eos=True)` | `prompt_throughput` / TTFT-derived | `decode_throughput` (run once without, once with `--speculative-config`). |
 | SGLang | `sglang.bench_one_batch_server --batch-size 1 --input-len 512 --output-len 128` (or `bench_serving --max-concurrency 1`) | reported input throughput / TTFT | reported output throughput (run with/without `--speculative-algorithm NEXTN`). |
-| bw24 | `run-gen <model> <512 prompt ids>` w/ `BW24_NGEN=128` | see 5.3 (currently NOT timed separately) | the printed `... tok/s` line (decode-only; prefill done via decode_step loop, excluded from the timer). |
+| memra | `run-gen <model> <512 prompt ids>` w/ `MEMRA_NGEN=128` | see 5.3 (currently NOT timed separately) | the printed `... tok/s` line (decode-only; prefill done via decode_step loop, excluded from the timer). |
 
-### 5.3 bw24 honesty notes (do not paper over)
-- `run-gen` (`crates/bw24-engine/src/bin/run_gen.rs`) currently times **decode only** (`tok/s` line at
+### 5.3 memra honesty notes (do not paper over)
+- `run-gen` (`crates/memra-engine/src/bin/run_gen.rs`) currently times **decode only** (`tok/s` line at
   L46): it loops `decode_step` over the prompt to warm the cache, then times `N_GEN` greedy steps. It
   does **not** print a separate prefill tok/s, and prefill is done as a decode_step loop (not a batched
-  prefill GEMM). For a fair PREFILL comparison, bw24 needs a `run-gen` addition that times
+  prefill GEMM). For a fair PREFILL comparison, memra needs a `run-gen` addition that times
   `forward_last(prompt)` (the batched prefill path) and prints `prefill P/dt tok/s`. Until that lands,
-  bw24's prefill is reported as **"N/A (batched-prefill timing not yet in run-gen)"**, not faked.
-- bw24 spec-decode (MTP) is roadmap task #9, not yet landed → bw24's decode number is **no-spec**, so it
+  memra's prefill is reported as **"N/A (batched-prefill timing not yet in run-gen)"**, not faked.
+- memra spec-decode (MTP) is roadmap task #9, not yet landed → memra's decode number is **no-spec**, so it
   must be compared against the competitors' **no-spec** decode for fairness, and we explicitly note that
-  the competitors' headline uses MTP that bw24 does not yet have.
-- bw24 KV-quant (task #2) not landed → bw24 KV is native; competitors use q8_0/q5_1 or fp8. Note it.
+  the competitors' headline uses MTP that memra does not yet have.
+- memra KV-quant (task #2) not landed → memra KV is native; competitors use q8_0/q5_1 or fp8. Note it.
 
 ### 5.4 Run order (serial)
 1. `gpu-full-power on`; confirm GPU idle.
 2. llama-bench (9B, 27B) → pp512 / tg128, N=5 median.
 3. llama-server + MTP (27B) → decode-with-spec, N=5 median. Kill server.
-4. bw24 run-gen (9B, 27B) → decode tok/s, N=5 median.
+4. memra run-gen (9B, 27B) → decode tok/s, N=5 median.
 5. vLLM serve (9B, 27B) → no-spec then MTP decode, N=5 median. Kill server.
 6. SGLang launch (9B, 27B) → no-spec then NEXTN decode, N=5 median. Kill server.
 Each step fully releases the GPU before the next (`tools/bench.sh` enforces the serial guard).
 
 ---
 
-## 6. EXPECTED RANKING — where bw24 must land to win
+## 6. EXPECTED RANKING — where memra must land to win
 
 All targets are the MEASURED competitor numbers on this box (the bar to clear). Win = strictly faster
 than the best competitor on that metric, single-stream, same protocol.
@@ -280,8 +280,8 @@ than the best competitor on that metric, single-stream, same protocol.
 | llama.cpp | NVFP4 | **126.6** (the bar) | 126.6 (no 9B draft on disk) |
 | vLLM | NVFP4 | ~70–90 (FlashInfer, est.) | ~85–100 (MTP n=3) |
 | SGLang | FP8 | ~70–90 (triton, est.) | higher w/ NEXTN |
-| **bw24 (now)** | Q8_0 dp4a | **59.6** | n/a |
-- **9B target: beat 126.6 tok/s decode (llama.cpp NVFP4).** bw24 is at 59.6 (Q8_0); the gap is ~2.1×.
+| **memra (now)** | Q8_0 dp4a | **59.6** | n/a |
+- **9B target: beat 126.6 tok/s decode (llama.cpp NVFP4).** memra is at 59.6 (Q8_0); the gap is ~2.1×.
   Closing it needs the decode host-round-trip removal (#1, done) + NVFP4 GEMM + CUDA-graph decode (#4).
   Realistic intermediate win: beat vLLM/SGLang no-spec (~70–90) first, then llama.cpp.
 
@@ -291,23 +291,23 @@ than the best competitor on that metric, single-stream, same protocol.
 | llama.cpp | NVFP4 | **42.1** (no-spec bar) | **66.6** (MTP, the peak bar) |
 | vLLM | NVFP4 | est. lower than llama raw | ~85–100 (community 24 GB laptop, MTP) |
 | SGLang | NVFP4 | est. | NEXTN |
-| **bw24 (now)** | — | not yet benched at 27B decode | n/a |
-- **27B no-spec target: beat 42.1 tok/s** (this is the apples-to-apples kernel bar — bw24's first win).
+| **memra (now)** | — | not yet benched at 27B decode | n/a |
+- **27B no-spec target: beat 42.1 tok/s** (this is the apples-to-apples kernel bar — memra's first win).
 - **27B peak target: beat 66.6 tok/s (llama.cpp MTP)** and the ~85–100 community vLLM-MTP number.
-  bw24 reaches this only after MTP spec-decode (#9) lands. Until then, the honest claim is "beat the
+  memra reaches this only after MTP spec-decode (#9) lands. Until then, the honest claim is "beat the
   no-spec decode (42.1)".
 
 ### Prefill (tok/s)
-| Model | llama.cpp pp512 (bar) | bw24 |
+| Model | llama.cpp pp512 (bar) | memra |
 |-------|------------------------|------|
 | 9B | **6220** | N/A until batched-prefill timing in run-gen |
 | 27B | **1980** | N/A until batched-prefill timing in run-gen |
 - **Prefill targets: beat 6220 (9B) / 1980 (27B) pp512.** Requires the hand-written FA prefill (#3) +
-  NVFP4 MMQ prefill path, and adding the prefill timer to run-gen (5.3). bw24's structural prefill
+  NVFP4 MMQ prefill path, and adding the prefill timer to run-gen (5.3). memra's structural prefill
   advantage candidate: it fits the 35B MoE in 24 GB where llama.cpp full-offload OOMs (already proven,
   argmax=1178 match) — the "wins where they OOM" angle is a real differentiator even before raw tok/s.
 
-### Where bw24 already wins (capability, not just speed)
+### Where memra already wins (capability, not just speed)
 - **35B-A3B MoE fits 24 GB (~4 GB peak via EDGE-1 selective expert staging)** where llama.cpp
   full-offload OOMs at 30.5 GB. That is a clean capability win to headline alongside the tok/s gaps.
 
@@ -316,7 +316,7 @@ than the best competitor on that metric, single-stream, same protocol.
 - 27B decode no-spec: **42.1 tok/s**; 27B decode peak: **66.6 tok/s** (llama.cpp MTP).
 - 9B prefill: **6220 pp512**; 27B prefill: **1980 pp512** (llama.cpp NVFP4).
 
-The driver `tools/bench.sh` produces the bw24-vs-llama.cpp side of this table automatically; vLLM/SGLang
+The driver `tools/bench.sh` produces the memra-vs-llama.cpp side of this table automatically; vLLM/SGLang
 are run separately (serial) via the section 2/3 commands and pasted into `research/benchmarks.md`.
 
 ## Gemma-4 pairing note (2026-07-15)

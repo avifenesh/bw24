@@ -3,11 +3,11 @@
 
 Runs the z-lab reference DFlashDraftModel on the real backbone-only checkpoint with
 FIXED-SEED synthetic inputs (target_hidden + noise_embedding stand-ins), dumping every
-layer's intermediates. The bw24 loader+forward must reproduce the final hidden states
+layer's intermediates. The memra loader+forward must reproduce the final hidden states
 (and intermediates, for bisecting) bit-close (f32 rel ~1e-3 class vs bf16 reference).
 
 Synthetic inputs isolate the DRAFT math from target plumbing: target taps / embed /
-lm_head are bw24-native pieces gated separately.
+lm_head are memra-native pieces gated separately.
 
 Usage (in ~/.venvs/torch):
   python tools/dflash_oracle.py /data/ai-ml/hf-models/dspark-gemma4-31b-draft/backbone-only \
@@ -31,7 +31,7 @@ from safetensors.torch import load_file  # noqa: E402
 sd = load_file(f"{ckpt_dir}/model.safetensors")
 missing, unexpected = model.load_state_dict(sd, strict=False)
 print("missing:", missing, "unexpected:", unexpected)
-model = model.to(torch.float32).eval()   # f32 reference (bw24 math is f32 accumulate)
+model = model.to(torch.float32).eval()   # f32 reference (memra math is f32 accumulate)
 
 H = config.hidden_size
 NT = len(model.target_layer_ids)

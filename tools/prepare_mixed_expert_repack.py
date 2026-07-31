@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build a bw24 expert overlay with exact per-expert mixed GGUF encodings.
+"""Build a memra expert overlay with exact per-expert mixed GGUF encodings.
 
 The quantization source may be an indexed BF16/F16/F32 Hugging Face checkpoint or the stacked
 MLX-affine Hy3 checkpoint. Dense/router tensors resolve from --fallback-dir, which may itself be
-a complete bw24 manifest repack. Experts declared pruned in the plan are omitted and masked by the
+a complete memra manifest repack. Experts declared pruned in the plan are omitted and masked by the
 runtime before top-k routing. No model or GPU is loaded by this CPU-only preparation tool.
 """
 
@@ -41,9 +41,9 @@ from ggml_quant_bridge import (
 )
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-OVERLAY_FORMAT = "bw24-expert-overlay-v2"
-COMPLETION_RECEIPT_FORMAT = "bw24-expert-overlay-file-completion-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+OVERLAY_FORMAT = "memra-expert-overlay-v2"
+COMPLETION_RECEIPT_FORMAT = "memra-expert-overlay-file-completion-v1"
 PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
     "Q8_0": (32, 34, ".q8"),
@@ -537,7 +537,7 @@ def _install_tensor_overrides(
         shutil.rmtree(override_dir, ignore_errors=True)
         return
     receipt = json.loads(override_path.read_text())
-    if receipt.get("format") != "bw24-tensor-overrides-v1":
+    if receipt.get("format") != "memra-tensor-overrides-v1":
         raise ValueError(f"{override_path}: unsupported tensor override format")
     blob = receipt.get("blob")
     tensors = receipt.get("tensors")
@@ -598,7 +598,7 @@ def prepare(args: argparse.Namespace) -> None:
     config = json.loads((source_dir / "config.json").read_text())
     is_mlx = bool(config.get("quantization") or config.get("quantization_config"))
     if is_mlx and fallback_dir == source_dir:
-        raise ValueError("MLX quant sources require --fallback-dir pointing to a complete bw24 repack")
+        raise ValueError("MLX quant sources require --fallback-dir pointing to a complete memra repack")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "experts").mkdir(exist_ok=True)
     store = SafeTensorDir(source_dir)
@@ -824,7 +824,7 @@ def _write_safetensors(path: Path, tensors: dict[str, tuple[list[int], bytes]]) 
 
 
 def self_test() -> None:
-    root = Path(tempfile.mkdtemp(prefix="bw24-tiered-expert-test-"))
+    root = Path(tempfile.mkdtemp(prefix="memra-tiered-expert-test-"))
     try:
         source, out = root / "source", root / "overlay"
         source.mkdir()
@@ -868,7 +868,7 @@ def self_test() -> None:
         override_blob.write_bytes(override_values.tobytes())
         override_receipt = root / "router-overrides.json"
         override_receipt.write_text(json.dumps({
-            "format": "bw24-tensor-overrides-v1",
+            "format": "memra-tensor-overrides-v1",
             "blob": {
                 "path": str(override_blob), "bytes": override_blob.stat().st_size,
                 "sha256": sha256_file(override_blob),
@@ -1015,7 +1015,7 @@ def main() -> int:
     prep = sub.add_parser("prepare")
     prep.add_argument("source_dir")
     prep.add_argument("out_dir")
-    prep.add_argument("--fallback-dir", help="complete HF or bw24 repack used for non-overlay tensors")
+    prep.add_argument("--fallback-dir", help="complete HF or memra repack used for non-overlay tensors")
     prep.add_argument("--plan", required=True)
     prep.add_argument("--max-work-mb", type=int, default=512)
     prep.add_argument("--workers", type=int, default=1)
@@ -1033,7 +1033,7 @@ def main() -> int:
     )
     prep.add_argument(
         "--tensor-overrides",
-        help="bw24-tensor-overrides-v1 receipt whose F32 router tensors override fallback",
+        help="memra-tensor-overrides-v1 receipt whose F32 router tensors override fallback",
     )
     inspect = sub.add_parser("probe")
     inspect.add_argument("source_dir")

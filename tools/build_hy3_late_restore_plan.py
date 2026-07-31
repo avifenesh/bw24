@@ -24,7 +24,7 @@ from build_hy3_delta_restore_plan import (
 )
 
 
-OUTPUT_FORMAT = "bw24-layer100-late-restore-v1"
+OUTPUT_FORMAT = "memra-layer100-late-restore-v1"
 
 
 def main() -> None:

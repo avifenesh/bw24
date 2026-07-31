@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import Any
 
 
-OUTPUT_FORMAT = "bw24-hy3-layer-constraints-v1"
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-EFFECTS_FORMAT = "bw24-hy3-quant-effects-map-v1"
+OUTPUT_FORMAT = "memra-hy3-layer-constraints-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+EFFECTS_FORMAT = "memra-hy3-quant-effects-map-v1"
 PROJECTIONS_PER_EXPERT = 3
 
 
@@ -251,7 +251,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-layer-constraints-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memra-layer-constraints-") as tmp:
         root = Path(tmp)
         layers = list(range(1, 9))
         reference = {
@@ -284,7 +284,7 @@ def self_test() -> None:
         receipts.mkdir()
         for layer in layers:
             write_json(receipts / f"layer-{layer:03}.receipt.json", {
-                "format": "bw24-hy3-prune-heal-layer-v1",
+                "format": "memra-hy3-prune-heal-layer-v1",
                 "mode": "joint",
                 "layer": layer,
                 "after": {"normalized_mse": float(layer)},

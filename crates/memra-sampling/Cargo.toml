@@ -1,0 +1,8 @@
+[package]
+name = "memra-sampling"
+version = "0.0.0"
+edition = "2021"
+# Host-side sampler chain (llama.cpp CPU sampler semantics) — shared across engine lanes
+# (ARCHITECTURE-H100.md §5). Self-contained: no engine/CUDA dependencies.
+
+[dependencies]

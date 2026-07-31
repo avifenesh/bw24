@@ -1,16 +1,16 @@
-// Compare the exact bw24 qmatvec kernel with weights in HBM versus CUDA-mapped pinned RAM.
+// Compare the exact memra qmatvec kernel with weights in HBM versus CUDA-mapped pinned RAM.
 //
 // Build:
 //   nvcc -O3 -std=c++17 -arch=sm_120a tools/bench_mapped_qmatvec.cu \
-//     -o /tmp/bw24-bench-mapped-qmatvec
+//     -o /tmp/memra-bench-mapped-qmatvec
 //
 // Run:
-//   bw24-bench-mapped-qmatvec FILE OFFSET BYTES IN_F OUT_F ROW_BYTES QTYPE ITERATIONS
+//   memra-bench-mapped-qmatvec FILE OFFSET BYTES IN_F OUT_F ROW_BYTES QTYPE ITERATIONS
 //
 // QTYPE is qmatvec.cu's internal QT_* value, not the GGML enum. The benchmark deliberately
 // includes the production kernel source so mapped-host and resident arms execute identical math.
 
-#include "../crates/bw24-engine/cu/qmatvec.cu"
+#include "../crates/memra-engine/cu/qmatvec.cu"
 
 #include <cuda_runtime.h>
 
@@ -160,8 +160,8 @@ float time_quantize_q8_1(const float * input, signed char * aq, float * ad,
 float time_q8_expert(const uint8_t * weights, const signed char * aq, const float * ad,
                      float * output, int in_f, int out_f, int qtype, int64_t row_bytes,
                      int iterations) {
-    const dim3 block(32, BW24_MMVQ_ROWS, 1);
-    const dim3 grid((out_f + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS, 1, 1);
+    const dim3 block(32, MEMRA_MMVQ_ROWS, 1);
+    const dim3 grid((out_f + MEMRA_MMVQ_ROWS - 1) / MEMRA_MMVQ_ROWS, 1, 1);
     for (int warmup = 0; warmup < 5; ++warmup) {
         qmatvec_expert_q8<<<grid, block>>>(
             weights, aq, ad, output, in_f, out_f, 1, qtype, row_bytes);

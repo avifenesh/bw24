@@ -1,4 +1,4 @@
-# The draft regime — how every bw24 model gets its speculative draft
+# The draft regime — how every memra model gets its speculative draft
 
 This is the DEFAULT, applied identically to every supported model. It replaced the
 old per-model mix of external drafts, separate trim files, and env knobs with **one
@@ -46,14 +46,14 @@ p1 +3.4%, p2 +2.5%, p3 +0.9% over the previous board config — 2026-07-18, json
 tools/make-trimmed-draft.sh model.gguf ranks.gguf.txt draft.gguf 32768 [imatrix.gguf]
 ```
 
-Serve: `BW24_MTP_DRAFT=draft.gguf ./target/release/bw24-server` (or run-spec).
+Serve: `MEMRA_MTP_DRAFT=draft.gguf ./target/release/memra-server` (or run-spec).
 Validate before trusting: `frspec-owngen model.gguf out.gguf --validate` A/Bs
 baseline-vs-trimmed spec e2e and prints a GOOD/WASH/BAD verdict.
 
 ## Prebuilt drafts
 
 Every board model's draft (built by exactly this pipeline, from exactly the published
-model bytes) ships at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench)
+model bytes) ships at [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench)
 with per-file provenance (source model, rank corpus, commands). Use ours for the board
 models; build your own (commands above) for any other model, requant, or finetune —
 a finetune's distribution moved, so its draft must too (law 1).
@@ -61,11 +61,11 @@ a finetune's distribution moved, so its draft must too (law 1).
 ## Gemma variant
 
 Gemma drafters are already standalone byte-verbatim GGUFs (law 2 by provenance); the trim
-applies at LOAD instead of at build: `BW24_GEMMA_DRAFT_RANKS=<ranks.txt>` (the `.txt`
+applies at LOAD instead of at build: `MEMRA_GEMMA_DRAFT_RANKS=<ranks.txt>` (the `.txt`
 sidecar frspec-owngen emits). Laws 1 and 3 apply unchanged — own-gen ranks per model,
 adopt on e2e only.
 
-With ranks set, the **adaptive trim** is on by default (`BW24_GEMMA_TRIM_ADAPT`,
+With ranks set, the **adaptive trim** is on by default (`MEMRA_GEMMA_TRIM_ADAPT`,
 512 spare head slots): coverage escapes self-identify at serve time — they arrive as
 verify corrections and ride in with the prompt — so the loop writes their head rows
 into the spare slots and persists the ids to `<ranks>.learned` (pre-filled on the next

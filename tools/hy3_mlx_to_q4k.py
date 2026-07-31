@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""CPU-only Hy3 REAP50 MLX-affine -> bw24 Q4_K preparation tool.
+"""CPU-only Hy3 REAP50 MLX-affine -> memra Q4_K preparation tool.
 
 This intentionally avoids torch, mlx, safetensors, and GPU APIs.  It reads
 safetensors with mmap + json, streams rows in bounded chunks, and writes a
-bw24-oriented repack directory:
+memra-oriented repack directory:
 
   manifest.json                  machine-readable loader plan
   tensors/*.q4k                   GGUF block_q4_K row-major bytes
@@ -556,7 +556,7 @@ def transcode(args: argparse.Namespace) -> None:
     store = SafeTensorDir(model_dir)
     max_work = int(args.max_work_mb) << 20
     manifest: dict[str, Any] = {
-        "format": "bw24-hy3-q4k-repack-v1",
+        "format": "memra-hy3-q4k-repack-v1",
         "source_repo": "pipenetwork/Hy3-REAP50-MLX-4bit",
         "source_dir": str(model_dir),
         "created_utc": _dt.datetime.now(_dt.UTC).isoformat(),
@@ -687,7 +687,7 @@ def transcode(args: argparse.Namespace) -> None:
 
 
 def map_hy3_mtp_name(name: str, layer: int) -> str | None:
-    """Map base-checkpoint `model.layers.{layer}.*` MTP-head names to bw24 ggml names.
+    """Map base-checkpoint `model.layers.{layer}.*` MTP-head names to memra ggml names.
 
     The base tencent/Hy3 head block differs from the REAP trunk naming in three ways:
       * MTP glue tensors exist (`eh_proj`, `enorm`, `hnorm`, `final_layernorm`) — these map to the
@@ -792,7 +792,7 @@ def transcode_mtp(args: argparse.Namespace) -> None:
     if not names:
         raise SystemExit(f"no {prefix}* tensors in index")
     manifest: dict[str, Any] = {
-        "format": "bw24-hy3-mtp-q4k-repack-v1",
+        "format": "memra-hy3-mtp-q4k-repack-v1",
         "source_repo": args.source_repo,
         "source_dir": str(model_dir),
         "head_layer": layer,

@@ -10,7 +10,7 @@
 // if K wins).
 //
 // KERNEL BODIES are verbatim copies of the engine's fa_decode_vec_q (register path)
-// and fa_decode_vec_q_smem (deep-ctx path) from crates/bw24-engine/cu/flash_attn.cu,
+// and fa_decode_vec_q_smem (deep-ctx path) from crates/memra-engine/cu/flash_attn.cu,
 // with ONLY the K addressing remapped in the *_al twins. Dequant math (half scale x
 // int8 q, bf16 round-trip) is UNCHANGED — outputs must be BIT-IDENTICAL between
 // layouts (this probe verifies partO/partM/partL bytewise before timing).

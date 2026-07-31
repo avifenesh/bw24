@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any
 
 
-PLAN_FORMAT = "bw24-expert-tier-plan-v2"
-OUTPUT_FORMAT = "bw24-layer100-delta-restore-v1"
+PLAN_FORMAT = "memra-expert-tier-plan-v2"
+OUTPUT_FORMAT = "memra-layer100-delta-restore-v1"
 PROJECTIONS = ("gate", "up", "down")
 TENSOR_RE = re.compile(r"^blk\.(\d+)\.ffn_(gate|up|down)_exps\.(\d+)\.weight$")
 
@@ -366,7 +366,7 @@ def build(
 
 
 def self_test() -> None:
-    with tempfile.TemporaryDirectory(prefix="bw24-delta-restore-"):
+    with tempfile.TemporaryDirectory(prefix="memra-delta-restore-"):
         def plan(kept: set[int], qtype: str, size: int) -> dict[str, Any]:
             return {
                 "format": PLAN_FORMAT,

@@ -1,0 +1,3009 @@
+// memra-native CPU implementation of one routed MoE token for the Hy3 CPU/GPU expert split.
+// This translation unit is self-contained: it owns the packed-format decoders, activation
+// quantizer, SIMD dot products, storage pipeline, and stable C ABI. No external inference runtime
+// is compiled, linked, or loaded.
+
+#include <omp.h>
+#include <immintrin.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <fstream>
+#include <exception>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+extern "C" {
+
+struct memra_cpu_projection_v2 {
+    const std::uint8_t * weights;
+    std::int32_t qtype;
+    std::int32_t in_features;
+    std::int32_t out_features;
+    std::size_t row_bytes;
+    std::size_t byte_len;
+    std::int32_t file_fd;
+    std::uint64_t file_offset;
+    float scale;
+};
+
+struct memra_cpu_expert_v2 {
+    memra_cpu_projection_v2 gate;
+    memra_cpu_projection_v2 up;
+    memra_cpu_projection_v2 down;
+    float route_weight;
+};
+
+std::uint32_t memra_cpu_experts_abi_version() {
+    return 2;
+}
+
+} // extern "C"
+
+namespace {
+
+// Keep these values identical to crates/memra-engine/src/lib.rs. They are memra's kernel ABI,
+// not identifiers borrowed from another runtime.
+enum QuantType : std::int32_t {
+    QT_Q8_0 = 0,
+    QT_Q4_K = 1,
+    QT_Q6_K = 2,
+    QT_Q5_K = 3,
+    QT_Q3_K = 4,
+    QT_IQ4_XS = 5,
+    QT_IQ3_S = 6,
+    QT_NVFP4 = 7,
+    QT_F32 = 8,
+    QT_BF16 = 11,
+    QT_Q4_0 = 12,
+    QT_Q2_K = 13,
+};
+
+struct QuantSpec {
+    int block;
+    int bytes;
+    const char * name;
+};
+
+QuantSpec quant_spec(std::int32_t qtype) {
+    switch (qtype) {
+        case QT_Q8_0: return {32, 34, "Q8_0"};
+        case QT_Q4_K: return {256, 144, "Q4_K"};
+        case QT_Q6_K: return {256, 210, "Q6_K"};
+        case QT_Q5_K: return {256, 176, "Q5_K"};
+        case QT_Q3_K: return {256, 110, "Q3_K"};
+        case QT_IQ4_XS: return {256, 136, "IQ4_XS"};
+        case QT_IQ3_S: return {256, 110, "IQ3_S"};
+        case QT_NVFP4: return {64, 36, "NVFP4"};
+        case QT_F32: return {1, 4, "F32"};
+        case QT_BF16: return {1, 2, "BF16"};
+        case QT_Q4_0: return {32, 18, "Q4_0"};
+        case QT_Q2_K: return {256, 84, "Q2_K"};
+        default: throw std::runtime_error("unsupported memra CPU qtype " + std::to_string(qtype));
+    }
+}
+
+// Optional persistent cache arena on tmpfs (MEMRA_CPU_EXPERT_CACHE_SHM=1): weight blocks live
+// in a named shm segment and the cache index persists across process restarts, so a
+// restarting server starts with a warm cache instead of re-reading tens of GB from NVMe.
+// Safety: an exclusive flock serializes ownership (a second concurrent process silently gets
+// a private in-memory cache); the header state flips to dirty at open and clean only after a
+// successful index write, so a crash yields a cold-but-correct start; and cache keys pin
+// device/inode/size/ctime, so entries from a changed source tree can never match.
+class ShmArena {
+public:
+    struct PersistedEntry {
+        std::uint64_t device = 0;
+        std::uint64_t inode = 0;
+        std::uint64_t file_size = 0;
+        std::int64_t ctime_seconds = 0;
+        std::int64_t ctime_nanoseconds = 0;
+        std::uint64_t file_offset = 0;
+        std::uint64_t byte_len = 0;
+        std::uint64_t shm_offset = 0;
+        std::uint64_t pool_bytes = 0;
+    };
+
+    static ShmArena & instance() {
+        static ShmArena * arena = new ShmArena();  // leaked: see RawBlockPool::instance
+        return *arena;
+    }
+
+    bool enabled() const { return base_ != nullptr; }
+    bool reopened_clean() const { return reopened_clean_; }
+
+    bool contains(const void * pointer) const {
+        const auto * p = static_cast<const std::uint8_t *>(pointer);
+        return base_ != nullptr && p >= data_begin() && p < base_ + segment_bytes_;
+    }
+
+    // Allocation state is process-local; occupied ranges are rebuilt from the persisted
+    // index at reopen (holes become the freelist). Called with no concurrent access at
+    // startup, then only under RawBlockPool's mutex.
+    void * acquire(std::size_t pool_bytes, std::size_t alignment) {
+        for (auto it = holes_.begin(); it != holes_.end(); ++it) {
+            const std::size_t aligned = align_up(it->first, alignment);
+            if (aligned + pool_bytes <= it->first + it->second) {
+                const std::size_t hole_off = it->first;
+                const std::size_t hole_len = it->second;
+                holes_.erase(it);
+                if (aligned > hole_off) holes_.emplace_back(hole_off, aligned - hole_off);
+                if (aligned + pool_bytes < hole_off + hole_len) {
+                    holes_.emplace_back(
+                        aligned + pool_bytes, hole_off + hole_len - aligned - pool_bytes);
+                }
+                return base_ + aligned;
+            }
+        }
+        const std::size_t aligned = align_up(bump_, alignment);
+        if (aligned + pool_bytes > segment_bytes_) return nullptr;  // arena full
+        bump_ = aligned + pool_bytes;
+        return base_ + aligned;
+    }
+
+    void release(void * pointer, std::size_t pool_bytes) {
+        holes_.emplace_back(
+            static_cast<std::size_t>(static_cast<std::uint8_t *>(pointer) - base_),
+            pool_bytes);
+    }
+
+    std::uint64_t offset_of(const void * pointer) const {
+        return static_cast<std::uint64_t>(
+            static_cast<const std::uint8_t *>(pointer) - base_);
+    }
+
+    std::uint8_t * pointer_at(std::uint64_t offset) const { return base_ + offset; }
+
+    // Marks a range occupied during index reload (before any acquire).
+    void reserve_range(std::uint64_t offset, std::uint64_t pool_bytes) {
+        occupied_.emplace_back(offset, pool_bytes);
+    }
+
+    void finish_reload() {
+        std::sort(occupied_.begin(), occupied_.end());
+        std::size_t cursor = data_offset_;
+        for (const auto & [offset, length] : occupied_) {
+            if (offset > cursor) holes_.emplace_back(cursor, offset - cursor);
+            cursor = std::max(cursor, static_cast<std::size_t>(offset + length));
+        }
+        bump_ = cursor;
+        occupied_.clear();
+    }
+
+    std::size_t max_entries() const { return kIndexEntries; }
+    PersistedEntry * index_table() const {
+        return reinterpret_cast<PersistedEntry *>(base_ + 4096);
+    }
+    std::uint64_t * entry_count_slot() const {
+        return &header()->entry_count;
+    }
+
+    void mark_dirty() { header()->state = 0; msync_header(); }
+    void mark_clean(std::uint64_t entries) {
+        header()->entry_count = entries;
+        header()->state = 1;
+        msync_header();
+    }
+
+private:
+    struct Header {
+        std::uint64_t magic;
+        std::uint32_t version;
+        std::uint32_t state;  // 0 = dirty, 1 = clean index
+        std::uint64_t segment_bytes;
+        std::uint64_t entry_count;
+    };
+
+    static constexpr std::uint64_t kMagic = 0x62773234736d6863ull;  // "memrashmc"
+    static constexpr std::uint32_t kVersion = 1;
+    static constexpr std::size_t kIndexEntries = 262144;  // 72 B each ≈ 18 MiB
+
+    ShmArena() {
+        const char * flag = std::getenv("MEMRA_CPU_EXPERT_CACHE_SHM");
+        if (flag == nullptr || std::strcmp(flag, "1") != 0) return;
+        const char * name_raw = std::getenv("MEMRA_CPU_EXPERT_CACHE_SHM_NAME");
+        const std::string name = name_raw != nullptr && *name_raw != '\0'
+            ? name_raw : "/memra-expert-cache-v1";
+        const double budget_gib = [] {
+            const char * raw = std::getenv("MEMRA_CPU_EXPERT_CACHE_GB");
+            if (raw == nullptr || *raw == '\0') return 16.0;
+            return std::strtod(raw, nullptr);
+        }();
+        segment_bytes_ = static_cast<std::size_t>(budget_gib * 1.06 * 1024.0 * 1024.0 * 1024.0)
+            + (std::size_t(64) << 20);
+        data_offset_ = align_up(4096 + kIndexEntries * sizeof(PersistedEntry), std::size_t(2) << 20);
+
+        fd_ = shm_open(name.c_str(), O_RDWR | O_CREAT, 0600);
+        if (fd_ < 0) {
+            std::fprintf(stderr, "[memra-cpu] shm cache disabled: shm_open(%s): %s\n",
+                name.c_str(), std::strerror(errno));
+            return;
+        }
+        if (flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+            std::fprintf(stderr,
+                "[memra-cpu] shm cache busy (another process holds %s); using private cache\n",
+                name.c_str());
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+        struct stat st {};
+        const bool fresh = fstat(fd_, &st) != 0
+            || static_cast<std::size_t>(st.st_size) != segment_bytes_;
+        if (fresh && ftruncate(fd_, static_cast<off_t>(segment_bytes_)) != 0) {
+            std::fprintf(stderr, "[memra-cpu] shm cache disabled: ftruncate: %s\n",
+                std::strerror(errno));
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+        void * mapping = mmap(nullptr, segment_bytes_, PROT_READ | PROT_WRITE,
+            MAP_SHARED, fd_, 0);
+        if (mapping == MAP_FAILED) {
+            std::fprintf(stderr, "[memra-cpu] shm cache disabled: mmap: %s\n",
+                std::strerror(errno));
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+        base_ = static_cast<std::uint8_t *>(mapping);
+        madvise(base_, segment_bytes_, MADV_HUGEPAGE);  // honored only if shmem THP allows
+        auto * head = header();
+        reopened_clean_ = !fresh && head->magic == kMagic && head->version == kVersion
+            && head->state == 1 && head->segment_bytes == segment_bytes_;
+        if (!reopened_clean_) {
+            head->magic = kMagic;
+            head->version = kVersion;
+            head->segment_bytes = segment_bytes_;
+            head->entry_count = 0;
+        }
+        bump_ = data_offset_;
+    }
+
+    Header * header() const { return reinterpret_cast<Header *>(base_); }
+
+    void msync_header() { msync(base_, 4096, MS_SYNC); }
+
+    std::uint8_t * data_begin() const { return base_ + data_offset_; }
+
+    static std::size_t align_up(std::size_t value, std::size_t alignment) {
+        return (value + alignment - 1) & ~(alignment - 1);
+    }
+
+    int fd_ = -1;
+    std::uint8_t * base_ = nullptr;
+    std::size_t segment_bytes_ = 0;
+    std::size_t data_offset_ = 0;
+    std::size_t bump_ = 0;
+    bool reopened_clean_ = false;
+    std::vector<std::pair<std::size_t, std::size_t>> holes_;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> occupied_;
+};
+
+// Recycles page-aligned weight-buffer blocks. Expert misses allocate 1–4 MB per projection at
+// ~0.9 GB/token; glibc returns freed chunks to the kernel (mmap for large blocks, heap trim at
+// 128 KB), so every miss re-faults ~7.8M first-touch pages per 32 decoded tokens and the
+// kernel zero-fills the entire read volume. Recycled blocks stay faulted-in: steady-state
+// decode performs no allocation, no page faults, and no kernel zeroing.
+class RawBlockPool {
+public:
+    static RawBlockPool & instance() {
+        // Intentionally leaked: cache entries release buffers here from static destructors,
+        // which may run after a function-local static pool would have been destroyed.
+        static RawBlockPool * pool = new RawBlockPool();
+        return *pool;
+    }
+
+    void * acquire(std::size_t pool_bytes) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = free_.find(pool_bytes);
+            if (found != free_.end() && !found->second.empty()) {
+                void * block = found->second.back();
+                found->second.pop_back();
+                pooled_bytes_ -= pool_bytes;
+                return block;
+            }
+        }
+        // 2 MB-aligned blocks + MADV_HUGEPAGE: expert projections are 1-4 MB and the compute
+        // kernels stream the whole resident set, so 4 KB pages cost millions of TLB walks per
+        // window. khugepaged collapses these during warmup (THP mode "madvise" on this rig).
+        const std::size_t alignment = pool_bytes >= (std::size_t(2) << 20)
+            ? (std::size_t(2) << 20) : 4096;
+        auto & arena = ShmArena::instance();
+        if (arena.enabled()) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            void * block = arena.acquire(pool_bytes, alignment);
+            if (block != nullptr) return block;
+            // Arena full: fall through to a private block (still correct, just not persisted).
+        }
+        void * allocation = nullptr;
+        const int status = posix_memalign(&allocation, alignment, pool_bytes);
+        if (status != 0) {
+            throw std::runtime_error(
+                "aligned CPU expert allocation failed: " + std::string(std::strerror(status)));
+        }
+        if (alignment >= (std::size_t(2) << 20)) {
+            madvise(allocation, pool_bytes, MADV_HUGEPAGE);
+        }
+        return allocation;
+    }
+
+    void release(void * block, std::size_t pool_bytes) noexcept {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            // Arena blocks always recycle through the freelist (never free()d — the memory
+            // belongs to the shm segment); the cap only bounds private blocks.
+            const bool arena_block = ShmArena::instance().contains(block);
+            if (arena_block || pooled_bytes_ + pool_bytes <= kMaxPooledBytes) {
+                try {
+                    free_[pool_bytes].push_back(block);
+                    pooled_bytes_ += pool_bytes;
+                    return;
+                } catch (...) {
+                    if (arena_block) return;  // leak into the segment rather than free()
+                }
+            }
+        }
+        std::free(block);
+    }
+
+private:
+    // Buffers cycle cache -> pool -> next miss, so the pool holds only the churn window;
+    // the cap is a backstop against pathological size-class drift.
+    static constexpr std::size_t kMaxPooledBytes = std::size_t(2) << 30;
+
+    std::mutex mutex_;
+    std::unordered_map<std::size_t, std::vector<void *>> free_;
+    std::size_t pooled_bytes_ = 0;
+};
+
+struct AlignedBytes {
+    struct Free {
+        // No default member initializer: NSDMIs of nested classes are late-parsed until the
+        // enclosing class closes, which would leave Free non-default-constructible at the
+        // `storage` member declaration below.
+        std::size_t pool_bytes;
+
+        Free() : pool_bytes(0) {}
+        explicit Free(std::size_t bytes) : pool_bytes(bytes) {}
+
+        void operator()(void * pointer) const {
+            if (pool_bytes != 0) {
+                RawBlockPool::instance().release(pointer, pool_bytes);
+            } else {
+                std::free(pointer);
+            }
+        }
+    };
+
+    std::unique_ptr<void, Free> storage;
+    std::size_t capacity = 0;
+    std::size_t alignment = 0;
+    void * data = nullptr;
+
+    void resize(std::size_t bytes, std::size_t alignment = 64) {
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0 || alignment > 4096) {
+            throw std::runtime_error("alignment must be a power of two up to 4096");
+        }
+        if (capacity >= bytes && this->alignment >= alignment) return;
+        const std::size_t pool_bytes = (bytes + 4095) & ~std::size_t(4095);
+        void * allocation = RawBlockPool::instance().acquire(pool_bytes);
+        storage = std::unique_ptr<void, Free>(allocation, Free(pool_bytes));
+        capacity = bytes;
+        this->alignment = 4096;
+        data = allocation;
+    }
+
+    std::size_t size() const { return capacity; }
+};
+
+#include "memra_iq3s_grid.inc"
+
+constexpr std::array<std::array<std::int8_t, 8>, 256> make_iq3_signs() {
+    std::array<std::array<std::int8_t, 8>, 256> signs {};
+    for (int mask = 0; mask < 256; ++mask) {
+        for (int lane = 0; lane < 8; ++lane) {
+            signs[mask][lane] = (mask & (1 << lane)) != 0 ? -1 : 1;
+        }
+    }
+    return signs;
+}
+
+alignas(16) constexpr auto MEMRA_IQ3S_SIGNS = make_iq3_signs();
+
+float fp16_to_f32(std::uint16_t h) {
+    const std::uint32_t sign = static_cast<std::uint32_t>(h & 0x8000) << 16;
+    const std::uint32_t exp = (h >> 10) & 0x1f;
+    const std::uint32_t mantissa = h & 0x03ff;
+    std::uint32_t bits = 0;
+    if (exp == 0) {
+        if (mantissa == 0) {
+            bits = sign;
+        } else {
+            std::uint32_t m = mantissa;
+            std::uint32_t shift = 0;
+            while ((m & 0x0400) == 0) {
+                m <<= 1;
+                ++shift;
+            }
+            m &= 0x03ff;
+            bits = sign | ((127 - 14 - shift) << 23) | (m << 13);
+        }
+    } else if (exp == 0x1f) {
+        bits = sign | 0x7f800000 | (mantissa << 13);
+    } else {
+        bits = sign | ((exp + 127 - 15) << 23) | (mantissa << 13);
+    }
+    float result;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+float bf16_to_f32(const std::uint8_t * bytes) {
+    std::uint16_t value;
+    std::memcpy(&value, bytes, sizeof(value));
+    const std::uint32_t bits = static_cast<std::uint32_t>(value) << 16;
+    float result;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+
+std::uint16_t read_u16(const std::uint8_t * bytes) {
+    std::uint16_t value;
+    std::memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+
+std::uint32_t read_u32(const std::uint8_t * bytes) {
+    std::uint32_t value;
+    std::memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+
+float ue4m3_to_f32(std::uint8_t value) {
+    if (value == 0 || value == 0x7f) return 0.0f;
+    const int exponent = (value >> 3) & 0x0f;
+    const float mantissa = static_cast<float>(value & 7);
+    const float decoded = exponent == 0
+        ? std::ldexp(mantissa, -9)
+        : std::ldexp(1.0f + mantissa / 8.0f, exponent - 7);
+    return 0.5f * decoded;
+}
+
+struct alignas(32) Q8Block16 {
+    float scale = 0.0f;
+    std::int32_t sum = 0;
+    alignas(16) std::int8_t values[16] {};
+};
+
+struct QuantizedActivation {
+    std::vector<Q8Block16> blocks;
+
+    void prepare(int count) {
+        if (count <= 0 || count % 16 != 0) {
+            throw std::runtime_error("memra CPU activation width must be a positive multiple of 16");
+        }
+        blocks.resize(static_cast<std::size_t>(count / 16));
+    }
+
+    bool quantize(const float * input, int count) noexcept {
+        if (input == nullptr || count <= 0 || count % 16 != 0
+            || blocks.size() != static_cast<std::size_t>(count / 16)) {
+            return false;
+        }
+        bool finite = true;
+        for (std::size_t block_index = 0; block_index < blocks.size(); ++block_index) {
+            auto & block = blocks[block_index];
+            const float * values = input + block_index * 16;
+            float absolute_max = 0.0f;
+            for (int index = 0; index < 16; ++index) {
+                if (std::isfinite(values[index])) {
+                    absolute_max = std::max(absolute_max, std::abs(values[index]));
+                } else {
+                    finite = false;
+                }
+            }
+            block.scale = absolute_max == 0.0f ? 0.0f : absolute_max / 127.0f;
+            block.sum = 0;
+            for (int index = 0; index < 16; ++index) {
+                float rounded = 0.0f;
+                if (block.scale != 0.0f && std::isfinite(values[index])) {
+                    rounded = std::nearbyint(values[index] / block.scale);
+                }
+                const int quantized = static_cast<int>(
+                    std::clamp(rounded, -127.0f, 127.0f));
+                block.values[index] = static_cast<std::int8_t>(quantized);
+                block.sum += quantized;
+            }
+        }
+        return finite;
+    }
+};
+
+std::int32_t dot_i8_16(
+        const std::int8_t * left, const std::int8_t * right,
+        [[maybe_unused]] std::int32_t right_sum) {  // consumed only by the AVX-VNNI arm
+#if defined(__AVXVNNI__)
+    const __m128i weights = _mm_loadu_si128(reinterpret_cast<const __m128i *>(left));
+    const __m128i activations = _mm_loadu_si128(reinterpret_cast<const __m128i *>(right));
+    const __m128i biased = _mm_xor_si128(weights, _mm_set1_epi8(static_cast<char>(0x80)));
+    __m128i sums = _mm_dpbusd_epi32(_mm_setzero_si128(), biased, activations);
+    sums = _mm_hadd_epi32(sums, sums);
+    sums = _mm_hadd_epi32(sums, sums);
+    return _mm_cvtsi128_si32(sums) - 128 * right_sum;
+#elif defined(__AVX2__)
+    const __m128i left8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(left));
+    const __m128i right8 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(right));
+    const __m256i left16 = _mm256_cvtepi8_epi16(left8);
+    const __m256i right16 = _mm256_cvtepi8_epi16(right8);
+    const __m256i products = _mm256_mullo_epi16(left16, right16);
+    const __m256i pairs = _mm256_madd_epi16(products, _mm256_set1_epi16(1));
+    const __m128i low = _mm256_castsi256_si128(pairs);
+    const __m128i high = _mm256_extracti128_si256(pairs, 1);
+    __m128i sum = _mm_add_epi32(low, high);
+    sum = _mm_hadd_epi32(sum, sum);
+    sum = _mm_hadd_epi32(sum, sum);
+    return _mm_cvtsi128_si32(sum);
+#else
+    std::int32_t sum = 0;
+    for (int index = 0; index < 16; ++index) sum += left[index] * right[index];
+    return sum;
+#endif
+}
+
+#if defined(__SSSE3__)
+#if !defined(__AVXVNNI__) || !defined(__AVX2__)
+__m128i byte_shift_right(__m128i values, int shift) {
+    switch (shift) {
+        case 0: return values;
+        case 2: return _mm_srli_epi16(values, 2);
+        case 4: return _mm_srli_epi16(values, 4);
+        case 6: return _mm_srli_epi16(values, 6);
+        default: throw std::runtime_error("invalid packed-byte shift");
+    }
+}
+#endif
+
+__m128i unpack_nibbles(const std::uint8_t * values, bool high) {
+    const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(values));
+    return _mm_and_si128(
+        high ? _mm_srli_epi16(packed, 4) : packed,
+        _mm_set1_epi8(15));
+}
+
+void store_i8(std::int8_t * destination, __m128i values) {
+    _mm_store_si128(reinterpret_cast<__m128i *>(destination), values);
+}
+
+#if !defined(__AVXVNNI__) || !defined(__AVX2__)
+std::int32_t dot_i8_16(__m128i weights, const Q8Block16 & input) {
+#if defined(__AVXVNNI__)
+    const __m128i activations = _mm_load_si128(
+        reinterpret_cast<const __m128i *>(input.values));
+    const __m128i biased = _mm_xor_si128(weights, _mm_set1_epi8(static_cast<char>(0x80)));
+    __m128i sums = _mm_dpbusd_epi32(_mm_setzero_si128(), biased, activations);
+    sums = _mm_hadd_epi32(sums, sums);
+    sums = _mm_hadd_epi32(sums, sums);
+    return _mm_cvtsi128_si32(sums) - 128 * input.sum;
+#else
+    alignas(16) std::int8_t unpacked[16];
+    store_i8(unpacked, weights);
+    return dot_i8_16(unpacked, input.values, input.sum);
+#endif
+}
+#endif
+
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+std::array<std::int32_t, 2> dot_i8_16_pair(
+        __m256i weights, const Q8Block16 & low, const Q8Block16 & high) {
+    __m256i activations = _mm256_castsi128_si256(
+        _mm_load_si128(reinterpret_cast<const __m128i *>(low.values)));
+    activations = _mm256_inserti128_si256(
+        activations,
+        _mm_load_si128(reinterpret_cast<const __m128i *>(high.values)),
+        1);
+    const __m256i biased = _mm256_xor_si256(
+        weights, _mm256_set1_epi8(static_cast<char>(0x80)));
+    const __m256i products = _mm256_dpbusd_epi32(
+        _mm256_setzero_si256(), biased, activations);
+    auto reduce = [](__m128i lanes) {
+        lanes = _mm_hadd_epi32(lanes, lanes);
+        lanes = _mm_hadd_epi32(lanes, lanes);
+        return _mm_cvtsi128_si32(lanes);
+    };
+    return {
+        reduce(_mm256_castsi256_si128(products)) - 128 * low.sum,
+        reduce(_mm256_extracti128_si256(products, 1)) - 128 * high.sum,
+    };
+}
+#endif
+#endif
+
+float dot_q2_k_row(
+        const std::uint8_t * weights,
+        const QuantizedActivation & activation,
+        int count) {
+    float result = 0.0f;
+    const int superblocks = count / 256;
+    for (int superblock = 0; superblock < superblocks; ++superblock) {
+        const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 84;
+        const std::uint8_t * scales = block;
+        const std::uint8_t * quants = block + 16;
+        const float d = fp16_to_f32(read_u16(block + 80));
+        const float dmin = fp16_to_f32(read_u16(block + 82));
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+        for (int half = 0; half < 2; ++half) {
+            const __m256i packed = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i *>(quants + half * 32));
+            for (int pair = 0; pair < 4; ++pair) {
+                const int group = half * 8 + pair * 2;
+                const __m256i decoded = _mm256_and_si256(
+                    _mm256_srli_epi16(packed, pair * 2), _mm256_set1_epi8(3));
+                const auto integer_dots = dot_i8_16_pair(
+                    decoded,
+                    activation.blocks[static_cast<std::size_t>(superblock * 16 + group)],
+                    activation.blocks[static_cast<std::size_t>(superblock * 16 + group + 1)]);
+                for (int lane = 0; lane < 2; ++lane) {
+                    const int current = group + lane;
+                    const auto & input = activation.blocks[
+                        static_cast<std::size_t>(superblock * 16 + current)];
+                    result += input.scale * (
+                        d * static_cast<float>(scales[current] & 15) * integer_dots[lane]
+                        - dmin * static_cast<float>(scales[current] >> 4) * input.sum);
+                }
+            }
+        }
+#else
+        for (int group = 0; group < 16; ++group) {
+            const int start = group * 16;
+            const int half = start / 128;
+            const int within = start % 128;
+            const auto & input = activation.blocks[
+                static_cast<std::size_t>(superblock * 16 + group)];
+#if defined(__SSSE3__)
+            const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                quants + half * 32 + within % 32));
+            const __m128i decoded = _mm_and_si128(
+                byte_shift_right(packed, 2 * (within / 32)), _mm_set1_epi8(3));
+            const int integer_dot = dot_i8_16(decoded, input);
+#else
+            alignas(16) std::int8_t decoded[16];
+            for (int index = 0; index < 16; ++index) {
+                decoded[index] = static_cast<std::int8_t>(
+                    (quants[half * 32 + (within + index) % 32]
+                        >> (2 * (within / 32))) & 3);
+            }
+            const int integer_dot = dot_i8_16(decoded, input.values, input.sum);
+#endif
+            result += input.scale * (
+                d * static_cast<float>(scales[group] & 15) * integer_dot
+                - dmin * static_cast<float>(scales[group] >> 4) * input.sum);
+        }
+#endif
+    }
+    return result;
+}
+
+float scaled_dot16(
+        const std::int8_t * weights,
+        const QuantizedActivation & activation,
+        std::size_t block,
+        float weight_scale) {
+    const auto & input = activation.blocks[block];
+    return weight_scale * input.scale
+        * static_cast<float>(dot_i8_16(weights, input.values, input.sum));
+}
+
+float scaled_sum16(
+        const QuantizedActivation & activation,
+        std::size_t block,
+        float weight_scale) {
+    const auto & input = activation.blocks[block];
+    return weight_scale * input.scale * static_cast<float>(input.sum);
+}
+
+void scale_min_k4(int group, const std::uint8_t * scales, int & scale, int & minimum) {
+    if (group < 4) {
+        scale = scales[group] & 63;
+        minimum = scales[group + 4] & 63;
+    } else {
+        scale = (scales[group + 4] & 0x0f) | ((scales[group - 4] >> 6) << 4);
+        minimum = (scales[group + 4] >> 4) | ((scales[group] >> 6) << 4);
+    }
+}
+
+float dot_quantized_row(
+        std::int32_t qtype,
+        const std::uint8_t * weights,
+        const QuantizedActivation & activation,
+        int count) {
+    if (qtype == QT_Q2_K) return dot_q2_k_row(weights, activation, count);
+    alignas(16) std::int8_t decoded[16];
+    float result = 0.0f;
+    const auto spec = quant_spec(qtype);
+    const int superblocks = count / spec.block;
+    const auto block16 = [spec](int superblock, int local) {
+        return static_cast<std::size_t>(superblock * (spec.block / 16) + local);
+    };
+
+    for (int superblock = 0; superblock < superblocks; ++superblock) {
+        const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * spec.bytes;
+        if (qtype == QT_Q8_0 || qtype == QT_Q4_0) {
+            const float d = fp16_to_f32(read_u16(block));
+            for (int half = 0; half < 2; ++half) {
+#if defined(__SSSE3__)
+                if (qtype == QT_Q8_0) {
+                    store_i8(decoded, _mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(block + 2 + half * 16)));
+                } else {
+                    store_i8(decoded, _mm_sub_epi8(
+                        unpack_nibbles(block + 2, half != 0), _mm_set1_epi8(8)));
+                }
+#else
+                for (int index = 0; index < 16; ++index) {
+                    if (qtype == QT_Q8_0) {
+                        decoded[index] = static_cast<std::int8_t>(block[2 + half * 16 + index]);
+                    } else {
+                        const std::uint8_t packed = block[2 + index];
+                        decoded[index] = static_cast<std::int8_t>(
+                            (half == 0 ? packed & 15 : packed >> 4) - 8);
+                    }
+                }
+#endif
+                const std::size_t input_block = static_cast<std::size_t>(
+                    superblock * (spec.block / 16) + half);
+                result += scaled_dot16(decoded, activation, input_block, d);
+            }
+            continue;
+        }
+        if (qtype == QT_NVFP4) {
+            static constexpr std::int8_t values[16] =
+                {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+            const std::uint8_t * quants = block + 4;
+            for (int group = 0; group < 4; ++group) {
+#if defined(__SSSE3__)
+                const __m128i table = _mm_loadu_si128(reinterpret_cast<const __m128i *>(values));
+                const __m128i packed = _mm_loadl_epi64(
+                    reinterpret_cast<const __m128i *>(quants + group * 8));
+                const __m128i low = _mm_shuffle_epi8(table, _mm_and_si128(packed, _mm_set1_epi8(15)));
+                const __m128i high = _mm_shuffle_epi8(
+                    table, _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(15)));
+                store_i8(decoded, _mm_unpacklo_epi64(low, high));
+#else
+                for (int index = 0; index < 8; ++index) {
+                    const std::uint8_t packed = quants[group * 8 + index];
+                    decoded[index] = values[packed & 15];
+                    decoded[index + 8] = values[packed >> 4];
+                }
+#endif
+                result += scaled_dot16(
+                    decoded, activation, block16(superblock, group), ue4m3_to_f32(block[group]));
+            }
+            continue;
+        }
+        if (qtype == QT_Q4_K || qtype == QT_Q5_K) {
+            const float d = fp16_to_f32(read_u16(block));
+            const float dmin = fp16_to_f32(read_u16(block + 2));
+            const std::uint8_t * scales = block + 4;
+            const std::uint8_t * high = qtype == QT_Q5_K ? block + 16 : nullptr;
+            const std::uint8_t * quants = qtype == QT_Q5_K ? block + 48 : block + 16;
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+            // Paired-group Q4_K path: both 16-wide halves of a 32-weight group share one
+            // scale/min pair, so unpack the group's nibbles into one 256-bit vector and
+            // evaluate both activation blocks with a single vpdpbusd. Scale and min terms
+            // apply sequentially in original half order, preserving floating-point
+            // accumulation order exactly. Q5_K keeps the established groupwise path.
+            if (qtype == QT_Q4_K) {
+                for (int group = 0; group < 8; ++group) {
+                    const int pair = group / 2;
+                    const bool upper_nibble = group % 2 != 0;
+                    const __m256i packed = _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i *>(quants + pair * 32));
+                    const __m256i values = _mm256_and_si256(
+                        upper_nibble ? _mm256_srli_epi16(packed, 4) : packed,
+                        _mm256_set1_epi8(15));
+                    int scale = 0;
+                    int minimum = 0;
+                    scale_min_k4(group, scales, scale, minimum);
+                    const auto integer_dots = dot_i8_16_pair(
+                        values,
+                        activation.blocks[block16(superblock, group * 2)],
+                        activation.blocks[block16(superblock, group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            block16(superblock, group * 2 + lane)];
+                        result += d * scale * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                        result -= dmin * minimum * input.scale
+                            * static_cast<float>(input.sum);
+                    }
+                }
+                continue;
+            }
+#endif
+            for (int group = 0; group < 8; ++group) {
+                const int pair = group / 2;
+                const bool upper_nibble = group % 2 != 0;
+                const int high_mask = upper_nibble ? (2 << (2 * pair)) : (1 << (2 * pair));
+                for (int half = 0; half < 2; ++half) {
+#if defined(__SSSE3__)
+                    __m128i values = unpack_nibbles(quants + pair * 32 + half * 16, upper_nibble);
+                    if (high != nullptr) {
+                        const __m128i high_bytes = _mm_loadu_si128(
+                            reinterpret_cast<const __m128i *>(high + half * 16));
+                        const __m128i present = _mm_cmpeq_epi8(
+                            _mm_and_si128(high_bytes, _mm_set1_epi8(high_mask)),
+                            _mm_set1_epi8(high_mask));
+                        values = _mm_add_epi8(values, _mm_and_si128(present, _mm_set1_epi8(16)));
+                    }
+                    store_i8(decoded, values);
+#else
+                    for (int index = 0; index < 16; ++index) {
+                        const int qindex = half * 16 + index;
+                        const std::uint8_t packed = quants[pair * 32 + qindex];
+                        int value = upper_nibble ? packed >> 4 : packed & 15;
+                        if (high != nullptr && (high[qindex] & high_mask) != 0) value += 16;
+                        decoded[index] = static_cast<std::int8_t>(value);
+                    }
+#endif
+                    int scale = 0;
+                    int minimum = 0;
+                    scale_min_k4(group, scales, scale, minimum);
+                    const std::size_t input_block = block16(superblock, group * 2 + half);
+                    result += scaled_dot16(decoded, activation, input_block, d * scale);
+                    result -= scaled_sum16(activation, input_block, dmin * minimum);
+                }
+            }
+            continue;
+        }
+        if (qtype == QT_Q6_K) {
+            const std::uint8_t * low = block;
+            const std::uint8_t * high = block + 128;
+            const auto * scales = reinterpret_cast<const std::int8_t *>(block + 192);
+            const float d = fp16_to_f32(read_u16(block + 208));
+            for (int group = 0; group < 16; ++group) {
+                const int half128 = group / 8;
+                const int within128 = group % 8;
+                const int segment = within128 / 2;
+                const int lane_half = within128 % 2;
+                for (int index = 0; index < 16; ++index) {
+                    const int lane = lane_half * 16 + index;
+                    const int low_offset = half128 * 64;
+                    const int high_offset = half128 * 32;
+                    int value = 0;
+                    if (segment == 0) value = (low[low_offset + lane] & 15) | ((high[high_offset + lane] & 3) << 4);
+                    if (segment == 1) value = (low[low_offset + lane + 32] & 15) | (((high[high_offset + lane] >> 2) & 3) << 4);
+                    if (segment == 2) value = (low[low_offset + lane] >> 4) | (((high[high_offset + lane] >> 4) & 3) << 4);
+                    if (segment == 3) value = (low[low_offset + lane + 32] >> 4) | (((high[high_offset + lane] >> 6) & 3) << 4);
+                    decoded[index] = static_cast<std::int8_t>(value - 32);
+                }
+                const int scale_index = half128 * 8 + lane_half + segment * 2;
+                result += scaled_dot16(
+                    decoded, activation, block16(superblock, group), d * scales[scale_index]);
+            }
+            continue;
+        }
+        if (qtype == QT_Q3_K) {
+            const std::uint8_t * high = block;
+            const std::uint8_t * quants = block + 32;
+            const std::uint8_t * packed_scales = block + 96;
+            const float d = fp16_to_f32(read_u16(block + 108));
+            const std::uint32_t aux0 = read_u32(packed_scales);
+            const std::uint32_t aux1 = read_u32(packed_scales + 4);
+            const std::uint32_t aux2 = read_u32(packed_scales + 8);
+            const std::uint32_t words[4] = {
+                (aux0 & 0x0f0f0f0fU) | (((aux2 >> 0) & 0x03030303U) << 4),
+                (aux1 & 0x0f0f0f0fU) | (((aux2 >> 2) & 0x03030303U) << 4),
+                ((aux0 >> 4) & 0x0f0f0f0fU) | (((aux2 >> 4) & 0x03030303U) << 4),
+                ((aux1 >> 4) & 0x0f0f0f0fU) | (((aux2 >> 6) & 0x03030303U) << 4),
+            };
+            std::uint8_t scales[16];
+            std::memcpy(scales, words, sizeof(scales));
+            for (int group = 0; group < 16; ++group) {
+                const int half128 = group / 8;
+                const int local = group % 8;
+                const int shift = 2 * (local / 2);
+                const int qoffset = half128 * 32 + (local % 2) * 16;
+                const int high_bit = 1 << (half128 * 4 + local / 2);
+                for (int index = 0; index < 16; ++index) {
+                    const int high_value = (high[(local % 2) * 16 + index] & high_bit) ? 0 : 4;
+                    decoded[index] = static_cast<std::int8_t>(((quants[qoffset + index] >> shift) & 3) - high_value);
+                }
+                result += scaled_dot16(
+                    decoded, activation, block16(superblock, group),
+                    d * (static_cast<int>(scales[group]) - 32));
+            }
+            continue;
+        }
+        if (qtype == QT_IQ4_XS) {
+            static constexpr std::int8_t values[16] =
+                {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+            const float d = fp16_to_f32(read_u16(block));
+            const std::uint16_t high_scales = read_u16(block + 2);
+            const std::uint8_t * low_scales = block + 4;
+            const std::uint8_t * quants = block + 8;
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+            // Paired-group path: both halves of a 32-weight group share one 6-bit scale, so
+            // pshufb-decode the group's 16 nibble bytes into one 256-bit vector (low nibbles
+            // -> lane 0, high nibbles -> lane 1) and evaluate both activation blocks with a
+            // single vpdpbusd. Scale terms apply in original half order — accumulation
+            // order unchanged.
+            {
+                const __m128i table = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(values));
+                const __m256i table_pair = _mm256_set_m128i(table, table);
+                for (int group = 0; group < 8; ++group) {
+                    const int packed_scale = (low_scales[group / 2] >> (4 * (group % 2))) & 15;
+                    const int scale = packed_scale | (((high_scales >> (2 * group)) & 3) << 4);
+                    const __m128i packed = _mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(quants + group * 16));
+                    const __m256i nibbles = _mm256_and_si256(
+                        _mm256_set_m128i(_mm_srli_epi16(packed, 4), packed),
+                        _mm256_set1_epi8(15));
+                    const __m256i decoded_pair = _mm256_shuffle_epi8(table_pair, nibbles);
+                    const auto integer_dots = dot_i8_16_pair(
+                        decoded_pair,
+                        activation.blocks[block16(superblock, group * 2)],
+                        activation.blocks[block16(superblock, group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            block16(superblock, group * 2 + lane)];
+                        result += d * (scale - 32) * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                    }
+                }
+            }
+            continue;
+#endif
+            for (int group = 0; group < 8; ++group) {
+                const int packed_scale = (low_scales[group / 2] >> (4 * (group % 2))) & 15;
+                const int scale = packed_scale | (((high_scales >> (2 * group)) & 3) << 4);
+                const std::uint8_t * q = quants + group * 16;
+                for (int half = 0; half < 2; ++half) {
+#if defined(__SSSE3__)
+                    const __m128i table = _mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(values));
+                    store_i8(decoded, _mm_shuffle_epi8(table, unpack_nibbles(q, half != 0)));
+#else
+                    for (int index = 0; index < 16; ++index) {
+                        decoded[index] = values[half == 0 ? q[index] & 15 : q[index] >> 4];
+                    }
+#endif
+                    result += scaled_dot16(
+                        decoded, activation, block16(superblock, group * 2 + half),
+                        d * (scale - 32));
+                }
+            }
+            continue;
+        }
+        if (qtype == QT_IQ3_S) {
+            const float d = fp16_to_f32(read_u16(block));
+            const std::uint8_t * quants = block + 2;
+            const std::uint8_t * high = block + 66;
+            const std::uint8_t * signs = block + 74;
+            const std::uint8_t * scales = block + 106;
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+            // Paired-group path: decode all 32 weights of a group (8 grid lookups, 4 sign
+            // bytes) into one 256-bit vector and evaluate both 16-wide activation blocks
+            // with a single vpdpbusd. Scale terms apply sequentially in original half
+            // order, preserving floating-point accumulation order exactly.
+            for (int group = 0; group < 8; ++group) {
+                const int scale_nibble = group % 2 == 0
+                    ? scales[group / 2] & 15 : scales[group / 2] >> 4;
+                const __m256i index_bytes = _mm256_cvtepu8_epi32(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(quants + group * 8)));
+                const __m256i high_bits = _mm256_and_si256(
+                    _mm256_srlv_epi32(
+                        _mm256_set1_epi32(high[group]),
+                        _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)),
+                    _mm256_set1_epi32(1));
+                const __m256i indices = _mm256_or_si256(
+                    index_bytes, _mm256_slli_epi32(high_bits, 8));
+                const __m256i grid = _mm256_i32gather_epi32(
+                    reinterpret_cast<const int *>(MEMRA_IQ3S_GRID), indices, 4);
+                const __m128i signs_low = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4 + 1]].data())));
+                const __m128i signs_high = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4 + 2]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4 + 3]].data())));
+                const __m256i directions = _mm256_set_m128i(signs_high, signs_low);
+                const __m256i decoded_pair = _mm256_sign_epi8(grid, directions);
+                const auto integer_dots = dot_i8_16_pair(
+                    decoded_pair,
+                    activation.blocks[block16(superblock, group * 2)],
+                    activation.blocks[block16(superblock, group * 2 + 1)]);
+                for (int lane = 0; lane < 2; ++lane) {
+                    const auto & input = activation.blocks[
+                        block16(superblock, group * 2 + lane)];
+                    result += d * (1 + 2 * scale_nibble) * input.scale
+                        * static_cast<float>(integer_dots[lane]);
+                }
+            }
+            continue;
+#endif
+            for (int group = 0; group < 8; ++group) {
+                const int scale_nibble = group % 2 == 0
+                    ? scales[group / 2] & 15 : scales[group / 2] >> 4;
+                for (int half = 0; half < 2; ++half) {
+#if defined(__AVX2__) && defined(__SSSE3__)
+                    const int first_chunk = half * 2;
+                    const std::uint8_t high_bits = high[group];
+                    const std::uint8_t * packed = quants + group * 8 + first_chunk * 2;
+                    const __m128i indices = _mm_setr_epi32(
+                        packed[0] | (((high_bits >> (first_chunk * 2)) & 1) << 8),
+                        packed[1] | (((high_bits >> (first_chunk * 2 + 1)) & 1) << 8),
+                        packed[2] | (((high_bits >> (first_chunk * 2 + 2)) & 1) << 8),
+                        packed[3] | (((high_bits >> (first_chunk * 2 + 3)) & 1) << 8));
+                    const __m128i grid = _mm_i32gather_epi32(
+                        reinterpret_cast<const int *>(MEMRA_IQ3S_GRID), indices, 4);
+                    const __m128i directions = _mm_unpacklo_epi64(
+                        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                            MEMRA_IQ3S_SIGNS[signs[group * 4 + first_chunk]].data())),
+                        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                            MEMRA_IQ3S_SIGNS[signs[group * 4 + first_chunk + 1]].data())));
+                    store_i8(decoded, _mm_sign_epi8(grid, directions));
+#else
+                    for (int local_chunk = 0; local_chunk < 2; ++local_chunk) {
+                        const int chunk = half * 2 + local_chunk;
+                        const int first_index = quants[group * 8 + chunk * 2]
+                            | ((static_cast<int>(high[group]) << (8 - 2 * chunk)) & 256);
+                        const int second_index = quants[group * 8 + chunk * 2 + 1]
+                            | ((static_cast<int>(high[group]) << (7 - 2 * chunk)) & 256);
+                        const std::uint32_t first = MEMRA_IQ3S_GRID[first_index];
+                        const std::uint32_t second = MEMRA_IQ3S_GRID[second_index];
+                        const std::uint8_t sign_bits = signs[group * 4 + chunk];
+                        for (int index = 0; index < 4; ++index) {
+                            const int first_value = (first >> (8 * index)) & 255;
+                            const int second_value = (second >> (8 * index)) & 255;
+                            decoded[local_chunk * 8 + index] = static_cast<std::int8_t>(
+                                sign_bits & (1 << index) ? -first_value : first_value);
+                            decoded[local_chunk * 8 + index + 4] = static_cast<std::int8_t>(
+                                sign_bits & (1 << (index + 4)) ? -second_value : second_value);
+                        }
+                    }
+#endif
+                    result += scaled_dot16(
+                        decoded, activation, block16(superblock, group * 2 + half),
+                        d * (1 + 2 * scale_nibble));
+                }
+            }
+            continue;
+        }
+        throw std::runtime_error("missing memra CPU dot implementation for " + std::string(spec.name));
+    }
+    return result;
+}
+
+// Multi-row dot: decode each weight group ONCE and evaluate it against m_r activation rows —
+// the weight-decode ALU (the dominant per-element cost, P0 receipts) amortizes across rows.
+// Per-row accumulation order is identical to the single-row path (group-ascending, same
+// scale expressions), so each row's result matches dot_quantized_row bit-for-bit for the
+// fused formats. Formats without a fused multi path fall back to per-row dots (correct, no
+// amortization).
+void dot_row_multi(
+        std::int32_t qtype,
+        const std::uint8_t * weights,
+        const QuantizedActivation * const * activations,
+        float * results,
+        int m_r,
+        int count) {
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+    if (qtype == QT_Q2_K) {
+        for (int r = 0; r < m_r; ++r) results[r] = 0.0f;
+        const int superblocks = count / 256;
+        for (int superblock = 0; superblock < superblocks; ++superblock) {
+            const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 84;
+            const std::uint8_t * scales = block;
+            const std::uint8_t * quants = block + 16;
+            const float d = fp16_to_f32(read_u16(block + 80));
+            const float dmin = fp16_to_f32(read_u16(block + 82));
+            for (int half = 0; half < 2; ++half) {
+                const __m256i packed = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(quants + half * 32));
+                for (int pair = 0; pair < 4; ++pair) {
+                    const int group = half * 8 + pair * 2;
+                    const __m256i decoded = _mm256_and_si256(
+                        _mm256_srli_epi16(packed, pair * 2), _mm256_set1_epi8(3));
+                    for (int r = 0; r < m_r; ++r) {
+                        const auto & activation = *activations[r];
+                        const auto integer_dots = dot_i8_16_pair(
+                            decoded,
+                            activation.blocks[static_cast<std::size_t>(
+                                superblock * 16 + group)],
+                            activation.blocks[static_cast<std::size_t>(
+                                superblock * 16 + group + 1)]);
+                        for (int lane = 0; lane < 2; ++lane) {
+                            const int current = group + lane;
+                            const auto & input = activation.blocks[
+                                static_cast<std::size_t>(superblock * 16 + current)];
+                            results[r] += input.scale * (
+                                d * static_cast<float>(scales[current] & 15)
+                                    * integer_dots[lane]
+                                - dmin * static_cast<float>(scales[current] >> 4)
+                                    * input.sum);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if (qtype == QT_IQ3_S) {
+        for (int r = 0; r < m_r; ++r) results[r] = 0.0f;
+        const int superblocks = count / 256;
+        for (int superblock = 0; superblock < superblocks; ++superblock) {
+            const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 110;
+            const float d = fp16_to_f32(read_u16(block));
+            const std::uint8_t * quants = block + 2;
+            const std::uint8_t * high = block + 66;
+            const std::uint8_t * signs = block + 74;
+            const std::uint8_t * scales = block + 106;
+            for (int group = 0; group < 8; ++group) {
+                const int scale_nibble = group % 2 == 0
+                    ? scales[group / 2] & 15 : scales[group / 2] >> 4;
+                const __m256i index_bytes = _mm256_cvtepu8_epi32(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(quants + group * 8)));
+                const __m256i high_bits = _mm256_and_si256(
+                    _mm256_srlv_epi32(
+                        _mm256_set1_epi32(high[group]),
+                        _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)),
+                    _mm256_set1_epi32(1));
+                const __m256i indices = _mm256_or_si256(
+                    index_bytes, _mm256_slli_epi32(high_bits, 8));
+                const __m256i grid = _mm256_i32gather_epi32(
+                    reinterpret_cast<const int *>(MEMRA_IQ3S_GRID), indices, 4);
+                const __m128i signs_low = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4 + 1]].data())));
+                const __m128i signs_high = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4 + 2]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        MEMRA_IQ3S_SIGNS[signs[group * 4 + 3]].data())));
+                const __m256i directions = _mm256_set_m128i(signs_high, signs_low);
+                const __m256i decoded_pair = _mm256_sign_epi8(grid, directions);
+                for (int r = 0; r < m_r; ++r) {
+                    const auto & activation = *activations[r];
+                    const auto integer_dots = dot_i8_16_pair(
+                        decoded_pair,
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2)],
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            static_cast<std::size_t>(superblock * 16 + group * 2 + lane)];
+                        results[r] += d * (1 + 2 * scale_nibble) * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if (qtype == QT_Q4_K) {
+        for (int r = 0; r < m_r; ++r) results[r] = 0.0f;
+        const int superblocks = count / 256;
+        for (int superblock = 0; superblock < superblocks; ++superblock) {
+            const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 144;
+            const float d = fp16_to_f32(read_u16(block));
+            const float dmin = fp16_to_f32(read_u16(block + 2));
+            const std::uint8_t * scales = block + 4;
+            const std::uint8_t * quants = block + 16;
+            for (int group = 0; group < 8; ++group) {
+                const int pair = group / 2;
+                const bool upper_nibble = group % 2 != 0;
+                const __m256i packed = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(quants + pair * 32));
+                const __m256i values = _mm256_and_si256(
+                    upper_nibble ? _mm256_srli_epi16(packed, 4) : packed,
+                    _mm256_set1_epi8(15));
+                int scale = 0;
+                int minimum = 0;
+                scale_min_k4(group, scales, scale, minimum);
+                for (int r = 0; r < m_r; ++r) {
+                    const auto & activation = *activations[r];
+                    const auto integer_dots = dot_i8_16_pair(
+                        values,
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2)],
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            static_cast<std::size_t>(superblock * 16 + group * 2 + lane)];
+                        results[r] += d * scale * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                        results[r] -= dmin * minimum * input.scale
+                            * static_cast<float>(input.sum);
+                    }
+                }
+            }
+        }
+        return;
+    }
+#endif
+    for (int r = 0; r < m_r; ++r) {
+        results[r] = dot_quantized_row(qtype, weights, *activations[r], count);
+    }
+}
+
+float dot_row_native(
+        std::int32_t qtype,
+        const std::uint8_t * weights,
+        const float * activation_f32,
+        const QuantizedActivation * activation_q8,
+        int count) {
+    if (qtype == QT_F32) {
+        const float * values = reinterpret_cast<const float *>(weights);
+        float result = 0.0f;
+#pragma omp simd reduction(+:result)
+        for (int index = 0; index < count; ++index) result += values[index] * activation_f32[index];
+        return result;
+    }
+    if (qtype == QT_BF16) {
+        float result = 0.0f;
+#pragma omp simd reduction(+:result)
+        for (int index = 0; index < count; ++index) {
+            result += bf16_to_f32(weights + index * 2) * activation_f32[index];
+        }
+        return result;
+    }
+    if (activation_q8 == nullptr) throw std::runtime_error("missing memra CPU q8 activation");
+    return dot_quantized_row(qtype, weights, *activation_q8, count);
+}
+
+struct InodeKey {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+
+    bool operator==(const InodeKey & other) const {
+        return device == other.device && inode == other.inode;
+    }
+};
+
+struct InodeKeyHash {
+    std::size_t operator()(const InodeKey & key) const {
+        std::size_t value = std::hash<std::uint64_t>{}(key.device);
+        value ^= std::hash<std::uint64_t>{}(key.inode)
+            + 0x9e3779b9 + (value << 6) + (value >> 2);
+        return value;
+    }
+};
+
+struct FileKey {
+    InodeKey inode;
+    std::uint64_t size = 0;
+    std::int64_t ctime_seconds = 0;
+    std::int64_t ctime_nanoseconds = 0;
+
+    bool operator==(const FileKey & other) const {
+        return inode == other.inode && size == other.size
+            && ctime_seconds == other.ctime_seconds
+            && ctime_nanoseconds == other.ctime_nanoseconds;
+    }
+};
+
+struct FileKeyHash {
+    std::size_t operator()(const FileKey & key) const {
+        std::size_t value = InodeKeyHash {}(key.inode);
+        const auto combine = [&value](std::size_t field) {
+            value ^= field + 0x9e3779b9 + (value << 6) + (value >> 2);
+        };
+        combine(std::hash<std::uint64_t> {}(key.size));
+        combine(std::hash<std::int64_t> {}(key.ctime_seconds));
+        combine(std::hash<std::int64_t> {}(key.ctime_nanoseconds));
+        return value;
+    }
+};
+
+InodeKey inode_key(int fd) {
+    struct stat value {};
+    if (fstat(fd, &value) != 0) {
+        throw std::runtime_error(
+            "cannot stat CPU expert source fd: " + std::string(std::strerror(errno)));
+    }
+    return InodeKey {
+        static_cast<std::uint64_t>(value.st_dev),
+        static_cast<std::uint64_t>(value.st_ino),
+    };
+}
+
+FileKey file_key(int fd) {
+    struct stat value {};
+    if (fstat(fd, &value) != 0) {
+        throw std::runtime_error(
+            "cannot stat CPU expert source fd: " + std::string(std::strerror(errno)));
+    }
+    return FileKey {
+        InodeKey {
+            static_cast<std::uint64_t>(value.st_dev),
+            static_cast<std::uint64_t>(value.st_ino),
+        },
+        static_cast<std::uint64_t>(value.st_size),
+        static_cast<std::int64_t>(value.st_ctim.tv_sec),
+        static_cast<std::int64_t>(value.st_ctim.tv_nsec),
+    };
+}
+
+struct CacheKey {
+    FileKey file;
+    std::uint64_t offset = 0;
+    std::size_t len = 0;
+
+    bool operator==(const CacheKey & other) const {
+        return file == other.file && offset == other.offset && len == other.len;
+    }
+};
+
+struct CacheKeyHash {
+    std::size_t operator()(const CacheKey & key) const {
+        std::size_t value = FileKeyHash{}(key.file);
+        value ^= std::hash<std::uint64_t>{}(key.offset)
+            + 0x9e3779b9 + (value << 6) + (value >> 2);
+        value ^= std::hash<std::size_t>{}(key.len)
+            + 0x9e3779b9 + (value << 6) + (value >> 2);
+        return value;
+    }
+};
+
+struct ProjectionRuntime {
+    const memra_cpu_projection_v2 * desc = nullptr;
+    const float * activation_f32 = nullptr;
+    const struct QuantizedActivation * activation_q8 = nullptr;
+    const std::uint8_t * weights = nullptr;
+    std::shared_ptr<AlignedBytes> weight_owner;
+    bool needs_read = false;
+    std::int32_t read_fd = -1;
+    std::int32_t alternate_read_fd = -1;
+    CacheKey cache_key;
+};
+
+struct ExpertRuntime {
+    ProjectionRuntime gate;
+    ProjectionRuntime up;
+    ProjectionRuntime down;
+    std::vector<float> gate_output;
+    std::vector<float> up_output;
+    std::vector<float> activation;
+    std::vector<float> down_output;
+};
+
+bool direct_io_enabled() {
+    static const bool enabled = [] {
+        const char * raw = std::getenv("MEMRA_CPU_EXPERT_IO");
+        if (raw == nullptr || std::strcmp(raw, "buffered") == 0) return false;
+        if (std::strcmp(raw, "direct") == 0) return true;
+        throw std::runtime_error(std::string("invalid MEMRA_CPU_EXPERT_IO=") + raw
+            + " (expected buffered or direct)");
+    }();
+    return enabled;
+}
+
+int io_thread_count(int compute_threads) {
+    const char * raw = std::getenv("MEMRA_CPU_EXPERT_IO_THREADS");
+    if (raw == nullptr || *raw == '\0') return compute_threads;
+    char * end = nullptr;
+    const long value = std::strtol(raw, &end, 10);
+    if (end == raw || *end != '\0' || value < 1 || value > 256) {
+        throw std::runtime_error(std::string("invalid MEMRA_CPU_EXPERT_IO_THREADS=") + raw);
+    }
+    return static_cast<int>(value);
+}
+
+class DirectFiles {
+public:
+    ~DirectFiles() {
+        for (const auto & [_, fd] : files_) close(fd);
+    }
+
+    int resolve(int source_fd, const InodeKey & identity) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = files_.find(identity);
+        if (found != files_.end()) return found->second;
+        const std::string path = "/proc/self/fd/" + std::to_string(source_fd);
+        const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
+        if (fd < 0) {
+            throw std::runtime_error("cannot open O_DIRECT expert source " + path
+                + ": " + std::strerror(errno));
+        }
+        if (!(inode_key(fd) == identity)) {
+            close(fd);
+            throw std::runtime_error("O_DIRECT expert source changed while opening it");
+        }
+        files_.emplace(identity, fd);
+        return fd;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<InodeKey, int, InodeKeyHash> files_;
+};
+
+DirectFiles & direct_files() {
+    static DirectFiles files;
+    return files;
+}
+
+class MirrorFiles {
+public:
+    struct MirrorSpec {
+        FileKey source;
+        FileKey alternate;
+        std::string path;
+    };
+
+    struct OpenMirror {
+        int fd = -1;
+        FileKey generation;
+    };
+
+    MirrorFiles() {
+        const char * path = std::getenv("MEMRA_CPU_EXPERT_MIRROR_MAP");
+        if (path == nullptr || *path == '\0') return;
+        std::ifstream input(path);
+        if (!input) {
+            throw std::runtime_error(std::string("cannot open CPU expert mirror map: ") + path);
+        }
+        std::string line;
+        while (std::getline(input, line)) {
+            std::array<std::string, 11> fields;
+            std::size_t start = 0;
+            for (std::size_t index = 0; index < fields.size() - 1; ++index) {
+                const std::size_t end = line.find('\t', start);
+                if (end == std::string::npos || end == start) {
+                    throw std::runtime_error(
+                        "malformed CPU expert mirror map (native runtime requires v2)");
+                }
+                fields[index] = line.substr(start, end - start);
+                start = end + 1;
+            }
+            if (start == line.size() || line.find('\t', start) != std::string::npos) {
+                throw std::runtime_error(
+                    "malformed CPU expert mirror map (native runtime requires v2)");
+            }
+            fields.back() = line.substr(start);
+            const auto parse_u64 = [](const std::string & value) {
+                std::size_t end = 0;
+                const auto parsed = std::stoull(value, &end);
+                if (end != value.size()) {
+                    throw std::runtime_error("malformed CPU expert mirror-map generation");
+                }
+                return static_cast<std::uint64_t>(parsed);
+            };
+            const auto parse_i64 = [](const std::string & value) {
+                std::size_t end = 0;
+                const auto parsed = std::stoll(value, &end);
+                if (end != value.size()) {
+                    throw std::runtime_error("malformed CPU expert mirror-map generation");
+                }
+                return static_cast<std::int64_t>(parsed);
+            };
+            const MirrorSpec spec {
+                FileKey {
+                    InodeKey { parse_u64(fields[0]), parse_u64(fields[1]) },
+                    parse_u64(fields[2]), parse_i64(fields[3]), parse_i64(fields[4]),
+                },
+                FileKey {
+                    InodeKey { parse_u64(fields[5]), parse_u64(fields[6]) },
+                    parse_u64(fields[7]), parse_i64(fields[8]), parse_i64(fields[9]),
+                },
+                fields[10],
+            };
+            const auto inserted = paths_.emplace(spec.source.inode, spec);
+            if (!inserted.second
+                && (!(inserted.first->second.source == spec.source)
+                    || !(inserted.first->second.alternate == spec.alternate)
+                    || inserted.first->second.path != spec.path)) {
+                throw std::runtime_error("conflicting CPU expert mirror-map inode");
+            }
+        }
+        if (input.bad()) throw std::runtime_error("cannot read CPU expert mirror map");
+        if (paths_.empty()) throw std::runtime_error("CPU expert mirror map is empty");
+        std::fprintf(stderr, "[memra-cpu] mirrored direct I/O: %zu inode mappings\n", paths_.size());
+    }
+
+    ~MirrorFiles() {
+        for (const auto & [_, mirror] : files_) close(mirror.fd);
+    }
+
+    int resolve(int source_fd, const FileKey & source) {
+        if (paths_.empty()) return -1;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const FileKey current_source = file_key(source_fd);
+        if (!(current_source == source)) {
+            throw std::runtime_error("CPU expert source changed while resolving its mirror");
+        }
+        const auto spec = paths_.find(source.inode);
+        if (spec == paths_.end()) {
+            throw std::runtime_error("CPU expert source inode is absent from mirror map");
+        }
+        if (!(spec->second.source == source)) {
+            throw std::runtime_error("CPU expert source generation differs from mirror map");
+        }
+        const auto cached = files_.find(source);
+        if (cached != files_.end()) {
+            if (!(file_key(cached->second.fd) == cached->second.generation)) {
+                throw std::runtime_error("CPU expert mirror generation changed after opening");
+            }
+            return cached->second.fd;
+        }
+        const int alternate = open(
+            spec->second.path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
+        if (alternate < 0) {
+            throw std::runtime_error(
+                "cannot open mirrored CPU expert source " + spec->second.path
+                + ": " + std::strerror(errno));
+        }
+        FileKey alternate_generation;
+        try {
+            alternate_generation = file_key(alternate);
+        } catch (...) {
+            close(alternate);
+            throw;
+        }
+        if (!(alternate_generation == spec->second.alternate)
+            || alternate_generation.size != source.size
+            || alternate_generation.inode.device == source.inode.device) {
+            close(alternate);
+            throw std::runtime_error(
+                "CPU expert mirror generation differs from map or physical filesystem");
+        }
+        files_.emplace(source, OpenMirror { alternate, alternate_generation });
+        return alternate;
+    }
+
+private:
+    std::mutex mutex_;
+    std::unordered_map<InodeKey, MirrorSpec, InodeKeyHash> paths_;
+    std::unordered_map<FileKey, OpenMirror, FileKeyHash> files_;
+};
+
+MirrorFiles & mirror_files() {
+    static MirrorFiles files;
+    return files;
+}
+
+struct CpuProfile {
+    std::atomic<std::uint64_t> calls { 0 };
+    std::atomic<std::uint64_t> prepare_ns { 0 };
+    std::atomic<std::uint64_t> io_ns { 0 };
+    std::atomic<std::uint64_t> insert_ns { 0 };
+    std::atomic<std::uint64_t> compute_ns { 0 };
+    std::atomic<std::uint64_t> read_projections { 0 };
+    std::atomic<std::uint64_t> read_bytes { 0 };
+    std::atomic<std::uint64_t> stage_entry_ns { 0 };
+    std::atomic<std::uint64_t> stage_cached_ns { 0 };
+    std::atomic<std::uint64_t> stage_missing_ns { 0 };
+    std::atomic<std::uint64_t> stage_accum_ns { 0 };
+    std::atomic<std::uint64_t> prefetch_projections { 0 };
+    std::atomic<std::uint64_t> prefetch_bytes { 0 };
+    ~CpuProfile() {
+        const auto to_seconds = [](std::uint64_t ns) { return ns / 1.0e9; };
+        std::fprintf(
+            stderr,
+            "[memra-cpu-profile] calls=%llu prepare=%.6fs io=%.6fs insert=%.6fs "
+            "compute=%.6fs read_projections=%llu read_GB=%.3f "
+            "stage_entry=%.6fs stage_cached=%.6fs stage_missing=%.6fs stage_accum=%.6fs "
+            "prefetch_projections=%llu prefetch_GB=%.3f\n",
+            static_cast<unsigned long long>(calls.load(std::memory_order_relaxed)),
+            to_seconds(prepare_ns.load(std::memory_order_relaxed)),
+            to_seconds(io_ns.load(std::memory_order_relaxed)),
+            to_seconds(insert_ns.load(std::memory_order_relaxed)),
+            to_seconds(compute_ns.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(read_projections.load(std::memory_order_relaxed)),
+            read_bytes.load(std::memory_order_relaxed) / 1.0e9,
+            to_seconds(stage_entry_ns.load(std::memory_order_relaxed)),
+            to_seconds(stage_cached_ns.load(std::memory_order_relaxed)),
+            to_seconds(stage_missing_ns.load(std::memory_order_relaxed)),
+            to_seconds(stage_accum_ns.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                prefetch_projections.load(std::memory_order_relaxed)),
+            prefetch_bytes.load(std::memory_order_relaxed) / 1.0e9);
+    }
+};
+
+CpuProfile & cpu_profile() {
+    static CpuProfile profile;
+    return profile;
+}
+
+std::uint64_t elapsed_ns(std::chrono::steady_clock::time_point start) {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count());
+}
+
+class WeightCache {
+public:
+    WeightCache() : budget_(parse_budget()) {
+        std::fprintf(stderr, "[memra-cpu] normal-RAM expert cache: %.2f GiB policy=lru io=%s\n",
+            static_cast<double>(budget_) / (1024.0 * 1024.0 * 1024.0),
+            direct_io_enabled() ? "direct" : "buffered");
+        auto & arena = ShmArena::instance();
+        if (!arena.enabled()) return;
+        std::uint64_t reloaded = 0;
+        if (arena.reopened_clean()) {
+            const std::uint64_t count = std::min<std::uint64_t>(
+                *arena.entry_count_slot(), arena.max_entries());
+            const auto * table = arena.index_table();
+            for (std::uint64_t i = 0; i < count && used_ <= budget_; ++i) {
+                const auto & row = table[i];
+                if (row.byte_len == 0 || row.pool_bytes < row.byte_len) continue;
+                CacheKey key {
+                    FileKey {
+                        InodeKey { row.device, row.inode },
+                        row.file_size,
+                        row.ctime_seconds,
+                        row.ctime_nanoseconds,
+                    },
+                    row.file_offset,
+                    row.byte_len,
+                };
+                if (entries_.find(key) != entries_.end()) continue;
+                auto bytes = std::make_shared<AlignedBytes>();
+                bytes->storage = std::unique_ptr<void, AlignedBytes::Free>(
+                    arena.pointer_at(row.shm_offset),
+                    AlignedBytes::Free(static_cast<std::size_t>(row.pool_bytes)));
+                bytes->capacity = row.byte_len;
+                bytes->alignment = 4096;
+                bytes->data = bytes->storage.get();
+                arena.reserve_range(row.shm_offset, row.pool_bytes);
+                lru_.push_back(key);
+                entries_.emplace(key, Entry { std::move(bytes), std::prev(lru_.end()) });
+                used_ += key.len;
+                ++reloaded;
+            }
+        }
+        arena.finish_reload();
+        arena.mark_dirty();
+        std::fprintf(stderr,
+            "[memra-cpu] shm cache: %s, warm entries=%llu (%.3f GB)\n",
+            arena.reopened_clean() ? "reopened clean" : "cold start",
+            static_cast<unsigned long long>(reloaded),
+            static_cast<double>(used_) / 1.0e9);
+    }
+
+    ~WeightCache() {
+        const std::uint64_t accesses = hits_ + misses_;
+        const double hit_rate = accesses == 0
+            ? 0.0
+            : 100.0 * static_cast<double>(hits_) / static_cast<double>(accesses);
+        std::fprintf(
+            stderr,
+            "[memra-cpu-cache] hits=%llu misses=%llu hit_rate=%.2f%% read_GB=%.3f "
+            "resident_GB=%.3f\n",
+            static_cast<unsigned long long>(hits_),
+            static_cast<unsigned long long>(misses_),
+            hit_rate,
+            static_cast<double>(read_bytes_) / 1.0e9,
+            static_cast<double>(used_) / 1.0e9);
+        auto & arena = ShmArena::instance();
+        if (!arena.enabled()) return;
+        // Persist the index in LRU order (oldest first) so a reload preserves recency; only
+        // entries whose blocks live inside the segment are recorded.
+        auto * table = arena.index_table();
+        std::uint64_t persisted = 0;
+        for (const auto & key : lru_) {
+            if (persisted >= arena.max_entries()) break;
+            const auto found = entries_.find(key);
+            if (found == entries_.end()) continue;
+            const auto & bytes = found->second.bytes;
+            if (!arena.contains(bytes->data)) continue;
+            table[persisted++] = ShmArena::PersistedEntry {
+                key.file.inode.device,
+                key.file.inode.inode,
+                key.file.size,
+                key.file.ctime_seconds,
+                key.file.ctime_nanoseconds,
+                key.offset,
+                key.len,
+                arena.offset_of(bytes->data),
+                bytes->storage.get_deleter().pool_bytes,
+            };
+        }
+        arena.mark_clean(persisted);
+        std::fprintf(stderr, "[memra-cpu] shm cache: persisted %llu entries\n",
+            static_cast<unsigned long long>(persisted));
+    }
+
+    std::shared_ptr<AlignedBytes> find(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = entries_.find(key);
+        if (found == entries_.end()) {
+            ++misses_;
+            return {};
+        }
+        ++hits_;
+        lru_.splice(lru_.end(), lru_, found->second.lru);
+        return found->second.bytes;
+    }
+
+    void insert(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes) {
+        insert_at(key, bytes, /*cold=*/false);
+    }
+
+    bool contains(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entries_.find(key) != entries_.end();
+    }
+
+    void insert_at(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes,
+                   bool cold) {
+        if (budget_ == 0 || bytes->size() > budget_) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = entries_.find(key);
+        if (found != entries_.end()) {
+            if (!cold) lru_.splice(lru_.end(), lru_, found->second.lru);
+            return;
+        }
+        if (cold) {
+            lru_.push_front(key);
+            entries_.emplace(key, Entry { bytes, lru_.begin() });
+        } else {
+            lru_.push_back(key);
+            entries_.emplace(key, Entry { bytes, std::prev(lru_.end()) });
+        }
+        used_ += key.len;
+        read_bytes_ += key.len;
+        while (used_ > budget_ && !lru_.empty()) {
+            const auto entry = entries_.find(lru_.front());
+            if (entry == entries_.end()) {
+                throw std::runtime_error("CPU expert cache eviction index is inconsistent");
+            }
+            used_ -= entry->first.len;
+            lru_.erase(entry->second.lru);
+            entries_.erase(entry);
+        }
+    }
+
+    void snapshot(std::uint64_t * hits, std::uint64_t * misses,
+                  std::uint64_t * read_bytes, std::uint64_t * resident_bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (hits != nullptr) *hits = hits_;
+        if (misses != nullptr) *misses = misses_;
+        if (read_bytes != nullptr) *read_bytes = read_bytes_;
+        if (resident_bytes != nullptr) *resident_bytes = used_;
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<AlignedBytes> bytes;
+        std::list<CacheKey>::iterator lru;
+    };
+
+    using EntryMap = std::unordered_map<CacheKey, Entry, CacheKeyHash>;
+
+    static std::size_t parse_budget() {
+        const char * raw = std::getenv("MEMRA_CPU_EXPERT_CACHE_GB");
+        const double requested_gib = [&] {
+            if (raw == nullptr || *raw == '\0') return 16.0;
+            char * end = nullptr;
+            const double value = std::strtod(raw, &end);
+            if (end == raw || *end != '\0' || !std::isfinite(value)
+                || value < 0.0 || value > 1024.0) {
+                throw std::runtime_error(
+                    std::string("invalid MEMRA_CPU_EXPERT_CACHE_GB=") + raw);
+            }
+            return value;
+        }();
+        const auto to_bytes = [](double gib) {
+            return static_cast<std::size_t>(gib * 1024.0 * 1024.0 * 1024.0);
+        };
+        const std::size_t requested = to_bytes(requested_gib);
+
+        // Reserve floor DEFAULTS ON (4 GiB) — 2026-07-20 lesson: a run with the reserve
+        // unset/0 pinned 36 GiB of a 37.11 GiB MemAvailable, starved the page cache and
+        // thrash-locked the desktop into a hard reboot (journald "Under memory pressure",
+        // gnome 1.8s input lag; no OOM-kill because cache pages are "reclaimable" — the
+        // kernel refaults forever instead of killing). An explicit env value still wins,
+        // but 0 now means "0 on top of nothing": the floor guards the DESKTOP, so going
+        // below the default requires saying so with a real number.
+        constexpr double kDefaultReserveGib = 4.0;
+        const char * reserve_raw = std::getenv("MEMRA_CPU_EXPERT_RESERVE_GB");
+        double reserve_gib = kDefaultReserveGib;
+        if (reserve_raw != nullptr && *reserve_raw != '\0') {
+            char * reserve_end = nullptr;
+            reserve_gib = std::strtod(reserve_raw, &reserve_end);
+            if (reserve_end == reserve_raw || *reserve_end != '\0' || !std::isfinite(reserve_gib)
+                || reserve_gib < 0.0 || reserve_gib > 1024.0) {
+                throw std::runtime_error(
+                    std::string("invalid MEMRA_CPU_EXPERT_RESERVE_GB=") + reserve_raw);
+            }
+        }
+
+        std::ifstream meminfo("/proc/meminfo");
+        std::string key;
+        std::string unit;
+        std::uint64_t value_kib = 0;
+        std::uint64_t available_kib = 0;
+        while (meminfo >> key >> value_kib >> unit) {
+            if (key == "MemAvailable:") {
+                if (unit != "kB") {
+                    throw std::runtime_error("/proc/meminfo MemAvailable has an unknown unit");
+                }
+                available_kib = value_kib;
+                break;
+            }
+        }
+        if (available_kib == 0) {
+            throw std::runtime_error(
+                "MEMRA_CPU_EXPERT_RESERVE_GB requires /proc/meminfo MemAvailable");
+        }
+        const std::size_t available = static_cast<std::size_t>(available_kib) * 1024;
+        const std::size_t reserve = to_bytes(reserve_gib);
+        const std::size_t headroom_budget = available > reserve ? available - reserve : 0;
+        const std::size_t effective = std::min(requested, headroom_budget);
+        std::fprintf(
+            stderr,
+            "[memra-cpu] RAM headroom cap: requested=%.2f GiB available=%.2f GiB "
+            "reserve=%.2f GiB effective=%.2f GiB\n",
+            requested / (1024.0 * 1024.0 * 1024.0),
+            available / (1024.0 * 1024.0 * 1024.0),
+            reserve / (1024.0 * 1024.0 * 1024.0),
+            effective / (1024.0 * 1024.0 * 1024.0));
+        if (effective < requested / 2) {
+            std::fprintf(stderr,
+                "[memra-cpu] WARNING: headroom cap cut the cache to %.2f GiB (< half of the "
+                "requested %.2f GiB) — the box is memory-tight; expect miss-rate degradation\n",
+                effective / (1024.0 * 1024.0 * 1024.0),
+                requested / (1024.0 * 1024.0 * 1024.0));
+        }
+        return effective;
+    }
+
+    std::size_t budget_ = 0;
+    std::size_t used_ = 0;
+    std::uint64_t hits_ = 0;
+    std::uint64_t misses_ = 0;
+    std::uint64_t read_bytes_ = 0;
+    std::mutex mutex_;
+    std::list<CacheKey> lru_;
+    EntryMap entries_;
+};
+
+WeightCache & weight_cache() {
+    static WeightCache cache;
+    return cache;
+}
+
+// Speculative entries live OUTSIDE the main LRU (2026-07-23 A/B autopsy: cold-front
+// insertions at a full cache are evicted by demand fills before their layer arrives and the
+// same experts re-prefetch every token). The annex is a small FIFO side-buffer: a demand miss
+// checks it and PROMOTES a hit into the main cache; annex membership plus the in-flight set
+// dedups repeat predictions for free. Speculation can therefore never evict a demand entry
+// and never re-reads what it already holds.
+class PrefetchAnnex {
+public:
+    static PrefetchAnnex & instance() {
+        static PrefetchAnnex * annex = new PrefetchAnnex();  // leaked: static-dtor ordering
+        return *annex;
+    }
+
+    std::size_t budget() const { return budget_; }
+
+    /// True if the key is already speculated (held or being read) — callers skip re-prefetch.
+    bool speculated(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return held_.find(key) != held_.end() || inflight_.find(key) != inflight_.end();
+    }
+
+    bool begin_read(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (held_.find(key) != held_.end()) return false;
+        return inflight_.insert(key).second;
+    }
+
+    void abort_read(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        inflight_.erase(key);
+    }
+
+    void complete_read(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        inflight_.erase(key);
+        if (held_.find(key) != held_.end()) return;
+        order_.push_back(key);
+        held_.emplace(key, bytes);
+        used_ += key.len;
+        while (used_ > budget_ && !order_.empty()) {
+            const auto oldest = order_.front();
+            order_.pop_front();
+            const auto found = held_.find(oldest);
+            if (found != held_.end()) {
+                used_ -= found->first.len;
+                held_.erase(found);
+                ++expired_;
+            }
+        }
+    }
+
+    /// Demand-miss path: take a speculated buffer if present (promotion into the main cache
+    /// is the caller's job). Counts usefulness.
+    std::shared_ptr<AlignedBytes> take(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = held_.find(key);
+        if (found == held_.end()) return {};
+        auto bytes = found->second;
+        used_ -= found->first.len;
+        held_.erase(found);
+        ++promoted_;
+        return bytes;
+    }
+
+    void snapshot(std::uint64_t * promoted, std::uint64_t * expired) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (promoted != nullptr) *promoted = promoted_;
+        if (expired != nullptr) *expired = expired_;
+    }
+
+private:
+    PrefetchAnnex() {
+        const char * raw = std::getenv("MEMRA_CPU_EXPERT_PREFETCH_ANNEX_GB");
+        const double gib = raw != nullptr && *raw != '\0' ? std::strtod(raw, nullptr) : 1.5;
+        budget_ = static_cast<std::size_t>(
+            std::clamp(gib, 0.125, 16.0) * 1024.0 * 1024.0 * 1024.0);
+    }
+
+    std::mutex mutex_;
+    std::size_t budget_ = 0;
+    std::size_t used_ = 0;
+    std::deque<CacheKey> order_;
+    std::unordered_map<CacheKey, std::shared_ptr<AlignedBytes>, CacheKeyHash> held_;
+    std::unordered_set<CacheKey, CacheKeyHash> inflight_;
+    std::uint64_t promoted_ = 0;
+    std::uint64_t expired_ = 0;
+};
+
+
+void copy_error(char * dst, std::size_t capacity, const std::string & message) {
+    if (dst == nullptr || capacity == 0) return;
+    const std::size_t count = std::min(capacity - 1, message.size());
+    std::memcpy(dst, message.data(), count);
+    dst[count] = '\0';
+}
+
+ProjectionRuntime prepare_projection(
+        const memra_cpu_projection_v2 & desc) {
+    if ((desc.weights == nullptr && desc.file_fd < 0)
+        || desc.in_features <= 0 || desc.out_features <= 0) {
+        throw std::runtime_error("invalid CPU expert projection descriptor");
+    }
+    const auto spec = quant_spec(desc.qtype);
+    if (desc.in_features % spec.block != 0) {
+        throw std::runtime_error(std::string("CPU expert width is not block-aligned for ") + spec.name);
+    }
+    const std::size_t expected_row =
+        static_cast<std::size_t>(desc.in_features / spec.block) * spec.bytes;
+    if (expected_row != desc.row_bytes) {
+        throw std::runtime_error(std::string("CPU expert row-size mismatch for ") + spec.name
+            + ": descriptor=" + std::to_string(desc.row_bytes)
+            + " memra=" + std::to_string(expected_row));
+    }
+    const std::size_t expected_bytes = desc.row_bytes * static_cast<std::size_t>(desc.out_features);
+    if (desc.byte_len != expected_bytes) {
+        throw std::runtime_error(std::string("CPU expert extent mismatch for ")
+            + spec.name + ": descriptor=" + std::to_string(desc.byte_len)
+            + " expected=" + std::to_string(expected_bytes));
+    }
+    ProjectionRuntime runtime;
+    runtime.desc = &desc;
+    if (desc.file_fd >= 0) {
+        const FileKey source = file_key(desc.file_fd);
+        const CacheKey key { source, desc.file_offset, desc.byte_len };
+        runtime.cache_key = key;
+        runtime.weight_owner = weight_cache().find(key);
+        if (!runtime.weight_owner) {
+            // Demand miss: promote a speculated buffer from the prefetch annex if one landed.
+            if (auto speculated = PrefetchAnnex::instance().take(key)) {
+                weight_cache().insert(key, speculated);
+                runtime.weight_owner = std::move(speculated);
+            }
+        }
+        if (!runtime.weight_owner) {
+            runtime.weight_owner = std::make_shared<AlignedBytes>();
+            const bool direct = direct_io_enabled()
+                && desc.file_offset % 4096 == 0 && desc.byte_len % 4096 == 0;
+            runtime.weight_owner->resize(desc.byte_len, direct ? 4096 : 64);
+            runtime.read_fd = direct
+                ? direct_files().resolve(desc.file_fd, source.inode)
+                : desc.file_fd;
+            runtime.alternate_read_fd = direct
+                ? mirror_files().resolve(desc.file_fd, source)
+                : -1;
+            runtime.needs_read = true;
+        }
+        runtime.weights = static_cast<const std::uint8_t *>(runtime.weight_owner->data);
+    } else {
+        runtime.weights = desc.weights;
+    }
+    return runtime;
+}
+
+int pread_exact(const ProjectionRuntime & projection, int fd, void * destination,
+                std::size_t relative_offset, std::size_t length) {
+    const auto & desc = *projection.desc;
+    std::size_t done = 0;
+    auto * bytes = static_cast<std::uint8_t *>(destination);
+    while (done < length) {
+        const ssize_t count = pread(
+            fd,
+            bytes + done,
+            length - done,
+            static_cast<off_t>(desc.file_offset + relative_offset + done));
+        if (count > 0) {
+            done += static_cast<std::size_t>(count);
+        } else if (count == 0) {
+            return EIO;
+        } else if (errno != EINTR) {
+            return errno;
+        }
+    }
+    return 0;
+}
+
+struct ReadRequest {
+    ProjectionRuntime * projection;
+    int fd;
+    std::size_t offset;
+    std::size_t length;
+};
+
+// ---- asynchronous read pipeline -------------------------------------------------------------
+// Default path: expert reads are submitted to a persistent io pool and each expert's compute
+// starts as soon as its projections land, while later reads are still in flight. Per-expert
+// math and the final expert-index-order accumulation are unchanged, so output stays
+// byte-identical to the serial path. MEMRA_CPU_EXPERT_PIPELINE=0 is the rollback seam.
+
+bool pipeline_enabled() {
+    // Opt-in until the single-region structural fix lands: with the default passive OMP
+    // waits, the pipeline's ready-batch region entries pay futex+C-state wakes and decode
+    // compute inflated 3.0 -> 8.4 s per 32 tokens; with ACTIVE waits the spinning workers
+    // starve the caller between calls and the end-to-end result is flat (2026-07-22,
+    // local-5090-next3 bisect chain). The Hy3 launcher opts in with the measured config.
+    static const bool enabled = [] {
+        const char * raw = std::getenv("MEMRA_CPU_EXPERT_PIPELINE");
+        return raw != nullptr && std::strcmp(raw, "1") == 0;
+    }();
+    return enabled;
+}
+
+struct CallIoState {
+    std::mutex mutex;
+    std::condition_variable ready_cv;
+    std::vector<int> ready;             // expert indices whose reads all landed
+    std::vector<int> pending_requests;  // per expert index, guarded by mutex
+    int outstanding_experts = 0;        // experts with reads still in flight
+    int first_error = 0;                // first errno observed by any read
+};
+
+// Detached speculative-prefetch batch: heap-owned, freed by the last completing read. Owns
+// copies of the caller's projection descriptors (the caller returns immediately) and the
+// destination buffers; each fully-read projection is inserted cold into the weight cache.
+struct PrefetchState {
+    std::vector<memra_cpu_projection_v2> descs;
+    std::vector<ProjectionRuntime> runtimes;
+    std::unique_ptr<std::atomic<int>[]> projection_pending;
+    std::unique_ptr<std::atomic<bool>[]> projection_failed;
+    std::atomic<int> outstanding { 0 };
+};
+
+std::atomic<int> & prefetch_inflight() {
+    static std::atomic<int> count { 0 };
+    return count;
+}
+
+
+struct IoJob {
+    ProjectionRuntime * projection = nullptr;
+    int fd = -1;
+    std::size_t offset = 0;
+    std::size_t length = 0;
+    int expert_index = -1;
+    CallIoState * call = nullptr;
+    PrefetchState * prefetch = nullptr;  // set instead of `call` for detached prefetch reads
+};
+
+class IoPool {
+public:
+    static IoPool & instance() {
+        static IoPool pool;
+        return pool;
+    }
+
+    ~IoPool() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        queue_cv_.notify_all();
+        for (auto & worker : workers_) worker.join();
+    }
+
+    void ensure_started(int threads) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!workers_.empty()) return;
+        const int count = std::max(1, threads);
+        workers_.reserve(static_cast<std::size_t>(count));
+        for (int index = 0; index < count; ++index) {
+            workers_.emplace_back([this] { worker_loop(); });
+        }
+        apply_cpuset_locked();
+    }
+
+    void submit(std::vector<IoJob> && jobs) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto & job : jobs) queue_.push_back(job);
+        }
+        queue_cv_.notify_all();
+    }
+
+private:
+    // Optional io-thread pinning (e.g. E-cores) so reads stop competing with compute cores.
+    // Unset = inherit the process affinity mask.
+    void apply_cpuset_locked() {
+        const char * raw = std::getenv("MEMRA_CPU_EXPERT_IO_CPUSET");
+        if (raw == nullptr || *raw == '\0') return;
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        const std::string spec(raw);
+        std::size_t position = 0;
+        while (position < spec.size()) {
+            const std::size_t comma = spec.find(',', position);
+            const std::string part = spec.substr(
+                position, comma == std::string::npos ? std::string::npos : comma - position);
+            const std::size_t dash = part.find('-');
+            char * end = nullptr;
+            const long lo = std::strtol(part.c_str(), &end, 10);
+            long hi = lo;
+            if (dash != std::string::npos) {
+                hi = std::strtol(part.c_str() + dash + 1, &end, 10);
+            }
+            if (lo < 0 || hi < lo || hi >= CPU_SETSIZE
+                || end == part.c_str() || (end != nullptr && *end != '\0')) {
+                throw std::runtime_error(
+                    std::string("invalid MEMRA_CPU_EXPERT_IO_CPUSET=") + raw);
+            }
+            for (long cpu = lo; cpu <= hi; ++cpu) CPU_SET(static_cast<int>(cpu), &set);
+            if (comma == std::string::npos) break;
+            position = comma + 1;
+        }
+        for (auto & worker : workers_) {
+            pthread_setaffinity_np(worker.native_handle(), sizeof(set), &set);
+        }
+    }
+
+    void worker_loop() {
+        for (;;) {
+            IoJob job;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                queue_cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+                if (queue_.empty()) return;
+                job = queue_.front();
+                queue_.pop_front();
+            }
+            auto * destination = static_cast<std::uint8_t *>(
+                job.projection->weight_owner->data) + job.offset;
+            const int status = pread_exact(
+                *job.projection, job.fd, destination, job.offset, job.length);
+            if (job.prefetch != nullptr) {
+                auto * state = job.prefetch;
+                const std::size_t index = static_cast<std::size_t>(job.expert_index);
+                if (status != 0) {
+                    state->projection_failed[index].store(true, std::memory_order_release);
+                }
+                if (state->projection_pending[index].fetch_sub(1,
+                        std::memory_order_acq_rel) == 1) {
+                    // Completed speculative read lands in the ANNEX, never the main cache; a
+                    // failed one just releases its in-flight claim (dropped, never fatal).
+                    if (state->projection_failed[index].load(std::memory_order_acquire)) {
+                        PrefetchAnnex::instance().abort_read(job.projection->cache_key);
+                    } else {
+                        PrefetchAnnex::instance().complete_read(
+                            job.projection->cache_key, job.projection->weight_owner);
+                    }
+                }
+                prefetch_inflight().fetch_sub(1, std::memory_order_relaxed);
+                if (state->outstanding.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    delete state;
+                }
+                continue;
+            }
+            auto * state = job.call;
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (status != 0 && state->first_error == 0) state->first_error = status;
+                if (--state->pending_requests[job.expert_index] == 0) {
+                    --state->outstanding_experts;
+                    state->ready.push_back(job.expert_index);
+                }
+            }
+            state->ready_cv.notify_all();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<IoJob> queue_;
+    std::vector<std::thread> workers_;
+    bool stopping_ = false;
+};
+
+// Blocks scope exit until every submitted read for this call has completed, so read buffers
+// (owned by the call's runtime vector) can never be written after the call unwinds.
+struct IoDrainGuard {
+    CallIoState * state = nullptr;
+
+    ~IoDrainGuard() {
+        if (state == nullptr) return;
+        std::unique_lock<std::mutex> lock(state->mutex);
+        state->ready_cv.wait(lock, [this] { return state->outstanding_experts == 0; });
+    }
+};
+
+void append_projection_jobs(
+        std::vector<IoJob> & jobs,
+        ProjectionRuntime & projection,
+        int expert_index,
+        CallIoState & state) {
+    if (!projection.needs_read) return;
+    const std::size_t length = projection.desc->byte_len;
+    int requests = 0;
+    if (projection.alternate_read_fd >= 0 && length >= 8192) {
+        const std::size_t split = (length / 2) & ~std::size_t(4095);
+        jobs.push_back(IoJob { &projection, projection.read_fd, 0, split, expert_index, &state });
+        jobs.push_back(IoJob {
+            &projection,
+            projection.alternate_read_fd,
+            split,
+            length - split,
+            expert_index,
+            &state,
+        });
+        requests = 2;
+    } else {
+        jobs.push_back(IoJob { &projection, projection.read_fd, 0, length, expert_index, &state });
+        requests = 1;
+    }
+    state.pending_requests[static_cast<std::size_t>(expert_index)] += requests;
+}
+
+void load_projection_weights(std::vector<ProjectionRuntime *> & projections, int threads) {
+    std::vector<ReadRequest> reads;
+    reads.reserve(projections.size() * 2);
+    for (auto * projection : projections) {
+        if (!projection->needs_read) continue;
+        const std::size_t length = projection->desc->byte_len;
+        if (projection->alternate_read_fd >= 0 && length >= 8192) {
+            const std::size_t split = (length / 2) & ~std::size_t(4095);
+            reads.push_back(ReadRequest { projection, projection->read_fd, 0, split });
+            reads.push_back(ReadRequest {
+                projection,
+                projection->alternate_read_fd,
+                split,
+                length - split,
+            });
+        } else {
+            reads.push_back(ReadRequest { projection, projection->read_fd, 0, length });
+        }
+    }
+    std::vector<int> read_errors(reads.size(), 0);
+    auto & profile = cpu_profile();
+    const auto io_start = std::chrono::steady_clock::now();
+    if (!reads.empty()) {
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads)
+        for (std::size_t index = 0; index < reads.size(); ++index) {
+            const auto & read = reads[index];
+            auto * destination = static_cast<std::uint8_t *>(
+                read.projection->weight_owner->data) + read.offset;
+            read_errors[index] = pread_exact(
+                *read.projection, read.fd, destination, read.offset, read.length);
+        }
+    }
+    profile.io_ns.fetch_add(elapsed_ns(io_start), std::memory_order_relaxed);
+
+    const auto insert_start = std::chrono::steady_clock::now();
+    std::uint64_t invocation_reads = 0;
+    std::uint64_t invocation_read_bytes = 0;
+    for (std::size_t index = 0; index < reads.size(); ++index) {
+        if (read_errors[index] != 0) {
+            throw std::runtime_error(
+                "CPU expert pread failed at mirrored request " + std::to_string(index)
+                + ": " + std::strerror(read_errors[index]));
+        }
+    }
+    for (auto * projection : projections) {
+        if (!projection->needs_read) continue;
+        const auto & desc = *projection->desc;
+        ++invocation_reads;
+        invocation_read_bytes += desc.byte_len;
+        weight_cache().insert(projection->cache_key, projection->weight_owner);
+    }
+    profile.insert_ns.fetch_add(elapsed_ns(insert_start), std::memory_order_relaxed);
+    profile.read_projections.fetch_add(invocation_reads, std::memory_order_relaxed);
+    profile.read_bytes.fetch_add(invocation_read_bytes, std::memory_order_relaxed);
+}
+
+void dot_row(const ProjectionRuntime & projection, int row, float * output) {
+    const auto & desc = *projection.desc;
+    *output = dot_row_native(
+        desc.qtype,
+        projection.weights + desc.row_bytes * static_cast<std::size_t>(row),
+        projection.activation_f32,
+        projection.activation_q8,
+        desc.in_features);
+}
+
+// Runs the full per-expert chain (gate/up dots, SwiGLU, down-activation quantize, down dots)
+// for a subset of the call's experts. Orphaned worksharing: binds to the caller's parallel
+// team (or runs sequentially outside one). Row-level math and per-expert op order are
+// identical for every subset partition, so all partitions produce byte-identical outputs.
+// Zero-size subsets still encounter every worksharing construct (no early return).
+void compute_expert_stages(
+        const std::vector<int> & subset,
+        std::vector<ExpertRuntime> & runtime,
+        const memra_cpu_expert_v2 * experts,
+        std::vector<QuantizedActivation> & down_activations,
+        std::vector<std::uint8_t> & down_activation_finite,
+        int n_ff,
+        int n_embd) {
+    const int n_subset = static_cast<int>(subset.size());
+#pragma omp for schedule(dynamic, 16)
+    for (int task = 0; task < n_subset * n_ff * 2; ++task) {
+        const int expert = subset[static_cast<std::size_t>(task / (n_ff * 2))];
+        const int local = task % (n_ff * 2);
+        const bool is_up = local >= n_ff;
+        const int row = local % n_ff;
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        if (is_up) {
+            dot_row(work.up, row, &work.up_output[row]);
+        } else {
+            dot_row(work.gate, row, &work.gate_output[row]);
+        }
+    }
+
+#pragma omp for schedule(static)
+    for (int index = 0; index < n_subset * n_ff; ++index) {
+        const int expert = subset[static_cast<std::size_t>(index / n_ff)];
+        const int column = index % n_ff;
+        const auto & desc = experts[expert];
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        const float gate = work.gate_output[column] * desc.gate.scale;
+        const float up = work.up_output[column] * desc.up.scale;
+        work.activation[column] = (gate / (1.0f + std::exp(-gate))) * up;
+    }
+
+#pragma omp for schedule(static)
+    for (int index = 0; index < n_subset; ++index) {
+        const int expert = subset[static_cast<std::size_t>(index)];
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        auto & activation = down_activations[static_cast<std::size_t>(expert)];
+        down_activation_finite[static_cast<std::size_t>(expert)] =
+            static_cast<std::uint8_t>(
+                activation.quantize(work.activation.data(), work.down.desc->in_features));
+        work.down.activation_f32 = work.activation.data();
+        work.down.activation_q8 = &activation;
+    }
+
+#pragma omp for schedule(dynamic, 16)
+    for (int task = 0; task < n_subset * n_embd; ++task) {
+        const int expert = subset[static_cast<std::size_t>(task / n_embd)];
+        const int row = task % n_embd;
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        dot_row(work.down, row, &work.down_output[row]);
+    }
+}
+
+// One parallel region per call. Cached experts compute while reads land; the io wait happens
+// INSIDE the region (master waits on the cv, workers park once at the barrier), so the team
+// pays at most one sleep/wake per call regardless of OMP_WAIT_POLICY, and no thread ever
+// spins between calls. Missing experts then compute, and the final accumulation runs over
+// all experts in index order — byte-identical to the serial path.
+std::uint64_t compute_call_single_region(
+        const std::vector<int> & cached_experts,
+        const std::vector<int> & missing_experts,
+        CallIoState & io_state,
+        std::vector<ExpertRuntime> & runtime,
+        const memra_cpu_expert_v2 * experts,
+        int n_experts,
+        std::vector<QuantizedActivation> & down_activations,
+        std::vector<std::uint8_t> & down_activation_finite,
+        float * output,
+        int n_ff,
+        int n_embd,
+        int threads) {
+    auto & profile = cpu_profile();
+    std::uint64_t io_wait_ns = 0;
+    const auto region_entry = std::chrono::steady_clock::now();
+#pragma omp parallel num_threads(threads)
+    {
+#pragma omp master
+        profile.stage_entry_ns.fetch_add(elapsed_ns(region_entry), std::memory_order_relaxed);
+        const auto cached_start = std::chrono::steady_clock::now();
+        compute_expert_stages(cached_experts, runtime, experts, down_activations,
+                              down_activation_finite, n_ff, n_embd);
+#pragma omp master
+        profile.stage_cached_ns.fetch_add(
+            elapsed_ns(cached_start), std::memory_order_relaxed);
+#pragma omp master
+        {
+            if (!missing_experts.empty()) {
+                const auto wait_start = std::chrono::steady_clock::now();
+                int read_error = 0;
+                {
+                    std::unique_lock<std::mutex> lock(io_state.mutex);
+                    io_state.ready_cv.wait(lock, [&io_state] {
+                        return io_state.outstanding_experts == 0;
+                    });
+                    read_error = io_state.first_error;
+                }
+                io_wait_ns = elapsed_ns(wait_start);
+                profile.io_ns.fetch_add(io_wait_ns, std::memory_order_relaxed);
+                const auto insert_start = std::chrono::steady_clock::now();
+                if (read_error == 0) {
+                    for (const int expert : missing_experts) {
+                        auto & work = runtime[static_cast<std::size_t>(expert)];
+                        for (auto * projection : { &work.gate, &work.up, &work.down }) {
+                            if (!projection->needs_read) continue;
+                            weight_cache().insert(
+                                projection->cache_key, projection->weight_owner);
+                            profile.read_projections.fetch_add(1, std::memory_order_relaxed);
+                            profile.read_bytes.fetch_add(
+                                projection->desc->byte_len, std::memory_order_relaxed);
+                        }
+                    }
+                }
+                profile.insert_ns.fetch_add(
+                    elapsed_ns(insert_start), std::memory_order_relaxed);
+            }
+        }
+#pragma omp barrier
+        const auto missing_start = std::chrono::steady_clock::now();
+        compute_expert_stages(missing_experts, runtime, experts, down_activations,
+                              down_activation_finite, n_ff, n_embd);
+#pragma omp master
+        profile.stage_missing_ns.fetch_add(
+            elapsed_ns(missing_start), std::memory_order_relaxed);
+        const auto accum_start = std::chrono::steady_clock::now();
+#pragma omp for schedule(static)
+        for (int row = 0; row < n_embd; ++row) {
+            float sum = 0.0f;
+            for (int expert = 0; expert < n_experts; ++expert) {
+                const float scale = experts[expert].route_weight * experts[expert].down.scale;
+                sum = std::fma(runtime[expert].down_output[row], scale, sum);
+            }
+            output[row] = sum;
+        }
+#pragma omp master
+        profile.stage_accum_ns.fetch_add(elapsed_ns(accum_start), std::memory_order_relaxed);
+    }
+    return io_wait_ns;
+}
+
+} // namespace
+
+int memra_cpu_moe_token_impl(
+        const memra_cpu_expert_v2 * experts,
+        std::int32_t expert_count,
+        const float * input,
+        float * output,
+        std::int32_t threads,
+        char * error,
+        std::size_t error_capacity) try {
+    if (experts == nullptr || input == nullptr || output == nullptr || expert_count <= 0) {
+        throw std::runtime_error("null or empty CPU expert invocation");
+    }
+    if (threads <= 0) {
+        throw std::runtime_error("CPU expert thread count must be positive");
+    }
+    auto & profile = cpu_profile();
+    const auto prepare_start = std::chrono::steady_clock::now();
+
+    const int n_experts = expert_count;
+    const int n_embd = experts[0].gate.in_features;
+    const int n_ff = experts[0].gate.out_features;
+    if (n_embd <= 0 || n_ff <= 0 || n_embd % 16 != 0 || n_ff % 16 != 0) {
+        throw std::runtime_error("CPU expert dimensions must be positive multiples of 16");
+    }
+    // Per-thread scratch reuse: expert dimensions are constant per model, so the runtime
+    // vectors keep their capacity across calls and steady-state decode stops allocating.
+    // OMP regions below must only touch these through the local references — a thread_local
+    // name inside a parallel region resolves to each worker's own (empty) instance.
+    thread_local std::vector<ExpertRuntime> runtime_scratch;
+    auto & runtime = runtime_scratch;
+    runtime.resize(static_cast<std::size_t>(n_experts));
+    for (int expert = 0; expert < n_experts; ++expert) {
+        const auto & desc = experts[expert];
+        if (desc.gate.in_features != n_embd || desc.up.in_features != n_embd
+            || desc.gate.out_features != n_ff || desc.up.out_features != n_ff
+            || desc.down.in_features != n_ff || desc.down.out_features != n_embd) {
+            throw std::runtime_error("inconsistent CPU expert projection dimensions");
+        }
+        auto & work = runtime[expert];
+        work.gate = prepare_projection(desc.gate);
+        work.up = prepare_projection(desc.up);
+        work.down = prepare_projection(desc.down);
+        work.activation.resize(n_ff);
+        work.gate_output.resize(n_ff);
+        work.up_output.resize(n_ff);
+        work.down_output.resize(n_embd);
+    }
+
+    omp_set_dynamic(0);
+    omp_set_num_threads(threads);
+    profile.prepare_ns.fetch_add(elapsed_ns(prepare_start), std::memory_order_relaxed);
+    const int io_threads = io_thread_count(threads);
+
+    // Partition the call: cached experts compute immediately while missing experts stream in
+    // from the io pool; each missing expert computes as soon as its projections land. Serial
+    // fallback (MEMRA_CPU_EXPERT_PIPELINE=0) keeps the read-everything-then-compute order.
+    CallIoState io_state;
+    IoDrainGuard drain_guard;
+    std::vector<int> cached_experts;
+    std::vector<int> missing_experts;
+    if (pipeline_enabled()) {
+        io_state.pending_requests.assign(static_cast<std::size_t>(n_experts), 0);
+        std::vector<IoJob> jobs;
+        jobs.reserve(static_cast<std::size_t>(n_experts) * 6);
+        for (int expert = 0; expert < n_experts; ++expert) {
+            auto & work = runtime[static_cast<std::size_t>(expert)];
+            append_projection_jobs(jobs, work.gate, expert, io_state);
+            append_projection_jobs(jobs, work.up, expert, io_state);
+            append_projection_jobs(jobs, work.down, expert, io_state);
+            if (io_state.pending_requests[static_cast<std::size_t>(expert)] == 0) {
+                cached_experts.push_back(expert);
+            } else {
+                missing_experts.push_back(expert);
+            }
+        }
+        io_state.outstanding_experts = static_cast<int>(missing_experts.size());
+        drain_guard.state = &io_state;
+        if (!jobs.empty()) {
+            auto & pool = IoPool::instance();
+            pool.ensure_started(io_threads);
+            pool.submit(std::move(jobs));
+        }
+    } else {
+        std::vector<ProjectionRuntime *> projections;
+        projections.reserve(static_cast<std::size_t>(n_experts) * 3);
+        for (auto & expert : runtime) {
+            projections.push_back(&expert.gate);
+            projections.push_back(&expert.up);
+            projections.push_back(&expert.down);
+        }
+        load_projection_weights(projections, io_threads);
+        cached_experts.reserve(static_cast<std::size_t>(n_experts));
+        for (int expert = 0; expert < n_experts; ++expert) cached_experts.push_back(expert);
+    }
+
+    std::uint64_t compute_elapsed = 0;
+    thread_local QuantizedActivation input_activation_scratch;
+    auto & input_activation = input_activation_scratch;
+    {
+        const auto compute_start = std::chrono::steady_clock::now();
+        input_activation.prepare(n_embd);
+        if (!input_activation.quantize(input, n_embd)) {
+            throw std::runtime_error("non-finite memra CPU expert input activation");
+        }
+        compute_elapsed += elapsed_ns(compute_start);
+    }
+    thread_local std::vector<QuantizedActivation> down_activations_scratch;
+    auto & down_activations = down_activations_scratch;
+    down_activations.resize(static_cast<std::size_t>(n_experts));
+    for (auto & activation : down_activations) activation.prepare(n_ff);
+    thread_local std::vector<std::uint8_t> down_activation_finite_scratch;
+    auto & down_activation_finite = down_activation_finite_scratch;
+    down_activation_finite.assign(static_cast<std::size_t>(n_experts), 1);
+    for (auto & work : runtime) {
+        work.gate.activation_f32 = input;
+        work.up.activation_f32 = input;
+        work.gate.activation_q8 = &input_activation;
+        work.up.activation_q8 = &input_activation;
+    }
+
+    // One parallel region covers cached compute, the in-region io wait, missing compute, and
+    // accumulation. compute_ns excludes the master's measured io wait so the io/compute split
+    // stays meaningful.
+    {
+        const auto region_start = std::chrono::steady_clock::now();
+        const std::uint64_t io_wait_ns = compute_call_single_region(
+            cached_experts, missing_experts, io_state, runtime, experts, n_experts,
+            down_activations, down_activation_finite, output, n_ff, n_embd, threads);
+        const std::uint64_t region_ns = elapsed_ns(region_start);
+        compute_elapsed += region_ns > io_wait_ns ? region_ns - io_wait_ns : 0;
+    }
+    {
+        std::lock_guard<std::mutex> lock(io_state.mutex);
+        if (io_state.first_error != 0) {
+            throw std::runtime_error(std::string("CPU expert pipelined pread failed: ")
+                + std::strerror(io_state.first_error));
+        }
+    }
+    if (std::find(down_activation_finite.begin(), down_activation_finite.end(), 0)
+        != down_activation_finite.end()) {
+        throw std::runtime_error("non-finite memra CPU expert SwiGLU activation");
+    }
+    profile.compute_ns.fetch_add(compute_elapsed, std::memory_order_relaxed);
+    profile.calls.fetch_add(1, std::memory_order_relaxed);
+    if (error != nullptr && error_capacity != 0) error[0] = '\0';
+    return 0;
+} catch (const std::exception & exception) {
+    copy_error(error, error_capacity, exception.what());
+    return 1;
+} catch (...) {
+    copy_error(error, error_capacity, "unknown CPU expert failure");
+    return 1;
+}
+
+extern "C" int memra_cpu_moe_token_v2(
+        const memra_cpu_expert_v2 * experts,
+        std::int32_t expert_count,
+        const float * input,
+        float * output,
+        std::int32_t threads,
+        char * error,
+        std::size_t error_capacity) {
+    return memra_cpu_moe_token_impl(
+        experts, expert_count, input, output, threads, error, error_capacity);
+}
+
+// Lane-3 M3: one EXPERT evaluated for m_r activation rows in a single call. The weight
+// bytes stream through the caches once and each weight-row's decode is amortized across all
+// rows (dot_row_multi). Outputs are per-row down-projections scaled by that row's route
+// weight; the caller owns cross-expert accumulation order. Cache/read behavior matches the
+// single-row path (same prepare_projection, same pipelined-or-serial read policy).
+extern "C" std::int32_t memra_cpu_expert_rows_v2(
+        const memra_cpu_expert_v2 * expert,
+        const float * inputs,
+        std::int32_t m_r,
+        const float * route_weights,
+        float * outputs,
+        std::int32_t threads,
+        char * error,
+        std::size_t error_capacity) try {
+    if (expert == nullptr || inputs == nullptr || outputs == nullptr
+        || route_weights == nullptr || m_r <= 0 || m_r > 64 || threads <= 0) {
+        throw std::runtime_error("invalid CPU expert rows invocation (m_r must be 1..=64)");
+    }
+    for (const auto * projection : { &expert->gate, &expert->up, &expert->down }) {
+        if (projection->qtype == QT_F32 || projection->qtype == QT_BF16) {
+            throw std::runtime_error("CPU expert rows path serves quantized experts only");
+        }
+    }
+    auto & profile = cpu_profile();
+    const auto prepare_start = std::chrono::steady_clock::now();
+    const int n_embd = expert->gate.in_features;
+    const int n_ff = expert->gate.out_features;
+    if (n_embd <= 0 || n_ff <= 0 || n_embd % 16 != 0 || n_ff % 16 != 0) {
+        throw std::runtime_error("CPU expert dimensions must be positive multiples of 16");
+    }
+    ExpertRuntime work;
+    work.gate = prepare_projection(expert->gate);
+    work.up = prepare_projection(expert->up);
+    work.down = prepare_projection(expert->down);
+    omp_set_dynamic(0);
+    omp_set_num_threads(threads);
+    std::vector<ProjectionRuntime *> projections {
+        &work.gate, &work.up, &work.down,
+    };
+    profile.prepare_ns.fetch_add(elapsed_ns(prepare_start), std::memory_order_relaxed);
+    load_projection_weights(projections, io_thread_count(threads));
+
+    const auto compute_start = std::chrono::steady_clock::now();
+    const std::size_t rows = static_cast<std::size_t>(m_r);
+    std::vector<QuantizedActivation> input_activations(rows);
+    for (std::size_t r = 0; r < rows; ++r) {
+        input_activations[r].prepare(n_embd);
+        if (!input_activations[r].quantize(inputs + r * n_embd, n_embd)) {
+            throw std::runtime_error("non-finite memra CPU expert rows input activation");
+        }
+    }
+    std::vector<const QuantizedActivation *> input_ptrs(rows);
+    for (std::size_t r = 0; r < rows; ++r) input_ptrs[r] = &input_activations[r];
+    std::vector<float> gate_out(rows * n_ff);
+    std::vector<float> up_out(rows * n_ff);
+    std::vector<float> act(rows * n_ff);
+    std::vector<std::uint8_t> act_finite(rows, 1);
+    std::vector<QuantizedActivation> act_q8(rows);
+    for (auto & a : act_q8) a.prepare(n_ff);
+    std::vector<float> down_out(rows * static_cast<std::size_t>(n_embd));
+#pragma omp parallel
+    {
+        // gate+up: one task per (projection, weight-row); decode amortized across m_r rows.
+#pragma omp for schedule(dynamic, 8)
+        for (int task = 0; task < 2 * n_ff; ++task) {
+            const bool is_up = task >= n_ff;
+            const int out_row = is_up ? task - n_ff : task;
+            const auto & projection = is_up ? work.up : work.gate;
+            const auto & desc = *projection.desc;
+            std::array<float, 64> local {};
+            dot_row_multi(
+                desc.qtype,
+                projection.weights + desc.row_bytes * static_cast<std::size_t>(out_row),
+                input_ptrs.data(),
+                local.data(),
+                m_r,
+                n_embd);
+            auto * destination = (is_up ? up_out.data() : gate_out.data());
+            for (std::size_t r = 0; r < rows; ++r) {
+                destination[r * n_ff + out_row] = local[r];
+            }
+        }
+#pragma omp for schedule(static)
+        for (int index = 0; index < static_cast<int>(rows) * n_ff; ++index) {
+            const std::size_t r = static_cast<std::size_t>(index) / n_ff;
+            const int column = index % n_ff;
+            const float gate = gate_out[r * n_ff + column] * expert->gate.scale;
+            const float up = up_out[r * n_ff + column] * expert->up.scale;
+            act[r * n_ff + column] = (gate / (1.0f + std::exp(-gate))) * up;
+        }
+#pragma omp for schedule(static)
+        for (int r = 0; r < m_r; ++r) {
+            const std::size_t row = static_cast<std::size_t>(r);
+            act_finite[row] = static_cast<std::uint8_t>(
+                act_q8[row].quantize(act.data() + row * n_ff, n_ff));
+        }
+#pragma omp for schedule(dynamic, 8)
+        for (int out_row = 0; out_row < n_embd; ++out_row) {
+            const auto & desc = *work.down.desc;
+            std::array<const QuantizedActivation *, 64> ptrs {};
+            for (std::size_t r = 0; r < rows; ++r) ptrs[r] = &act_q8[r];
+            std::array<float, 64> local {};
+            dot_row_multi(
+                desc.qtype,
+                work.down.weights + desc.row_bytes * static_cast<std::size_t>(out_row),
+                ptrs.data(),
+                local.data(),
+                m_r,
+                n_ff);
+            for (std::size_t r = 0; r < rows; ++r) {
+                down_out[r * static_cast<std::size_t>(n_embd) + out_row] = local[r];
+            }
+        }
+#pragma omp for schedule(static)
+        for (int index = 0; index < static_cast<int>(rows) * n_embd; ++index) {
+            const std::size_t r = static_cast<std::size_t>(index) / n_embd;
+            const int column = index % n_embd;
+            outputs[r * static_cast<std::size_t>(n_embd) + column] =
+                down_out[r * static_cast<std::size_t>(n_embd) + column]
+                    * expert->down.scale * route_weights[r];
+        }
+    }
+    if (std::find(act_finite.begin(), act_finite.end(), 0) != act_finite.end()) {
+        throw std::runtime_error("non-finite memra CPU expert rows SwiGLU activation");
+    }
+    profile.compute_ns.fetch_add(elapsed_ns(compute_start), std::memory_order_relaxed);
+    profile.calls.fetch_add(1, std::memory_order_relaxed);
+    if (error != nullptr && error_capacity != 0) error[0] = '\0';
+    return 0;
+} catch (const std::exception & exception) {
+    copy_error(error, error_capacity, exception.what());
+    return 1;
+} catch (...) {
+    copy_error(error, error_capacity, "unknown CPU expert rows failure");
+    return 1;
+}
+
+// Detached speculative prefetch: reads the given projections into the RAM cache as cold
+// (evict-first) insertions and returns immediately. Cached projections are skipped; requests
+// beyond the in-flight cap are dropped, never queued — speculative traffic must not compound
+// under load. Returns the number of projections actually submitted, or -1 on invalid input.
+extern "C" std::int32_t memra_cpu_expert_prefetch_v2(
+        const memra_cpu_projection_v2 * projections,
+        std::int32_t count,
+        char * error,
+        std::size_t error_capacity) try {
+    if (projections == nullptr || count <= 0) {
+        throw std::runtime_error("invalid CPU expert prefetch invocation");
+    }
+    static const int max_inflight = [] {
+        const char * raw = std::getenv("MEMRA_CPU_EXPERT_PREFETCH_MAX_INFLIGHT");
+        if (raw == nullptr || *raw == '\0') return 32;
+        const long value = std::strtol(raw, nullptr, 10);
+        return value >= 1 && value <= 4096 ? static_cast<int>(value) : 32;
+    }();
+    auto & annex = PrefetchAnnex::instance();
+    auto state = std::make_unique<PrefetchState>();
+    state->descs.reserve(static_cast<std::size_t>(count));
+    for (std::int32_t index = 0; index < count; ++index) {
+        const auto & desc = projections[index];
+        if (desc.file_fd < 0) continue;  // memory-backed projections need no prefetch
+        state->descs.push_back(desc);
+    }
+    const std::size_t n = state->descs.size();
+    if (n == 0) return 0;
+    state->runtimes.reserve(n);
+    state->projection_pending = std::make_unique<std::atomic<int>[]>(n);
+    state->projection_failed = std::make_unique<std::atomic<bool>[]>(n);
+    std::vector<IoJob> jobs;
+    std::int32_t submitted = 0;
+    auto & profile = cpu_profile();
+    for (std::size_t index = 0; index < state->descs.size(); ++index) {
+        const auto & desc = state->descs[index];
+        if (prefetch_inflight().load(std::memory_order_relaxed) >= max_inflight) break;
+        // Build the cache key without prepare_projection: the demand path's annex promotion
+        // must never fire from a speculative probe, and cache stats must not count them.
+        const FileKey source = file_key(desc.file_fd);
+        const CacheKey key { source, desc.file_offset, desc.byte_len };
+        if (weight_cache().contains(key)) continue;
+        if (!annex.begin_read(key)) continue;  // already speculated or in flight (dedup)
+        ProjectionRuntime runtime;
+        runtime.desc = &state->descs[index];
+        runtime.cache_key = key;
+        runtime.weight_owner = std::make_shared<AlignedBytes>();
+        const bool direct = direct_io_enabled()
+            && desc.file_offset % 4096 == 0 && desc.byte_len % 4096 == 0;
+        runtime.weight_owner->resize(desc.byte_len, direct ? 4096 : 64);
+        runtime.read_fd = direct
+            ? direct_files().resolve(desc.file_fd, source.inode)
+            : desc.file_fd;
+        runtime.alternate_read_fd = direct
+            ? mirror_files().resolve(desc.file_fd, source)
+            : -1;
+        runtime.needs_read = true;
+        state->runtimes.push_back(std::move(runtime));
+        auto & stored = state->runtimes.back();
+        const std::size_t slot = state->runtimes.size() - 1;
+        const std::size_t jobs_before = jobs.size();
+        state->projection_pending[slot].store(0, std::memory_order_relaxed);
+        state->projection_failed[slot].store(false, std::memory_order_relaxed);
+        const std::size_t length = desc.byte_len;
+        if (stored.alternate_read_fd >= 0 && length >= 8192) {
+            const std::size_t split = (length / 2) & ~std::size_t(4095);
+            jobs.push_back(IoJob { &stored, stored.read_fd, 0, split,
+                static_cast<int>(slot), nullptr, state.get() });
+            jobs.push_back(IoJob { &stored, stored.alternate_read_fd, split, length - split,
+                static_cast<int>(slot), nullptr, state.get() });
+        } else {
+            jobs.push_back(IoJob { &stored, stored.read_fd, 0, length,
+                static_cast<int>(slot), nullptr, state.get() });
+        }
+        state->projection_pending[slot].store(
+            static_cast<int>(jobs.size() - jobs_before), std::memory_order_relaxed);
+        prefetch_inflight().fetch_add(1, std::memory_order_relaxed);
+        profile.prefetch_projections.fetch_add(1, std::memory_order_relaxed);
+        profile.prefetch_bytes.fetch_add(length, std::memory_order_relaxed);
+        ++submitted;
+    }
+    if (jobs.empty()) return 0;
+    state->outstanding.store(static_cast<int>(jobs.size()), std::memory_order_relaxed);
+    auto & pool = IoPool::instance();
+    pool.ensure_started(io_thread_count(8));
+    pool.submit(std::move(jobs));
+    state.release();  // owned by the completion path from here
+    if (error != nullptr && error_capacity != 0) error[0] = '\0';
+    return submitted;
+} catch (const std::exception & exception) {
+    copy_error(error, error_capacity, exception.what());
+    return -1;
+} catch (...) {
+    copy_error(error, error_capacity, "unknown CPU expert prefetch failure");
+    return -1;
+}
+
+// Model-independent correctness hook used by `cpu-native-check`. This intentionally exercises the
+// same activation quantizer and row-dot dispatch as production without constructing a full model.
+extern "C" int memra_cpu_dot_v2(
+        std::int32_t qtype,
+        const std::uint8_t * weights,
+        std::size_t row_bytes,
+        const float * input,
+        std::int32_t count,
+        float * output,
+        char * error,
+        std::size_t error_capacity) try {
+    if (weights == nullptr || input == nullptr || output == nullptr || count <= 0) {
+        throw std::runtime_error("invalid memra CPU dot invocation");
+    }
+    const auto spec = quant_spec(qtype);
+    if (count % spec.block != 0
+        || row_bytes != static_cast<std::size_t>(count / spec.block) * spec.bytes) {
+        throw std::runtime_error("invalid memra CPU dot row layout");
+    }
+    QuantizedActivation quantized;
+    const QuantizedActivation * quantized_ptr = nullptr;
+    if (qtype != QT_F32 && qtype != QT_BF16) {
+        quantized.prepare(count);
+        if (!quantized.quantize(input, count)) {
+            throw std::runtime_error("non-finite memra CPU dot input activation");
+        }
+        quantized_ptr = &quantized;
+    }
+    *output = dot_row_native(qtype, weights, input, quantized_ptr, count);
+    if (error != nullptr && error_capacity != 0) error[0] = '\0';
+    return 0;
+} catch (const std::exception & exception) {
+    copy_error(error, error_capacity, exception.what());
+    return 1;
+} catch (...) {
+    copy_error(error, error_capacity, "unknown memra CPU dot failure");
+    return 1;
+}
+
+// Annex/speculation accounting: submitted speculative projections, annex promotions (a
+// speculated buffer served a demand miss), annex expiries (never used, FIFO-evicted), and
+// reads still in flight.
+extern "C" void memra_cpu_expert_prefetch_stats_v2(
+        std::uint64_t * submitted,
+        std::uint64_t * promoted,
+        std::uint64_t * expired,
+        std::uint64_t * inflight) noexcept {
+    if (submitted != nullptr) {
+        *submitted = cpu_profile().prefetch_projections.load(std::memory_order_relaxed);
+    }
+    if (inflight != nullptr) {
+        *inflight = static_cast<std::uint64_t>(
+            std::max(0, prefetch_inflight().load(std::memory_order_relaxed)));
+    }
+    try {
+        PrefetchAnnex::instance().snapshot(promoted, expired);
+    } catch (...) {
+        // Diagnostic path; the C ABI must never propagate an exception.
+    }
+}
+
+extern "C" void memra_cpu_expert_cache_stats_v2(
+        std::uint64_t * hits,
+        std::uint64_t * misses,
+        std::uint64_t * read_bytes,
+        std::uint64_t * resident_bytes) noexcept {
+    if (hits != nullptr) *hits = 0;
+    if (misses != nullptr) *misses = 0;
+    if (read_bytes != nullptr) *read_bytes = 0;
+    if (resident_bytes != nullptr) *resident_bytes = 0;
+    try {
+        weight_cache().snapshot(hits, misses, read_bytes, resident_bytes);
+    } catch (...) {
+        // Stats are diagnostic and the stable C ABI must never propagate a C++ exception.
+    }
+}
+
+extern "C" void memra_cpu_expert_profile_stats_v2(
+        std::uint64_t * prepare_ns,
+        std::uint64_t * io_ns,
+        std::uint64_t * insert_ns,
+        std::uint64_t * compute_ns) {
+    auto & profile = cpu_profile();
+    if (prepare_ns != nullptr) {
+        *prepare_ns = profile.prepare_ns.load(std::memory_order_relaxed);
+    }
+    if (io_ns != nullptr) *io_ns = profile.io_ns.load(std::memory_order_relaxed);
+    if (insert_ns != nullptr) *insert_ns = profile.insert_ns.load(std::memory_order_relaxed);
+    if (compute_ns != nullptr) *compute_ns = profile.compute_ns.load(std::memory_order_relaxed);
+}

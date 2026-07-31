@@ -177,7 +177,7 @@ def main() -> int:
     )
     map_path.write_text(map_text)
     receipt = {
-        "format": "bw24-expert-mirror-map-v2",
+        "format": "memra-expert-mirror-map-v2",
         "dual_nvme_view": str(view),
         "mirror_root": str(mirror),
         "manifest_sha256": expected_manifest,

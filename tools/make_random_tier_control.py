@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def random_control(plan: dict, seed: int) -> dict:
-    if plan.get("format") != "bw24-expert-tier-plan-v2":
+    if plan.get("format") != "memra-expert-tier-plan-v2":
         raise ValueError("input is not a v2 expert tier plan")
     by_layer: dict[int, Counter[str]] = defaultdict(Counter)
     for group in plan["assignments"]:

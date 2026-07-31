@@ -4,8 +4,8 @@
 // shaped; this harness develops the bf16-mma form against a CPU reference of the EXACT
 // f32 semantics (v0 = the shipped kernel verbatim), standalone before any engine change.
 // NUMERIC NOTE: an mma form rounds the multiply INPUTS to bf16 (state storage stays f32)
-// — a numeric change WITHIN the already-gated chunked prefill config (BW24_GDN_CHUNKED);
-// the BW24_GDN_DIFF oracle + argmax battery arbitrate any engine adoption.
+// — a numeric change WITHIN the already-gated chunked prefill config (MEMRA_GDN_CHUNKED);
+// the MEMRA_GDN_DIFF oracle + argmax battery arbitrate any engine adoption.
 //
 // Build (box): nvcc -O3 -arch=sm_90a -o /tmp/gdnk4 tools/bench_gdn_k4.cu
 #include <cstdio>
