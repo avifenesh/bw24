@@ -116,3 +116,13 @@
 {"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"bw24","toks":223.56,"profile":"performance"}
 {"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"llama","toks":170.16,"accept_note":"draft_accept=0.529","profile":"performance"}
 {"ts":"2026-07-30T02:53:57Z","git":"7973731e","cell":"q35-spec-p3-agentic-long","arm":"bw24","toks":223.31,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"llama","toks":91.71,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"bw24","toks":88.39,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"llama","toks":90.61,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"bw24","toks":88.11,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"llama","toks":90.26,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"bw24","toks":87.80,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"llama","toks":90.03,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"bw24","toks":87.36,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"llama","toks":89.94,"profile":"performance"}
+{"ts":"2026-07-30T15:38:22Z","git":"998c61ac","cell":"g12-plain-d1736","arm":"bw24","toks":86.83,"profile":"performance"}
