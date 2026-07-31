@@ -2138,3 +2138,21 @@ g26 gate MATCH (maxdiff 1.7). Full 6-cell board re-running on the real prompt fo
 consistent table. Interim same-session receipts (fox, gate-passing cells only): q35 decode
 240.0 vs vLLM 224.5 (decode WIN, was 0.79x); e4b decode 365.6 vs 170.5 + prefill 19.3k vs
 52.3k (e2e ~2.0x, was 1.05x).
+
+Round 45 update 4 — the REAL-TEXT full board (2026-07-31, the round's scoreboard):
+all six cells re-measured on board-2048 (real text, ~2100 tok, both arms same file,
+N=5 medians, argmax gate green on every published row; raw rows
+research/tune-data/h100board-vllm-20260731-realtext.jsonl). e2e (512 gen wall):
+g12 146 vs 81 (1.81x) | g31 75 vs 64 (1.18x) | q9 204 vs 176 (1.16x) |
+e4b 193 vs 168 (1.14x) | q35 197 vs 214 (0.92x) | g26 159 vs 191 (0.83x).
+Decode-only: 5/6 wins (q9 1.22x, q35 1.07x — the FP8-MoE decode loss FLIPPED via the
+shexp fused dot; g12 1.85x, g31 1.24x, e4b 1.18x; g26 0.93x the one decode loss).
+Board-motion attribution: q35 0.71x -> 0.92x (shexp dot + real-prompt basis);
+e4b 1.05x -> 1.14x (head-last prime + the empty-fallback crash fix; fox had inflated
+e4b decode ~365 via degenerate per-layer-embed locality — real text says 201);
+g26 0.76x-row was UNSOUND (yesterday's memra rows were 0/0) -> first valid cell 0.83x.
+q9 f16 prefill mirrors DEFAULTED OFF for the Q8_0 dense class (per-model argmax-gate
+arbitration: f16-vs-int8 gap 0.67 maxdiff flips a real-prompt top-tie, deterministic
+x5; gemma + MoE hybrids hold MATCH and keep mirrors) — q9 prefill 10.9k gate-clean,
+row still a 1.16x e2e win. NEXT RUNG unchanged: mmq_iq_experts kernel rate (~16 TF,
+60x off CUTLASS int8) gates BOTH remaining losses.

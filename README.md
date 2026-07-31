@@ -25,10 +25,11 @@ against vLLM are published per model. **Use something else when** you have anoth
 
 **Standing (2026-07-31):** seven supported models on the 5090, all fully gated; every
 MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
-wall or above. On the H100, a full per-model board against vLLM 0.26: decode wins 5 of
-6 models (1.2–2.1x), loses one honestly (35B MoE, 0.79x — mechanism priced); prefill
-gaps are published per model and shrinking release-by-release (12B 2.1x and 31B 1.6x
-prefill landed this week). Every number is a same-session interleaved measurement;
+wall or above. On the H100, a full per-model board against vLLM 0.26: end-to-end wins
+on 4 of 6 models (1.14–1.81x), decode wins on 5 of 6 (the 35B MoE decode loss flipped
+to a 1.07x win this release); the two e2e losses (0.92x, 0.83x) are MoE expert-prefill
+cells with the remaining kernel-rate rung mapped. Every number is a same-session
+interleaved measurement on a real-text prompt with the argmax exactness gate green;
 trimmed MTP drafter heads are published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
 
@@ -49,30 +50,33 @@ is byte-for-byte the tuned 5090 engine.
 
 ## The H100 build (sm_90a)
 
-The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, same session.
-One number per arm: **end-to-end tok/s** — 512 tokens generated on a ~2048-token
-prompt, single request, total wall time (N=5 medians). Cross-artifact by design:
-vLLM serves what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it
-rejects these GGUFs); memra serves its GGUF artifacts.
+The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, same session
+(2026-07-31). One number per arm: **end-to-end tok/s** — 512 tokens generated on a
+~2100-token real-text prompt, single request, total wall time (N=5 medians, argmax
+exactness gate green on every published row). Cross-artifact by design: vLLM serves
+what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it rejects these
+GGUFs); memra serves its GGUF artifacts.
 
 | model | memra e2e | vLLM 0.26 e2e (artifact) | ratio |
 |---|---:|---:|---:|
-| Gemma-4 12B | **148** | 81 (bf16) | **1.83x** |
-| Qwen3.5-9B | **212** | 177 (w8a8) | **1.20x** |
-| Gemma-4 31B | **77** | 64 (FP8-dyn) | **1.20x** |
-| Gemma-4 E4B | **176** | 168 (bf16) | **1.05x** |
-| Gemma-4 26B MoE | 146 | 191 (FP8-dyn) | 0.76x |
-| Qwen3.6-35B MoE | 157 | 220 (FP8) | 0.71x |
+| Gemma-4 12B | **146** | 81 (bf16) | **1.81x** |
+| Gemma-4 31B | **75** | 64 (FP8-dyn) | **1.18x** |
+| Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
+| Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
+| Qwen3.6-35B MoE | 197 | 214 (FP8) | 0.92x |
+| Gemma-4 26B MoE | 159 | 191 (FP8-dyn) | 0.83x |
 
 Wins on exact math (the bf16-row wins carry a quant-advantage caveat — those vLLM arms
-move 4x the weight bytes). The losses are published, mechanism-priced, and moving:
-both losing cells are MoE prefill/expert paths with mapped levers, and the 12B/31B
-rows each gained double-digit e2e in one release (Q4_0→fp16 prefill mirrors). The
-remaining Qwen prefill deficit inside these numbers is the int8-GEMM dtype edge — a
-Q8_0-exact int8 GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x
-naive / 17x pipelined; ptxas serializes cross-bank GMMA register reads), so crossing
-it means w8a8-class numerics that change model outputs — an accuracy-bar decision with
-measured receipts, not an engineering unknown.
+move 4x the weight bytes). Decode alone wins 5 of 6 cells (1.07–1.85x; the 35B MoE
+decode loss flipped to a win when its per-layer shared-expert gate left cuBLASLt).
+The two e2e losses are MoE expert-prefill cells: both MoE models already route their
+expert GEMMs through an int8-MMA expert kernel, and that kernel's ~16 TF rate — 60x
+off the CUTLASS int8 roofline — is the single mapped rung between here and those rows
+flipping. The dense-model prefill gaps are the int8-GEMM dtype edge — a Q8_0-exact
+int8 GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x naive / 17x
+pipelined; ptxas serializes cross-bank GMMA register reads), so crossing it means
+w8a8-class numerics that change model outputs — an accuracy-bar decision with measured
+receipts, not an engineering unknown.
 
 Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4.8x the
 mma kernel), fused wgmma GDN chunk kernels with varlen twins, Q4_0/Q8_0→fp16 prefill
@@ -181,8 +185,10 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
 - **5090 prefill** trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4
   prefill at W4A4 (FP4 activations), a numeric class memra's exactness gates reject.
   Output quality outranks the prefill column.
-- **H100 prefill** stands at 73–79% of vLLM; the residual is the int8-GEMM dtype edge,
-  refused by the accuracy laws (full refutation ledger in
+- **H100 prefill** trails vLLM on every model (12–70% by cell) while decode wins 5 of
+  6 — the e2e wins come from decode dominating the p2048/g512 shape. MoE cells are
+  gated on the expert-GEMM kernel rate (mapped rung); dense cells on the int8-GEMM
+  dtype edge, refused by the accuracy laws (full refutation ledger in
   [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)).
 - Gemma plain margins are thin where both engines sit at the DRAM wall (1.02–1.06x).
 - Hy3 native spill serves at a 5.13 tok/s N=3 median, tuning toward 10

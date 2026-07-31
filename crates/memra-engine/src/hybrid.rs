@@ -1107,11 +1107,19 @@ impl HybridModel {
             };
             if q8rp_on {
                 let e_ref = e;
+                // f16 prefill mirrors, PER-MODEL argmax-gate arbitration (round 45): on the
+                // qwen Q8_0 dense class the f16-prefill-vs-int8-decode gap (maxdiff ~0.67)
+                // flips the run-gen argmax gate on real prompts (board-2048: 485 vs 332,
+                // deterministic x5) — gate-violating defaults don't ship. gemma (Q4_0) and
+                // the MoE hybrids hold MATCH on the same prompt and keep their mirrors.
+                // MEMRA_PP_F16=1 forces (diagnostic seam); =0 still kills everywhere.
+                let f16_model_ok = cfg.gemma4.is_some() || cfg.moe.is_some()
+                    || std::env::var("MEMRA_PP_F16").as_deref() == Ok("1");
                 let mut nmir = 0usize;
                 let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
                     let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
                     e_ref.build_q8_rp4(w)?;
-                    if crate::f16_ffi::pp_f16_enabled() {
+                    if crate::f16_ffi::pp_f16_enabled() && f16_model_ok {
                         e_ref.build_q8_f16(w)?;
                     }
                     if !before && matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. }) {

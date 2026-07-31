@@ -1,0 +1,39 @@
+{
+ "engine": "vllm",
+ "model": "unsloth/gemma-4-E4B-it",
+ "ngen": 512,
+ "prompt_tokens": 2048,
+ "runs": [
+  {
+   "run": 1,
+   "prefill_tps": 50982.8,
+   "decode_tps": 170.67,
+   "ttft_s": 0.0402
+  },
+  {
+   "run": 2,
+   "prefill_tps": 52618.3,
+   "decode_tps": 170.71,
+   "ttft_s": 0.0389
+  },
+  {
+   "run": 3,
+   "prefill_tps": 52569.8,
+   "decode_tps": 170.62,
+   "ttft_s": 0.039
+  },
+  {
+   "run": 4,
+   "prefill_tps": 52829.9,
+   "decode_tps": 170.66,
+   "ttft_s": 0.0388
+  },
+  {
+   "run": 5,
+   "prefill_tps": 53819.4,
+   "decode_tps": 170.64,
+   "ttft_s": 0.0381
+  }
+ ],
+ "decode_tps_median": 170.66
+}

@@ -1,0 +1,39 @@
+{
+ "engine": "vllm",
+ "model": "RedHatAI/gemma-4-26b-a4b-it-FP8-dynamic",
+ "ngen": 512,
+ "prompt_tokens": 2048,
+ "runs": [
+  {
+   "run": 1,
+   "prefill_tps": 44524.8,
+   "decode_tps": 194.55,
+   "ttft_s": 0.046
+  },
+  {
+   "run": 2,
+   "prefill_tps": 44114.6,
+   "decode_tps": 194.62,
+   "ttft_s": 0.0464
+  },
+  {
+   "run": 3,
+   "prefill_tps": 44350.2,
+   "decode_tps": 194.56,
+   "ttft_s": 0.0462
+  },
+  {
+   "run": 4,
+   "prefill_tps": 44592.3,
+   "decode_tps": 194.5,
+   "ttft_s": 0.0459
+  },
+  {
+   "run": 5,
+   "prefill_tps": 43508.2,
+   "decode_tps": 194.58,
+   "ttft_s": 0.0471
+  }
+ ],
+ "decode_tps_median": 194.56
+}
