@@ -40,7 +40,7 @@ extern "C" __global__ void dequant_rc(const int* __restrict__ s, const float* __
 struct ShapeRef { int in_f, out_f; float f16_us; const char* tag; };
 
 int main() {
-    const int m = 512;
+    const int m = getenv("BENCH_M") ? atoi(getenv("BENCH_M")) : 512;
     // f16_us = shipped fp16-mirror per-launch medians (nsys/probe 2026-07-26)
     ShapeRef shapes[] = {
         {4096, 12288, 78.4f, "wqkv (lin)"},
