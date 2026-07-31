@@ -131,7 +131,30 @@ impl crate::Engine {
             _ => return Ok(None),
         };
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
-        let mut y = self.qmatvec_gemm_f16_raw(w16, x, m, in_f, out_f)?;
+        // W8A8 PILOT act half (MEMRA_W8A8_SIM=2): per-TOKEN int8 fake-quant of the
+        // activation rows before the f16 GEMM — with the =1 weight half this models
+        // the full w8a8 numeric class through the unchanged lane. Slow host roundtrip,
+        // pilot only.
+        static SIM_ACT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let sim_act = *SIM_ACT.get_or_init(||
+            std::env::var("MEMRA_W8A8_SIM").as_deref() == Ok("2"));
+        let mut y = if sim_act {
+            let mut hx = self.dtoh(x)?;
+            hx.truncate(m * in_f);
+            for row in hx.chunks_mut(in_f) {
+                let amax = row.iter().fold(0f32, |a, &v| a.max(v.abs()));
+                if amax > 0.0 {
+                    let d = amax / 127.0;
+                    for v in row.iter_mut() {
+                        *v = (*v / d).round().clamp(-127.0, 127.0) * d;
+                    }
+                }
+            }
+            let xq = self.htod(&hx)?;
+            self.qmatvec_gemm_f16_raw(w16, &xq, m, in_f, out_f)?
+        } else {
+            self.qmatvec_gemm_f16_raw(w16, x, m, in_f, out_f)?
+        };
         if scale != 1.0 {
             self.scale_inplace(&mut y, scale, m * out_f)?;
         }
@@ -201,7 +224,41 @@ impl crate::Engine {
         &self,
         x: &CudaSlice<f32>,
         nelem: usize,
+        in_f: usize,
     ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        // W8A8 PILOT act half (MEMRA_W8A8_SIM=2): per-TOKEN int8 fake-quant of the
+        // activation rows before the fp16 convert — every pre-converted GEMM in the
+        // group inherits it. Slow host roundtrip, pilot only; default path unchanged.
+        static SIM_ACT2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *SIM_ACT2.get_or_init(|| std::env::var("MEMRA_W8A8_SIM").as_deref() == Ok("2"))
+            && in_f > 0 && nelem % in_f == 0 {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| eprintln!("[w8a8-sim] act per-token int8 fake-quant ACTIVE (f16_act)"));
+            let mut hx = self.dtoh(x)?;
+            hx.truncate(nelem);
+            for row in hx.chunks_mut(in_f) {
+                let amax = row.iter().fold(0f32, |a, &v| a.max(v.abs()));
+                if amax > 0.0 {
+                    let d = amax / 127.0;
+                    for v in row.iter_mut() {
+                        *v = (*v / d).round().clamp(-127.0, 127.0) * d;
+                    }
+                }
+            }
+            let xq = self.htod(&hx)?;
+            let mut xh = self.alloc_u8_uninit(nelem * 2)?;
+            let rc = {
+                let stream = &self.gpu.stream;
+                let (x_p, _gx) = xq.device_ptr(stream);
+                let (h_p, _gh) = xh.device_ptr_mut(stream);
+                unsafe {
+                    memra_f16_cvt(x_p as *const f32, h_p as *mut core::ffi::c_void,
+                                  nelem, stream.cu_stream() as *mut core::ffi::c_void)
+                }
+            };
+            if rc != 0 { return Err(format!("memra_f16_cvt rc={rc}").into()); }
+            return Ok(xh);
+        }
         let mut xh = self.alloc_u8_uninit(nelem * 2)?;
         let rc = {
             let stream = &self.gpu.stream;
@@ -480,7 +537,7 @@ impl crate::Engine {
         // act-int8 half is additive and strictly smaller — per-token absmax on smooth
         // activations).
         static SIM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *SIM.get_or_init(|| std::env::var("MEMRA_W8A8_SIM").as_deref() == Ok("1")) {
+        if *SIM.get_or_init(|| matches!(std::env::var("MEMRA_W8A8_SIM").as_deref(), Ok("1") | Ok("2"))) {
             fn f16_bits_to_f32(b: u16) -> f32 {
                 let (s, e, m) = ((b >> 15) as u32, ((b >> 10) & 0x1f) as u32, (b & 0x3ff) as u32);
                 let bits = if e == 0 {

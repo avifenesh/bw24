@@ -614,7 +614,7 @@ impl HybridModel {
                     let pre_n = pre.len() / t;
                     let xh_pre = match pre16 {
                         Some(x) => x,
-                        None => e.f16_act(&pre, t * pre_n)?,
+                        None => e.f16_act(&pre, t * pre_n, pre_n)?,
                     };
                     if !e.try_f16_gemm_pre_into(w_out, &xh_pre, t, mslab)? {
                         let y = e.matmul(w_out, &pre, t)?;
@@ -686,7 +686,7 @@ impl HybridModel {
                     // down GEMM into the ffn_out slab (f16 arm; fallback copies)
                     let xh_act = match act16 {
                         Some(x) => x,
-                        None => e.f16_act(act, t * n_ff)?,
+                        None => e.f16_act(act, t * n_ff, n_ff)?,
                     };
                     if !e.try_f16_gemm_pre_into(ffn_down, &xh_act, t, sl_fo)? {
                         let y = e.matmul(ffn_down, &*act, t)?;
