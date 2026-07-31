@@ -2043,3 +2043,13 @@ per-expert Lt/f16 GEMMs over the CSR token groups (the vLLM shape); (3) a k64-ti
 expert GEMM kernel. q35's prefill (0.26x) is the sibling front (its experts pass %256
 — its wall needs its own capture). Implementation = next arc; capture receipts in this
 round's session log.
+
+Round 44 update — g26 expert-down MMA SHIPPED (2026-07-31): the ragged-k (704) down
+projection rides mmq_iq_experts with a padded k-walk (in_f rounds to the 256-val
+superblock = 768; the act quantizer's zero padding nulls every padded-k product;
+144B dev-slab tail slack absorbs the final overread). g26 pp1736: 2901 -> 5042 tok/s
+(1.74x; full-dp4a reference 1723), run-gen argmax MATCH, kernel-check ALL GREEN, q35
+gate MATCH. e2e cell ~0.76x -> ~0.84x. NEXT RUNG: mmq_iq_experts itself runs ~16 TF
+(3.45ms/call, nc=true) — 60x off the CUTLASS int8 rate; the expert GEMM kernel is the
+remaining prefill wall, and the g26 DECODE router (lone-warp, 25.4us x 30 layers —
+the w8 twin is knife-edge-blocked on this model) is the decode rung.

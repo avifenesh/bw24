@@ -4618,12 +4618,27 @@ impl HybridModel {
                                            m.up_exps.qtype, m.up_exps.row_bytes)?)
             };
             let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
-            let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
             let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
             let pself = e.htod_i32(&pair_self)?;
-            let y_down = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
-                                                   n_ff_exp, n_embd, n_expert, n_active, n_pairs,
-                                                   m.down_exps.qtype, m.down_exps.row_bytes)?;
+            // DOWN through the int8-MMA expert GEMM (2026-07-31, g26 prefill lever): the
+            // ragged k (n_ff_exp=704 on the 26B) rides a PADDED k-walk — in_f rounds up
+            // to the 256-val superblock (768) while the act quantizer's zero padding
+            // makes every padded-k product exactly zero (weight overread bytes multiply
+            // zero int8 act values; the dev slab carries 144B tail slack for the OOB).
+            // The old dp4a matvec was 11.3ms/call at m=T (the 0.07x prefill wall).
+            // MEMRA_GEMMA_MOE_MMA=0 reverts down together with gate/up.
+            let y_down = if mma {
+                let in_pad = n_ff_exp.div_ceil(256) * 256;
+                let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
+                e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
+                                 in_pad, n_embd, n_active, n_pairs, n_pairs,
+                                 m.down_exps.qtype, m.down_exps.row_bytes)?
+            } else {
+                let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+                e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
+                                          n_ff_exp, n_embd, n_expert, n_active, n_pairs,
+                                          m.down_exps.qtype, m.down_exps.row_bytes)?
+            };
             let mut moe_out = e.uninit(t * n_embd)?;
             e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
             return Ok(moe_out);

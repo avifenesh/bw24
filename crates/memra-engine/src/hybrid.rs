@@ -244,7 +244,11 @@ fn build_dev_exps(
             e.htod_bytes_padded(up.bytes.as_bytes(), 8)?,
         )
     };
-    let d = e.htod_bytes_padded(down.bytes.as_bytes(), 8)?;
+    // 144B tail slack (2026-07-31, g26 prefill lever): the ragged-k expert MMA walks
+    // whole 256-val superblocks — the LAST row's final partial superblock overreads up
+    // to 144B past the slab (harmless bytes: the act's zero-padded k-range multiplies
+    // every overread weight to zero; the slack only prevents the OOB fault).
+    let d = e.htod_bytes_padded(down.bytes.as_bytes(), 144)?;
     let mut host = vec![0u64; 3 * n_expert];
     let (pg, pu, pd) = {
         let (pg, _e0) = g.device_ptr(e.stream());
