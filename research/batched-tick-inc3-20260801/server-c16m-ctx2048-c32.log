@@ -1,0 +1,32 @@
+[server] starting; models config = [("qwen", "/home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] qwen: decode chunk cap 16 (exact-16 tier)
+[server] worker ready; serving models: ["qwen"]
+[server] listening on http://127.0.0.1:8093
+[prime-batch] B=2 tokens=452 in 91.0ms
+[prime-batch] B=6 tokens=1356 in 251.3ms
+[prime-batch] B=6 tokens=1356 in 253.2ms
+[prime-batch] B=6 tokens=1356 in 269.6ms
+[prime-batch] B=6 tokens=1356 in 263.9ms
+[prime-batch] B=6 tokens=1356 in 255.3ms
+[prime-batch] B=2 tokens=452 in 93.4ms
+[prime-batch] B=6 tokens=1356 in 256.8ms
+[prime-batch] B=6 tokens=1356 in 268.7ms
+[prime-batch] B=6 tokens=1356 in 277.1ms
+[prime-batch] B=6 tokens=1356 in 279.0ms
+[prime-batch] B=6 tokens=1356 in 278.5ms
+[prime-batch] B=2 tokens=452 in 93.9ms
+[prime-batch] B=6 tokens=1356 in 251.7ms
+[prime-batch] B=6 tokens=1356 in 259.4ms
+[prime-batch] B=6 tokens=1356 in 262.2ms
+[prime-batch] B=6 tokens=1356 in 264.1ms
+[prime-batch] B=6 tokens=1356 in 260.5ms
+[prime-batch] B=2 tokens=452 in 93.3ms
+[prime-batch] B=6 tokens=1356 in 254.6ms
+[prime-batch] B=6 tokens=1356 in 261.2ms
+[prime-batch] B=6 tokens=1356 in 265.2ms
+[prime-batch] B=6 tokens=1356 in 267.2ms
+[prime-batch] B=6 tokens=1356 in 263.0ms

@@ -93,12 +93,19 @@ Audit of what crossed D2H per token per seq in the worker tick (devsample + lean
   remains BY DESIGN (host sampler needs the row; not the load-harness path).
 - Retire-time pool park: one D2H per RETIRED session (inc2's lean design) — untouched.
 
-The drop: `decode_step_batch_sampled_lean_defer` writes each device-sampled row's token
-into a caller-owned per-tick device buffer (same argmax/gumbel launches, different
-output slot — values bit-unchanged); the worker accumulates every chunk of the tick
-there and performs **ONE dtoh_u32 after the last chunk** = one D2H + one sync per tick,
-chunks pipeline back-to-back. `MEMRA_SERVE_TOKDEFER=0` rollback seam (the exact pre-3c
-tick). Engine callers with `defer=None` are byte-identical to inc2.
+The drop (BUILT, MEASURED FLAT, KILLED): a deferred variant wrote each device-sampled
+row's token into a caller-owned per-tick device buffer (same argmax/gumbel launches,
+different output slot — values bit-unchanged, greedy-hash + check-batch-exact receipts
+identical); the worker accumulated every chunk of the tick there and performed ONE
+dtoh_u32 after the last chunk = one D2H + one sync per tick instead of one per chunk.
+Serve A/B (N=4 medians, base=seam-off vs defer=on, same binary): c8 377.3 vs 375.3,
+c16 369.5 vs 372.2, c32 370.3 vs 368.6 tok/s — FLAT within ±0.7% at every load point,
+as the arithmetic predicts (3 saved syncs ≈ 0.1% of a ~100 ms weight-bound tick; at
+the new chunk-16 default it is 1 saved sync). Killed per the flags doctrine (flat ⇒
+kill the flag and dispatch arm; the JSONL rows are the record). The audit conclusion
+stands as the increment's 3c finding: the serving tick's steady-state D2H floor is one
+[B]-u32 token readback per CHUNK and NOTHING per seq; the per-tick fold is below
+measurement resolution on this rig.
 
 ## Serving receipts (single 5090 replica, fresh server per point, arms interleaved)
 
@@ -117,9 +124,43 @@ cap 16 (exact-16 tier)` (server-exact-c16m.log); naked arms log cap 8. Raw:
 batch-exact-{base,defer,c16m}.{log,jsonl}, greedy-hash-inc3.log, exact-refs.json.
 
 A/B round (temp 0.7, ~200-tok prompt, 128-tok gens, requests=4c, N=4 per (arm,c),
-gpu5090.lock held per point):
+fresh server per point, gpu5090.lock held per point, raw: serve-points.jsonl /
+sv-*.log / server-*.log / metrics-*.json):
 
-FILL-AB-TABLE
+Phase 1 — 3c isolate (same binary; base = MEMRA_SERVE_TOKDEFER=0):
+
+| c | base med | defer med | delta |
+|---|---|---|---|
+| 8 | 377.3 | 375.3 | -0.5% (noise) |
+| 16 | 369.5 | 372.2 | +0.7% (noise) |
+| 32 | 370.3 | 368.6 | -0.5% (noise) |
+
+→ FLAT; arm killed (see 3c section). All 24 points 0 errors. Aggregate is
+c-independent ~370 — the weight-stream-bound signature from inc2 reproduces on the
+5090 at chunk 8.
+
+Phase 2 — chunk width isolate (BOTH arms carry the q8rp mirror; c8m pins width 8 via
+the door, c16m rides the auto exact-16 policy — server-log receipts):
+
+| c | c8m med | c16m med | chunk-16 delta | c16m vs naked base |
+|---|---|---|---|---|
+| 16 | 416.4 [405.1,419.2] | **494.5** [472.7,509.9] | **+18.8%** (p50 4.92→4.16 s) | **+33.8%** |
+| 32 @ctx8192 | 368.6* | 471.0* | (capacity-clipped cells) | — |
+| 32 @MEMRA_CTX=2048 | — | **502.1**, 128/128 ok (N=1) | — | **+35.6%** |
+
+(*) every c=32 mirror point at the default MEMRA_CTX=8192 admitted only ~27 of 32
+sessions — 101/128 requests failed with the captured
+`cache alloc failed: CUDA_ERROR_OUT_OF_MEMORY` (server also logs `[prime-batch] failed
+(CUDA_ERROR_OUT_OF_MEMORY)` fallbacks; concurrent GPU state: 9.5 GB weights + 8.4 GB
+mirror + 32×~119 MB ctx-8192 sessions > 24 GB). The 5090 deployment envelope for the
+mirror config: ~27 ctx-8192 sessions, OR set MEMRA_CTX to the workload (machine-specific
+config knob per the flags doctrine) — at MEMRA_CTX=2048 the same cell runs clean at
+502.1 tok/s. Naked (mirror-less) c=32 serves 128/128 at every point.
+
+Post-kill confirmation (final binary, killed 3c arm): base-c16 383.4 | c8m-c16 421.4
+(chunk-cap-8 log receipt) | c16m-c16 502.9 — the chunk-16 win stands without the defer
+plumbing; check-batch-exact postkill-c16m PASS 16/16 vs the same shared refs;
+greedy-hash still `28ca31bb8fb5aae3` (4/4 arms across the day).
 
 ## (3b) graphed batched tick — blocker map (not forced)
 
@@ -168,3 +209,12 @@ FILL-AB-TABLE
    bit-identity 160 steps GREEN. The plumbing-bug signature (step 0-2 on EVERY draw)
    is absent — this is the accepted near-tie roulette; the 6-seed rule needs a 5090
    recalibration pass (left for the gate's owner lane; gate2/gate3 arbitrate here).
+4. zsh env-splitting bug in an INLINE post-kill point: `env $VAR` with
+   VAR="MEMRA_Q8RP=1 MEMRA_DECODE_BATCH_CAP=8" does not word-split under zsh — the
+   whole string became MEMRA_Q8RP's value, CAP stayed unset, and the point silently
+   ran the auto chunk-16 policy. Caught by the server-log `decode chunk cap` receipt
+   (the point read 505.4 ≈ the c16m twin — serve-points.jsonl label
+   `c8m-c16-r5postkill` is really a second c16m sample; the corrected bash re-run
+   `c8m-c16-r5bpostkill` = 421.4 with the cap-8 log line). The phase-1/2 script ran
+   under bash (correct splitting, per-point cap receipts verified). Rule: pass env as
+   explicit `env K=V K=V` argv, never a single string through a shell variable.

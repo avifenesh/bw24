@@ -169,28 +169,14 @@ impl HybridModel {
         samp: &[Option<(f32, u64, u32)>],
         lean: bool,
     ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
-        self.decode_step_batch_sampled_lean_defer(e, tokens, caches, samp, lean, None)
-    }
-
-    /// `decode_step_batch_sampled_lean` + DEFERRED TOKEN READBACK (increment 3c, 2026-08-01):
-    /// with `defer = Some((buf, off))`, each device-sampled row bi writes its token into the
-    /// CALLER's device buffer at `buf[off + bi]` and NO D2H happens inside this step — the
-    /// returned `next` entries for those rows are None and the caller performs ONE
-    /// `dtoh_u32(buf)` after enqueuing every chunk of the tick. This removes the per-chunk
-    /// [B]-u32 readback AND its stream sync (the sync serialized chunk launches host-side:
-    /// 4 syncs/tick at 32 sessions chunked by 8 become 1). Token VALUES are bit-unchanged —
-    /// the same argmax/gumbel launches write to a different slot (gate3 contract; the
-    /// serving-level arbiter is the greedy-hash battery). `defer = None` is the previous
-    /// method byte-for-byte.
-    pub fn decode_step_batch_sampled_lean_defer(
-        &self,
-        e: &Engine,
-        tokens: &[u32],
-        caches: &mut [&mut Cache],
-        samp: &[Option<(f32, u64, u32)>],
-        lean: bool,
-        defer: Option<(&mut CudaSlice<u32>, usize)>,
-    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        // NOTE (inc3 3c, 2026-08-01, KILLED ARM): a deferred-token-readback variant (all
+        // chunks of a tick writing device-sampled tokens into one shared buffer, ONE
+        // dtoh_u32 after the last chunk instead of one per chunk) measured FLAT at serve
+        // level on the 5090 (N=4 medians within +-0.7% at c=8/16/32 — 3 saved syncs
+        // against a ~100 ms weight-bound tick is ~0.1%, below resolution). Killed per the
+        // flags doctrine; receipts research/batched-tick-inc3-20260801 (serve-points.jsonl
+        // base vs defer arms) are the record. The per-chunk [B]-u32 readback below IS the
+        // tick's only steady-state D2H — one per chunk, none per seq.
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
         // MEMRA_DECODE_BATCH_CAP (experimental door, serving-lane tier probe 2026-08-01):
@@ -579,40 +565,25 @@ impl HybridModel {
         let n_vocab = self.output.out_features();
         let mut next: Vec<Option<u32>> = vec![None; b_n];
         if samp.iter().take(b_n).any(|s| s.is_some()) {
-            // Deferred mode targets the caller's per-tick buffer at `off`; immediate mode
-            // keeps a local [B] buffer + the in-step readback (the pre-3c tick).
-            let mut local_toks: Option<CudaSlice<u32>> = None;
-            let deferred = defer.is_some();
-            let (tbuf, toff): (&mut CudaSlice<u32>, usize) = match defer {
-                Some((buf, off)) => {
-                    assert!(buf.len() >= off + b_n, "defer token buffer too small");
-                    (buf, off)
-                }
-                None => {
-                    local_toks = Some(e.alloc_u32_zeroed(b_n)?);
-                    (local_toks.as_mut().unwrap(), 0)
-                }
-            };
+            let mut toks = e.alloc_u32_zeroed(b_n)?;
             let mut perturb: Option<CudaSlice<f32>> = None;
             for (bi, s) in samp.iter().take(b_n).enumerate() {
                 let Some((temp, seed, ctr)) = s else { continue };
                 if *temp <= 0.0 {
-                    e.argmax_token_device_col(&logits, bi, n_vocab, tbuf, toff + bi)?;
+                    e.argmax_token_device_col(&logits, bi, n_vocab, &mut toks, bi)?;
                 } else {
                     if perturb.is_none() {
                         perturb = Some(e.zeros(n_vocab)?);
                     }
                     let pb = perturb.as_mut().unwrap();
                     e.gumbel_perturb_col(&logits, bi, pb, n_vocab, *seed, *ctr, *temp)?;
-                    e.argmax_token_device_col(pb, 0, n_vocab, tbuf, toff + bi)?;
+                    e.argmax_token_device_col(pb, 0, n_vocab, &mut toks, bi)?;
                 }
             }
-            if !deferred {
-                let host_toks = e.dtoh_u32(local_toks.as_ref().unwrap())?;
-                for (bi, s) in samp.iter().take(b_n).enumerate() {
-                    if s.is_some() {
-                        next[bi] = Some(host_toks[bi]);
-                    }
+            let host_toks = e.dtoh_u32(&toks)?;
+            for (bi, s) in samp.iter().take(b_n).enumerate() {
+                if s.is_some() {
+                    next[bi] = Some(host_toks[bi]);
                 }
             }
         }
