@@ -5313,14 +5313,16 @@ impl Engine {
                 self.qmatvec_dp4a_named(
                     if *rp { "qmatvec_nvfp4_dp4a_rp" } else { "qmatvec_nvfp4_dp4a" },
                     bytes, x, m, in_f, out_f, *row_bytes)?,
-            // IQ4_XS optional fast path (gate behind a second env var; Stage-A is the default).
+            // IQ4_XS trunk fast path — DEFAULT ON since 2026-08-02 (MEMRA_IQ_FAST=0 reverts to
+            // Stage-A; see iq_fast_enabled). The old opt-in default was the KAT-Coder decode
+            // anomaly (research/kat-anomaly-20260802/).
             GpuTensor::Quant { bytes, qtype, row_bytes, .. }
-                if fast && *qtype == QT_IQ4_XS && std::env::var("MEMRA_IQ_FAST").is_ok() =>
+                if fast && *qtype == QT_IQ4_XS && Self::iq_fast_enabled() =>
                 self.qmatvec_iq4_XS_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
-            // B3: IQ3_S and (default) IQ4_XS use the Stage-A f32 dequant-in-kernel path. There is
-            // NO qmatvec_iq3_s_dp4a / (default) iq4_XS fast kernel — do NOT add a `*qtype == QT_IQ3_S`
-            // (or unconditional QT_IQ4_XS) fast guard here without first writing the matching kernel,
-            // or func() will panic "kernel ... not in any fatbin".
+            // B3: IQ3_S uses the Stage-A f32 dequant-in-kernel path. There is NO
+            // qmatvec_iq3_s_dp4a kernel — do NOT add a `*qtype == QT_IQ3_S` fast guard here
+            // without first writing the matching kernel, or func() will panic
+            // "kernel ... not in any fatbin".
             GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } =>
                 // Stage-A generic: repacked NVFP4 uses the device-side split-plane tag (the
                 // deq(row,j) form cannot address the planes; same value/product order).
@@ -5348,7 +5350,7 @@ impl Engine {
         match w {
             GpuTensor::Quant { qtype, .. } => matches!(*qtype,
                 QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3 | QT_Q4_0)
-                || (*qtype == QT_IQ4_XS && std::env::var("MEMRA_IQ_FAST").is_ok()),
+                || (*qtype == QT_IQ4_XS && Self::iq_fast_enabled()),
             GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => false,
         }
     }
@@ -6457,6 +6459,18 @@ impl Engine {
     /// HBM/L2 once for m tokens (vs grid.y=m re-reading m times). The 5 daily-hot dtypes have them.
     pub fn batched_supports(&self, qtype: i32) -> bool {
         matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4 | QT_F8_E4M3 | QT_Q4_0)
+    }
+
+    /// IQ4_XS trunk fast seam: MEMRA_IQ_FAST=0 reverts non-expert IQ4_XS matmuls to the Stage-A
+    /// f32 oracle path. Default ON since 2026-08-02 (research/kat-anomaly-20260802/): the old
+    /// opt-in default left every IQ4_XS-trunk artifact (KAT-Coder IQ4_XS: attn_qkv/attn_gate/
+    /// ssm_out/shexp, ~0.52GB re-read per decode tick) on the oracle kernel — decode 106.7 ->
+    /// 193.4 tok/s (x5 interleaved), pp512 228 -> 697, same bytes, via qmatvec_iq4_XS_dp4a. The
+    /// supported artifacts carry IQ4_XS only in EXPERT banks (their own dispatch, not this seam),
+    /// so this admission is dispatch-unchanged for every non-IQ4_XS-trunk model.
+    pub fn iq_fast_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("MEMRA_IQ_FAST").map(|v| v != "0").unwrap_or(true))
     }
 
     /// b8 tier seam: MEMRA_B8=0 keeps m=5..8 on the per-m grid.y=m path (m=2..4 batched dispatch
