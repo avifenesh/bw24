@@ -73,3 +73,11 @@
   [f16g2 rep3] decision=RESIDENT prime-gate=none tokens_sha=c0c12c3b350dc7f5
 DOOR-SWEEP-DONE 2026-08-01T23:07:30Z
 === O35B F16G2 KNOB SWEEP 2026-08-01T23:10:43Z git=5cfad376 profile=performance ===
+  [sk0] pp2048 med5 = 3289.5
+  [sk32] pp2048 med5 = 3306.8
+  [sk128] pp2048 med5 = 3323.7
+  [cross32] pp2048 med5 = 3452.3
+  [cross64] pp2048 med5 = 3459.9
+  [cross128] pp2048 med5 = 3425.6
+  [cross256] pp2048 med5 = 3393.3
+KNOB-SWEEP-DONE 2026-08-01T23:14:22Z

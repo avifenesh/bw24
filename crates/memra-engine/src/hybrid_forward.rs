@@ -3212,7 +3212,19 @@ impl HybridModel {
         // layer) fail q8_expert_dec_supported but dequant fine to f16, so f16g must be able to
         // take a layer the MMQ arm would reject. Same t >= mma_t floor as MMA: decode and
         // spec-verify batches must ride the dp4a path whose FP order matches the T=1 chain.
-        let f16g = crate::moe_f16g_on() && t >= mma_t
+        // AUTO-KQUANT (mode 3, sm_120a naked default, lane/q4k-expert-prefill 2026-08-02):
+        // admit f16g ONLY where the MMA arm can't take the layer's QTYPES — the k-quant expert
+        // class whose baseline is the per-pair _em fallback (Ornith-35B Q4_K: board-2048 3.14x).
+        // MMA-capable layers (IQ3_S/IQ4_XS/Q4_0 banks: q35, KAT) keep their measured-faster
+        // MMQ tiles; explicit =1/=2 keeps forcing all-layer admission (the A/B door). Keyed on
+        // qtype capability, NOT use_mma, so MEMRA_MOE_MMA=0 stays a pure dp4a rollback seam.
+        let mma_capable = q8_expert_dec_supported(m.gate_exps.qtype)
+            && q8_expert_dec_supported(m.up_exps.qtype)
+            && q8_expert_dec_supported(m.down_exps.qtype)
+            && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
+        let f16g_mode = crate::moe_f16g_mode();
+        let f16g = f16g_mode != 0 && t >= mma_t
+            && (f16g_mode != 3 || !mma_capable)
             && f16g_proj_ok(m.gate_exps.qtype, n_embd)
             && f16g_proj_ok(m.up_exps.qtype, n_embd)
             && f16g_proj_ok(m.down_exps.qtype, n_ff_exp);
