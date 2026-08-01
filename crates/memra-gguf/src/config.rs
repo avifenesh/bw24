@@ -16,6 +16,8 @@ pub enum Arch {
     Hy3,          // dense full-attention + MoE FFN: sigmoid router + bias + shared MLP, QK-norm
     Gemma4,       // hybrid SWA(1024)/global 5:1, per-layer kv-heads+head_dim+rope, K=V globals,
                   // 128-expert MoE + parallel shared FFN, gelu_tanh, softcap 30, layer_output_scale
+    GlmDsa,       // GLM-5/5.2: MLA attention (latent KV, MQA decode) + DSA sparse indexer +
+                  // deepseek-style MoE (sigmoid router + noaux_tc bias) + 1 NextN/MTP layer
     Llama,
     Other(String),
 }
@@ -35,6 +37,7 @@ impl Arch {
             "minimax-m3" => Arch::MinimaxM3,
             "hy3" => Arch::Hy3,
             "gemma4" => Arch::Gemma4,
+            "glm-dsa" => Arch::GlmDsa,
             "llama" => Arch::Llama,
             other => Arch::Other(other.to_string()),
         }
@@ -52,6 +55,8 @@ impl Arch {
             // MiniMax-M3 (incl the VL wrapper model_type; text_config flattening handles the rest)
             "minimax_m3" | "minimax_m3_vl" | "minimax_m3_text" => "minimax-m3",
             "hy_v3" | "hy3" => "hy3",
+            // GLM-5/5.2 (HF `GlmMoeDsaForCausalLM`, model_type `glm_moe_dsa`)
+            "glm_moe_dsa" => "glm-dsa",
             "llama" => "llama",
             other => other,
         };
@@ -63,11 +68,13 @@ impl Arch {
     /// `Model` has no decode path — and M3 already proved the dense-attention-MoE-as-degenerate-
     /// hybrid shape end to end. "Not qwen35 hybrid" holds where it matters: zero SSM/linear layers.)
     pub fn is_hybrid(&self) -> bool {
-        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3 | Arch::Hy3 | Arch::Gemma4)
+        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3 | Arch::Hy3 | Arch::Gemma4
+                     | Arch::GlmDsa)
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
-        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3 | Arch::Hy3 | Arch::Gemma4)
+        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3 | Arch::Hy3
+                     | Arch::Gemma4 | Arch::GlmDsa)
     }
     /// MiniMax-M3: sigmoid router (+e_score_correction_bias), gemma-norm, swigluoai clamp,
     /// Mixtral-style expert tensor names. Full attention v0 (MSA is bit-exact-degenerate <=2048
@@ -155,6 +162,67 @@ pub struct Gemma4Config {
     pub suppress_tokens: Vec<u32>,
 }
 
+/// DSA (DeepSeek Sparse Attention) lightning-indexer geometry (GLM-5.2). Parsed when the GGUF
+/// carries the `attention.indexer.*` keys; consumed by increment 6 (indexer arm). GLM-5.2:
+/// 32 heads x 128 (64 rope + 64 nope), top-k 2048, 21 "full" layers (own top-k) + 57 "shared"
+/// (reuse the previous full layer's indices — IndexShare/IndexCache, arXiv 2603.12201).
+#[derive(Debug, Clone)]
+pub struct DsaConfig {
+    pub index_n_heads: u32,      // glm-dsa.attention.indexer.head_count (32)
+    pub index_head_dim: u32,     // glm-dsa.attention.indexer.key_length (128)
+    pub index_top_k: u32,        // glm-dsa.attention.indexer.top_k (2048)
+    /// Per TRUNK layer: true = "full" indexer layer (own top-k selection + indexer tensors),
+    /// false = "shared" (reuses the previous full layer's top-k; NO indexer tensors in the GGUF).
+    /// glm-dsa.attention.indexer.types, [bool; n_trunk]. Empty if the key is absent (pre-5.2
+    /// GLM GGUFs: all layers full — llama.cpp BC default).
+    pub indexer_full: Vec<bool>,
+}
+
+/// llama.cpp `GLM_5_2_DEFAULT_INDEXER_TYPES` (glm-dsa.cpp): full-indexer layers at 0,1 then
+/// every 4th from 2 — {0,1,2,6,10,...} — i.e. 21 full / 57 shared over 78 trunk layers. This is
+/// NOT just BC: the 2026-06 unsloth GLM-5.2 GGUFs ship WITHOUT the `attention.indexer.types`
+/// key (verified from the artifact header 2026-08-01, research/mla-inc2-20260801/ARTIFACT.md),
+/// so the default table is what actually drives layer classification on the real artifact.
+pub fn glm52_default_indexer_types(n_trunk: usize) -> Vec<bool> {
+    (0..n_trunk).map(|i| i < 2 || (i - 2) % 4 == 0).collect()
+}
+
+/// MLA (multi-head latent attention) geometry + glm-dsa router knobs, parsed from the GGUF keys
+/// the llama.cpp converter writes (pinned in research/mla-bringup-20260801/RECEIPTS.md §5).
+/// GLM-5.2 values in comments. The latent KV-cache row is `latent_dim()` = kv_lora_rank +
+/// qk_rope_head_dim (576); V is the first `kv_lora_rank` (512) elements of the SAME row.
+#[derive(Debug, Clone)]
+pub struct MlaConfig {
+    pub q_lora_rank: u32,        // glm-dsa.attention.q_lora_rank (2048)
+    pub kv_lora_rank: u32,       // glm-dsa.attention.kv_lora_rank (512)
+    /// Per-head qk dim AFTER decompression (nope + rope) — glm-dsa.attention.key_length_mla (256).
+    /// The softmax scale is 1/sqrt(THIS), not of the absorbed 576 width (DESIGN.md §1.3).
+    pub qk_head_dim: u32,
+    pub qk_nope_head_dim: u32,   // qk_head_dim - qk_rope_head_dim (192)
+    pub qk_rope_head_dim: u32,   // glm-dsa.rope.dimension_count (64)
+    /// Per-head v dim after decompression — glm-dsa.attention.value_length_mla (256).
+    pub v_head_dim: u32,
+    // ---- deepseek-style sigmoid router (the Hy3/M3-class knobs, glm-dsa key names) ----
+    pub sigmoid_routing: bool,       // expert_gating_func == 2 (sigmoid); absent => sigmoid (BC)
+    pub routed_scaling_factor: f32,  // glm-dsa.expert_weights_scale (2.5)
+    pub route_norm: bool,            // glm-dsa.expert_weights_norm (norm_topk_prob: true)
+    pub n_shared_experts: u32,       // glm-dsa.expert_shared_count (1)
+    pub first_k_dense_replace: u32,  // glm-dsa.leading_dense_block_count (3)
+    // ---- DSA indexer (None when the GGUF carries no indexer keys) ----
+    pub dsa: Option<DsaConfig>,
+}
+
+impl MlaConfig {
+    /// Latent KV-cache row width: [rmsnorm(c_kv) | rope(k_pe)] — 576 on GLM-5.2. This is what
+    /// `attention.key_length` carries in a glm-dsa GGUF (cross-checked at parse).
+    pub fn latent_dim(&self) -> u32 { self.kv_lora_rank + self.qk_rope_head_dim }
+    /// The V view is the first kv_lora_rank (512) elements of each latent row — what
+    /// `attention.value_length` carries in a glm-dsa GGUF. No separate V plane exists.
+    pub fn v_view_dim(&self) -> u32 { self.kv_lora_rank }
+    /// Softmax scale: 1/sqrt(qk_head_dim) = 1/16 on GLM-5.2 (mscale = 1, no yarn).
+    pub fn scale(&self) -> f32 { 1.0 / (self.qk_head_dim as f32).sqrt() }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub arch: Arch,
@@ -182,6 +250,8 @@ pub struct ModelConfig {
     // Hy3 extras (None for every other arch)
     pub hy3: Option<Hy3Config>,
     pub gemma4: Option<Gemma4Config>,
+    // MLA extras — glm-dsa only (None for every other arch)
+    pub mla: Option<MlaConfig>,
     // multi-token-predict / NextN
     pub nextn_predict_layers: u32,
     pub n_layer_total: u32,             // includes appended MTP layers
@@ -256,6 +326,72 @@ impl ModelConfig {
                 })
             } else { None };
 
+        // glm-dsa MLA + DSA keys (RECEIPTS.md §5 — the exact set the llama.cpp converter writes).
+        let mla = if matches!(&arch, Arch::GlmDsa) {
+            let q_lora_rank = u("attention.q_lora_rank").expect("glm-dsa: attention.q_lora_rank");
+            let kv_lora_rank = u("attention.kv_lora_rank").expect("glm-dsa: attention.kv_lora_rank");
+            let qk_head_dim =
+                u("attention.key_length_mla").expect("glm-dsa: attention.key_length_mla");
+            let v_head_dim =
+                u("attention.value_length_mla").expect("glm-dsa: attention.value_length_mla");
+            let qk_rope_head_dim =
+                u("rope.dimension_count").expect("glm-dsa: rope.dimension_count");
+            assert!(qk_rope_head_dim < qk_head_dim,
+                    "glm-dsa: rope dim {qk_rope_head_dim} >= qk head dim {qk_head_dim}");
+            // Cross-checks (DESIGN.md §3.1): attention.key_length is the LATENT cache row
+            // (kv_lora_rank + rope), attention.value_length its V prefix view (kv_lora_rank).
+            // A projection-wide mismatch here means a mis-converted GGUF — fail at load, loudly.
+            if let Some(kl) = u("attention.key_length") {
+                assert_eq!(kl, kv_lora_rank + qk_rope_head_dim,
+                    "glm-dsa: attention.key_length {kl} != kv_lora_rank + rope {}",
+                    kv_lora_rank + qk_rope_head_dim);
+            }
+            if let Some(vl) = u("attention.value_length") {
+                assert_eq!(vl, kv_lora_rank,
+                    "glm-dsa: attention.value_length {vl} != kv_lora_rank {kv_lora_rank}");
+            }
+            // Router: expert_gating_func 2 = sigmoid; ABSENT defaults to sigmoid (llama.cpp
+            // glm-dsa BC — load_arch_hparams maps NONE -> SIGMOID).
+            let sigmoid_routing = u("expert_gating_func").map(|v| v == 2).unwrap_or(true);
+            // DSA indexer: present iff the converter wrote the indexer keys (GLM-5/5.1/5.2 all do).
+            let dsa = u("attention.indexer.head_count").map(|index_n_heads| DsaConfig {
+                index_n_heads,
+                index_head_dim: u("attention.indexer.key_length")
+                    .expect("glm-dsa: attention.indexer.key_length"),
+                index_top_k: u("attention.indexer.top_k")
+                    .expect("glm-dsa: attention.indexer.top_k"),
+                indexer_full: match g.meta_arch("attention.indexer.types") {
+                    Some(MetaValue::Array(a)) =>
+                        a.iter().filter_map(|v| v.as_u64().map(|x| x != 0)).collect(),
+                    // Key absent (the real 2026-06 unsloth GLM-5.2 GGUF!): llama.cpp BC —
+                    // 5.2-class (ctx >= 1M) takes the hardcoded 21-full/57-shared table,
+                    // pre-5.2 GLM (ctx < 1M) is all-full.
+                    _ => {
+                        let n_trunk = (n_layer - nextn) as usize;
+                        if u("context_length").unwrap_or(0) >= 1_048_576 {
+                            glm52_default_indexer_types(n_trunk)
+                        } else {
+                            vec![true; n_trunk]
+                        }
+                    }
+                },
+            });
+            Some(MlaConfig {
+                q_lora_rank,
+                kv_lora_rank,
+                qk_head_dim,
+                qk_nope_head_dim: qk_head_dim - qk_rope_head_dim,
+                qk_rope_head_dim,
+                v_head_dim,
+                sigmoid_routing,
+                routed_scaling_factor: f("expert_weights_scale").unwrap_or(1.0),
+                route_norm: u("expert_weights_norm").map(|v| v != 0).unwrap_or(false),
+                n_shared_experts: u("expert_shared_count").unwrap_or(0),
+                first_k_dense_replace: u("leading_dense_block_count").unwrap_or(0),
+                dsa,
+            })
+        } else { None };
+
         ModelConfig {
             arch,
             name: g.metadata.get("general.name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -281,6 +417,7 @@ impl ModelConfig {
             m3: None,   // GGUF M3 metadata keys are a later arc (ST import first)
             hy3: None,  // GGUF Hy3 metadata keys are a later arc (repack source first)
             gemma4,
+            mla,
             nextn_predict_layers: nextn,
             n_layer_total: n_layer + nextn,
         }
@@ -390,6 +527,7 @@ impl ModelConfig {
             m3,
             hy3,
             gemma4: None,   // ST gemma4 route: config wiring when that arc opens
+            mla: None,      // GGUF-first arch (glm-dsa): HF/safetensors import is a later arc
             // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; the 27B (dense hybrid)
             // uses `mtp_num_hidden_layers` (NVIDIA + local text ckpts) — same meaning, both = 1.
             nextn_predict_layers: c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
@@ -429,7 +567,7 @@ impl ModelConfig {
     /// their wq out is exactly n_head*head_dim, and running the split would read 2x out of bounds.
     /// One predicate so every full-attn site (prefill/prime/decode/dc/spec) agrees.
     pub fn attn_out_gate(&self) -> bool {
-        self.m3.is_none() && self.hy3.is_none() && self.gemma4.is_none()
+        self.m3.is_none() && self.hy3.is_none() && self.gemma4.is_none() && self.mla.is_none()
     }
 
     /// DeepSeek-V3-class sigmoid routing knobs, arch-agnostic: `Some((scaling_factor, route_norm))`
@@ -443,6 +581,11 @@ impl ModelConfig {
         }
         if let Some(hy3) = self.hy3.as_ref() {
             if hy3.sigmoid_routing { return Some((hy3.router_scaling_factor, hy3.route_norm)); }
+        }
+        // glm-dsa: sigmoid + noaux_tc selection bias (exp_probs_b) + routed_scaling 2.5,
+        // norm_topk_prob=true — the exact DeepSeek-V3 recipe M3/Hy3 already ride.
+        if let Some(mla) = self.mla.as_ref() {
+            if mla.sigmoid_routing { return Some((mla.routed_scaling_factor, mla.route_norm)); }
         }
         None
     }
