@@ -31,36 +31,40 @@ binaries from `/tmp` on a terminating box; this convention exists so that never 
 
 ## Phase 1 — first ~2h (GPUs 0-7): weights, gates, comms re-confirm
 
-### 1a. GLM-5.2 weights pull → `/opt/dlami/nvme/models` (starts immediately; network-bound)
+### 1a. Weights pulls → `/opt/dlami/nvme/models` (start immediately; network-bound, zero GPU cost)
 
-The exact artifact command (source, revision, layout) is owned by **lane/mla-inc2's
-`ARTIFACT.md` — reference it, do not duplicate or improvise it here.**
-⚠ As of 2026-08-01 that file is not yet committed (lane/mla-inc2 == restructure/public-split,
-worktree clean) — hard phase-1 dependency, see Gaps below. Start the pull first: it shares
-the window with the Mumbai models rsync and may run long; everything else in phase 1
-proceeds in parallel.
+Two pulls, in this order (mission priority per `research/product-vision-20260801/ASSESSMENT.md`):
+
+1. **Hy3 serving artifact** — the staging manifest comes from **lane/hy3-hopper's receipts**
+   (`research/hy3-hopper-20260801/`): the exact artifact form already first-lit on the Mumbai
+   H100 rsyncs from Mumbai's NVMe copy (box-to-box, the SG rule opens at launch). Record the
+   staged manifest hash (CLAUDE.md staging rule).
+2. **GLM-5.2** — exact commands in `research/mla-inc2-20260801/ARTIFACT.md` (MERGED:
+   unsloth/GLM-5.2-GGUF @ abc55e72, UD-Q4_K_XL, 11 parts, 435.2 GiB, per-file sha256
+   manifest; DevQuasar fallback). Network-bound fill — it must never displace Hy3 staging
+   bandwidth or any GPU work.
 
 ### 1b. M1-finish: multi-device pp2 gates (`MEMRA_PP_DEVICES=0,1`)
 
-The authoritative multi-device forms come from **lane/m1-inc2's command list** (also not
-yet landed — see Gaps). Increment-1 single-device matrix re-confirms first (bit-identity
-gate, from the committed `research/m1-pp2-20260801/` logs):
+**lane/m1-inc2 is MERGED** — the authoritative on-box M1-finish list lives in
+`research/m1-inc2-20260801/` and runs verbatim:
 
 ```
 mkdir -p ~/receipts/m1-pp2
-cargo build --release -p memra-engine --bin pp2-gate
-B=./target/release/pp2-gate; R=~/receipts/m1-pp2
-$B ~/models/Qwen3.5-9B-Q8_0.gguf 16 32     2>&1 | tee $R/q9-defaultsplit.log   # split 16/16
-$B ~/models/Qwen3.5-9B-Q8_0.gguf 16 32 5   2>&1 | tee $R/q9-split5.log
-$B ~/models/Qwen3.5-9B-Q8_0.gguf 16 32 31  2>&1 | tee $R/q9-split31.log
-$B ~/models/gemma-4-12b-it-qat-q4_0.gguf 16 32    2>&1 | tee $R/g12-defaultsplit.log
-$B ~/models/gemma-4-12b-it-qat-q4_0.gguf 16 32 7  2>&1 | tee $R/g12-split7.log
-# then the M1-finish forms, exactly per lane/m1-inc2's command list, shaped like:
-MEMRA_PP_DEVICES=0,1 $B <model.gguf> <P> <N> <split>  2>&1 | tee $R/<model>-dev01-<split>.log
+cargo build --release                                  # arch auto-detects 90a
+./target/release/pp-transport-smoke 2>&1 | tee ~/receipts/m1-pp2/transport-smoke.log
+B=./target/release/pp2-gate; R=~/receipts/m1-pp2; M=~/models/Qwen3.5-9B-Q8_0.gguf
+$B $M                                    2>&1 | tee $R/q9-singledev.log
+MEMRA_PP_DEVICES=0,1 $B $M               2>&1 | tee $R/q9-dev01.log       # THE cross-device gate
+MEMRA_PP_DEVICES=0,1 $B $M 16 32 5       2>&1 | tee $R/q9-dev01-split5.log
+MEMRA_PP_DEVICES=0,1 MEMRA_PP_OVERLAP=1 $B $M 2>&1 | tee $R/q9-dev01-overlap.log
+MEMRA_PP_DEVICES=0,7 $B $M               2>&1 | tee $R/q9-dev07.log       # non-adjacent NVLink pair
 ```
 
-Gate contract: BIT-IDENTICAL logits at every step, prime + generate — any differing bit is
-a seam bug, FAIL.
+Gate contract: BIT-IDENTICAL logits at every step — any differing bit is a seam bug, FAIL.
+Plus one receipt: per-tick boundary cost interleaved ×5 vs M0's 0.3-0.5% prediction
+(weights are peer-read in this placement — correctness-mode, not the perf configuration).
+M1 is DECLARED DONE when this list is green.
 
 ### 1c. M0 a2a re-confirm (new box, new NVSwitch fabric)
 
@@ -101,18 +105,35 @@ verify gate; validate-h100.sh touches the .cu sources for exactly this reason).
 
 ---
 
-## Phase 2 — bulk of the window
+## Phase 2 — bulk of the window (assessment order: Hy3 spike is the centerpiece)
 
-### 2a. M2 PP8 bring-up (all 8 GPUs, PP microbatch)
+### 2a. Hy3 PP-2 serving spike — THE product deliverable of this window
+
+Per `research/product-vision-20260801/ASSESSMENT.md`: Hy3 is the first darklanes SKU
+(top-5 OpenRouter demand on five endpoints, zero new kernel classes, first-light GREEN on
+the Mumbai H100 2026-08-01 — coherent generation, see `research/hy3-hopper-20260801/`).
+Sequence:
+1. Single-H100 replica gates on this box (argmax + short serve) — the Mumbai first-light
+   reproduced on the box artifact copy.
+2. **PP-2 Hy3**: `MEMRA_PP_DEVICES=<a>,<b>` on the Hy3 artifact — the M1 cross-device seam
+   carrying the real SKU. Bit-gate first, then interleaved ×5 throughput.
+3. 2×H100-per-replica fleet point: 4 replicas (GPUs 0-7 paired), serve-fleet + load-serve,
+   in-window denominators.
+4. Exit artifact: exactness receipts + a tok/s and $/Mtok table vs the 5 incumbent Hy3
+   endpoints (pricing pinned in `research/model-demand-20260801/`).
+Receipts → `~/receipts/hy3-spike/`.
+
+### 2b. M2 PP8 bring-up (GPUs as free after 2a)
 
 The M0 verdict (PP ~free at 0.3-0.5% tick, peerAsync > NCCL 2.8x at PP-activation sizes)
-plus the M1 2-stage seam extend to 8 stages with microbatching. Gates before perf: the
-pp2-gate bit-identity contract generalizes — an 8-stage run must match the unsplit
-reference exactly before any throughput number is quoted. Receipts → `~/receipts/m2-pp8/`.
-Scope note: depends on m1-inc2 landing (see Gaps); if it slips, M2 gets the reduced target
-of a 2-stage × 2-device seam proven on this box.
+plus the merged M1 seam extend to N stages with microbatching. M2 needs (from
+`research/m1-inc2-20260801/`): N-stage stage map, weight sharding (peer-read is
+bring-up-only), deferred-readback pipelining, microbatch boundary slots + graph capture.
+Gates before perf: the pp2-gate bit-identity contract generalizes — an 8-stage run must
+match the unsplit reference exactly before any throughput number is quoted.
+Receipts → `~/receipts/m2-pp8/`.
 
-### 2b. MLA increment 3 on real weights (GLM-5.2 from 1a)
+### 2d. MLA increment 3 on real weights (GLM-5.2 from 1a) — LOW-PRIORITY FILL
 
 Order is fixed: **tensor audit → CPU-ref spot check → loader at scale.**
 
@@ -180,23 +201,16 @@ thermal regime.
 
 ---
 
-## Gaps — need a human/owner decision before 2026-08-02T11:30Z
+## Gaps — status as of 2026-08-01 late
 
-1. **lane/mla-inc2 `ARTIFACT.md` does not exist yet** (branch == restructure/public-split,
-   worktree clean as of Aug 1). The GLM-5.2 weights-pull command is the phase-1 critical
-   path; that lane must land it — or the owner supplies source/revision — before box start.
-2. **lane/m1-inc2 command list not landed** (`MEMRA_PP_DEVICES` appears nowhere in the tree
-   yet). Single-device matrix is pre-staged as the fallback; the multi-device gate forms
-   need the lane's code + list.
-3. **M2 PP8 scope call:** no PP8/microbatch code exists on this base (inc-1 is 2-stage
-   single-device). If m1-inc2 slips, how much window does PP8 bring-up still get vs. the
-   fleet/MLA tracks?
-4. **Which commit gets `sync-repo`'d:** likely an integration branch merging m1-inc2 +
-   mla-inc2 + this lane — owner picks the pin (the box tree is not a git repo; the pin is
-   the receipt).
-5. **Root volume baked at 300 GiB gp3** (AMI default is 20 GiB — too small for the
-   toolchain + target trees). ~\$1.3 for the window; veto/resize in `provision-aug2.sh` if
-   wrong.
+1. ~~lane/mla-inc2 ARTIFACT.md~~ **CLOSED** — merged (`research/mla-inc2-20260801/ARTIFACT.md`).
+2. ~~lane/m1-inc2 command list~~ **CLOSED** — merged; 1b above is the verbatim list.
+3. **Hy3 staging manifest:** lane/hy3-hopper still running on Mumbai (first-light GREEN);
+   its receipts supply 1a's staging source. If it hasn't landed by box start, rsync the
+   exact Mumbai NVMe artifact directory it first-lit (the copy IS the manifest).
+4. **sync-repo pin:** the v0.62 release commit on restructure/public-split (cut before box
+   start), which merges every box-relevant lane. The pin is the receipt.
+5. **Root volume baked at 300 GiB gp3** (AMI default 20 GiB too small). ~\$1.3/window;
+   veto/resize in `provision-aug2.sh` if wrong.
 6. **Mumbai SG hygiene:** `launch` auto-revokes the dead Jul-31 box rule
-   (18.117.231.105/32) and adds the new box IP. Flag if that stale rule is wanted for
-   anything else.
+   (18.117.231.105/32) and adds the new box IP. Flag if that stale rule is wanted.
