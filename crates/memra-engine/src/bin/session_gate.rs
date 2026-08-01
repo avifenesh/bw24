@@ -27,13 +27,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // turn 4 = EMPTY suffix (pure continuation burst — the serve pattern): must equal greedy
     // over the full committed history, same oracle as the other turns.
     let turn4: Vec<u32> = Vec::new();
+    // The harness tracks the TRUE context itself (suffixes + every emitted token) instead of
+    // deriving it from session internals: since pending-carry (2026-08-01), `sess.committed`
+    // legitimately lags `out` by one carried token at a burst boundary, so the old
+    // `committed.len() - out.len()` prefix derivation no longer holds — and an oracle that
+    // doesn't read the system under test's internals is stronger anyway.
+    let mut hist: Vec<u32> = Vec::new();
     for (i, suffix) in [turn1, turn2, turn3, turn4].iter().enumerate() {
+        hist.extend_from_slice(suffix);
         let (out, _d, _a) = model.generate_spec_session(&e, &mut sess, suffix, n_new, k)?;
-        // reference: plain greedy over the FULL committed prefix (history includes this turn's
-        // suffix + generated). generate() re-primes from scratch — the independent oracle.
-        let hist_end = sess.committed.len() - out.len();
-        let prefix: Vec<u32> = sess.committed[..hist_end].to_vec();
-        let reference = model.generate(&e, &prefix, out.len())?;
+        // reference: plain greedy over the FULL history (prior turns' suffixes + outputs +
+        // this turn's suffix). generate() re-primes from scratch — the independent oracle.
+        let reference = model.generate(&e, &hist, out.len())?;
+        hist.extend_from_slice(&out);
         let m = if out == reference[..out.len().min(reference.len())] { "MATCH" } else { "MISMATCH" };
         if m == "MISMATCH" { ok = false; }
         println!("turn {}: {} tok generated, committed={} -> {m}", i + 1, out.len(),

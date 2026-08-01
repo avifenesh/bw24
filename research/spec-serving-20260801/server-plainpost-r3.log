@@ -1,0 +1,23 @@
+[server] starting; models config = [("q27", "/opt/dlami/nvme/models/Qwen3.6-27B-Q4_K_M.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /opt/dlami/nvme/models/Qwen3.6-27B-Q4_K_M.gguf
+[q8rp] split-plane decode mirrors built: 449 tensors
+[worker]   loaded "q27": 65 layers, eos=248046
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8185
+[prime-batch] B=2 tokens=452 in 197.7ms
+[prime-batch] B=2 tokens=452 in 192.4ms
+[prime-batch] B=2 tokens=452 in 192.0ms
+[prime-batch] B=2 tokens=452 in 191.9ms
+[prime-batch] B=4 tokens=904 in 345.7ms
+[prime-batch] B=4 tokens=904 in 340.9ms
+[prime-batch] B=4 tokens=904 in 341.0ms
+[prime-batch] B=4 tokens=904 in 340.9ms
+[prime-batch] B=2 tokens=452 in 193.0ms
+[prime-batch] B=6 tokens=1356 in 483.1ms
+[prime-batch] B=2 tokens=452 in 192.1ms
+[prime-batch] B=6 tokens=1356 in 465.5ms
+[prime-batch] B=2 tokens=452 in 192.2ms
+[prime-batch] B=6 tokens=1356 in 465.8ms
+[prime-batch] B=2 tokens=452 in 192.0ms
+[prime-batch] B=6 tokens=1356 in 465.1ms

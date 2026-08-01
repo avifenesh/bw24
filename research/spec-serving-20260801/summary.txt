@@ -1,0 +1,14 @@
+point       agg_tok_s med  n   range            p50_lat   err
+plain-c1            72.5     4    72.1-  72.8     1.76s   0
+plain-c2           111.2     4   111.1- 112.1     2.30s   0
+plain-c4           156.9     3   155.0- 158.0     3.25s   16  (1 dead point: plain-r3-c4)
+plain-c8           182.5     3   181.9- 182.7     5.60s   32  (1 dead point: plain-r3-c8)
+spec-c1           125.5     3   123.8- 126.3     1.01s   0
+spec-c2           126.2     3   124.4- 126.4     2.03s   0
+spec-c4           126.4     3   124.4- 126.5     4.05s   0
+spec-c8           126.5     3   124.8- 126.7     8.09s   0
+c=1: spec/plain = 1.73x
+c=2: spec/plain = 1.14x
+c=4: spec/plain = 0.81x
+c=8: spec/plain = 0.69x
+acceptance over all bursts: 17421/19579 = 0.890 (n_bursts=789)

@@ -1,0 +1,14 @@
+[q8rp] split-plane decode mirrors built: 449 tensors
+turn 1: 48 tok generated, committed=175 -> MISMATCH
+  session:   [195, 196, 197, 199, 200, 201, 202, 203, 204, 205, 206, 207]
+  reference: [194, 195, 196, 197, 199, 200, 201, 202, 203, 204, 205, 206]
+turn 2: 50 tok generated, committed=290 -> MISMATCH
+  session:   [220, 15, 220, 15, 220, 15, 220, 15, 220, 15, 220, 15]
+  reference: [318, 559, 13, 198, 262, 411, 13, 198, 262, 411, 13, 198]
+turn 3: 49 tok generated, committed=373 -> MISMATCH
+  session:   [220, 15, 220, 15, 220, 15, 220, 15, 220, 15, 220, 15]
+  reference: [548, 549, 548, 549, 548, 549, 548, 549, 548, 549, 548, 549]
+turn 4: 48 tok generated, committed=421 -> MISMATCH
+  session:   [15, 220, 15, 220, 15, 220, 15, 220, 15, 220, 15, 220]
+  reference: [220, 15, 220, 15, 220, 15, 220, 15, 220, 15, 220, 15]
+SESSION GATE: FAIL

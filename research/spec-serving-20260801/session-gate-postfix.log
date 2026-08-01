@@ -1,0 +1,6 @@
+[q8rp] split-plane decode mirrors built: 449 tensors
+turn 1: 48 tok generated, committed=176 -> MATCH
+turn 2: 50 tok generated, committed=291 -> MATCH
+turn 3: 49 tok generated, committed=374 -> MATCH
+turn 4: 49 tok generated, committed=423 -> MATCH
+SESSION GATE: ALL TURNS MATCH

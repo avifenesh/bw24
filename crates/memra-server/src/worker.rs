@@ -715,7 +715,16 @@ pub fn run(
         for &i in finished.iter().rev() {
             let s = active.remove(i);
             n_completed += 1;
-            if let Some(sess) = s.spec {
+            if let Some(mut sess) = s.spec {
+                // PENDING-CARRY flush before parking: a parked session must be fully committed
+                // (committed_text drives the text-prefix resume match — an uncommitted pending
+                // would double-feed on resume). One T=1 pass per RETIRED request, not per burst.
+                if sess.pending_tok.is_some() {
+                    if let Err(err) = loaded[&s.model].model.spec_flush_pending(&engine, &mut sess) {
+                        eprintln!("[worker] spec pending flush failed ({err}); dropping session");
+                        continue;
+                    }
+                }
                 if sess.committed.len() >= REUSE_MIN_PREFIX && sess.next_pred.is_some() {
                     // skip the leading BOS when rendering: the client's prompt STRING never
                     // contains it (encode() adds it), so it would poison the text-prefix match.
@@ -1200,8 +1209,10 @@ fn step_session(
     // the session-gate oracle (4 turns incl empty-suffix) pins burst output == fresh greedy.
     if let Some(spec) = s.spec.as_mut() {
         // Burst size trades round-robin latency (other sessions wait a whole burst) against
-        // per-burst fixed cost (generate_spec_session re-runs draft-graph capture + session
-        // setup every call). MEMRA_SPEC_BURST overrides for measurement; 32 = latency-safe default.
+        // per-burst fixed cost. The dominant cost — the per-call draft-graph recapture,
+        // measured ~16ms/burst on H100 q27 — is gone since 2026-08-01: the captured graph
+        // persists on the SpecSession (spec.rs DraftGraphCtx) and later bursts replay it.
+        // MEMRA_SPEC_BURST overrides for measurement; 32 = latency-safe default.
         let burst_t: usize = std::env::var("MEMRA_SPEC_BURST").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(32);
         let k: usize = std::env::var("MEMRA_SPEC_K").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -1209,7 +1220,7 @@ fn step_session(
         if room == 0 { finish(s, StopReason::MaxNew); return Ok(false); }
         let suffix: Vec<u32> = s.prefill_queue.drain(..).collect();
         s.prefill_done = true;
-        if suffix.is_empty() && spec.next_pred.is_none() {
+        if suffix.is_empty() && spec.next_pred.is_none() && spec.pending_tok.is_none() {
             // nothing primed and nothing to prime — shouldn't happen (admit rejects empty prompts)
             finish(s, StopReason::MaxNew); return Ok(false);
         }
@@ -1254,7 +1265,8 @@ fn step_session(
             stop = Some(StopReason::Callback);
         }
         if stop.is_none() && s.generated.len() >= s.budget { stop = Some(StopReason::MaxNew); }
-        if stop.is_none() && spec.committed.len() + k + 2 >= spec.cache_max_ctx() {
+        // +3 (was +2): committed excludes a carried pending token (pending-carry, 2026-08-01).
+        if stop.is_none() && spec.committed.len() + k + 3 >= spec.cache_max_ctx() {
             stop = Some(StopReason::ContextFull);
         }
         if let Some(r) = stop { finish(s, r); return Ok(false); }
