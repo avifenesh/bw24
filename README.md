@@ -26,12 +26,13 @@ against vLLM are published per model. **Use something else when** you have anoth
 **Standing (2026-08-01):** seven supported models on the 5090, all fully gated; every
 MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
 wall or above. On the H100, a full per-model board against vLLM 0.26: **no end-to-end
-losses** — six wins (1.02-1.81x) and one dead-even cell; decode wins 7 of 7. The last
-two losses fell in one day: the 35B MoE's expert prefill jumped +53% when the grouped
-f16 expert lane got full dequant coverage, and the 27B gained a +54% prefill and +16%
-decode from K-quant f16 mirrors and split-plane layout v2. Multi-user serving measured
-on 3xH100: 1,480 tok/s managed fleet, with per-replica throughput since raised +25-36%
-by batching the decode tick's per-sequence work. Every number is a same-session
+losses** — seven wins of seven (1.02-1.81x); decode wins 7 of 7. The last losses fell
+in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
+got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
+f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
+arbitration narrowed that f16g default per dispatch class. Multi-user serving measured
+on 3xH100: 1,477 tok/s managed fleet (chaos-tested: kill a replica mid-load, the
+breaker + supervisor recover in seconds with only in-flight requests lost). Every number is a same-session
 interleaved measurement on a real-text prompt with the argmax exactness gate green;
 trimmed MTP drafter heads are published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
@@ -68,16 +69,19 @@ row). Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-d
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
 | Qwen3.6-35B MoE | **218** | 214 (FP8) | **1.02x** |
-| Gemma-4 26B MoE | 191 | 191 (FP8-dyn) | 1.00x |
+| Gemma-4 26B MoE | **196** | 191 (FP8-dyn) | **1.02x** |
 
-Zero losses: six wins and one dead-even cell, on exact math (the bf16-row wins carry a
-quant-advantage caveat — those vLLM arms move 4x the weight bytes). Decode wins every
-cell (1.05–1.85x; the last two decode losses fell to the shexp fused dot and a
+Zero losses: seven wins, on exact math (the bf16-row wins carry a quant-advantage
+caveat — those vLLM arms move 4x the weight bytes). Decode wins every cell
+(1.05–1.85x; the last two decode losses fell to the shexp fused dot and a
 router-default re-arbitration on real prompts). The last two e2e losses — both MoE
 expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
 reached full dequant coverage and became the Hopper default (expert prefill +53%), the
 27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors
-(+16% decode, bit-identical). Per-cell prefill still trails vLLM on the dense models —
+(+16% decode, bit-identical). The 26B cell flipped from dead-even to a win in round 50,
+when a cross-box interleaved arbitration caught that same f16g default *regressing* the
+gemma expert class −6 to −8% and narrowed it per-model — the board is tuned per
+dispatch class, not per flag. Per-cell prefill still trails vLLM on the dense models —
 the int8-GEMM dtype edge: a Q8_0-exact int8 GEMM is mechanism-refuted on Hopper
 (per-32-block rescale costs 5.4x naive / 17x pipelined; ptxas serializes cross-bank
 GMMA register reads), so crossing it means w8a8-class numerics that change model
@@ -87,7 +91,9 @@ Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4
 mma kernel), fused wgmma GDN chunk kernels with varlen twins, f16 prefill mirrors on
 the cuBLASLt lane for the Q8_0/Q4_0/Q4_K/Q5_K/Q6_K classes, K-quant split-plane decode
 mirrors (bit-identical layout v2, 27B decode +15-16%), the grouped f16 expert lane (one
-grouped GEMM over the routed experts — Hopper default, 35B expert prefill +53%), a
+grouped GEMM over the routed experts — Hopper default for the qwen/silu MoE class, 35B
+expert prefill +53%; per-model off for the gemma class after the round-50 regression
+arbitration), a
 batched serving decode tick (z-batched attention + KV append, device-side sampling,
 lean logits: 654-659 tok/s/replica, +25-36%), an MTP speculative serving fast lane
 (1.82x plain serving at c=1 on the 27B), cross-request prefill batching, per-session
@@ -221,8 +227,8 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
 - **Serving** — OpenAI-compatible server with batched decode (one z-batched tick
   across sequences), cross-request prefill batching, KV prefix reuse, speculative
   serving, and a flat `/metrics` endpoint. Multi-GPU boxes serve as a replica fleet:
-  supervisor + admission proxy + load harness, measured at 1,480 tok/s on 3xH100
-  ([docs/SERVING.md](docs/SERVING.md)).
+  supervisor + admission proxy + load harness, measured at 1,477 tok/s managed on
+  3xH100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
 - **Loaders** — GGUF (memory-mapped) and safetensors (modelopt NVFP4 byte-exact).
 
 ## Correctness discipline
