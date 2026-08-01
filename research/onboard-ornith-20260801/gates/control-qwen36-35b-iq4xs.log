@@ -1,0 +1,20 @@
+[moe] resident-experts decision: per-layer 373MB x 41 layers = 15.3GB vs budget 19.1GB -> RESIDENT
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Write a one-line Python function that reverses a string.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Write a one-line Python function that reverses a string."
+prompt tokens: [248045, 846, 198, 7734, 264, 799, 8187, 12654, 709, 421, 16915, 287, 264, 886, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=8160  decode argmax=8160  logit maxdiff=9.365e-1  MATCH
+prefill 22 tok in 0.0630s = 349.1 tok/s (pp22)
+generated 32 tokens in 0.192s = 166.41 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.063s) [stop: MaxNew]
+tokens: [8160, 579, 264, 7047, 1817, 25, 271, 16, 13, 220, 2972, 2014, 53983, 2570, 5952, 64700, 198, 256, 471, 2972, 6065, 64700, 9357, 264, 799, 8187, 12654, 709, 421, 16915, 287, 264]
+OUTPUT TEXT: "Here's a thinking process:\n\n1.  **Analyze User Request:**\n   - **Task:** Write a one-line Python function that reverses a"
+--- generated text ---
+Here's a thinking process:
+
+1.  **Analyze User Request:**
+   - **Task:** Write a one-line Python function that reverses a
