@@ -1,0 +1,8 @@
+# katcoder drafter manifest — 2026-08-01T19:24:20+03:00, lane/ornith-drafters
+# role sha256 bytes path
+target e35e23219a81590b9d4174eea4717d716dd62676c8c434f6b708f49a07310e1a 18806446496 /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf
+donor df27a780435b7b45c2597536112ea3cb091f8544c3d0c3318d9f4258b31f7adf 18209036576 /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+ranks-gguf e2aed7f6cf062bb93f13660f04c7f350a3c58192d4017c66921a48ef9cb0c742 131168 /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/owngen-ranks-32768.gguf
+ranks-txt b0341374fdd8cf46a350471de07954f1e5edcdcf712f7ed9abce02e0e8117721 185594 /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/owngen-ranks-32768.gguf.txt
+corpus-ids 0166b7c8f53828e0936e7171b4a64e1e186231714bd518deaa6fceb7b958be5a 540916 /home/avifenesh/projects/wt-ornith-drafters/research/ornith-drafters-20260801/corpus/katcoder-owngen-ids.txt
+draft b7ff069a511f957cc6853f020597c14ec50639a2163c1b87ffd82b46f8ebddee 944118560 /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/draft-katcoder-owntrim-nvfp4head-q4blk.gguf
