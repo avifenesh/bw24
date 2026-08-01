@@ -1,0 +1,18 @@
+== build (sm_90a; cu sources touched to defeat rsync-stale fatbins) ==
+   Compiling memra-engine v0.0.0 (/home/ubuntu/arc4/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 3m 47s
+   Compiling memra-server v0.0.0 (/home/ubuntu/arc4/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 2.77s
+== gate: policy tests ==
+
+== gate: kernel-check ==
+== gate: decode-batch (config B=8) ==
+[q8rp] split-plane decode mirrors built: 449 tensors
+[q4kf16] prefill fp16 mirrors built: 183 tensors (22420 MB)
+== gate: decode-batch (strict, equalized composition) ==
+[q8rp] split-plane decode mirrors built: 449 tensors
+[q4kf16] prefill fp16 mirrors built: 183 tensors (22420 MB)
+== gate: decode-dc (device counters, bit-identity) ==
+== gate: graph-decode (capture/replay bit-identity) ==
+== gate: graph-session (serving GraphSession vs generate_graph) ==
+VALIDATE-H100: ALL GATES GREEN

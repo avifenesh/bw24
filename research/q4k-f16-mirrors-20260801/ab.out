@@ -1,0 +1,13 @@
+base board2048 r1 rc=0
+base agentic500 r1 rc=0
+new board2048 r1 rc=0
+new agentic500 r1 rc=0
+base board2048 r2 rc=0
+base agentic500 r2 rc=0
+new board2048 r2 rc=0
+new agentic500 r2 rc=0
+base board2048 r3 rc=0
+base agentic500 r3 rc=0
+new board2048 r3 rc=0
+new agentic500 r3 rc=0
+AB-DONE

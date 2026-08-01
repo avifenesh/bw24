@@ -786,10 +786,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use memra_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
         // (tensor, GEMM qt, dp4a-fast selector). Each is validated if present with the right type.
-        let gemm_cases: [(&str, i32, &str); 5] = [
+        let gemm_cases: [(&str, i32, &str); 6] = [
             ("blk.0.ffn_gate.weight",  memra_engine::QT_Q8_0,  "q8_0"),  // 35B token_embd-style Q8_0
             ("blk.0.attn_qkv.weight",  memra_engine::QT_Q8_0,  "q8_0"),
             ("blk.3.attn_q.weight",    memra_engine::QT_Q4_K,  "q4_K"),  // 9B/27B attn Q4_K
+            ("blk.0.ssm_out.weight",   memra_engine::QT_Q5_K,  "q5_K"),  // q27 GDN out Q5_K
             ("blk.0.attn_v.weight",    memra_engine::QT_Q6_K,  "q6_K"),
             ("output.weight",          memra_engine::QT_Q6_K,  "q6_K"),  // Q6_K lm_head
         ];
@@ -798,6 +799,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let gt = match t.ggml_type {
                 GgmlType::Q8_0 => memra_engine::QT_Q8_0, GgmlType::Q4_K => memra_engine::QT_Q4_K,
                 GgmlType::Q6_K => memra_engine::QT_Q6_K, GgmlType::NVFP4 => memra_engine::QT_NVFP4,
+                GgmlType::Q5_K => memra_engine::QT_Q5_K,
                 _ => continue,
             };
             if gt != want_qt { continue; }
@@ -811,8 +813,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && out_f % 64 == 0 && in_f % 32 == 0 {
                 Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?)
             } else { None };
+            // f16-mirror coverage per admitted class: Q8_0 (2026-07-26), Q4_K + Q5_K
+            // (round 49 — the q27 trunk bulk + ssm_out), Q6_K (round 47; entry added
+            // round 49 with Q4_K — the "gates outside the battery rot" law).
             let f16_mirror = if gt == memra_engine::QT_Q8_0 && in_f % 32 == 0 {
                 Some(e.build_q8_f16_raw(&wd, in_f, out_f)?)
+            } else if gt == memra_engine::QT_Q4_K && in_f % 256 == 0 {
+                Some(e.build_q4k_f16_raw(&wd, in_f, out_f)?)
+            } else if gt == memra_engine::QT_Q5_K && in_f % 256 == 0 {
+                Some(e.build_q5k_f16_raw(&wd, in_f, out_f)?)
+            } else if gt == memra_engine::QT_Q6_K && in_f % 256 == 0 {
+                Some(e.build_q6k_f16_raw(&wd, in_f, out_f)?)
             } else { None };
             for tt in [16usize, 64, 128, 512] {
                 let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
@@ -820,6 +831,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ydp = match sel {
                     "q8_0" => e.qmatvec_q8_0_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
                     "q4_K" => e.qmatvec_q4_K_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
+                    "q5_K" => e.qmatvec_q5_K_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
                     "q6_K" => e.qmatvec_q6_K_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
                     _ => unreachable!(),
                 };
