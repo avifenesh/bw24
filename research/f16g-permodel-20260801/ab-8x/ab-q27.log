@@ -1,0 +1,11 @@
+q27 pair1 def prefill=4847.7 decode=92.62
+q27 pair1 off prefill=4845.9 decode=91.31
+q27 pair2 def prefill=4843.6 decode=92.94
+q27 pair2 off prefill=4835.6 decode=91.53
+q27 pair3 def prefill=4835.5 decode=92.67
+q27 pair3 off prefill=4833.9 decode=91.28
+q27 pair4 def prefill=4843.6 decode=92.43
+q27 pair4 off prefill=4830.3 decode=90.94
+q27 pair5 def prefill=4835.5 decode=91.16
+q27 pair5 off prefill=4827.5 decode=92.29
+q27 AB_DONE

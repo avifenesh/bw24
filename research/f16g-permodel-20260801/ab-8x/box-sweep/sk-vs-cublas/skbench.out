@@ -1,0 +1,23 @@
+=== sanity r1 f16g2
+pp-only rep 0: 0.2582s = 7932.5 tok/s
+pp-only rep 1: 0.2583s = 7928.0 tok/s
+pp-only rep 2: 0.2581s = 7934.8 tok/s
+pp-only MEDIAN: 2048 tok in 0.2582s = 7932.5 tok/s (pp2048, 3 reps)
+=== sanity r1 f16g1
+pp-only rep 0: 0.2542s = 8057.1 tok/s
+pp-only rep 1: 0.2522s = 8121.6 tok/s
+pp-only rep 2: 0.2488s = 8229.9 tok/s
+pp-only MEDIAN: 2048 tok in 0.2522s = 8121.6 tok/s (pp2048, 3 reps)
+=== sanity r2 f16g2
+pp-only rep 0: 0.2644s = 7745.5 tok/s
+pp-only rep 1: 0.2582s = 7933.2 tok/s
+pp-only rep 2: 0.2597s = 7886.6 tok/s
+pp-only MEDIAN: 2048 tok in 0.2597s = 7886.6 tok/s (pp2048, 3 reps)
+=== sanity r2 f16g1
+pp-only rep 0: 0.2547s = 8041.6 tok/s
+pp-only rep 1: 0.2623s = 7807.5 tok/s
+pp-only rep 2: 0.2523s = 8116.2 tok/s
+pp-only MEDIAN: 2048 tok in 0.2547s = 8041.6 tok/s (pp2048, 3 reps)
+=== nsys f16g1
+=== nsys f16g2
+=== ALL DONE
