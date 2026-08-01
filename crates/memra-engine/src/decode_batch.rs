@@ -108,6 +108,8 @@ impl HybridModel {
                 Mixer::Full(fa) => [&fa.wq, &fa.wk, &fa.wv, &fa.wo].into_iter().all(ok),
                 Mixer::Linear(la) => [&la.wqkv, &la.wqkv_gate, &la.ssm_beta,
                                       &la.ssm_alpha, &la.ssm_out].into_iter().all(ok),
+                // MLA rides its own increment-4 arm; never admitted to the exact-16 tier here.
+                Mixer::Mla(_) => false,
             };
             let ffn_ok = match &l.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } =>
