@@ -1,0 +1,35 @@
+== cargo test -p memra-gguf --lib micro_gguf (CPU, 2026-08-01T12:28:33Z, 4e395fa3+wip) ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (target/debug/deps/memra_gguf-b15681ec79cda235)
+
+running 5 tests
+test micro_gguf::tests::non_glm_arch_has_no_mla ... ok
+test micro_gguf::tests::parse_glm52_pinned_metadata ... ok
+test micro_gguf::tests::parse_glm52_without_indexer_types_key ... ok
+test micro_gguf::tests::micro_fixture_parse_and_tensor_audit ... ok
+test micro_gguf::tests::micro_fixture_kv_b_split_convention ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.01s
+
+
+== cargo test -p memra-engine --test mla_fixture_forward (CPU) ==
+     Running tests/mla_fixture_forward.rs (target/debug/deps/mla_fixture_forward-374bfa064c6b8455)
+
+running 3 tests
+test cpu_block_forward_absorbed_equals_naive_chunked ... ok
+test cpu_block_forward_absorbed_equals_naive_decode ... ok
+test cpu_block_forward_absorbed_equals_naive_prefill ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+== cargo test -p memra-engine --lib mla (increment-1 oracle, unchanged) ==
+
+running 4 tests
+test mla::tests::rope_norm_equals_permuted_neox ... ok
+test mla::tests::naive_equals_absorbed_prefill_causal ... ok
+test mla::tests::naive_equals_absorbed_decode_t1 ... ok
+test mla::tests::naive_equals_absorbed_glm52_full_dims ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.93s
+

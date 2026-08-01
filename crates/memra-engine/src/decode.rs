@@ -303,6 +303,9 @@ impl HybridModel {
                     && e.uses_q8_1_fast(&la.ssm_beta)
                     && e.uses_q8_1_fast(&la.ssm_alpha)
             }
+            // MLA (increment 2, loader-only): predicate only — never claim the fused
+            // norm+quantize chain for an arm that has no forward yet.
+            Mixer::Mla(_) => false,
         }
     }
 
@@ -334,6 +337,7 @@ impl HybridModel {
                 Mixer::Linear(la) => {
                     self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         } else {
             let mut h = e.uninit(n_embd)?;
@@ -341,6 +345,7 @@ impl HybridModel {
             match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, pos_d, pos, cache, il),
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         }
     }
@@ -371,6 +376,7 @@ impl HybridModel {
                 Mixer::Linear(la) => {
                     self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         } else {
             let mut h = e.uninit(n_embd)?;
@@ -378,6 +384,7 @@ impl HybridModel {
             match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_decode_dc(e, fa, &h, pos_d, cache, il),
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         }
     }
@@ -410,6 +417,7 @@ impl HybridModel {
                 Mixer::Linear(la) => {
                     self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, true)
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         } else {
             let mut h = e.uninit(n_embd)?;
@@ -419,6 +427,7 @@ impl HybridModel {
                     self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max)
                 }
                 Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il),
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         }
     }
@@ -639,6 +648,7 @@ impl HybridModel {
                         Mixer::Linear(la) => {
                             self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)?
                         }
+                        Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                     }
                 }
                 (taken, _) => {
@@ -742,6 +752,7 @@ impl HybridModel {
                         Mixer::Linear(la) => {
                             self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)?
                         }
+                        Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                     }
                 }
                 (taken, _) => {
@@ -951,6 +962,7 @@ impl HybridModel {
                                 il,
                                 false,
                             )?,
+                            Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                         }
                     }
                     (taken, _) => {

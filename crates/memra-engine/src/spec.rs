@@ -411,6 +411,7 @@ impl HybridModel {
             Mixer::Linear(_) => {
                 panic!("MTP block is full-attn in qwen35; linear MTP not supported")
             }
+            Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
         };
 
         // op 7: x1 = inpSA + attn_out
@@ -798,6 +799,7 @@ impl HybridModel {
             Mixer::Linear(_) => {
                 panic!("MTP block is full-attn in qwen35; linear MTP not supported")
             }
+            Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
         };
         let mut x1 = e.zeros(di)?;
         e.add(&inp_sa, &attn_out, &mut x1, di)?;
@@ -1038,6 +1040,7 @@ impl HybridModel {
                 Mixer::Full(fa) => {
                     self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il, stream.map(|(_, c)| c))?
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     // BATCHED linear verify (2026-07-03, the MTP-profit lever): one T-token pass —
                     // batched projections (weight read ONCE, hits the m=2-4 weight-resident matvec),
@@ -1584,6 +1587,7 @@ impl HybridModel {
             }
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il, None)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     let mut out = e.zeros(t * n_embd)?;
                     for col in 0..t {

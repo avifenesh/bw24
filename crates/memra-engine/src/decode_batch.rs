@@ -208,6 +208,7 @@ impl HybridModel {
                             ptrs.push(pv as u64);
                         }
                     }
+                    Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 }
             }
         }
@@ -262,6 +263,7 @@ impl HybridModel {
 
             // ---- mixer ----
             let mixed: CudaSlice<f32> = match &layer.mixer {
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Full(fa) => {
                     // Batched projections: one weight read serves all B rows.
                     let qf = e.matmul_pre(&fa.wq, &hq, &hd, &xn, b_n)?;

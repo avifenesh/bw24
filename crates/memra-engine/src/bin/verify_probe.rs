@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let kind = match &model.layers[il].mixer {
                         memra_engine::hybrid::Mixer::Full(_) => "full",
                         memra_engine::hybrid::Mixer::Linear(_) => "lin ",
+                        memra_engine::hybrid::Mixer::Mla(_) => "mla ",
                     };
                     if md != 0.0 || il < 3 || il == n_layer - 1 {
                         println!("  T2 layer {il:2} [{kind}]: maxdiff={md:.3e}");
@@ -224,6 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Mixer::Linear(la) => vec![("wqkv", e.uses_q8_1_fast(&la.wqkv)), ("gate", e.uses_q8_1_fast(&la.wqkv_gate)),
                                           ("beta", e.uses_q8_1_fast(&la.ssm_beta)), ("alpha", e.uses_q8_1_fast(&la.ssm_alpha)),
                                           ("out", e.uses_q8_1_fast(&la.ssm_out))],
+                Mixer::Mla(_) => vec![("mla", false)],
             };
             let ffn = match &layer.ffn {
                 Ffn::Dense { ffn_gate, ffn_up, ffn_down } =>
@@ -244,6 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let kind = match &model.layers[il].mixer {
             memra_engine::hybrid::Mixer::Full(_) => "full",
             memra_engine::hybrid::Mixer::Linear(_) => "lin ",
+            memra_engine::hybrid::Mixer::Mla(_) => "mla ",
         };
         if md != 0.0 || il < 3 || il == n_layer - 1 {
             println!("  layer {il:2} [{kind}]: maxdiff={md:.3e}");

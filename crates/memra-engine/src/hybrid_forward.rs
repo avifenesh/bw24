@@ -278,6 +278,7 @@ impl HybridModel {
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
 
             // residual 1
@@ -335,6 +336,7 @@ impl HybridModel {
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} mixer ok"); }
             let mut x1 = e.uninit(t * n_embd)?;
@@ -613,6 +615,7 @@ impl HybridModel {
                         let (pre, pre16) = self.full_attn_prime_core_inner(e, fa, g3, &pos_d, t, cache, il)?;
                         (pre, pre16, &fa.wo)
                     }
+                    Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                     Mixer::Linear(la) => {
                         let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
                         let g4 = match hx16 {
@@ -655,6 +658,7 @@ impl HybridModel {
                 let mixed = match &layer.mixer {
                     Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
                     Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
+                    Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 };
                 if f16fuse {
                     // round 28: residual+norm in ONE kernel (add_rms_norm precedent,
@@ -813,6 +817,7 @@ impl HybridModel {
             }
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache, il)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
                     let g4 = match hx16.as_ref() {
@@ -1088,6 +1093,7 @@ impl HybridModel {
                         }
                     }
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     // task #16: NO split copies (cores read row-offset views of the concat
                     // outputs; out-GEMMs write into `mixed` at offs[s]). task #18: the core
