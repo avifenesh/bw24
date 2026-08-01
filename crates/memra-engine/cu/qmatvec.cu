@@ -7663,7 +7663,27 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_mr1_rp(
 // __ldcs and the header/scale fetches land on sector-contiguous planes. Per
 // (token,row,g) the dp4a int inputs are the SAME BYTES in the same k order and the
 // float chain is VERBATIM the GGUF-layout kernel -> BIT-IDENTICAL (kernel-check rp
-// gates + run-gen argmax + run-spec K=1..8 arbitrate). =====
+// gates + run-gen argmax + run-spec K=1..8 arbitrate).
+//
+// v2 LANE->CHUNK REMAP (2026-08-01, the ledgered residue fix): the v1 mirror kept the
+// GGUF intra-superblock byte order, so paired lanes (q4_K: grp 2c/2c+1; q6_K: runs
+// sharing a ql window, 4 runs sharing a qh window) issued 16B loads at 32B stride over
+// the SAME chunk — every qs sector requested twice and only half a sector utilized per
+// instruction, plus byte-granular d/dmin/scale reads (ncu on the hot 4352-grid q4_K
+// shape: 32% excessive sectors, 70% of stalls L1TEX scoreboard). v2 re-packs the quant
+// planes so each grp g (0..7) of a superblock owns ONE contiguous 16B chunk:
+//   q4_K qs / q6_K ql chunk byte 4k+b = nib(4k+b) | nib(4(k+4)+b) << 4  (nib = that
+//     lane's original low-or-high source nibble) -> the kernel's k-th dp4a int is
+//     (k<4 ? wv[k] & 0x0F0F0F0F : (wv[k-4] >> 4) & 0x0F0F0F0F), byte-equal to v1;
+//   q6_K qh chunk (8B/grp): byte 4i+b packs crumbs j=0..3 of source bytes 16i+4j+b at
+//     the lane's 2-bit position -> qhn[k] = (hv[k>>2] >> 2*(k&3)) & 0x03030303;
+//   q4_K meta stays the 16B GGUF header (read as ONE int4, fields register-extracted);
+//   q6_K scales stay GGUF order (is0/is1 are plane-adjacent: one aligned 2B load).
+// Warp addresses per g-iter become wqs+g*16 / wql+g*16 / wqh+g*8 — dense contiguous
+// 512B/512B/256B windows, one load each. Plane offsets and total bytes are unchanged;
+// only intra-superblock byte order moved, so q4k/q6k_rp_planes and the Rust builder
+// (build_kq_rp4_raw) are untouched. Same values, same fold order — only addresses
+// change; the KQRP bit-bad=0 gates still arbitrate. =====
 __device__ __forceinline__ void q4k_rp_planes(const unsigned char* W, int out_f, int o,
                                               int nsbk,
                                               const unsigned char** wqs,
@@ -7671,7 +7691,9 @@ __device__ __forceinline__ void q4k_rp_planes(const unsigned char* W, int out_f,
     *wqs   = W + ((size_t)o * nsbk) * 128;
     *wmeta = W + (size_t)out_f * nsbk * 128 + ((size_t)o * nsbk) * 16;
 }
-// device-side mirror build: one thread per q4_K superblock, pure byte permutation.
+// device-side mirror build: one thread per q4_K superblock, pure nibble/byte permutation.
+// v2 chunked layout: grp g owns qs bytes [g*16, g*16+16); chunk byte 4k+b holds that
+// lane's source nibble of GGUF qs[(g>>1)*32 + 4k + b] (low) and ...+16... (high).
 extern "C" __global__ void q4_K_split_rp_build(
         const unsigned char* __restrict__ src, unsigned char* __restrict__ dst,
         int out_f, int nsbk) {
@@ -7681,12 +7703,22 @@ extern "C" __global__ void q4_K_split_rp_build(
     size_t qplane = (size_t)out_f * nsbk * 128;
     unsigned char* q = dst + (size_t)i * 128;
     #pragma unroll
-    for (int k = 0; k < 128; k++) q[k] = b[16 + k];
+    for (int g = 0; g < 8; g++) {
+        const unsigned char* s = b + 16 + (g >> 1) * 32;   // the grp's GGUF qs window
+        int sh = (g & 1) * 4;                              // odd grp = high nibbles
+        #pragma unroll
+        for (int j = 0; j < 16; j++)
+            q[g * 16 + j] = (unsigned char)(((s[j] >> sh) & 0xF)
+                                          | (((s[j + 16] >> sh) & 0xF) << 4));
+    }
     unsigned char* mt = dst + qplane + (size_t)i * 16;
     #pragma unroll
     for (int k = 0; k < 16; k++) mt[k] = b[k];
 }
 // rp twin of qmatvec_q4_K_mmvq: same grid/warp mapping, aligned int4 weight loads.
+// (A dense-a-window + warp-shuffle exchange for the activation pair was MEASURED
+// NEGATIVE here 2026-08-01: hot 4352-grid shape 23.7 -> 27.4us, DRAM 66 -> 57% — the
+// 16 SHFL/iter exceed what the a-side coalescing saves. Direct a-loads stay.)
 extern "C" __global__ void qmatvec_q4_K_mmvq_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -7706,27 +7738,35 @@ extern "C" __global__ void qmatvec_q4_K_mmvq_rp(
     for (int g = lane; g < nsb; g += 32) {
         int sblk = g >> 3;
         int grp  = g & 7;
-        const unsigned char* mb = wmeta + (size_t)sblk * 16;
-        float d_sb    = half_to_float(*(const unsigned short*)mb);
-        float dmin_sb = half_to_float(*(const unsigned short*)(mb + 2));
-        const unsigned char* scales = mb + 4;
+        // ONE int4 meta load (16B GGUF header), fields extracted from registers —
+        // same bytes as the v1 short/byte loads.
+        const int4 mv = *(const int4*)(wmeta + (size_t)sblk * 16);
+        float d_sb    = half_to_float((unsigned short)((unsigned)mv.x & 0xFFFFu));
+        float dmin_sb = half_to_float((unsigned short)((unsigned)mv.x >> 16));
+        // scales[12] = meta bytes 4..15: mv.y = scales[0..3], mv.z = [4..7], mv.w = [8..11].
         unsigned char sc, mn;
-        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
-        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
-               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
-        int chunk = grp >> 1;
-        bool hi = (grp & 1);
-        int4 w01 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32));
-        int4 w23 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32 + 16));
-        int q4[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        if (grp < 4) {
+            unsigned sg  = ((unsigned)mv.y >> (grp * 8)) & 0xFFu;   // scales[grp]
+            unsigned sg4 = ((unsigned)mv.z >> (grp * 8)) & 0xFFu;   // scales[grp+4]
+            sc = sg & 63; mn = sg4 & 63;
+        } else {
+            int g4 = grp - 4;
+            unsigned s8 = ((unsigned)mv.w >> (g4 * 8)) & 0xFFu;     // scales[grp+4]
+            unsigned s0 = ((unsigned)mv.y >> (g4 * 8)) & 0xFFu;     // scales[grp-4]
+            unsigned s4 = ((unsigned)mv.z >> (g4 * 8)) & 0xFFu;     // scales[grp]
+            sc = (s8 & 0xF) | ((s0 >> 6) << 4);
+            mn = (s8 >> 4) | ((s4 >> 6) << 4);
+        }
+        // ONE 16B qs load from the grp's chunk (warp: dense contiguous 512B/iter).
+        int4 wv = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + grp * 16));
+        int q4v[4] = { wv.x, wv.y, wv.z, wv.w };
         const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
         int4 a01 = aq16[0], a23 = aq16[1];
         int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi_d = 0, sumi_sum = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            int raw = q4[k];
-            int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+            int wpack = (k < 4) ? (q4v[k] & 0x0F0F0F0F) : ((q4v[k - 4] >> 4) & 0x0F0F0F0F);
             int a = aq4[k];
             sumi_d   = dp4a(wpack, a, sumi_d);
             sumi_sum = dp4a(0x01010101, a, sumi_sum);
@@ -7750,7 +7790,11 @@ __device__ __forceinline__ void q6k_rp_planes(const unsigned char* W, int out_f,
     *wsc = (const signed char*)(W + nsbt * 192 + ((size_t)o * nsbk) * 16);
     *wd  = (const unsigned short*)(W + nsbt * 208) + (size_t)o * nsbk;
 }
-// device-side mirror build: one thread per q6_K superblock, pure byte permutation.
+// device-side mirror build: one thread per q6_K superblock, pure nibble/crumb permutation.
+// v2 chunked layout: grp g = (n = g>>2, run = g&3) owns ql bytes [g*16, +16) (nibble-packed
+// like q4_K from its GGUF window b[n*64 + (run&1)*32 ..], high nibbles when run>=2) and qh
+// bytes [g*8, +8) (byte 4i+b packs crumbs j=0..3 of GGUF qh[n*32 + 16i + 4j + b] at the
+// lane's 2-bit position 2*run). scales/d keep GGUF order.
 extern "C" __global__ void q6_K_split_rp_build(
         const unsigned char* __restrict__ src, unsigned char* __restrict__ dst,
         int out_f, int nsbk) {
@@ -7763,9 +7807,25 @@ extern "C" __global__ void q6_K_split_rp_build(
     unsigned char* sc = dst + nsbt * 192 + (size_t)i * 16;
     unsigned char* dh = dst + nsbt * 208 + (size_t)i * 2;
     #pragma unroll
-    for (int k = 0; k < 128; k++) ql[k] = b[k];
-    #pragma unroll
-    for (int k = 0; k < 64; k++) qh[k] = b[128 + k];
+    for (int g = 0; g < 8; g++) {
+        int n = g >> 2, run = g & 3;
+        const unsigned char* s = b + n * 64 + (run & 1) * 32;   // the grp's GGUF ql window
+        int sh = (run >> 1) * 4;                                // run>=2 = high nibbles
+        #pragma unroll
+        for (int j = 0; j < 16; j++)
+            ql[g * 16 + j] = (unsigned char)(((s[j] >> sh) & 0xF)
+                                           | (((s[j + 16] >> sh) & 0xF) << 4));
+        const unsigned char* h = b + 128 + n * 32;              // the grp's GGUF qh window
+        #pragma unroll
+        for (int t = 0; t < 8; t++) {
+            int i2 = (t >> 2) * 16, b2 = t & 3;
+            unsigned v = 0;
+            #pragma unroll
+            for (int j = 0; j < 4; j++)
+                v |= ((unsigned)(h[i2 + 4 * j + b2] >> (2 * run)) & 3u) << (2 * j);
+            qh[g * 8 + t] = (unsigned char)v;
+        }
+    }
     #pragma unroll
     for (int k = 0; k < 16; k++) sc[k] = b[192 + k];
     dh[0] = b[208]; dh[1] = b[209];
@@ -7773,6 +7833,7 @@ extern "C" __global__ void q6_K_split_rp_build(
 // rp twin of qmatvec_q6_K_mmvq: same grid/warp mapping, aligned int4 ql/qh loads.
 // Carries MEMRA_PDL_ENTRY like its GGUF-layout source (PDL wave-A, 2026-07-23) —
 // the dispatch marked-name list admits it to the programmatic-serialization launch.
+// (Dense-a-window shuffle exchange measured negative here too: 23.7 -> 26.6us.)
 extern "C" __global__ void qmatvec_q6_K_mmvq_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -7795,34 +7856,26 @@ extern "C" __global__ void qmatvec_q6_K_mmvq_rp(
         int sblk = g >> 3;
         int grp  = g & 7;
         float d = half_to_float(wd6[sblk]);
-        int n   = grp >> 2;
-        int run = grp & 3;
-        const unsigned char* qlh = wql + (size_t)sblk * 128 + n * 64;
-        const unsigned char* qhh = wqh + (size_t)sblk * 64 + n * 32;
-        const signed char*   scn = wsc + (size_t)sblk * 16 + n * 8;
+        // is0/is1 are plane-adjacent bytes (GGUF scale order kept): ONE aligned 2B load;
+        // sign-extension matches the v1 signed-char reads.
+        unsigned short sv = *(const unsigned short*)((const unsigned char*)wsc
+                                                     + (size_t)sblk * 16 + grp * 2);
+        int sc0 = (int)(signed char)(sv & 0xFF);
+        int sc1 = (int)(signed char)(sv >> 8);
         const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
         int4 a01 = aq16[0], a23 = aq16[1];
         int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
-        int is0 = run * 2 + 0;
-        int is1 = run * 2 + 1;
+        // ONE 16B ql chunk + ONE 8B qh chunk (warp: dense 512B + 256B windows/iter);
+        // the k-th qln/qhn ints below are byte-equal to the v1 window extraction.
+        int4 lv = __ldcs((const int4*)(wql + (size_t)sblk * 128 + grp * 16));
+        int qlv[4] = { lv.x, lv.y, lv.z, lv.w };
+        uint2 hv = __ldcs((const uint2*)(wqh + (size_t)sblk * 64 + grp * 8));
+        unsigned qhv[2] = { hv.x, hv.y };
         int sumi0 = 0, sumi1 = 0;
-        int ql_off = (run & 1) ? 32 : 0;
-        int ql_hi  = (run >= 2);
-        int qh_sh  = run * 2;
-        // aligned int4 loads: qlh+ql_off and qhh are 16B-aligned plane offsets; the k-th
-        // int equals get_int_b2(qlh + k*4 + ql_off) / get_int_b2(qhh + k*4) byte-for-byte.
-        int4 l01 = __ldcs((const int4*)(qlh + ql_off));
-        int4 l23 = __ldcs((const int4*)(qlh + ql_off + 16));
-        int qla[8] = { l01.x, l01.y, l01.z, l01.w, l23.x, l23.y, l23.z, l23.w };
-        int4 h01 = __ldcs((const int4*)qhh);
-        int4 h23 = __ldcs((const int4*)(qhh + 16));
-        int qha[8] = { h01.x, h01.y, h01.z, h01.w, h23.x, h23.y, h23.z, h23.w };
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            int ql4 = qla[k];
-            int qh4 = qha[k];
-            int qln = ql_hi ? ((ql4 >> 4) & 0x0F0F0F0F) : (ql4 & 0x0F0F0F0F);
-            int qhn = (qh4 >> qh_sh) & 0x03030303;
+            int qln = (k < 4) ? (qlv[k] & 0x0F0F0F0F) : ((qlv[k - 4] >> 4) & 0x0F0F0F0F);
+            int qhn = (int)((qhv[k >> 2] >> (2 * (k & 3))) & 0x03030303u);
             int vpack = qln | (qhn << 4);
             int wpack = __vsubss4(vpack, 0x20202020);
             int a = aq4[k];
@@ -7830,7 +7883,7 @@ extern "C" __global__ void qmatvec_q6_K_mmvq_rp(
             else       sumi1 = dp4a(wpack, a, sumi1);
         }
         float d8 = adrow[g];
-        acc += d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
+        acc += d * d8 * ( (float)(sumi0 * sc0) + (float)(sumi1 * sc1) );
     }
     acc = warp_reduce_sum(acc);
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
@@ -7855,25 +7908,30 @@ __device__ __forceinline__ void q4k_mmvq_batched_rp(
     for (int g = lane; g < nsb; g += 32) {
         int sblk = g >> 3;
         int grp  = g & 7;
-        const unsigned char* mb = wmeta + (size_t)sblk * 16;
-        float d_sb    = half_to_float(*(const unsigned short*)mb);
-        float dmin_sb = half_to_float(*(const unsigned short*)(mb + 2));
-        const unsigned char* scales = mb + 4;
+        // ONE int4 meta load, register-extracted (same bytes as the v1 short/byte loads).
+        const int4 mv = *(const int4*)(wmeta + (size_t)sblk * 16);
+        float d_sb    = half_to_float((unsigned short)((unsigned)mv.x & 0xFFFFu));
+        float dmin_sb = half_to_float((unsigned short)((unsigned)mv.x >> 16));
         unsigned char sc, mn;
-        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
-        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
-               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
-        int chunk = grp >> 1;
-        bool hi = (grp & 1);
-        int4 w01 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32));
-        int4 w23 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32 + 16));
-        int q4[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        if (grp < 4) {
+            unsigned sg  = ((unsigned)mv.y >> (grp * 8)) & 0xFFu;   // scales[grp]
+            unsigned sg4 = ((unsigned)mv.z >> (grp * 8)) & 0xFFu;   // scales[grp+4]
+            sc = sg & 63; mn = sg4 & 63;
+        } else {
+            int g4 = grp - 4;
+            unsigned s8 = ((unsigned)mv.w >> (g4 * 8)) & 0xFFu;     // scales[grp+4]
+            unsigned s0 = ((unsigned)mv.y >> (g4 * 8)) & 0xFFu;     // scales[grp-4]
+            unsigned s4 = ((unsigned)mv.z >> (g4 * 8)) & 0xFFu;     // scales[grp]
+            sc = (s8 & 0xF) | ((s0 >> 6) << 4);
+            mn = (s8 >> 4) | ((s4 >> 6) << 4);
+        }
+        // ONE 16B qs load from the grp's chunk (warp: dense contiguous 512B/iter).
+        int4 wv = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + grp * 16));
+        int q4v[4] = { wv.x, wv.y, wv.z, wv.w };
         int wpack[8];                            // decode the 4-bit weights ONCE for this group
         #pragma unroll
-        for (int k = 0; k < 8; k++) {
-            int raw = q4[k];
-            wpack[k] = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
-        }
+        for (int k = 0; k < 8; k++)
+            wpack[k] = (k < 4) ? (q4v[k] & 0x0F0F0F0F) : ((q4v[k - 4] >> 4) & 0x0F0F0F0F);
         #pragma unroll
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
@@ -7940,31 +7998,24 @@ __device__ __forceinline__ void q6k_mmvq_batched_rp(
         int sblk = g >> 3;
         int grp  = g & 7;
         float d = half_to_float(wd6[sblk]);
-        int n   = grp >> 2;
-        int run = grp & 3;
-        const unsigned char* qlh = wql + (size_t)sblk * 128 + n * 64;
-        const unsigned char* qhh = wqh + (size_t)sblk * 64 + n * 32;
-        const signed char*   scn = wsc + (size_t)sblk * 16 + n * 8;
-        int is0 = run * 2 + 0;
-        int is1 = run * 2 + 1;
-        int ql_off = (run & 1) ? 32 : 0;
-        int ql_hi  = (run >= 2);
-        int qh_sh  = run * 2;
-        int4 l01 = __ldcs((const int4*)(qlh + ql_off));
-        int4 l23 = __ldcs((const int4*)(qlh + ql_off + 16));
-        int qla[8] = { l01.x, l01.y, l01.z, l01.w, l23.x, l23.y, l23.z, l23.w };
-        int4 h01 = __ldcs((const int4*)qhh);
-        int4 h23 = __ldcs((const int4*)(qhh + 16));
-        int qha[8] = { h01.x, h01.y, h01.z, h01.w, h23.x, h23.y, h23.z, h23.w };
+        // is0/is1 plane-adjacent: ONE aligned 2B load, sign-extension as the v1 reads.
+        unsigned short sv = *(const unsigned short*)((const unsigned char*)wsc
+                                                     + (size_t)sblk * 16 + grp * 2);
+        int sc0 = (int)(signed char)(sv & 0xFF);
+        int sc1 = (int)(signed char)(sv >> 8);
+        // ONE 16B ql chunk + ONE 8B qh chunk (warp: dense 512B + 256B windows/iter).
+        int4 lv = __ldcs((const int4*)(wql + (size_t)sblk * 128 + grp * 16));
+        int qlv[4] = { lv.x, lv.y, lv.z, lv.w };
+        uint2 hv = __ldcs((const uint2*)(wqh + (size_t)sblk * 64 + grp * 8));
+        unsigned qhv[2] = { hv.x, hv.y };
         int wpack[8];                            // decode the 6-bit signed weights ONCE for this group
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            int qln = ql_hi ? ((qla[k] >> 4) & 0x0F0F0F0F) : (qla[k] & 0x0F0F0F0F);
-            int qhn = (qha[k] >> qh_sh) & 0x03030303;
+            int qln = (k < 4) ? (qlv[k] & 0x0F0F0F0F) : ((qlv[k - 4] >> 4) & 0x0F0F0F0F);
+            int qhn = (int)((qhv[k >> 2] >> (2 * (k & 3))) & 0x03030303u);
             int vpack = qln | (qhn << 4);
             wpack[k] = __vsubss4(vpack, 0x20202020);
         }
-        int sc0 = (int)scn[is0], sc1 = (int)scn[is1];
         #pragma unroll
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
