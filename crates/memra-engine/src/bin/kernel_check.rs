@@ -1565,6 +1565,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // --- K-QUANT SPLIT-PLANE (rp) gates: q4_K/q6_K mirror vs GGUF layout, every decode
+    // consumer (m=1 _mmvq_rp + batched _b{2,4,8}_rp; q6_K adds b16). The mirror is a pure
+    // byte permutation and each rp twin keeps the exact per-(token,row) value/product
+    // order -> outputs must be BIT-identical (bit-bad == 0). H100 K-quant coalescing fix,
+    // 2026-08-01. ---
+    if let Some(path) = gguf_arg.clone() {
+        use memra_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        let want: [(GgmlType, i32); 2] = [
+            (GgmlType::Q4_K, memra_engine::QT_Q4_K), (GgmlType::Q6_K, memra_engine::QT_Q6_K),
+        ];
+        for (gtype, gt) in want {
+            let t = match g.tensors.iter().find(|t| t.ggml_type == gtype && t.ne.len() == 2
+                                                 && t.ne[0] % 256 == 0 && t.ne[1] >= 4) {
+                Some(t) => t, None => continue,
+            };
+            let tname = t.name.clone();
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            let mir = e.build_kq_rp4_raw(&wd, in_f, out_f, gt)?;
+            // m=1 rp twin vs GGUF-layout mmvq: bit-identical.
+            {
+                let x: Vec<f32> = (0..in_f).map(|i| pr(i + 151) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, 1, in_f, out_f, gt, row_bytes, false)?)?;
+                let yrp = e.dtoh(&e.qmatvec_mmvq_raw(&mir, &xd, 1, in_f, out_f, gt, row_bytes, true)?)?;
+                let bad = yref.iter().zip(&yrp).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                println!("KQRP {tname} [{:?}] m=1 mmvq_rp: bit-bad={bad} {}", t.ggml_type,
+                         if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+            // batched rp twins vs GGUF-layout batched: bit-identical (b16 tier is q6_K-only).
+            let tiers: &[(usize, usize)] = if gt == memra_engine::QT_Q6_K {
+                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (12, 16)]
+            } else {
+                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8)]
+            };
+            for &(mm, mcols) in tiers {
+                let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let yref = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, mcols, false)?)?;
+                let yrp = e.dtoh(&e.qmatvec_batched_raw(&mir, &xd, mm, in_f, out_f, gt, row_bytes, mcols, true)?)?;
+                let bad = yref.iter().zip(&yrp).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                println!("KQRP {tname} [{:?}] m={mm} mcols={mcols} batched_rp: bit-bad={bad} {}", t.ggml_type,
+                         if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
     // NVFP4 batched vs per-m _mmvq on the 9B model.
     {
         use memra_gguf::{GgufFile, GgmlType};
