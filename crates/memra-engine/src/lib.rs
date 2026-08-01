@@ -45,18 +45,26 @@ pub use memra_sampling as sampler;
 /// dequant coverage fix the q35 board-2048 prime measured 5490 (MMQ) / 8380 (mode 1,
 /// +53%) / 7990 (mode 2) x3 interleaved on the H100, argmax MATCH — the last board loss
 /// flips. The 5090 measured FLAT (858GB/s makes the dequant-workspace traffic cancel the
-/// GEMM win), so sm_120a keeps the MMQ default. MEMRA_MOE_F16G=0 kills anywhere.
+/// GEMM win) — but that verdict is for expert banks the int8-MMA MMQ arm can take
+/// (IQ3_S/IQ4_XS/Q4_0). MEMRA_MOE_F16G=0 kills anywhere.
+///
+/// AUTO-KQUANT (mode 3, 2026-08-02, lane/q4k-expert-prefill): sm_120a's default when unset.
+/// The mode-2 sk form is admitted ONLY for layers the MMA MMQ arm rejects (k-quant expert
+/// projections — Q3_K/Q4_K/Q6_K), i.e. exactly where the baseline is the per-pair
+/// moe_pairs_matvec_q8_em fallback with zero token reuse. On Ornith-35B Q4_K_M (resident)
+/// that fallback was the prefill wall: board-2048 1098.2 -> 3453.7 (3.14x), pp512 1081 ->
+/// 1662 (+54%), decode flat, argmax + batched-prime MATCH, x3 interleaved
+/// (research/q4k-expert-prefill-20260802/). IQ4_XS-bank models (q35, KAT) keep their
+/// measured-faster MMQ tiles on their MMA-capable layers. Explicit =1/=2 still forces
+/// all-layer admission (the A/B door); the gemma (gelu) site stays env-explicit-only.
 pub fn moe_f16g_mode() -> u8 {
     static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *M.get_or_init(|| match std::env::var("MEMRA_MOE_F16G").as_deref() {
         Ok("0") => 0,
         Ok("2") => 2,
         Ok(_) => 1,
-        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 0 },
+        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 3 },
     })
-}
-pub fn moe_f16g_on() -> bool {
-    moe_f16g_mode() != 0
 }
 /// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs
 /// as a persistent problem-visitor over the real CSR tiles with two tile forms. Returns
