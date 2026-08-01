@@ -68,13 +68,18 @@ row). Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-d
 | Gemma-4 31B | **75** | 64 (FP8-dyn) | **1.18x** |
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
-| Qwen3.6-35B MoE | **218** | 214 (FP8) | **1.02x** |
 | Gemma-4 26B MoE | **196** | 191 (FP8-dyn) | **1.02x** |
+| Qwen3.6-35B MoE | **215** | 214 (FP8) | **1.00x** |
 
-Zero losses: seven wins, on exact math (the bf16-row wins carry a quant-advantage
-caveat — those vLLM arms move 4x the weight bytes). Decode wins every cell
-(1.05–1.85x; the last two decode losses fell to the shexp fused dot and a
-router-default re-arbitration on real prompts). The last two e2e losses — both MoE
+Zero losses: six wins and a dead-even 35B cell, on exact math (the bf16-row wins
+carry a quant-advantage caveat — those vLLM arms move 4x the weight bytes). Decode
+wins every cell (1.05–1.85x; the last two decode losses fell to the shexp fused dot
+and a router-default re-arbitration on real prompts). The 35B cell slipped from
+218/1.02x when the concat-prime exactness fix landed (m-invariant prefill router +
+shexp gates, `MEMRA_ROUTER_PREFILL_EXACT` default ON): expert prefill pays −13%
+on Hopper (8428 → 7311 pp2048) so a session's routing no longer depends on its
+co-arrivals — decode is untouched, and the dense 27B row is unaffected (no MoE
+router; re-cell bit-stable). Receipts `research/router-fix-recells-20260802/`. The last two e2e losses — both MoE
 expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
 reached full dequant coverage and became the Hopper default (expert prefill +53%), the
 27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors

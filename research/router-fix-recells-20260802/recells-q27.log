@@ -1,0 +1,5 @@
+=== H100 vLLM BOARD 2026-08-01T19:32:04Z git=rsync-tree filter=q27 ===
+== q27 (vllm vs memra, p2048/g512, N=5 medians) ==
+  [q27/vllm] decode 74.33 tok/s prefill 15071.3 tok/s (Qwen/Qwen3.6-27B-FP8)
+  [q27/memra] decode 103.73 tok/s prefill 4820.4 tok/s (Qwen3.6-27B-Q4_K_M.gguf)
+=== H100 vLLM BOARD DONE 19:37:50Z — rows in research/tune-data/h100board-vllm-20260731-realtext.jsonl ===
