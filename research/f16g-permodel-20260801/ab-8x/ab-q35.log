@@ -1,0 +1,11 @@
+q35 pair1 def prefill=7901.9 decode=180.50
+q35 pair1 off prefill=5435.2 decode=184.84
+q35 pair2 def prefill=7976.5 decode=178.35
+q35 pair2 off prefill=5446.3 decode=186.80
+q35 pair3 def prefill=8064.7 decode=186.81
+q35 pair3 off prefill=5437.1 decode=184.11
+q35 pair4 def prefill=7013.3 decode=183.84
+q35 pair4 off prefill=5444.5 decode=183.07
+q35 pair5 def prefill=7877.8 decode=183.61
+q35 pair5 off prefill=5442.3 decode=180.23
+q35 AB_DONE

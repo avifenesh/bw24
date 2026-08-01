@@ -1,0 +1,11 @@
+g31 pair1 def prefill=4768.4 decode=81.34
+g31 pair1 off prefill=4704.5 decode=80.77
+g31 pair2 def prefill=4712.3 decode=81.10
+g31 pair2 off prefill=4707.8 decode=81.40
+g31 pair3 def prefill=4718.5 decode=81.11
+g31 pair3 off prefill=4719.0 decode=80.91
+g31 pair4 def prefill=4695.4 decode=81.27
+g31 pair4 off prefill=4728.1 decode=81.46
+g31 pair5 def prefill=4750.5 decode=81.45
+g31 pair5 off prefill=4724.0 decode=81.14
+g31 AB_DONE

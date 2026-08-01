@@ -1,0 +1,11 @@
+g26 pair1 def prefill=9616.0 decode=207.73
+g26 pair1 off prefill=11165.0 decode=207.86
+g26 pair2 def prefill=7420.2 decode=207.96
+g26 pair2 off prefill=11162.9 decode=210.42
+g26 pair3 def prefill=10908.9 decode=207.61
+g26 pair3 off prefill=11261.6 decode=208.01
+g26 pair4 def prefill=11779.1 decode=208.82
+g26 pair4 off prefill=11318.7 decode=211.37
+g26 pair5 def prefill=10588.3 decode=209.27
+g26 pair5 off prefill=11310.1 decode=211.14
+g26 AB_DONE
