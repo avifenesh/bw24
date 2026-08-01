@@ -1,6 +1,34 @@
 # bw24 — Session Handover
 
-_Internal living document: the cold-start state for whoever (or whatever) works on bw24 next. Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly._
+_Internal living document: the cold-start state for whoever (or whatever) works on bw24 next. Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
+
+## CURRENT STATE (2026-08-01, v0.60.0 cold-start)
+
+- **H100 board vs vLLM 0.26 (rounds 45-49): ZERO e2e LOSSES** — 6 wins + 1 dead even
+  (g12 1.81x, q27 1.31x, g31 1.18x, q9 1.16x, e4b 1.14x, q35 1.02x, g26 1.00x), decode
+  7/7. The last two losses fell 2026-08-01: q35 via the grouped f16 expert lane
+  (`MEMRA_MOE_F16G` mode 1 = Hopper default, 41/41 dequant coverage, expert prefill +53%)
+  and q27 via K-quant f16 prefill mirrors (Q4_K/Q5_K/Q6_K, +54% pp2048 default budget) +
+  KQRP split-plane decode mirrors with layout v2 (+15-16% then +2.5-3.9% decode,
+  bit-identical). Full mechanism ledger: ARCHITECTURE-H100.md rounds 45-49.
+- **Serving (darklanes 8xH100, GPUs 5-7):** batched-tick increment 2 (z-batched seqs
+  fa_decode + KV append + device sampling + lean logits) = **654-659 tok/s/replica**
+  (+25-36%); pair-packed fleet 6 replicas/3 GPUs = **1,480 tok/s** direct / ~1,380 via
+  the admission proxy (c=96, 0 errors). Fleet tooling: `tools/serve-fleet.sh` +
+  `serve-proxy.py` + `load-serve.py`; runbook `docs/SERVING.md`. MTP spec = single-stream
+  fast lane only (q27 c1 1.82x plain; plain batching overtakes by c=4) — deploy as a
+  separate latency-tier process.
+- **Gates:** everything lives INSIDE `tools/validate-h100.sh` (LAW 3) — kernel-check pins
+  now include KQRP bit-gates, f16-mirror GEMM bands (Q4_K/Q5_K/Q6_K), and the batched-seqs
+  append/FA pins; decode-batch gate grew gate3 (device sampling) + gate3c (lean-vs-full
+  logits) and a multi-seed gate1-config (`MEMRA_GATE_SEED`); graph-decode captures per
+  kernel-class segment (the round-45 q35 divergence fix). 5090 battery unchanged:
+  `tools/local-ci.sh` (+ `--perf`).
+- **Multi-GPU (GLM-5.2 build) foundation:** M0 comms spike banked the NVLink/NCCL floor —
+  PP ~free, EP<=4 (NCCL overtakes peer-copy a2a at n>=4; n=8 dependent-chain floor
+  55.8us), graphed a2a mandatory. Receipts `research/` (m0-nccl rows, 2026-08-01).
+- **Releases:** v0.60.0 tagged (zero-loss board + serving + multi-GPU foundation). Flags
+  doctrine unchanged: winners are defaults, catalog `docs/FLAGS.md` (§7 = the Hopper lane).
 
 ## CURRENT STATE (2026-07-16 cold-start)
 
