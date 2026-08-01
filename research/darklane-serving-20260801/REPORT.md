@@ -237,3 +237,121 @@ Ranked next steps for per-GPU throughput:
   (Q8_0 b16_rp wiring), `tools/check-batch-exact.py` (the serving-level exactness
   harness). End state: GPU 5 replica restored to default (cap 8) on the new binary,
   hash-verified; GPUs 6/7 untouched on the original binary.
+
+---
+
+# Round 3 — two replicas per GPU, measured (2026-08-01, GPUs 5-7)
+
+## R3.1 Setup
+
+Two co-resident memra-server replicas on GPU 5 (ports 8085 + 8088, both
+`CUDA_VISIBLE_DEVICES=5`, default chunk 8), GPUs 6/7 unchanged as stability
+control. Load = direct 2-harness (one per replica, same protocol as the round-1
+direct reference — no proxy confound); pair concurrency {8,16,24,32} = per-replica
+{4,8,12,16}. Single runs per point; the timeslice c16/c32 points were re-run
+same-conditions (below) and reproduced within 0.1-2.7%.
+
+MPS recipe (scoped so GPUs 0-4 are untouched):
+
+```
+export CUDA_MPS_PIPE_DIRECTORY=~/darklane-serving-20260801/mps/pipe   # lane-private
+export CUDA_MPS_LOG_DIRECTORY=~/darklane-serving-20260801/mps/log
+CUDA_VISIBLE_DEVICES=5 nvidia-cuda-mps-control -d    # daemon scope = GPU 5 only
+# clients: set the SAME CUDA_MPS_PIPE_DIRECTORY, do NOT set CUDA_VISIBLE_DEVICES
+# (the daemon's device set is the scope; Engine::new(0) lands on GPU 5).
+# teardown: echo quit | nvidia-cuda-mps-control   (same pipe env)
+```
+
+Worked first try on this DLAMI (driver-default compute mode is fine); verified via
+`nvidia-cuda-mps-server` in compute-apps and both clients at 16,648 MiB on GPU 5.
+
+Tenant note (evidence discipline): a VLLM::EngineCore (30.7 GB, another lane)
+appeared on GPU 1 at 01:25:24 — AFTER the first timeslice sweep ended (01:25:16).
+The MPS arm ran with it present; the timeslice re-run (`pair-timeslice2`) under the
+same conditions reproduced the original numbers (491.4 vs 491.8; 396.3 vs 385.7),
+so the tenant is not a factor on GPU-5 numbers.
+
+## R3.2 Pair vs single (aggregate tok/s, GPU 5)
+
+| pair-c (per-replica) | timeslice | MPS   | single replica (round-1, same c total) |
+|----------------------|----------:|------:|---------------------------------------:|
+| 8 (4+4)              | 381.7     | 393.2 | 270.9 (c=4) .. 308.9 (c=8)             |
+| 16 (8+8)             | **491.8** | 459.9 | 307.3 (c=16)                           |
+| 24 (12+12)           | 386.6     | **447.5** | ~306                                |
+| 32 (16+16)           | 385.7     | **451.7** | 305.0 (c=32)                        |
+
+p50/p95 at the pair sweet spot (c16): 4.16/4.37s timeslice, 4.45/4.64s MPS — vs
+6.66/6.75s for a single replica carrying the same 16 sessions. Greedy hash
+`dbd1c98f9fed4efe` held on BOTH co-resident replicas, sequential and simultaneous,
+in BOTH modes — co-residency does not change outputs.
+
+### MPS vs timeslice verdict
+
+- **At <=8 sessions/replica (each replica inside its exactness-tier batch):
+  timeslice wins** — 491.8 vs 459.9 (+7%), and it is operationally free.
+- **Past 8/replica, timeslice thrashes** (386-396, both replicas symmetrically at
+  ~193 — context-switch cost between two saturated contexts), **while MPS holds
+  447-452** (+15% over thrashed timeslice). MPS's SM co-scheduling degrades
+  gracefully; time-slicing degrades in a step.
+- Net: **run pairs in plain timeslice mode WITH admission capped at ~8
+  sessions/replica** (the queue-admission v2 gap does double duty here). MPS is
+  the safety choice only if over-admission cannot be prevented.
+- Pair ceiling is ~490, NOT the naive 2x305=610: co-residency costs each replica
+  ~19% (305 -> ~246) even at the sweet spot — consistent with round 2's
+  serial-latency-bound tick (two processes' small kernels inflate each other's
+  latency; there is no idle bandwidth being handed over). VRAM peaked at 44.1 GiB
+  of 81.6 (pair at 16+16 sessions) — no OOM risk at these caps.
+
+## R3.3 Fleet point (6 replicas, 3 GPUs, c=48)
+
+Second replicas added on GPU 6 (8089) and GPU 7 (8090), timeslice mode, 8
+sessions/replica (the sweet-spot regime), direct 6-harness:
+
+| replica | GPU | agg tok/s | p50 | p95 |
+|---------|-----|----------:|----:|----:|
+| 8085 | 5 | 248.1 | 4.12s | 4.42s |
+| 8088 | 5 | 248.3 | 4.12s | 4.31s |
+| 8086 | 6 | 249.8 | 4.11s | 4.25s |
+| 8089 | 6 | 252.2 | 4.09s | 4.25s |
+| 8087 | 7 | 241.0 | 4.26s | 4.32s |
+| 8090 | 7 | 240.7 | 4.29s | 4.49s |
+
+**Fleet aggregate: 1480.1 tok/s** (0 errors; ~493/GPU — the pair-c16 number
+reproduced exactly across all three GPUs; VRAM ~43-44 GiB/GPU). vs round-1
+3-replica direct 915.9: **+62% from pair-packing the same three GPUs.** The mixed
+binaries (8086/8087 = round-1 binary, rest = round-2 binary at default cap) are
+behavior-identical at chunk 8 (control row, round 2) and hash-identical.
+
+## R3.4 Updated v2 gap list (supersedes §5 ranking)
+
+1. **Queue admission at ~8 sessions/replica** — now load-bearing twice: it holds
+   the exactness-tier batch AND it is what makes timeslice pairs beat MPS (491
+   vs 386 thrashed). Proxy-side cap + 429/deadline queue.
+2. **Pair-packed fleet as deployment default** — 6 replicas/3 GPUs = 1480 tok/s
+   today with zero engine work. Needs: proxy backend list extended to 6, session
+   affinity (gap 3), and a supervisor (systemd units) instead of nohup.
+3. **Session affinity / KV reuse** (unchanged from v1).
+4. **Batch the per-seq serial parts of the tick** (round-2 finding): batched
+   fa_decode across caches, batched KV append, device-side sampling. This is what
+   raises the per-replica 305 — and it compounds with pair-packing only if it
+   also shrinks kernel-latency sensitivity (fewer, larger launches co-schedule
+   better under co-residency).
+5. **Third replica per GPU** — 44 GiB used of 81.6 leaves room for a third
+   (~66 GiB); diminishing returns expected from the same serial-latency contention
+   that priced the second at -19%, but it is a one-command measurement.
+6. Per-GPU model diversity + proxy hardening (unchanged from v1).
+
+## R3.5 Round-3 receipts
+
+- `pair-sweep.jsonl` / `pair-sweep-per-request.jsonl` — all pair points (both arms
+  + the `pair-timeslice2` same-conditions re-runs).
+- `fleet-point.jsonl` / `fleet-per-request.jsonl` — the 6-replica confirming point.
+- `vram-gpu5-r3.csv` — 1 Hz GPU-5 VRAM for the whole round.
+- `logs/pair-timeslice.log`, `logs/pair-mps.log` — sweep drivers' raw output
+  (greedy hashes per arm inside); `logs/control.log`, `logs/server.log` — MPS
+  daemon/server logs; replica logs `replica-8088-timeslice.log`,
+  `replica-808{5,8}-mps.log`, `replica-8089-gpu6.log`, `replica-8090-gpu7.log`.
+- `run-pair-sweep.sh` — the exact driver.
+- End state: 3-replica + proxy steady state restored (8085/8086/8087 + :8080),
+  greedy hash verified, no MPS processes, extra replicas killed, GPUs 0-4 never
+  touched.
