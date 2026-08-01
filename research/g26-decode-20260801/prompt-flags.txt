@@ -1,0 +1,53 @@
+# Environment flags — the audited catalog
+
+Doctrine (CLAUDE.md): **winners are defaults** — naked commands run the tuned path. A flag exists only when it is (a) runtime parameter, (b) machine-specific config, (c) documented rollback seam, (d) diagnostic, or (e) explicitly-blocked experimental door. When an experiment concludes negative or flat, the flag and dispatch arm are deleted — the `research/tune-data/*.jsonl` row is the record, not dead code. The 2026-07-08 flag audit enforced this repo-wide; removed-flag ledger at bottom.
+
+Provenance dates refer to `research/tune-data/rig5090.jsonl` / `g7e-rtx6000.jsonl` rows and
+HANDOVER.md sections from that date.
+
+---
+
+## 1. Runtime parameters
+
+### Generation (run-gen / run-spec / run-eagle)
+
+| flag | default | what it does |
+|---|---|---|
+| `MEMRA_PROMPT` | numeric ids `101..612` | prompt TEXT (tokenized with the model's tokenizer) |
+| `MEMRA_PROMPT_FILE` | — | prompt text from a file (wins over `MEMRA_PROMPT`) |
+| `MEMRA_NGEN` | bin-specific (64–256) | number of tokens to generate |
+| `MEMRA_CHAT` | off | `1` wraps the prompt in the model's chat template (run-gen) |
+| `MEMRA_PRINT_TEXT` | off | `1` decodes gold tokens between markers (agent-loop harness, run-spec, 2026-07-08) |
+| `MEMRA_GEN_ONLY` | off | run-spec: skip prime-inclusive timing, report gen-only |
+| `MEMRA_SEED` | 0 | sampler seed (run-gen sampling path) |
+| `MEMRA_TEMP` | greedy | temperature; enables the sampling chain |
+| `MEMRA_TOP_K` / `MEMRA_TOP_P` / `MEMRA_MIN_P` | off | sampling filters (run-gen) |
+| `MEMRA_PENALTY_REPEAT` / `_FREQ` / `_PRESENT` / `_LAST_N` | off | repetition penalties (run-gen) |
+| `MEMRA_STOP` | EOS only | comma-separated stop strings (run-gen) |
+
+### Speculative decode (run-spec / serve)
+
+| flag | default | what it does |
+|---|---|---|
+| `MEMRA_SPEC_K` | 3 | draft depth K. Per-(model,content): 27B K=3, 9B K=2–3, 35B K=2 (2026-07-05/06 sweeps). `run_hy3_local_5090.sh` additionally accepts `all` to omit the override and run the mandatory K=1..8 battery in one model load |
+| `MEMRA_SPEC_HOST_EMBD` | off | `1` keeps the token-embedding table in host memory for the Hy3 spill profile, reducing HBM pressure at the cost of a host-row transfer |
+| `MEMRA_SPEC_PMIN` | 0.0 | p-min confidence gate — stop the draft chain when head confidence drops below it (0.15–0.3 typical) |
+| `MEMRA_SPEC_PMIN0` | off | `1` lets p-min gate slot 0 too (zero-draft rounds). Pays below ~75% base acceptance, hurts above ~90% (2026-07-08, 35B +13–23 tok/s) |
+| `MEMRA_SPEC_HPOST` | off | `1` feeds the MTP head POST-output_norm hidden — acceptance lever on the 27B (>100 tok/s crossing, 2026-07-06). Per-model choice |
+| `MEMRA_FRSPEC_TRIM` | off | `<frspec.gguf>`: self-trimmed draft lm_head — gathers top-frequency rows from the model's own output.weight via the file's d2t ranking (generic ranking transfers across same-vocab heads; specialized ones do not — 2026-07-07) |
+| `MEMRA_MTP_DRAFT` | off | `<draft.gguf>`: replace the MTP head with a standalone draft GGUF (exactness unaffected — verify arbitrates). The standard artifact is the regime draft (docs/DRAFT-REGIME.md): own-gen ranks + NVFP4 head + Q4_K_M block, one file, no other flags |
+| `MEMRA_GEMMA_DRAFT_RANKS` | off | `<ranks.txt>`: gemma FR-Spec drafter head trim — corpus-ranked vocab ids, head gathered to those rows (150→18 MB at 32k). ADOPTED for 26B serving: +2.8% short/+5.8% depth spec at IDENTICAL acceptance (2026-07-12; ranks file: `research/gemma4-bringup/gemma4-frspec-ranks-32768.txt`). Historical negative verdicts were measured through two since-fixed verify bugs |
+| `MEMRA_GEMMA_TRIM_ADAPT` | 512 | spare head slots for the serve-time adaptive trim (needs `..._DRAFT_RANKS`; `0` = static trim). Coverage escapes — tokens the trim can't propose — are the entire trim cost (oracle 2026-07-19); the loop learns them from prompt ids + verify argmaxes and persists to `<ranks>.learned`, so a distribution's escapes pay their first-miss round once per lifetime, not per request. Flipped the 31B chat cell from −17% to +2.5% and made trim ≥ untrimmed on EVERY measured cell (2026-07-19) |
+| `MEMRA_SPEC_CAPMAX` | 7 | gemma adaptive-K cap ceiling. >7 opens the b16 verify tier (t=9..16) — correct since 2026-07-12 (three host bugs fixed) but measured perf-negative (depth K8-10 283-293 vs K6 301-306); the door is a measurement, not a crash |
+
+### Benchmark harness (run-gen / session-bench)
+
+| flag | default | what it does |
+|---|---|---|
+| `MEMRA_PP_ONLY` | off | prefill-only timing mode |
+| `MEMRA_PP_REPS` | 1 | prefill repetitions (N-median protocol) |
+| `MEMRA_PP_WARMUP` | 1 | prefill warmup runs |
+| `MEMRA_NMEASURE` | 32 | decode tokens measured after counter reset |
+| `MEMRA_FORCE_TOKENS_FILE` | off | run-gen diagnostic: teacher-force numeric token ids from a file so placement A/Bs traverse an identical decode route |
+| `MEMRA_TURN_TOKENS` | 512 | session-bench: suffix length per turn |
+| `MEMRA_HIST_FILE` | required 

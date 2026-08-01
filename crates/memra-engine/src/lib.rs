@@ -2354,37 +2354,21 @@ impl Engine {
         Ok(())
     }
 
-    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8. Geometry variants (2026-08-01 g26 decode
-    /// dig — the base lone-warp-CTA form was the last router-class latency kernel in the g26
-    /// decode chain): `_j8` packs the 8 slots into one CTA (warp j = slot j), `_j8r2` adds 2
-    /// rows/warp. Per-(row,slot) FP order is BIT-IDENTICAL across all three (same dot loop,
-    /// same warp tree) — geometry, not a numeric config. MEMRA_MOE_DEVQ8_GGU forces:
-    /// 0=base | j8 | j8r2 (probe knob class, same as MEMRA_MOE_DEVQ8_GU); auto = j8
-    /// (measured winner, receipts research/g26-decode-20260801/).
+    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry — slot-packed j8/j8r2
+    /// twins probed 2026-08-01 g26 decode dig: bit-identical rows, -2.5%/-2.9% whole-model
+    /// decode x3 interleaved -> refuted and killed; research/g26-decode-20260801/receipts.md).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_gate_up_gelu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                     in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
                                     qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        static GGU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        let mode = GGU.get_or_init(|| std::env::var("MEMRA_MOE_DEVQ8_GGU").unwrap_or_default())
-                      .as_str();
         let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
         let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
                                         rb_g as i64, rb_u as i64);
-        let (f, cfg) = match mode {
-            "0" => (self.func("moe_gate_up_gelu8_dev_q8"),
-                    LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
-                                   block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
-            "j8r2" => (self.func("moe_gate_up_gelu8_dev_q8_j8r2"),
-                       LaunchConfig { grid_dim: (n_ff.div_ceil(2) as u32, 1, 1),
-                                      block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
-            // auto (and "j8"): slot-packed winner.
-            _ => (self.func("moe_gate_up_gelu8_dev_q8_j8"),
-                  LaunchConfig { grid_dim: (n_ff as u32, 1, 1),
-                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
-        };
+        let f = self.func("moe_gate_up_gelu8_dev_q8");
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
