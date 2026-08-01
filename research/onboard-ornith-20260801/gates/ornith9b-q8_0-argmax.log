@@ -1,0 +1,20 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Write a one-line Python function that reverses a string.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Write a one-line Python function that reverses a string."
+prompt tokens: [248045, 846, 198, 7734, 264, 799, 8187, 12654, 709, 421, 16915, 287, 264, 886, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=90700  decode argmax=90700  logit maxdiff=8.812e-1  MATCH
+prefill 22 tok in 0.0311s = 706.4 tok/s (pp22)
+generated 32 tokens in 0.379s = 84.49 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.031s) [stop: MaxNew]
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 5261, 25, 9357, 264, 799, 8187, 12654, 709, 421, 16915, 287, 264, 886, 13, 198]
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Task: Write a one-line Python function that reverses a string.\n"
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Task: Write a one-line Python function that reverses a string.
+
