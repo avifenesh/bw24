@@ -2240,3 +2240,31 @@ Round 47 update 2 — q27 win-harder arc (2026-08-01, "most-used model" directiv
    tok/expert is the direct attack on both remaining losses). Infra verdict in #33:
    bench box stays bench-only, spot p5.4x us-east-1 $2.63/hr for dev, quota headroom
    +47 boxes, skip MIG.
+
+## Round 48 — g26 decode: the router knife-edge was roulette (+12.7%), ragged tiles refuted (2026-08-01)
+
+Two lane2 arcs on the darklanes box, both receipts-complete:
+
+1. RAGGED TOKEN-TILES (lever #1 from the round-47 queue) REFUTED: {64,96,128} avg-pairs
+   dispatch for mmq_iq_experts costs -7.6% q35 pp2048 at ANY sub-128 tile (attribution
+   arm -0.4%; 96-floor probe == ragged mix). Mechanism: the Y-gather already skips
+   clamped tail columns (round 46 inc4) so tile-128 padding waste was dead MMA only —
+   and the kernel is latency-bound, so dead MMA was free AND hid the W-stage/Y-gather
+   latency; smaller tiles expose it. A future ragged attempt must invert the loop nest
+   (dequant W once per kb, walk token sub-tiles inside). g26 control flat. Mechanism
+   preserved on lane/ragged-tiles (tip reverts it); receipts
+   research/ragged-tiles-20260801/.
+2. G26 DECODE DIG (lane/g26-decode): honest wall table by two-capture nsys subtraction
+   (NGEN 16 vs 528, prime cancels exactly): router_gemv_f32 763.9us/step = 15.8% (25.4us
+   x 30 layers — round-44 number reproduced). The round-44 gemma4 w8 block RE-ARBITRATED
+   on 6 real prompts x both arms: w8's gate outcome IDENTICAL to lone-warp on all six
+   (the one MISMATCH prompt fails BOTH arms with the same argmax pair — router-
+   independent). Verdict: single-synthetic-prompt roulette, exactly the round-45 class.
+   FLIP LANDED: gemma4 rides the global ROUTER_W8_DEFAULT — g26 decode 182.6 -> 205.7
+   depth / 180.9 -> 204.2 board (+12.7/+12.9%, naked-vs-naked x3 interleaved, all
+   argmax MATCH; router now 114us/step = 2.7%). Cross-day vLLM 194.6 NOT re-benched —
+   board harness re-run required for a publishable cell. Bounded increment on the next
+   wall (gelu gate_up slot-packing _j8/_j8r2, bit-identical rows) measured -2.5%/-2.9%
+   -> killed per flags doctrine (grid 704x8 1-warp CTAs beat 704x1 8-warp packing).
+   Next rungs: gate_up+down8 fusion (25% combined, 15-30% of SOL), fa chain (~20%),
+   q6_K LM head (323us, 7.8%). Receipts research/g26-decode-20260801/.

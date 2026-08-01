@@ -1017,9 +1017,13 @@ impl HybridModel {
             // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
             crate::FA_SP512_DEFAULT.store(if real_moe { 16 } else { 32 },
                                           std::sync::atomic::Ordering::Relaxed);
-            // gemma4 keeps the lone-warp router (the 26B's knife-edge gate flips on the
-            // w8 twin's fold order — 2026-07-31 on-box receipts; qwen-class keeps w8).
-            crate::ROUTER_W8_DEFAULT.store(false, std::sync::atomic::Ordering::Relaxed);
+            // gemma4 router w8 RE-ARBITRATED 2026-08-01 (g26 decode dig): the 2026-07-31
+            // knife-edge that stored false here was single-synthetic-prompt roulette — on 6
+            // real prompts the w8 twin's gate outcome is IDENTICAL to the lone-warp form
+            // (5 MATCH/5 MATCH; the one MISMATCH prompt fails both arms with the same
+            // argmax pair, router-independent). w8 = +13% g26 decode (182->206 tok/s x3
+            // interleaved, H100). Receipts: research/g26-decode-20260801/. gemma4 now rides
+            // the global default (true); MEMRA_ROUTER_V2=0 is the rollback seam.
             // fused t=1 pair/triple mr1 per variant (2026-07-14 DRAM-duty arc: dense +1.1%
             // short / +0.6% depth on 31B; MoE 26B −1.2% — stays mr2).
             crate::FUSED_MR1_DEFAULT.store(!real_moe,

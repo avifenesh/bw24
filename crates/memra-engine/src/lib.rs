@@ -251,9 +251,10 @@ pub static FUSED_MR1_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Per-model router-GEMV form (2026-07-31): the 8-warp twin is +8.8% on the H100 q35
 /// decode step (router was 14.8% of it) with argmax + spec self-consistency green on
-/// qwen-class MoE both rigs; the gemma-4 26B's knife-edge prefill-vs-decode gate flips
-/// on ANY router fold-order change (same class as its stream-K verdict), so gemma4
-/// loading stores false. MEMRA_ROUTER_V2 env overrides either way.
+/// qwen-class MoE both rigs. The gemma-4 26B knife-edge block (2026-07-31, single
+/// synthetic prompt) was RE-ARBITRATED 2026-08-01 on 6 real prompts — gate outcomes
+/// identical to the lone-warp arm, +13% g26 decode — so gemma4 rides the default too
+/// (research/g26-decode-20260801/). MEMRA_ROUTER_V2 env overrides either way.
 pub static ROUTER_W8_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
@@ -2361,7 +2362,9 @@ impl Engine {
         Ok(())
     }
 
-    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry only for now).
+    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry — slot-packed j8/j8r2
+    /// twins probed 2026-08-01 g26 decode dig: bit-identical rows, -2.5%/-2.9% whole-model
+    /// decode x3 interleaved -> refuted and killed; research/g26-decode-20260801/receipts.md).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_gate_up_gelu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
