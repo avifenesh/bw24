@@ -27,6 +27,19 @@ use crate::Engine;
 use cudarc::driver::CudaSlice;
 
 impl HybridModel {
+    /// Batched-decode width cap. 8 = the exactness-tier default (see the assert below);
+    /// MEMRA_DECODE_BATCH_CAP overrides for tier-probe measurement, clamped to 32.
+    pub fn decode_batch_cap() -> usize {
+        use std::sync::OnceLock;
+        static CAP: OnceLock<usize> = OnceLock::new();
+        *CAP.get_or_init(|| {
+            std::env::var("MEMRA_DECODE_BATCH_CAP").ok()
+                .and_then(|v| v.parse().ok())
+                .map(|c: usize| c.clamp(1, 32))
+                .unwrap_or(8)
+        })
+    }
+
     /// One batched greedy-decode step over B independent sequences.
     /// `tokens[b]` is sequence b's input token; `caches[b]` its private cache (position,
     /// quantized KV, GDN/conv state). Returns the B logits rows (host, [n_vocab] each).
@@ -39,10 +52,19 @@ impl HybridModel {
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
+        // MEMRA_DECODE_BATCH_CAP (experimental door, serving-lane tier probe 2026-08-01):
+        // default 8 keeps the v1 exactness policy — B=2..8 rides the verify-tier batched
+        // mmvq arms, per-row bit-identical to isolated m=1 decode. Values >8 are a
+        // MEASUREMENT DOOR ONLY: m=9..15 falls to the grid.y=m dp4a tail (m weight
+        // re-reads + a different reduce shape) and m>=16 crosses into the GEMM tier
+        // (block-scale f32 rounding) — BOTH break the "byte-identical to isolated"
+        // serving contract. Never default this above 8 without the batched-tier
+        // exactness policy landing.
+        let cap = Self::decode_batch_cap();
         assert!(
-            b_n <= 8,
-            "decode_step_batch: B={b_n} > 8 crosses the m>=16 GEMM tier (a different \
-             numeric config) — refused until the batched-tier exactness policy lands"
+            b_n <= cap,
+            "decode_step_batch: B={b_n} > cap {cap} (>8 crosses the m>=16 GEMM tier, a \
+             different numeric config) — refused until the batched-tier exactness policy lands"
         );
         assert!(
             !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),

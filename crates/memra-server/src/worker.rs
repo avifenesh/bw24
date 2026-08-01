@@ -622,7 +622,8 @@ pub fn run(
                     (true, None) => {} // nothing to do this tick
                 }
             }
-            // batched steps in chunks of <= 8 (the exactness-tier cap), same model per chunk
+            // batched steps in chunks of <= decode_batch_cap() (default 8 = the exactness-tier
+            // cap; MEMRA_DECODE_BATCH_CAP is the tier-probe door), same model per chunk
             for chunk in group_chunks(&active, &ready) {
                 let toks: Vec<u32> = chunk.iter().map(|&(_, t)| t).collect();
                 let idxs: Vec<usize> = chunk.iter().map(|&(i, _)| i).collect();
@@ -1095,11 +1096,12 @@ fn advance_token_emit(
 /// Group ready (session_idx, token) pairs into batched-step chunks: same model, <= 8 rows
 /// (the exactness-tier cap), input order preserved (caller sorted interactive first).
 fn group_chunks(active: &[Session], ready: &[(usize, u32)]) -> Vec<Vec<(usize, u32)>> {
+    let cap = memra_engine::hybrid::HybridModel::decode_batch_cap();
     let mut chunks: Vec<Vec<(usize, u32)>> = Vec::new();
     for &(i, t) in ready {
         let model = &active[i].model;
         match chunks.last_mut() {
-            Some(c) if c.len() < 8 && active[c[0].0].model == *model => c.push((i, t)),
+            Some(c) if c.len() < cap && active[c[0].0].model == *model => c.push((i, t)),
             _ => chunks.push(vec![(i, t)]),
         }
     }

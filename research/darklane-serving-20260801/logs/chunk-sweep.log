@@ -1,0 +1,52 @@
+########## chunk=8 1785544798 ##########
+BASELINE_VRAM chunk=8 1785544806 16659
+GREEDY_HASH chunk=8 dbd1c98f9fed4efe
+[ref] collected 24 isolated references
+{"ts": "2026-08-01T00:40:21+0000", "label": "chunk8", "base": "http://127.0.0.1:8085", "n": 24, "max_tokens": 64, "wall_s": 3.773202115999993, "n_match": 24, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+PHASE chunk8-c8 START 1785544821
+{"ts": "2026-08-01T00:40:35+0000", "label": "chunk8", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 13.457712045000335, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 304.3607996889562, "req_per_s": 2.3778187475699704, "lat_p50_s": 3.3594736180002656, "lat_p95_s": 3.499169940999309, "lat_mean_s": 3.3621085435625844, "lat_max_s": 3.499915596000392, "errors_sample": []}
+PHASE chunk8-c8 END 1785544835 VRAM 23317
+PHASE chunk8-c16 START 1785544835
+{"ts": "2026-08-01T00:41:02+0000", "label": "chunk8", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 26.803028860000268, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 305.63709955278233, "req_per_s": 2.387789840256112, "lat_p50_s": 6.69472329600012, "lat_p95_s": 6.767889065000418, "lat_mean_s": 6.697974616328139, "lat_max_s": 6.77076053699966, "errors_sample": []}
+PHASE chunk8-c16 END 1785544862 VRAM 23317
+PHASE chunk8-c32 START 1785544862
+{"ts": "2026-08-01T00:42:05+0000", "label": "chunk8", "base": "http://127.0.0.1:8085", "concurrency": 32, "requests": 128, "max_tokens": 128, "greedy": false, "wall_s": 62.72955541800002, "n_ok": 128, "n_err": 0, "completion_tokens_total": 16384, "agg_tok_s": 261.184698198876, "req_per_s": 2.0405054546787187, "lat_p50_s": 15.669771174000743, "lat_p95_s": 15.954786445000536, "lat_mean_s": 15.678470121953147, "lat_max_s": 15.958672410000872, "errors_sample": []}
+PHASE chunk8-c32 END 1785544925 VRAM 25493
+PHASE chunk8-c64 START 1785544925
+{"ts": "2026-08-01T00:43:54+0000", "label": "chunk8", "base": "http://127.0.0.1:8085", "concurrency": 64, "requests": 256, "max_tokens": 128, "greedy": false, "wall_s": 108.33055098899968, "n_ok": 256, "n_err": 0, "completion_tokens_total": 32768, "agg_tok_s": 302.48161484314244, "req_per_s": 2.3631376159620503, "lat_p50_s": 27.09516398100004, "lat_p95_s": 27.193880836999597, "lat_mean_s": 27.073310395625004, "lat_max_s": 27.203302371000063, "errors_sample": []}
+PHASE chunk8-c64 END 1785545034 VRAM 32373
+########## chunk=16 1785545034 ##########
+BASELINE_VRAM chunk=16 1785545041 16659
+GREEDY_HASH chunk=16 dbd1c98f9fed4efe
+[ref] loaded 24 isolated references from /home/ubuntu/darklane-serving-20260801/isolated-refs.json
+{"ts": "2026-08-01T00:44:09+0000", "label": "chunk16", "base": "http://127.0.0.1:8085", "n": 24, "max_tokens": 64, "wall_s": 7.407543622999583, "n_match": 21, "n_mismatch": 3, "n_err": 0, "verdict": "FAIL", "mismatches": [{"i": 4, "diverge_at_char": 173, "ref_sha": "d20f70286f09", "out_sha": "d0b6b5e06b47", "ref_tail": "Rules of Go:**\n    *   Objective: Captur", "out_tail": "Concepts of Go:**\n    *   Board: Grid ("}, {"i": 9, "diverge_at_char": 108, "ref_sha": "6fd158272a14", "out_sha": "f19c5b7e606f", "ref_tail": "t in exactly two sentences.\n\n2.  **Defin", "out_tail": "n exactly two sentences.\n\n2.  **Identify"}, {"i": 23, "diverge_at_char": 113, "ref_sha": "dbbb83ff7bd2", "out_sha": "c09c35a7207f", "ref_tail": "plain in exactly two sentences.\n\n2.  **I", "out_tail": "actly two sentences.\n\n2.  **Define \"Gold"}]}
+PHASE chunk16-c8 START 1785545049
+{"ts": "2026-08-01T00:44:25+0000", "label": "chunk16", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 15.068450658999609, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 271.8262210689637, "req_per_s": 2.123642352101279, "lat_p50_s": 3.7662903359996562, "lat_p95_s": 3.850839452999935, "lat_mean_s": 3.7646392450938606, "lat_max_s": 3.8515543990006336, "errors_sample": []}
+PHASE chunk16-c8 END 1785545065 VRAM 23093
+PHASE chunk16-c16 START 1785545065
+{"ts": "2026-08-01T00:45:14+0000", "label": "chunk16", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 48.40299784099989, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 169.24571545981692, "req_per_s": 1.3222321520298197, "lat_p50_s": 12.08410547099993, "lat_p95_s": 12.168344216999685, "lat_mean_s": 12.09712664809372, "lat_max_s": 12.169101541999225, "errors_sample": []}
+PHASE chunk16-c16 END 1785545114 VRAM 23093
+PHASE chunk16-c32 START 1785545114
+{"ts": "2026-08-01T00:46:51+0000", "label": "chunk16", "base": "http://127.0.0.1:8085", "concurrency": 32, "requests": 128, "max_tokens": 128, "greedy": false, "wall_s": 97.07537312800014, "n_ok": 128, "n_err": 0, "completion_tokens_total": 16384, "agg_tok_s": 168.77607030566486, "req_per_s": 1.3185630492630067, "lat_p50_s": 24.26605765000022, "lat_p95_s": 24.327218033999998, "lat_mean_s": 24.26386854986719, "lat_max_s": 24.329160266000144, "errors_sample": []}
+PHASE chunk16-c32 END 1785545211 VRAM 25525
+PHASE chunk16-c64 START 1785545211
+{"ts": "2026-08-01T00:50:06+0000", "label": "chunk16", "base": "http://127.0.0.1:8085", "concurrency": 64, "requests": 256, "max_tokens": 128, "greedy": false, "wall_s": 194.7520982899996, "n_ok": 256, "n_err": 0, "completion_tokens_total": 32768, "agg_tok_s": 168.25492658469918, "req_per_s": 1.3144916139429623, "lat_p50_s": 48.66956038599983, "lat_p95_s": 48.99934219399984, "lat_mean_s": 48.66337615394922, "lat_max_s": 49.01310973300042, "errors_sample": []}
+PHASE chunk16-c64 END 1785545406 VRAM 32405
+########## chunk=32 1785545406 ##########
+BASELINE_VRAM chunk=32 1785545413 16659
+GREEDY_HASH chunk=32 dbd1c98f9fed4efe
+[ref] loaded 24 isolated references from /home/ubuntu/darklane-serving-20260801/isolated-refs.json
+{"ts": "2026-08-01T00:50:21+0000", "label": "chunk32", "base": "http://127.0.0.1:8085", "n": 24, "max_tokens": 64, "wall_s": 6.912424213999657, "n_match": 20, "n_mismatch": 4, "n_err": 0, "verdict": "FAIL", "mismatches": [{"i": 4, "diverge_at_char": 173, "ref_sha": "d20f70286f09", "out_sha": "d0b6b5e06b47", "ref_tail": "Rules of Go:**\n    *   Objective: Captur", "out_tail": "Concepts of Go:**\n    *   Board: Grid ("}, {"i": 5, "diverge_at_char": 151, "ref_sha": "f52b96556883", "out_sha": "b90d1822e95c", "ref_tail": "Concepts:**\n    *   Yeast is a microorga", "out_tail": "Mechanisms:**\n    *   Yeast is a microor"}, {"i": 9, "diverge_at_char": 108, "ref_sha": "6fd158272a14", "out_sha": "f19c5b7e606f", "ref_tail": "t in exactly two sentences.\n\n2.  **Defin", "out_tail": "n exactly two sentences.\n\n2.  **Identify"}, {"i": 23, "diverge_at_char": 63, "ref_sha": "dbbb83ff7bd2", "out_sha": "4f628055e403", "ref_tail": "Gold standard in economics.\n    *   Cons", "out_tail": "The gold standard in economics.\n    *   "}]}
+PHASE chunk32-c8 START 1785545421
+{"ts": "2026-08-01T00:50:37+0000", "label": "chunk32", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 15.240155601999504, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 268.76366009429756, "req_per_s": 2.0997160944866997, "lat_p50_s": 3.808566721999341, "lat_p95_s": 3.896571292999397, "lat_mean_s": 3.8076204463123986, "lat_max_s": 3.897205775999282, "errors_sample": []}
+PHASE chunk32-c8 END 1785545437 VRAM 23157
+PHASE chunk32-c16 START 1785545437
+{"ts": "2026-08-01T00:51:26+0000", "label": "chunk32", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 48.66101783100021, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 168.34830764228624, "req_per_s": 1.3152211534553613, "lat_p50_s": 12.154596313999718, "lat_p95_s": 12.270978550999644, "lat_mean_s": 12.159970184374927, "lat_max_s": 12.273503385999902, "errors_sample": []}
+PHASE chunk32-c16 END 1785545486 VRAM 23157
+PHASE chunk32-c32 START 1785545486
+{"ts": "2026-08-01T00:52:35+0000", "label": "chunk32", "base": "http://127.0.0.1:8085", "concurrency": 32, "requests": 128, "max_tokens": 128, "greedy": false, "wall_s": 68.99786822900023, "n_ok": 128, "n_err": 0, "completion_tokens_total": 16384, "agg_tok_s": 237.45661163939704, "req_per_s": 1.8551297784327894, "lat_p50_s": 17.238877789999606, "lat_p95_s": 17.351509752999846, "lat_mean_s": 17.243258312812515, "lat_max_s": 17.353540576999876, "errors_sample": []}
+PHASE chunk32-c32 END 1785545555 VRAM 25525
+PHASE chunk32-c64 START 1785545555
+{"ts": "2026-08-01T00:54:54+0000", "label": "chunk32", "base": "http://127.0.0.1:8085", "concurrency": 64, "requests": 256, "max_tokens": 128, "greedy": false, "wall_s": 138.2226768649998, "n_ok": 256, "n_err": 0, "completion_tokens_total": 32768, "agg_tok_s": 237.06674435197095, "req_per_s": 1.852083940249773, "lat_p50_s": 34.54914448399995, "lat_p95_s": 34.72280769500048, "lat_mean_s": 34.542011926570304, "lat_max_s": 34.73284662399965, "errors_sample": []}
+PHASE chunk32-c64 END 1785545694 VRAM 32373
+CHUNK SWEEP DONE
