@@ -591,28 +591,66 @@ int memra_mmq_iq_fused_act_quant(const float* gate, const float* up, void* act_s
 
 // Expert-segmented IQ MMA MMQ. y[n_pairs, out_f]. `act_scratch` pre-quantized via
 // memra_mmq_iq_quantize_act (token-major over n_tokens). qtype: 5=IQ4_XS, 6=IQ3_S.
+} // extern "C" (paused: the tile-width launch helper below is a template — no C linkage)
+
+// Dynamic-smem bytes for a given token-tile width (the mmq_x-dependent pieces: pair ids +
+// the round-45/46 Y ping-pong; tile_x + the W staging ring are mmq_y-fixed).
+static size_t mmq_iq_experts_smem(int mmq_x){
+    return (size_t)mmq_x*sizeof(int)
+        + 2*GGML_PAD((size_t)mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)  // Y ping-pong
+        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int)
+        + 2*(size_t)MMQ_Y*W_STAGE_STRIDE;              // W kb-slice staging ring
+}
+
+template<int MX>
+static int mmq_iq_experts_launch(const unsigned long long* table, int proj, int n_expert,
+        const int* ex_ids, const int* ex_off, const int* ex_pairs, const int* pair_tok,
+        const int* Yq, float* y, int in_f, int out_f, int n_active, int n_tokens,
+        int qtype, long row_bytes, cudaStream_t st){
+    const int nty = (out_f + MMQ_Y - 1)/MMQ_Y;
+    dim3 grid((unsigned)nty, (unsigned)n_active, 1);
+    dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
+    size_t smem = mmq_iq_experts_smem(MX);
+    const bool nc = (out_f % MMQ_Y) != 0;
+    cudaError_t ae;
+    if(nc){
+        ae = cudaFuncSetAttribute(mmq_iq_experts_kernel<MX,true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if(ae != cudaSuccess) return 2000+(int)ae;
+        mmq_iq_experts_kernel<MX,true><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
+    } else {
+        ae = cudaFuncSetAttribute(mmq_iq_experts_kernel<MX,false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if(ae != cudaSuccess) return 2000+(int)ae;
+        mmq_iq_experts_kernel<MX,false><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
+    }
+    cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+}
+
+extern "C" {
+
 int memra_mmq_iq_experts(const unsigned long long* table, int proj, int n_expert,
         const int* ex_ids, const int* ex_off, const int* ex_pairs, const int* pair_tok,
         const void* act_scratch, float* y,
         int in_f, int out_f, int n_active, int n_tokens, int qtype, long row_bytes, void* stream){
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
-    const int nty = (out_f + MMQ_Y - 1)/MMQ_Y;
-    dim3 grid((unsigned)nty, (unsigned)n_active, 1);
-    dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
-    size_t smem = (size_t)MMQ_X*sizeof(int)
-        + 2*GGML_PAD((size_t)MMQ_X*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)  // Y ping-pong
-        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int)
-        + 2*(size_t)MMQ_Y*W_STAGE_STRIDE;              // W kb-slice staging ring
     const int* Yq = (const int*)act_scratch;
-    const bool nc = (out_f % MMQ_Y) != 0;
-    if(nc){
-        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mmq_iq_experts_kernel<MMQ_X,true><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
-    } else {
-        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mmq_iq_experts_kernel<MMQ_X,false><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
+    // DEVICE SMEM GUARD (2026-08-01, found on the 5090): the round-46 async-movement growth
+    // (Y ping-pong + W staging ring) put the 128-token tile at 114.5KB dynamic smem — fine on
+    // H100's 228KB opt-in, OVER sm_120a's ~99KB. cudaFuncSetAttribute was failing UNCHECKED and
+    // the launch died cudaErrorInvalidValue: q35/g26 prime was broken on the deployment rig.
+    // Fall back to the 64-token tile (98.3KB, fits) when the built tile exceeds the device.
+    static int smem_optin = -1;
+    if(smem_optin < 0){
+        int dev = 0; cudaGetDevice(&dev);
+        if(cudaDeviceGetAttribute(&smem_optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess)
+            smem_optin = 48*1024;
     }
-    cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+    if(mmq_iq_experts_smem(MMQ_X) > (size_t)smem_optin){
+        if(mmq_iq_experts_smem(64) > (size_t)smem_optin) return 3;   // no tile fits this device
+        return mmq_iq_experts_launch<64>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,
+                                         Yq,y,in_f,out_f,n_active,n_tokens,qtype,row_bytes,st);
+    }
+    return mmq_iq_experts_launch<MMQ_X>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,
+                                        Yq,y,in_f,out_f,n_active,n_tokens,qtype,row_bytes,st);
 }
 
 } // extern "C"
