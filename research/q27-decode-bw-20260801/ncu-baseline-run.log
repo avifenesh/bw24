@@ -1,0 +1,41 @@
+==PROF== Connected to process 121633 (/home/ubuntu/lane1/target/release/run-gen)
+[q8rp] split-plane decode mirrors built: 96 tensors
+loaded qwen35 (64 trunk layers; optional MTP skipped)
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.\n"
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13, 198]
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q6_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q6_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq": 0%....50%....100% - 39 passes
+prefill argmax=7734  decode argmax=7734  logit maxdiff=4.605e-1  MATCH
+prefill 28 tok in 0.2883s = 97.1 tok/s (pp28)
+generated 8 tokens in 1.362s = 5.87 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.261s) [stop: MaxNew]
+tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651]
+OUTPUT TEXT: "Write a Python function that implements a doubly"
+--- generated text ---
+Write a Python function that implements a doubly
+==PROF== Disconnected from process 121633
+==PROF== Report: /home/ubuntu/lane1/research/q27-decode-bw-20260801/mmvq-baseline.ncu-rep

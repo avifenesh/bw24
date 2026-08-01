@@ -1105,7 +1105,10 @@ impl HybridModel {
                 Ok(_) => true,
                 Err(_) => cfg!(memra_hopper_mma),
             };
-            if q8rp_on {
+            // K-quant split-plane mirrors (q4_K/q6_K, 2026-08-01 H100 coalescing fix) ride
+            // the same trunk walk under their own seam (MEMRA_KQRP, default = hopper lane).
+            let kqrp_on = crate::Engine::kqrp_enabled();
+            if q8rp_on || kqrp_on {
                 let e_ref = e;
                 // f16 prefill mirrors, PER-MODEL argmax-gate arbitration (round 45): on the
                 // qwen Q8_0 dense class the f16-prefill-vs-int8-decode gap (maxdiff ~0.67)
@@ -1118,14 +1121,18 @@ impl HybridModel {
                 let mut nmir = 0usize;
                 let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
                     let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
-                    e_ref.build_q8_rp4(w)?;
+                    if q8rp_on { e_ref.build_q8_rp4(w)?; }
+                    if kqrp_on {
+                        e_ref.build_q4k_rp4(w)?;
+                        e_ref.build_q6k_rp4(w)?;
+                    }
                     // Q6_K mirrors are model-CLASS-agnostic (round 47): no MMQ arm exists for
                     // Q6_K — the fallback dequant-GEMM is ~10x the f16 lane (q27's prefill
                     // wall). The qwen-dense argmax-flip evidence (round 45) was the Q8_0
                     // mirror specifically; Q6_K admission is arbitrated by its own gate runs.
                     let q6k = matches!(w, crate::model::GpuTensor::Quant { qtype, .. }
                                        if *qtype == crate::QT_Q6_K);
-                    if crate::f16_ffi::pp_f16_enabled() && (f16_model_ok || q6k) {
+                    if q8rp_on && crate::f16_ffi::pp_f16_enabled() && (f16_model_ok || q6k) {
                         e_ref.build_q8_f16(w)?;
                     }
                     if !before && matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. }) {

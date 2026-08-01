@@ -2240,3 +2240,26 @@ Round 47 update 2 — q27 win-harder arc (2026-08-01, "most-used model" directiv
    tok/expert is the direct attack on both remaining losses). Infra verdict in #33:
    bench box stays bench-only, spot p5.4x us-east-1 $2.63/hr for dev, quota headroom
    +47 boxes, skip MIG.
+
+Round 48 — q27 K-QUANT SPLIT-PLANE DECODE MIRRORS (2026-08-01, lane/q27-decode-bw):
+the byte-normalized head-to-head (vLLM FP8 decode 79.9 at 1.7x our weight bytes vs our
+78-79) said the q27 decode leaves H100 bandwidth unused. ncu (receipts in
+research/q27-decode-bw-20260801/): qmatvec_q4_K_mmvq holds DRAM 41-54% with 65%
+excessive sectors ("uncoalesced global accesses"), qmatvec_q6_K_mmvq 40-47% with 78% —
+the 144B/210B GGUF superblock strides are the Q8_0 34B-stride disease (2026-07-26) on
+K-quants. Fix = the same split-plane recipe: load-time mirrors (q4_K: qs plane ++ 16B
+meta plane; q6_K: ql ++ qh ++ scales ++ d planes; same total bytes, MEMRA_KQRP seam,
+hopper-default) + bit-identical rp twins (m=1 mmvq_rp, batched b2/b4/b8_rp, q6_K b16_rp;
+q6_K rp keeps PDL wave-A). After-ncu: q4_K hot shape 52% -> 61-64% DRAM (excessive
+sectors 65% -> 32%), 28.8 -> 24.6us; q6_K fat call 54.6 -> 44.0us (40 -> 50% DRAM).
+E2E (interleaved x3, same-session): PLAIN 77-78 -> 88-91 tok/s (+15-16% all three prompt
+classes), SPEC K=3+HPOST+PMIN0.3 board-2048 103.7 -> 109.2 / short 127.2 -> 133.4 /
+agentic 137.9 -> 144.8 (+5%), acceptance IDENTICAL per class (bit-identity holds e2e).
+Gates: kernel-check ALL GREEN incl. 13 new KQRP bit-bad=0 gates (m=1..12, both dtypes),
+run-gen argmax MATCH (board-2048), run-spec K=1..8 SELF-CONSISTENCY PASS x3 classes.
+Board math: spec e2e 92.5 -> ~96.2 vs vLLM FP8+MTP-best 140.9 (gap 1.52x -> 1.46x).
+REMAINING HEADROOM (next attack): the hot q4_K shape still shows 32% excessive sectors
+and 61-64% DRAM — the paired-lane chunk redundancy and the byte-granular meta/scale
+reads are the residue; a lane->chunk remap (each lane owns its own 32B chunk) is the
+follow-up probe. Mirrors are VRAM-paid (trunk-sized) — hopper-lane only, 5090 untouched
+(sm_120a build byte-identical, MEMRA_KQRP defaults off without memra_hopper_mma).
