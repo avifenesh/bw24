@@ -1,0 +1,13 @@
+
+
+Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.
+
+Here0.01.802.193 E init: the tokens of sequence 1 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 1 is X = 30
+ - the tokens for sequence 1 in the input batch have a starting position of Y = 28
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.01.802.195 E decode: failed to initialize batch
+0.01.802.195 E llama_decode: failed to decode, ret = -1
+0.01.802.195 E 
+
+main: llama_decode failed - increase KV cache size

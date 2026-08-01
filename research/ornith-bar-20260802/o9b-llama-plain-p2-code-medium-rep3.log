@@ -1,0 +1,252 @@
+0.00.017.025 I llama_completion: llama backend init
+0.00.017.032 I llama_completion: load the model and apply lora adapter, if any
+0.01.591.761 I llama_completion: llama threadpool init, n_threads = 4
+0.01.591.778 I llama_completion: chat template is available, enabling conversation mode (disable it with -no-cnv)
+0.01.591.778 W *** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
+0.01.591.870 I llama_completion: chat template example:
+<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+
+0.01.591.870 I 
+0.01.591.909 I system_info: n_threads = 4 (n_threads_batch = 4) / 24 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | FA_ALL_QUANTS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.01.591.909 I 
+0.01.594.071 I llama_completion: interactive mode on.
+0.01.594.075 I sampler seed: 2992281591
+0.01.594.080 I sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = -1
+	top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.01.594.086 I sampler chain: logits -> logit-bias -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+0.01.594.086 I generate: n_ctx = 8192, n_batch = 2048, n_predict = 256, n_keep = 0
+0.01.594.086 I 
+0.01.594.086 I == Running in interactive mode. ==
+0.01.594.086 I  - Press Ctrl+C to interject at any time.
+0.01.594.086 I  - Press Return to return control to the AI.
+ - To return control without starting a new line, end your input with '/'.
+ - If you want to submit another line, end your input with '\'.
+0.01.594.086 I  - Not using system message. To change it, set a different value via -sys PROMPT
+0.01.594.087 I 
+user
+Here is a Rust HTTP server source file:
+
+```rust
+//! bw24-server (BASE-4): a minimal OpenAI-ish HTTP server that serves 2-4 concurrent agents across
+//! DIFFERENT models on one endpoint via a single GPU worker thread + step-interleave scheduler.
+//!
+//! Architecture (see worker.rs): axum runs on a tokio runtime; ONE dedicated std::thread owns the
+//! Engine + every loaded HybridModel (CUDA context is thread-affine). Handlers submit `Cmd`s over a
+//! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
+//!
+//! Endpoints:
+//!   GET  /health                 -> {"status":"ok","models":[...]}
+//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
+//!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
+//!                                     seed?,stop?,chat?,stream?}. stream=true => SSE token-by-token;
+//!                                     else a single JSON {text,tokens,stop_reason}.
+//!
+//! CONFIG: BW24_MODELS="name=/path.gguf,name2=/path2.gguf" (comma-separated name=path pairs).
+//! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. BW24_ADDR sets the bind addr.
+
+mod worker;
+
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
+
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{sse::{Event as SseEvent, Sse}, IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use bw24_engine::decode::GenParams;
+use bw24_engine::sampler::SamplerConfig;
+use worker::{Cmd, Event, Request};
+
+#[derive(Clone)]
+struct AppState {
+    cmd_tx: Sender<Cmd>,
+    models: Arc<Vec<String>>,
+}
+
+/// POST /v1/completions request body.
+#[derive(Deserialize)]
+struct CompletionReq {
+    model: String,
+    #[serde(default)]
+    prompt: String,
+    /// raw token-id prompt (the exact-token validation-gate path; bypasses the tokenizer).
+    #[serde(default)]
+    prompt_ids: Vec<u32>,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: usize,
+    #[serde(default)]
+    temperature: f32,
+    #[serde(default = "one")]
+    top_p: f32,
+    #[serde(default)]
+    top_k: usize,
+    #[serde(default)]
+    min_p: f32,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    stop: Vec<String>,
+    /// wrap the prompt in the model's chat template (single user turn).
+    #[serde(default)]
+    chat: bool,
+    /// stream tokens via SSE; else return one JSON when done.
+    #[serde(default)]
+    stream: bool,
+    /// optional hard context cap.
+    #[serde(default)]
+    max_ctx: Option<usize>,
+}
+fn default_max_tokens() -> usize { 128 }
+fn one() -> f32 { 1.0 }
+
+#[derive(Serialize)]
+struct CompletionResp {
+    model: String,
+    text: String,
+    tokens: Vec<u32>,
+    stop_reason: String,
+    n_tokens: usize,
+    elapsed_s: f64,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let models = parse_models_config();
+    eprintln!("[server] starting; models config = {models:?}");
+
+    // Spawn the GPU worker thread and block until every model is loaded (or it fails).
+    let (cmd_tx, model_names) = match worker::spawn(models) {
+        Ok(v) => v,
+        Err(err) => { eprintln!("[server] FATAL: worker init failed: {err}"); std::process::exit(1); }
+    };
+    eprintln!("[server] worker ready; serving models: {model_names:?}");
+
+    let state = AppState { cmd_tx, models: model_names };
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/models", get(list_models))
+        .route("/v1/completions", post(completions))
+        .with_state(state);
+
+    let addr = std::env::var("BW24_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("[server] listening on http://{addr}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// BW24_MODELS="name=/path.gguf,name2=/path2.gguf". Falls back to the BASE-4 test pair.
+fn parse_models_config() -> Vec<(String, String)> {
+    if let Ok(spec) = std::env::var("BW24_MODELS") {
+        let mut out = Vec::new();
+        for entry in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            if let Some((name, path)) = entry.split_once('=') {
+                out.push((name.trim().to_string(), path.trim().to_string()));
+            } else {
+                eprintln!("[server] WARN: bad BW24_MODELS entry {entry:?} (want name=/path); skipping");
+            }
+        }
+        if !out.is_empty() { return out; }
+    }
+    // Default: the BASE-4 test pair (main=27B, judge=9B).
+    vec![
+        ("main".into(),  "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf".into()),
+        ("judge".into(), "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf".into()),
+    ]
+}
+
+async fn health(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({ "status": "ok", "models": *st.models }))
+}
+
+async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
+    let data: Vec<_> = st.models.iter().map(|m| json!({ "id": m, "object": "model" })).collect();
+    Json(json!({ "object": "list", "data": data }))
+}
+
+/// Build the (GenParams, SamplerConfig, stop, prompt) from a request body.
+fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Request {
+    let params = GenParams {
+        max_new: req.max_tokens,
+        max_ctx: req.max_ctx,
+        eos: Vec::new(), // worker adds the model's own eos id
+    };
+    let sampler_cfg = SamplerConfig {
+        temperature: req.temperature,
+        top_k: req.top_k,
+        top_p: req.top_p,
+        min_p: req.min_p,
+        seed: req.seed,
+        ..Default::default()
+    };
+    Request {
+        model: req.model.clone(),
+        prompt_ids: req.prompt_ids.clone(),
+        prompt_text: req.prompt.clone(),
+        chat: req.chat,
+        params,
+        sampler_cfg,
+        stop_strings: req.stop.clone(),
+        tx,
+    }
+}
+
+async fn completions(State(st): State<AppState>, Json(req): Json<Comple
+```
+
+Refactor this to add graceful shutdown: catch SIGTERM/SIGINT, stop accepting new requests, drain in-flight sessions with a 30s deadline, then exit. Show the complete modified sections with explanations.
+assistant
+<think>
+The user wants me to refactor a Rust HTTP server to add graceful shutdown functionality. Let me analyze what needs to be done:
+
+1. Catch SIGTERM/SIGINT signals
+2. Stop accepting new requests
+3. Drain in-flight sessions with a 30s deadline
+4. Exit cleanly
+
+Let me look at the current code structure:
+
+- `main()` spawns the worker thread, creates the axum router, and serves it
+- The worker thread owns the GPU models and processes commands via mpsc channel
+- Requests come in via POST /v1/completions and get tokens back via per-request tokio mpsc channels
+
+For graceful shutdown, I need to:
+
+1. Add signal handling (SIGTERM, SIGINT) using `tokio::signal`
+2. Create a shutdown flag/channel that the axum server can check
+3. When shutdown is triggered, stop accepting new requests
+4. Wait up to 30s for in-flight requests to complete
+5. If deadline passes, force shutdown
+
+Let me think about the architecture:
+
+- The worker thread uses `std::sync::mpsc::Sender<Cmd>` - this is a blocking channel
+- The axum handlers use `tokio
+> EOF by user
+
+
+0.05.107.199 I common_perf_print:    sampling time =      91.53 ms
+0.05.107.200 I common_perf_print:    samplers time =      34.10 ms /  2109 tokens
+0.05.107.203 I common_perf_print:        load time =     380.27 ms
+0.05.107.204 I common_perf_print: prompt eval time =     376.40 ms /  1853 tokens (    0.20 ms per token,  4922.92 tokens per second)
+0.05.107.205 I common_perf_print:        eval time =    3041.81 ms /   255 runs   (   11.93 ms per token,    83.83 tokens per second)
+0.05.107.205 I common_perf_print:       total time =    3515.44 ms /  2108 tokens
+0.05.107.206 I common_perf_print: unaccounted time =       5.71 ms /   0.2 %      (total - sampling - prompt eval - eval) / (total)
+0.05.107.206 I common_perf_print:    graphs reused =        254
