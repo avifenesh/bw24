@@ -2291,3 +2291,38 @@ and 61-64% DRAM — the paired-lane chunk redundancy and the byte-granular meta/
 reads are the residue; a lane->chunk remap (each lane owns its own 32B chunk) is the
 follow-up probe. Mirrors are VRAM-paid (trunk-sized) — hopper-lane only, 5090 untouched
 (sm_120a build byte-identical, MEMRA_KQRP defaults off without memra_hopper_mma).
+
+## Round 49 — q27 Q4_K f16 PREFILL MIRRORS: +54% pp2048 default, +105% at full coverage (2026-08-01, lane/q4k-f16-mirrors)
+
+Q4_K joins the f16-mirror carve-out (Q8_0 07-26, Q4_0 campaign-A, Q6_K round 47): the
+q27 trunk bulk (294 Q4_K tensors) rode mul_mat_q_q45k int8-MMA for prefill — good, but
+the cuBLASLt f16 lane beats that class at large m. memra_q4kf16_dequant_kernel
+(f16_prefill.cu): 144B superblock, d*sc*q - dmin*mn, get_scale_min_k4 6-bit unpack
+verified against qmatvec.cu's deq_q4_k; admission in build_q8_f16 (in_f%256, 144B rows);
+model-class-agnostic carve-out in the Q8RP walk, arbitrated by per-model argmax gates.
+DESIGN: Q4_K admits as a SECOND budget pass so MEMRA_PP_F16_BUDGET_MB keeps FULL Q6_K
+coverage as its floor (Q6_K replaces a ~10x dequant-GEMM; Q4_K upgrades a working MMA
+arm — a joint walk would evict late-layer Q6_K mirrors for the weaker lever).
+NUMBERS (interleaved x3, N=3 medians, same-session, GPU 3; receipts
+research/q4k-f16-mirrors-20260801/): pp2048 board 3205 -> 4935 (+54%), agentic-634
+2781 -> 4403 (+58%); plain decode FLAT (88.5/90.2 -> 89.6/89.8 — decode never touches
+the mirror). Budget probe (x2): default 32768MB admits 183/294 (22.4GB) after Q6_K;
+43008MB admits 265/294 (32.7GB) -> pp2048 6564 (+105% vs base, +33% vs default), VRAM
+peak 76.3/81.5GB. SPEC-ACCEPTANCE FIND: at default budget board-2048 spec K=3 drops
+109.9 -> 101.4 (acc 66.1 -> 57.3) while agentic RISES 144.2 -> 146.4 (acc 84 -> 86);
+at 43008 the board acceptance RECOVERS (64.8, spec 109.4 ~ parity) — the dip is a
+partial-coverage artifact (layer-prefix mirror mixes f16-prime and int8-prime numerics
+mid-trunk), single-prompt evidence per the round-45/48 roulette law. e2e board-2048:
+plain 72.5 -> 78.2 (+7.9%); spec 86.3 -> 87.1 default / ~96.5 (+11.8%) at 43008.
+GATES ALL GREEN: kernel-check 0 fails — Q4_K f16 gates NEW (rel 4.1-4.4e-3, band 1e-2)
+plus the round-47 Q6_K f16 gates that had NO battery entry (law 3: added, rel
+3.5-4.3e-3); run-gen argmax MATCH both budgets (maxdiff 6.5e-1 / 5.1e-1 — NO round-45
+flip, the class HOLDS on the q27 hybrid); run-spec K=1..8 all PASS; q35 argmax MATCH
+(zero Q4_K tensors — untouched; ditto q9-Q8_0 and the gemma q4_0 artifacts, so the
+fleet blast radius is q27 only); validate-h100 --quick ALL GATES GREEN on the new
+binary (graph-decode/graph-session included — the captured prime graph bakes f16 GEMM
+pointers, the untested surface for mirrors joining the prime path). Default budget stays 32768 (a hopper-wide bump moves
+VRAM on every model per box); serving configs set MEMRA_PP_F16_BUDGET_MB per model —
+machine-specific config per flags doctrine. NEXT RUNG: Q5_K (48 tensors, 3GB @2B/w)
+is the remaining non-f16 trunk class; full-coverage budget as a q27 serving default is
+the open owner call (5.2GB headroom at 43008).

@@ -811,8 +811,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && out_f % 64 == 0 && in_f % 32 == 0 {
                 Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?)
             } else { None };
+            // f16-mirror coverage per admitted class: Q8_0 (2026-07-26), Q4_K (round 49 —
+            // the q27 trunk bulk), Q6_K (round 47; entry added round 49 with Q4_K — the
+            // "gates outside the battery rot" law).
             let f16_mirror = if gt == memra_engine::QT_Q8_0 && in_f % 32 == 0 {
                 Some(e.build_q8_f16_raw(&wd, in_f, out_f)?)
+            } else if gt == memra_engine::QT_Q4_K && in_f % 256 == 0 {
+                Some(e.build_q4k_f16_raw(&wd, in_f, out_f)?)
+            } else if gt == memra_engine::QT_Q6_K && in_f % 256 == 0 {
+                Some(e.build_q6k_f16_raw(&wd, in_f, out_f)?)
             } else { None };
             for tt in [16usize, 64, 128, 512] {
                 let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
