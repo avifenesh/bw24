@@ -1,0 +1,27 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
+[worker]   loaded "m": 32 layers, eos=248046
+[server] worker ready; serving models: ["m"]
+[worker] m: decode chunk cap 8
+[server] listening on http://127.0.0.1:8098
+[prime-batch] B=6 tokens=1356 in 255.5ms
+[prime-batch] B=2 tokens=452 in 100.1ms
+[prime-batch] B=6 tokens=1356 in 264.1ms
+[prime-batch] B=2 tokens=452 in 100.4ms
+[prime-batch] B=6 tokens=1356 in 270.5ms
+[prime-batch] B=2 tokens=452 in 100.9ms
+[prime-batch] B=6 tokens=1356 in 261.6ms
+[prime-batch] B=2 tokens=452 in 102.1ms
+[prime-batch] B=6 tokens=1356 in 258.0ms
+[prime-batch] B=6 tokens=1356 in 269.8ms
+[prime-batch] B=4 tokens=904 in 216.5ms
+[prime-batch] B=6 tokens=1356 in 268.3ms
+[prime-batch] B=6 tokens=1356 in 301.8ms
+[prime-batch] B=4 tokens=904 in 216.3ms
+[prime-batch] B=6 tokens=1356 in 272.1ms
+[prime-batch] B=6 tokens=1356 in 298.5ms
+[prime-batch] B=4 tokens=904 in 216.9ms
+[prime-batch] B=6 tokens=1356 in 272.6ms
+[prime-batch] B=6 tokens=1356 in 293.2ms
+[prime-batch] B=4 tokens=904 in 220.5ms

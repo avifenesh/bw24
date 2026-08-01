@@ -1,0 +1,11 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
+[worker]   loaded "m": 32 layers, eos=248046
+[worker] m: decode chunk cap 8
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8098
+[prime-batch] B=2 tokens=43 in 37.2ms
+[prime-batch] B=6 tokens=128 in 58.8ms
+[prime-batch] B=6 tokens=128 in 59.5ms
+[prime-batch] B=2 tokens=42 in 36.4ms

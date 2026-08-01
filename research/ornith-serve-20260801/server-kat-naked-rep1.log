@@ -1,0 +1,32 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf
+[moe] resident-experts decision: per-layer 427MB x 40 layers = 17.1GB vs budget 19.1GB -> RESIDENT
+[worker]   loaded "m": 40 layers, eos=248046
+[worker] m: decode chunk cap 8
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8098
+[prime-batch] B=2 tokens=452 in 2306.9ms
+[prime-batch] B=6 tokens=1356 in 6890.6ms
+[prime-batch] B=2 tokens=452 in 2353.4ms
+[prime-batch] B=6 tokens=1356 in 6967.2ms
+[prime-batch] B=2 tokens=452 in 2352.2ms
+[prime-batch] B=6 tokens=1356 in 7079.7ms
+[prime-batch] B=2 tokens=452 in 2409.8ms
+[prime-batch] B=6 tokens=1356 in 7028.3ms
+[prime-batch] B=2 tokens=452 in 2414.8ms
+[prime-batch] B=6 tokens=1356 in 7022.1ms
+[prime-batch] B=6 tokens=1356 in 6954.8ms
+[prime-batch] B=2 tokens=452 in 2424.0ms
+[prime-batch] B=2 tokens=452 in 2370.9ms
+[prime-batch] B=6 tokens=1356 in 6949.2ms
+[prime-batch] B=6 tokens=1356 in 6969.2ms
+[prime-batch] B=2 tokens=452 in 2357.7ms
+[prime-batch] B=2 tokens=452 in 2387.4ms
+[prime-batch] B=6 tokens=1356 in 7060.9ms
+[prime-batch] B=6 tokens=1356 in 7044.9ms
+[prime-batch] B=2 tokens=452 in 2393.0ms
+[prime-batch] B=2 tokens=452 in 2442.9ms
+[prime-batch] B=6 tokens=1356 in 7008.5ms
+[prime-batch] B=6 tokens=1356 in 6969.3ms
+[prime-batch] B=2 tokens=452 in 2411.1ms

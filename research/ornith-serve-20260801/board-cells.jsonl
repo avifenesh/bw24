@@ -1,0 +1,54 @@
+{"ts":"2026-08-01T15:00:08Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"llama","metric":"pp512","toks":4927.07,"rep":1,"profile":"performance","temp_c":83}
+{"ts":"2026-08-01T15:00:08Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"llama","metric":"tg128","toks":80.42,"rep":1,"profile":"performance","temp_c":83}
+{"ts":"2026-08-01T15:00:08Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"memra","metric":"prefill","toks":4933.4,"rep":1,"profile":"performance","temp_c":78}
+{"ts":"2026-08-01T15:00:08Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"memra","metric":"decode","toks":81.12,"rep":1,"profile":"performance","temp_c":78}
+{"ts":"2026-08-01T15:00:08Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"llama","metric":"pp512","toks":5027.32,"rep":2,"profile":"performance","temp_c":78}
+{"ts":"2026-08-01T15:00:08Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"llama","metric":"tg128","toks":83.77,"rep":2,"profile":"performance","temp_c":78}
+{"ts":"2026-08-01T16:02:15Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"memra","metric":"prefill","toks":5255.6,"rep":2,"profile":"performance","temp_c":80}
+{"ts":"2026-08-01T16:02:15Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"memra","metric":"decode","toks":87.84,"rep":2,"profile":"performance","temp_c":80}
+{"ts":"2026-08-01T16:02:15Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"llama","metric":"pp512","toks":5100.85,"rep":3,"profile":"performance","temp_c":81}
+{"ts":"2026-08-01T16:02:15Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"llama","metric":"tg128","toks":84.05,"rep":3,"profile":"performance","temp_c":81}
+{"ts":"2026-08-01T16:02:15Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"memra","metric":"prefill","toks":4870.9,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-01T16:02:15Z","git":"b94adf5d","cell":"o9b-q8_0","arm":"memra","metric":"decode","toks":79.48,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"llama","metric":"pp512","toks":3513.40,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"llama","metric":"tg128","toks":191.94,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"memra","metric":"prefill","toks":491.1,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"memra","metric":"decode","toks":134.78,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"llama","metric":"pp512","toks":3385.63,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"llama","metric":"tg128","toks":192.19,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"memra","metric":"prefill","toks":493.0,"rep":2,"profile":"performance","temp_c":71}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"memra","metric":"decode","toks":137.32,"rep":2,"profile":"performance","temp_c":71}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"llama","metric":"pp512","toks":3359.34,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"llama","metric":"tg128","toks":190.10,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"memra","metric":"prefill","toks":492.2,"rep":3,"profile":"performance","temp_c":72}
+{"ts":"2026-08-01T16:19:45Z","git":"b94adf5d","cell":"o35b-q4km","arm":"memra","metric":"decode","toks":137.51,"rep":3,"profile":"performance","temp_c":72}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"llama","metric":"pp512","toks":4167.87,"rep":1,"profile":"performance","temp_c":82}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"llama","metric":"tg128","toks":192.88,"rep":1,"profile":"performance","temp_c":82}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"memra","metric":"prefill","toks":214.9,"rep":1,"profile":"performance","temp_c":74}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"memra","metric":"decode","toks":105.59,"rep":1,"profile":"performance","temp_c":74}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"llama","metric":"pp512","toks":4159.26,"rep":2,"profile":"performance","temp_c":82}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"llama","metric":"tg128","toks":192.95,"rep":2,"profile":"performance","temp_c":82}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"memra","metric":"prefill","toks":223.9,"rep":2,"profile":"performance","temp_c":73}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"memra","metric":"decode","toks":105.93,"rep":2,"profile":"performance","temp_c":73}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"llama","metric":"pp512","toks":4206.91,"rep":3,"profile":"performance","temp_c":79}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"llama","metric":"tg128","toks":193.99,"rep":3,"profile":"performance","temp_c":79}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"memra","metric":"prefill","toks":225.9,"rep":3,"profile":"performance","temp_c":71}
+{"ts":"2026-08-01T16:34:22Z","git":"b94adf5d","cell":"kat-iq4xs","arm":"memra","metric":"decode","toks":106.47,"rep":3,"profile":"performance","temp_c":71}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"llama","metric":"pp512","toks":3055.97,"rep":1,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"llama","metric":"tg128","toks":165.14,"rep":1,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"memra","metric":"prefill","toks":2389.7,"rep":1,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"memra","metric":"decode","toks":263.17,"rep":1,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"llama","metric":"pp512","toks":4171.46,"rep":2,"profile":"performance","temp_c":69}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"llama","metric":"tg128","toks":169.93,"rep":2,"profile":"performance","temp_c":69}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"memra","metric":"prefill","toks":2363.5,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"memra","metric":"decode","toks":264.38,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"llama","metric":"pp512","toks":4176.37,"rep":3,"profile":"performance","temp_c":72}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"llama","metric":"tg128","toks":170.15,"rep":3,"profile":"performance","temp_c":72}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"memra","metric":"prefill","toks":2314.1,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T16:45:41Z","git":"b94adf5d","cell":"ctrl-q35","arm":"memra","metric":"decode","toks":259.71,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T16:57:26Z","git":"b94adf5d","cell":"ctrl-q35-prose","arm":"memra","metric":"decode","toks":191.66,"rep":1,"profile":"performance","note":"prose-512 prompt"}
+{"ts":"2026-08-01T16:57:26Z","git":"b94adf5d","cell":"ctrl-q35-prose","arm":"memra","metric":"decode","toks":191.54,"rep":2,"profile":"performance","note":"prose-512 prompt"}
+{"ts":"2026-08-01T16:57:26Z","git":"b94adf5d","cell":"ctrl-q35-prose","arm":"memra","metric":"decode","toks":191.27,"rep":3,"profile":"performance","note":"prose-512 prompt"}
+{"ts":"2026-08-01T16:57:40Z","git":"b94adf5d","cell":"ctrl-q35-prose","arm":"memra","metric":"prefill","toks":2404.7,"rep":1,"profile":"performance","note":"prose-511 prompt (pp512.txt hits Eos@2 on ctrl)"}
+{"ts":"2026-08-01T16:57:40Z","git":"b94adf5d","cell":"ctrl-q35-prose","arm":"memra","metric":"prefill","toks":2395.9,"rep":2,"profile":"performance","note":"prose-511 prompt (pp512.txt hits Eos@2 on ctrl)"}
+{"ts":"2026-08-01T16:57:40Z","git":"b94adf5d","cell":"ctrl-q35-prose","arm":"memra","metric":"prefill","toks":2394.6,"rep":3,"profile":"performance","note":"prose-511 prompt (pp512.txt hits Eos@2 on ctrl)"}

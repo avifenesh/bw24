@@ -1,0 +1,11 @@
+=== ORNITH BOARD CELLS 2026-08-01T15:00:08Z git=b94adf5d profile=performance ===
+== o9b-q8_0 (interleaved x3) ==
+  [o9b-q8_0/llama rep1] pp512 = 4927.07 tok/s
+  [o9b-q8_0/llama rep1] tg128 = 80.42 tok/s
+wait_idle timeout (busy=1 clk=1702)
+  [o9b-q8_0/memra rep1] prefill = 4933.4 tok/s
+  [o9b-q8_0/memra rep1] decode = 81.12 tok/s
+wait_idle timeout (busy=1 clk=2257)
+  [o9b-q8_0/llama rep2] pp512 = 5027.32 tok/s
+  [o9b-q8_0/llama rep2] tg128 = 83.77 tok/s
+wait_idle timeout (busy=1 clk=2137)

@@ -1,0 +1,14 @@
+== kat-iq4xs (interleaved x3) ==
+  [kat-iq4xs/llama rep1] pp512 = 4167.87 tok/s
+  [kat-iq4xs/llama rep1] tg128 = 192.88 tok/s
+  [kat-iq4xs/memra rep1] prefill = 214.9 tok/s
+  [kat-iq4xs/memra rep1] decode = 105.59 tok/s
+  [kat-iq4xs/llama rep2] pp512 = 4159.26 tok/s
+  [kat-iq4xs/llama rep2] tg128 = 192.95 tok/s
+  [kat-iq4xs/memra rep2] prefill = 223.9 tok/s
+  [kat-iq4xs/memra rep2] decode = 105.93 tok/s
+  [kat-iq4xs/llama rep3] pp512 = 4206.91 tok/s
+  [kat-iq4xs/llama rep3] tg128 = 193.99 tok/s
+  [kat-iq4xs/memra rep3] prefill = 225.9 tok/s
+  [kat-iq4xs/memra rep3] decode = 106.47 tok/s
+PHASE-DONE kat 2026-08-01T16:42:43Z

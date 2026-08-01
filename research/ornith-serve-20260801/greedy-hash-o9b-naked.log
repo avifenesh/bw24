@@ -1,0 +1,2 @@
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T17:47:35+0300", "label": "o9b-naked", "base": "http://127.0.0.1:8098", "n": 16, "max_tokens": 96, "wall_s": 4.085409861989319, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
