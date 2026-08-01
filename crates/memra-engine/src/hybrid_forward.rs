@@ -278,6 +278,7 @@ impl HybridModel {
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
 
             // residual 1
@@ -335,6 +336,7 @@ impl HybridModel {
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} mixer ok"); }
             let mut x1 = e.uninit(t * n_embd)?;
@@ -613,6 +615,7 @@ impl HybridModel {
                         let (pre, pre16) = self.full_attn_prime_core_inner(e, fa, g3, &pos_d, t, cache, il)?;
                         (pre, pre16, &fa.wo)
                     }
+                    Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                     Mixer::Linear(la) => {
                         let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
                         let g4 = match hx16 {
@@ -655,6 +658,7 @@ impl HybridModel {
                 let mixed = match &layer.mixer {
                     Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
                     Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
+                    Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 };
                 if f16fuse {
                     // round 28: residual+norm in ONE kernel (add_rms_norm precedent,
@@ -813,6 +817,7 @@ impl HybridModel {
             }
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache, il)?,
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
                     let g4 = match hx16.as_ref() {
@@ -1088,6 +1093,7 @@ impl HybridModel {
                         }
                     }
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     // task #16: NO split copies (cores read row-offset views of the concat
                     // outputs; out-GEMMs write into `mixed` at offs[s]). task #18: the core
@@ -3629,9 +3635,10 @@ impl HybridModel {
                                                       c.resident(BlockId::new(il, PROJ_UP,   ex)),
                                                       c.resident(BlockId::new(il, PROJ_DOWN, ex)))
                 else { return Ok(None); };
-                let (pg, _e0) = c.slot(sg).device_ptr(eng.stream());
-                let (pu, _e1) = c.slot(su).device_ptr(eng.stream());
-                let (pd, _e2) = c.slot(sd).device_ptr(eng.stream());
+                let __s = eng.stream();
+                let (pg, _e0) = c.slot(sg).device_ptr(&__s);
+                let (pu, _e1) = c.slot(su).device_ptr(&__s);
+                let (pd, _e2) = c.slot(sd).device_ptr(&__s);
                 g[j] = pg as u64; u[j] = pu as u64; d[j] = pd as u64;
             }
             if cpu_expert_profile_admit_enabled() && !c.is_frozen() {
@@ -3679,9 +3686,10 @@ impl HybridModel {
                                                       c.resident(BlockId::new(il, PROJ_UP,   ex)),
                                                       c.resident(BlockId::new(il, PROJ_DOWN, ex)))
                 else { return Ok(None); };
-                let (pg, _e0) = c.slot(sg).device_ptr(eng.stream());
-                let (pu, _e1) = c.slot(su).device_ptr(eng.stream());
-                let (pd, _e2) = c.slot(sd).device_ptr(eng.stream());
+                let __s = eng.stream();
+                let (pg, _e0) = c.slot(sg).device_ptr(&__s);
+                let (pu, _e1) = c.slot(su).device_ptr(&__s);
+                let (pd, _e2) = c.slot(sd).device_ptr(&__s);
                 g[j] = pg as u64; u[j] = pu as u64; d[j] = pd as u64;
             }
             if cpu_expert_profile_admit_enabled() && !c.is_frozen() {
@@ -6391,13 +6399,56 @@ impl HybridModel {
         Ok(x)
     }
 
-    /// M1-PP2 (increment 1): `gemma4_decode_step_h` as TWO stage subgraphs on one device.
-    /// Stage 0 = embed+scale + layers [0, split); explicit [n_embd] activation handoff
-    /// (TX dtod copy into a dedicated boundary buffer, RX dtod copy out — never an alias);
-    /// stage 1 = layers [split, n) + output_norm + softcapped head. Same ownership contract
-    /// as the generic arm (see crate::pp). Gate: `pp2-gate` (bit-identical logits vs unsplit).
+    /// M1-PP2 (increment 2): `gemma4_decode_step_h` as TWO stage subgraphs, each on its
+    /// own stream (and device, under MEMRA_PP_DEVICES) with the transport-selected
+    /// boundary handoff — same choreography as the generic arm (decode.rs), same
+    /// ownership contract (crate::pp). Stage 0 = embed+scale + layers [0, split);
+    /// stage 1 = layers [split, n) + output_norm + softcapped head.
+    /// MEMRA_PP_STREAMS=0 = the increment-1 same-stream seam. Gate: `pp2-gate`.
     fn gemma4_decode_step_h_pp2(&self, e: &Engine, token: u32, cache: &mut Cache, split: usize)
                                 -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        if crate::pp::pp2_streams_off() {
+            return self.gemma4_decode_step_h_pp2_samestream(e, token, cache, split);
+        }
+        let rt = crate::pp::Pp2Rt::get(e)?;
+        let e0 = rt.engine(0, e);
+        let e1 = rt.engine(1, e);
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+
+        // ---- STAGE 0 (its own stream): embed + sqrt(n_embd) scale + layers [0, split) ----
+        let (pos_d, slot) = {
+            let _st0 = rt.enter(0);
+            let pos_d = e0.htod_i32(&[cache.pos as i32])?;
+            let mut x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
+            e0.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+            let x = self.gemma4_decode_layers(e0, x, 0, split, &pos_d, cache)?;
+            let slot = rt.tx(&x, n_embd)?;
+            (pos_d, slot)
+        };
+
+        // ---- STAGE 1 (its own stream): RX + layers [split, n) + softcapped head ----
+        let _st1 = rt.enter(1);
+        let x = rt.rx(slot, n_embd)?;
+        let x = self.gemma4_decode_layers(e1, x, split, self.layers.len(), &pos_d, cache)?;
+
+        let mut hn = e1.uninit(n_embd)?;
+        e1.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let h_seed = e1.clone_dtod(&x)?;
+        let mut ld = e1.matmul(&self.output, &hn, 1)?;
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        e1.softcap(&mut ld, cap, self.output.out_features())?;
+        self.gemma4_suppress(e1, &mut ld, 1)?;
+        let logits = e1.dtoh(&ld)?;
+        cache.pos += 1;
+        Ok((logits, h_seed))
+    }
+
+    /// MEMRA_PP_STREAMS=0 rollback seam: the increment-1 gemma4 pp2 body verbatim — both
+    /// stage subgraphs on the ambient compute stream, boundary = two plain dtod copies.
+    fn gemma4_decode_step_h_pp2_samestream(&self, e: &Engine, token: u32, cache: &mut Cache,
+                                           split: usize)
+                                           -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let pos_d = e.htod_i32(&[cache.pos as i32])?;

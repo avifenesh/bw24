@@ -249,12 +249,17 @@ unsafe extern "C" {
         src_f16: *const core::ffi::c_void, dst: *mut f32, n: usize,
         stream: *mut core::ffi::c_void,
     ) -> i32;
-    // Single-kernel grouped GEMM (MEMRA_MOE_F16G=2, round 49): one launch on OUR stream,
-    // f32 C with the act row-scale folded in — no cublas internal-stream race, no sync.
+    // Single-kernel grouped GEMM (MEMRA_MOE_F16G=2, rounds 49+51): on OUR stream, f32 C with
+    // the act row-scale folded in — no cublas internal-stream race, no sync. Round 51 runs it
+    // as a persistent problem-visitor over the real tiles with two tile forms (32x64x32
+    // 2-stage / 128x64x64 3-stage): shape_sel < 0 = the round-49 grid-scan kernel (rollback
+    // arm); else groups with m_e >= cross ride the 128 form. ex_off_host sizes the visitor
+    // grids host-side (the offsets are already there at the call site — no extra transfer).
     pub fn memra_moe_f16g_gemm_sk(
         w_f16: *const core::ffi::c_void, act_f16: *const core::ffi::c_void,
         y_f32: *mut f32, row_scale: *const f32, ex_off_dev: *const i32,
-        n_active: i32, max_m: i32, in_f: i32, out_f: i32,
+        ex_off_host: *const i32,
+        n_active: i32, max_m: i32, in_f: i32, out_f: i32, shape_sel: i32, cross: i32,
         stream: *mut core::ffi::c_void,
     ) -> i32;
 }
@@ -452,11 +457,11 @@ impl Engine {
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = bytes.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = bytes.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let launcher = if qtype == crate::QT_Q4_K {
                 memra_mmq_q4_K
             } else {
@@ -499,11 +504,11 @@ impl Engine {
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = bytes.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = bytes.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_mmq_q8_0(
                     w_p as *const core::ffi::c_void,
@@ -552,8 +557,8 @@ impl Engine {
             "MMQ Q4_0 requires in_f % 32 == 0, got {in_f}"
         );
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
-        let stream = &self.gpu.stream;
-        let (x_p, _gx) = x.device_ptr(stream);
+        let stream = self.gpu.stream();
+        let (x_p, _gx) = x.device_ptr(&stream);
         let epoch = MMQ_ACT_EPOCH.load(Ordering::Relaxed);
         // quantize-once: reuse the window's scratch when the SAME activation comes back.
         let mut slot = MMQ_ACT_SLOT.lock().unwrap();
@@ -563,7 +568,7 @@ impl Engine {
             let act_bytes = unsafe { memra_mmq_q4_0_act_bytes(in_f as i32, m as i32) };
             let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
             {
-                let (s_p, _gs) = scratch.device_ptr_mut(stream);
+                let (s_p, _gs) = scratch.device_ptr_mut(&stream);
                 let rc = unsafe {
                     memra_mmq_q4_0_quant_act(
                         x_p as *const f32,
@@ -583,9 +588,9 @@ impl Engine {
         }
         let scratch = &slot.as_ref().unwrap().4;
         {
-            let (w_p, _gw) = bytes.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (s_p, _gs) = scratch.device_ptr(stream);
+            let (w_p, _gw) = bytes.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr(&stream);
             // Stream-k arm (DEFAULT since 2026-07-23; MEMRA_MMQ_SK=0 reverts to xy-tiling):
             // small-batch tail-wave fix — the sk entry itself falls back to (bit-identical)
             // tiling at >=90% wave efficiency. Band-class fold order below that. Gate: 12B
@@ -620,7 +625,7 @@ impl Engine {
                     let nb = unsafe { memra_mmq_q4_0_fixup_bytes() };
                     *fx = Some(self.alloc_uninit::<u8>(nb)?);
                 }
-                let (f_p, _gf) = fx.as_mut().unwrap().device_ptr_mut(stream);
+                let (f_p, _gf) = fx.as_mut().unwrap().device_ptr_mut(&stream);
                 unsafe {
                     memra_mmq_q4_0_gemm_sk(
                         w_p as *const core::ffi::c_void,
@@ -703,11 +708,11 @@ impl Engine {
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = bytes.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = bytes.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_mmq_nvfp4(
                     w_p as *const core::ffi::c_void,
@@ -788,11 +793,11 @@ impl Engine {
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = bytes.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = bytes.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             // MEMRA_MMQ_F8F4=1: the R-B W4A8-FP8 tile (own numeric config; battery-gated seam).
             // Scratch layouts are footprint-identical, so only the entry point swaps.
             static F8F4: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -844,9 +849,9 @@ impl Engine {
         let act_bytes = unsafe { memra_mmq_iq_experts_act_bytes(in_f as i32, n_tokens as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         {
-            let stream = &self.gpu.stream;
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_mmq_iq_quantize_act(
                     x_p as *const f32,
@@ -879,10 +884,10 @@ impl Engine {
         let act_bytes = unsafe { memra_mmq_iq_experts_act_bytes(in_f as i32, n_tokens as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         {
-            let stream = &self.gpu.stream;
-            let (g_p, _gg) = gate.device_ptr(stream);
-            let (u_p, _gu) = up.device_ptr(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (g_p, _gg) = gate.device_ptr(&stream);
+            let (u_p, _gu) = up.device_ptr(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_mmq_iq_fused_act_quant(
                     g_p as *const f32,
@@ -925,14 +930,14 @@ impl Engine {
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (tab_p, _g0) = table.device_ptr(stream);
-            let (ei_p, _g1) = ex_ids.device_ptr(stream);
-            let (eo_p, _g2) = ex_off.device_ptr(stream);
-            let (ep_p, _g3) = ex_pairs.device_ptr(stream);
-            let (pt_p, _g4) = pair_tok.device_ptr(stream);
-            let (as_p, _g5) = act_scratch.device_ptr(stream);
-            let (y_p, _g6) = y.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (tab_p, _g0) = table.device_ptr(&stream);
+            let (ei_p, _g1) = ex_ids.device_ptr(&stream);
+            let (eo_p, _g2) = ex_off.device_ptr(&stream);
+            let (ep_p, _g3) = ex_pairs.device_ptr(&stream);
+            let (pt_p, _g4) = pair_tok.device_ptr(&stream);
+            let (as_p, _g5) = act_scratch.device_ptr(&stream);
+            let (y_p, _g6) = y.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_mmq_iq_experts(
                     tab_p as *const u64,
@@ -974,14 +979,14 @@ impl Engine {
         let mut act = self.alloc_uninit::<u8>(n_pairs * in_f * 2)?;
         let mut scales = self.alloc_uninit::<f32>(n_pairs)?;
         {
-            let stream = &self.gpu.stream;
-            let (x_p, _gx) = x.device_ptr(stream);
+            let stream = self.gpu.stream();
+            let (x_p, _gx) = x.device_ptr(&stream);
             let pt_p = match pair_tok {
-                Some(pt) => { let (p, _g) = pt.device_ptr(stream); p as *const i32 }
+                Some(pt) => { let (p, _g) = pt.device_ptr(&stream); p as *const i32 }
                 None => std::ptr::null(),
             };
-            let (a_p, _ga) = act.device_ptr_mut(stream);
-            let (s_p, _gs) = scales.device_ptr_mut(stream);
+            let (a_p, _ga) = act.device_ptr_mut(&stream);
+            let (s_p, _gs) = scales.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_moe_f16g_gather_act(x_p as *const f32, pt_p,
                     a_p as *mut core::ffi::c_void, s_p as *mut f32,
@@ -1033,10 +1038,10 @@ impl Engine {
                     let a = self.alloc_uninit::<u8>(4 * 64 * 2)?;
                     let mut yw = self.alloc_uninit::<u8>(4 * 32 * 2)?;
                     let off = [0i32, 2, 4];
-                    let stream = &self.gpu.stream;
-                    let (w_p, _a1) = w.device_ptr(stream);
-                    let (a_p, _a2) = a.device_ptr(stream);
-                    let (y_p, _a3) = yw.device_ptr_mut(stream);
+                    let stream = self.gpu.stream();
+                    let (w_p, _a1) = w.device_ptr(&stream);
+                    let (a_p, _a2) = a.device_ptr(&stream);
+                    let (y_p, _a3) = yw.device_ptr_mut(&stream);
                     let rc = unsafe {
                         memra_moe_f16g_gemm(w_p as *const core::ffi::c_void,
                             a_p as *const core::ffi::c_void, y_p as *mut core::ffi::c_void,
@@ -1044,7 +1049,7 @@ impl Engine {
                             stream.cu_stream() as *mut core::ffi::c_void)
                     };
                     if rc != 0 { return Err(format!("f16g warmup rc={rc}").into()); }
-                    self.gpu.stream.synchronize()?;
+                    self.gpu.stream().synchronize()?;
                     Ok(())
                 })();
                 if let Err(e) = r { warm_err = Some(e.to_string()); }
@@ -1055,10 +1060,10 @@ impl Engine {
         let mut w_f16 = self.alloc_uninit::<u8>(w_bytes)?;
         let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (tab_p, _g0) = table.device_ptr(stream);
-            let (ei_p, _g1) = ex_ids.device_ptr(stream);
-            let (w_p, _g2) = w_f16.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (tab_p, _g0) = table.device_ptr(&stream);
+            let (ei_p, _g1) = ex_ids.device_ptr(&stream);
+            let (w_p, _g2) = w_f16.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_moe_f16g_dequant(tab_p as *const u64, proj, n_expert as i32,
                     ei_p as *const i32, w_p as *mut core::ffi::c_void,
@@ -1066,23 +1071,24 @@ impl Engine {
                     stream.cu_stream() as *mut core::ffi::c_void)
             };
             if rc != 0 { return Err(format!("memra_moe_f16g_dequant rc={rc}").into()); }
-            let (a_p, _g3) = act_f16.device_ptr(stream);
-            let (s_p, _g6) = act_scale.device_ptr(stream);
-            let (y_p, _g5) = y.device_ptr_mut(stream);
+            let (a_p, _g3) = act_f16.device_ptr(&stream);
+            let (s_p, _g6) = act_scale.device_ptr(&stream);
+            let (y_p, _g5) = y.device_ptr_mut(&stream);
             if sk {
                 let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
-                let (off_p, _g7) = ex_off_dev.device_ptr(stream);
+                let (off_p, _g7) = ex_off_dev.device_ptr(&stream);
+                let (shape_sel, cross) = crate::moe_f16g_sk_params();
                 let rc = unsafe {
                     memra_moe_f16g_gemm_sk(w_p as *const core::ffi::c_void,
                         a_p as *const core::ffi::c_void, y_p as *mut f32,
-                        s_p as *const f32, off_p as *const i32,
-                        n_active as i32, max_m, in_f as i32, out_f as i32,
+                        s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
+                        n_active as i32, max_m, in_f as i32, out_f as i32, shape_sel, cross,
                         stream.cu_stream() as *mut core::ffi::c_void)
                 };
                 if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
             } else {
                 let mut y16 = self.alloc_uninit::<u8>(n_pairs * out_f * 2)?;
-                let (y16_p, _g4) = y16.device_ptr_mut(stream);
+                let (y16_p, _g4) = y16.device_ptr_mut(&stream);
                 let rc = unsafe {
                     memra_moe_f16g_gemm(w_p as *const core::ffi::c_void,
                         a_p as *const core::ffi::c_void, y16_p as *mut core::ffi::c_void,
@@ -1103,7 +1109,7 @@ impl Engine {
         // projection. Mode 2 (single kernel, our stream) is ordered by construction — no sync,
         // that is the point of this arc.
         if !sk {
-            self.gpu.stream.synchronize()?;
+            self.gpu.stream().synchronize()?;
         }
         if std::env::var("MEMRA_F16G_DEBUG").is_ok() {
             // FULL NaN/Inf scan of w, act (through h2f) and y — localizes the corrupt stage.
@@ -1112,11 +1118,11 @@ impl Engine {
             let mut wf = self.alloc_uninit::<f32>(wn)?;
             let mut af = self.alloc_uninit::<f32>(an)?;
             {
-                let stream = &self.gpu.stream;
-                let (w_p, _a) = w_f16.device_ptr(stream);
-                let (a_p, _b) = act_f16.device_ptr(stream);
-                let (wf_p, _c) = wf.device_ptr_mut(stream);
-                let (af_p, _d) = af.device_ptr_mut(stream);
+                let stream = self.gpu.stream();
+                let (w_p, _a) = w_f16.device_ptr(&stream);
+                let (a_p, _b) = act_f16.device_ptr(&stream);
+                let (wf_p, _c) = wf.device_ptr_mut(&stream);
+                let (af_p, _d) = af.device_ptr_mut(&stream);
                 unsafe {
                     memra_moe_f16g_h2f(w_p as *const core::ffi::c_void, wf_p as *mut f32, wn,
                         stream.cu_stream() as *mut core::ffi::c_void);
@@ -1134,6 +1140,37 @@ impl Engine {
             eprintln!("[f16g-debug] proj={proj} w: bad={wb} max={wm:.3e} | act: bad={ab} \
                        max={am:.3e} | y: bad={yb} max={ym:.3e} (na={n_active} np={n_pairs} \
                        in={in_f} out={out_f})");
+        }
+        Ok(y)
+    }
+
+    /// Raw sk grouped-GEMM entry for kernel-check ("f16g-sk" section): explicit shape/cross
+    /// instead of the env policy. shape_sel < 0 = the round-49 grid-scan rollback arm; else
+    /// the round-51 problem-visitor split at `cross` (1 forces all-128, i32::MAX all-32).
+    /// w_f16 = [n_active][out_f][in_f] f16 bytes, act_f16 = [n_pairs][in_f] f16 bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_f16g_gemm_sk_raw(&self, w_f16: &CudaSlice<u8>, act_f16: &CudaSlice<u8>,
+        row_scale: &CudaSlice<f32>, ex_off_host: &[i32], ex_off_dev: &CudaSlice<i32>,
+        in_f: usize, out_f: usize, n_pairs: usize, shape_sel: i32, cross: i32)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_active = ex_off_host.len() - 1;
+        let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        {
+            let stream = self.gpu.stream();
+            let (w_p, _g0) = w_f16.device_ptr(&stream);
+            let (a_p, _g1) = act_f16.device_ptr(&stream);
+            let (s_p, _g2) = row_scale.device_ptr(&stream);
+            let (off_p, _g3) = ex_off_dev.device_ptr(&stream);
+            let (y_p, _g4) = y.device_ptr_mut(&stream);
+            let rc = unsafe {
+                memra_moe_f16g_gemm_sk(w_p as *const core::ffi::c_void,
+                    a_p as *const core::ffi::c_void, y_p as *mut f32,
+                    s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
+                    n_active as i32, max_m, in_f as i32, out_f as i32, shape_sel, cross,
+                    stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
         }
         Ok(y)
     }

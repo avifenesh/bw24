@@ -1,0 +1,33 @@
+=== decode-batch-gate --batch 16 --steps 160 (env: MEMRA_DECODE_BATCH_CAP=16) 2026-08-01T11:18:51Z ===
+loaded qwen35 (32 layers); steps=160 batch=16
+gate1 seed 0 step 1: token diverged FAIL
+gate1 seed 1: agreement all 160 steps
+gate1 seed 2: agreement all 160 steps
+gate1 seed 3 step 3: token diverged — accepted cross-config drift (WARN)
+gate1 seed 4: agreement all 160 steps
+gate1 seed 5: agreement all 160 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 160 steps, 6 seed(s)): FAIL
+gate2 seq 0 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.648e-1) FAIL
+gate2 seq 1 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.893e-1) FAIL
+gate2 seq 2 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.437e-1) FAIL
+gate2 seq 3 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.602e-1) FAIL
+gate2 seq 4 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.521e-1) FAIL
+gate2 seq 5 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.861e-1) FAIL
+gate2 seq 6 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.421e-1) FAIL
+gate2 seq 7 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.461e-1) FAIL
+gate2 seq 8 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.389e-1) FAIL
+gate2 seq 9 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.518e-1) FAIL
+gate2 seq 10 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.927e-1) FAIL
+gate2 seq 11 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 2.069e-1) FAIL
+gate2 seq 12 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.696e-1) FAIL
+gate2 seq 13 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.877e-1) FAIL
+gate2 seq 14 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.334e-1) FAIL
+gate2 seq 15 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.282e-1) FAIL
+gate2 (B=16 vs isolated batched-B=1, bit-checked, 160 steps): FAIL
+gate3b seq 0: sampled stream DIVERGED batched-vs-isolated at step Some(8) FAIL
+gate3b seq 12: sampled stream DIVERGED batched-vs-isolated at step Some(11) FAIL
+gate3b seq 13: sampled stream DIVERGED batched-vs-isolated at step Some(11) FAIL
+gate3b seq 14: sampled stream DIVERGED batched-vs-isolated at step Some(11) FAIL
+gate3b seq 15: sampled stream DIVERGED batched-vs-isolated at step Some(8) FAIL
+gate3 (device sampling: greedy==host-argmax + sampled B=16 vs isolated + lean-logits identity): FAIL
+Error: "decode-batch-gate FAILED"

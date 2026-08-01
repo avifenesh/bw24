@@ -1,0 +1,8 @@
+=== POST-KILL decode-batch-gate b8 s32 2026-08-01T12:55:29Z
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+gate2 (B=8 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=8 vs isolated + lean-logits identity): PASS
+=== POST-KILL decode-batch-gate b16 q8rp s32 2026-08-01T12:55:44Z
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+gate2 (B=16 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=16 vs isolated + lean-logits identity): PASS

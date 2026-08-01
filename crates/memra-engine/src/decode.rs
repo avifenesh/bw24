@@ -303,6 +303,9 @@ impl HybridModel {
                     && e.uses_q8_1_fast(&la.ssm_beta)
                     && e.uses_q8_1_fast(&la.ssm_alpha)
             }
+            // MLA (increment 2, loader-only): predicate only — never claim the fused
+            // norm+quantize chain for an arm that has no forward yet.
+            Mixer::Mla(_) => false,
         }
     }
 
@@ -334,6 +337,7 @@ impl HybridModel {
                 Mixer::Linear(la) => {
                     self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         } else {
             let mut h = e.uninit(n_embd)?;
@@ -341,6 +345,7 @@ impl HybridModel {
             match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, pos_d, pos, cache, il),
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         }
     }
@@ -371,6 +376,7 @@ impl HybridModel {
                 Mixer::Linear(la) => {
                     self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         } else {
             let mut h = e.uninit(n_embd)?;
@@ -378,6 +384,7 @@ impl HybridModel {
             match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_decode_dc(e, fa, &h, pos_d, cache, il),
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         }
     }
@@ -410,6 +417,7 @@ impl HybridModel {
                 Mixer::Linear(la) => {
                     self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, true)
                 }
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         } else {
             let mut h = e.uninit(n_embd)?;
@@ -419,6 +427,7 @@ impl HybridModel {
                     self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max)
                 }
                 Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il),
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             }
         }
     }
@@ -639,6 +648,7 @@ impl HybridModel {
                         Mixer::Linear(la) => {
                             self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)?
                         }
+                        Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                     }
                 }
                 (taken, _) => {
@@ -742,6 +752,7 @@ impl HybridModel {
                         Mixer::Linear(la) => {
                             self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)?
                         }
+                        Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                     }
                 }
                 (taken, _) => {
@@ -765,16 +776,80 @@ impl HybridModel {
         Ok(x)
     }
 
-    /// M1-PP2 (increment 1): `decode_step_h` as TWO stage subgraphs on one device with an
-    /// explicit activation handoff at the layer-`split` boundary. Stage 0 = embed + layers
-    /// [0, split); stage 1 = layers [split, n) + output_norm + lm head. The handoff is two
-    /// REAL dtod copies — stage 0 publishes its residual into a dedicated boundary buffer
-    /// (TX), stage 1 copies out of it into its own working buffer (RX) — never an alias, so
-    /// increment 2 swaps the middle of the seam for a P2P transport without touching either
-    /// stage. Per-layer KV/linear state stays owned by the stage that runs the layer;
-    /// `cache.pos` is snapshotted once and advanced once. Door: MEMRA_PP_STAGES=2
-    /// (+ MEMRA_PP_SPLIT), see crate::pp. Gate: `pp2-gate` (bit-identical logits vs unsplit).
+    /// M1-PP2 (increment 2): `decode_step_h` as TWO stage subgraphs, each on ITS OWN
+    /// CUDA stream (and, under MEMRA_PP_DEVICES, its own device/engine), with the
+    /// transport-selected boundary handoff at the layer-`split` cut. Stage 0 = embed +
+    /// layers [0, split) on stream 0; the TX publishes the residual into a persistent
+    /// boundary slot (dtod same-device / cudaMemcpyPeerAsync cross-device) and records
+    /// an event; stage 1 waits that event, RX-copies into its own working buffer, and
+    /// runs layers [split, n) + output_norm + lm head on stream 1. Per-layer KV/linear
+    /// state stays owned by the stage that runs the layer; `cache.pos` is snapshotted
+    /// once and advanced once. MEMRA_PP_STREAMS=0 = the increment-1 same-stream seam.
+    /// Gate: `pp2-gate` (bit-identical logits vs unsplit, every knob combination).
     fn decode_step_h_pp2(
+        &self,
+        e: &Engine,
+        token: u32,
+        cache: &mut Cache,
+        split: usize,
+    ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        if crate::pp::pp2_streams_off() {
+            return self.decode_step_h_pp2_samestream(e, token, cache, split);
+        }
+        let rt = crate::pp::Pp2Rt::get(e)?;
+        let e0 = rt.engine(0, e);
+        let e1 = rt.engine(1, e);
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let pos = cache.pos;
+
+        // ---- STAGE 0 (its own stream): embed + layers [0, split) + boundary TX ----
+        let (pos_d, slot) = {
+            let _st0 = rt.enter(0);
+            let pos_d = e0.htod_i32(&[pos as i32])?;
+            let x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
+            let x = self.decode_layers_eager(e0, x, 0, split, &pos_d, pos, cache)?;
+            let slot = rt.tx(&x, n_embd)?;
+            (pos_d, slot)
+            // x drops here: freed stream-ordered on stage-0's stream AFTER the TX copy.
+        };
+
+        // ---- STAGE 1 (its own stream): RX (waits the TX event) + layers [split, n) ----
+        let _st1 = rt.enter(1);
+        let x = rt.rx(slot, n_embd)?;
+        let x = self.decode_layers_eager(e1, x, split, self.layers.len(), &pos_d, pos, cache)?;
+        let e = e1; // head runs through the stage-1 engine on the stage-1 stream
+
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let h_seed = if crate::spec::spec_hpost() {
+            e.clone_dtod(&hn)?
+        } else {
+            e.clone_dtod(&x)?
+        };
+        // same diagnostics door as decode_step_h (MEMRA_DUMP_HN) so the arms stay observably
+        // interchangeable.
+        if let Ok(path) = std::env::var("MEMRA_DUMP_HN") {
+            let hh = e.dtoh(&hn)?;
+            use std::io::Write;
+            let mut fo = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            for v in &hh {
+                fo.write_all(&v.to_le_bytes())?;
+            }
+        }
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        let host = e.dtoh(&logits)?;
+        cache.pos += 1;
+        Ok((host, h_seed))
+    }
+
+    /// MEMRA_PP_STREAMS=0 rollback seam: the increment-1 pp2 body verbatim — both stage
+    /// subgraphs on the ambient compute stream, boundary = two plain dtod copies.
+    fn decode_step_h_pp2_samestream(
         &self,
         e: &Engine,
         token: u32,
@@ -805,8 +880,6 @@ impl HybridModel {
         } else {
             e.clone_dtod(&x)?
         };
-        // same diagnostics door as decode_step_h (MEMRA_DUMP_HN) so the arms stay observably
-        // interchangeable.
         if let Ok(path) = std::env::var("MEMRA_DUMP_HN") {
             let hh = e.dtoh(&hn)?;
             use std::io::Write;
@@ -951,6 +1024,7 @@ impl HybridModel {
                                 il,
                                 false,
                             )?,
+                            Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                         }
                     }
                     (taken, _) => {

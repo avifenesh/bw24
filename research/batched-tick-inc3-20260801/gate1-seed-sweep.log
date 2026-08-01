@@ -1,0 +1,25 @@
+=== gate1-config divergence-step distribution, MEMRA_GATE_SEED in {0,6,12} = 18 draws, unmodified-config binary, 2026-08-01T11:41:39Z ===
+--- MEMRA_GATE_SEED=0
+gate1 seed 0 step 1: token diverged FAIL
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3 step 3: token diverged — accepted cross-config drift (WARN)
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5: agreement all 32 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+--- MEMRA_GATE_SEED=6
+gate1 seed 0: agreement all 32 steps
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3 step 19: token diverged — accepted cross-config drift (WARN)
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5: agreement all 32 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+--- MEMRA_GATE_SEED=12
+gate1 seed 0: agreement all 32 steps
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3: agreement all 32 steps
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5: agreement all 32 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS

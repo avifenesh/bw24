@@ -4,7 +4,7 @@
 
 use crate::model::{EmbedHost, GpuTensor, HostExps};
 use crate::Engine;
-use memra_gguf::config::{LayerKind, ModelConfig};
+use memra_gguf::config::{LayerKind, MlaConfig, ModelConfig};
 use memra_gguf::source::{GgufSource, TensorSource};
 use memra_gguf::{GgmlType, GgufFile};
 use cudarc::driver::CudaSlice;
@@ -26,16 +26,23 @@ fn load_opt(
     GpuTensor::load_opt_from_source(e, src, name)
 }
 
-/// Load the mixer (full-attn or linear-attn) for block `il`. Shared by the trunk loop and the MTP head.
-/// `kind` overrides cfg.layer_kind (the MTP/NextN block is ALWAYS full-attn regardless of the periodic
-/// interval — its GGUF carries attn_q/k/v, not ssm_*/attn_qkv).
+/// Load the mixer (full-attn, linear-attn, or MLA) for block `il`. Shared by the trunk loop and
+/// the MTP head. `kind` overrides cfg.layer_kind (the MTP/NextN block is ALWAYS full-attn
+/// regardless of the periodic interval — its GGUF carries attn_q/k/v, not ssm_*/attn_qkv).
+/// `mla` is the Arch gate: `Some` only for glm-dsa (cfg.mla) — every layer of an MLA model,
+/// INCLUDING its NextN/MTP block (dense MLA, no indexer), takes the Mla arm.
 fn load_mixer_kind(
     e: &Engine,
     src: &dyn TensorSource,
     il: u32,
     kind: LayerKind,
+    mla: Option<&MlaConfig>,
 ) -> Result<Mixer, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
+    if let Some(m) = mla {
+        assert_eq!(kind, LayerKind::FullAttention, "MLA layers are full-attention class");
+        return Ok(Mixer::Mla(MlaAttnLayer::load(e, src, il, m)?));
+    }
     Ok(match kind {
         LayerKind::FullAttention => Mixer::Full(FullAttnLayer {
             wq: load_t(e, src, &p("attn_q.weight"))?,
@@ -86,6 +93,8 @@ pub(crate) fn load_ffn(
     let dense_override = cfg.m3.as_ref()
         .is_some_and(|m| m.moe_layer_freq.get(il as usize).copied() == Some(0))
         || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace)
+        // glm-dsa: leading_dense_block_count layers (GLM-5.2: 3) are dense-FFN
+        || cfg.mla.as_ref().is_some_and(|m| il < m.first_k_dense_replace)
         // gemma4 DENSE variants (31B/E4B): the arch is MoE-capable but the file ships no
         // expert tensors at all — tensor presence decides.
         || (cfg.gemma4.is_some() && !src.has(&p("ffn_gate_exps.weight"))
@@ -251,9 +260,12 @@ fn build_dev_exps(
     let d = e.htod_bytes_padded(down.bytes.as_bytes(), 144)?;
     let mut host = vec![0u64; 3 * n_expert];
     let (pg, pu, pd) = {
-        let (pg, _e0) = g.device_ptr(e.stream());
-        let (pu, _e1) = u.device_ptr(e.stream());
-        let (pd, _e2) = d.device_ptr(e.stream());
+        let __s_e0 = e.stream();
+        let (pg, _e0) = g.device_ptr(&__s_e0);
+        let __s_e1 = e.stream();
+        let (pu, _e1) = u.device_ptr(&__s_e1);
+        let __s_e2 = e.stream();
+        let (pd, _e2) = d.device_ptr(&__s_e2);
         (pg as u64, pu as u64, pd as u64)
     };
     for ex in 0..n_expert {
@@ -289,6 +301,103 @@ pub struct FullAttnLayer {
     pub k_norm: GpuTensor,
 }
 
+/// Latent-KV geometry for one MLA layer, resolved at load from `MlaConfig` (glm-dsa). The KV
+/// cache stores ONE `latent_dim`-wide row per token per layer: [rmsnorm(c_kv) | rope(k_pe)];
+/// V is the first `kv_rank` elements of the SAME row (no V plane). All heads stream it (MQA).
+#[derive(Clone, Copy, Debug)]
+pub struct MlaGeom {
+    pub n_head: usize,     // 64  — query heads; n_head_kv semantics = 1
+    pub d_nope: usize,     // 192 — qk nope head dim (absorb GEMM K)
+    pub d_rope: usize,     // 64  — decoupled rope width (q_pe / k_pe)
+    pub d_v: usize,        // 256 — v head dim after wv_b decompression
+    pub kv_rank: usize,    // 512 — latent rank (absorbed qk dim, AV accumulator width)
+    pub latent_dim: usize, // 576 = kv_rank + d_rope — the cache row / K width
+    pub scale: f32,        // 1/sqrt(d_nope + d_rope) = 1/16 — NOT 1/sqrt(latent_dim)
+}
+
+/// GLM-5.2 MLA attention block (DESIGN.md §3.1 mapping). INCREMENT 2: loader-only — the
+/// projections + latent-cache geometry land on device; forward arms (prefill/decode/dc/graph)
+/// are increment 4. The CPU oracle for those arms is `crate::mla` (naive ≡ absorbed, proven).
+pub struct MlaAttnLayer {
+    pub wq_a: GpuTensor,      // attn_q_a.weight      [H -> Lq] (q down-projection)
+    pub q_a_norm: GpuTensor,  // attn_q_a_norm.weight [Lq]
+    pub wq_b: GpuTensor,      // attn_q_b.weight      [Lq -> N*(nope+rope)] (q up, per head [nope|rope])
+    pub wkv_a: GpuTensor,     // attn_kv_a_mqa.weight [H -> Lkv+rope] (latent row producer)
+    pub kv_a_norm: GpuTensor, // attn_kv_a_norm.weight [Lkv] (c_kv rms; k_pe is NOT normed)
+    pub wk_b: GpuTensor,      // attn_k_b.weight      [nope, Lkv, N] 3D — TRANSPOSED nope slice of
+                              //   kv_b (conversion split): the per-head absorb GEMM operand
+    pub wv_b: GpuTensor,      // attn_v_b.weight      [Lkv, V, N] 3D — the post-softmax decompress
+    pub wo: GpuTensor,        // attn_output.weight   [N*V -> H]
+    pub geom: MlaGeom,
+}
+
+impl MlaAttnLayer {
+    /// Load one MLA attention block to device. `attn_kv_b` (the unsplit tensor, when present)
+    /// is intentionally NOT loaded — v1 runs absorbed-form everywhere; the MHA-prefill arm that
+    /// would consume it is a later arc (DESIGN.md §3.1 "unused v1").
+    ///
+    /// NOTE (increment-3+): wk_b/wv_b are 3D. The F32 fixture rides the Float path (exact, full
+    /// ne kept). Quantized 3D tensors would mis-derive `row_bytes` in the generic 2D Quant arm
+    /// (out_f = ne[1] only) — the real-weights loader must split per head or flatten ne[1]*ne[2]
+    /// before the batched-GEMM kernels consume them. Guarded by the assert below.
+    pub fn load(
+        e: &Engine,
+        src: &dyn TensorSource,
+        il: u32,
+        m: &MlaConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let p = |s: &str| format!("blk.{il}.{s}");
+        let geom = MlaGeom {
+            n_head: 0, // patched below from wq_b's out width (metadata cross-check)
+            d_nope: m.qk_nope_head_dim as usize,
+            d_rope: m.qk_rope_head_dim as usize,
+            d_v: m.v_head_dim as usize,
+            kv_rank: m.kv_lora_rank as usize,
+            latent_dim: m.latent_dim() as usize,
+            scale: m.scale(),
+        };
+        let wq_a = load_t(e, src, &p("attn_q_a.weight"))?;
+        let wq_b = load_t(e, src, &p("attn_q_b.weight"))?;
+        let wkv_a = load_t(e, src, &p("attn_kv_a_mqa.weight"))?;
+        let wk_b = load_t(e, src, &p("attn_k_b.weight"))?;
+        let wv_b = load_t(e, src, &p("attn_v_b.weight"))?;
+        let wo = load_t(e, src, &p("attn_output.weight"))?;
+        // shape audit at load (fail loudly, not as garbage activations later):
+        let n_head = wq_b.out_features() / (geom.d_nope + geom.d_rope);
+        assert_eq!(wq_b.out_features(), n_head * (geom.d_nope + geom.d_rope),
+                   "wq_b out {} not a multiple of qk_head_dim {}", wq_b.out_features(),
+                   geom.d_nope + geom.d_rope);
+        assert_eq!(wq_a.in_features() , wkv_a.in_features(), "q_a/kv_a hidden mismatch");
+        assert_eq!(wq_b.in_features(), m.q_lora_rank as usize, "wq_b in != q_lora_rank");
+        assert_eq!(wkv_a.out_features(), geom.latent_dim, "wkv_a out != kv_lora_rank + rope");
+        assert_eq!(wk_b.ne(), &[geom.d_nope as u64, geom.kv_rank as u64, n_head as u64],
+                   "attn_k_b must be the TRANSPOSED (nope, kv_rank, head) conversion split");
+        assert_eq!(wv_b.ne(), &[geom.kv_rank as u64, geom.d_v as u64, n_head as u64],
+                   "attn_v_b must be the (kv_rank, v, head) conversion split");
+        assert_eq!(wo.in_features(), n_head * geom.d_v, "wo in != n_head * v_head_dim");
+        Ok(MlaAttnLayer {
+            wq_a,
+            q_a_norm: load_t(e, src, &p("attn_q_a_norm.weight"))?,
+            wq_b,
+            wkv_a,
+            kv_a_norm: load_t(e, src, &p("attn_kv_a_norm.weight"))?,
+            wk_b,
+            wv_b,
+            wo,
+            geom: MlaGeom { n_head, ..geom },
+        })
+    }
+}
+
+/// Increment-2 guard: every forward-path `match` on `Mixer` routes Mla here until increment 4
+/// lands the MLA kernels. Loading a glm-dsa model works; running it panics with THIS message
+/// instead of garbage math. Zero behavior change for Full/Linear arches (arm never taken).
+#[track_caller]
+pub(crate) fn mla_forward_unimplemented() -> ! {
+    panic!("Mixer::Mla has no forward arm yet — glm-dsa is loader-only in increment 2; \
+            the CUDA forward lands in increment 4 (research/mla-bringup-20260801/DESIGN.md §4)")
+}
+
 pub struct LinearAttnLayer {
     pub wqkv: GpuTensor,       // [n_embd, conv_dim] -> qkv_mixed
     pub wqkv_gate: GpuTensor,  // [n_embd, value_dim] -> z
@@ -304,6 +413,8 @@ pub struct LinearAttnLayer {
 pub enum Mixer {
     Full(FullAttnLayer),
     Linear(LinearAttnLayer),
+    /// glm-dsa MLA block (loader-only in increment 2; forward = increment 4).
+    Mla(MlaAttnLayer),
 }
 
 /// MoE weights for one layer. Router + shared expert stay GPU-RESIDENT (tiny); the routed
@@ -629,7 +740,7 @@ impl MtpHead {
             post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
                 .expect("draft NextN block needs post_attention_norm or ffn_norm"),
-            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention)?,
+            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref())?,
             ffn: load_ffn(e, &src, &dcfg, n, None)?,
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
@@ -792,7 +903,7 @@ impl HybridModel {
                             k_norm: load_t(e, src, &tp("attn_k_norm.weight"))?,
                         })
                     } else {
-                        load_mixer_kind(e, src, il, cfg.layer_kind(il))?
+                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref())?
                     }
                 },
                 ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
@@ -877,7 +988,7 @@ impl HybridModel {
                     post_attn_norm: load_opt(e, src, &p("post_attention_norm.weight"))?
                         .or(load_opt(e, src, &p("ffn_norm.weight"))?)
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
-                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention)?,
+                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref())?,
                     ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
                     shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
@@ -1153,6 +1264,9 @@ impl HybridModel {
                             for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
                                       &mut la.ssm_alpha, &mut la.ssm_out] { mir(w)?; }
                         }
+                        // MLA: no decode mirrors in increment 2 (its kernels arrive in inc 4;
+                        // mirror admission is arbitrated there with measurements).
+                        Mixer::Mla(_) => {}
                     }
                     if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
                         for w in [ffn_gate, ffn_up, ffn_down] { mir(w)?; }
@@ -1200,6 +1314,7 @@ impl HybridModel {
                                     for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
                                               &mut la.ssm_alpha, &mut la.ssm_out] { mirk(w)?; }
                                 }
+                                Mixer::Mla(_) => {} // no mirrors in increment 2 (see above)
                             }
                             if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
                                 for w in [ffn_gate, ffn_up, ffn_down] { mirk(w)?; }

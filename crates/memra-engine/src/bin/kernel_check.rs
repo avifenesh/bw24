@@ -863,6 +863,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    // --- f16g mode-2 sk grouped GEMM (rounds 49+51): grid-scan vs visitor forms. Synthetic ---
+    // CSR with q35-like routing skew (group sizes 1..300 — the ~17x skew shape that drove the
+    // round-51 visitor). Two gates per case:
+    //   (a) the round-49 grid-scan kernel vs the f32 CPU oracle on the SAME f16 operands
+    //       (values snapped to an f16-exact grid, so only f32-accumulate order differs);
+    //   (b) every round-51 visitor form (hybrid split / all-128 / all-32) vs the grid-scan
+    //       kernel BYTE-IDENTICAL — each output element's k-chain is the same ascending
+    //       mma.sync m16n8k16 sequence by construction, so maxdiff MUST be exactly 0.
+    // Case 2's in_f=480 (%32 but not %64) forces the sk128 in_f fallback: force-128 must
+    // silently ride the 32x64 form and stay byte-identical.
+    {
+        fn f16_bits(x: f32) -> u16 {
+            let b = x.to_bits();
+            let s = ((b >> 16) & 0x8000) as u16;
+            if x == 0.0 { return s; }
+            let he = ((b >> 23) & 0xff) as i32 - 127 + 15; // test values are moderate normals
+            let m = b & 0x7f_ffff;
+            let mut h = ((he as u32) << 10) | (m >> 13);
+            let rem = m & 0x1fff;
+            if rem > 0x1000 || (rem == 0x1000 && (h & 1) == 1) { h += 1; }
+            s | h as u16
+        }
+        let m_sizes: [i32; 8] = [1, 3, 17, 33, 64, 129, 200, 300];
+        let n_active = m_sizes.len();
+        let mut ex_off_host = vec![0i32; n_active + 1];
+        for (g, m) in m_sizes.iter().enumerate() { ex_off_host[g + 1] = ex_off_host[g] + m; }
+        let n_pairs = *ex_off_host.last().unwrap() as usize;
+        let snap = |v: f32| (v * 256.0).round() / 256.0;
+        for (in_f, out_f) in [(512usize, 300usize), (480, 192)] {
+            let w_f32: Vec<f32> = (0..n_active * out_f * in_f)
+                .map(|i| snap(pr(i + 101) - 0.5)).collect();
+            let a_f32: Vec<f32> = (0..n_pairs * in_f)
+                .map(|i| snap(pr(i + 211) - 0.5)).collect();
+            let scales: Vec<f32> = (0..n_pairs).map(|p| 1.0 + (p % 5) as f32 * 0.25).collect();
+            let mut cpu = vec![0f32; n_pairs * out_f];
+            for g in 0..n_active {
+                let (lo, hi) = (ex_off_host[g] as usize, ex_off_host[g + 1] as usize);
+                for p in lo..hi {
+                    let arow = &a_f32[p * in_f..][..in_f];
+                    for o in 0..out_f {
+                        let wrow = &w_f32[(g * out_f + o) * in_f..][..in_f];
+                        let s: f32 = wrow.iter().zip(arow).map(|(w, a)| w * a).sum();
+                        cpu[p * out_f + o] = s * scales[p];
+                    }
+                }
+            }
+            let to_bytes = |v: &[f32]| -> Vec<u8> {
+                v.iter().flat_map(|&x| f16_bits(x).to_le_bytes()).collect()
+            };
+            let wd = e.htod_bytes(&to_bytes(&w_f32))?;
+            let ad = e.htod_bytes(&to_bytes(&a_f32))?;
+            let sd = e.htod(&scales)?;
+            let offd = e.htod_i32(&ex_off_host)?;
+            let y_legacy = e.dtoh(&e.moe_f16g_gemm_sk_raw(&wd, &ad, &sd, &ex_off_host, &offd,
+                                                          in_f, out_f, n_pairs, -1, 0)?)?;
+            let scale = cpu.iter().map(|v| v.abs()).fold(0.0f32, f32::max).max(1e-3);
+            let rel = maxdiff(&cpu, &y_legacy) / scale;
+            println!("f16g-sk (in={in_f} out={out_f} skew 1..300) grid-scan vs oracle: \
+                      rel={rel:.2e} {}",
+                     if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+            for (name, cross) in [("visitor-hybrid(cross=64)", 64),
+                                  ("visitor-128", 1), ("visitor-32", i32::MAX)] {
+                let yv = e.dtoh(&e.moe_f16g_gemm_sk_raw(&wd, &ad, &sd, &ex_off_host, &offd,
+                                                        in_f, out_f, n_pairs, 0, cross)?)?;
+                let d = maxdiff(&y_legacy, &yv);
+                println!("f16g-sk (in={in_f} out={out_f}) {name} vs grid-scan: maxdiff={d:.2e} {}",
+                         if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
     // NVFP4 GEMM vs dp4a on the 9B model (separate path: per-tensor macro-scale + in_f%64).
     {
         use memra_gguf::{GgufFile, GgmlType};
@@ -2170,10 +2241,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes,false)?;
                 }
                 // arm 2 (seqs): one z-batched launch into kcs2/vcs2 via the pointer table
+                let es = e.gpu.stream();
                 let mut ptrs2: Vec<u64> = Vec::new();
                 for z in 0..b_n {
-                    let (pk, _g) = kcs2[z].device_ptr(&e.gpu.stream);
-                    let (pv, _g2) = vcs2[z].device_ptr(&e.gpu.stream);
+                    let (pk, _g) = kcs2[z].device_ptr(&es);
+                    let (pv, _g2) = vcs2[z].device_ptr(&es);
                     ptrs2.push(pk as u64); ptrs2.push(pv as u64);
                 }
                 let table2 = e.htod_u64(&ptrs2)?;
@@ -2207,8 +2279,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let mut ptrs1: Vec<u64> = Vec::new();
                 for z in 0..b_n {
-                    let (pk, _g) = kcs[z].device_ptr(&e.gpu.stream);
-                    let (pv, _g2) = vcs[z].device_ptr(&e.gpu.stream);
+                    let (pk, _g) = kcs[z].device_ptr(&es);
+                    let (pv, _g2) = vcs[z].device_ptr(&es);
                     ptrs1.push(pk as u64); ptrs1.push(pv as u64);
                 }
                 let table1 = e.htod_u64(&ptrs1)?;

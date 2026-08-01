@@ -1,0 +1,4 @@
+pp2-gate increment-2 config: streams=OFF(inc1 seam) overlap=0 devices=default(primary)
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=262144, n_layers=48, stage0=[0,24), stage1=[24,48); streams=OFF(inc1 seam) overlap=0 devices=default(primary))

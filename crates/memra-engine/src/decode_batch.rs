@@ -13,8 +13,13 @@
 //!   bit-identical to m=1 (the spec-exactness machinery decode_step_t relies on). Each
 //!   sequence's token stream must equal its isolated single-seq run (worker.rs contract:
 //!   "byte-identical to isolated").
-//! - B >= 16 would cross into the GEMM tier (block-scale f32 rounding — a DIFFERENT
-//!   numeric config). Deliberately refused in v1: assert B <= 8.
+//! - 9 <= B <= 16 (the EXACT-16 tier, inc3 2026-08-01): admitted iff
+//!   `decode_batch_exact16_ok` — every matmul rides the b16 batched-mmvq class
+//!   (bit-identical per (token,row) to m=1; Q8_0 needs the q8rp mirror) under a
+//!   verify_exact scope that disables the m>=16 GEMM/MMQ arms. gate2 bit-strength
+//!   PASS at B=12/16 (research/batched-tick-inc3-20260801). Refused otherwise.
+//! - B > 16 crosses into GEMM/dp4a-tail numeric configs with NO exact kernel class —
+//!   refused (MEMRA_DECODE_BATCH_CAP stays a measurement door).
 //!
 //! v1 scope: the hybrid (Qwen3.5-class) non-gemma4 trunk. Fused m=1 micro-launches
 //! (fused3 QKV, cross-layer add+norm+q8 chain) are NOT used — the unfused sequence is
@@ -74,6 +79,47 @@ impl HybridModel {
         })
     }
 
+    /// EXACT-16 TIER admission (increment 3a, 2026-08-01, 5090 receipts
+    /// research/batched-tick-inc3-20260801): true iff EVERY matmul the batched decode step
+    /// runs has a per-(token,row) bit-exact kernel class at m=9..16 under the verify_exact
+    /// scope — i.e. the batched-mmvq b16 family (32-thread warp reduce, the exact m=1 mmvq
+    /// program per column) or the e4m3 grid.y=m mmvq catch-all. Q8_0 qualifies only with
+    /// the split-plane mirror (rp4, MEMRA_Q8RP): its b16 kernel exists only as the _rp twin.
+    /// Float matmuls (cuBLASLt, n-dependent reductions) and MoE FFNs disqualify the model.
+    /// Measured attribution for WHY the naked m=16 tier is not exact: the m>=16 arms
+    /// (MMQ int8-MMA `mul_mat_q` — MEMRA_PP_Q8MMQ default-on — and `qmatvec_gemm`, both
+    /// block-scale f32) and the m=9..15 dp4a tail (128-thread two-level reduce) all break
+    /// per-row bit-identity vs isolated decode (gate2 step-0 bit-diffs, maxdiff ~1.3-2.3e-1).
+    pub fn decode_batch_exact16_ok(&self) -> bool {
+        fn ok(w: &crate::model::GpuTensor) -> bool {
+            match w {
+                crate::model::GpuTensor::Quant { qtype, rp4, .. } =>
+                    *qtype == crate::QT_Q4_0 || *qtype == crate::QT_Q6_K
+                    || *qtype == crate::QT_F8_E4M3
+                    || (*qtype == crate::QT_Q8_0 && rp4.is_some()),
+                _ => false,
+            }
+        }
+        if self.cfg.m3.is_some() || self.is_gemma4_e4b() || self.cfg.gemma4.is_some() {
+            return false;
+        }
+        self.layers.iter().all(|l| {
+            let mix_ok = match &l.mixer {
+                Mixer::Full(fa) => [&fa.wq, &fa.wk, &fa.wv, &fa.wo].into_iter().all(ok),
+                Mixer::Linear(la) => [&la.wqkv, &la.wqkv_gate, &la.ssm_beta,
+                                      &la.ssm_alpha, &la.ssm_out].into_iter().all(ok),
+                // MLA rides its own increment-4 arm; never admitted to the exact-16 tier here.
+                Mixer::Mla(_) => false,
+            };
+            let ffn_ok = match &l.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } =>
+                    [ffn_gate, ffn_up, ffn_down].into_iter().all(ok),
+                crate::hybrid::Ffn::Moe(_) => false,
+            };
+            mix_ok && ffn_ok
+        }) && ok(&self.output)
+    }
+
     /// One batched greedy-decode step over B independent sequences.
     /// `tokens[b]` is sequence b's input token; `caches[b]` its private cache (position,
     /// quantized KV, GDN/conv state). Returns the B logits rows (host, [n_vocab] each).
@@ -130,6 +176,14 @@ impl HybridModel {
         samp: &[Option<(f32, u64, u32)>],
         lean: bool,
     ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        // NOTE (inc3 3c, 2026-08-01, KILLED ARM): a deferred-token-readback variant (all
+        // chunks of a tick writing device-sampled tokens into one shared buffer, ONE
+        // dtoh_u32 after the last chunk instead of one per chunk) measured FLAT at serve
+        // level on the 5090 (N=4 medians within +-0.7% at c=8/16/32 — 3 saved syncs
+        // against a ~100 ms weight-bound tick is ~0.1%, below resolution). Killed per the
+        // flags doctrine; receipts research/batched-tick-inc3-20260801 (serve-points.jsonl
+        // base vs defer arms) are the record. The per-chunk [B]-u32 readback below IS the
+        // tick's only steady-state D2H — one per chunk, none per seq.
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
         // MEMRA_DECODE_BATCH_CAP (experimental door, serving-lane tier probe 2026-08-01):
@@ -141,11 +195,33 @@ impl HybridModel {
         // serving contract. Never default this above 8 without the batched-tier
         // exactness policy landing.
         let cap = Self::decode_batch_cap();
+        // EXACT-16 TIER (increment 3a): chunks of 9..=16 are admitted WITHOUT the env door
+        // when every matmul has a bit-exact b16-class kernel (see decode_batch_exact16_ok).
+        // The verify_exact scope below pins that dispatch for the whole step: it turns off
+        // the m>=16 GEMM arms (qmatvec_gemm + MMQ + fp8/f16/fp4 — all block-scale/foreign
+        // numeric configs) so every projection rides the batched-mmvq b16 tier, which is
+        // per-(token,row) bit-identical to isolated m=1 decode (gate2 bit-strength PASS at
+        // B=12/16, s32+s160, 5090 receipts research/batched-tick-inc3-20260801). Without
+        // the exact tier, B>cap stays refused; the env door (MEMRA_DECODE_BATCH_CAP) keeps
+        // its old meaning as the non-exact measurement probe.
+        let exact16 = b_n > 8 && b_n <= 16 && self.decode_batch_exact16_ok();
         assert!(
-            b_n <= cap,
-            "decode_step_batch: B={b_n} > cap {cap} (>8 crosses the m>=16 GEMM tier, a \
-             different numeric config) — refused until the batched-tier exactness policy lands"
+            b_n <= cap || exact16,
+            "decode_step_batch: B={b_n} > cap {cap} with no exact tier (Q8_0 m>8 needs the \
+             q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused"
         );
+        struct ExactScope<'a>(&'a Engine, bool);
+        impl Drop for ExactScope<'_> {
+            fn drop(&mut self) {
+                if self.1 {
+                    self.0.set_verify_exact(false);
+                }
+            }
+        }
+        let _exact_scope = ExactScope(e, exact16);
+        if exact16 {
+            e.set_verify_exact(true);
+        }
         assert!(
             !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
             "decode_step_batch v1 covers the hybrid non-gemma4 trunk only"
@@ -177,7 +253,7 @@ impl HybridModel {
         let mut ptrs: Vec<u64> = Vec::new();
         {
             use cudarc::driver::DevicePtr;
-            let s = &e.gpu.stream;
+            let s = &e.gpu.stream();
             for (il, layer) in self.layers.iter().enumerate() {
                 match &layer.mixer {
                     Mixer::Linear(_) => {
@@ -208,6 +284,7 @@ impl HybridModel {
                             ptrs.push(pv as u64);
                         }
                     }
+                    Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 }
             }
         }
@@ -262,6 +339,7 @@ impl HybridModel {
 
             // ---- mixer ----
             let mixed: CudaSlice<f32> = match &layer.mixer {
+                Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Full(fa) => {
                     // Batched projections: one weight read serves all B rows.
                     let qf = e.matmul_pre(&fa.wq, &hq, &hd, &xn, b_n)?;

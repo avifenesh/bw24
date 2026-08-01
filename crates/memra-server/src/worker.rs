@@ -321,6 +321,15 @@ pub fn run(
     }
     let _ = ready_tx.send(Ok(order.clone()));
 
+    // Per-model decode chunk width (inc3 3a): computed once — model tensors and mirrors
+    // are fixed after load.
+    let chunk_caps: HashMap<String, usize> =
+        loaded.iter().map(|(n, lm)| (n.clone(), chunk_cap_for(lm))).collect();
+    for (n, c) in &chunk_caps {
+        eprintln!("[worker] {n}: decode chunk cap {c}{}",
+                  if *c > 8 { " (exact-16 tier)" } else { "" });
+    }
+
     // ---- scheduler loop ----
     let mut active: Vec<Session> = Vec::new();
     let mut queue: std::collections::VecDeque<Box<Request>> = std::collections::VecDeque::new();
@@ -628,9 +637,13 @@ pub fn run(
                     (true, None) => {} // nothing to do this tick
                 }
             }
-            // batched steps in chunks of <= decode_batch_cap() (default 8 = the exactness-tier
-            // cap; MEMRA_DECODE_BATCH_CAP is the tier-probe door), same model per chunk
-            for chunk in group_chunks(&active, &ready) {
+            // batched steps in per-model chunks (chunk_cap_for: exact-16 tier models chunk
+            // at 16, everything else 8; MEMRA_DECODE_BATCH_CAP is the explicit door).
+            // D2H audit (inc3 3c): the per-chunk [B]-u32 device-token readback inside the
+            // step is the tick's ONLY steady-state D2H — one per chunk, none per seq. A
+            // deferred one-per-TICK variant measured FLAT (±0.7%, N=4, c=8/16/32, 5090 —
+            // research/batched-tick-inc3-20260801) and was killed per the flags doctrine.
+            for chunk in group_chunks(&active, &ready, &chunk_caps) {
                 let toks: Vec<u32> = chunk.iter().map(|&(_, t)| t).collect();
                 let idxs: Vec<usize> = chunk.iter().map(|&(i, _)| i).collect();
                 let model_name = active[idxs[0]].model.clone();
@@ -1182,11 +1195,29 @@ fn serve_leanlogits() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_SERVE_LEANLOGITS").as_deref() != Ok("0"))
 }
 
-fn group_chunks(active: &[Session], ready: &[(usize, u32)]) -> Vec<Vec<(usize, u32)>> {
-    let cap = memra_engine::hybrid::HybridModel::decode_batch_cap();
+/// Per-model decode chunk width. MEMRA_DECODE_BATCH_CAP (explicit door) wins; otherwise
+/// models that qualify for the EXACT-16 tier (decode_batch_exact16_ok — every matmul has
+/// a bit-exact b16-class kernel; Q8_0 needs the q8rp mirror) default to chunk 16, the
+/// measured winner on the 5090 (+12% aggregate over chunk 8 at 32 seqs, same mirror
+/// config — research/batched-tick-inc3-20260801/chunksweep.log); everything else keeps
+/// the chunk-8 exactness tier. Isolation contract unchanged either way (gate2
+/// bit-strength PASS at both widths).
+fn chunk_cap_for(lm: &LoadedModel) -> usize {
+    if let Some(c) = std::env::var("MEMRA_DECODE_BATCH_CAP").ok().and_then(|v| v.parse().ok()) {
+        return usize::clamp(c, 1, 32);
+    }
+    if lm.model.decode_batch_exact16_ok() { 16 } else { 8 }
+}
+
+fn group_chunks(
+    active: &[Session],
+    ready: &[(usize, u32)],
+    caps: &HashMap<String, usize>,
+) -> Vec<Vec<(usize, u32)>> {
     let mut chunks: Vec<Vec<(usize, u32)>> = Vec::new();
     for &(i, t) in ready {
         let model = &active[i].model;
+        let cap = caps.get(model).copied().unwrap_or(8);
         match chunks.last_mut() {
             Some(c) if c.len() < cap && active[c[0].0].model == *model => c.push((i, t)),
             _ => chunks.push(vec![(i, t)]),

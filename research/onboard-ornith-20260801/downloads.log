@@ -1,0 +1,18 @@
++ export HF_HUB_ENABLE_HF_TRANSFER=1
++ HF_HUB_ENABLE_HF_TRANSFER=1
++ hf download deepreinforce-ai/Ornith-1.0-9B-GGUF ornith-1.0-9b-Q8_0.gguf --revision 3296bc7a404871a72ac3f1903f561459c09b5c17 --local-dir /data/ai-ml/hf-models/ornith-1.0-9b-gguf
+/home/avifenesh/.local/lib/python3.14/site-packages/huggingface_hub/constants.py:298: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Hint: A new version of huggingface_hub (1.26.0) is available! You are using version 1.22.0.
+To update, run: hf update
+path=/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
++ hf download deepreinforce-ai/Ornith-1.0-35B-GGUF ornith-1.0-35b-Q4_K_M.gguf --revision 383064f72a1ef3087b779f268d3ca117eb989aac --local-dir /data/ai-ml/hf-models/ornith-1.0-35b-gguf
+/home/avifenesh/.local/lib/python3.14/site-packages/huggingface_hub/constants.py:298: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+path=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
++ hf download bartowski/Kwaipilot_KAT-Coder-V2.5-Dev-GGUF Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf --revision d8f684f08d2950ea9d2db6a35ef7dada0707858b --local-dir /data/ai-ml/hf-models/kat-coder-v25-dev-gguf
+/home/avifenesh/.local/lib/python3.14/site-packages/huggingface_hub/constants.py:298: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+path=/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf
++ echo 'ALL DOWNLOADS DONE'
+ALL DOWNLOADS DONE

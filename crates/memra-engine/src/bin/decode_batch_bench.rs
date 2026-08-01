@@ -26,11 +26,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v.split(',').filter_map(|s| s.parse().ok()).collect())
         .unwrap_or_else(|| vec![1, 2, 4, 8]);
 
+    // inc3 (3a) CHUNK-SIZE SWEEP: `--seqs N --chunk C` advances N sequences per tick via
+    // ceil(N/C) chunked decode_step_batch calls (the worker's group_chunks shape) and prints
+    // one aggregate tok/s line — the per-tick cost of chunking policy C for an N-seq batch.
+    // One chunk config per invocation (env-dependent dispatch reads once); interleave
+    // invocations at the script level for the x5 medians.
+    let seqs: Option<usize> = rest.iter().position(|a| a == "--seqs")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok());
+    let chunk: usize = rest.iter().position(|a| a == "--chunk")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(8);
+
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;
     println!("loaded {} ({} layers); steps={steps} reps={reps} batches={batches:?}",
              g.arch().unwrap_or("?"), model.layers.len());
+
+    if let Some(n_seqs) = seqs {
+        let prompt_t: usize = rest.iter().position(|a| a == "--ctx")
+            .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(512);
+        let ctx = prompt_t + n_seqs * 7 + 64 + (steps + 8) * (reps + 1);
+        let mut caches: Vec<Cache> = Vec::new();
+        let mut toks: Vec<u32> = Vec::new();
+        for i in 0..n_seqs {
+            let prompt: Vec<u32> = (0..(prompt_t as u32) + i as u32 * 7)
+                .map(|j| 55 + i as u32 * 97 + j * 31).collect();
+            let mut c = Cache::new(&e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            toks.push(*prompt.last().unwrap());
+            caches.push(c);
+        }
+        let mut rates: Vec<f64> = Vec::new();
+        for rep in 0..=reps {
+            let t0 = std::time::Instant::now();
+            for _ in 0..steps {
+                let mut next: Vec<u32> = Vec::with_capacity(n_seqs);
+                for (cs, ts) in caches.chunks_mut(chunk).zip(toks.chunks(chunk)) {
+                    let mut refs: Vec<&mut Cache> = cs.iter_mut().collect();
+                    let logits = model.decode_step_batch(&e, ts, &mut refs)?;
+                    for l in &logits {
+                        next.push(argmax(l) as u32);
+                    }
+                }
+                toks = next;
+            }
+            let dt = t0.elapsed().as_secs_f64();
+            if rep > 0 {
+                rates.push((n_seqs * steps) as f64 / dt);
+            }
+        }
+        rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let agg = rates[rates.len() / 2];
+        println!("CHUNKSWEEP seqs={n_seqs} chunk={chunk}: aggregate {agg:.1} tok/s \
+                  ({:.2} ms/tick, median of {reps})",
+                 n_seqs as f64 / agg * 1e3);
+        if memra_engine::decode_batch::batch_phase_on() {
+            println!("{}", memra_engine::decode_batch::batch_phase_report());
+        }
+        return Ok(());
+    }
 
     let ctx_extra: usize = rest.iter().position(|a| a == "--ctx")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(512);

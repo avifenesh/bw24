@@ -18,6 +18,10 @@ pub mod cache {
 }
 pub mod decode;
 pub mod decode_batch;
+/// MLA (multi-head latent attention) CPU f32 reference — GLM-5.2 bring-up lane increment 1.
+/// Naive vs absorbed decode forms + NORM/NEOX rope permutation, unit-tested; the permanent
+/// oracle for the MLA kernel family (`research/mla-bringup-20260801/DESIGN.md`). No CUDA deps.
+pub mod mla;
 pub mod pp;
 pub mod spec;
 pub mod gemma_spec;
@@ -53,6 +57,30 @@ pub fn moe_f16g_mode() -> u8 {
 }
 pub fn moe_f16g_on() -> bool {
     moe_f16g_mode() != 0
+}
+/// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs
+/// as a persistent problem-visitor over the real CSR tiles with two tile forms. Returns
+/// (shape_sel, cross) for the FFI:
+///   MEMRA_F16G_SK=0    -> (-1, _): the round-49 grid-scan kernel (rollback seam).
+///   MEMRA_F16G_SK=32   -> all groups on the 32x64x32 2-stage form (cross = i32::MAX).
+///   MEMRA_F16G_SK=128  -> all groups on the 128x64x64 3-stage form (cross = 1; groups fall
+///                         back to 32x64 in-launcher when the device/in_f can't take it).
+///   unset              -> hybrid split: groups with m_e >= MEMRA_F16G_SK_CROSS ride the 128
+///                         form. Default cross = 64 (5090 sweep 2026-08-01, receipts
+///                         research/sk-bm128-20260801/ — re-sweep on Hopper before flipping
+///                         mode 2 there).
+pub fn moe_f16g_sk_params() -> (i32, i32) {
+    static P: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
+    *P.get_or_init(|| match std::env::var("MEMRA_F16G_SK").as_deref() {
+        Ok("0") => (-1, 0),
+        Ok("32") => (0, i32::MAX),
+        Ok("128") => (0, 1),
+        _ => {
+            let cross = std::env::var("MEMRA_F16G_SK_CROSS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(64);
+            (0, cross)
+        }
+    })
 }
 /// Per-model door for the gemma-MoE (gelu) grouped path: round 49's Hopper default
 /// REGRESSED g26 board-2048 prefill -8.3% interleaved x5 on-box (def median 10380,
@@ -813,7 +841,9 @@ impl Engine {
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
-    pub fn stream(&self) -> &Arc<CudaStream> { &self.gpu.stream }
+    /// Ambient stream (by value since M1-PP2 increment 2): the thread's pp2 stage stream
+    /// when a stage scope is active, else the main compute stream — see `Gpu::stream`.
+    pub fn stream(&self) -> Arc<CudaStream> { self.gpu.stream() }
     /// FP8-GLOBALS switch (MEMRA_GEMMA_GKV, default ON): gemma global (hd512) layers keep
     /// their KV in e4m3 — the dequant-latency arc (HANDOVER). Windowed layers stay q8_0/q5_1.
     pub fn gkv_on() -> bool {
@@ -893,11 +923,13 @@ impl Engine {
         let f2 = self.func("scatter_trim_logits_pass2_f32");
         let (dv, nv) = (d_vocab as i32, n_vocab as i32);
         let cfg1 = LaunchConfig { grid_dim: (256, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        let __s_b1 = self.gpu.stream();
+        let mut b1 = __s_b1.launch_builder(&f1);
         b1.arg(src).arg(d2t).arg(&mut *dst).arg(&dv).arg(&nv);
         unsafe { b1.launch(cfg1)?; }
         let cfg2 = LaunchConfig { grid_dim: (d_vocab.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f2);
         b2.arg(src).arg(d2t).arg(&mut *dst).arg(&dv);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -917,7 +949,8 @@ impl Engine {
         let f = self.func("filter_stats_f32");
         let (ni, nr, rs) = (n as i32, nrow as i32, row_stride as i64);
         let cfg = LaunchConfig { grid_dim: (nrow as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&rs).arg(rows).arg(&mut *out_th).arg(&mut *out_z).arg(&mut *out_max)
          .arg(&ni).arg(&nr).arg(&temp).arg(&top_k).arg(&top_p).arg(&min_p);
         unsafe { b.launch(cfg)?; }
@@ -934,7 +967,8 @@ impl Engine {
         let f = self.func("softmax_gather_filtered_f32");
         let (ni, np, rs) = (n as i32, npair as i32, row_stride as i64);
         let cfg = LaunchConfig { grid_dim: (npair as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&rs).arg(ids).arg(rows).arg(th).arg(z).arg(&mut *out).arg(&ni).arg(&np).arg(&temp);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -953,7 +987,8 @@ impl Engine {
         let qbuf = q.unwrap_or(p);
         let (pm, pth, pz) = p_stats; let (qm, qth, qz) = q_stats;
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(p).arg(qbuf).arg(&has_q).arg(&ni).arg(&temp).arg(&slo).arg(&shi).arg(&stream_pos)
          .arg(&pm).arg(&pth).arg(&pz).arg(&qm).arg(&qth).arg(&qz).arg(&mut *out_tok);
         unsafe { b.launch(cfg)?; }
@@ -968,7 +1003,8 @@ impl Engine {
         let f = self.func("gumbel_perturb_filtered_f32");
         let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
         let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp).arg(&row_max).arg(&th);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -985,7 +1021,8 @@ impl Engine {
         let f = self.func("penalize_logits_f32");
         let (nh, ni) = (n_hist as i32, n as i32);
         let cfg = LaunchConfig { grid_dim: (n_hist.div_ceil(128) as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1000,7 +1037,8 @@ impl Engine {
         let f = self.func("penalize_logits_rows_f32");
         let (nh, ni, nr) = (n_hist as i32, n as i32, nrow as i32);
         let cfg = LaunchConfig { grid_dim: (n_hist.div_ceil(128) as u32, nrow as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni).arg(&nr);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1179,7 +1217,7 @@ impl Engine {
         let cfg = cu::CUlaunchConfig {
             gridDimX: grid.0, gridDimY: grid.1, gridDimZ: grid.2,
             blockDimX: block.0, blockDimY: block.1, blockDimZ: block.2,
-            sharedMemBytes: smem, hStream: self.gpu.stream.cu_stream(),
+            sharedMemBytes: smem, hStream: self.gpu.stream().cu_stream(),
             attrs: &mut attr, numAttrs: 1,
         };
         let r = unsafe { cu::cuLaunchKernelEx(&cfg, f, params.as_mut_ptr(), std::ptr::null_mut()) };
@@ -1200,7 +1238,7 @@ impl Engine {
         let cfg = cu::CUlaunchConfig {
             gridDimX: grid.0, gridDimY: grid.1, gridDimZ: grid.2,
             blockDimX: block.0, blockDimY: block.1, blockDimZ: block.2,
-            sharedMemBytes: 0, hStream: self.gpu.stream.cu_stream(),
+            sharedMemBytes: 0, hStream: self.gpu.stream().cu_stream(),
             attrs: &mut attr, numAttrs: 1,
         };
         let r = unsafe { cu::cuLaunchKernelEx(&cfg, f, params.as_mut_ptr(), std::ptr::null_mut()) };
@@ -1228,7 +1266,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (ncols.div_ceil(256) as u32, 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (nc, ix) = (ncols as i32, idx as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(tok).arg(&ix).arg(dst).arg(&nc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1242,7 +1281,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (ni, off) = (n as i32, row_off as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(logits).arg(bias).arg(&ni).arg(&off);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1255,7 +1295,8 @@ impl Engine {
         let ni = n as i64;
         let cfg = LaunchConfig { grid_dim: (lines.div_ceil(256) as u32, 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(p).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1281,7 +1322,8 @@ impl Engine {
         let (ne, nx, ti) = (n_embd as i32, n_experts as i32, t as i32);
         let cfg = LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1),
                                  block_dim: (32, if w8 { 8 } else { 1 }, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(x).arg(&mut y).arg(&ne).arg(&nx).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -1295,7 +1337,8 @@ impl Engine {
         let (nc, nr) = (ncols as i32, nrows as i32);
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1),
                                  shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(idx).arg(&mut dst).arg(&nc).arg(&nr);
         unsafe { b.launch(cfg)?; }
         Ok(dst)
@@ -1321,7 +1364,8 @@ impl Engine {
         let (ne, ti) = (n_embd as i32, t as i32);
         let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (32, 8, 1),
                                  shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(&mut g).arg(&ne).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(g)
@@ -1335,7 +1379,8 @@ impl Engine {
         let (b, nr) = (base as i32, n_rows as i32);
         let cfg = LaunchConfig { grid_dim: (n_rows.div_ceil(64) as u32, 1, 1),
                                  block_dim: (64, 1, 1), shared_mem_bytes: 0 };
-        let mut bl = self.gpu.stream.launch_builder(&f);
+        let __s_bl = self.gpu.stream();
+        let mut bl = __s_bl.launch_builder(&f);
         bl.arg(len_ptrs).arg(pos_start).arg(acc).arg(&b).arg(&nr);
         unsafe { bl.launch(cfg)?; }
         Ok(())
@@ -1348,7 +1393,8 @@ impl Engine {
         let f = self.func("plain_tok_ring");
         let (b, cap) = (base as i32, ring.len() as i32);
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut bl = self.gpu.stream.launch_builder(&f);
+        let __s_bl = self.gpu.stream();
+        let mut bl = __s_bl.launch_builder(&f);
         bl.arg(vam).arg(pos_start).arg(&b).arg(&mut *ring).arg(&cap);
         unsafe { bl.launch(cfg)?; }
         Ok(())
@@ -1361,7 +1407,8 @@ impl Engine {
                             -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("spec_ring_commit");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(vtok).arg(acc).arg(brk).arg(ring).arg(pend);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1370,7 +1417,8 @@ impl Engine {
                         -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("i32_copy_add");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(dst).arg(&delta);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1379,7 +1427,8 @@ impl Engine {
                     -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("u32_copy");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(dst);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1394,7 +1443,8 @@ impl Engine {
         let f = self.func("spec_adapt_k");
         let (fl, cp) = (floor as i32, cap as i32);
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(acc).arg(brk).arg(&fl).arg(&cp);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1407,7 +1457,8 @@ impl Engine {
                                  -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("spec_accept_greedy_dc");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(preds).arg(vtok).arg(last_pred).arg(brk).arg(out);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1420,7 +1471,8 @@ impl Engine {
         let ti = t as i32;
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (t.max(1) as u32, 1, 1),
                                  shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(pos0).arg(out).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1438,7 +1490,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_rows).arg(v_rows).arg(kc).arg(vc).arg(t0_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1460,7 +1513,8 @@ impl Engine {
                                  shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(t0_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1472,7 +1526,8 @@ impl Engine {
         let f = self.func("pack_tok_p");
         let sl = slot as i32;
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(tok).arg(p).arg(out).arg(&sl);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1481,7 +1536,8 @@ impl Engine {
                        -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("tok_map_u32");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(tok).arg(map);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1496,7 +1552,8 @@ impl Engine {
         let f = self.func("spec_assemble_verify");
         let (ki, pm) = (k as i32, if pmin0 { 1i32 } else { 0i32 });
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         match d2t {
             Some(m) => { b.arg(tokp).arg(pend).arg(m).arg(vtok).arg(brk).arg(&p_min).arg(&ki).arg(&pm);
                          unsafe { b.launch(cfg)?; } }
@@ -1517,7 +1574,8 @@ impl Engine {
         let n = conv_dim * (d_conv - 1);
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let (cd, b0, tv, dc) = (conv_dim as i32, base as i32, t_v as i32, d_conv as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_tm).arg(ring_old).arg(conv_state).arg(&cd).arg(acc).arg(&b0).arg(&tv).arg(&dc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1537,7 +1595,8 @@ impl Engine {
             shared_mem_bytes: 0,
         };
         let (h, b0, tv) = (n_head as i32, base as i32, t_v as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o)
          .arg(&h).arg(acc).arg(&b0).arg(&tv).arg(&scale);
         unsafe { b.launch(cfg)?; }
@@ -1552,7 +1611,8 @@ impl Engine {
         let (b, nl) = (base as i32, n_layer as i32);
         let cfg = LaunchConfig { grid_dim: (n_layer.div_ceil(64) as u32, 1, 1),
                                  block_dim: (64, 1, 1), shared_mem_bytes: 0 };
-        let mut bl = self.gpu.stream.launch_builder(&f);
+        let __s_bl = self.gpu.stream();
+        let mut bl = __s_bl.launch_builder(&f);
         bl.arg(len_ptrs).arg(saved).arg(acc).arg(&b).arg(&nl);
         unsafe { bl.launch(cfg)?; }
         Ok(())
@@ -1568,7 +1628,8 @@ impl Engine {
         let (b, ne) = (base as i32, n_embd as i32);
         let cfg = LaunchConfig { grid_dim: (n_embd.div_ceil(256) as u32, 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut bl = self.gpu.stream.launch_builder(&f);
+        let __s_bl = self.gpu.stream();
+        let mut bl = __s_bl.launch_builder(&f);
         bl.arg(vx).arg(fill_prev).arg(acc).arg(h_seed).arg(&b).arg(&ne);
         unsafe { bl.launch(cfg)?; }
         Ok(())
@@ -1583,7 +1644,8 @@ impl Engine {
         let f = self.func("spec_accept_greedy");
         let (b, k) = (base as i32, k_round as i32);
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut bl = self.gpu.stream.launch_builder(&f);
+        let __s_bl = self.gpu.stream();
+        let mut bl = __s_bl.launch_builder(&f);
         bl.arg(preds).arg(draft).arg(&last_pred).arg(&b).arg(&k).arg(out);
         unsafe { bl.launch(cfg)?; }
         Ok(())
@@ -1601,7 +1663,8 @@ impl Engine {
         let f = self.func("gumbel_perturb_f32");
         let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
         let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1620,7 +1683,8 @@ impl Engine {
         let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
         let col_view = x.slice(col * n..(col + 1) * n);
         let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&col_view).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1633,7 +1697,8 @@ impl Engine {
     pub fn sctr_inc(&self, ctr: &mut CudaSlice<u32>) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("memra_sctr_inc");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&mut *ctr);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1649,7 +1714,8 @@ impl Engine {
         let f = self.func("gumbel_perturb_ctr_f32");
         let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
         let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(ctr).arg(&temp);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1666,7 +1732,8 @@ impl Engine {
         let (ni, rs) = (n as i32, row_stride as i64);
         let np = npair as i32;
         let cfg = LaunchConfig { grid_dim: (npair as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&rs).arg(ids).arg(rows).arg(&mut *out).arg(&ni).arg(&np).arg(&temp);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1685,7 +1752,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (nth, 1, 1), shared_mem_bytes: 0 };
         let has_q: i32 = q.is_some() as i32;
         let qbuf = q.unwrap_or(p);   // dummy when absent; kernel gates on has_q
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(p).arg(qbuf).arg(&has_q).arg(&ni).arg(&temp).arg(&slo).arg(&shi).arg(&stream_pos)
          .arg(&mut *out_tok);
         unsafe { b.launch(cfg)?; }
@@ -1815,7 +1883,7 @@ impl Engine {
     }
 
     pub fn htod_bytes(&self, v: &[u8]) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(v)?)
+        Ok(self.gpu.stream().clone_htod(v)?)
     }
 
     /// `htod_bytes` with a mapped (uninit) tail pad: the wide-load expert dots read up to 6B
@@ -1826,7 +1894,7 @@ impl Engine {
         let mut d = self.alloc_u8_uninit(v.len() + pad)?;
         {
             let mut view = d.slice_mut(0..v.len());
-            self.gpu.stream.memcpy_htod(v, &mut view)?;
+            self.gpu.stream().memcpy_htod(v, &mut view)?;
         }
         Ok(d)
     }
@@ -1835,7 +1903,7 @@ impl Engine {
     pub fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
         let mut view = dst.slice_mut(off..off + len);
-        self.gpu.stream.memcpy_dtod(&src.slice(0..len), &mut view)?;
+        self.gpu.stream().memcpy_dtod(&src.slice(0..len), &mut view)?;
         Ok(())
     }
 
@@ -1844,7 +1912,7 @@ impl Engine {
     pub fn copy_u8_into(&self, dst: &mut CudaSlice<u8>, off: usize, src: &CudaSlice<u8>, len: usize)
                         -> Result<(), Box<dyn std::error::Error>> {
         let mut view = dst.slice_mut(off..off + len);
-        self.gpu.stream.memcpy_dtod(&src.slice(0..len), &mut view)?;
+        self.gpu.stream().memcpy_dtod(&src.slice(0..len), &mut view)?;
         Ok(())
     }
 
@@ -1853,7 +1921,7 @@ impl Engine {
     pub fn htod_u8_into(&self, dst: &mut CudaSlice<u8>, off: usize, src: &[u8])
                         -> Result<(), Box<dyn std::error::Error>> {
         let mut view = dst.slice_mut(off..off + src.len());
-        self.gpu.stream.memcpy_htod(src, &mut view)?;
+        self.gpu.stream().memcpy_htod(src, &mut view)?;
         Ok(())
     }
 
@@ -1884,7 +1952,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(&ti).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1904,7 +1973,7 @@ impl Engine {
         // PDL wave-B2: flash-module flavor mirrors the builder path's g flag exactly.
         if Self::pdl_on() && Self::pdl_wb_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pk, _g0) = k_row.device_ptr(s); let (pv, _g1) = v_row.device_ptr(s);
             let (pkc, _g2) = kc.device_ptr_mut(s); let (pvc, _g3) = vc.device_ptr_mut(s);
             let (pt, _g4) = t_dev.device_ptr(s);
@@ -1921,7 +1990,8 @@ impl Engine {
         }
         let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_dc") } else { self.func("append_quantize_kv_q8_0_q5_1_dc") };
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(t_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1953,7 +2023,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (t0i, kdk, kdv) = (t0 as i32, kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_rows).arg(v_rows).arg(kc).arg(vc).arg(&t0i).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1965,7 +2036,8 @@ impl Engine {
     pub fn inc_seqlen(&self, p: &mut CudaSlice<i32>) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("inc_i32");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(p);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1985,7 +2057,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(&ti).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -1997,7 +2070,7 @@ impl Engine {
                           src: &cudarc::driver::CudaView<f32>, len: usize)
                           -> Result<(), Box<dyn std::error::Error>> {
         let mut view = dst.slice_mut(off..off + len);
-        self.gpu.stream.memcpy_dtod(&src.slice(0..len), &mut view)?;
+        self.gpu.stream().memcpy_dtod(&src.slice(0..len), &mut view)?;
         Ok(())
     }
 
@@ -2005,8 +2078,8 @@ impl Engine {
     /// Used for cache snapshots (MTP-PLAN §D.4): `CudaSlice::clone()` only bumps a refcount and
     /// would alias the live buffer; this allocs new device memory and memcpy_dtod's the contents.
     pub fn clone_dtod(&self, src: &CudaSlice<f32>) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let mut dst = self.gpu.stream.alloc_zeros::<f32>(src.len())?;
-        self.gpu.stream.memcpy_dtod(src, &mut dst)?;
+        let mut dst = self.gpu.stream().alloc_zeros::<f32>(src.len())?;
+        self.gpu.stream().memcpy_dtod(src, &mut dst)?;
         Ok(dst)
     }
 
@@ -2014,14 +2087,14 @@ impl Engine {
     /// Stream-ordered, async — decode_batch's per-sequence row plumbing.
     pub fn dtod_copy_view(&self, src: &cudarc::driver::CudaView<f32>, dst: &mut CudaSlice<f32>)
                           -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.stream.memcpy_dtod(src, dst)?;
+        self.gpu.stream().memcpy_dtod(src, dst)?;
         Ok(())
     }
 
     /// D2D i8 twin of `dtod_copy_view` (q8_1 activation rows).
     pub fn dtod_copy_view_i8(&self, src: &cudarc::driver::CudaView<i8>, dst: &mut CudaSlice<i8>)
                              -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.stream.memcpy_dtod(src, dst)?;
+        self.gpu.stream().memcpy_dtod(src, dst)?;
         Ok(())
     }
 
@@ -2030,7 +2103,7 @@ impl Engine {
                           -> Result<(), Box<dyn std::error::Error>> {
         let n = src.len();
         let mut dv = dst.slice_mut(offset..offset + n);
-        self.gpu.stream.memcpy_dtod(src, &mut dv)?;
+        self.gpu.stream().memcpy_dtod(src, &mut dv)?;
         Ok(())
     }
 
@@ -2046,7 +2119,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(x).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qt).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -2054,7 +2128,7 @@ impl Engine {
 
     /// Allocate a reusable u8 GPU scratch buffer (for staged expert weights).
     pub fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        let s = self.gpu.stream.alloc_zeros::<u8>(n)?;
+        let s = self.gpu.stream().alloc_zeros::<u8>(n)?;
         self.keep_if_capturing(&s);
         Ok(s)
     }
@@ -2063,7 +2137,7 @@ impl Engine {
     /// range is fully overwritten by a stage_expert H2D before any kernel reads it (LAUNCH-STRUCTURE
     /// STAGE 2: the per-layer MoE scratch trio was 3 dead ~1MB memsets per layer per decode token).
     pub fn alloc_u8_uninit(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        let s = unsafe { self.gpu.stream.alloc::<u8>(n)? };
+        let s = unsafe { self.gpu.stream().alloc::<u8>(n)? };
         self.keep_if_capturing(&s);
         Ok(s)
     }
@@ -2072,7 +2146,7 @@ impl Engine {
     /// memset-elision uses for tokens that fall off the gdec fast path (LAUNCH-STRUCTURE STAGE 2).
     pub fn memset_zeros_view(&self, dst: &mut cudarc::driver::CudaViewMut<f32>)
                              -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.stream.memset_zeros(dst)?;
+        self.gpu.stream().memset_zeros(dst)?;
         Ok(())
     }
 
@@ -2084,7 +2158,7 @@ impl Engine {
     pub fn stage_expert(&self, host_bytes: &[u8], scratch: &mut CudaSlice<u8>, off: usize)
                         -> Result<(), Box<dyn std::error::Error>> {
         let mut dst = scratch.slice_mut(off..off + host_bytes.len());  // CudaViewMut<u8>
-        self.gpu.stream.memcpy_htod(host_bytes, &mut dst)?;            // accepts &[u8] HostSlice src
+        self.gpu.stream().memcpy_htod(host_bytes, &mut dst)?;            // accepts &[u8] HostSlice src
         Ok(())
     }
 
@@ -2101,7 +2175,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
                                  shared_mem_bytes: 0 };
         let (ne, nu) = (n_expert as i32, n_used as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu);
         unsafe { b.launch(cfg)?; }
         Ok((sel_idx, sel_w))
@@ -2122,7 +2197,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
                                  shared_mem_bytes: 0 };
         let (ne, nu) = (n_expert as i32, n_used as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu).arg(ex_scale);
         unsafe { b.launch(cfg)?; }
         Ok((sel_idx, sel_w))
@@ -2144,7 +2220,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
                                  shared_mem_bytes: 0 };
         let (ne, nu) = (n_expert as i32, n_used as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu);
         unsafe { b.launch(cfg)?; }
         // single-sync readback: sel (i32) at offset 0, w (f32) at offset n*4 of the pinned stage.
@@ -2158,9 +2235,9 @@ impl Engine {
             (std::slice::from_raw_parts_mut(stage.ptr as *mut i32, n),
              std::slice::from_raw_parts_mut(stage.ptr.add(n * 4) as *mut f32, n))
         };
-        self.gpu.stream.memcpy_dtoh(&sel_idx, si)?;   // async (pinned dst)
-        self.gpu.stream.memcpy_dtoh(&sel_w, sw)?;     // async (pinned dst)
-        self.gpu.stream.synchronize()?;               // ONE sync for both
+        self.gpu.stream().memcpy_dtoh(&sel_idx, si)?;   // async (pinned dst)
+        self.gpu.stream().memcpy_dtoh(&sel_w, sw)?;     // async (pinned dst)
+        self.gpu.stream().synchronize()?;               // ONE sync for both
         Ok((si.iter().map(|&i| i as u32).collect(), sw.to_vec()))
     }
 
@@ -2176,7 +2253,7 @@ impl Engine {
 
     /// Make the compute stream wait for an async copy event (the consumer side of `stage_expert_async`).
     pub fn compute_wait(&self, ev: &cudarc::driver::CudaEvent) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.stream.wait(ev)?;
+        self.gpu.stream().wait(ev)?;
         Ok(())
     }
 
@@ -2193,7 +2270,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&wv).arg(x).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qt).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -2219,7 +2297,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (inf, nff, rbg, rbu) = (in_f as i32, n_ff as i32, rb_g as i64, rb_u as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&gp).arg(&up).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
         unsafe { b.launch(cfg)?; }
@@ -2236,7 +2315,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, nu, rbi) = (in_f as i32, out_f as i32, n_used as i32, rb as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&dp).arg(&w).arg(aq2).arg(ad2).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&qt).arg(&rbi);
         unsafe { b.launch(cfg)?; }
@@ -2255,7 +2335,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: ((out_f as u32 + ROWS - 1) / ROWS, m as u32, 1),
                                  block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rbi) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&wv).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qtype).arg(&rbi);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -2270,7 +2351,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, nff, rbg, rbu) = (in_f as i32, n_ff as i32, rb_g as i64, rb_u as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&gp).arg(&up).arg(x).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
         unsafe { b.launch(cfg)?; }
@@ -2291,7 +2373,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, nu, rbv) = (in_f as i32, out_f as i32, n_used as i32, rb as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&dp).arg(&w).arg(act).arg(dst).arg(&inf).arg(&outf).arg(&nu).arg(&qt).arg(&rbv);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2332,7 +2415,8 @@ impl Engine {
                                  block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
         let (inf, outf, ne, np, rbi) = (in_f as i32, out_f as i32, n_expert as i32,
                                         n_pairs as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(&proj).arg(pair_tok).arg(pair_ex).arg(aq).arg(ad).arg(&mut y)
          .arg(&inf).arg(&outf).arg(&ne).arg(&np).arg(&qtype).arg(&rbi);
         unsafe { b.launch(cfg)?; }
@@ -2355,7 +2439,8 @@ impl Engine {
                                  block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
         let (inf, outf, ne, na, rbi) = (in_f as i32, out_f as i32, n_expert as i32,
                                         n_active as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(&proj).arg(ex_ids).arg(ex_off).arg(ex_pairs).arg(pair_tok)
          .arg(aq).arg(ad).arg(&mut y)
          .arg(&inf).arg(&outf).arg(&ne).arg(&na).arg(&qtype).arg(&rbi);
@@ -2380,7 +2465,8 @@ impl Engine {
                                  block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
         let (inf, outf, ne, na, rbi) = (in_f as i32, out_f as i32, n_expert as i32,
                                         n_active as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(&proj).arg(ex_ids).arg(ex_off).arg(ex_pairs).arg(pair_tok)
          .arg(aq).arg(ad).arg(&mut y)
          .arg(&inf).arg(&outf).arg(&ne).arg(&na).arg(&qtype).arg(&rbi);
@@ -2394,7 +2480,8 @@ impl Engine {
         let mut act = self.alloc_uninit::<f32>(n)?;
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let nl = n as i64;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(&mut act).arg(&nl);
         unsafe { b.launch(cfg)?; }
         Ok(act)
@@ -2406,7 +2493,8 @@ impl Engine {
         let mut act = self.alloc_uninit::<f32>(n)?;
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let nl = n as i64;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(&mut act).arg(&nl);
         unsafe { b.launch(cfg)?; }
         Ok(act)
@@ -2421,7 +2509,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((n_embd + 255) / 256) as u32, t as u32, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let ne = n_embd as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(y_down).arg(pair_w).arg(tok_pair_off).arg(tok_pair_ids).arg(moe_out).arg(&ne);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2442,7 +2531,8 @@ impl Engine {
         let f = self.func("moe_gate_up_gelu8_dev_q8");
         let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
         unsafe { b.launch(cfg)?; }
@@ -2462,7 +2552,8 @@ impl Engine {
         let f = self.func("moe_gate_up_gelu8_dev_q8_rows");
         let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, t as u32),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu);
         unsafe { b.launch(cfg)?; }
@@ -2483,7 +2574,8 @@ impl Engine {
         let f = self.func("moe_gate_up_gelu8_dev_q8_csr");
         let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_pairs as u32, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu).arg(&npi);
         unsafe { b.launch(cfg)?; }
@@ -2503,7 +2595,8 @@ impl Engine {
         let f = self.func("moe_down8_fma_dev_q8_rows_g");
         let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, t as u32),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
         unsafe { b.launch(cfg)?; }
@@ -2552,34 +2645,38 @@ impl Engine {
         let fb = self.func("qmatvec_q4_0_mmvq_b4");
         let fr = self.func("qmatvec_q4_0_mmvq_b4_rp");
         {
-            let mut b = self.gpu.stream.launch_builder(&fb);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&fb);
             b.arg(&w_d).arg(&aq_d).arg(&ad_d).arg(&mut y0).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
             unsafe { b.launch(cfg)?; }
-            let mut b = self.gpu.stream.launch_builder(&fr);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&fr);
             b.arg(&wrp_d).arg(&aq_d).arg(&ad_d).arg(&mut y1).arg(&inf).arg(&outf).arg(&mi).arg(&qp);
             unsafe { b.launch(cfg)?; }
         }
-        self.gpu.stream.synchronize()?;
+        self.gpu.stream().synchronize()?;
         let (h0, h1) = (self.dtoh(&y0)?, self.dtoh(&y1)?);
         let nd = h0.iter().zip(&h1).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
         if nd != 0 { return Err(format!("rp twin not bitwise: {nd}/{} diffs", h0.len()).into()); }
         let mut time = |rp: bool| -> Result<f64, Box<dyn std::error::Error>> {
-            self.gpu.stream.synchronize()?;
+            self.gpu.stream().synchronize()?;
             let t0 = std::time::Instant::now();
             for _ in 0..500 {
                 if rp {
-                    let mut b = self.gpu.stream.launch_builder(&fr);
+                    let __s_b = self.gpu.stream();
+                    let mut b = __s_b.launch_builder(&fr);
                     b.arg(&wrp_d).arg(&aq_d).arg(&ad_d).arg(&mut y1)
                      .arg(&inf).arg(&outf).arg(&mi).arg(&qp);
                     unsafe { b.launch(cfg)?; }
                 } else {
-                    let mut b = self.gpu.stream.launch_builder(&fb);
+                    let __s_b = self.gpu.stream();
+                    let mut b = __s_b.launch_builder(&fb);
                     b.arg(&w_d).arg(&aq_d).arg(&ad_d).arg(&mut y0)
                      .arg(&inf).arg(&outf).arg(&mi).arg(&rb);
                     unsafe { b.launch(cfg)?; }
                 }
             }
-            self.gpu.stream.synchronize()?;
+            self.gpu.stream().synchronize()?;
             Ok(t0.elapsed().as_secs_f64() * 1e6 / 500.0)
         };
         let _ = time(false)?; let _ = time(true)?;   // warm
@@ -2605,7 +2702,8 @@ impl Engine {
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (of, nb) = (out_f as i32, nblk as i32);
         let _ = n;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
         unsafe { b.launch(cfg)?; }
         *rp4 = Some(dst);
@@ -2638,7 +2736,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((out_f * nblk) as u32).div_ceil(256), 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (of, nb) = (out_f as i32, nblk as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
         unsafe { b.launch(cfg)?; }
         Ok(dst)
@@ -2688,7 +2787,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((out_f * nsbk) as u32).div_ceil(256), 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (of, nb) = (out_f as i32, nsbk as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
         unsafe { b.launch(cfg)?; }
         Ok(dst)
@@ -2714,7 +2814,7 @@ impl Engine {
     pub fn build_q4_rp_swap(&self, t: &mut crate::model::GpuTensor)
                             -> Result<bool, Box<dyn std::error::Error>> {
         self.build_q4_rp4(t)?;
-        self.gpu.stream.synchronize()?;   // build kernel reads the GGUF bytes — drain BEFORE dropping them
+        self.gpu.stream().synchronize()?;   // build kernel reads the GGUF bytes — drain BEFORE dropping them
         use crate::model::GpuTensor;
         let GpuTensor::Quant { bytes, rp4, rp, .. } = t else { return Ok(false) };
         match rp4.take() {
@@ -2743,7 +2843,8 @@ impl Engine {
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (re, nr) = (row_elems as i32, n_rows as i32);
         let (st, off) = (src_stride as i64, src_off as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(&mut *dst).arg(&re).arg(&nr).arg(&st).arg(&off);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2755,7 +2856,8 @@ impl Engine {
         let f = self.func("u32_set_k");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
         let ii = idx as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(dst).arg(&v).arg(&ii);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2765,7 +2867,8 @@ impl Engine {
     pub fn i32_add_k(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("i32_add_k");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(d).arg(&v);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2777,7 +2880,8 @@ impl Engine {
         let f = self.func("i32_iota_from");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(ctr).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2789,7 +2893,8 @@ impl Engine {
         let f = self.func("u32_map_k");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
         let ii = idx as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(buf).arg(map).arg(&ii);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2803,7 +2908,8 @@ impl Engine {
         let f = self.func("u32_pack2");
         let cfg = LaunchConfig::for_num_elems((n1 + n2) as u32);
         let (oa, i1, i2) = (off_a as i32, n1 as i32, n2 as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(&oa).arg(&i1).arg(b_in).arg(&i2).arg(out);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2815,7 +2921,8 @@ impl Engine {
         let f = self.func("moe_w_exscale");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(sel).arg(s).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2830,7 +2937,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n.div_ceil(64) as u32, 1, 1),
                                  block_dim: (64, 1, 1), shared_mem_bytes: 0 };
         let (ne, nn) = (n_expert as i32, n as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(sel).arg(macros).arg(&ne).arg(&nn);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -2913,7 +3021,8 @@ impl Engine {
                   LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(macros);
         unsafe { b.launch(cfg)?; }
@@ -2975,7 +3084,8 @@ impl Engine {
                   LaunchConfig { grid_dim: (out_f as u32, 1, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
         unsafe { b.launch(cfg)?; }
@@ -3001,7 +3111,8 @@ impl Engine {
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (inf, nff, ne, nu, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
                                             n_used as i32, rb_g as i64, rb_u as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu).arg(macros);
         unsafe { b.launch(cfg)?; }
@@ -3025,7 +3136,8 @@ impl Engine {
                                  block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 };
         let (inf, outf, nu, ne, rbi) = (in_f as i32, out_f as i32, n_used as i32,
                                         n_expert as i32, rb as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
         unsafe { b.launch(cfg)?; }
@@ -3047,7 +3159,8 @@ impl Engine {
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (inf, nff, ne, nu, npi, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
                                                  n_used as i32, n_pairs as i32, rb_g as i64, rb_u as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu).arg(&npi);
         unsafe { b.launch(cfg)?; }
@@ -3086,7 +3199,8 @@ impl Engine {
                   LaunchConfig { grid_dim: (out_f as u32, 1, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
         unsafe { b.launch(cfg)?; }
@@ -3109,7 +3223,8 @@ impl Engine {
                           else { "moe_gate_up_silu8_dev_q8" });
         let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                  block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
         unsafe { b.launch(cfg)?; }
@@ -3128,7 +3243,8 @@ impl Engine {
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
                                         rb_g as i64, rb_u as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(x).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(macros);
         unsafe { b.launch(cfg)?; }
@@ -3149,7 +3265,8 @@ impl Engine {
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, nu, ne, rbv) = (in_f as i32, out_f as i32, n_used as i32,
                                         n_expert as i32, rb as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(table).arg(sel).arg(w).arg(act).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbv);
         unsafe { b.launch(cfg)?; }
@@ -3163,7 +3280,8 @@ impl Engine {
         let f = self.func("axpy_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let (a, ni) = (alpha, n as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(dst).arg(&a).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3176,7 +3294,8 @@ impl Engine {
         let f = self.func("add_scaled_rows_f32");
         let cfg = LaunchConfig::for_num_elems((ncols * nrows) as u32);
         let (nc, nr) = (ncols as i32, nrows as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(scale).arg(dst).arg(&nc).arg(&nr);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3191,7 +3310,8 @@ impl Engine {
         let f = self.func("gather_rows_f32");
         let cfg = LaunchConfig::for_num_elems((m_e * ncols) as u32);
         let (nc, me) = (ncols as i32, m_e as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(idx).arg(dst).arg(&nc).arg(&me);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3209,7 +3329,8 @@ impl Engine {
         let f = self.func("scatter_add_slot_f32");
         let cfg = LaunchConfig::for_num_elems((m_e * ncols) as u32);
         let (nc, nu, me) = (ncols as i32, n_used as i32, m_e as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(tok_idx).arg(slot_idx).arg(weight).arg(dst).arg(wbuf).arg(&nc).arg(&nu).arg(&me);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3224,7 +3345,8 @@ impl Engine {
         let f = self.func("reduce_slots_f32");
         let cfg = LaunchConfig::for_num_elems((t * ncols) as u32);
         let (nc, nu, ti) = (ncols as i32, n_used as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(slots).arg(wbuf).arg(dst).arg(&nc).arg(&nu).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3244,7 +3366,8 @@ impl Engine {
         let mut d = self.alloc_uninit::<f32>(m * nblk)?;
         let cfg = LaunchConfig::for_num_elems((m * in_f) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut q).arg(&mut d).arg(&inf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok((q, d))
@@ -3261,7 +3384,7 @@ impl Engine {
         if Self::pdl_on() && Self::pdl_wb_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (px, _g0) = x.device_ptr(s);
             let (pq, _g1) = q.device_ptr_mut(s); let (pd, _g2) = d.device_ptr_mut(s);
             let mut ps = [
@@ -3274,7 +3397,8 @@ impl Engine {
             return Ok((q, d));
         }
         let f = self.func("quantize_q8_1");
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut q).arg(&mut d).arg(&inf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok((q, d))
@@ -3291,7 +3415,8 @@ impl Engine {
         let mut ad4 = self.alloc_uninit::<u8>(m * nb16)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig::for_num_elems((m * nb16) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut aq4).arg(&mut ad4).arg(&inf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok((aq4, ad4))
@@ -3324,7 +3449,8 @@ impl Engine {
             block_dim: (32, 4, 1), shared_mem_bytes: 0,
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(bytes).arg(aq4).arg(ad4).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -3347,7 +3473,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -3362,7 +3489,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -3377,7 +3505,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -3425,35 +3554,36 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
     }
 
     pub fn htod(&self, v: &[f32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(v)?)
+        Ok(self.gpu.stream().clone_htod(v)?)
     }
     pub fn htod_i32(&self, v: &[i32]) -> Result<CudaSlice<i32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(v)?)
+        Ok(self.gpu.stream().clone_htod(v)?)
     }
     /// i8 upload (moe-devq8-check: synthetic q8_1 activation bytes).
     pub fn htod_i8(&self, v: &[i8]) -> Result<CudaSlice<i8>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(v)?)
+        Ok(self.gpu.stream().clone_htod(v)?)
     }
     pub fn htod_u64(&self, v: &[u64]) -> Result<CudaSlice<u64>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(v)?)
+        Ok(self.gpu.stream().clone_htod(v)?)
     }
     /// View twin of `dtoh` (lean-logits component 3: D2H one row of a [B, n_vocab] stack).
     pub fn dtoh_view(&self, d: &cudarc::driver::CudaView<f32>)
                      -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+        self.gpu.stream().synchronize()?;
         Ok(v)
     }
     pub fn dtoh(&self, d: &CudaSlice<f32>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-                self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+                self.gpu.stream().synchronize()?;
         Ok(v)
     }
     /// Queue two f32 device-to-host copies on the compute stream, then establish one host
@@ -3464,25 +3594,25 @@ impl Engine {
         a: &CudaSlice<f32>,
         b: &CudaSlice<f32>,
     ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
-        let av = self.gpu.stream.clone_dtoh(a)?;
-        let bv = self.gpu.stream.clone_dtoh(b)?;
-        self.gpu.stream.synchronize()?;
+        let av = self.gpu.stream().clone_dtoh(a)?;
+        let bv = self.gpu.stream().clone_dtoh(b)?;
+        self.gpu.stream().synchronize()?;
         Ok((av, bv))
     }
     /// Device-to-host copy of an i32 buffer (fused-router sel_idx readback).
     pub fn dtoh_i32(&self, d: &CudaSlice<i32>) -> Result<Vec<i32>, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+        self.gpu.stream().synchronize()?;
         Ok(v)
     }
     /// Device-to-host copy of a u8 buffer (used to read back the quantized KV cache for validation).
     pub fn dtoh_u8(&self, d: &CudaSlice<u8>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+        self.gpu.stream().synchronize()?;
         Ok(v)
     }
     pub fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let s = self.gpu.stream.alloc_zeros::<f32>(n)?;
+        let s = self.gpu.stream().alloc_zeros::<f32>(n)?;
         self.keep_if_capturing(&s);
         Ok(s)
     }
@@ -3503,13 +3633,15 @@ impl Engine {
         let f1 = self.func("prob_of_token_partial_f32");
         let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let nv = n_vocab as i32;
-        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        let __s_b1 = self.gpu.stream();
+        let mut b1 = __s_b1.launch_builder(&f1);
         b1.arg(logits).arg(tok).arg(&mut part).arg(&nv);
         unsafe { b1.launch(cfg1)?; }
         let f2 = self.func("prob_of_token_final_f32");
         let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let nbi = nb as i32;
-        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f2);
         b2.arg(&part).arg(&mut p).arg(&nbi);
         unsafe { b2.launch(cfg2)?; }
         Ok(p)
@@ -3532,13 +3664,15 @@ impl Engine {
         let f1 = self.func("prob_of_token_partial_f32");
         let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let nv = n_vocab as i32;
-        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        let __s_b1 = self.gpu.stream();
+        let mut b1 = __s_b1.launch_builder(&f1);
         b1.arg(logits).arg(&tok_v).arg(&mut part).arg(&nv);
         unsafe { b1.launch(cfg1)?; }
         let f2 = self.func("prob_of_token_final_f32");
         let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let nbi = nb as i32;
-        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f2);
         b2.arg(&part).arg(&mut p_v).arg(&nbi);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -3552,13 +3686,15 @@ impl Engine {
         let f1 = self.func("prob_of_token_partial_f32");
         let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let nv = n_vocab as i32;
-        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        let __s_b1 = self.gpu.stream();
+        let mut b1 = __s_b1.launch_builder(&f1);
         b1.arg(logits).arg(tok).arg(&mut part).arg(&nv);
         unsafe { b1.launch(cfg1)?; }
         let f2 = self.func("prob_of_token_final_f32");
         let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let nbi = nb as i32;
-        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f2);
         b2.arg(&part).arg(p_out).arg(&nbi);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -3566,7 +3702,7 @@ impl Engine {
 
     pub fn argmax_token_device(&self, logits: &CudaSlice<f32>, n_vocab: usize)
                                -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        let mut tok = unsafe { self.gpu.stream.alloc::<u32>(1)? };
+        let mut tok = unsafe { self.gpu.stream().alloc::<u32>(1)? };
         self.argmax_token_device_into(logits, &mut tok, n_vocab)?;
         Ok(tok)
     }
@@ -3585,8 +3721,8 @@ impl Engine {
         if guard.is_none() {
             // allocate ONCE; under generate_graph this runs in the tracking-off prime window so the
             // buffers carry no cudarc events (illegal inside capture).
-            let pv = self.gpu.stream.alloc_zeros::<f32>(nb)?;
-            let pi = self.gpu.stream.alloc_zeros::<i32>(nb)?;
+            let pv = self.gpu.stream().alloc_zeros::<f32>(nb)?;
+            let pi = self.gpu.stream().alloc_zeros::<i32>(nb)?;
             *guard = Some((pv, pi));
         }
         let (part_v, part_i) = guard.as_mut().unwrap();
@@ -3594,12 +3730,14 @@ impl Engine {
         let nbi = nb as i32;
         // pass 1: NB blocks x 256 threads grid-stride scan -> per-block (val, idx) partials.
         let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        let __s_b1 = self.gpu.stream();
+        let mut b1 = __s_b1.launch_builder(&f1);
         b1.arg(logits).arg(&mut *part_v).arg(&mut *part_i).arg(&nv);
         unsafe { b1.launch(cfg1)?; }
         // pass 2: one block reduces NB partials -> token_out[0].
         let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f2);
         b2.arg(&*part_v).arg(&*part_i).arg(tok).arg(&nbi);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -3617,8 +3755,8 @@ impl Engine {
         let f2 = self.func("argmax_final_f32");
         let mut guard = self.argmax_partials.lock().unwrap();
         if guard.is_none() {
-            let pv = self.gpu.stream.alloc_zeros::<f32>(nb)?;
-            let pi = self.gpu.stream.alloc_zeros::<i32>(nb)?;
+            let pv = self.gpu.stream().alloc_zeros::<f32>(nb)?;
+            let pi = self.gpu.stream().alloc_zeros::<i32>(nb)?;
             *guard = Some((pv, pi));
         }
         let (part_v, part_i) = guard.as_mut().unwrap();
@@ -3626,28 +3764,30 @@ impl Engine {
         let nv = n_vocab as i32;
         let nbi = nb as i32;
         let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        let __s_b1 = self.gpu.stream();
+        let mut b1 = __s_b1.launch_builder(&f1);
         b1.arg(&col_view).arg(&mut *part_v).arg(&mut *part_i).arg(&nv);
         unsafe { b1.launch(cfg1)?; }
         let mut tok_view = toks.slice_mut(out_idx..out_idx + 1);
         let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f2);
         b2.arg(&*part_v).arg(&*part_i).arg(&mut tok_view).arg(&nbi);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
     /// Read back a device u32 buffer (the spec accept walk's [t] per-column argmax tokens).
     pub fn htod_u32_v(&self, v: &[u32]) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(v)?)
+        Ok(self.gpu.stream().clone_htod(v)?)
     }
     pub fn dtoh_u32(&self, d: &CudaSlice<u32>) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+        self.gpu.stream().synchronize()?;
         Ok(v)
     }
     /// Allocate a zeroed device u32 buffer (persistent spec-loop prediction slots).
     pub fn alloc_u32_zeroed(&self, n: usize) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        let s = self.gpu.stream.alloc_zeros::<u32>(n)?;
+        let s = self.gpu.stream().alloc_zeros::<u32>(n)?;
         self.keep_if_capturing(&s);
         Ok(s)
     }
@@ -3660,15 +3800,16 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (ne, qt, rb) = (n_embd as i32, qtype, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(embd).arg(token_d).arg(x_out).arg(&ne).arg(&qt).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
     /// Read a [1] i32 device counter (pos / seqlen) back to host. Tiny D2H + sync.
     pub fn dtoh_i32_one(&self, d: &CudaSlice<i32>) -> Result<i32, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+        self.gpu.stream().synchronize()?;
         Ok(v[0])
     }
     /// Set a [1] i32 device counter IN PLACE (keeps the buffer pointer stable — required for the
@@ -3682,31 +3823,32 @@ impl Engine {
         let f = self.func("i32_set_k");
         let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
         let idx = 0i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(dst).arg(&v).arg(&idx);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
 
     pub fn set_i32_one(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.stream.memcpy_htod(&[v], d)?;
+        self.gpu.stream().memcpy_htod(&[v], d)?;
         Ok(())
     }
     /// Set a [1] u32 device buffer IN PLACE (stable pointer) — for the resident `token_d` counter
     /// during priming / capture-state restore.
     pub fn set_u32_one(&self, d: &mut CudaSlice<u32>, v: u32) -> Result<(), Box<dyn std::error::Error>> {
-        self.gpu.stream.memcpy_htod(&[v], d)?;
+        self.gpu.stream().memcpy_htod(&[v], d)?;
         Ok(())
     }
     /// Read back a [1] u32 device buffer (the argmax token). One tiny D2H + sync.
     pub fn dtoh_u32_one(&self, d: &CudaSlice<u32>) -> Result<u32, Box<dyn std::error::Error>> {
-        let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+        let v = self.gpu.stream().clone_dtoh(d)?;
+        self.gpu.stream().synchronize()?;
         Ok(v[0])
     }
     /// Upload raw bytes to a resident device u8 buffer (e.g. the embed table for device gather).
     pub fn upload_u8(&self, bytes: &[u8]) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.clone_htod(bytes)?)
+        Ok(self.gpu.stream().clone_htod(bytes)?)
     }
     /// Embed-from-device (CUDA-GRAPH-PLAN Phase 1): gather+dequant the row for the token id in
     /// `token_d[0]` from the resident embed table `embd` -> x_out[n_embd]. Bit-identical to host
@@ -3719,7 +3861,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), 1, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (ne, qt, rb) = (n_embd as i32, qtype, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(embd).arg(token_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(x)
@@ -3733,13 +3876,14 @@ impl Engine {
                                  n_embd: usize, qtype: i32, row_bytes: usize)
                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let t = tokens.len();
-        let tok_d = self.gpu.stream.clone_htod(tokens)?;
+        let tok_d = self.gpu.stream().clone_htod(tokens)?;
         let f = self.func("embed_gather_u32_t");
         let mut x = self.alloc_uninit::<f32>(t * n_embd)?;
         let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), t as u32, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(embd).arg(&tok_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(x)
@@ -3757,7 +3901,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), t as u32, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(embd).arg(tok_v).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(x)
@@ -3771,7 +3916,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), t as u32, 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(embd).arg(tok_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(x)
@@ -3792,7 +3938,7 @@ impl Engine {
 
     fn alloc_uninit<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, n: usize)
             -> Result<CudaSlice<T>, Box<dyn std::error::Error>> {
-        let mut s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        let mut s = unsafe { self.gpu.stream().alloc::<T>(n)? };
         // MEMRA_DEBUG_ZERO_ALLOCS=1 (task #14 defect hunt): memset EVERY engine allocation —
         // the global uninit-read discriminator (the prime-fn-scoped zeroing experiment could
         // not cover engine-internal buffers). Debug-only: massive launch overhead.
@@ -3802,8 +3948,8 @@ impl Engine {
                 // raw D8 memset (T lacks ValidAsZeroBits in the generic bound)
                 use cudarc::driver::DevicePtrMut;
                 let n_bytes = s.len() * std::mem::size_of::<T>();
-                let stream = &self.gpu.stream;
-                let (p_, _g) = s.device_ptr_mut(stream);
+                let stream = self.gpu.stream();
+                let (p_, _g) = s.device_ptr_mut(&stream);
                 unsafe {
                     cudarc::driver::sys::cuMemsetD8Async(p_, 0, n_bytes, stream.cu_stream())
                         .result()?;
@@ -3843,7 +3989,8 @@ impl Engine {
         let f = self.func("rms_norm3_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w0).arg(w1).arg(w2).arg(d0).arg(d1).arg(d2).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3877,7 +4024,8 @@ impl Engine {
         };
         let (nc, rqi, rki, rvi, e) = (ncols as i32, rq as i32, rk as i32, rk as i32, eps);
         let vf = vf16 as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv).arg(&mut *dvb)
          .arg(&nc).arg(&rqi).arg(&rki).arg(&rvi).arg(&e).arg(&vf);
         unsafe { b.launch(cfg)?; }
@@ -3905,7 +4053,8 @@ impl Engine {
                 grid_dim: (rows.div_ceil(8), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0,
             };
             let (nc, rqi, rki, rvi, e) = (ncols as i32, rq as i32, rk as i32, rk as i32, eps);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv)
              .arg(&nc).arg(&rqi).arg(&rki).arg(&rvi).arg(&e);
             unsafe { b.launch(cfg)?; }
@@ -3915,7 +4064,8 @@ impl Engine {
         let grid = (rq + 2 * rk) as u32;
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, rqi, rki, e) = (ncols as i32, rq as i32, rk as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv)
          .arg(&nc).arg(&rqi).arg(&rki).arg(&e);
         unsafe { b.launch(cfg)?; }
@@ -3931,7 +4081,8 @@ impl Engine {
         let f = self.func("rms_norm2x_f32");
         let cfg = LaunchConfig { grid_dim: (2 * nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, nr, e) = (ncols as i32, nrows as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(bb).arg(wa).arg(wb).arg(da).arg(db).arg(&nc).arg(&nr).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3943,7 +4094,8 @@ impl Engine {
         let f = self.func("softcap_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(y).arg(&cap).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3957,7 +4109,8 @@ impl Engine {
         let f = self.func("mask_ids_rows_f32");
         let cfg = LaunchConfig::for_num_elems((n_ids * t) as u32);
         let (ni, nv, ti) = (n_ids as i32, n_vocab as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(y).arg(ids).arg(&ni).arg(&nv).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3972,7 +4125,8 @@ impl Engine {
         let f = self.func("add_scale_rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e2) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(dst).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -3991,7 +4145,7 @@ impl Engine {
         if Self::pdl_on() && Self::pdl_wb_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pa, _g0) = a.device_ptr(s); let (pb, _g1) = b_in.device_ptr(s);
             let (pw, _g2) = w.device_ptr(s); let (pr, _g3) = res.device_ptr_mut(s);
             let (pq, _g4) = out_q.device_ptr_mut(s); let (pd, _g5) = out_d.device_ptr_mut(s);
@@ -4009,7 +4163,8 @@ impl Engine {
         }
         let f = self.func("add_scale_rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
         Ok((out_q, out_d))
@@ -4026,7 +4181,7 @@ impl Engine {
         let (nc, e2) = (ncols as i32, eps);
         if Self::pdl_on() && Self::pdl_wb_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pa, _g0) = a.device_ptr(s); let (pb, _g1) = b_in.device_ptr(s);
             let (pw, _g2) = w.device_ptr(s); let (pr, _g3) = res.device_ptr_mut(s);
             let (pq, _g4) = out_q.device_ptr_mut(s); let (pd, _g5) = out_d.device_ptr_mut(s);
@@ -4043,7 +4198,8 @@ impl Engine {
         }
         let f = self.func("add_scale_rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut *out_q).arg(&mut *out_d).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4063,7 +4219,7 @@ impl Engine {
         if Self::pdl_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pa, _g0) = a.device_ptr(s); let (pwa, _g1) = wa.device_ptr(s);
             let (pb, _g2) = b_in.device_ptr(s); let (pw, _g3) = w.device_ptr(s);
             let (pr, _g4) = res.device_ptr_mut(s);
@@ -4082,7 +4238,8 @@ impl Engine {
         }
         let f = self.func("rms_pre_add_scale_rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(wa).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
         Ok((out_q, out_d))
@@ -4100,7 +4257,7 @@ impl Engine {
         if Self::pdl_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pg, _g0) = gate.device_ptr(s); let (pu, _g1) = up.device_ptr(s);
             let (pact, _g2) = act.device_ptr_mut(s);
             let (pq, _g3) = out_q.device_ptr_mut(s); let (pd, _g4) = out_d.device_ptr_mut(s);
@@ -4116,7 +4273,8 @@ impl Engine {
         }
         let f = self.func("gelu_tanh_mul_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(act).arg(&mut out_q).arg(&mut out_d).arg(&nc);
         unsafe { b.launch(cfg)?; }
         Ok((out_q, out_d))
@@ -4133,7 +4291,7 @@ impl Engine {
         let nc = ncols as i32;
         if Self::pdl_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pg, _g0) = gate.device_ptr(s); let (pu, _g1) = up.device_ptr(s);
             let (pact, _g2) = act.device_ptr_mut(s);
             let (pq, _g3) = out_q.device_ptr_mut(s); let (pd, _g4) = out_d.device_ptr_mut(s);
@@ -4148,7 +4306,8 @@ impl Engine {
         }
         let f = self.func("gelu_tanh_mul_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(&mut *act).arg(&mut *out_q).arg(&mut *out_d).arg(&nc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4168,7 +4327,8 @@ impl Engine {
         let f = self.func("add_rms_norm3_q8z_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e2) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(w0).arg(w1).arg(w2).arg(res)
          .arg(&mut q0).arg(&mut d0).arg(out1).arg(&mut q2).arg(&mut d2).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
@@ -4185,7 +4345,8 @@ impl Engine {
         let f = self.func("add_rms_norm3_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e2) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(w0).arg(w1).arg(w2).arg(res).arg(d0).arg(d1).arg(d2).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4197,7 +4358,8 @@ impl Engine {
         let f = self.func("add_scale_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(&c).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4208,7 +4370,7 @@ impl Engine {
         let (nc, e) = (ncols as i32, eps);
         if Self::pdl_on() && Self::pdl_wb_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (px, _g0) = x.device_ptr(s); let (pw, _g1) = w.device_ptr(s);
             let (pd, _g2) = dst.device_ptr_mut(s);
             let mut ps = [
@@ -4222,7 +4384,8 @@ impl Engine {
         }
         let f = self.func("rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4240,7 +4403,8 @@ impl Engine {
         let f = self.func("rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4258,7 +4422,7 @@ impl Engine {
         if Self::pdl_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (px, _g0) = x.device_ptr(s); let (pw, _g1) = w.device_ptr(s);
             let (pq, _g2) = q.device_ptr_mut(s); let (pd, _g3) = d.device_ptr_mut(s);
             let mut ps = [
@@ -4275,7 +4439,8 @@ impl Engine {
         // 1024 threads: decode is nrows=1 -> ONE CTA; 32 warps hide the pass1->pass2 latency
         // (s[32] reduce already sized for 32 warps). Same shape math at any blockDim.
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok((q, d))
@@ -4292,7 +4457,7 @@ impl Engine {
         let (nc, e) = (ncols as i32, eps);
         if Self::pdl_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (px, _g0) = x.device_ptr(s); let (pw, _g1) = w.device_ptr(s);
             let (pq, _g2) = q.device_ptr_mut(s); let (pd, _g3) = d.device_ptr_mut(s);
             let mut ps = [
@@ -4306,7 +4471,8 @@ impl Engine {
         }
         let f = self.func("rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(&mut *q).arg(&mut *d).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4322,7 +4488,7 @@ impl Engine {
         let (inf, mi) = (in_f as i32, m as i32);
         if Self::pdl_on() && Self::pdl_wb_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (px, _g0) = x.device_ptr(s);
             let (pq, _g1) = q.device_ptr_mut(s); let (pd, _g2) = d.device_ptr_mut(s);
             let mut ps = [
@@ -4334,7 +4500,8 @@ impl Engine {
             return Ok(());
         }
         let f = self.func("quantize_q8_1");
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut *q).arg(&mut *d).arg(&inf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4353,7 +4520,8 @@ impl Engine {
         // 1024 threads: same single-CTA-at-decode reasoning as rms_norm_q8_1.
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut bld = self.gpu.stream.launch_builder(&f);
+        let __s_bld = self.gpu.stream();
+        let mut bld = __s_bld.launch_builder(&f);
         bld.arg(a).arg(b_in).arg(w).arg(res).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
         unsafe { bld.launch(cfg)?; }
         Ok((q, d))
@@ -4368,7 +4536,7 @@ impl Engine {
         let (nc, e) = (ncols as i32, eps);
         if Self::pdl_on() && Self::pdl_wb_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pa, _g0) = a.device_ptr(s); let (pb, _g1) = b.device_ptr(s);
             let (pw, _g2) = w.device_ptr(s);
             let (pr, _g3) = res.device_ptr_mut(s); let (pd, _g4) = dst.device_ptr_mut(s);
@@ -4384,7 +4552,8 @@ impl Engine {
         }
         let f = self.func("add_rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b2 = self.gpu.stream.launch_builder(&f);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f);
         b2.arg(a).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
         unsafe { b2.launch(cfg)?; }
         Ok(())
@@ -4401,7 +4570,8 @@ impl Engine {
         let f = self.func("rms_pre_add_rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b2 = self.gpu.stream.launch_builder(&f);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f);
         b2.arg(a).arg(wa).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
         unsafe { b2.launch(cfg)?; }
         Ok(())
@@ -4421,7 +4591,7 @@ impl Engine {
         if Self::pdl_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pa, _g0) = a.device_ptr(s); let (pwa, _g1) = wa.device_ptr(s);
             let (pb, _g2) = b.device_ptr(s); let (pw, _g3) = w.device_ptr(s);
             let (pr, _g4) = res.device_ptr_mut(s); let (pdst, _g5) = dst.device_ptr_mut(s);
@@ -4440,7 +4610,8 @@ impl Engine {
         }
         let f = self.func("rms_pre_add_rms_norm_q8z_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b2 = self.gpu.stream.launch_builder(&f);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f);
         b2.arg(a).arg(wa).arg(b).arg(w).arg(&mut *res).arg(&mut *dst)
           .arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e);
         unsafe { b2.launch(cfg)?; }
@@ -4499,7 +4670,7 @@ impl Engine {
         let (nc, rqi, rki, nhq, nhk) = (head_dim as i32, rq as i32, rk as i32, nh_q as i32, nh_k as i32);
         if Self::pdl_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pqkv, _g0) = qkv.device_ptr(s);
             let (pwq, _g1) = wq.device_ptr(s); let (pwk, _g2) = wk.device_ptr(s);
             let (pwv, _g3) = wv.device_ptr(s);
@@ -4528,7 +4699,8 @@ impl Engine {
         }
         let f = self.func("rms_norm_qkv_rope_cat_f32");
         let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         match ff {
             Some(t) => { b.arg(qkv).arg(wq).arg(wk).arg(wv)
                           .arg(&mut *q).arg(&mut *k).arg(&mut *v)
@@ -4559,7 +4731,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let theta_scale = base.powf(-2.0 / head_dim as f32);
         let (nc, rqi, rki, nhq, nhk) = (head_dim as i32, rq as i32, rk as i32, nh_q as i32, nh_k as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         match ff {
             Some(t) => { b.arg(q0).arg(k0).arg(v0).arg(wq).arg(wk).arg(wv)
                           .arg(&mut *q).arg(&mut *k).arg(&mut *v)
@@ -4597,7 +4770,7 @@ impl Engine {
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         if Self::pdl_on() && Self::pdl_wb_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (p0, _a0) = q0.device_ptr(s); let (p1, _a1) = k0.device_ptr(s);
             let (p2, _a2) = v0.device_ptr(s);
             let (pwq, _a3) = wq.device_ptr(s); let (pwk, _a4) = wk.device_ptr(s);
@@ -4630,7 +4803,8 @@ impl Engine {
         let f = if g { self.func_g("rms_norm_qkv_rope_append_dc_f32") }
                 else { self.func("rms_norm_qkv_rope_append_dc_f32") };
         let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         match ff {
             Some(t) => { b.arg(q0).arg(k0).arg(v0).arg(wq).arg(wk).arg(wv)
                           .arg(&mut *q).arg(&mut *k).arg(&mut *v)
@@ -4659,7 +4833,8 @@ impl Engine {
         let f = self.func("add_q8_1_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let nc = ncols as i32;
-        let mut b2 = self.gpu.stream.launch_builder(&f);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f);
         b2.arg(a).arg(b).arg(&mut *res).arg(&mut out_q).arg(&mut out_d).arg(&nc);
         unsafe { b2.launch(cfg)?; }
         Ok((out_q, out_d))
@@ -4678,7 +4853,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1),
                                  shared_mem_bytes: 0 };
         let (nc, ep) = (ncols as i32, eps);
-        let mut b2 = self.gpu.stream.launch_builder(&f);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&f);
         b2.arg(a).arg(wa).arg(b).arg(&mut *res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&ep);
         unsafe { b2.launch(cfg)?; }
         Ok((out_q, out_d))
@@ -4701,7 +4877,8 @@ impl Engine {
             let (nc, nr, e) = (ncols as i32, nrows as i32, eps);
             // mirror-fold: bf16 twin address by value (0 = skip; matches the nullable param)
             let d16: u64 = match dst16 { Some(d) => self.addr_u8(d), None => 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(x).arg(dst).arg(&d16).arg(&nc).arg(&nr).arg(&e);
             unsafe { b.launch(cfg)?; }
             return Ok(());
@@ -4714,7 +4891,8 @@ impl Engine {
         let f = self.func("l2_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4730,7 +4908,8 @@ impl Engine {
         let f = self.func("l2_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4745,7 +4924,8 @@ impl Engine {
         let grid = (n_heads * n_tokens) as u32;
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
         let (hd, nd, nh) = (head_dim as i32, n_dims as i32, n_heads as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(pos).arg(&hd).arg(&nd).arg(&nh).arg(&theta_scale).arg(&freq_scale);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4761,7 +4941,8 @@ impl Engine {
         let grid = (n_heads * n_tokens) as u32;
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
         let (hd, nd, nh) = (head_dim as i32, n_dims as i32, n_heads as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(pos).arg(&hd).arg(&nd).arg(&nh).arg(&theta_scale).arg(&freq_scale).arg(ff);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4779,7 +4960,8 @@ impl Engine {
         let grid = ((nh_q + nh_k) * n_tokens) as u32;
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
         let (hd, nd, nq, nk, nt) = (head_dim as i32, n_dims as i32, nh_q as i32, nh_k as i32, n_tokens as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(pos).arg(&hd).arg(&nd).arg(&nq).arg(&nk).arg(&nt)
          .arg(&theta_scale).arg(&freq_scale);
         match ff {
@@ -4799,7 +4981,8 @@ impl Engine {
         let f = self.func("gelu_tanh_mul_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4811,7 +4994,8 @@ impl Engine {
         // float4 kernel: one thread per 4 elements (tail handled in-kernel)
         let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4825,7 +5009,8 @@ impl Engine {
         let f = self.func("silu_mul_f16out_f32");
         let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(dst).arg(dst16).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4843,7 +5028,8 @@ impl Engine {
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
         let (gsf, usf) = (gs, us);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(&gsf).arg(&usf).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4859,7 +5045,8 @@ impl Engine {
         let f = self.func("swigluoai_mul_scaled_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(&gs).arg(&us).arg(&alpha).arg(&limit).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -4882,7 +5069,8 @@ impl Engine {
         // WARP-PER-BLOCK kernel: one warp (32 lanes) per 32-block -> n threads total.
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let (gsf, usf, ni) = (gs, us, n as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(gate).arg(up).arg(&gsf).arg(&usf).arg(&mut aq).arg(&mut ad).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok((aq, ad))
@@ -4894,7 +5082,8 @@ impl Engine {
         // float4 kernel: one thread per 4 elements (tail handled in-kernel)
         let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
-        let mut bld = self.gpu.stream.launch_builder(&f);
+        let __s_bld = self.gpu.stream();
+        let mut bld = __s_bld.launch_builder(&f);
         bld.arg(a).arg(b_in).arg(dst).arg(&ni);
         unsafe { bld.launch(cfg)?; }
         Ok(())
@@ -4905,7 +5094,8 @@ impl Engine {
         let f = self.func("mul_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut bld = self.gpu.stream.launch_builder(&f);
+        let __s_bld = self.gpu.stream();
+        let mut bld = __s_bld.launch_builder(&f);
         bld.arg(a).arg(b_in).arg(dst).arg(&ni);
         unsafe { bld.launch(cfg)?; }
         Ok(())
@@ -5201,7 +5391,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
@@ -5315,7 +5506,8 @@ impl Engine {
         // noscale contract: the caller folds s0/s1 into the SwiGLU epilogue — the kernel's fused
         // yscale args stay 1.0 here (they exist for the single-tensor callers).
         let one = 1.0f32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
          .arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&one).arg(&one);
         unsafe { b.launch(cfg)?; }
@@ -5350,7 +5542,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nb0 + nb1, 1, 1), block_dim: (32, ROWS_PER_BLOCK, 1),
                                  shared_mem_bytes: 0 };
         let (inf, o0, o1, rbl) = (in_f as i32, out0 as i32, out1 as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
          .arg(&inf).arg(&o0).arg(&o1).arg(&rbl);
         unsafe { b.launch(cfg)?; }
@@ -5441,7 +5634,7 @@ impl Engine {
         if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
             let (p2, _g2) = b2.device_ptr(s); let (paq, _g3) = aq.device_ptr(s);
             let (pad, _g4) = ad.device_ptr(s);
@@ -5462,7 +5655,8 @@ impl Engine {
             }
             return Ok(Some((y0, y1, y2)));
         }
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&r0).arg(&r1).arg(&r2);
         unsafe { b.launch(cfg)?; }
@@ -5519,7 +5713,7 @@ impl Engine {
         // PDL wave-A: identical to the owned twin (capture-lane parity).
         if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
             let (p2, _g2) = b2.device_ptr(s); let (paq, _g3) = aq.device_ptr(s);
             let (pad, _g4) = ad.device_ptr(s);
@@ -5539,7 +5733,8 @@ impl Engine {
                                      (grid, 1, 1), (32, rpb, 1), &mut ps)?; }
             return Ok(true);
         }
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut *y0).arg(&mut *y1).arg(&mut *y2)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&r0).arg(&r1).arg(&r2);
         unsafe { b.launch(cfg)?; }
@@ -5592,7 +5787,7 @@ impl Engine {
         if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
             let (paq, _g2) = aq.device_ptr(s); let (pad, _g3) = ad.device_ptr(s);
             let (py0, _g4) = y0.device_ptr_mut(s); let (py1, _g5) = y1.device_ptr_mut(s);
@@ -5609,7 +5804,8 @@ impl Engine {
             }
             return Ok(Some((y0, y1)));
         }
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
         unsafe { b.launch(cfg)?; }
@@ -5659,7 +5855,7 @@ impl Engine {
         // PDL wave-A: identical to the owned twin (capture-lane parity).
         if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
             let (paq, _g2) = aq.device_ptr(s); let (pad, _g3) = ad.device_ptr(s);
             let (py0, _g4) = y0.device_ptr_mut(s); let (py1, _g5) = y1.device_ptr_mut(s);
@@ -5675,7 +5871,8 @@ impl Engine {
                                      (grid, 1, 1), (32, rpb, 1), &mut ps)?; }
             return Ok(true);
         }
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut *y0).arg(&mut *y1)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
         unsafe { b.launch(cfg)?; }
@@ -5726,7 +5923,8 @@ impl Engine {
         let inf = w0.in_features() as i32;
         let (oo0, oo1, mi) = (o0 as i32, o1 as i32, m as i32);
         let rb = rb0 as i64;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
@@ -5778,7 +5976,8 @@ impl Engine {
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2, mi) = (o0 as i32, o1 as i32, o2 as i32, m as i32);
         let rb = 0i64;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
@@ -5810,7 +6009,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nb0 + nb1 + nb2, 1, 1), block_dim: (32, ROWS_PER_BLOCK, 1),
                                  shared_mem_bytes: 0 };
         let (inf, o0, o1, o2, rbl) = (in_f as i32, out0 as i32, out1 as i32, out2 as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
          .arg(&inf).arg(&o0).arg(&o1).arg(&o2).arg(&rbl);
         unsafe { b.launch(cfg)?; }
@@ -5860,7 +6060,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (nb0 + nb1, 1, 1), block_dim: (32, ROWS_PER_BLOCK, 1),
                                  shared_mem_bytes: 0 };
         let (inf, o0, o1, mi, rbl) = (in_f as i32, out0 as i32, out1 as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
          .arg(&inf).arg(&o0).arg(&o1).arg(&mi).arg(&rbl);
         unsafe { b.launch(cfg)?; }
@@ -5909,7 +6110,8 @@ impl Engine {
                                  shared_mem_bytes: 0 };
         let (inf, o0, o1, o2, mi, rbl) = (in_f as i32, out0 as i32, out1 as i32, out2 as i32,
                                           m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
          .arg(&inf).arg(&o0).arg(&o1).arg(&o2).arg(&mi).arg(&rbl);
         unsafe { b.launch(cfg)?; }
@@ -5984,7 +6186,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(Some((y, scale)))
@@ -6041,7 +6244,8 @@ impl Engine {
                 shared_mem_bytes: 0,
             };
             let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, 1i32, row_bytes as i64);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
             unsafe { b.launch(cfg)?; }
             if scale != 1.0 { self.scale_inplace(y, scale, out_f)?; }
@@ -6136,7 +6340,8 @@ impl Engine {
             shared_mem_bytes: 0,                  // warp-only reduce at m=1
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         // NVFP4 + e4m3 mmvq kernels take the macro-scale as a fused epilogue arg (applied at the
         // write — bit-identical to the old separate scale_inplace pass, minus one launch per matvec:
         // 53 scale launches/token on the 9B; for e4m3 the scale is the checkpoint's per-tensor f32
@@ -6152,7 +6357,7 @@ impl Engine {
             // names may take this launch (unmarked kernels would read unordered).
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pw, _g0) = bytes.device_ptr(s); let (paq, _g1) = aq.device_ptr(s);
             let (pad, _g2) = ad.device_ptr(s); let (py, _g3) = y.device_ptr_mut(s);
             let mut ps = [
@@ -6527,7 +6732,8 @@ impl Engine {
             grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 1, 1),
             block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: smem };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
@@ -6612,7 +6818,8 @@ impl Engine {
         let f = self.func("rms_norm_f16out_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(dst).arg(dst16).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -6628,7 +6835,8 @@ impl Engine {
         let f = self.func("add_rms_norm_f16out_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut lb = self.gpu.stream.launch_builder(&f);
+        let __s_lb = self.gpu.stream();
+        let mut lb = __s_lb.launch_builder(&f);
         lb.arg(a).arg(b).arg(w).arg(res).arg(dst).arg(dst16).arg(&nc).arg(&e);
         unsafe { lb.launch(cfg)?; }
         Ok(())
@@ -6661,7 +6869,8 @@ impl Engine {
         let f = self.func("gdn_pad_mask_f32");
         let cfg = LaunchConfig::for_num_elems((t * h) as u32);
         let (hi, ti) = (h as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(beta).arg(g_log).arg(len_d).arg(&hi).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -6675,7 +6884,8 @@ impl Engine {
         let f = self.func("row_gather_dev_f32");
         let cfg = LaunchConfig::for_num_elems(ncols as u32);
         let nc = ncols as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(dst).arg(len_d).arg(&nc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -6738,7 +6948,7 @@ impl Engine {
             for (s, &m) in ms.iter().enumerate() {
                 let mut ys_s = self.uninit(m * out_f)?;
                 let src = y.slice(off * out_f..(off + m) * out_f);
-                self.gpu.stream.memcpy_dtod(&src, &mut ys_s)?;
+                self.gpu.stream().memcpy_dtod(&src, &mut ys_s)?;
                 out[s].push(ys_s);
                 off += m;
             }
@@ -6825,7 +7035,8 @@ impl Engine {
             shared_mem_bytes: 0,
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
@@ -6864,7 +7075,8 @@ impl Engine {
             block_dim: (32, warps, 1), shared_mem_bytes: 0,
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(bytes).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -6887,7 +7099,8 @@ impl Engine {
             block_dim: (128, 1, 1), shared_mem_bytes: 0,
         };
         let (inf, outf, mi) = (in_f as i32, out_f as i32, m as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(rp4).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -6899,7 +7112,8 @@ impl Engine {
         let f = self.func("scale_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let (sf, ni) = (s, n as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(y).arg(&sf).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -6915,7 +7129,8 @@ impl Engine {
         let f = self.func("bf16_to_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(data).arg(&mut out).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(out)
@@ -6949,7 +7164,7 @@ impl Engine {
             for mi in 0..m {
                 let src = yc.slice(mi * rows..(mi + 1) * rows);
                 let mut dst = y.slice_mut(mi * out_f + r0..mi * out_f + r0 + rows);
-                self.gpu.stream.memcpy_dtod(&src, &mut dst)?;
+                self.gpu.stream().memcpy_dtod(&src, &mut dst)?;
             }
             r0 += rows;
         }
@@ -7004,7 +7219,8 @@ impl Engine {
             shared_mem_bytes: (t_kv * 4) as u32,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -7024,7 +7240,8 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                                 t as i32, t_kv as i32, causal as i32, window as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
          .arg(&scale).arg(&cz).arg(&wi);
         unsafe { b.launch(cfg)?; }
@@ -7042,7 +7259,8 @@ impl Engine {
             shared_mem_bytes: (t_kv * 4) as u32,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -7069,7 +7287,8 @@ impl Engine {
                                  shared_mem_bytes: 0 };
         let (kdk, kdv, tkvi) = (kv_dim_k as i32, kv_dim_v as i32, t_kv as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k).arg(v).arg(&mut *kf).arg(&mut *vf).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -7105,7 +7324,8 @@ impl Engine {
         };
         let (kv_dim_i, t_kv_i) = (kv_dim as i32, t_kv as i32);
         let (k_tok_bytes_i, v_tok_bytes_i) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k)
             .arg(v)
             .arg(&mut kf)
@@ -7156,11 +7376,11 @@ impl Engine {
             self.f32_to_bf16_into(v, &mut v16, nkv)?;
             let rc = {
                 use cudarc::driver::{DevicePtr, DevicePtrMut};
-                let stream = &self.gpu.stream;
-                let (qp, _g1) = q16.device_ptr(stream);
-                let (kp, _g2) = k16.device_ptr(stream);
-                let (vp, _g3) = v16.device_ptr(stream);
-                let (op, _g4) = o.device_ptr_mut(stream);
+                let stream = self.gpu.stream();
+                let (qp, _g1) = q16.device_ptr(&stream);
+                let (kp, _g2) = k16.device_ptr(&stream);
+                let (vp, _g3) = v16.device_ptr(&stream);
+                let (op, _g4) = o.device_ptr_mut(&stream);
                 unsafe {
                     memra_fa3_prefill(qp as *const core::ffi::c_void,
                                      kp as *const core::ffi::c_void,
@@ -7198,7 +7418,8 @@ impl Engine {
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti)
              .arg(&tkvi).arg(&scale).arg(&cz);
             unsafe { b.launch(cfg)?; }
@@ -7233,10 +7454,12 @@ impl Engine {
             let fcv = self.func("f32_to_bf16_bulk");
             let ni = n as i64;
             let cfgc = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
-            let mut b = self.gpu.stream.launch_builder(&fcv);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&fcv);
             b.arg(k).arg(&mut kb).arg(&ni);
             unsafe { b.launch(cfgc)?; }
-            let mut b = self.gpu.stream.launch_builder(&fcv);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&fcv);
             b.arg(v).arg(&mut vb).arg(&ni);
             unsafe { b.launch(cfgc)?; }
             (Some(kb), Some(vb))
@@ -7262,7 +7485,8 @@ impl Engine {
             block_dim: (32, warps, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q);
         match (&kb16, &vb16) {
             (Some(kb), Some(vb)) => { b.arg(kb).arg(vb); }
@@ -7336,7 +7560,8 @@ impl Engine {
             };
             let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
                 n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(qb).arg(kb).arg(vh).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz).arg(&wi);
             unsafe { b.launch(cfg)?; }
@@ -7353,7 +7578,8 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
             n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qb).arg(kb).arg(vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
          .arg(&scale).arg(&cz).arg(&wi);
         unsafe { b.launch(cfg)?; }
@@ -7395,7 +7621,8 @@ impl Engine {
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vh = self.f32_to_f16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vh).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz).arg(&wi);
             unsafe { b.launch(cfg)?; }
@@ -7416,7 +7643,8 @@ impl Engine {
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz).arg(&wi);
             unsafe { b.launch(cfg)?; }
@@ -7455,7 +7683,8 @@ impl Engine {
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz).arg(&wi);
             unsafe { b.launch(cfg)?; }
@@ -7475,7 +7704,8 @@ impl Engine {
         let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                                 t as i32, t_kv as i32, causal as i32, window as i32);
         if f32_stage {
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz).arg(&wi);
             unsafe { b.launch(cfg)?; }
@@ -7483,7 +7713,8 @@ impl Engine {
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz).arg(&wi);
             unsafe { b.launch(cfg)?; }
@@ -7577,7 +7808,8 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                             t as i32, t_kv as i32, causal as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qb).arg(kb).arg(vref).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
          .arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
@@ -7627,7 +7859,8 @@ impl Engine {
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vb = if f16pv { self.f32_to_f16(v, t_kv * n_head_kv * head_dim)? }
                      else { self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)? };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz);
             unsafe { b.launch(cfg)?; }
@@ -7647,7 +7880,8 @@ impl Engine {
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                             t as i32, t_kv as i32, causal as i32);
         if f32_stage {
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz);
             unsafe { b.launch(cfg)?; }
@@ -7655,7 +7889,8 @@ impl Engine {
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
             let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz);
             unsafe { b.launch(cfg)?; }
@@ -7680,7 +7915,8 @@ impl Engine {
         let theta_scale = base.powf(-2.0 / n_dims as f32);
         let (hd, nd, nhq, nhk, nt) = (head_dim as i32, n_dims as i32, nh_q as i32,
                                       nh_k as i32, n_tokens as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         match ff {
             Some(t) => { b.arg(&mut *q).arg(&mut *k).arg(&mut *qb).arg(&mut *kb).arg(pos)
                           .arg(&hd).arg(&nd).arg(&nhq).arg(&nhk).arg(&nt)
@@ -7707,7 +7943,8 @@ impl Engine {
             grid_dim: (((n / 4) as u32).div_ceil(256), 1, 1),
             block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut y).arg(&n_i);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -7723,7 +7960,8 @@ impl Engine {
             grid_dim: (((n / 4) as u32).div_ceil(256), 1, 1),
             block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(&mut y).arg(&n_i);
         unsafe { b.launch(cfg)?; }
         Ok(y)
@@ -7748,7 +7986,8 @@ impl Engine {
             grid_dim: (((n / 2) as u32).div_ceil(256), 1, 1),
             block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(xb).arg(y).arg(&n2);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -7776,7 +8015,8 @@ impl Engine {
             let blocks = ((max_n as u32).div_ceil(4)).div_ceil(256);
             for which in 0..2i32 {
                 let cfg = LaunchConfig { grid_dim: (blocks, 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-                let mut lb = self.gpu.stream.launch_builder(&f);
+                let __s_lb = self.gpu.stream();
+                let mut lb = __s_lb.launch_builder(&f);
                 lb.arg(&v).arg(&ept).arg(&which);
                 unsafe { lb.launch(cfg)?; }
             }
@@ -7794,7 +8034,8 @@ impl Engine {
             block_dim: (32, 4, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
-        let mut lb = self.gpu.stream.launch_builder(&f);
+        let __s_lb = self.gpu.stream();
+        let mut lb = __s_lb.launch_builder(&f);
         lb.arg(&v).arg(&hd).arg(&nh).arg(&nhkv).arg(&scale);
         unsafe { lb.launch(cfg)?; }
         Ok(())
@@ -7821,14 +8062,16 @@ impl Engine {
             let f = self.func("q_gate_split_vl");
             let n = max_t * (n_head * head_dim) as u32;
             let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hd).arg(&nh);
             unsafe { lb.launch(cfg)?; }
         }
         {
             let f = self.func("attn_rms_vl");
             let cfg = LaunchConfig { grid_dim: (max_t * n_head as u32, 2, b as u32), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(wq).arg(wk).arg(&hd).arg(&nh).arg(&nhkv).arg(&eps);
             unsafe { lb.launch(cfg)?; }
         }
@@ -7837,7 +8080,8 @@ impl Engine {
             let theta_scale = freq_base.powf(-2.0 / rope_dims as f32);
             let nd = rope_dims as i32;
             let cfg = LaunchConfig { grid_dim: (max_t * n_head as u32, 2, b as u32), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hd).arg(&nd).arg(&nh).arg(&nhkv).arg(&theta_scale).arg(&freq_scale);
             unsafe { lb.launch(cfg)?; }
         }
@@ -7847,7 +8091,8 @@ impl Engine {
             let cfg = LaunchConfig { grid_dim: (nblk, max_t, b as u32), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
             let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
             let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
             unsafe { lb.launch(cfg)?; }
         }
@@ -7884,7 +8129,8 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
@@ -7938,7 +8184,8 @@ impl Engine {
             let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let (kdk, kdv, tkvi) = (kv_dim_k as i32, kv_dim_v as i32, t_kv as i32);
             let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(k).arg(v).arg(&mut *kw).arg(&mut *vw).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
             unsafe { b.launch(cfg)?; }
         }
@@ -7968,7 +8215,8 @@ impl Engine {
             };
             let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
             let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(&*kw).arg(&*vw).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
              .arg(&kdk).arg(&kdv);
             unsafe { b.launch(cfg)?; }
@@ -8013,7 +8261,8 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb, tkvi, ski) = (k_tok_bytes as i64, v_tok_bytes as i64, t_kv_host as i32,
                                      split_keys as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         match t_kv_dev {
             Some(d) => { b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
                           .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(d).arg(&scale).arg(&nsp)
@@ -8031,13 +8280,15 @@ impl Engine {
             // wave-5b: q8-emitting combine — the wo matmul_pre consumes the pair directly.
             let fc = if g { self.func_g("fa_decode_combine_q8_1") }
                      else { self.fa_func("fa_decode_combine_q8_1", head_dim) };
-            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            let __s_b2 = self.gpu.stream();
+            let mut b2 = __s_b2.launch_builder(&fc);
             b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(oq).arg(od).arg(&hd).arg(&nh).arg(&nsp);
             unsafe { b2.launch(cfg2)?; }
             return Ok(());
         }
         let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -8085,9 +8336,9 @@ impl Engine {
                                 self.alloc_uninit::<f32>(cm.max(ml_len))?));
         }
         let pg = part_guard.as_mut().unwrap();
-        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
         let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         let (part_o, part_m, part_l) = (&mut *part_o, &mut *part_m, &mut *part_l);
         let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
@@ -8188,13 +8439,15 @@ impl Engine {
                                                  k_tok_bytes, v_tok_bytes, g,
                                                  part_o, part_m, part_l, None);
         };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         let (fc, cfg2) = (if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) },
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -8230,9 +8483,9 @@ impl Engine {
                                 self.alloc_uninit::<f32>(cm.max(ml_len))?));
         }
         let pg = part_guard.as_mut().unwrap();
-        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
         let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
         let (nspm, spk) = (n_splits_max as i32, split_keys as i32);
@@ -8246,7 +8499,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, b_n as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
         {
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(kv_ptrs).arg(pos_seq).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
              .arg(&hd).arg(&nh).arg(&nhkv).arg(&scale).arg(&nspm).arg(&spk).arg(&ktb).arg(&vtb);
             unsafe { b.launch(cfg)?; }
@@ -8254,7 +8508,8 @@ impl Engine {
         let fc = self.func("fa_decode_combine_seqs");
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, b_n as u32, 1),
             block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(pos_seq).arg(&nspm).arg(&spk);
         unsafe { b2.launch(cfg2)?; }
@@ -8280,7 +8535,8 @@ impl Engine {
             block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(k_rows).arg(v_rows).arg(kv_ptrs).arg(pos_seq)
          .arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
@@ -8457,9 +8713,9 @@ impl Engine {
                                 self.alloc_uninit::<f32>(cm.max(ml_len))?));
         }
         let pg = part_guard.as_mut().unwrap();
-        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
         let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
             let (part_o, part_m, part_l) = (&mut *part_o, &mut *part_m, &mut *part_l);
             let qv = self.view(q, t * n_head * head_dim);
@@ -8467,7 +8723,8 @@ impl Engine {
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_g as u32, t_g as u32),
                 block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
             {
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 if tb512 {
                     // rows-inner launch: grid.z dropped, the kernel loops n_rows itself.
                     let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
@@ -8476,7 +8733,7 @@ impl Engine {
                     if Self::pdl_on() && Self::pdl_wb_on() {
                         // wave-B2b: flavor mirrors fa_func(fname, 512) = gkv.
                         use cudarc::driver::{DevicePtr, DevicePtrMut};
-                        let s = &self.gpu.stream;
+                        let s = &self.gpu.stream();
                         let (pq, _b0) = q_g.device_ptr(s); let (pk, _b1) = k.device_ptr(s);
                         let (pv, _b2) = v.device_ptr(s);
                         let (po, _b3) = part_o.device_ptr_mut(s);
@@ -8535,7 +8792,7 @@ impl Engine {
                     if Self::pdl_on() && Self::pdl_wb_on() {
                         // wave-B2: flavor mirrors fa_func (hd512 + gkv → kf8vf8).
                         use cudarc::driver::{DevicePtr, DevicePtrMut};
-                        let s = &self.gpu.stream;
+                        let s = &self.gpu.stream();
                         let (po, _g0) = part_o.device_ptr(s); let (pm, _g1) = part_m.device_ptr(s);
                         let (pl, _g2) = part_l.device_ptr(s);
                         let (pq, _g3) = oq.device_ptr_mut(s); let (pd, _g4) = od.device_ptr_mut(s);
@@ -8554,14 +8811,16 @@ impl Engine {
                         continue;
                     }
                     let fc = self.fa_func("fa_decode_combine_rows_dc_q8_1", head_dim);
-                    let mut b2 = self.gpu.stream.launch_builder(&fc);
+                    let __s_b2 = self.gpu.stream();
+                    let mut b2 = __s_b2.launch_builder(&fc);
                     b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut **oq).arg(&mut **od)
                       .arg(&hd).arg(&nh).arg(bd).arg(&plus_g).arg(&nspm).arg(&spk);
                     unsafe { b2.launch(cfg2)?; }
                     continue;
                 }
                 let fc = self.fa_func("fa_decode_combine_rows_dc", head_dim);
-                let mut b2 = self.gpu.stream.launch_builder(&fc);
+                let __s_b2 = self.gpu.stream();
+                let mut b2 = __s_b2.launch_builder(&fc);
                 b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut o_g).arg(&hd).arg(&nh)
                   .arg(bd).arg(&plus_g).arg(&nspm).arg(&spk);
                 unsafe { b2.launch(cfg2)?; }
@@ -8570,7 +8829,8 @@ impl Engine {
                 // leave the caller's pair unwritten (consumer would read garbage).
                 assert!(q8_out.is_none(), "rows q8 emit requires the hd512 dc combine");
                 let fc = self.func("fa_decode_combine_rows");
-                let mut b2 = self.gpu.stream.launch_builder(&fc);
+                let __s_b2 = self.gpu.stream();
+                let mut b2 = __s_b2.launch_builder(&fc);
                 b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut o_g).arg(&hd).arg(&nh)
                   .arg(&base_i).arg(&nspm).arg(&spk);
                 unsafe { b2.launch(cfg2)?; }
@@ -8623,9 +8883,9 @@ impl Engine {
                                 self.alloc_uninit::<f32>(cm.max(ml_len))?));
         }
         let pg = part_guard.as_mut().unwrap();
-        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
         let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         // Lane pick: decode AND verify both land here in the windowed regime (parity law —
         // hybrid_forward verify_attn), so the pick only needs internal consistency, not
@@ -8657,7 +8917,7 @@ impl Engine {
             if Self::pdl_on() && Self::pdl_wb_on() {
                 // wave-B2b: flavor mirrors wg.
                 use cudarc::driver::{DevicePtr, DevicePtrMut};
-                let s = &self.gpu.stream;
+                let s = &self.gpu.stream();
                 let (pq, _b0) = q.device_ptr(s); let (pk, _b1) = k.device_ptr(s);
                 let (pv, _b2) = v.device_ptr(s);
                 let (po, _b3) = part_o.device_ptr_mut(s);
@@ -8684,7 +8944,8 @@ impl Engine {
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
                 block_dim: (32, gqa + 1, 1), shared_mem_bytes: sh };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
              .arg(&ktb).arg(&vtb).arg(&wini);
@@ -8695,7 +8956,7 @@ impl Engine {
             // wave-B2b: the v4_w pick only (smem/reg twins stay builder-launched).
             let sh = (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32;
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let s = &self.gpu.stream;
+            let s = &self.gpu.stream();
             let (pq, _b0) = q.device_ptr(s); let (pk, _b1) = k.device_ptr(s);
             let (pv, _b2) = v.device_ptr(s);
             let (po, _b3) = part_o.device_ptr_mut(s);
@@ -8731,7 +8992,8 @@ impl Engine {
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: sh };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb).arg(&wini);
@@ -8746,7 +9008,7 @@ impl Engine {
             if Self::pdl_on() && Self::pdl_wb_on() {
                 // wave-B2: flavor mirrors the builder's wg choice.
                 use cudarc::driver::{DevicePtr, DevicePtrMut};
-                let s = &self.gpu.stream;
+                let s = &self.gpu.stream();
                 let (po, _g0) = part_o.device_ptr(s); let (pm, _g1) = part_m.device_ptr(s);
                 let (pl, _g2) = part_l.device_ptr(s);
                 let (pq, _g3) = oq.device_ptr_mut(s); let (pd, _g4) = od.device_ptr_mut(s);
@@ -8763,7 +9025,8 @@ impl Engine {
             }
             let fc = if wg { self.func_g("fa_decode_combine_rows_w_q8_1") }
                      else { self.func("fa_decode_combine_rows_w_q8_1") };
-            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            let __s_b2 = self.gpu.stream();
+            let mut b2 = __s_b2.launch_builder(&fc);
             b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(oq).arg(od).arg(&hd).arg(&nh)
               .arg(&nspm).arg(&spk).arg(&wini);
             unsafe { b2.launch(cfg2)?; }
@@ -8771,7 +9034,8 @@ impl Engine {
         }
         let fc = if wg { self.func_g("fa_decode_combine_rows_w") }
                  else { self.func("fa_decode_combine_rows_w") };
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(&nspm).arg(&spk).arg(&wini);
         unsafe { b2.launch(cfg2)?; }
@@ -8810,9 +9074,9 @@ impl Engine {
                                     self.alloc_uninit::<f32>(cm.max(ml_len))?));
             }
             let pg = part_guard.as_mut().unwrap();
-            self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-            self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-            self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+            self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+            self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+            self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
             let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
             let f = if g { self.func_g("fa_decode_vec_q_rows_v4_dc") }
                     else { self.func("fa_decode_vec_q_rows_v4_dc") };
@@ -8821,7 +9085,8 @@ impl Engine {
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
                 block_dim: (32, gqa, 1), shared_mem_bytes: sh };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale)
              .arg(&nspm).arg(&spk).arg(&ktb).arg(&vtb);
@@ -8829,7 +9094,8 @@ impl Engine {
             let fc = self.func("fa_decode_combine_rows_dc");
             let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
-            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            let __s_b2 = self.gpu.stream();
+            let mut b2 = __s_b2.launch_builder(&fc);
             b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
               .arg(base_dev).arg(&base_plus).arg(&nspm).arg(&spk);
             unsafe { b2.launch(cfg2)?; }
@@ -8851,9 +9117,9 @@ impl Engine {
                                 self.alloc_uninit::<f32>(cm.max(ml_len))?));
         }
         let pg = part_guard.as_mut().unwrap();
-        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
         let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         let f = self.func("fa_decode_vec_q_rows_v3_dc");
         let sh = (32 * head_dim * 2) as u32;
@@ -8861,7 +9127,8 @@ impl Engine {
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: sh };
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb);
@@ -8870,7 +9137,8 @@ impl Engine {
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
             block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
         let plus0 = 0i32;
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(base_dev).arg(&plus0).arg(&nspm).arg(&spk);
         unsafe { b2.launch(cfg2)?; }
@@ -8928,9 +9196,9 @@ impl Engine {
                                 self.alloc_uninit::<f32>(cm.max(ml_len))?));
         }
         let pg = part_guard.as_mut().unwrap();
-        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
-        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream().memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
         let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
@@ -8996,7 +9264,8 @@ impl Engine {
                                                  &mut *part_o, &mut *part_m, &mut *part_l, q8_out);
         };
         let ski = sp as i32;   // one-partition law: the twins derive ns_eff from (T_kv, ski)
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ski)
          .arg(&ktb).arg(&vtb);
@@ -9005,13 +9274,15 @@ impl Engine {
         if let Some((oq, od)) = q8_out {
             let fc = if g { self.func_g("fa_decode_combine_q8_1") }
                      else { self.fa_func("fa_decode_combine_q8_1", head_dim) };
-            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            let __s_b2 = self.gpu.stream();
+            let mut b2 = __s_b2.launch_builder(&fc);
             b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(oq).arg(od).arg(&hd).arg(&nh).arg(&nsp);
             unsafe { b2.launch(cfg2)?; }
             return Ok(());
         }
         let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        let __s_b2 = self.gpu.stream();
+        let mut b2 = __s_b2.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -9099,10 +9370,10 @@ impl Engine {
             let w = (|| { step(self)?; step(self) })();
             self.capture_keep_on.store(false, std::sync::atomic::Ordering::Relaxed);
             w?;
-            self.gpu.stream.synchronize()?;
-            self.gpu.stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
+            self.gpu.stream().synchronize()?;
+            self.gpu.stream().begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
             let r = step(self);
-            let g = self.gpu.stream.end_capture(flags);
+            let g = self.gpu.stream().end_capture(flags);
             r?;
             let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
             graph.upload()?;
@@ -9132,13 +9403,13 @@ impl Engine {
             // warmup: two inline runs (no capture) so allocator pointers + kernel attrs are stable.
             step(self)?;
             step(self)?;
-            self.gpu.stream.synchronize()?;
+            self.gpu.stream().synchronize()?;
             // capture the third run.
-            self.gpu.stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
+            self.gpu.stream().begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
             // If the body errors mid-capture, end the capture before propagating so the stream isn't
             // left in a capturing state.
             let r = step(self);
-            let g = self.gpu.stream.end_capture(CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+            let g = self.gpu.stream().end_capture(CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
             r?;
             let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
             graph.upload()?;
@@ -9160,7 +9431,8 @@ impl Engine {
         const S_V: u32 = 128; const WARP: u32 = 32; const COLS: u32 = 4;
         let cfg = LaunchConfig { grid_dim: (n_head as u32, 1, S_V / COLS), block_dim: (WARP, COLS, 1), shared_mem_bytes: 0 };
         let (h, ti) = (n_head as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o).arg(&h).arg(&ti).arg(&scale);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9175,7 +9447,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (conv_dim as u32, ((t as u32 + 255) / 256).max(1), 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (cd, ti, dc, s) = (conv_dim as i32, t as i32, d_conv as i32, silu as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc).arg(&s);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9196,7 +9469,8 @@ impl Engine {
             block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
         let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_tm).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9236,7 +9510,8 @@ impl Engine {
                 block_dim: (256, 1, 1), shared_mem_bytes: 0,
             };
             let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
             unsafe { b.launch(cfg)?; }
         }
@@ -9246,7 +9521,8 @@ impl Engine {
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
                 let (cd, dc) = (conv_dim as i32, d_conv as i32);
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
@@ -9255,7 +9531,8 @@ impl Engine {
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
                 let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
@@ -9282,7 +9559,8 @@ impl Engine {
                 block_dim: (256, 1, 1), shared_mem_bytes: 0,
             };
             let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
             unsafe { b.launch(cfg)?; }
         }
@@ -9292,7 +9570,8 @@ impl Engine {
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
                 let (cd, dc) = (conv_dim as i32, d_conv as i32);
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
@@ -9301,7 +9580,8 @@ impl Engine {
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
                 let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
@@ -9323,7 +9603,8 @@ impl Engine {
         let n = conv_dim * (d_conv - 1);
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let (cd, ti, dc) = (conv_dim as i32, tc as i32, d_conv as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_tm).arg(ring_old).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9343,7 +9624,8 @@ impl Engine {
         let f = self.func("gdn_prep_decode_f32");
         let cfg = LaunchConfig { grid_dim: (num_v as u32, 1, 1), block_dim: (32, 4, 1), shared_mem_bytes: 0 };
         let (ds, nv, nk, kd) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(conv_out).arg(beta_raw).arg(alpha).arg(dt_bias).arg(a)
          .arg(q_l2).arg(k_l2).arg(v_g).arg(beta).arg(g_log)
          .arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&eps);
@@ -9367,7 +9649,8 @@ impl Engine {
         };
         let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
         let (ds, nv, nk, kd) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_tm).arg(w).arg(q_g).arg(k_g).arg(v_g)
          .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd);
         unsafe { b.launch(cfg)?; }
@@ -9381,7 +9664,8 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (conv_dim as u32, ((t as u32 + 255) / 256).max(1), 1),
                                  block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (cd, ti, dc, s) = (conv_dim as i32, t as i32, d_conv as i32, silu as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc).arg(&s);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9402,7 +9686,8 @@ impl Engine {
             shared_mem_bytes: 0,
         };
         let (h, ti) = (n_head as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o).arg(&h).arg(&ti).arg(&scale);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9423,7 +9708,8 @@ impl Engine {
             block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
         let (cd, dc) = (conv_dim as i32, d_conv as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_cols).arg(conv_state_ptrs).arg(w).arg(conv_outs).arg(&cd).arg(&dc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9444,7 +9730,8 @@ impl Engine {
         };
         let (ds, nv, nk, kd, cd) =
             (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, conv_dim as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(conv_outs).arg(beta_raws).arg(alphas).arg(dt_bias).arg(a)
          .arg(q_l2).arg(k_l2).arg(v_g).arg(beta).arg(g_log)
          .arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&eps).arg(&cd);
@@ -9467,7 +9754,8 @@ impl Engine {
             block_dim: (WARP, COLS_PER_BLOCK, 1), shared_mem_bytes: 0,
         };
         let h = n_head as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in_ptrs).arg(state_out_ptrs)
          .arg(o).arg(&h).arg(&scale);
         unsafe { b.launch(cfg)?; }
@@ -9526,7 +9814,8 @@ impl Engine {
         {   // K1
             let f = self.func("gdn_chunk_cumgate_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
@@ -9537,7 +9826,8 @@ impl Engine {
             let f = self.func("gdn_k2_wgmma");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
             let hki = hk as i32;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(qb).arg(kb).arg(&gcum).arg(beta).arg(&mut a).arg(&mut *pb).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
             unsafe { b.launch(cfg)?; }
         } else if c <= 64 && !portable_mma_gated() {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
@@ -9545,14 +9835,16 @@ impl Engine {
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let hki = hk as i32;
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
             unsafe { b.launch(cfg)?; }
         } else {       // K2 generic (C = 128, or the portable target's low-smem fallback)
             assert!(hk == h, "generic K2 is broadcast-only (de-broadcast rides C==32)");
             let f = self.func("gdn_chunk_attn_g_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 8, 1), shared_mem_bytes: 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
@@ -9564,14 +9856,16 @@ impl Engine {
                     // mirror-fold: W's bf16 twin emitted on store (0 = skip)
                     let wb: u64 = match wb16 { Some(d) => self.addr_u8(d), None => 0 };
                     let hki = hk as i32;
-                    let mut b = self.gpu.stream.launch_builder(&f);
+                    let __s_b = self.gpu.stream();
+                    let mut b = __s_b.launch_builder(&f);
                     b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&wb).arg(&hi).arg(&ti).arg(&hki);
                     unsafe { b.launch(cfg)?; }
                 }
                 _ => {
                     assert!(hk == h, "generic K3 is broadcast-only");
                     let f = self.func("gdn_chunk_solve_f32");
-                    let mut b = self.gpu.stream.launch_builder(&f);
+                    let __s_b = self.gpu.stream();
+                    let mut b = __s_b.launch_builder(&f);
                     b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&hi).arg(&ti).arg(&ci);
                     unsafe { b.launch(cfg)?; }
                 }
@@ -9632,7 +9926,8 @@ impl Engine {
             };
             let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
             let (ds, nv, nk, kd, hki) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, hk as i32);
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(q_g).arg(k_g).arg(v_g)
              .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&hki);
             unsafe { b.launch(cfg)?; }
@@ -9643,7 +9938,8 @@ impl Engine {
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
                 let (cd, dc) = (conv_dim as i32, d_conv as i32);
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(qkv_tm).arg(conv_state).arg(len_d).arg(&cd).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
@@ -9652,7 +9948,8 @@ impl Engine {
                 let n = conv_dim * (d_conv - 1);
                 let cfg = LaunchConfig::for_num_elems(n as u32);
                 let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
                 unsafe { b.launch(cfg)?; }
             }
@@ -9692,7 +9989,8 @@ impl Engine {
         let f = self.func("f32_to_bf16_bulk");
         let ni = n as i64;
         let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9704,7 +10002,8 @@ impl Engine {
         let f = self.func("f32_to_bf16_bulk");
         let ni = n as i64;
         let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -9725,7 +10024,8 @@ impl Engine {
         {
             let f = self.func("gdn_chunk_cumgate_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hi).arg(&ci);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9733,20 +10033,23 @@ impl Engine {
         if let Some(w) = wq {   // K2-wgmma vl twin (writes A + pre-masked Pb16)
             let f = self.func("gdn_k2_wgmma_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(w).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         } else {
             let f = self.func("gdn_chunk_attn_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
         {
             let f = self.func("gdn_chunk_solve32_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9775,13 +10078,15 @@ impl Engine {
             let f = self.func("ssm_conv1d_gdn_state_vl");
             let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let (dsi, nvi, nki, kdi, hki) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, hk as i32);
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         } else {
             let f = self.func("ssm_conv1d_tm_state_vl");
             let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9789,7 +10094,8 @@ impl Engine {
             let f = self.func("ssm_conv_ring_update_vl");
             let n = (conv_dim * (d_conv - 1)) as u32;
             let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&cdi).arg(&dci);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9798,7 +10104,8 @@ impl Engine {
             let n = max_t * (num_v * d_state) as u32;
             let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let (dsi, nvi, nki, kdi) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9806,14 +10113,16 @@ impl Engine {
             let f = self.func("gdn_l2_v2_vl");
             let cfg = LaunchConfig { grid_dim: ((max_t * hk as u32).div_ceil(8), 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let (dsi, nvi) = (d_state as i32, hk as i32);
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
             unsafe { lb.launch(cfg)?; }
         } else {
             let f = self.func("gdn_l2_vl");
             let cfg = LaunchConfig { grid_dim: (max_t * hk as u32, 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let (dsi, nvi) = (d_state as i32, hk as i32);
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9822,7 +10131,8 @@ impl Engine {
             let n = max_t * num_v as u32;
             let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let nvi = num_v as i32;
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(dt_bias).arg(a).arg(&nvi);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9843,7 +10153,8 @@ impl Engine {
         let f = self.func("gdn_mirror_vl");
         let blocks = ((max_n as u32).div_ceil(4)).div_ceil(256);
         let cfg = LaunchConfig { grid_dim: (blocks, 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let mut lb = self.gpu.stream.launch_builder(&f);
+        let __s_lb = self.gpu.stream();
+        let mut lb = __s_lb.launch_builder(&f);
         lb.arg(&v).arg(&ept).arg(&which);
         unsafe { lb.launch(cfg)?; }
         Ok(())
@@ -9863,7 +10174,8 @@ impl Engine {
         // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
         let cfg = LaunchConfig { grid_dim: (max_t * num_v as u32, 1, b as u32), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (dsi, nvi) = (d_state as i32, num_v as i32);
-        let mut lb = self.gpu.stream.launch_builder(&f);
+        let __s_lb = self.gpu.stream();
+        let mut lb = __s_lb.launch_builder(&f);
         lb.arg(&v).arg(norm_w).arg(&dsi).arg(&nvi).arg(&eps);
         unsafe { lb.launch(cfg)?; }
         Ok(())
@@ -9873,22 +10185,26 @@ impl Engine {
     /// launches; every buffer outlives the call — the f16 FFI discipline).
     pub fn addr_f32(&self, x: &CudaSlice<f32>) -> u64 {
         use cudarc::driver::DevicePtr;
-        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        let s = self.gpu.stream();
+        let (p, _g) = x.device_ptr(&s);
         p as u64
     }
     pub fn addr_f32_mut(&self, x: &mut CudaSlice<f32>) -> u64 {
         use cudarc::driver::DevicePtrMut;
-        let (p, _g) = x.device_ptr_mut(&self.gpu.stream);
+        let s = self.gpu.stream();
+        let (p, _g) = x.device_ptr_mut(&s);
         p as u64
     }
     pub fn addr_f32v(&self, x: &cudarc::driver::CudaView<f32>) -> u64 {
         use cudarc::driver::DevicePtr;
-        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        let s = self.gpu.stream();
+        let (p, _g) = x.device_ptr(&s);
         p as u64
     }
     pub fn addr_u8(&self, x: &CudaSlice<u8>) -> u64 {
         use cudarc::driver::DevicePtr;
-        let (p, _g) = x.device_ptr(&self.gpu.stream);
+        let s = self.gpu.stream();
+        let (p, _g) = x.device_ptr(&s);
         p as u64
     }
 
@@ -9911,7 +10227,8 @@ impl Engine {
             // K4+K5 fused wgmma vl twin: one launch, Y/Ssnap never materialized.
             let f = self.func("gdn_k45_wgmma_vl");
             let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(w).arg(&scale).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
             let _ = max_nc;
@@ -9920,14 +10237,16 @@ impl Engine {
         {
             let f = self.func("gdn_chunk_state_mma_vl");
             let cfg = LaunchConfig { grid_dim: (n_head as u32, NSPLIT, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hi).arg(&ci).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
         {
             let f = self.func("gdn_chunk_output_mma_vl");
             let cfg = LaunchConfig { grid_dim: (max_nc, n_head as u32, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut lb = self.gpu.stream.launch_builder(&f);
+            let __s_lb = self.gpu.stream();
+            let mut lb = __s_lb.launch_builder(&f);
             lb.arg(&v).arg(&hi).arg(&ci).arg(&scale).arg(&hki);
             unsafe { lb.launch(cfg)?; }
         }
@@ -9974,7 +10293,8 @@ impl Engine {
             let f = self.func("f32_to_bf16_bulk");
             let n2 = nk as i64;
             let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(k).arg(&mut kb).arg(&n2);
             unsafe { b.launch(cfg2)?; }
             kb16_local = Some(kb);
@@ -9991,7 +10311,8 @@ impl Engine {
                 let f = self.func("f32_to_bf16_bulk");
                 let n2 = nk as i64;
                 let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(q).arg(&mut qb).arg(&n2);
                 unsafe { b.launch(cfg2)?; }
                 qb16 = Some(qb);
@@ -10048,7 +10369,8 @@ impl Engine {
                     let f = self.func("gdn_k45_wgmma");
                     let cfg = LaunchConfig { grid_dim: (h as u32, 4, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
                     let hki = hk as i32;
-                    let mut b = self.gpu.stream.launch_builder(&f);
+                    let __s_b = self.gpu.stream();
+                    let mut b = __s_b.launch_builder(&f);
                     b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(qb16).arg(pb16)
                      .arg(o).arg(&scale).arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
                     unsafe { b.launch(cfg)?; }
@@ -10064,7 +10386,8 @@ impl Engine {
                 let f = self.func("gdn_chunk_state_mma");
                 let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
                 let hki = hk as i32;
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(kb16_ref).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&mut y16).arg(&mut ssnap16)
                  .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci).arg(&hki);
                 unsafe { b.launch(cfg)?; }
@@ -10074,7 +10397,8 @@ impl Engine {
                 let jt = ((c + 31) / 32) as u32;
                 let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
                 let hki = hk as i32;
-                let mut b = self.gpu.stream.launch_builder(&f);
+                let __s_b = self.gpu.stream();
+                let mut b = __s_b.launch_builder(&f);
                 b.arg(q).arg(&gcum).arg(&p).arg(&y16).arg(&ssnap16).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale).arg(&hki);
                 unsafe { b.launch(cfg)?; }
             }
@@ -10083,7 +10407,8 @@ impl Engine {
         {   // K4 (sequential over chunks inside; blocks col-partition the state)
             let f = self.func("gdn_chunk_state_f32");
             let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(k).arg(&gcum).arg(beta).arg(&u).arg(&w).arg(&mut y).arg(&mut ssnap)
              .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
@@ -10092,7 +10417,8 @@ impl Engine {
             let f = self.func("gdn_chunk_output_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(&gcum).arg(&p).arg(&y).arg(&ssnap).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale);
             unsafe { b.launch(cfg)?; }
         }
@@ -10171,7 +10497,8 @@ impl Engine {
         let f = self.func("gdn_glog_f32");
         let cfg = LaunchConfig::for_num_elems((n_head * t) as u32);
         let (h, ti) = (n_head as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(alpha).arg(dt_bias).arg(a).arg(g_log).arg(&h).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10184,7 +10511,8 @@ impl Engine {
         let f = self.func("sigmoid_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(y).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10196,7 +10524,8 @@ impl Engine {
         let f = self.func("gdn_glog_f32");
         let cfg = LaunchConfig::for_num_elems((n_head * t) as u32);
         let (h, ti) = (n_head as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(alpha).arg(dt_bias).arg(a).arg(g_log).arg(&h).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10207,7 +10536,8 @@ impl Engine {
         let f = self.func("sigmoid_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(x).arg(y).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10221,7 +10551,8 @@ impl Engine {
         let f = self.func("sig_mul_f16out_f32");
         let cfg = LaunchConfig::for_num_elems(n as u32);
         let ni = n as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(g).arg(dst).arg(dst16).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10234,7 +10565,8 @@ impl Engine {
         let f = self.func("gated_rmsnorm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10250,7 +10582,8 @@ impl Engine {
         // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(dst).arg(dst16).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10270,7 +10603,8 @@ impl Engine {
         let f = self.func("add_rms_norm_zq8");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
         let (nc, ep) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(b_in).arg(w).arg(res).arg(z).arg(&mut q).arg(&mut d).arg(&nc).arg(&ep);
         unsafe { b.launch(cfg)?; }
         Ok((q, d))
@@ -10287,7 +10621,8 @@ impl Engine {
         let f = self.func("gated_rmsnorm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10302,7 +10637,8 @@ impl Engine {
         // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(dst).arg(dst16).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10317,7 +10653,8 @@ impl Engine {
         let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (nc, ep) = (ncols as i32, eps);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(o).arg(w).arg(z).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&ep);
         unsafe { b.launch(cfg)?; }
         Ok((out_q, out_d))
@@ -10330,7 +10667,8 @@ impl Engine {
         let mut out = self.zeros(rows * cols)?;
         let cfg = LaunchConfig::for_num_elems((rows * cols) as u32);
         let (r, c) = (rows as i32, cols as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(inp).arg(&mut out).arg(&r).arg(&c);
         unsafe { b.launch(cfg)?; }
         Ok(out)
@@ -10343,7 +10681,8 @@ impl Engine {
         let f = self.func("repeat_heads_f32");
         let cfg = LaunchConfig::for_num_elems((head_dim * n_out * t) as u32);
         let (hd, ni, no, ti) = (head_dim as i32, n_in as i32, n_out as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(inp).arg(out).arg(&hd).arg(&ni).arg(&no).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10357,7 +10696,8 @@ impl Engine {
         let f = self.func("q_gate_split_f32");
         let cfg = LaunchConfig::for_num_elems((head_dim * n_head * t) as u32);
         let (hd, nh, ti) = (head_dim as i32, n_head as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qf).arg(q_out).arg(gate_out).arg(&hd).arg(&nh).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10373,7 +10713,8 @@ impl Engine {
         let f = self.func("qkv_to_gdn_repack_f32");
         let cfg = LaunchConfig::for_num_elems((d_state * num_v * t) as u32);
         let (ds, nv, nk, kd, ti) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, t as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(conv_out).arg(q_g).arg(k_g).arg(v_g).arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10387,7 +10728,8 @@ impl Engine {
         let f = self.func("conv_left_pad_f32");
         let cfg = LaunchConfig::for_num_elems((conv_dim * t) as u32);
         let (cd, ti, p) = (conv_dim as i32, t as i32, pad as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(src).arg(dst).arg(&cd).arg(&ti).arg(&p);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10402,7 +10744,8 @@ impl Engine {
         let f = self.func("conv_assemble_and_roll_f32");
         let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
         let (cd, p) = (conv_dim as i32, pad as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_col).arg(conv_state).arg(conv_in).arg(&cd).arg(&p);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10420,7 +10763,8 @@ impl Engine {
         let f = self.func("ssm_conv1d_fused_decode_f32");
         let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
         let (cd, dc) = (conv_dim as i32, d_conv as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
         b.arg(qkv_col).arg(conv_state).arg(w).arg(conv_out).arg(&cd).arg(&dc);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -10430,8 +10774,8 @@ impl Engine {
     /// Used for qkv split views. Small/rare; not perf-critical in Stage 1.
     pub fn slice_range(&self, src: &CudaSlice<f32>, start: usize, len: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let host = self.gpu.stream.clone_dtoh(src)?;
-        self.gpu.stream.synchronize()?;
+        let host = self.gpu.stream().clone_dtoh(src)?;
+        self.gpu.stream().synchronize()?;
         Ok(self.htod(&host[start..start + len])?)
     }
 }

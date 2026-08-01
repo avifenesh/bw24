@@ -33,8 +33,70 @@ pub fn cpu_linear(x: &[f32], w: &[f32], m: usize, in_f: usize, out_f: usize) -> 
 /// GPU runtime handle: a context + stream + cuBLASLt.
 pub struct Gpu {
     pub ctx: Arc<CudaContext>,
-    pub stream: Arc<CudaStream>,
+    /// The MAIN compute stream. PRIVATE since M1 increment 2: every launch site reads
+    /// `stream()` so the pp2 per-stage stream override (below) is a single seam. Naked
+    /// paths (no override pushed) get exactly this stream back — behavior unchanged.
+    stream: Arc<CudaStream>,
     pub blas: CudaBlasLT,
+}
+
+// ---------------------------------------------------------------------------------------
+// M1-PP2 increment 2: AMBIENT STREAM OVERRIDE (per-stage CUDA streams).
+//
+// The engine's entire launch surface reads `Gpu::stream()`. A pipeline stage redirects it
+// by pushing a per-stage stream onto this thread-local stack for the stage's host-issue
+// scope (RAII guard pops it). Decode is single-threaded host-issue, so thread-local is the
+// natural scope; cost when the stack is empty (every naked path) is one TLS lookup + a
+// branch + one Arc clone per launch — nanoseconds against a kernel launch.
+//
+// SAFETY CONTRACT (the multi-stream law): cudarc's per-arg event tracking stays DISABLED
+// (see memra-engine Engine::new) — cross-stream ordering is the OVERRIDER's job, via
+// explicit CudaEvents (pp2's boundary TX/RX choreography). The async mem pool is configured
+// below with opportunistic reuse OFF + internal dependencies ON, so a block freed on stream
+// A and re-allocated on stream B carries a driver-inserted dependency — alloc reuse cannot
+// race across stages. Buffers that one stream writes and another reads must be evented by
+// the caller; pp2 routes ALL cross-stage bytes through its persistent boundary slots.
+// ---------------------------------------------------------------------------------------
+thread_local! {
+    static STREAM_OVERRIDE: std::cell::RefCell<Vec<Arc<CudaStream>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// RAII scope: while alive, `Gpu::stream()` on THIS thread returns the pushed stream.
+/// Nest freely (stack). Popping on Drop keeps panic paths consistent.
+pub struct StreamOverride(());
+
+/// Push `s` as the ambient stream for the current thread until the guard drops.
+pub fn push_stream_override(s: Arc<CudaStream>) -> StreamOverride {
+    STREAM_OVERRIDE.with(|o| o.borrow_mut().push(s));
+    StreamOverride(())
+}
+
+impl Drop for StreamOverride {
+    fn drop(&mut self) {
+        STREAM_OVERRIDE.with(|o| {
+            o.borrow_mut().pop();
+        });
+    }
+}
+
+impl Gpu {
+    /// The stream every engine op launches on: the thread's override if one is pushed
+    /// (pp2 stage scopes), else the main compute stream. By-value Arc so callers hold a
+    /// stable handle across the call regardless of later pushes/pops.
+    #[inline]
+    pub fn stream(&self) -> Arc<CudaStream> {
+        STREAM_OVERRIDE
+            .with(|o| o.borrow().last().cloned())
+            .unwrap_or_else(|| self.stream.clone())
+    }
+
+    /// The main compute stream, override-blind (graph capture pins itself here; the pp2
+    /// runtime uses it to fence stage streams against load-time state).
+    #[inline]
+    pub fn main_stream(&self) -> &Arc<CudaStream> {
+        &self.stream
+    }
 }
 
 impl Gpu {

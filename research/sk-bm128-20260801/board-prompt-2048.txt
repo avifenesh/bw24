@@ -1,0 +1,32 @@
+# memra — Architecture & Tech-Stack Decision
+
+From-scratch LLM inference engine for **one** machine: NVIDIA **RTX 5090 Laptop** (consumer Blackwell **GB203, sm_120**, compute capability **12.0**, **24463 MiB** VRAM, **858 GB/s** measured read wall [95.8% of peak], 82 SMs, 3090 MHz max SM clock, 64 MB L2), Intel **Core Ultra 9 275HX** (24 cores, **no AMX/AVX-512** but **has AVX2 + AVX_VNNI** int8), **elastic free host RAM** (~12–16 GB free, varies with other LLM servers — query at runtime, never hardcode), **2× WD PC SN8000S** NVMe (**PCIe Gen4 x4, ~7 GB/s each**, RAID0 ≈ 14 GB/s), GPU on **PCIe Gen5 x8** (~31 GB/s ceiling; idles at Gen1, re-clocks under load). **Power is not a hard constraint:** the "150 W cap" is an asus-armoury firmware-settings bug (`nv_tgp.max_value` wrongly clamped; spec = 150 TGP + 25 boost = 175 W; user's patch to asus-linux maintainer raises it). Real sustained limit is thermal (87 °C target), not fixed wattage — benchmark at full power (`gpu-full-power on`). Toolchains present (mutable): CUDA **13.1** + **12.8**, driver **595** (CUDA 13.2 runtime); CUTLASS/deps installable as research dictates.
+
+**Goal:** beat vLLM, SGLang, and llama.cpp on *this exact box* for single-stream/low-concurrency decode and MoE-that-doesn't-fit. Must support MoE, weight/expert/KV spilling, GGUF, KV-cache quantization. Copying leading impl 1:1 is allowed and encouraged. (Note: "tokens-per-watt" was planned, but since power cap is a *settings bug being patched*, not silicon limit, watt-normalized targets are secondary — optimize for raw tok/s at thermal-limited full-power state and re-baseline after TGP patch lands.)
+
+This document folds in the adversarial verdicts. Where a verifier **refuted** or marked a claim **uncertain**, the optimistic framing has been downgraded and the load-bearing risk demoted off the critical path.
+
+---
+
+## 0. Hard architectural facts (the constraints that drive every decision)
+
+These are confirmed locally and by multiple primary sources. They are non-negotiable inputs:
+
+1. **sm_120 ≠ sm_100.** Consumer Blackwell has **no tcgen05, no TMEM, no WGMMA, no TMA multicast** (cluster forced 1×1×1), and only **~99 KB shared-mem/block** (vs 228 KB on datacenter). It is **Ampere/Ada-style warp-level `mma.sync` into registers**, *plus* Blackwell FP4/FP6 block-scaled `mma.sync` extensions. **FlashAttention-3 (sm_90a) and FlashAttention-4 (sm_100a) do not run here.** Any kernel gated on tcgen05/TMEM silently fails or refuses.
+2. **NVFP4 dense GEMM works on sm_120; NVFP4 *grouped/MoE* GEMM does not (yet).** CUTLASS TMA-warp-specialized grouped tactics fail to initialize even under `compute_120f`; the working fallback path is ~39 tok/s, **below Marlin W4A16 at 46–50 tok/s**. → **Marlin W4A16 is the shipping default for MoE; native FP4 grouped is research, not a pillar.** [CORRECTED — the earlier "MXFP4 block-scale mma.sync is ptxas-rejected on sm_120" claim was a **false negative**: `mma.sync.m16n8k64.kind::mxf4.block_scale.scale_vec::2X..ue8m0` AND `kind::mxf8f6f4.block_scale` both **assemble and RUN on this GPU** when built with `-gencode arch=compute_120a,code=sm_120a`. The rejection only happens under the bare `-arch=sm_120a` shortcut (which misroutes to `compute_120` PTX) — the same llama.cpp #19662 build-flag bug, NOT a silicon limit. Verified on-device 2026-06-26.]
+3. **DECODE here is memory-bandwidth- and power-bound, not FLOP-bound** (single-token AI≈1-2 FLOP/byte, far below any crossover). [CORRECTED re compute: the "FP8/FP4 is not a compute win, FP8≈FP16 ~102 TFLOP/s" claim is true ONLY of the **plain** mma path. **Measured on-device: block-scaled FP8 (mxf8f6f4) = 381 TFLOP/s and block-scaled FP4 (mxf4) = 762 TFLOP/s vs FP16 117 and plain-FP8 219** — block-scale lifts the FP32-accumulate throttle (1.74x over plain FP8), matching FlashInfer #3628.] → For DECODE, low-bit weights + KV quant win via **bytes moved** (compute is irrelevant there). For **PREFILL / batched / block-scaled attention mainloops**, block-scaled FP4/FP8 is a genuine **6.5x / 3.3x compute lever** — a real edge, scoped to compute-bound regimes.
+4. **The build toolchain is a correctness landmine.** llama.cpp MMQ **segfaults under CUDA 13.1** on sm_120 (nvcc codegen/-O3 bug, confirmed: zenn write-up + issue #18331) → must build the GGUF/MMQ path with **CUDA 12.8**. Arch flag must be **`sm_120a` (SASS)**; FP4-fast grouped needs **`compute_120f` (CUDA 13.0+)**. There is also a **`sharedMemPerBlockOptin` overflow on Blackwell** that aborts MMQ at runtime regardless of toolkit — must carry the smpbo clamp from llama.cpp PR #22338 **[CORRECTED: PR #22338 was on driver 590.48.01 (not 595), and is an UNMERGED, author-closed PR — it did NOT land upstream, so we carry it as a LOCAL PATCH, not a relied-on upstream fix].**
+5. **The Python engines' tax is structural, not kernel quality.** vLLM/SGLang pay per-step Python dispatch + GC + mandatory CUDA graphs (8× penalty without graphs on sm_120 per vLLM #37242) and have **no host expert offload** (they OOM on >24 GB MoE). llama.cpp has offload but **re-copies hot experts every token** and uses per-op dispatch. These are the real seams.
+6. **Numbers in the wild are mostly desktop/datacenter.** Desktop 5090 ≈ 1792 GB/s / 575 W / 170 SMs; **this laptop ≈ 896 GB/s (847 measured) / 82 SMs / thermal-bound (~175 W now, more after the TGP patch)** — roughly **half the bandwidth, half the SMs**. Every published decode tok/s must be ~halved (bandwidth) as a first approximation and re-measured at full power before any "beats X" claim (perf claims require **N=5 medians**, benchmarked with `gpu-full-power on`).
+
+---
+
+## 1. TECH STACK DECISION
+
+### Chosen: **Rust host runtime + raw `.cu` kernels (nvcc, `-arch=sm_120a`) embedded as a fatbin, driven via `cudarc`. Build = `cargo` + `build.rs`→`nvcc`→`ninja`. Server = native `axum`/`tokio` OpenAI-compatible HTTP, in-process.**
+
+| Layer | Choice |
+|---|---|
+| Host runtime / scheduler / KV mgr / spill mgr / loader | **Rust** (single process, single address space, no GC, fearless compute/copy/spill overlap) |
+| CUDA driver/runtime access | **`cudarc`** crate (driver + NVRTC + cuBLAS + cuBLASLt + cuDNN; CUDA 13.0–13.3 wrapped, block-scale FP4/FP8 enums exposed) |
+| Kernel authoring | **Hand-written `.cu`** compiled AOT by **nvcc** in `build.rs` (ninja-driven) into a **fa

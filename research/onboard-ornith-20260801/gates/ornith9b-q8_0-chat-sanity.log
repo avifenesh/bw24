@@ -1,0 +1,32 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Explain in two short paragraphs why the sky is blue.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Explain in two short paragraphs why the sky is blue."
+prompt tokens: [248045, 846, 198, 814, 20139, 303, 1330, 2716, 41228, 3069, 279, 12515, 369, 6105, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=90700  decode argmax=90700  logit maxdiff=1.089e0  MATCH
+prefill 22 tok in 0.0306s = 718.6 tok/s (pp22)
+generated 200 tokens in 2.364s = 84.59 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.031s) [stop: MaxNew]
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 31819, 25, 8169, 279, 12515, 369, 6105, 13, 198, 262, 348, 256, 42794, 25, 8771, 2716, 41228, 13, 198, 262, 348, 256, 38622, 25, 79091, 279, 24057, 9077, 321, 3413, 284, 943, 13, 271, 17, 13, 220, 2972, 27382, 1386, 5141, 35801, 73182, 64700, 198, 262, 348, 256, 7806, 4009, 369, 4022, 3000, 22687, 314, 660, 7736, 318, 82, 37424, 553, 198, 262, 348, 256, 8964, 579, 16078, 5435, 43034, 318, 42608, 24388, 11, 22817, 8, 321, 18167, 13, 198, 262, 348, 256, 12870, 60845, 69377, 25, 22602, 89661, 318, 11855, 5285, 29899, 8, 43000, 777, 1056, 4860, 89661, 318, 1114, 4979, 818, 553, 198, 262, 348, 256, 10774, 7662, 25598, 25, 567, 1436, 6105, 777, 1056, 76990, 13, 271, 18, 13, 220, 2972, 48401, 286, 471, 47690, 220, 16, 25, 561, 26898, 2074, 318, 3217, 29347, 188912, 198, 262, 348, 256, 4980, 440, 37728, 15783, 279, 16078, 13, 198, 262, 348, 256, 82210, 421, 37728, 5435, 660, 7736, 13, 198, 262, 348, 256, 79091, 12870, 60845, 69377, 25, 6605, 33470, 43000, 22602, 89661, 318, 11855, 8, 777, 13057, 1056, 4860, 5981, 318]
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Topic: Why the sky is blue.\n    *   Constraint: Two short paragraphs.\n    *   Goal: Explain the phenomenon clearly and concisely.\n\n2.  **Identify Key Scientific Concepts:**\n    *   Sunlight is white light composed of all colors (spectrum).\n    *   Earth's atmosphere contains gases (nitrogen, oxygen) and particles.\n    *   Rayleigh scattering: shorter wavelengths (blue/violet) scatter more than longer wavelengths (red/orange).\n    *   Human eye sensitivity: we see blue more than violet.\n\n3.  **Drafting - Paragraph 1: The Mechanism (Scattering):**\n    *   Start with sunlight entering the atmosphere.\n    *   Mention that sunlight contains all colors.\n    *   Explain Rayleigh scattering: gas molecules scatter shorter wavelengths (blue) more effectively than longer ones ("
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Topic: Why the sky is blue.
+    *   Constraint: Two short paragraphs.
+    *   Goal: Explain the phenomenon clearly and concisely.
+
+2.  **Identify Key Scientific Concepts:**
+    *   Sunlight is white light composed of all colors (spectrum).
+    *   Earth's atmosphere contains gases (nitrogen, oxygen) and particles.
+    *   Rayleigh scattering: shorter wavelengths (blue/violet) scatter more than longer wavelengths (red/orange).
+    *   Human eye sensitivity: we see blue more than violet.
+
+3.  **Drafting - Paragraph 1: The Mechanism (Scattering):**
+    *   Start with sunlight entering the atmosphere.
+    *   Mention that sunlight contains all colors.
+    *   Explain Rayleigh scattering: gas molecules scatter shorter wavelengths (blue) more effectively than longer ones (

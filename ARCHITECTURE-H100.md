@@ -2395,3 +2395,48 @@ arms, 10:53Z same-session block): memra prefill 11337.1 / decode 210.30 -> e2e 9
 vLLM FP8-dynamic 43964.4 / 194.73 -> 956.7 = **1.023x** (decode is the cell's best to
 date: 180.87 -> 182.09 -> 204.57 -> 210.30). Receipts:
 `research/f16g-permodel-20260801/` (A/B, gate logs, batteries, board jsonl + raw runs).
+
+## Round 51 — sk128 persistent-visitor grouped GEMM: +4.2%, cublas parity NOT reached (2026-08-01, lane/sk-bm128)
+
+The mode-2 single-kernel grouped GEMM (round 49's `MEMRA_F16G_SK` arm) rebuilt as a
+persistent problem-visitor over the REAL CSR tiles: a grid-stride flat tile list from a
+smem prefix over the device offsets kills the round-49 grid's ~92% early-exit churn under
+q35's ~17x group skew. Two tile forms: 32x64x32 2-stage (the round-49 geometry) and
+128x64x64 3-stage cp.async — cutlass's tile shape on the same sm_80-portable mma.sync
+m16n8k16, no wgmma/TMA; hybrid split at `MEMRA_F16G_SK_CROSS` (per-arch swept: H100 32,
+5090 64). Every form is BYTE-IDENTICAL to the round-49 kernel (same ascending mma k-chain
+per element; kernel-check f16g-sk section maxdiff 0.00e0 on BOTH rigs, identical values —
+deterministic k-chain). VERDICT (x5 interleaved process rounds x3 arms round-robin, each
+the median of 5 in-process reps, same box same hour): old grid-scan 7966.1 / new visitor
+8299.9 / cublas mode-1 8563.2 tok/s board-2048 prime — **new vs old +4.2%, zero overlap;
+new = 96.9% of cublas — PARITY NOT REACHED, mode 1 keeps the Hopper default**. The 5090
+mode-2 arm wins outright: 3403.7 -> 3568.4 (+4.8% interleaved x5, zero overlap; GEMM
+stage -9.4% by nsys) — but MMQ stays the sm_120a default (mode 2 is the experimental
+door on both arches). RESIDUAL, PRICED (nsys N=1, mechanism evidence): sk GEMM stage
+131.9ms (sk128v 90.5 + sk32v 41.3) vs cutlass grouped 101.6 + h2f_rows_scale 10.8 =
+112.4ms (cublas also pays a host stream-sync per projection the kernel sum can't see) —
+the 32x64 2-stage TAIL form is 41.3ms = 31% of stage time; the crossover fine-sweep
+(x8..x512, winner 32) refuted pushing tail groups onto sk128, so the next rung is a
+deeper tail form (BK=64 3-stage at small BM, or register double-buffering). Gates:
+kernel-check ALL GREEN both rigs (incl the in_f=480 %32-not-%64 forced-128 fallback
+case), run-gen argmax MATCH with maxdiff identical old-vs-new on each rig, run-spec
+K=1..8 PASS with acceptance counts identical to the round-49 receipt. First-run find:
+static __half smem tiles after the 2052B prefix landed 4-aligned ->
+CUDA_ERROR_MISALIGNED_ADDRESS on cp.async/ldmatrix; `__align__(16)` on all smem tiles.
+sk128's 82944B dynamic smem needs the >48KB opt-in — SetAttribute CHECKED with device-fit
+fallback (1 CTA/SM x 8 warps on sm_120a; H100's 228KB admits 2/SM). Receipts:
+`research/sk-bm128-20260801/` (5090 + `h100/`).
+
+Round-51 adjacent, serving: batched-tick increment 3 (5090 lane,
+`research/batched-tick-inc3-20260801/`) shipped the per-model EXACT-16 decode chunk tier
+(`decode_batch_exact16_ok`; Q8_0 qualifies only through the q8rp `_rp` mirror twins) —
+the pre-inc2 darklane cap-15/16 "flat-or-worse" verdict was re-swept after inc2 made the
+tick weight-stream-bound (LAW 2 claims another stale verdict) and chunk 16 measured
++18.8% at c=16 same-mirror on the 5090. On THIS lane the 9B Q8_0 fleet model qualifies
+automatically (`MEMRA_Q8RP` defaults ON under `memra_hopper_mma`), so the next fleet
+deploy runs chunk 16 — every H100 serve number in this ledger is chunk-8-era, and the
+chunk-16 fleet effect on Hopper is PENDING on-box re-validation (no H100 receipts exist
+yet; do not quote the 5090 delta as a fleet claim). The emit-defer arm (one D2H per tick
+instead of per chunk) measured FLAT (±0.7% at every load point — 3 saved syncs vs a
+~100ms weight-bound tick) and was KILLED per the flags doctrine; the JSONL rows are the
+record.

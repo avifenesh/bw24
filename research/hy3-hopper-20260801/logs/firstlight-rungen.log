@@ -1,0 +1,14 @@
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded Hy3 from memra repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain in two sentences why the sky is blue.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain in two sentences why the sky is blue."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 280, 1230, 17628, 3892, 252, 15318, 316, 7571, 13, 120007, 120029, 120030]
+verify-prefill argmax=628  decode argmax=628  logit maxdiff=1.664e0  MATCH
+generated 32 tokens in 15.270s = 2.10 tok/s (ST greedy decode)
+tokens: [628, 15318, 8205, 7571, 1775, 3605, 9559, 289, 15443, 15134, 8886, 40877, 18411, 5001, 15873, 20218, 1307, 71340, 7571, 289, 1165, 6571, 1307, 7603, 1134, 5800, 31604, 1594, 244, 1666, 2478, 100357]
+MoE cache DECODE-WINDOW: 6572 slots | hits=35742 misses=24930 (hit-rate=58.9%) | staged 64.70 GB H2D (1928.3 MB/token)
+storage DECODE-WINDOW: 0.57 GB physical reads
+OUTPUT TEXT: "The sky appears blue because air molecules and tiny dust particles scatter shorter-wavelength sunlight—mostly blue and some green—more than longer wavelengths through a process called Rayleigh"
+--- generated text ---
+The sky appears blue because air molecules and tiny dust particles scatter shorter-wavelength sunlight—mostly blue and some green—more than longer wavelengths through a process called Rayleigh

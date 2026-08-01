@@ -1,0 +1,9 @@
+devices: 1
+(single device: no peer pairs — matrix section is census-only here; the cross-device arm gates on the 8x box)
+peer-arm copy (cuMemcpyPeerAsync, same-ctx degenerate): bytediff=0 OK
+Pp2Rt built: cross_device=false
+boundary roundtrip step 0 slot 0: bytediff=0 OK
+boundary roundtrip step 1 slot 1: bytediff=0 OK
+boundary roundtrip step 2 slot 0: bytediff=0 OK
+boundary roundtrip step 3 slot 1: bytediff=0 OK
+pp-transport-smoke PASS

@@ -18,6 +18,7 @@ use memmap2::Mmap;
 pub mod d2t;
 pub mod dequant;
 pub mod config;
+pub mod micro_gguf;
 pub mod safetensors;
 pub mod hf;
 pub mod hf_mapping;
