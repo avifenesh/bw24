@@ -1,0 +1,2 @@
+{"ts": "2026-08-01T02:09:37+0000", "label": "exact-r2", "base": "http://127.0.0.1:8093", "n": 16, "max_tokens": 64, "wall_s": 2.414256218000446, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+{"ts": "2026-08-01T02:09:51+0000", "label": "exact-r3", "base": "http://127.0.0.1:8093", "n": 16, "max_tokens": 64, "wall_s": 2.9488026649996755, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}

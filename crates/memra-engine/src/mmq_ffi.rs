@@ -190,6 +190,18 @@ unsafe extern "C" {
         n_tokens: i32,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+    /// Fused act-epilogue: silu/gelu(gate)*up + q8_1_mmq (D4) quantize in ONE launch — no f32 act
+    /// buffer. gate/up pair-major [n_tokens, in_f]; scratch identical to memra_mmq_iq_quantize_act.
+    /// act_kind: 0=silu*mul, 1=gelu_tanh*mul. Byte-identical to the two-pass path (kernel-check gated).
+    pub fn memra_mmq_iq_fused_act_quant(
+        gate: *const f32,
+        up: *const f32,
+        act_scratch: *mut core::ffi::c_void,
+        in_f: i32,
+        n_tokens: i32,
+        act_kind: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// Expert-segmented IQ MMA MMQ. Same CSR shape as moe_pairs_matvec_q8_dec: `table` = [3,n_expert]
     /// device slab ptrs, CSR ex_ids/ex_off/ex_pairs group pairs by expert, pair_tok gathers the
     /// activation row. y = [n_pairs, out_f] pair-major. `act_scratch` pre-quantized over n_tokens.
@@ -838,6 +850,44 @@ impl Engine {
             };
             if rc != 0 {
                 return Err(format!("memra_mmq_iq_quantize_act rc={rc}").into());
+            }
+        }
+        Ok(scratch)
+    }
+
+    /// Fused act-epilogue (research lever #3): silu/gelu(gate)*up + D4 quantize in one launch —
+    /// replaces moe_pairs_{silu,gelu}_mul + mmq_iq_quantize_act without materializing the f32 act
+    /// buffer (saves one full write + one full read pass over [n_pairs x n_ff]). Scratch bytes are
+    /// BYTE-IDENTICAL to the two-pass path (kernel-check `iq fused act+quant` gates it).
+    /// `act_kind`: 0 = silu*mul (qwen35moe), 1 = gelu_tanh*mul (gemma4).
+    pub fn mmq_iq_fused_act_quant(
+        &self,
+        gate: &CudaSlice<f32>,
+        up: &CudaSlice<f32>,
+        in_f: usize,
+        n_tokens: usize,
+        act_kind: i32,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let act_bytes = unsafe { memra_mmq_iq_experts_act_bytes(in_f as i32, n_tokens as i32) };
+        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        {
+            let stream = &self.gpu.stream;
+            let (g_p, _gg) = gate.device_ptr(stream);
+            let (u_p, _gu) = up.device_ptr(stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let rc = unsafe {
+                memra_mmq_iq_fused_act_quant(
+                    g_p as *const f32,
+                    u_p as *const f32,
+                    s_p as *mut core::ffi::c_void,
+                    in_f as i32,
+                    n_tokens as i32,
+                    act_kind,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 {
+                return Err(format!("memra_mmq_iq_fused_act_quant rc={rc}").into());
             }
         }
         Ok(scratch)

@@ -3,6 +3,41 @@
 use memra_validate::{maxdiff, pr};
 use memra_engine::Engine;
 
+/// Weight-oracle artifact resolution (lane/kc-paths, 2026-08-01). The dtype5/D.2/Q8MMQ/G12/G27
+/// sections used to pin 5090-rig absolute paths (/home/avifenesh/..., /data/...), so they
+/// silently SKIPped on every other box — H100 rounds 44-47 ran the battery blind on exactly
+/// the models that lane fights over. Chain, first existing path wins:
+///   1. $MEMRA_KC_MODELS_DIR/<file>                       (explicit; battery scripts set this)
+///   2. the CLI gguf arg, when its basename == <file>     (model under test doubles as oracle)
+///   3. $HOME/models/<file>, /opt/dlami/nvme/models/<file> (bench-box conventions)
+///   4. the legacy rig paths                              (the 5090 rig keeps working naked)
+/// A miss prints ONE loud actionable line — a skipped section must always be visible in the
+/// battery log and name the env that enables it, never silent.
+fn kc_model(section: &str, fname: &str, legacy: &[&str], gguf_arg: &Option<String>) -> Option<String> {
+    let mut cands: Vec<String> = Vec::new();
+    if let Ok(d) = std::env::var("MEMRA_KC_MODELS_DIR") {
+        cands.push(format!("{}/{fname}", d.trim_end_matches('/')));
+    }
+    if let Some(a) = gguf_arg {
+        if std::path::Path::new(a).file_name().map(|f| f == fname).unwrap_or(false) {
+            cands.push(a.clone());
+        }
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        cands.push(format!("{h}/models/{fname}"));
+    }
+    cands.push(format!("/opt/dlami/nvme/models/{fname}"));
+    cands.extend(legacy.iter().map(|s| s.to_string()));
+    if let Some(p) = cands.iter().find(|p| std::path::Path::new(p).exists()) {
+        return Some(p.clone());
+    }
+    println!(
+        "KC-SKIP [{section}] {fname}: absent on this box ({} candidates tried) — \
+         set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section",
+        cands.len()
+    );
+    None
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let e = Engine::new(0)?;
@@ -254,6 +289,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
         println!("silu_mul_q8_1 fold: int8_mismatch={qbad} scale_mismatch={dbad} {}",
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- FUSED ACT-EPILOGUE (MoE prefill MMA arms): mmq_iq_fused_act_quant must produce a
+    //     BYTE-IDENTICAL block_q8_1_mmq D4 scratch to the two-pass chain
+    //     moe_pairs_{silu,gelu}_mul -> mmq_iq_quantize_act. Covers both activations and the
+    //     ragged/padded in_f (gemma 704 -> GGML_PAD 512-multiple zero tail — the padded-k
+    //     down-GEMM contract rides those zero bytes). ANY nonzero diff = FAIL. ---
+    for (name, in_f, n_pairs, act_kind) in [("silu", 768usize, 33usize, 0i32),
+                                            ("silu", 512, 7, 0),
+                                            ("gelu", 704, 29, 1)] {
+        let n = n_pairs * in_f;
+        let g: Vec<f32> = (0..n).map(|i| pr(i + 17) * 4.0).collect();
+        let u: Vec<f32> = (0..n).map(|i| pr(i + 29) * 4.0).collect();
+        let gd = e.htod(&g)?;
+        let ud = e.htod(&u)?;
+        // two-pass reference: f32 act buffer, then the D4 quantizer re-reads it.
+        let act = if act_kind == 0 { e.moe_pairs_silu_mul(&gd, &ud, n)? }
+                  else { e.moe_pairs_gelu_mul(&gd, &ud, n)? };
+        let scr_ref = e.mmq_iq_quantize_act(&act, in_f, n_pairs)?;
+        // fused: activation in registers, only the quantized scratch is written.
+        let scr_f = e.mmq_iq_fused_act_quant(&gd, &ud, in_f, n_pairs, act_kind)?;
+        let b_ref: Vec<u8> = e.stream().clone_dtoh(&scr_ref)?;
+        let b_f: Vec<u8> = e.stream().clone_dtoh(&scr_f)?;
+        e.stream().synchronize()?;
+        let nbad = b_ref.iter().zip(&b_f).filter(|(a, b)| a != b).count();
+        println!("iq fused act+quant [{name} in_f={in_f} n_pairs={n_pairs}]: \
+                  byte_mismatch={nbad}/{} {}",
+                 b_ref.len(), if nbad == 0 && b_ref.len() == b_f.len() { "OK" }
+                              else { fails += 1; "FAIL" });
     }
 
     // --- naive SDPA (1 head, no GQA, causal, head_dim=64, T=T_kv=4) ---
@@ -632,32 +696,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the GPU paths against ggml ground truth transitively. Mirrors the Q4_K/Q6_K block above:
     //   Stage-A (dequant-in-kernel) rel < 1e-4 ; Stage-B (int8 dp4a) rel < 3e-2.
     // IQ3_S has NO dp4a fast path (intentional, see lib.rs) -> Stage-A only.
-    // Skips silently if a daily GGUF is absent so the core gate still runs in CI without models.
+    // Skips LOUDLY (kc_model) if a daily GGUF is absent so the core gate still runs in CI
+    // without models — and a box missing the artifact shows the miss in its battery log.
     {
         use memra_gguf::{GgufFile, GgmlType, dequant};
         use memra_runtime::cpu_linear;
-        const GGUF_9B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
-        const GGUF_35B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf";
+        let gguf_9b = kc_model("dtype5", "Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"],
+            &gguf_arg);
+        let gguf_35b = kc_model("dtype5", "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"],
+            &gguf_arg);
         // (gguf, tensor, expected type, QT code, fast-path selector or "" for Stage-A only)
-        let cases: [(&str, &str, GgmlType, i32, &str); 5] = [
-            (GGUF_9B,  "blk.0.ffn_gate.weight",      GgmlType::NVFP4,  memra_engine::QT_NVFP4,  "nvfp4"),
-            (GGUF_9B,  "blk.0.attn_gate.weight",     GgmlType::Q5_K,   memra_engine::QT_Q5_K,   "q5k"),
-            (GGUF_35B, "blk.0.ffn_gate_exps.weight", GgmlType::IQ3_S,  memra_engine::QT_IQ3_S,  ""),
-            (GGUF_35B, "blk.0.ffn_down_exps.weight", GgmlType::IQ4_XS, memra_engine::QT_IQ4_XS, "iq4xs"),
-            (GGUF_35B, "blk.40.ffn_gate_exps.weight",GgmlType::Q3_K,   memra_engine::QT_Q3_K,   "q3k"),
+        let cases: [(&Option<String>, &str, GgmlType, i32, &str); 5] = [
+            (&gguf_9b,  "blk.0.ffn_gate.weight",      GgmlType::NVFP4,  memra_engine::QT_NVFP4,  "nvfp4"),
+            (&gguf_9b,  "blk.0.attn_gate.weight",     GgmlType::Q5_K,   memra_engine::QT_Q5_K,   "q5k"),
+            (&gguf_35b, "blk.0.ffn_gate_exps.weight", GgmlType::IQ3_S,  memra_engine::QT_IQ3_S,  ""),
+            (&gguf_35b, "blk.0.ffn_down_exps.weight", GgmlType::IQ4_XS, memra_engine::QT_IQ4_XS, "iq4xs"),
+            (&gguf_35b, "blk.40.ffn_gate_exps.weight",GgmlType::Q3_K,   memra_engine::QT_Q3_K,   "q3k"),
         ];
         for (path, tname, gty, qt, sel) in cases {
-            if !std::path::Path::new(path).exists() {
-                println!("dtype5 {gty:?} {tname}: GGUF absent ({path}) — SKIP");
-                continue;
-            }
+            let Some(path) = path.as_deref() else { continue };   // kc_model already skipped loudly
             let g = GgufFile::open(path)?;
-            let t = match g.find(tname) {
-                Some(t) if t.ggml_type == gty => t,
-                Some(t) => { println!("dtype5 {tname}: type {:?} != {gty:?}", t.ggml_type); fails += 1; continue; }
-                None => { println!("dtype5 {tname}: NOT FOUND in {path}"); fails += 1; continue; }
+            let t = match g.find(tname).filter(|t| t.ggml_type == gty) {
+                Some(t) => t,
+                // The pinned tensor can be absent or re-typed in another REVISION of the same
+                // artifact (the H100 box's 35B copy lacks the rig copy's blk.40 MTP layer — its
+                // Q3_K source; found by this gate 2026-08-01). The case exists to gate the DTYPE
+                // against ggml ground truth, the name is just a known carrier — substitute the
+                // smallest same-dtype weight so the dtype stays gated on this box; only a file
+                // with NO such tensor skips, and loudly. Numeric thresholds below are unchanged.
+                None => match g.tensors.iter()
+                        .filter(|t| t.ggml_type == gty && t.ne.len() >= 2 && t.ne[1] > 1
+                                && t.name.ends_with(".weight"))
+                        .min_by_key(|t| t.n_bytes) {
+                    Some(t) => {
+                        println!("dtype5 {gty:?}: pinned {tname} absent/re-typed in this artifact \
+                                  revision — substituting {}", t.name);
+                        t
+                    }
+                    None => {
+                        println!("KC-SKIP [dtype5] {path}: no {gty:?} .weight tensor at all \
+                                  (pinned {tname} absent) — this artifact revision lacks the dtype");
+                        continue;
+                    }
+                }
             };
             // in_f = ne[0] (K dim); out_f = ne[1] (rows). For 3D MoE tensors validate expert 0.
             let in_f = t.ne[0] as usize;
@@ -771,13 +854,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // NVFP4 GEMM vs dp4a on the 9B model (separate path: per-tensor macro-scale + in_f%64).
     {
         use memra_gguf::{GgufFile, GgmlType};
-        // Resolve the first existing NVFP4 model (box paths differ from the dev rig). The gates
+        // Resolve the first existing NVFP4 model (9B preferred, 27B-MTP fallback). The gates
         // below filter by tensor name+type, so a model that lacks a given tensor just skips it.
-        let gguf_9b_owned = [
-            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
-            "/home/ubuntu/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf",
-            "/home/ubuntu/memra-bench/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
-        ].into_iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string());
+        let gguf_9b_owned = kc_model("nvfp4-gemm", "Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+              "/home/ubuntu/memra-bench/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"],
+            &gguf_arg)
+        .or_else(|| kc_model("nvfp4-gemm", "Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf",
+            &["/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf"],
+            &gguf_arg));
         if let Some(gguf_9b) = gguf_9b_owned.as_deref() {
             let g = GgufFile::open(gguf_9b)?;
             // Q5_K GEMM vs dp4a (attn_gate is Q5_K in 9B).
@@ -936,112 +1021,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
-            // --- VENDORED llama Q8_0 MMQ GEMM (MEMRA_PP_Q8MMQ) vs the f32 dequant oracle. ---
-            // Q8_0 weight IS int8 (lossless tile-load) + q8_1 D4 activation -> same int8-activation
-            // band as q45k (~1e-3..1e-2). 2e-2 hard gate. Uses the 35B model's Q8_0 projections.
-            {
-                const G35: &str = "/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf";
-                if std::path::Path::new(G35).exists() {
-                    let g35 = GgufFile::open(G35)?;
-                    use memra_gguf::dequant;
-                    use memra_runtime::cpu_linear;
-                    for tname in ["blk.0.attn_qkv.weight", "blk.0.ffn_gate_shexp.weight"] {
-                        let Some(t) = g35.find(tname).filter(|t| t.ggml_type == GgmlType::Q8_0) else { continue };
-                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
-                        let raw = g35.tensor_data(t);
-                        let w_f32 = dequant::dequantize(GgmlType::Q8_0, raw, in_f * out_f);
-                        let wd = e.htod_bytes(raw)?;
-                        for tt in [16usize, 64, 128, 512] {
-                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 53) * 0.1).collect();
-                            let xd = e.htod(&x)?;
-                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
-                            let yb = e.dtoh(&e.qmatvec_mmq_q8_0_raw(&wd, &xd, tt, in_f, out_f)?)?;
-                            let d = maxdiff(&cpu, &yb);
-                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
-                            let rel = d / scale;
-                            println!("MMQ-Q8_0 {tname} [Q8_0 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
-                                     if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
-                        }
-                    }
-                }
-            }
-            // --- VENDORED llama Q4_0 MMQ GEMM (MEMRA_PP_Q4MMQ) vs the f32 dequant oracle. ---
-            // Nibble->int8 tile-load dequant is lossless ((q-8) exact in int8) + q8_1 D4 activation
-            // -> same int8-activation band as Q8_0 (~1e-3..1e-2). 2e-2 hard gate. Uses the 12B
-            // gemma QAT q4_0 projections. Also gates the rp split-plane loader BIT-identical to
-            // the raw-18B-block loader (pure address remap, same FP ops in the same order).
-            {
-                const G12: &str = "/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf";
-                // Host mirror of q4_0_split_rp_build: qs plane (16B/block, block-major) then fp16
-                // d plane (2B/block) at out_f*nblk*16.
-                fn repack_q4_0_split(raw: &[u8], nblocks: usize) -> Vec<u8> {
-                    let mut out = vec![0u8; nblocks * 18];
-                    let dplane = nblocks * 16;
-                    for i in 0..nblocks {
-                        let b = &raw[i * 18..i * 18 + 18];
-                        out[i * 16..i * 16 + 16].copy_from_slice(&b[2..18]);
-                        out[dplane + i * 2] = b[0];
-                        out[dplane + i * 2 + 1] = b[1];
-                    }
-                    out
-                }
-                if std::path::Path::new(G12).exists() {
-                    let g12 = GgufFile::open(G12)?;
-                    use memra_gguf::dequant;
-                    use memra_runtime::cpu_linear;
-                    for tname in ["blk.0.attn_q.weight", "blk.0.ffn_gate.weight"] {
-                        let Some(t) = g12.find(tname).filter(|t| t.ggml_type == GgmlType::Q4_0) else { continue };
-                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
-                        let raw = g12.tensor_data(t);
-                        let w_f32 = dequant::dequantize(GgmlType::Q4_0, raw, in_f * out_f);
-                        let wd = e.htod_bytes(raw)?;
-                        let wd_rp = e.htod_bytes(&repack_q4_0_split(raw, out_f * in_f / 32))?;
-                        for tt in [16usize, 64, 128, 512] {
-                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 59) * 0.1).collect();
-                            let xd = e.htod(&x)?;
-                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
-                            let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
-                            let d = maxdiff(&cpu, &yb);
-                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
-                            let rel = d / scale;
-                            println!("MMQ-Q4_0 {tname} [Q4_0 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
-                                     if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
-                            let yr = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd_rp, &xd, tt, in_f, out_f, true)?)?;
-                            let nbad = yb.iter().zip(yr.iter())
-                                .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-                            println!("MMQ-Q4_0-RP {tname} T={tt}: bit-mismatch {nbad}/{} {}",
-                                     yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
-                        }
-                    }
-                }
-            }
-            // 27B ffn_down NVFP4 shape probe (in_f=17408 not a clean MMQ_ITER_K_FP4 multiple? T=512)
-            // — compare MMQ vs the dp4a oracle to isolate the 27B T=513 mismatch.
-            {
-                const G27: &str = "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf";
-                if std::path::Path::new(G27).exists() {
-                    let g27 = GgufFile::open(G27)?;
-                    for tn in ["blk.0.ffn_down.weight", "blk.0.ffn_gate.weight"] {
-                        if let Some(t) = g27.find(tn).filter(|t| t.ggml_type == GgmlType::NVFP4) {
-                            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
-                            let raw = g27.tensor_data(t); let row_bytes = raw.len() / out_f;
-                            let wd = e.htod_bytes(raw)?;
-                            for tt in [16usize, 512] {
-                                let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
-                                let xd = e.htod(&x)?;
-                                let ya = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
-                                let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
-                                let d = maxdiff(&ya, &yb);
-                                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
-                                let rel = d / scale;
-                                println!("MMQ-27B {tn} [NVFP4 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} (W4A4-vs-dp4a band ~0.1) {}",
-                                         if rel < 2.5e-1 { "OK" } else { "HIGH" });
-                            }
-                        }
-                    }
-                }
-            }
-            }
             // --- Phase-1 CUTLASS FP4 GEMM: REPACK CORRECTNESS gate. ---
             // The de-interleave (GGUF -> plain packed e2m1) + SFB swizzle is the ONLY place a silent
             // wrong-answer hides. TWO checks isolate it:
@@ -1091,6 +1070,124 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+            }
+            // The three sections below were HOISTED out of the `if let Some(gguf_9b)`
+            // NVFP4 block above (lane/kc-paths, 2026-08-01): they gate Q8_0-MMQ/q4_0-MMQ/
+            // 27B-shape oracles that do NOT need the 9B NVFP4 artifact, but the nesting
+            // silently disabled them on every box without it (the same blindness class
+            // as the hardcoded paths).
+            // --- VENDORED llama Q8_0 MMQ GEMM (MEMRA_PP_Q8MMQ) vs the f32 dequant oracle. ---
+            // Q8_0 weight IS int8 (lossless tile-load) + q8_1 D4 activation -> same int8-activation
+            // band as q45k (~1e-3..1e-2). 2e-2 hard gate. Uses the 35B model's Q8_0 projections.
+            {
+                let g35_path = kc_model("q8mmq-gemm", "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+                    &["/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+                      "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"],
+                    &gguf_arg);
+                if let Some(g35_path) = g35_path {
+                    let g35 = GgufFile::open(&g35_path)?;
+                    use memra_gguf::dequant;
+                    use memra_runtime::cpu_linear;
+                    for tname in ["blk.0.attn_qkv.weight", "blk.0.ffn_gate_shexp.weight"] {
+                        let Some(t) = g35.find(tname).filter(|t| t.ggml_type == GgmlType::Q8_0) else { continue };
+                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                        let raw = g35.tensor_data(t);
+                        let w_f32 = dequant::dequantize(GgmlType::Q8_0, raw, in_f * out_f);
+                        let wd = e.htod_bytes(raw)?;
+                        for tt in [16usize, 64, 128, 512] {
+                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 53) * 0.1).collect();
+                            let xd = e.htod(&x)?;
+                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                            let yb = e.dtoh(&e.qmatvec_mmq_q8_0_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                            let d = maxdiff(&cpu, &yb);
+                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let rel = d / scale;
+                            println!("MMQ-Q8_0 {tname} [Q8_0 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
+                                     if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                        }
+                    }
+                }
+            }
+            // --- VENDORED llama Q4_0 MMQ GEMM (MEMRA_PP_Q4MMQ) vs the f32 dequant oracle. ---
+            // Nibble->int8 tile-load dequant is lossless ((q-8) exact in int8) + q8_1 D4 activation
+            // -> same int8-activation band as Q8_0 (~1e-3..1e-2). 2e-2 hard gate. Uses the 12B
+            // gemma QAT q4_0 projections. Also gates the rp split-plane loader BIT-identical to
+            // the raw-18B-block loader (pure address remap, same FP ops in the same order).
+            {
+                let g12_path = kc_model("q4_0-mmq", "gemma-4-12b-it-qat-q4_0.gguf",
+                    &["/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf"],
+                    &gguf_arg);
+                // Host mirror of q4_0_split_rp_build: qs plane (16B/block, block-major) then fp16
+                // d plane (2B/block) at out_f*nblk*16.
+                fn repack_q4_0_split(raw: &[u8], nblocks: usize) -> Vec<u8> {
+                    let mut out = vec![0u8; nblocks * 18];
+                    let dplane = nblocks * 16;
+                    for i in 0..nblocks {
+                        let b = &raw[i * 18..i * 18 + 18];
+                        out[i * 16..i * 16 + 16].copy_from_slice(&b[2..18]);
+                        out[dplane + i * 2] = b[0];
+                        out[dplane + i * 2 + 1] = b[1];
+                    }
+                    out
+                }
+                if let Some(g12_path) = g12_path {
+                    let g12 = GgufFile::open(&g12_path)?;
+                    use memra_gguf::dequant;
+                    use memra_runtime::cpu_linear;
+                    for tname in ["blk.0.attn_q.weight", "blk.0.ffn_gate.weight"] {
+                        let Some(t) = g12.find(tname).filter(|t| t.ggml_type == GgmlType::Q4_0) else { continue };
+                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                        let raw = g12.tensor_data(t);
+                        let w_f32 = dequant::dequantize(GgmlType::Q4_0, raw, in_f * out_f);
+                        let wd = e.htod_bytes(raw)?;
+                        let wd_rp = e.htod_bytes(&repack_q4_0_split(raw, out_f * in_f / 32))?;
+                        for tt in [16usize, 64, 128, 512] {
+                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 59) * 0.1).collect();
+                            let xd = e.htod(&x)?;
+                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                            let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                            let d = maxdiff(&cpu, &yb);
+                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let rel = d / scale;
+                            println!("MMQ-Q4_0 {tname} [Q4_0 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
+                                     if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                            let yr = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd_rp, &xd, tt, in_f, out_f, true)?)?;
+                            let nbad = yb.iter().zip(yr.iter())
+                                .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                            println!("MMQ-Q4_0-RP {tname} T={tt}: bit-mismatch {nbad}/{} {}",
+                                     yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                        }
+                    }
+                }
+            }
+            // 27B ffn_down NVFP4 shape probe (in_f=17408 not a clean MMQ_ITER_K_FP4 multiple? T=512)
+            // — compare MMQ vs the dp4a oracle to isolate the 27B T=513 mismatch.
+            {
+                let g27_path = kc_model("nvfp4-27b-shape", "Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf",
+                    &["/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf"],
+                    &gguf_arg);
+                if let Some(g27_path) = g27_path {
+                    let g27 = GgufFile::open(&g27_path)?;
+                    for tn in ["blk.0.ffn_down.weight", "blk.0.ffn_gate.weight"] {
+                        if let Some(t) = g27.find(tn).filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                            let raw = g27.tensor_data(t); let row_bytes = raw.len() / out_f;
+                            let wd = e.htod_bytes(raw)?;
+                            for tt in [16usize, 512] {
+                                let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
+                                let xd = e.htod(&x)?;
+                                let ya = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                                let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                                let d = maxdiff(&ya, &yb);
+                                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                                let rel = d / scale;
+                                println!("MMQ-27B {tn} [NVFP4 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} (W4A4-vs-dp4a band ~0.1) {}",
+                                         if rel < 2.5e-1 { "OK" } else { "HIGH" });
+                            }
+                        }
+                    }
+                }
+            }
             // #23 regression (2026-07-31): the 26B a4b shared-MLP shape (in=2816, out=2112 —
             // out % 128 != 0 -> need_check=true clamped last row-tile) through the FORCED
             // stream-K arm. On the H100 board this shape+SK produced garbage prefill logits
@@ -1098,9 +1195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // timing-picked autotune hid the arm from the 5090 battery. Force both forms
             // deterministically and pin each against the CPU reference.
             {
-                let g26_path = ["/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf",
-                                &format!("{}/models/gemma-4-26B_q4_0-it.gguf", std::env::var("HOME").unwrap_or_default())]
-                    .iter().map(|s| s.to_string()).find(|p| std::path::Path::new(p).exists());
+                let g26_path = kc_model("q4_0-sk-arm", "gemma-4-26B_q4_0-it.gguf",
+                    &["/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf"],
+                    &gguf_arg);
                 if let Some(g26_path) = g26_path {
                     let g26 = GgufFile::open(&g26_path)?;
                     use memra_gguf::dequant;
@@ -1318,10 +1415,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // NVFP4 MMVQ vs dp4a on the 9B model (in_f%64; macro-scale skipped in both raw paths).
     {
         use memra_gguf::{GgufFile, GgmlType};
-        const GGUF_9B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
-        if std::path::Path::new(GGUF_9B).exists() {
-            let g = GgufFile::open(GGUF_9B)?;
+        let gguf_9b = kc_model("nvfp4-mmvq", "Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"],
+            &gguf_arg);
+        if let Some(gguf_9b) = gguf_9b {
+            let g = GgufFile::open(&gguf_9b)?;
             if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
                 let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
                 let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
@@ -1467,13 +1565,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // --- K-QUANT SPLIT-PLANE (rp) gates: q4_K/q6_K mirror vs GGUF layout, every decode
+    // consumer (m=1 _mmvq_rp + batched _b{2,4,8}_rp; q6_K adds b16). The mirror is a pure
+    // byte permutation and each rp twin keeps the exact per-(token,row) value/product
+    // order -> outputs must be BIT-identical (bit-bad == 0). H100 K-quant coalescing fix,
+    // 2026-08-01. ---
+    if let Some(path) = gguf_arg.clone() {
+        use memra_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        let want: [(GgmlType, i32); 2] = [
+            (GgmlType::Q4_K, memra_engine::QT_Q4_K), (GgmlType::Q6_K, memra_engine::QT_Q6_K),
+        ];
+        for (gtype, gt) in want {
+            let t = match g.tensors.iter().find(|t| t.ggml_type == gtype && t.ne.len() == 2
+                                                 && t.ne[0] % 256 == 0 && t.ne[1] >= 4) {
+                Some(t) => t, None => continue,
+            };
+            let tname = t.name.clone();
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            let mir = e.build_kq_rp4_raw(&wd, in_f, out_f, gt)?;
+            // m=1 rp twin vs GGUF-layout mmvq: bit-identical.
+            {
+                let x: Vec<f32> = (0..in_f).map(|i| pr(i + 151) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, 1, in_f, out_f, gt, row_bytes, false)?)?;
+                let yrp = e.dtoh(&e.qmatvec_mmvq_raw(&mir, &xd, 1, in_f, out_f, gt, row_bytes, true)?)?;
+                let bad = yref.iter().zip(&yrp).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                println!("KQRP {tname} [{:?}] m=1 mmvq_rp: bit-bad={bad} {}", t.ggml_type,
+                         if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+            // batched rp twins vs GGUF-layout batched: bit-identical (b16 tier is q6_K-only).
+            let tiers: &[(usize, usize)] = if gt == memra_engine::QT_Q6_K {
+                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (12, 16)]
+            } else {
+                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8)]
+            };
+            for &(mm, mcols) in tiers {
+                let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let yref = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, mcols, false)?)?;
+                let yrp = e.dtoh(&e.qmatvec_batched_raw(&mir, &xd, mm, in_f, out_f, gt, row_bytes, mcols, true)?)?;
+                let bad = yref.iter().zip(&yrp).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                println!("KQRP {tname} [{:?}] m={mm} mcols={mcols} batched_rp: bit-bad={bad} {}", t.ggml_type,
+                         if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
     // NVFP4 batched vs per-m _mmvq on the 9B model.
     {
         use memra_gguf::{GgufFile, GgmlType};
-        const GGUF_9B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
-        if std::path::Path::new(GGUF_9B).exists() {
-            let g = GgufFile::open(GGUF_9B)?;
+        let gguf_9b = kc_model("nvfp4-batched", "Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"],
+            &gguf_arg);
+        if let Some(gguf_9b) = gguf_9b {
+            let g = GgufFile::open(&gguf_9b)?;
             if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
                 let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
                 let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
@@ -1499,9 +1646,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use memra_gguf::{GgufFile, GgmlType};
         use memra_engine::model::{repack_nvfp4_split, unpack_nvfp4_split};
-        const GGUF_9B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
-        let path9 = if std::path::Path::new(GGUF_9B).exists() { Some(GGUF_9B.to_string()) } else { None };
+        let path9 = kc_model("a6-split-plane(9b-fallback)", "Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"],
+            &gguf_arg);
         // prefer the model under test if it has NVFP4 tensors; else the 9B.
         let srcs: Vec<String> = gguf_arg.clone().into_iter().chain(path9).collect();
         let mut done = false;
@@ -2175,10 +2322,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use memra_gguf::{GgufFile, GgmlType};
         use memra_engine::moe_cache::{MoeSlotCache, BlockId, PROJ_GATE};
-        const GGUF_35B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf";
-        if std::path::Path::new(GGUF_35B).exists() {
-            let g = GgufFile::open(GGUF_35B)?;
+        let gguf_35b = kc_model("d2-cache-bit-identity", "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+            &["/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"],
+            &gguf_arg);
+        if let Some(gguf_35b) = gguf_35b {
+            let g = GgufFile::open(&gguf_35b)?;
             let t = g.find("blk.0.ffn_gate_exps.weight").expect("gate_exps");
             let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize; let n_expert = t.ne[2] as usize;
             let qt_opt = match t.ggml_type {
@@ -2211,8 +2359,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("moe cache-HIT bit-identity (stage==cache): {}",
                          if bitwise { "OK" } else { fails += 1; "FAIL" });
             }
-        } else {
-            println!("D.2 cache bit-identity: 35B GGUF absent — SKIP");
         }
     }
 

@@ -1,0 +1,19 @@
+Captured output — q35/q9 GGUFs on the darklanes box carry no NextN head (2026-08-01).
+The successful q35 gate rerun (with MEMRA_MTP_DRAFT) overwrote gate-q35-adapt-k1-8.log's
+first attempt; the captured error from that attempt is preserved here verbatim.
+
+$ CUDA_VISIBLE_DEVICES=3 MEMRA_SPEC_ADAPT=1 run-spec ~/models/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: per-layer 373MB x 40 layers = 14.9GB vs budget 67.2GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 190 tensors
+loaded qwen35moe (40 layers, nextn=0)
+ERROR: model has no MTP/NextN head (nextn_predict_layers=0, no blk.N.nextn.eh_proj). generate_spec is unavailable for this file.
+
+$ CUDA_VISIBLE_DEVICES=3 run-spec ~/models/Qwen3.5-9B-Q8_0.gguf   (head-presence probe)
+loaded qwen35 (32 layers, nextn=0)
+ERROR: model has no MTP/NextN head (nextn_predict_layers=0, no blk.N.nextn.eh_proj). generate_spec is unavailable for this file.
+
+Resolution: the board's q35-spec recipe (tools/full-board-bench.sh:209-211) loads the
+own-gen trimmed NVFP4 head sidecar via MEMRA_MTP_DRAFT. Sidecar
+draft-35b-owntrim-nvfp4head-q4blk.gguf (944,118,560 bytes) staged from the 5090 rig
+(/data/ai-ml/hf-models/qwen36-35b-moe/) to box ~/models/ via scp; q35 gate rerun with it:
+K=1..8 all PASS (gate-q35-adapt-k1-8.log).

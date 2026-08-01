@@ -278,11 +278,20 @@ static __device__ __forceinline__ void load_tiles_iq3s(const uint8_t* __restrict
 }
 
 // ======================= vec_dot (nvfp4_w4a8 machinery, verbatim) =======================
-template<int mmq_x, int mmq_y>
-static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00){
+// jexit (swapab-probe residue, 2026-08-01): ragged token tiles skip j0 strips whose 8-token
+// block lies entirely past j_max. Each warp's strips stride the whole token axis (j0 +
+// (ty%ntx)*8), so the skip is load-balanced at 8-token granularity — ceil8(65)/128 = 0.5625
+// of the mma work at q35 gate/up's ~65-pair groups. The skipped strips' sum slots are exactly
+// the writeback's discarded j>j_max columns, so live output slots are bit-identical. Dispatch
+// at the call site keeps full tiles (cnt == mmq_x) on the jexit=false instantiation — the
+// guard folds away and full-tile codegen is unchanged (the naked runtime check cost +2.1% at
+// m=128 in the swapab microbench; research/swapab-20260801/).
+template<int mmq_x, int mmq_y, bool jexit>
+static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00, int j_max){
     typedef tile<16,4,int> tA; typedef tile<16,8,int> tA8; typedef tile<8,4,int> tB; typedef tile<16,8,int> tC;
     constexpr int g=mmq_get_granularity_device(mmq_x); constexpr int rpw=2*g; constexpr int ntx=rpw/tC::I;
-    y += (threadIdx.y%ntx)*(tC::J*MMQ_TILE_Y_K);
+    const int joff = (threadIdx.y%ntx)*tC::J;
+    y += joff*MMQ_TILE_Y_K;
     const int* x_qs=x; const float* x_df=(const float*)x_qs + MMQ_TILE_NE_K*2;
     const int* y_qs=(const int*)y+4; const float* y_df=(const float*)y;
     const int i0=(threadIdx.y/ntx)*(ntx*tA::I);
@@ -301,6 +310,7 @@ static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, f
     }
     #pragma unroll
     for(int j0=0;j0<mmq_x;j0+=ntx*tC::J){
+        if(jexit && j0+joff > j_max) continue;   // strip fully past the tile's live tokens
         #pragma unroll
         for(int k01=0;k01<MMQ_TILE_NE_K;k01+=8){
             tB B[2]; float dB[tC::ne/2];
@@ -399,6 +409,13 @@ mmq_iq_experts_kernel(
         }
         __syncthreads();
         float sum[mmq_x*mmq_y/(MMQ_NWARPS*MMQ_WARP_SIZE)] = {0.0f};
+        // full tiles take the jexit=false instantiation (guard folds away, codegen unchanged);
+        // ragged tiles skip dead 8-token j0 strips (live sum slots bit-identical — the skipped
+        // slots are the writeback's discarded j>j_max columns).
+        auto vdot = [&](const int* ty, int k00){
+            if(cnt == mmq_x) vec_dot_mma<mmq_x,mmq_y,false>(tile_x, ty, sum, k00, j_max);
+            else             vec_dot_mma<mmq_x,mmq_y,true >(tile_x, ty, sum, k00, j_max);
+        };
         if(staged) stage_w(0, 0);
         for(int kb=0;kb<nsblk;kb++){
             if(staged){
@@ -439,10 +456,10 @@ mmq_iq_experts_kernel(
             // pending groups (issue order): [W(kb+1) if staged], Y(h0), Y(h1).
             asm volatile("cp.async.wait_group 1;");    // W(kb+1)+Y(h0) done; Y(h1) in flight
             __syncthreads();
-            vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y, sum, 0*MMQ_TILE_NE_K);
+            vdot(tile_y, 0*MMQ_TILE_NE_K);
             asm volatile("cp.async.wait_group 0;");    // Y(h1) done (overlapped the h0 mma)
             __syncthreads();
-            vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y + ybuf_stride, sum, 1*MMQ_TILE_NE_K);
+            vdot(tile_y + ybuf_stride, 1*MMQ_TILE_NE_K);
             __syncthreads();
         }
         // write-back (nvfp4_w4a8 machinery): row = ids[j] (pair id), col = it*mmq_y + i.
@@ -486,6 +503,55 @@ static __global__ void quantize_mmq_q8_1_d4_kernel(const float* __restrict__ x, 
     yb[ib].d4[iqs/32] = amax==0.0f?0.0f:1.0f/di;
 }
 
+// ======================= fused activation + quantize epilogue =======================
+// silu/gelu(gate)*up + D4 quantize in ONE launch (fused act-epilogue lever): the two-pass
+// chain (moe_pairs_silu_mul / moe_pairs_gelu_mul writes act f32 to HBM; the quantizer above
+// re-reads it) costs two full passes over the [n_pairs x n_ff] f32 activation. Here the
+// activation is computed in registers from gate/up and ONLY the quantized scratch is written
+// (read gate+up, write scratch — the f32 act buffer never exists).
+// BIT-IDENTITY CONTRACT: the activation expressions are moe_pairs_silu_mul /
+// moe_pairs_gelu_mul (qmatvec.cu) VERBATIM and the quantize fold is
+// quantize_mmq_q8_1_d4_kernel's exact per-thread-amax + 8-lane shfl_xor pattern — the
+// scratch bytes must equal the two-pass path's (kernel-check `iq fused act+quant` gates
+// byte-for-byte, both activations, aligned + ragged/padded in_f).
+template <int ACT>   // 0 = silu*mul (qwen35moe), 1 = gelu_tanh*mul (gemma4)
+static __global__ void fused_act_quant_mmq_q8_1_d4_kernel(
+        const float* __restrict__ gate, const float* __restrict__ up, void* __restrict__ vy,
+        int64_t ne00, int64_t s01, int64_t ne0, int ne1){
+    int64_t i0 = ((int64_t)blockDim.x*blockIdx.y + threadIdx.x)*4;
+    if(i0>=ne0) return;
+    int64_t i1=blockIdx.x;
+    block_q8_1_mmq* yb=(block_q8_1_mmq*)vy;
+    int64_t ib=(i0/(4*QK8_1))*ne1 + blockIdx.x;
+    int64_t iqs=i0%(4*QK8_1);
+    float4 xi = make_float4(0,0,0,0);   // i0>=ne00: zero padding, same as the two-pass quantizer
+    if(i0<ne00){
+        const float4 g4 = *(const float4*)(gate + i1*s01 + i0);
+        const float4 u4 = *(const float4*)(up   + i1*s01 + i0);
+        const float gg[4] = {g4.x,g4.y,g4.z,g4.w};
+        const float uu[4] = {u4.x,u4.y,u4.z,u4.w};
+        float aa[4];
+        #pragma unroll
+        for(int j=0;j<4;j++){
+            const float g = gg[j];
+            if(ACT==0){
+                aa[j] = (g / (1.0f + expf(-g))) * uu[j];           // moe_pairs_silu_mul verbatim
+            } else {                                                // moe_pairs_gelu_mul verbatim
+                float th = tanhf(0.79788456080286535587989211986876f * g * (1.0f + 0.044715f * g * g));
+                aa[j] = 0.5f * g * (1.0f + th) * uu[j];
+            }
+        }
+        xi = make_float4(aa[0],aa[1],aa[2],aa[3]);
+    }
+    float amax=fabsf(xi.x); amax=fmaxf(amax,fabsf(xi.y)); amax=fmaxf(amax,fabsf(xi.z)); amax=fmaxf(amax,fabsf(xi.w));
+    #pragma unroll
+    for(int off=32/8;off>0;off>>=1) amax=fmaxf(amax,__shfl_xor_sync(0xffffffff,amax,off,WARP_SIZE));
+    float di=127.0f/amax; char4 q; q.x=roundf(xi.x*di);q.y=roundf(xi.y*di);q.z=roundf(xi.z*di);q.w=roundf(xi.w*di);
+    ((char4*)yb[ib].qs)[iqs/4]=q;
+    if(iqs%32!=0) return;
+    yb[ib].d4[iqs/32] = amax==0.0f?0.0f:1.0f/di;
+}
+
 // ======================= C-ABI launchers =======================
 extern "C" {
 
@@ -502,6 +568,24 @@ int memra_mmq_iq_quantize_act(const float* act_f32, void* act_scratch, int in_f,
     int64_t bny = (nep + 4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1)/(4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     dim3 blk(CUDA_QUANTIZE_BLOCK_SIZE_MMQ,1,1), grid((unsigned)n_tokens,(unsigned)bny,1);
     quantize_mmq_q8_1_d4_kernel<<<grid,blk,0,st>>>(act_f32, act_scratch, ne10, in_f, nep, n_tokens);
+    cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+}
+
+// Fused act-epilogue: silu/gelu(gate)*up + D4 quantize, one launch, no f32 act buffer.
+// gate/up are pair-major [n_tokens, in_f] f32 (the mmq_iq_experts gate/up outputs);
+// scratch layout/bytes identical to memra_mmq_iq_quantize_act (memra_mmq_iq_experts_act_bytes).
+// act_kind: 0 = silu*mul (qwen35moe), 1 = gelu_tanh*mul (gemma4). Byte-identical to the
+// two-pass path by contract (see kernel comment). Returns 0 or 1000+cudaError.
+int memra_mmq_iq_fused_act_quant(const float* gate, const float* up, void* act_scratch,
+        int in_f, int n_tokens, int act_kind, void* stream){
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+    int64_t ne10 = in_f, nep = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+    int64_t bny = (nep + 4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1)/(4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
+    dim3 blk(CUDA_QUANTIZE_BLOCK_SIZE_MMQ,1,1), grid((unsigned)n_tokens,(unsigned)bny,1);
+    if(act_kind==0)
+        fused_act_quant_mmq_q8_1_d4_kernel<0><<<grid,blk,0,st>>>(gate, up, act_scratch, ne10, in_f, nep, n_tokens);
+    else
+        fused_act_quant_mmq_q8_1_d4_kernel<1><<<grid,blk,0,st>>>(gate, up, act_scratch, ne10, in_f, nep, n_tokens);
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
 }
 

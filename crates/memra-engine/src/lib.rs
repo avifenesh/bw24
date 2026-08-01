@@ -37,6 +37,14 @@ pub fn moe_f16g_on() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_MOE_F16G").as_deref() == Ok("1"))
 }
 
+/// Fused act-epilogue (silu/gelu-mul + q8_1_mmq quantize in one launch) for the MoE prefill
+/// MMA arms. Byte-identical to the two-pass path (kernel-check gated) — default ON.
+/// MEMRA_MOE_FUSE_ACTQ=0 is the rollback/A-B seam.
+pub fn moe_fuse_actq_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_MOE_FUSE_ACTQ").as_deref() != Ok("0"))
+}
+
 pub fn router_kernel_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -243,9 +251,10 @@ pub static FUSED_MR1_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Per-model router-GEMV form (2026-07-31): the 8-warp twin is +8.8% on the H100 q35
 /// decode step (router was 14.8% of it) with argmax + spec self-consistency green on
-/// qwen-class MoE both rigs; the gemma-4 26B's knife-edge prefill-vs-decode gate flips
-/// on ANY router fold-order change (same class as its stream-K verdict), so gemma4
-/// loading stores false. MEMRA_ROUTER_V2 env overrides either way.
+/// qwen-class MoE both rigs. The gemma-4 26B knife-edge block (2026-07-31, single
+/// synthetic prompt) was RE-ARBITRATED 2026-08-01 on 6 real prompts — gate outcomes
+/// identical to the lone-warp arm, +13% g26 decode — so gemma4 rides the default too
+/// (research/g26-decode-20260801/). MEMRA_ROUTER_V2 env overrides either way.
 pub static ROUTER_W8_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
@@ -1552,6 +1561,25 @@ impl Engine {
         Ok(())
     }
 
+    /// Column-`col` twin of `gumbel_perturb` over stacked logits [B, n_vocab] (the batched
+    /// serving tick's device sampler): y = x[col]/temp + gumbel(seed, stream_pos, lane).
+    /// SAME kernel/Philox mapping as `gumbel_perturb` — bit-identical perturbation for the
+    /// same (seed, stream_pos, temp) regardless of which batch column the row sits in
+    /// (the lane index is the in-row position; `col` only moves the input pointer). That
+    /// pointer-invariance IS the serving isolation contract for sampled rows.
+    pub fn gumbel_perturb_col(&self, x: &CudaSlice<f32>, col: usize, y: &mut CudaSlice<f32>,
+                              n: usize, seed: u64, stream_pos: u32, temp: f32)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gumbel_perturb_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let col_view = x.slice(col * n..(col + 1) * n);
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&col_view).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// In-graph sampling-event counter bump (spec_sample.cu kernel 5): ctr[0] += 1. The sampled
     /// graph-draft chain replays with FIXED kernel args, so the Philox event counter must be
     /// DEVICE data — the host seeds it once per round; every replay bumps it before the perturb
@@ -2353,7 +2381,9 @@ impl Engine {
         Ok(())
     }
 
-    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry only for now).
+    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry — slot-packed j8/j8r2
+    /// twins probed 2026-08-01 g26 decode dig: bit-identical rows, -2.5%/-2.9% whole-model
+    /// decode x3 interleaved -> refuted and killed; research/g26-decode-20260801/receipts.md).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_gate_up_gelu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
@@ -2566,6 +2596,68 @@ impl Engine {
         b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
         unsafe { b.launch(cfg)?; }
         Ok(dst)
+    }
+
+    /// K-quant twins of `build_q8_rp4` (H100 K-quant coalescing fix, 2026-08-01 ncu on the
+    /// q27 Q4_K_M decode: q4_K mmvq DRAM 41-54% with 65% excessive sectors, q6_K 40% with
+    /// 78% — the 144B/210B superblock strides land every 4B weight load off-sector). The
+    /// mirror re-packs each tensor into planes (q4_K: qs ++ 16B meta; q6_K: ql ++ qh ++
+    /// scales ++ d — same total bytes) so every quant fetch is an aligned 16B ldcs. Raw
+    /// bytes stay resident (prefill GEMM/dequant/Stage-A read GGUF layout); the mmvq/batched
+    /// decode arms prefer the mirror via `rp4`. Bit-identical outputs.
+    pub fn build_q4k_rp4(&self, t: &mut crate::model::GpuTensor)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, qtype, row_bytes, ne, rp4, .. } = t else { return Ok(()) };
+        if *qtype != QT_Q4_K || rp4.is_some() || ne.len() != 2 { return Ok(()); }
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        if in_f % 256 != 0 || *row_bytes != (in_f / 256) * 144 { return Ok(()); }
+        *rp4 = Some(self.build_kq_rp4_raw(bytes, in_f, out_f, QT_Q4_K)?);
+        Ok(())
+    }
+
+    pub fn build_q6k_rp4(&self, t: &mut crate::model::GpuTensor)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, qtype, row_bytes, ne, rp4, .. } = t else { return Ok(()) };
+        if *qtype != QT_Q6_K || rp4.is_some() || ne.len() != 2 { return Ok(()); }
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        if in_f % 256 != 0 || *row_bytes != (in_f / 256) * 210 { return Ok(()); }
+        *rp4 = Some(self.build_kq_rp4_raw(bytes, in_f, out_f, QT_Q6_K)?);
+        Ok(())
+    }
+
+    /// Raw K-quant rp-mirror build for gates/benches (same kernels the loader path uses).
+    pub fn build_kq_rp4_raw(&self, bytes: &CudaSlice<u8>, in_f: usize, out_f: usize, qtype: i32)
+                            -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(in_f % 256 == 0);
+        let nsbk = in_f / 256;
+        let (sb_bytes, kname) = match qtype {
+            QT_Q4_K => (144usize, "q4_K_split_rp_build"),
+            QT_Q6_K => (210usize, "q6_K_split_rp_build"),
+            _ => return Err(format!("build_kq_rp4_raw: qtype {qtype} has no rp mirror").into()),
+        };
+        let mut dst = self.alloc_uninit::<u8>(out_f * nsbk * sb_bytes)?;
+        let f = self.func(kname);
+        let cfg = LaunchConfig { grid_dim: (((out_f * nsbk) as u32).div_ceil(256), 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (of, nb) = (out_f as i32, nsbk as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
+        unsafe { b.launch(cfg)?; }
+        Ok(dst)
+    }
+
+    /// MEMRA_KQRP seam: the K-quant (q4_K/q6_K) split-plane decode mirrors at model load.
+    /// Default follows the Q8RP convention — ON on the Hopper lane (80GB pays the mirror
+    /// VRAM), OFF elsewhere (a 24GB card cannot hold model + mirror + KV for the big trunks).
+    pub fn kqrp_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| match std::env::var("MEMRA_KQRP").as_deref() {
+            Ok("0") => false,
+            Ok(_) => true,
+            Err(_) => cfg!(memra_hopper_mma),
+        })
     }
 
     /// IN-PLACE split-plane swap (the 31B dense arc): build the split layout and REPLACE the
@@ -4864,8 +4956,11 @@ impl Engine {
         // dp4a program). MEMRA_MMVQ=1 (the daily config) is dispatch-unchanged.
         if (2..=16).contains(&m) && fast && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
-            // b16 tier (2026-07-11, spec K>7): only Q4_0/Q6_K have b16 kernels.
-            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, .. } if *qtype == QT_Q4_0 || *qtype == QT_Q6_K);
+            // b16 tier (2026-07-11, spec K>7): Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's
+            // b16 exists only as the split-plane _rp twin, so it joins iff the q8rp mirror
+            // is present (rp4) — the mirror pick below then routes to the _rp family.
+            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, rp4, .. }
+                if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || (*qtype == QT_Q8_0 && rp4.is_some()));
             if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
@@ -5025,7 +5120,10 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K) {
+            // b16 tier: Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's b16 exists ONLY as the
+            // split-plane _rp twin (qmatvec_q8_0_mmvq_b16_rp — the q8rp mirror lane was built
+            // for the m<=16 family, hybrid.rs), so Q8_0 joins iff the mirror is present (mrp).
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && mrp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
@@ -5108,7 +5206,8 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K) {
+            // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note).
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -5961,6 +6060,11 @@ impl Engine {
             } => "qmatvec_q8_0_mmvq_rpca",
             (QT_Q8_0, _, true) => "qmatvec_q8_0_mmvq_rp",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
+            // K-quant split-plane twins (H100 K-quant coalescing fix, 2026-08-01): the rp4
+            // mirror routes here; GGUF layout keeps the plain kernels. rp bytes MUST never
+            // reach a GGUF-layout kernel or vice versa.
+            (QT_Q4_K, _, true) => "qmatvec_q4_K_mmvq_rp",
+            (QT_Q6_K, _, true) => "qmatvec_q6_K_mmvq_rp",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q4_0, 2, false) => "qmatvec_q4_0_mmvq_mr2",
             (QT_Q4_0, _, false) => "qmatvec_q4_0_mmvq",
@@ -5988,7 +6092,8 @@ impl Engine {
             b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
             unsafe { b.launch(cfg)?; }
         } else if Self::pdl_on() && Self::pdl_mmvq_on()
-            && matches!(name, "qmatvec_q4_0_mmvq_rp" | "qmatvec_q6_K_mmvq") {
+            && matches!(name, "qmatvec_q4_0_mmvq_rp" | "qmatvec_q6_K_mmvq"
+                              | "qmatvec_q6_K_mmvq_rp") {
             // PDL wave-A (2026-07-23): the two decode-hot single-matvec kernels carry
             // MEMRA_PDL_ENTRY — grid launches while the producer drains. ONLY the marked
             // names may take this launch (unmarked kernels would read unordered).
@@ -6051,6 +6156,9 @@ impl Engine {
         Some(match (qtype, mcols) {
             (QT_Q8_0, 2) => "qmatvec_q8_0_mmvq_b2", (QT_Q8_0, 4) => "qmatvec_q8_0_mmvq_b4",
             (QT_Q8_0, 8) => "qmatvec_q8_0_mmvq_b8",
+            // rp-ONLY tier: qmatvec_q8_0_mmvq_b16 has no base twin — the mcols==16 dispatch
+            // appends _rp, and every caller gates Q8_0 m>8 on the q8rp mirror being present.
+            (QT_Q8_0, 16) => "qmatvec_q8_0_mmvq_b16",
             (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_b2", (QT_Q4_K, 4) => "qmatvec_q4_K_mmvq_b4",
             (QT_Q4_K, 8) => "qmatvec_q4_K_mmvq_b8",
             (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",
@@ -6207,6 +6315,11 @@ impl Engine {
             else if matches!(v, "ms" | "sm" | "la") { "r2" } else { v }
         } else if qtype != QT_NVFP4 && !kq_r2 {
             "base"
+        } else if kq_r2 && rp {
+            // K-quant split-plane mirror (2026-08-01): only the plain _rp batched twins are
+            // compiled for q4_K/q6_K — rp is a LAYOUT, it must survive every heuristic
+            // (split-plane bytes through a GGUF-layout kernel = NaN). q5_K never mirrors.
+            "rp"
         } else if kq_r2 {
             // k-quant r2w8 only exists at b4 (b2_r2 already 8-resident; b8 has no w8 twin) ->
             // mcols != 4 forced r2w8 falls to unbounded r2.

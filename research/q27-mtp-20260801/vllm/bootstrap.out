@@ -1,0 +1,23 @@
++ V=/home/ubuntu/vllm-env
++ LOGD=/home/ubuntu/lane1/research/q27-mtp-20260801/vllm
++ python3 -m venv /home/ubuntu/vllm-env
++ /home/ubuntu/vllm-env/bin/pip install -U pip wheel
++ /home/ubuntu/vllm-env/bin/pip install 'huggingface_hub[hf_transfer]'
++ sudo mkdir -p /opt/dlami/nvme/hf
++ sudo chown ubuntu:ubuntu /opt/dlami/nvme/hf
++ DLPID=40473
++ /home/ubuntu/vllm-env/bin/pip install vllm
++ HF_HOME=/opt/dlami/nvme/hf
++ HF_HUB_ENABLE_HF_TRANSFER=1
++ /home/ubuntu/vllm-env/bin/hf download Qwen/Qwen3.6-27B-FP8
++ echo 'vllm install rc=0'
+vllm install rc=0
++ wait 40473
++ echo 'download rc=0'
+download rc=0
++ /home/ubuntu/vllm-env/bin/pip list
++ grep -iE '^(vllm|torch) '
+torch                                    2.11.0
+vllm                                     0.26.0
++ echo BOOTSTRAP-DONE
+BOOTSTRAP-DONE

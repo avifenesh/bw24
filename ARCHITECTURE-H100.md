@@ -2240,3 +2240,54 @@ Round 47 update 2 — q27 win-harder arc (2026-08-01, "most-used model" directiv
    tok/expert is the direct attack on both remaining losses). Infra verdict in #33:
    bench box stays bench-only, spot p5.4x us-east-1 $2.63/hr for dev, quota headroom
    +47 boxes, skip MIG.
+
+## Round 48 — g26 decode: the router knife-edge was roulette (+12.7%), ragged tiles refuted (2026-08-01)
+
+Two lane2 arcs on the darklanes box, both receipts-complete:
+
+1. RAGGED TOKEN-TILES (lever #1 from the round-47 queue) REFUTED: {64,96,128} avg-pairs
+   dispatch for mmq_iq_experts costs -7.6% q35 pp2048 at ANY sub-128 tile (attribution
+   arm -0.4%; 96-floor probe == ragged mix). Mechanism: the Y-gather already skips
+   clamped tail columns (round 46 inc4) so tile-128 padding waste was dead MMA only —
+   and the kernel is latency-bound, so dead MMA was free AND hid the W-stage/Y-gather
+   latency; smaller tiles expose it. A future ragged attempt must invert the loop nest
+   (dequant W once per kb, walk token sub-tiles inside). g26 control flat. Mechanism
+   preserved on lane/ragged-tiles (tip reverts it); receipts
+   research/ragged-tiles-20260801/.
+2. G26 DECODE DIG (lane/g26-decode): honest wall table by two-capture nsys subtraction
+   (NGEN 16 vs 528, prime cancels exactly): router_gemv_f32 763.9us/step = 15.8% (25.4us
+   x 30 layers — round-44 number reproduced). The round-44 gemma4 w8 block RE-ARBITRATED
+   on 6 real prompts x both arms: w8's gate outcome IDENTICAL to lone-warp on all six
+   (the one MISMATCH prompt fails BOTH arms with the same argmax pair — router-
+   independent). Verdict: single-synthetic-prompt roulette, exactly the round-45 class.
+   FLIP LANDED: gemma4 rides the global ROUTER_W8_DEFAULT — g26 decode 182.6 -> 205.7
+   depth / 180.9 -> 204.2 board (+12.7/+12.9%, naked-vs-naked x3 interleaved, all
+   argmax MATCH; router now 114us/step = 2.7%). Cross-day vLLM 194.6 NOT re-benched —
+   board harness re-run required for a publishable cell. Bounded increment on the next
+   wall (gelu gate_up slot-packing _j8/_j8r2, bit-identical rows) measured -2.5%/-2.9%
+   -> killed per flags doctrine (grid 704x8 1-warp CTAs beat 704x1 8-warp packing).
+   Next rungs: gate_up+down8 fusion (25% combined, 15-30% of SOL), fa chain (~20%),
+   q6_K LM head (323us, 7.8%). Receipts research/g26-decode-20260801/.
+
+Round 48 — q27 K-QUANT SPLIT-PLANE DECODE MIRRORS (2026-08-01, lane/q27-decode-bw):
+the byte-normalized head-to-head (vLLM FP8 decode 79.9 at 1.7x our weight bytes vs our
+78-79) said the q27 decode leaves H100 bandwidth unused. ncu (receipts in
+research/q27-decode-bw-20260801/): qmatvec_q4_K_mmvq holds DRAM 41-54% with 65%
+excessive sectors ("uncoalesced global accesses"), qmatvec_q6_K_mmvq 40-47% with 78% —
+the 144B/210B GGUF superblock strides are the Q8_0 34B-stride disease (2026-07-26) on
+K-quants. Fix = the same split-plane recipe: load-time mirrors (q4_K: qs plane ++ 16B
+meta plane; q6_K: ql ++ qh ++ scales ++ d planes; same total bytes, MEMRA_KQRP seam,
+hopper-default) + bit-identical rp twins (m=1 mmvq_rp, batched b2/b4/b8_rp, q6_K b16_rp;
+q6_K rp keeps PDL wave-A). After-ncu: q4_K hot shape 52% -> 61-64% DRAM (excessive
+sectors 65% -> 32%), 28.8 -> 24.6us; q6_K fat call 54.6 -> 44.0us (40 -> 50% DRAM).
+E2E (interleaved x3, same-session): PLAIN 77-78 -> 88-91 tok/s (+15-16% all three prompt
+classes), SPEC K=3+HPOST+PMIN0.3 board-2048 103.7 -> 109.2 / short 127.2 -> 133.4 /
+agentic 137.9 -> 144.8 (+5%), acceptance IDENTICAL per class (bit-identity holds e2e).
+Gates: kernel-check ALL GREEN incl. 13 new KQRP bit-bad=0 gates (m=1..12, both dtypes),
+run-gen argmax MATCH (board-2048), run-spec K=1..8 SELF-CONSISTENCY PASS x3 classes.
+Board math: spec e2e 92.5 -> ~96.2 vs vLLM FP8+MTP-best 140.9 (gap 1.52x -> 1.46x).
+REMAINING HEADROOM (next attack): the hot q4_K shape still shows 32% excessive sectors
+and 61-64% DRAM — the paired-lane chunk redundancy and the byte-granular meta/scale
+reads are the residue; a lane->chunk remap (each lane owns its own 32B chunk) is the
+follow-up probe. Mirrors are VRAM-paid (trunk-sized) — hopper-lane only, 5090 untouched
+(sm_120a build byte-identical, MEMRA_KQRP defaults off without memra_hopper_mma).

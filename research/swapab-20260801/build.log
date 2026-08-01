@@ -1,0 +1,21 @@
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_Z9k_currentILb1EEvPKaPKfS1_S3_Pfi' for 'sm_90a'
+ptxas info    : Function properties for _Z9k_currentILb1EEvPKaPKfS1_S3_Pfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 244 registers, used 1 barriers
+ptxas info    : Compile time = 225.176 ms
+ptxas info    : Compiling entry function '_Z9k_currentILb0EEvPKaPKfS1_S3_Pfi' for 'sm_90a'
+ptxas info    : Function properties for _Z9k_currentILb0EEvPKaPKfS1_S3_Pfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, used 1 barriers
+ptxas info    : Compile time = 251.568 ms
+ptxas info    : Compiling entry function '_Z5k_refPKaPKfS0_S2_Pfi' for 'sm_90a'
+ptxas info    : Function properties for _Z5k_refPKaPKfS0_S2_Pfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 38 registers, used 0 barriers
+ptxas info    : Compile time = 8.052 ms
+ptxas info    : Compiling entry function '_Z6k_swapPKaPKfS0_S2_Pfi' for 'sm_90a'
+ptxas info    : Function properties for _Z6k_swapPKaPKfS0_S2_Pfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 251 registers, used 1 barriers
+ptxas info    : Compile time = 243.503 ms

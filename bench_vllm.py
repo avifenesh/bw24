@@ -19,6 +19,9 @@ def main():
     ap.add_argument("--ngen", type=int, default=512)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--out", default="vllm-single.json")
+    # --spec-k K: enable vLLM's MTP speculative decoding (the model's own NextN head;
+    # safetensors-only — the GGUF plugin has no nextn mapping). 0 = plain decode.
+    ap.add_argument("--spec-k", type=int, default=0)
     args = ap.parse_args()
 
     from vllm import LLM, SamplingParams
@@ -26,6 +29,9 @@ def main():
     kwargs = {}
     if args.model.endswith(".gguf"):
         kwargs["tokenizer"] = args.tokenizer
+    if args.spec_k > 0:
+        kwargs["speculative_config"] = {"method": "mtp",
+                                        "num_speculative_tokens": args.spec_k}
     # max_num_seqs: the protocol is single-stream; hybrid (Mamba/GDN) models cap decode
     # sequences by Mamba cache blocks (27B FP8: 784 < the 1024 default -> engine init fail).
     llm = LLM(model=args.model, max_model_len=args.prompt_tokens + args.ngen + 64,
@@ -64,9 +70,12 @@ def main():
         print(rows[-1], flush=True)
 
     med = sorted(x["decode_tps"] for x in rows)[len(rows) // 2]
+    pre_med = sorted(x["prefill_tps"] for x in rows)[len(rows) // 2]
     out = {"engine": "vllm", "model": args.model, "ngen": args.ngen,
-           "prompt_tokens": args.prompt_tokens, "runs": rows,
-           "decode_tps_median": med}
+           "prompt_tokens": args.prompt_tokens, "spec_k": args.spec_k,
+           "runs": rows, "decode_tps_median": med, "prefill_tps_median": pre_med,
+           "e2e_tps_median": round(args.ngen / (args.ngen / med +
+                                                args.prompt_tokens / pre_med), 2)}
     with open(args.out, "w") as f:
         json.dump(out, f, indent=1)
     print("median decode tok/s:", med)

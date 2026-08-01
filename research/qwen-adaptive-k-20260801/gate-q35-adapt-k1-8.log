@@ -1,0 +1,35 @@
+[moe] resident-experts decision: per-layer 373MB x 40 layers = 14.9GB vs budget 67.2GB -> RESIDENT
+[mtp-draft] loading external MTP draft: /home/ubuntu/models/draft-35b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.40, head_vocab=32768 (trimmed, d2t map)
+[q8rp] split-plane decode mirrors built: 190 tensors
+loaded qwen35moe (40 layers, nextn=0)
+prompt tokens: [55]
+
+[generate]   31 tok in 0.178s = 174.46 tok/s (gen-only; this run's prime 0.005s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 99151, 111427, 96580, 97327, 109007, 97039, 95865, 113009, 110863, 3709, 96580, 105821, 100572, 109966, 97598, 106342, 97082, 98874, 95839, 109007, 3709, 96402, 96244, 102173, 96172, 97328]
+
+[generate_spec K=1] 32 tok in 0.234s = 132.29 tok/s (0.76x vs generate; this run's prime 0.006s)
+  acceptance: 3/28 = 10.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.238s = 130.42 tok/s (0.75x vs generate; this run's prime 0.005s)
+  acceptance: 3/32 = 9.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.238s = 130.06 tok/s (0.75x vs generate; this run's prime 0.005s)
+  acceptance: 3/33 = 9.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.244s = 126.80 tok/s (0.73x vs generate; this run's prime 0.005s)
+  acceptance: 3/34 = 8.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.242s = 128.28 tok/s (0.74x vs generate; this run's prime 0.005s)
+  acceptance: 3/35 = 8.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.244s = 127.28 tok/s (0.73x vs generate; this run's prime 0.005s)
+  acceptance: 3/36 = 8.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.244s = 126.79 tok/s (0.73x vs generate; this run's prime 0.005s)
+  acceptance: 3/37 = 8.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.244s = 126.85 tok/s (0.73x vs generate; this run's prime 0.005s)
+  acceptance: 3/37 = 8.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

@@ -1,0 +1,44 @@
+# device: NVIDIA H100 80GB HBM3, SMs=132
+# smem/CTA = 79872 B, grid=(4,252), block=(32,8)
+m= 16  A cur128  correctness: maxabs=1.788e-07 maxrel=1.119e-02  bad(abs&rel>1e-3)=0  PASS
+m= 16  B swap16  correctness: maxabs=1.788e-07 maxrel=1.947e-02  bad(abs&rel>1e-3)=0  PASS
+m= 16  C cur-exit correctness: maxabs=1.788e-07 maxrel=1.119e-02  bad(abs&rel>1e-3)=0  PASS
+m= 16  A cur128  us/launch: reps=[875.6 878.6 878.5 874.3 874.7]  median=875.6
+m= 16  B swap16  us/launch: reps=[809.2 809.5 808.6 808.7 808.2]  median=808.7
+m= 16  C cur-exit us/launch: reps=[650.9 651.4 650.0 650.4 650.5]  median=650.5
+m= 16  ratios: swap/cur128=0.924  exit/cur128=0.743  swap/exit=1.243  (ideal mma-work: 0.125 / 0.125)
+
+m= 32  A cur128  correctness: maxabs=1.788e-07 maxrel=1.282e-02  bad(abs&rel>1e-3)=0  PASS
+m= 32  B swap16  correctness: maxabs=1.788e-07 maxrel=1.947e-02  bad(abs&rel>1e-3)=0  PASS
+m= 32  C cur-exit correctness: maxabs=1.788e-07 maxrel=1.282e-02  bad(abs&rel>1e-3)=0  PASS
+m= 32  A cur128  us/launch: reps=[974.3 973.8 974.4 973.7 973.5]  median=973.8
+m= 32  B swap16  us/launch: reps=[940.5 940.1 942.5 942.0 942.0]  median=942.0
+m= 32  C cur-exit us/launch: reps=[794.9 794.6 794.6 794.5 794.6]  median=794.6
+m= 32  ratios: swap/cur128=0.967  exit/cur128=0.816  swap/exit=1.185  (ideal mma-work: 0.250 / 0.250)
+
+m= 65  A cur128  correctness: maxabs=1.788e-07 maxrel=1.282e-02  bad(abs&rel>1e-3)=0  PASS
+m= 65  B swap16  correctness: maxabs=1.788e-07 maxrel=2.423e-02  bad(abs&rel>1e-3)=0  PASS
+m= 65  C cur-exit correctness: maxabs=1.788e-07 maxrel=1.282e-02  bad(abs&rel>1e-3)=0  PASS
+m= 65  A cur128  us/launch: reps=[1187.0 1188.4 1187.1 1187.8 1187.6]  median=1187.6
+m= 65  B swap16  us/launch: reps=[1367.7 1367.2 1367.0 1367.4 1367.4]  median=1367.4
+m= 65  C cur-exit us/launch: reps=[1109.6 1110.5 1111.1 1110.5 1109.4]  median=1110.5
+m= 65  ratios: swap/cur128=1.151  exit/cur128=0.935  swap/exit=1.231  (ideal mma-work: 0.625 / 0.562)
+
+m= 96  A cur128  correctness: maxabs=1.788e-07 maxrel=1.373e-02  bad(abs&rel>1e-3)=0  PASS
+m= 96  B swap16  correctness: maxabs=1.788e-07 maxrel=2.423e-02  bad(abs&rel>1e-3)=0  PASS
+m= 96  C cur-exit correctness: maxabs=1.788e-07 maxrel=1.373e-02  bad(abs&rel>1e-3)=0  PASS
+m= 96  A cur128  us/launch: reps=[1405.5 1406.6 1405.1 1405.7 1405.0]  median=1405.5
+m= 96  B swap16  us/launch: reps=[1718.0 1717.6 1719.7 1718.1 1717.9]  median=1718.0
+m= 96  C cur-exit us/launch: reps=[1371.6 1371.2 1371.2 1370.9 1370.8]  median=1371.2
+m= 96  ratios: swap/cur128=1.222  exit/cur128=0.976  swap/exit=1.253  (ideal mma-work: 0.750 / 0.750)
+
+m=128  A cur128  correctness: maxabs=1.788e-07 maxrel=2.747e-02  bad(abs&rel>1e-3)=0  PASS
+m=128  B swap16  correctness: maxabs=1.788e-07 maxrel=2.423e-02  bad(abs&rel>1e-3)=0  PASS
+m=128  C cur-exit correctness: maxabs=1.788e-07 maxrel=2.747e-02  bad(abs&rel>1e-3)=0  PASS
+m=128  A cur128  us/launch: reps=[1614.6 1615.1 1614.9 1614.4 1614.5]  median=1614.6
+m=128  B swap16  us/launch: reps=[2078.4 2079.4 2078.1 2079.4 2079.0]  median=2079.0
+m=128  C cur-exit us/launch: reps=[1649.2 1649.0 1649.8 1649.0 1649.5]  median=1649.2
+m=128  ratios: swap/cur128=1.288  exit/cur128=1.021  swap/exit=1.261  (ideal mma-work: 1.000 / 1.000)
+
+name, driver_version, clocks.current.sm [MHz], temperature.gpu, power.draw [W]
+NVIDIA H100 80GB HBM3, 595.71.05, 1830 MHz, 39, 129.45 W

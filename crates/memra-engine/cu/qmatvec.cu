@@ -7649,3 +7649,371 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_mr1_rp(
                           b * rpb + (int)threadIdx.y, 0);
     }
 }
+
+// ===== K-QUANT split-plane (rp) decode twins — the H100 K-quant coalescing fix
+// (2026-08-01 ncu, q27 Q4_K_M decode: qmatvec_q4_K_mmvq holds DRAM at 41-54% with
+// "uncoalesced global accesses" = 65% excessive sectors; qmatvec_q6_K_mmvq 40% DRAM
+// at 78% excessive sectors — the 144B/210B GGUF superblock strides land every 4B
+// weight load off-sector, the exact Q8_0 disease of 2026-07-26). Mirror layout
+// (same total bytes as the source tensor, planes):
+//   q4_K: [qs: out_f*nsbk*128] ++ [meta: 16B/sblk = d(2) dmin(2) scales(12), the
+//          GGUF header bytes verbatim]
+//   q6_K: [ql: out_f*nsbk*128] ++ [qh: *64] ++ [scales: *16] ++ [d: *2]
+// (nsbk = in_f/256 superblocks per row). Every quant fetch becomes an aligned 16B
+// __ldcs and the header/scale fetches land on sector-contiguous planes. Per
+// (token,row,g) the dp4a int inputs are the SAME BYTES in the same k order and the
+// float chain is VERBATIM the GGUF-layout kernel -> BIT-IDENTICAL (kernel-check rp
+// gates + run-gen argmax + run-spec K=1..8 arbitrate). =====
+__device__ __forceinline__ void q4k_rp_planes(const unsigned char* W, int out_f, int o,
+                                              int nsbk,
+                                              const unsigned char** wqs,
+                                              const unsigned char** wmeta) {
+    *wqs   = W + ((size_t)o * nsbk) * 128;
+    *wmeta = W + (size_t)out_f * nsbk * 128 + ((size_t)o * nsbk) * 16;
+}
+// device-side mirror build: one thread per q4_K superblock, pure byte permutation.
+extern "C" __global__ void q4_K_split_rp_build(
+        const unsigned char* __restrict__ src, unsigned char* __restrict__ dst,
+        int out_f, int nsbk) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= out_f * nsbk) return;
+    const unsigned char* b = src + (size_t)i * 144;
+    size_t qplane = (size_t)out_f * nsbk * 128;
+    unsigned char* q = dst + (size_t)i * 128;
+    #pragma unroll
+    for (int k = 0; k < 128; k++) q[k] = b[16 + k];
+    unsigned char* mt = dst + qplane + (size_t)i * 16;
+    #pragma unroll
+    for (int k = 0; k < 16; k++) mt[k] = b[k];
+}
+// rp twin of qmatvec_q4_K_mmvq: same grid/warp mapping, aligned int4 weight loads.
+extern "C" __global__ void qmatvec_q4_K_mmvq_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsbk = in_f >> 8;
+    const unsigned char* wqs; const unsigned char* wmeta;
+    q4k_rp_planes(W, out_f, o, nsbk, &wqs, &wmeta);
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        const unsigned char* mb = wmeta + (size_t)sblk * 16;
+        float d_sb    = half_to_float(*(const unsigned short*)mb);
+        float dmin_sb = half_to_float(*(const unsigned short*)(mb + 2));
+        const unsigned char* scales = mb + 4;
+        unsigned char sc, mn;
+        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+        int chunk = grp >> 1;
+        bool hi = (grp & 1);
+        int4 w01 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32));
+        int4 w23 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32 + 16));
+        int q4[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        int sumi_d = 0, sumi_sum = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int raw = q4[k];
+            int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+            int a = aq4[k];
+            sumi_d   = dp4a(wpack, a, sumi_d);
+            sumi_sum = dp4a(0x01010101, a, sumi_sum);
+        }
+        float d8 = adrow[g];
+        acc += d_sb   * (float)((int)sc * sumi_d) * d8
+             - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+__device__ __forceinline__ void q6k_rp_planes(const unsigned char* W, int out_f, int o,
+                                              int nsbk,
+                                              const unsigned char** wql,
+                                              const unsigned char** wqh,
+                                              const signed char** wsc,
+                                              const unsigned short** wd) {
+    size_t nsbt = (size_t)out_f * nsbk;
+    *wql = W + ((size_t)o * nsbk) * 128;
+    *wqh = W + nsbt * 128 + ((size_t)o * nsbk) * 64;
+    *wsc = (const signed char*)(W + nsbt * 192 + ((size_t)o * nsbk) * 16);
+    *wd  = (const unsigned short*)(W + nsbt * 208) + (size_t)o * nsbk;
+}
+// device-side mirror build: one thread per q6_K superblock, pure byte permutation.
+extern "C" __global__ void q6_K_split_rp_build(
+        const unsigned char* __restrict__ src, unsigned char* __restrict__ dst,
+        int out_f, int nsbk) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= out_f * nsbk) return;
+    const unsigned char* b = src + (size_t)i * 210;
+    size_t nsbt = (size_t)out_f * nsbk;
+    unsigned char* ql = dst + (size_t)i * 128;
+    unsigned char* qh = dst + nsbt * 128 + (size_t)i * 64;
+    unsigned char* sc = dst + nsbt * 192 + (size_t)i * 16;
+    unsigned char* dh = dst + nsbt * 208 + (size_t)i * 2;
+    #pragma unroll
+    for (int k = 0; k < 128; k++) ql[k] = b[k];
+    #pragma unroll
+    for (int k = 0; k < 64; k++) qh[k] = b[128 + k];
+    #pragma unroll
+    for (int k = 0; k < 16; k++) sc[k] = b[192 + k];
+    dh[0] = b[208]; dh[1] = b[209];
+}
+// rp twin of qmatvec_q6_K_mmvq: same grid/warp mapping, aligned int4 ql/qh loads.
+// Carries MEMRA_PDL_ENTRY like its GGUF-layout source (PDL wave-A, 2026-07-23) —
+// the dispatch marked-name list admits it to the programmatic-serialization launch.
+extern "C" __global__ void qmatvec_q6_K_mmvq_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    MEMRA_PDL_ENTRY();
+    (void)row_bytes;
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsbk = in_f >> 8;
+    const unsigned char* wql; const unsigned char* wqh;
+    const signed char* wsc; const unsigned short* wd6;
+    q6k_rp_planes(W, out_f, o, nsbk, &wql, &wqh, &wsc, &wd6);
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        float d = half_to_float(wd6[sblk]);
+        int n   = grp >> 2;
+        int run = grp & 3;
+        const unsigned char* qlh = wql + (size_t)sblk * 128 + n * 64;
+        const unsigned char* qhh = wqh + (size_t)sblk * 64 + n * 32;
+        const signed char*   scn = wsc + (size_t)sblk * 16 + n * 8;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        int is0 = run * 2 + 0;
+        int is1 = run * 2 + 1;
+        int sumi0 = 0, sumi1 = 0;
+        int ql_off = (run & 1) ? 32 : 0;
+        int ql_hi  = (run >= 2);
+        int qh_sh  = run * 2;
+        // aligned int4 loads: qlh+ql_off and qhh are 16B-aligned plane offsets; the k-th
+        // int equals get_int_b2(qlh + k*4 + ql_off) / get_int_b2(qhh + k*4) byte-for-byte.
+        int4 l01 = __ldcs((const int4*)(qlh + ql_off));
+        int4 l23 = __ldcs((const int4*)(qlh + ql_off + 16));
+        int qla[8] = { l01.x, l01.y, l01.z, l01.w, l23.x, l23.y, l23.z, l23.w };
+        int4 h01 = __ldcs((const int4*)qhh);
+        int4 h23 = __ldcs((const int4*)(qhh + 16));
+        int qha[8] = { h01.x, h01.y, h01.z, h01.w, h23.x, h23.y, h23.z, h23.w };
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int ql4 = qla[k];
+            int qh4 = qha[k];
+            int qln = ql_hi ? ((ql4 >> 4) & 0x0F0F0F0F) : (ql4 & 0x0F0F0F0F);
+            int qhn = (qh4 >> qh_sh) & 0x03030303;
+            int vpack = qln | (qhn << 4);
+            int wpack = __vsubss4(vpack, 0x20202020);
+            int a = aq4[k];
+            if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
+            else       sumi1 = dp4a(wpack, a, sumi1);
+        }
+        float d8 = adrow[g];
+        acc += d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+// batched rp row bodies + wrappers (mirror of q4k/q6k_mmvq_batched with plane loads;
+// the spec-verify m=2..16 tiers ride these when the weight carries an rp4 mirror).
+template<int MCOLS>
+__device__ __forceinline__ void q4k_mmvq_batched_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m) {
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + threadIdx.y;
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsbk = in_f >> 8;
+    const unsigned char* wqs; const unsigned char* wmeta;
+    q4k_rp_planes(W, out_f, o, nsbk, &wqs, &wmeta);
+    float acc[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        const unsigned char* mb = wmeta + (size_t)sblk * 16;
+        float d_sb    = half_to_float(*(const unsigned short*)mb);
+        float dmin_sb = half_to_float(*(const unsigned short*)(mb + 2));
+        const unsigned char* scales = mb + 4;
+        unsigned char sc, mn;
+        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+        int chunk = grp >> 1;
+        bool hi = (grp & 1);
+        int4 w01 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32));
+        int4 w23 = __ldcs((const int4*)(wqs + (size_t)sblk * 128 + chunk * 32 + 16));
+        int q4[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        int wpack[8];                            // decode the 4-bit weights ONCE for this group
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int raw = q4[k];
+            wpack[k] = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+        }
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            int sumi_d = 0, sumi_sum = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                sumi_d   = dp4a(wpack[k], aq4[k], sumi_d);
+                sumi_sum = dp4a(0x01010101, aq4[k], sumi_sum);
+            }
+            float d8 = ad[(size_t)c * nsb + g];
+            acc[c] += d_sb   * (float)((int)sc * sumi_d) * d8
+                    - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a = warp_reduce_sum(acc[c]);
+        if (lane == 0) y[(size_t)c * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_q4_K_mmvq_b2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q4k_mmvq_batched_rp<2>(W, aq, ad, y, in_f, out_f, m);
+}
+extern "C" __global__ void qmatvec_q4_K_mmvq_b4_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q4k_mmvq_batched_rp<4>(W, aq, ad, y, in_f, out_f, m);
+}
+extern "C" __global__ void qmatvec_q4_K_mmvq_b8_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q4k_mmvq_batched_rp<8>(W, aq, ad, y, in_f, out_f, m);
+}
+template<int MCOLS>
+__device__ __forceinline__ void q6k_mmvq_batched_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m) {
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + threadIdx.y;
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsbk = in_f >> 8;
+    const unsigned char* wql; const unsigned char* wqh;
+    const signed char* wsc; const unsigned short* wd6;
+    q6k_rp_planes(W, out_f, o, nsbk, &wql, &wqh, &wsc, &wd6);
+    float acc[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        float d = half_to_float(wd6[sblk]);
+        int n   = grp >> 2;
+        int run = grp & 3;
+        const unsigned char* qlh = wql + (size_t)sblk * 128 + n * 64;
+        const unsigned char* qhh = wqh + (size_t)sblk * 64 + n * 32;
+        const signed char*   scn = wsc + (size_t)sblk * 16 + n * 8;
+        int is0 = run * 2 + 0;
+        int is1 = run * 2 + 1;
+        int ql_off = (run & 1) ? 32 : 0;
+        int ql_hi  = (run >= 2);
+        int qh_sh  = run * 2;
+        int4 l01 = __ldcs((const int4*)(qlh + ql_off));
+        int4 l23 = __ldcs((const int4*)(qlh + ql_off + 16));
+        int qla[8] = { l01.x, l01.y, l01.z, l01.w, l23.x, l23.y, l23.z, l23.w };
+        int4 h01 = __ldcs((const int4*)qhh);
+        int4 h23 = __ldcs((const int4*)(qhh + 16));
+        int qha[8] = { h01.x, h01.y, h01.z, h01.w, h23.x, h23.y, h23.z, h23.w };
+        int wpack[8];                            // decode the 6-bit signed weights ONCE for this group
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int qln = ql_hi ? ((qla[k] >> 4) & 0x0F0F0F0F) : (qla[k] & 0x0F0F0F0F);
+            int qhn = (qha[k] >> qh_sh) & 0x03030303;
+            int vpack = qln | (qhn << 4);
+            wpack[k] = __vsubss4(vpack, 0x20202020);
+        }
+        int sc0 = (int)scn[is0], sc1 = (int)scn[is1];
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            int sumi0 = 0, sumi1 = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                if (k < 4) sumi0 = dp4a(wpack[k], aq4[k], sumi0);
+                else       sumi1 = dp4a(wpack[k], aq4[k], sumi1);
+            }
+            float d8 = ad[(size_t)c * nsb + g];
+            acc[c] += d * d8 * ( (float)(sumi0 * sc0) + (float)(sumi1 * sc1) );
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a = warp_reduce_sum(acc[c]);
+        if (lane == 0) y[(size_t)c * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_b2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q6k_mmvq_batched_rp<2>(W, aq, ad, y, in_f, out_f, m);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_b4_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q6k_mmvq_batched_rp<4>(W, aq, ad, y, in_f, out_f, m);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_b8_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q6k_mmvq_batched_rp<8>(W, aq, ad, y, in_f, out_f, m);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_b16_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q6k_mmvq_batched_rp<16>(W, aq, ad, y, in_f, out_f, m);
+}

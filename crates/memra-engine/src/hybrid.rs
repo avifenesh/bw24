@@ -1017,9 +1017,13 @@ impl HybridModel {
             // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
             crate::FA_SP512_DEFAULT.store(if real_moe { 16 } else { 32 },
                                           std::sync::atomic::Ordering::Relaxed);
-            // gemma4 keeps the lone-warp router (the 26B's knife-edge gate flips on the
-            // w8 twin's fold order — 2026-07-31 on-box receipts; qwen-class keeps w8).
-            crate::ROUTER_W8_DEFAULT.store(false, std::sync::atomic::Ordering::Relaxed);
+            // gemma4 router w8 RE-ARBITRATED 2026-08-01 (g26 decode dig): the 2026-07-31
+            // knife-edge that stored false here was single-synthetic-prompt roulette — on 6
+            // real prompts the w8 twin's gate outcome is IDENTICAL to the lone-warp form
+            // (5 MATCH/5 MATCH; the one MISMATCH prompt fails both arms with the same
+            // argmax pair, router-independent). w8 = +13% g26 decode (182->206 tok/s x3
+            // interleaved, H100). Receipts: research/g26-decode-20260801/. gemma4 now rides
+            // the global default (true); MEMRA_ROUTER_V2=0 is the rollback seam.
             // fused t=1 pair/triple mr1 per variant (2026-07-14 DRAM-duty arc: dense +1.1%
             // short / +0.6% depth on 31B; MoE 26B −1.2% — stays mr2).
             crate::FUSED_MR1_DEFAULT.store(!real_moe,
@@ -1105,7 +1109,10 @@ impl HybridModel {
                 Ok(_) => true,
                 Err(_) => cfg!(memra_hopper_mma),
             };
-            if q8rp_on {
+            // K-quant split-plane mirrors (q4_K/q6_K, 2026-08-01 H100 coalescing fix) ride
+            // the same trunk walk under their own seam (MEMRA_KQRP, default = hopper lane).
+            let kqrp_on = crate::Engine::kqrp_enabled();
+            if q8rp_on || kqrp_on {
                 let e_ref = e;
                 // f16 prefill mirrors, PER-MODEL argmax-gate arbitration (round 45): on the
                 // qwen Q8_0 dense class the f16-prefill-vs-int8-decode gap (maxdiff ~0.67)
@@ -1118,14 +1125,18 @@ impl HybridModel {
                 let mut nmir = 0usize;
                 let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
                     let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
-                    e_ref.build_q8_rp4(w)?;
+                    if q8rp_on { e_ref.build_q8_rp4(w)?; }
+                    if kqrp_on {
+                        e_ref.build_q4k_rp4(w)?;
+                        e_ref.build_q6k_rp4(w)?;
+                    }
                     // Q6_K mirrors are model-CLASS-agnostic (round 47): no MMQ arm exists for
                     // Q6_K — the fallback dequant-GEMM is ~10x the f16 lane (q27's prefill
                     // wall). The qwen-dense argmax-flip evidence (round 45) was the Q8_0
                     // mirror specifically; Q6_K admission is arbitrated by its own gate runs.
                     let q6k = matches!(w, crate::model::GpuTensor::Quant { qtype, .. }
                                        if *qtype == crate::QT_Q6_K);
-                    if crate::f16_ffi::pp_f16_enabled() && (f16_model_ok || q6k) {
+                    if q8rp_on && crate::f16_ffi::pp_f16_enabled() && (f16_model_ok || q6k) {
                         e_ref.build_q8_f16(w)?;
                     }
                     if !before && matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. }) {
