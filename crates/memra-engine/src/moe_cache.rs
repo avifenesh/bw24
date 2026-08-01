@@ -230,7 +230,7 @@ fn stage_pread_on_compute_stream(
     let source = ExactPinnedPrefix(host_bytes);
     let mut dst = slot.slice_mut(0..host_bytes.len());
     e.stream().memcpy_htod(&source, &mut dst)?;
-    ready.record(e.stream())?;
+    ready.record(&e.stream())?;
         Ok(ready)
 }
 
@@ -1267,7 +1267,8 @@ impl MoeSlotCache {
                         // count said fully resident but a block is missing — inconsistent; bail safe.
                         return Ok(None);
                     };
-                    let (p, _ev) = self.slots[s].device_ptr(e.stream());
+                    let __s_ev = e.stream();
+                    let (p, _ev) = self.slots[s].device_ptr(&__s_ev);
                     host[proj as usize * n_expert + ex] = p as u64;
                 }
             }

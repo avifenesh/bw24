@@ -79,14 +79,16 @@ pub fn kv_len_ptr_table(
         .iter()
         .map(|kv| match kv.as_ref() {
             Some(kvl) => {
-                let (p, _g) = kvl.len_d.device_ptr(e.stream());
+                let __s_g = e.stream();
+                let (p, _g) = kvl.len_d.device_ptr(&__s_g);
                 p as u64
             }
             None => 0u64,
         })
         .collect();
     if let Some(pc) = pos_ctr {
-        let (p, _g) = pc.device_ptr(e.stream());
+        let __s_g = e.stream();
+        let (p, _g) = pc.device_ptr(&__s_g);
         ptrs.push(p as u64);
     }
     Ok(e.htod_u64(&ptrs)?)

@@ -24,7 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stride = rb * n_ff;
     let slab: Vec<u8> = (0..n_expert * stride).map(|i| hb(i + 7)).collect();
     let slab_d = e.htod_bytes(&slab)?;
-    let (p0, _g) = slab_d.device_ptr(e.stream());
+    let __s_g = e.stream();
+    let (p0, _g) = slab_d.device_ptr(&__s_g);
     let mut table_h = vec![0u64; 3 * n_expert];
     for ex in 0..n_expert {
         table_h[ex] = p0 + (ex * stride) as u64;
@@ -65,7 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dstride = drb * dout;
     let dslab: Vec<u8> = (0..n_expert * dstride).map(|i| hb(i + 31)).collect();
     let dslab_d = e.htod_bytes(&dslab)?;
-    let (pdn, _g2) = dslab_d.device_ptr(e.stream());
+    let __s_g2 = e.stream();
+    let (pdn, _g2) = dslab_d.device_ptr(&__s_g2);
     let mut dtab = vec![0u64; 3 * n_expert];
     for ex in 0..n_expert {
         dtab[ex] = pdn + (ex * dstride) as u64;

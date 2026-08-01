@@ -177,6 +177,30 @@ impl Cache {
         cfg: &ModelConfig,
         max_ctx: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_inner(&|_| e, cfg, max_ctx)
+    }
+
+    /// M1-PP2 increment 2 (stage-owned KV): layers [0, split) allocate through `dev0`,
+    /// layers [split, n) through `dev1` — each pipeline stage's cache lives on the
+    /// device that runs the stage. With dev0 == dev1 this is byte-for-byte `new`
+    /// (the single-device plumbing gate). Sizing math is IDENTICAL either way.
+    pub fn new_pp2(
+        dev0: &dyn KvDev,
+        dev1: &dyn KvDev,
+        split: usize,
+        cfg: &ModelConfig,
+        max_ctx: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_inner(&|il| if il < split { dev0 } else { dev1 }, cfg, max_ctx)
+    }
+
+    /// Shared allocation walk: `pick(il)` supplies the device that OWNS layer il's
+    /// cache state (always the same device outside the pp2 door).
+    fn new_inner<'a>(
+        pick: &dyn Fn(usize) -> &'a dyn KvDev,
+        cfg: &ModelConfig,
+        max_ctx: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let n = cfg.n_layer as usize;
         let mut kv = Vec::with_capacity(n);
         let mut recur = Vec::with_capacity(n);
@@ -204,6 +228,8 @@ impl Cache {
             (0, 0, 0, 0)
         };
         for il in 0..cfg.n_layer {
+            // stage-owned allocation (pp2): the device that runs this layer allocates it.
+            let e = pick(il as usize);
             // gemma4 R5: per-layer KV geometry (SWA 256hd x 8kv = 2048 / global 512hd x 2kv = 1024).
             let (kv_dim_k, kv_dim_v) = match &cfg.gemma4 {
                 Some(g) => {

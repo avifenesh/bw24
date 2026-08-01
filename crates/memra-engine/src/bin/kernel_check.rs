@@ -2170,10 +2170,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes,false)?;
                 }
                 // arm 2 (seqs): one z-batched launch into kcs2/vcs2 via the pointer table
+                let es = e.gpu.stream();
                 let mut ptrs2: Vec<u64> = Vec::new();
                 for z in 0..b_n {
-                    let (pk, _g) = kcs2[z].device_ptr(&e.gpu.stream);
-                    let (pv, _g2) = vcs2[z].device_ptr(&e.gpu.stream);
+                    let (pk, _g) = kcs2[z].device_ptr(&es);
+                    let (pv, _g2) = vcs2[z].device_ptr(&es);
                     ptrs2.push(pk as u64); ptrs2.push(pv as u64);
                 }
                 let table2 = e.htod_u64(&ptrs2)?;
@@ -2207,8 +2208,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let mut ptrs1: Vec<u64> = Vec::new();
                 for z in 0..b_n {
-                    let (pk, _g) = kcs[z].device_ptr(&e.gpu.stream);
-                    let (pv, _g2) = vcs[z].device_ptr(&e.gpu.stream);
+                    let (pk, _g) = kcs[z].device_ptr(&es);
+                    let (pv, _g2) = vcs[z].device_ptr(&es);
                     ptrs1.push(pk as u64); ptrs1.push(pv as u64);
                 }
                 let table1 = e.htod_u64(&ptrs1)?;

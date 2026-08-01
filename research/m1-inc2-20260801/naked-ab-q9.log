@@ -1,0 +1,10 @@
+rep1 base=83.51 new=83.42
+rep2 base=82.93 new=83.73
+rep3 base=83.56 new=83.35
+rep4 base=82.39 new=83.50
+rep5 base=83.54 new=83.68
+# protocol: interleaved x5 same-session, MEMRA_NGEN=128 gen-only tok/s, q9 q8_0, one warmup
+#           pair first, flock /tmp/gpu5090.lock per run, no doors open (naked path).
+# base = 4e395fa3 (branch point), new = lane/m1-inc2 (ambient-stream accessor on every launch).
+# medians: base 83.51, new 83.50 -> the Gpu::stream() TLS indirection is perf-neutral on the
+# naked path (run-gen argmax MATCH separately in run-gen-q9-naked.log / run-gen-g12-naked.log).

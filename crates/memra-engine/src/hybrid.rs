@@ -251,9 +251,12 @@ fn build_dev_exps(
     let d = e.htod_bytes_padded(down.bytes.as_bytes(), 144)?;
     let mut host = vec![0u64; 3 * n_expert];
     let (pg, pu, pd) = {
-        let (pg, _e0) = g.device_ptr(e.stream());
-        let (pu, _e1) = u.device_ptr(e.stream());
-        let (pd, _e2) = d.device_ptr(e.stream());
+        let __s_e0 = e.stream();
+        let (pg, _e0) = g.device_ptr(&__s_e0);
+        let __s_e1 = e.stream();
+        let (pu, _e1) = u.device_ptr(&__s_e1);
+        let __s_e2 = e.stream();
+        let (pd, _e2) = d.device_ptr(&__s_e2);
         (pg as u64, pu as u64, pd as u64)
     };
     for ex in 0..n_expert {
