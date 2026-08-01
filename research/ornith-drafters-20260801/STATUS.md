@@ -2,9 +2,9 @@
 
 | stage | ornith9b | ornith35b | katcoder |
 |---|---|---|---|
-| own-gen corpus (254 prompts, ~130k tok) | pending | pending | pending |
-| ranks artifact (owngen-ranks-32768) | pending | pending | pending |
-| drafter built (donor block + own trim) | pending | pending | pending |
+| own-gen corpus (254 prompts, ~130k tok) | in progress | DONE 128,617 tok, 11,367 distinct | pending |
+| ranks artifact (owngen-ranks-32768) | pending | DONE sha a423317a | pending |
+| drafter built (donor block + own trim) | pending | DONE 890MiB sha 78ff4bfb | pending |
 | run-spec K=1..8 self-consistency | pending | pending | pending |
 | acceptance table K=2..4 (p1/p2/p3) | pending | pending | pending |
 | e2e spec/plain x3 (serving K) | pending | pending | pending |
