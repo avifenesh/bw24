@@ -26,6 +26,40 @@ use crate::hybrid::{HybridModel, Mixer};
 use crate::Engine;
 use cudarc::driver::CudaSlice;
 
+// ---- MEMRA_BATCH_PHASE=1 (diagnostics): sync-bounded per-phase accumulators for the batched
+// tick. Each boundary syncs the stream, so the TOTAL inflates (launch pipelining is destroyed);
+// the value is the RANKING/shares, not absolute ms. Read via `batch_phase_report()`.
+pub(crate) static BATCH_PHASE: std::sync::Mutex<[f64; 12]> = std::sync::Mutex::new([0.0; 12]);
+pub const BATCH_PHASE_NAMES: [&str; 12] = [
+    "setup(ptrs+embed H2D)",
+    "attn batched pre (norm/qkv/rope)",
+    "attn per-seq: kv append",
+    "attn per-seq: q/a dtod copies",
+    "attn per-seq: fa_decode",
+    "attn post (gate+o-proj)",
+    "gdn batched projections",
+    "gdn state ops (conv/prep/scan)",
+    "gdn out (gated norm+proj)",
+    "ffn (add/norm/gate/up/act/down)",
+    "lm_head (norm+matmul)",
+    "logits D2H + host split",
+];
+pub fn batch_phase_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_BATCH_PHASE").as_deref() == Ok("1"))
+}
+pub fn batch_phase_report() -> String {
+    let ph = BATCH_PHASE.lock().unwrap();
+    let tot: f64 = ph.iter().sum();
+    let mut rows: Vec<(usize, f64)> = ph.iter().copied().enumerate().collect();
+    rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut s = format!("[batch-phase] total {:.1} ms (sync-bounded; shares rank, not walltime)\n", tot * 1e3);
+    for (i, v) in rows {
+        s += &format!("  {:>6.1} ms {:>5.1}%  {}\n", v * 1e3, v / tot * 100.0, BATCH_PHASE_NAMES[i]);
+    }
+    s
+}
+
 impl HybridModel {
     /// One batched greedy-decode step over B independent sequences.
     /// `tokens[b]` is sequence b's input token; `caches[b]` its private cache (position,
@@ -37,6 +71,32 @@ impl HybridModel {
         tokens: &[u32],
         caches: &mut [&mut Cache],
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+        let (rows, _) = self.decode_step_batch_sampled(e, tokens, caches, &[])?;
+        Ok(rows)
+    }
+
+    /// `decode_step_batch` + DEVICE-SIDE SAMPLING for eligible rows (the batched-tick lever,
+    /// 2026-08-01): the host sampler's temp-path is O(n_vocab) with a full-vocab exp per row
+    /// (measured 1.36 ms/row at the 9B's 248320 vocab = 10.9 ms/tick at B=8 — the single
+    /// largest component of the serving tick). Here each requested row samples ON DEVICE
+    /// between the lm_head matmul and the logits D2H:
+    ///   temp <= 0 (greedy): the 2-pass device argmax — bit-identical to host argmax
+    ///     (argmax-gate contract, same kernels as the dc serving path).
+    ///   temp > 0: gumbel_perturb(seed, ctr, temp) + the same argmax = ONE categorical draw
+    ///     from softmax(logits/temp) — the sampled-spec Philox machinery. Deterministic per
+    ///     (seed, ctr) and INDEPENDENT of batch composition (the isolation contract;
+    ///     decode-batch-gate gate3). NOTE: the draw stream differs from the host sampler's
+    ///     SplitMix64 (distribution-equal, seed-deterministic, NOT byte-equal to the old
+    ///     host draws) — greedy rows are unchanged bit-exact.
+    /// `samp[bi] = Some((temp, seed, ctr))` requests a device sample for row bi; the full
+    /// logits rows are still returned (worker keeps last_logits semantics + fallback rows).
+    pub fn decode_step_batch_sampled(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
         assert!(
@@ -97,6 +157,22 @@ impl HybridModel {
         // Embed all B tokens -> x [B, n_embd] (host gather, one H2D).
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
 
+        // MEMRA_BATCH_PHASE=1: sync-bounded phase accumulation (diagnostics — see header note).
+        let ph_on = batch_phase_on();
+        let mut ph_last = std::time::Instant::now();
+        let ph_mark = |slot: usize,
+                       last: &mut std::time::Instant|
+         -> Result<(), Box<dyn std::error::Error>> {
+            if ph_on {
+                e.stream().synchronize()?;
+                let now = std::time::Instant::now();
+                BATCH_PHASE.lock().unwrap()[slot] += (now - *last).as_secs_f64();
+                *last = now;
+            }
+            Ok(())
+        };
+        ph_mark(0, &mut ph_last)?;
+
         for (il, layer) in self.layers.iter().enumerate() {
             // ---- attn_norm + q8_1 quantize, batched (B rows) ----
             let anorm = layer.attn_norm.float_data();
@@ -133,6 +209,7 @@ impl HybridModel {
                                 cfg.rope_freq_base, 1.0)?;
                     e.rope_neox(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, b_n,
                                 cfg.rope_freq_base, 1.0)?;
+                    ph_mark(1, &mut ph_last)?;
 
                     // Per-sequence: append this row's k/v into that cache, attend, place the
                     // attention row. Row views — no scratch copies on the append side.
@@ -149,6 +226,7 @@ impl HybridModel {
                             Engine::kv_fp8_on(),
                         )?;
                         kvl.len += 1;
+                        ph_mark(2, &mut ph_last)?;
                         let t_kv = kvl.len;
                         let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
                         let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
@@ -156,12 +234,15 @@ impl HybridModel {
                         // row (q8-class µs cost). A q-view fa_decode twin is a v2 cleanup.
                         let mut q_row = e.uninit(q_dim)?;
                         e.dtod_copy_view(&q.slice(bi * q_dim..(bi + 1) * q_dim), &mut q_row)?;
+                        ph_mark(3, &mut ph_last)?;
                         let mut a_row = e.uninit(q_dim)?;
                         e.fa_decode_kvmod(
                             &q_row, &k_view, &v_view, &mut a_row, head_dim, n_head, n_head_kv,
                             t_kv, scale, kvl.k_tok_bytes, kvl.v_tok_bytes, Engine::kv_fp8_on(),
                         )?;
+                        ph_mark(4, &mut ph_last)?;
                         e.dtod_copy_into(&a_row, &mut attn, bi * q_dim)?;
+                        ph_mark(3, &mut ph_last)?;
                     }
 
                     // Output gate (element-wise — batches whole) + o-proj at m=B.
@@ -176,7 +257,9 @@ impl HybridModel {
                         }
                         None => attn,
                     };
-                    e.matmul(&fa.wo, &attn_g, b_n)?
+                    let o = e.matmul(&fa.wo, &attn_g, b_n)?;
+                    ph_mark(5, &mut ph_last)?;
+                    o
                 }
                 Mixer::Linear(la) => {
                     // v2 (the B-scaling fix): the GDN mixer's PROJECTIONS carry the layer's
@@ -200,6 +283,7 @@ impl HybridModel {
                     let z = e.matmul_pre(&la.wqkv_gate, &hq, &hd, &xn, b_n)?;
                     let beta_raw = e.matmul_pre(&la.ssm_beta, &hq, &hd, &xn, b_n)?;
                     let alpha = e.matmul_pre(&la.ssm_alpha, &hq, &hd, &xn, b_n)?;
+                    ph_mark(6, &mut ph_last)?;
 
                     // ---- batched recurrent state ops (3 launches for all B sequences) ----
                     let base = lin_base[il].expect("linear layer missing from pointer table");
@@ -230,9 +314,10 @@ impl HybridModel {
                         let rl = cache.recur[il].as_mut().unwrap();
                         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
                     }
+                    ph_mark(7, &mut ph_last)?;
 
                     // ---- batched gated norm + out-projection ----
-                    if e.uses_q8_1_fast(&la.ssm_out) {
+                    let o = if e.uses_q8_1_fast(&la.ssm_out) {
                         let (gq, gd) = e.gated_rmsnorm_q8_1(&o_all, la.ssm_norm.float_data(),
                                                             &z, d_state, b_n * num_v, eps)?;
                         let g0 = e.zeros(0)?;
@@ -242,7 +327,9 @@ impl HybridModel {
                         e.gated_rmsnorm(&o_all, la.ssm_norm.float_data(), &z, &mut gn,
                                         d_state, b_n * num_v, eps)?;
                         e.matmul(&la.ssm_out, &gn, b_n)?
-                    }
+                    };
+                    ph_mark(8, &mut ph_last)?;
+                    o
                 }
             };
 
@@ -272,17 +359,50 @@ impl HybridModel {
             let mut x2 = e.uninit(b_n * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, b_n * n_embd)?;
             x = x2;
+            ph_mark(9, &mut ph_last)?;
         }
 
         // ---- output norm + lm_head at m=B, one D2H ----
         let mut hn = e.uninit(b_n * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, b_n, eps)?;
         let logits = e.matmul(&self.output, &hn, b_n)?;
+        ph_mark(10, &mut ph_last)?;
+
+        // Device-side sampling for requested rows (see the method doc). Enqueued before the
+        // big logits D2H so the tiny [B] token readback rides the same sync.
+        let n_vocab = self.output.out_features();
+        let mut next: Vec<Option<u32>> = vec![None; b_n];
+        if samp.iter().take(b_n).any(|s| s.is_some()) {
+            let mut toks = e.alloc_u32_zeroed(b_n)?;
+            let mut perturb: Option<CudaSlice<f32>> = None;
+            for (bi, s) in samp.iter().take(b_n).enumerate() {
+                let Some((temp, seed, ctr)) = s else { continue };
+                if *temp <= 0.0 {
+                    e.argmax_token_device_col(&logits, bi, n_vocab, &mut toks, bi)?;
+                } else {
+                    if perturb.is_none() {
+                        perturb = Some(e.zeros(n_vocab)?);
+                    }
+                    let pb = perturb.as_mut().unwrap();
+                    e.gumbel_perturb_col(&logits, bi, pb, n_vocab, *seed, *ctr, *temp)?;
+                    e.argmax_token_device_col(pb, 0, n_vocab, &mut toks, bi)?;
+                }
+            }
+            let host_toks = e.dtoh_u32(&toks)?;
+            for (bi, s) in samp.iter().take(b_n).enumerate() {
+                if s.is_some() {
+                    next[bi] = Some(host_toks[bi]);
+                }
+            }
+        }
+
         let host = e.dtoh(&logits)?;
-        let n_vocab = host.len() / b_n;
         for c in caches.iter_mut() {
             c.pos += 1;
         }
-        Ok((0..b_n).map(|bi| host[bi * n_vocab..(bi + 1) * n_vocab].to_vec()).collect())
+        let rows: Vec<Vec<f32>> =
+            (0..b_n).map(|bi| host[bi * n_vocab..(bi + 1) * n_vocab].to_vec()).collect();
+        ph_mark(11, &mut ph_last)?;
+        Ok((rows, next))
     }
 }

@@ -350,6 +350,8 @@ battery is `tools/validate-h100.sh <model.gguf> [--quick]`.
 | `MEMRA_PRIME_BATCH_HOLD_MS` | 4 | batch-formation hold for staggered arrivals |
 | `MEMRA_SERVE_GS` | ON | solo greedy interactive sessions ride GraphSession replay. Round 35: promotion happens AFTER chunked prefill (`graph_session_from_cache`) — the old token-wise re-prime was a 3x end-to-end loss on long prompts (6.4 -> 2.8s measured) |
 | `MEMRA_GS_MIN` | 384 | min generation budget for GraphSession promotion (capture amortization) |
+| `MEMRA_SERVE_DEVSAMPLE` | ON | `0` = host-sample every batched-tick row from last_logits (the pre-2026-08-01 tick). Default: greedy-no-penalty rows sample via device argmax (bit-identical to host argmax), pure-temperature rows via seeded per-row gumbel draw (distribution-equal, batch-composition-independent — decode-batch-gate gate3); top-k/top-p/min-p/penalty rows keep the host path. Kills the measured 1.36 ms/row host temp-sample at 248k vocab (~45% of the B=8 9B tick) |
+| `MEMRA_BATCH_PHASE` | off | `1` = sync-bounded per-phase accumulators inside decode_step_batch (12 phases, printed by decode-batch-bench). Shares rank the tick; the added syncs inflate the total — diagnosis only |
 
 ### Tuning / diagnostic seams (sm_90a lane)
 

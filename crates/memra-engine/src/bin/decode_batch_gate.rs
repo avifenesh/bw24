@@ -186,7 +186,89 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              if strict { "decode_step_h" } else { "batched-B=1, bit-checked" },
              if g2_fail == 0 { "PASS" } else { "FAIL" });
 
-    if g1_fail + g2_fail == 0 {
+    // ---- Gate 3: DEVICE-SIDE SAMPLING isolation + greedy identity (2026-08-01 lever) ----
+    // (a) greedy device rows: decode_step_batch_sampled's device argmax token must equal the
+    //     host argmax of the SAME returned logits row, every row, every step (the argmax-gate
+    //     contract surfaced at the batched-tick API).
+    // (b) sampled isolation: per-seq (temp=0.7, seed=seq, ctr=step) device draws at B=N must
+    //     equal the SAME metas' draws at B=1 over identically-primed caches — the serving
+    //     isolation contract for the device sampler (batchmates must not change your stream).
+    let mut g3_fail = 0usize;
+    {
+        // (a) greedy identity inside the batch.
+        let mut caches: Vec<Cache> = Vec::new();
+        for p in prompts.iter().take(b_n) {
+            let mut c = Cache::new(&e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(&e, p, &mut c)?;
+            caches.push(c);
+        }
+        let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
+        let samp_g: Vec<Option<(f32, u64, u32)>> = vec![Some((0.0, 0, 0)); b_n];
+        for _s in 0..steps.min(16) {
+            let mut cache_refs: Vec<&mut Cache> = caches.iter_mut().collect();
+            let (rows, next) = model.decode_step_batch_sampled(&e, &toks, &mut cache_refs, &samp_g)?;
+            for (bi, l) in rows.iter().enumerate() {
+                let host_am = argmax(l) as u32;
+                let dev = next[bi].expect("greedy device row missing token");
+                if dev != host_am {
+                    println!("gate3a seq {bi}: device argmax {dev} != host argmax {host_am} FAIL");
+                    g3_fail += 1;
+                }
+                toks[bi] = host_am;
+            }
+            if g3_fail > 4 { break; }
+        }
+        // (b) sampled isolation: B=N vs B=1, same per-seq (seed, ctr) schedule.
+        let n_s = steps.min(16);
+        let mut iso: Vec<Vec<u32>> = Vec::with_capacity(b_n);
+        for bi in 0..b_n {
+            let mut c = Cache::new(&e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(&e, &prompts[bi], &mut c)?;
+            let mut t = *prompts[bi].last().unwrap();
+            let mut out = Vec::with_capacity(n_s);
+            for s in 0..n_s {
+                let mut refs = [&mut c];
+                let samp = [Some((0.7f32, bi as u64 + 1, s as u32))];
+                let (_, nx) = model.decode_step_batch_sampled(&e, &[t], &mut refs, &samp)?;
+                t = nx[0].expect("sampled row missing token");
+                out.push(t);
+            }
+            iso.push(out);
+        }
+        let mut bat: Vec<Vec<u32>> = vec![Vec::with_capacity(n_s); b_n];
+        {
+            let mut caches: Vec<Cache> = Vec::new();
+            for p in prompts.iter().take(b_n) {
+                let mut c = Cache::new(&e, &model.cfg, ctx)?;
+                let _ = model.prime_cache(&e, p, &mut c)?;
+                caches.push(c);
+            }
+            let mut toks: Vec<u32> =
+                prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
+            for s in 0..n_s {
+                let samp: Vec<Option<(f32, u64, u32)>> =
+                    (0..b_n).map(|bi| Some((0.7f32, bi as u64 + 1, s as u32))).collect();
+                let mut cache_refs: Vec<&mut Cache> = caches.iter_mut().collect();
+                let (_, nx) = model.decode_step_batch_sampled(&e, &toks, &mut cache_refs, &samp)?;
+                for bi in 0..b_n {
+                    toks[bi] = nx[bi].expect("sampled row missing token");
+                    bat[bi].push(toks[bi]);
+                }
+            }
+        }
+        for bi in 0..b_n {
+            if iso[bi] != bat[bi] {
+                let d = iso[bi].iter().zip(&bat[bi]).position(|(a, b)| a != b);
+                println!("gate3b seq {bi}: sampled stream DIVERGED batched-vs-isolated at \
+                          step {d:?} FAIL");
+                g3_fail += 1;
+            }
+        }
+    }
+    println!("gate3 (device sampling: greedy==host-argmax + sampled B={b_n} vs isolated): {}",
+             if g3_fail == 0 { "PASS" } else { "FAIL" });
+
+    if g1_fail + g2_fail + g3_fail == 0 {
         println!("ALL GREEN: decode_step_batch exactness battery");
         Ok(())
     } else {

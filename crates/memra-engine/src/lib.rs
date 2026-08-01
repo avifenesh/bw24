@@ -1552,6 +1552,25 @@ impl Engine {
         Ok(())
     }
 
+    /// Column-`col` twin of `gumbel_perturb` over stacked logits [B, n_vocab] (the batched
+    /// serving tick's device sampler): y = x[col]/temp + gumbel(seed, stream_pos, lane).
+    /// SAME kernel/Philox mapping as `gumbel_perturb` — bit-identical perturbation for the
+    /// same (seed, stream_pos, temp) regardless of which batch column the row sits in
+    /// (the lane index is the in-row position; `col` only moves the input pointer). That
+    /// pointer-invariance IS the serving isolation contract for sampled rows.
+    pub fn gumbel_perturb_col(&self, x: &CudaSlice<f32>, col: usize, y: &mut CudaSlice<f32>,
+                              n: usize, seed: u64, stream_pos: u32, temp: f32)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gumbel_perturb_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let col_view = x.slice(col * n..(col + 1) * n);
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&col_view).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// In-graph sampling-event counter bump (spec_sample.cu kernel 5): ctr[0] += 1. The sampled
     /// graph-draft chain replays with FIXED kernel args, so the Philox event counter must be
     /// DEVICE data — the host seeds it once per round; every replay bumps it before the perturb
