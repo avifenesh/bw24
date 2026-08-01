@@ -1,0 +1,19 @@
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 layers); steps=256 reps=1 batches=[8]
+B=8: aggregate 422.4 tok/s, per-seq 52.8 tok/s (median of 1)
+scale B=8: 1.00x aggregate vs B=1
+[batch-phase] total 9033.0 ms (sync-bounded; shares rank, not walltime)
+  2915.3 ms  32.3%  ffn (add/norm/gate/up/act/down)
+  1317.2 ms  14.6%  attn per-seq: fa_decode
+  1254.3 ms  13.9%  gdn batched projections
+   762.0 ms   8.4%  logits D2H + host split
+   642.4 ms   7.1%  attn per-seq: q/a dtod copies
+   415.1 ms   4.6%  attn batched pre (norm/qkv/rope)
+   398.9 ms   4.4%  attn per-seq: kv append
+   398.5 ms   4.4%  gdn out (gated norm+proj)
+   378.5 ms   4.2%  gdn state ops (conv/prep/scan)
+   371.8 ms   4.1%  lm_head (norm+matmul)
+   169.7 ms   1.9%  attn post (gate+o-proj)
+     9.3 ms   0.1%  setup(ptrs+embed H2D)
+
+[host-sample] n_vocab=248320 greedy argmax 142 us/row | temp0.7 sample 1336 us/row | x B=8 rows/tick = 1.13 ms (greedy) / 10.69 ms (temp) [sink 7121538]
