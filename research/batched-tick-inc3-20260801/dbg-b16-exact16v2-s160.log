@@ -1,0 +1,12 @@
+=== exact16v2 --batch 16 --steps 160 env: CAP=16 NO_GEMM=1 PP_Q8MMQ=0 Q8RP=1 2026-08-01T11:29:46Z ===
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 layers); steps=160 batch=16
+gate1 seed 0: agreement all 160 steps
+gate1 seed 1: agreement all 160 steps
+gate1 seed 2: agreement all 160 steps
+gate1 seed 3 step 3: token diverged — accepted cross-config drift (WARN)
+gate1 seed 4: agreement all 160 steps
+gate1 seed 5: agreement all 160 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 160 steps, 6 seed(s)): PASS
+gate2 (B=16 vs isolated batched-B=1, bit-checked, 160 steps): PASS
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")

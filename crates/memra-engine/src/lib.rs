@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use cudarc::driver::{CudaContext, CudaStream, CudaModule, CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::Ptx;
 
+pub use cudarc;
 pub use memra_gguf;
 pub use memra_runtime;
 

@@ -190,6 +190,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("gate2 (B={b_n} vs isolated {}, {steps} steps): {}",
              if strict { "decode_step_h" } else { "batched-B=1, bit-checked" },
              if g2_fail == 0 { "PASS" } else { "FAIL" });
+    // 24GB-card capacity (inc3, 2026-08-01): free gate2's cache herd + host logits before
+    // gate3 allocates its own (B=16 with the q8rp mirror OOM'd gate3 on the 5090 while
+    // every verdict was green — harness footprint, not model state).
+    drop(caches);
+    drop(ref_logits);
+    drop(ref_streams);
 
     // ---- Gate 3: DEVICE-SIDE SAMPLING isolation + greedy identity (2026-08-01 lever) ----
     // (a) greedy device rows: decode_step_batch_sampled's device argmax token must equal the
@@ -200,7 +206,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     isolation contract for the device sampler (batchmates must not change your stream).
     let mut g3_fail = 0usize;
     {
-        // (a) greedy identity inside the batch.
+        // (a) greedy identity inside the batch. (Own block: the cache herd frees before (b) —
+        // the 24GB-card capacity rule above.)
+        {
         let mut caches: Vec<Cache> = Vec::new();
         for p in prompts.iter().take(b_n) {
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
@@ -222,6 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 toks[bi] = host_am;
             }
             if g3_fail > 4 { break; }
+        }
         }
         // (b) sampled isolation: B=N vs B=1, same per-seq (seed, ctr) schedule.
         let n_s = steps.min(16);

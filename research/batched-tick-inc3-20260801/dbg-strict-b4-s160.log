@@ -1,0 +1,7 @@
+=== strict-b4 --batch 4 --steps 160 --mode strict env: MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1 2026-08-01T11:23:40Z ===
+loaded qwen35 (32 layers); steps=160 batch=4
+gate1 seed 0: agreement all 160 steps
+gate1 (B=1 bit-identity vs decode_step_h, 160 steps, 1 seed(s)): PASS
+gate2 (B=4 vs isolated decode_step_h, 160 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery

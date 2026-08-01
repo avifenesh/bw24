@@ -628,6 +628,22 @@ pub fn run(
                     (true, None) => {} // nothing to do this tick
                 }
             }
+            // DEFERRED TOKEN READBACK (inc3 component 3c, 2026-08-01): ONE D2H per tick.
+            // Each chunk's device-sampled tokens land in this shared per-tick device buffer
+            // (chunk-local offset); the single dtoh_u32 after the chunk loop replaces the
+            // per-chunk [B]-u32 readback + stream sync (4 syncs/tick at 32 sessions chunked
+            // by 8 become 1, and chunk launches pipeline instead of serializing on the sync).
+            // MEMRA_SERVE_TOKDEFER=0 is the rollback/A-B seam (per-chunk readback, the exact
+            // pre-3c tick). Alloc failure falls back to the per-chunk path for this tick.
+            let mut tick_toks: Option<memra_engine::cudarc::driver::CudaSlice<u32>> =
+                if serve_tokdefer() && !ready.is_empty() {
+                    engine.alloc_u32_zeroed(ready.len()).ok()
+                } else {
+                    None
+                };
+            // (session index, slot in tick_toks) for every device-sampled row of an Ok chunk.
+            let mut defer_map: Vec<(usize, usize)> = Vec::new();
+            let mut chunk_off = 0usize;
             // batched steps in chunks of <= decode_batch_cap() (default 8 = the exactness-tier
             // cap; MEMRA_DECODE_BATCH_CAP is the tier-probe door), same model per chunk
             for chunk in group_chunks(&active, &ready) {
@@ -676,14 +692,21 @@ pub fn run(
                     // [n_vocab] D2H — their last_logits comes back EMPTY and the row is
                     // parked on-device (cache.last_logits_dev) for the retire-time pool
                     // park below. MEMRA_SERVE_LEANLOGITS=0 restores the full D2H.
-                    lm.model.decode_step_batch_sampled_lean(&engine, &toks, &mut caches,
-                                                            &samp, serve_leanlogits())
+                    // Deferred token readback (3c): sampled tokens go to tick_toks at
+                    // this chunk's offset; next_toks comes back all-None (filled from
+                    // the one post-loop readback).
+                    lm.model.decode_step_batch_sampled_lean_defer(
+                        &engine, &toks, &mut caches, &samp, serve_leanlogits(),
+                        tick_toks.as_mut().map(|b| (b, chunk_off)))
                 };
                 match logits {
                     Ok((rows, next_toks)) => {
                         for (k, &i) in idxs.iter().enumerate() {
                             active[i].last_logits = rows[k].clone();
                             active[i].device_next = next_toks[k];
+                            if tick_toks.is_some() && samp[k].is_some() {
+                                defer_map.push((i, chunk_off + k));
+                            }
                             active[i].fed.push(toks[k]);
                             n_tokens_out += 1;
                         }
@@ -692,6 +715,26 @@ pub fn run(
                         for &i in &idxs {
                             let _ = active[i].tx.send(Event::Error(format!("batch step: {err}")));
                             finished.push(i);
+                        }
+                    }
+                }
+                chunk_off += idxs.len();
+            }
+            // 3c: the ONE D2H of the tick — every chunk's device-sampled tokens at once.
+            if let Some(buf) = tick_toks.take() {
+                if !defer_map.is_empty() {
+                    match engine.dtoh_u32(&buf) {
+                        Ok(host) => {
+                            for &(i, slot) in &defer_map {
+                                active[i].device_next = Some(host[slot]);
+                            }
+                        }
+                        Err(err) => {
+                            for &(i, _) in &defer_map {
+                                let _ = active[i].tx
+                                    .send(Event::Error(format!("token readback: {err}")));
+                                finished.push(i);
+                            }
                         }
                     }
                 }
@@ -1180,6 +1223,15 @@ fn serve_devsample() -> bool {
 fn serve_leanlogits() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MEMRA_SERVE_LEANLOGITS").as_deref() != Ok("0"))
+}
+
+/// DEFERRED TOKEN READBACK (inc3 component 3c, default ON): all chunks' device-sampled
+/// tokens accumulate in one per-tick device buffer, D2H'd ONCE after the last chunk —
+/// one readback+sync per tick instead of one per chunk. MEMRA_SERVE_TOKDEFER=0 is the
+/// rollback/A-B seam (the exact pre-3c per-chunk readback).
+fn serve_tokdefer() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_SERVE_TOKDEFER").as_deref() != Ok("0"))
 }
 
 fn group_chunks(active: &[Session], ready: &[(usize, u32)]) -> Vec<Vec<(usize, u32)>> {

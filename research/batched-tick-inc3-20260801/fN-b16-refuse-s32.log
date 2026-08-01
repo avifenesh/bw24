@@ -1,0 +1,13 @@
+=== FINAL b16-refuse --batch 16 --steps 32 --mode config env: none 2026-08-01T11:39:51Z ===
+loaded qwen35 (32 layers); steps=32 batch=16
+gate1 seed 0 step 1: token diverged FAIL
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3 step 3: token diverged — accepted cross-config drift (WARN)
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5: agreement all 32 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+
+thread 'main' (4104843) panicked at crates/memra-engine/src/decode_batch.rs:215:9:
+decode_step_batch: B=16 > cap 8 with no exact tier (Q8_0 m>8 needs the q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

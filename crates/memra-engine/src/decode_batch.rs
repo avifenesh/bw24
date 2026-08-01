@@ -74,6 +74,45 @@ impl HybridModel {
         })
     }
 
+    /// EXACT-16 TIER admission (increment 3a, 2026-08-01, 5090 receipts
+    /// research/batched-tick-inc3-20260801): true iff EVERY matmul the batched decode step
+    /// runs has a per-(token,row) bit-exact kernel class at m=9..16 under the verify_exact
+    /// scope — i.e. the batched-mmvq b16 family (32-thread warp reduce, the exact m=1 mmvq
+    /// program per column) or the e4m3 grid.y=m mmvq catch-all. Q8_0 qualifies only with
+    /// the split-plane mirror (rp4, MEMRA_Q8RP): its b16 kernel exists only as the _rp twin.
+    /// Float matmuls (cuBLASLt, n-dependent reductions) and MoE FFNs disqualify the model.
+    /// Measured attribution for WHY the naked m=16 tier is not exact: the m>=16 arms
+    /// (MMQ int8-MMA `mul_mat_q` — MEMRA_PP_Q8MMQ default-on — and `qmatvec_gemm`, both
+    /// block-scale f32) and the m=9..15 dp4a tail (128-thread two-level reduce) all break
+    /// per-row bit-identity vs isolated decode (gate2 step-0 bit-diffs, maxdiff ~1.3-2.3e-1).
+    pub fn decode_batch_exact16_ok(&self) -> bool {
+        fn ok(w: &crate::model::GpuTensor) -> bool {
+            match w {
+                crate::model::GpuTensor::Quant { qtype, rp4, .. } =>
+                    *qtype == crate::QT_Q4_0 || *qtype == crate::QT_Q6_K
+                    || *qtype == crate::QT_F8_E4M3
+                    || (*qtype == crate::QT_Q8_0 && rp4.is_some()),
+                _ => false,
+            }
+        }
+        if self.cfg.m3.is_some() || self.is_gemma4_e4b() || self.cfg.gemma4.is_some() {
+            return false;
+        }
+        self.layers.iter().all(|l| {
+            let mix_ok = match &l.mixer {
+                Mixer::Full(fa) => [&fa.wq, &fa.wk, &fa.wv, &fa.wo].into_iter().all(ok),
+                Mixer::Linear(la) => [&la.wqkv, &la.wqkv_gate, &la.ssm_beta,
+                                      &la.ssm_alpha, &la.ssm_out].into_iter().all(ok),
+            };
+            let ffn_ok = match &l.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } =>
+                    [ffn_gate, ffn_up, ffn_down].into_iter().all(ok),
+                crate::hybrid::Ffn::Moe(_) => false,
+            };
+            mix_ok && ffn_ok
+        }) && ok(&self.output)
+    }
+
     /// One batched greedy-decode step over B independent sequences.
     /// `tokens[b]` is sequence b's input token; `caches[b]` its private cache (position,
     /// quantized KV, GDN/conv state). Returns the B logits rows (host, [n_vocab] each).
@@ -130,6 +169,28 @@ impl HybridModel {
         samp: &[Option<(f32, u64, u32)>],
         lean: bool,
     ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        self.decode_step_batch_sampled_lean_defer(e, tokens, caches, samp, lean, None)
+    }
+
+    /// `decode_step_batch_sampled_lean` + DEFERRED TOKEN READBACK (increment 3c, 2026-08-01):
+    /// with `defer = Some((buf, off))`, each device-sampled row bi writes its token into the
+    /// CALLER's device buffer at `buf[off + bi]` and NO D2H happens inside this step — the
+    /// returned `next` entries for those rows are None and the caller performs ONE
+    /// `dtoh_u32(buf)` after enqueuing every chunk of the tick. This removes the per-chunk
+    /// [B]-u32 readback AND its stream sync (the sync serialized chunk launches host-side:
+    /// 4 syncs/tick at 32 sessions chunked by 8 become 1). Token VALUES are bit-unchanged —
+    /// the same argmax/gumbel launches write to a different slot (gate3 contract; the
+    /// serving-level arbiter is the greedy-hash battery). `defer = None` is the previous
+    /// method byte-for-byte.
+    pub fn decode_step_batch_sampled_lean_defer(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+        lean: bool,
+        defer: Option<(&mut CudaSlice<u32>, usize)>,
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
         // MEMRA_DECODE_BATCH_CAP (experimental door, serving-lane tier probe 2026-08-01):
@@ -141,11 +202,33 @@ impl HybridModel {
         // serving contract. Never default this above 8 without the batched-tier
         // exactness policy landing.
         let cap = Self::decode_batch_cap();
+        // EXACT-16 TIER (increment 3a): chunks of 9..=16 are admitted WITHOUT the env door
+        // when every matmul has a bit-exact b16-class kernel (see decode_batch_exact16_ok).
+        // The verify_exact scope below pins that dispatch for the whole step: it turns off
+        // the m>=16 GEMM arms (qmatvec_gemm + MMQ + fp8/f16/fp4 — all block-scale/foreign
+        // numeric configs) so every projection rides the batched-mmvq b16 tier, which is
+        // per-(token,row) bit-identical to isolated m=1 decode (gate2 bit-strength PASS at
+        // B=12/16, s32+s160, 5090 receipts research/batched-tick-inc3-20260801). Without
+        // the exact tier, B>cap stays refused; the env door (MEMRA_DECODE_BATCH_CAP) keeps
+        // its old meaning as the non-exact measurement probe.
+        let exact16 = b_n > 8 && b_n <= 16 && self.decode_batch_exact16_ok();
         assert!(
-            b_n <= cap,
-            "decode_step_batch: B={b_n} > cap {cap} (>8 crosses the m>=16 GEMM tier, a \
-             different numeric config) — refused until the batched-tier exactness policy lands"
+            b_n <= cap || exact16,
+            "decode_step_batch: B={b_n} > cap {cap} with no exact tier (Q8_0 m>8 needs the \
+             q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused"
         );
+        struct ExactScope<'a>(&'a Engine, bool);
+        impl Drop for ExactScope<'_> {
+            fn drop(&mut self) {
+                if self.1 {
+                    self.0.set_verify_exact(false);
+                }
+            }
+        }
+        let _exact_scope = ExactScope(e, exact16);
+        if exact16 {
+            e.set_verify_exact(true);
+        }
         assert!(
             !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
             "decode_step_batch v1 covers the hybrid non-gemma4 trunk only"
@@ -496,25 +579,40 @@ impl HybridModel {
         let n_vocab = self.output.out_features();
         let mut next: Vec<Option<u32>> = vec![None; b_n];
         if samp.iter().take(b_n).any(|s| s.is_some()) {
-            let mut toks = e.alloc_u32_zeroed(b_n)?;
+            // Deferred mode targets the caller's per-tick buffer at `off`; immediate mode
+            // keeps a local [B] buffer + the in-step readback (the pre-3c tick).
+            let mut local_toks: Option<CudaSlice<u32>> = None;
+            let deferred = defer.is_some();
+            let (tbuf, toff): (&mut CudaSlice<u32>, usize) = match defer {
+                Some((buf, off)) => {
+                    assert!(buf.len() >= off + b_n, "defer token buffer too small");
+                    (buf, off)
+                }
+                None => {
+                    local_toks = Some(e.alloc_u32_zeroed(b_n)?);
+                    (local_toks.as_mut().unwrap(), 0)
+                }
+            };
             let mut perturb: Option<CudaSlice<f32>> = None;
             for (bi, s) in samp.iter().take(b_n).enumerate() {
                 let Some((temp, seed, ctr)) = s else { continue };
                 if *temp <= 0.0 {
-                    e.argmax_token_device_col(&logits, bi, n_vocab, &mut toks, bi)?;
+                    e.argmax_token_device_col(&logits, bi, n_vocab, tbuf, toff + bi)?;
                 } else {
                     if perturb.is_none() {
                         perturb = Some(e.zeros(n_vocab)?);
                     }
                     let pb = perturb.as_mut().unwrap();
                     e.gumbel_perturb_col(&logits, bi, pb, n_vocab, *seed, *ctr, *temp)?;
-                    e.argmax_token_device_col(pb, 0, n_vocab, &mut toks, bi)?;
+                    e.argmax_token_device_col(pb, 0, n_vocab, tbuf, toff + bi)?;
                 }
             }
-            let host_toks = e.dtoh_u32(&toks)?;
-            for (bi, s) in samp.iter().take(b_n).enumerate() {
-                if s.is_some() {
-                    next[bi] = Some(host_toks[bi]);
+            if !deferred {
+                let host_toks = e.dtoh_u32(local_toks.as_ref().unwrap())?;
+                for (bi, s) in samp.iter().take(b_n).enumerate() {
+                    if s.is_some() {
+                        next[bi] = Some(host_toks[bi]);
+                    }
                 }
             }
         }
