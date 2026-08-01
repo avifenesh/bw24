@@ -1,0 +1,48 @@
+[moe] resident-experts decision: per-layer 427MB x 40 layers = 17.1GB vs budget 19.1GB -> RESIDENT
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+You are reviewing a small Rust utility. Here is the code:
+
+fn parse_config(path: &str) -> Result<Config, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+    let mut cfg = Config::default();
+    for (lineno, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(ConfigError::Malformed { line: lineno + 1 });
+        };
+        match key.trim() {
+            "threads" => cfg.threads = value.trim().parse().map_err(|_| ConfigError::BadValue { line: lineno + 1 })?,
+            "verbose" => cfg.verbose = value.trim() == "true",
+            "log_path" => cfg.log_path = Some(value.trim().to_string()),
+            unknown => return Err(ConfigError::UnknownKey { key: unknown.to_string(), line: lineno + 1 }),
+        }
+    }
+    Ok(cfg)
+}
+
+Identify one concrete bug or design weakness in this function, explain why it matters in production, and propose a minimal fix as a diff. Keep the answer under 250 words.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "You are reviewing a small Rust utility. Here is the code:\n\nfn parse_config(path: &str) -> Result<Config, ConfigError> {\n    let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;\n    let mut cfg = Config::default();\n    for (lineno, line) in raw.lines().enumerate() {\n        let line = line.trim();\n        if line.is_empty() || line.starts_with('#') { continue; }\n        let Some((key, value)) = line.split_once('=') else {\n            return Err(ConfigError::Malformed { line: lineno + 1 });\n        };\n        match key.trim() {\n            \"threads\" => cfg.threads = value.trim().parse().map_err(|_| ConfigError::BadValue { line: lineno + 1 })?,\n            \"verbose\" => cfg.verbose = value.trim() == \"true\",\n            \"log_path\" => cfg.log_path = Some(value.trim().to_string()),\n            unknown => return Err(ConfigError::UnknownKey { key: unknown.to_string(), line: lineno + 1 }),\n        }\n    }\n    Ok(cfg)\n}\n\nIdentify one concrete bug or design weakness in this function, explain why it matters in production, and propose a minimal fix as a diff. Keep the answer under 250 words.\n"
+prompt tokens: [248045, 846, 198, 2523, 513, 32767, 264, 2526, 32671, 15092, 13, 5514, 369, 279, 1970, 25, 271, 8556, 4563, 5164, 5406, 25, 594, 485, 8, 1411, 5536, 27, 2561, 11, 5359, 1401, 29, 313, 198, 262, 1042, 6891, 283, 1407, 476, 3720, 476, 851, 2270, 3773, 5406, 553, 2117, 8991, 32571, 1401, 476, 41384, 11504, 26, 198, 262, 1042, 5041, 12901, 283, 5359, 476, 2186, 2061, 198, 262, 364, 318, 77227, 11, 1500, 8, 303, 6891, 42602, 973, 73950, 363, 313, 198, 285, 1042, 1500, 283, 1500, 15937, 2061, 198, 285, 413, 1500, 2011, 14683, 363, 1321, 1500, 4801, 82, 6406, 3400, 837, 313, 2962, 26, 333, 198, 285, 1042, 4188, 1148, 767, 11, 869, 578, 283, 1500, 5121, 7387, 85476, 837, 745, 313, 198, 309, 460, 15040, 32571, 1401, 476, 28633, 9853, 313, 1500, 25, 82160, 478, 220, 16, 17574, 198, 285, 19455, 198, 285, 2353, 1328, 15937, 363, 313, 198, 309, 328, 26404, 1, 574, 12901, 13, 26404, 283, 869, 15937, 973, 6199, 973, 2117, 8991, 21729, 34224, 5359, 1401, 476, 16579, 1094, 313, 1500, 25, 82160, 478, 220, 16, 6212, 12259, 198, 309, 328, 14452, 1, 574, 12901, 43169, 283, 869, 15937, 363, 606, 328, 1802, 487, 198, 309, 328, 813, 2551, 1, 574, 12901, 1607, 2551, 283, 4188, 3553, 15937, 973, 951, 3773, 11519, 198, 309, 9496, 574, 460, 15040, 32571, 1401, 476, 13394, 1536, 313, 1328, 25, 9496, 2312, 3773, 1453, 1500, 25, 82160, 478, 220, 16, 30667, 198, 285, 333, 198, 262, 333, 198, 262, 7379, 27354, 8, 198, 92, 271, 27382, 1386, 799, 13769, 9584, 466, 2790, 22360, 303, 411, 709, 11, 10033, 3069, 424, 12482, 303, 5492, 11, 321, 28647, 264, 16866, 4884, 430, 264, 3515, 13, 13262, 279, 4087, 1172, 220, 17, 20, 15, 4105, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=760  decode argmax=760  logit maxdiff=1.850e0  MATCH
+prefill 302 tok in 1.4149s = 213.4 tok/s (pp302)
+generated 250 tokens in 2.423s = 103.18 tok/s (Stage-B int8 dp4a decode, gen-only; prime 1.408s) [stop: MaxNew]
+tokens: [760, 9584, 369, 421, 1510, 927, 15937, 52434, 369, 2512, 5081, 2942, 383, 279, 1788, 886, 15511, 11, 864, 369, 6699, 364, 55404, 694, 279, 1865, 4125, 369, 421, 1510, 927, 15937, 52434, 369, 2512, 303, 279, 1510, 26404, 63, 8602, 440, 71570, 6199, 52434, 694, 279, 1510, 14452, 63, 8602, 1503, 1510, 927, 15937, 363, 606, 328, 1802, 38593, 864, 369, 6699, 13, 4558, 13784, 11, 1042, 728, 311, 27864, 777, 15060, 13, 271, 760, 4880, 9584, 25, 1510, 927, 15937, 52434, 369, 2512, 5081, 2942, 13, 733, 279, 1510, 26404, 63, 8602, 11, 1510, 927, 15937, 973, 6199, 52434, 471, 411, 369, 6699, 13, 733, 279, 1510, 14452, 63, 8602, 11, 1510, 927, 15937, 363, 606, 328, 1802, 38593, 471, 6699, 13, 733, 279, 1510, 813, 2551, 63, 8602, 11, 1510, 927, 15937, 973, 951, 3773, 52434, 471, 6699, 13, 271, 50821, 11, 279, 1865, 9584, 353, 1436, 25, 279, 1510, 927, 63, 494, 1510, 6744, 7387, 85476, 837, 63, 5469, 4156, 1238, 279, 1118, 1510, 21559, 13, 4558, 4272, 413, 264, 1500, 369, 1510, 26404, 283, 220, 19, 7561, 1179, 1510, 767, 63, 369, 51515, 26404, 34781, 321, 1510, 927, 63, 369, 51515, 220, 19, 1, 27653, 4486, 79062, 2107, 11, 567, 615, 51515, 26404, 38593, 321, 51515, 19, 1, 27653, 2844, 4138, 6699, 13, 271, 3850, 1092, 883, 1510, 14452, 283, 804, 63, 30, 4844, 1510, 927, 63, 369, 51515, 804, 1, 7561, 321, 1510, 927, 15937, 363, 606, 328, 1802, 38593, 6486, 1510, 1802, 27653]
+OUTPUT TEXT: "The bug is that `value.trim()` is called multiple times on the same string slice, which is fine for correctness but the real issue is that `value.trim()` is called in the `threads` branch with `.parse()` but the `verbose` branch does `value.trim() == \"true\"` which is fine. \n\nWait, let me re-read more carefully.\n\nThe actual bug: `value.trim()` is called multiple times. In the `threads` branch, `value.trim().parse()` - this is fine. In the `verbose` branch, `value.trim() == \"true\"` - fine. In the `log_path` branch, `value.trim().to_string()` - fine.\n\nActually, the real bug I see: the `value` from `split_once('=')` includes everything after the first `=`. \n\nSo if a line is `threads = 4`, then `key` is `\"threads \"` and `value` is `\" 4\"`. After trimming both, we get `\"threads\"` and `\"4\"`. That works fine.\n\nBut what about `verbose = true`? Then `value` is `\" true\"`, and `value.trim() == \"true\"` gives `true`."
+--- generated text ---
+The bug is that `value.trim()` is called multiple times on the same string slice, which is fine for correctness but the real issue is that `value.trim()` is called in the `threads` branch with `.parse()` but the `verbose` branch does `value.trim() == "true"` which is fine. 
+
+Wait, let me re-read more carefully.
+
+The actual bug: `value.trim()` is called multiple times. In the `threads` branch, `value.trim().parse()` - this is fine. In the `verbose` branch, `value.trim() == "true"` - fine. In the `log_path` branch, `value.trim().to_string()` - fine.
+
+Actually, the real bug I see: the `value` from `split_once('=')` includes everything after the first `=`. 
+
+So if a line is `threads = 4`, then `key` is `"threads "` and `value` is `" 4"`. After trimming both, we get `"threads"` and `"4"`. That works fine.
+
+But what about `verbose = true`? Then `value` is `" true"`, and `value.trim() == "true"` gives `true`.

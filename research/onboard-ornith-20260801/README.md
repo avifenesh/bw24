@@ -70,6 +70,48 @@ Branch build: `nice cargo build --release`, sm_120a auto-detected.
 | gate | scope | result | log |
 |---|---|---|---|
 | kernel-check | once per branch build | **ALL GREEN** | `kernel-check.log` |
-| run-gen argmax (prefill==decode) | per downloaded model | pending | `gates/` |
+| run-gen argmax (prefill==decode) | control: supported Qwen3.5-9B NVFP4 | **MATCH** | `gates/control-qwen35-9b-nvfp4.log` |
+| run-gen argmax | control: supported Qwen3.6-35B IQ4_XS | **MATCH** | `gates/control-qwen36-35b-iq4xs.log` |
+| run-gen argmax | Ornith-9B Q8_0 (pp22) | **MATCH** | `gates/ornith9b-q8_0-argmax.log` |
+| run-gen argmax | Ornith-35B Q4_K_M (pp22 + pp302 depth) | **MATCH** | `gates/ornith35b-q4km-*.log` |
+| run-gen argmax | KAT-Coder IQ4_XS (pp22 + pp302 depth) | **MATCH** | `gates/kat-coder-iq4xs-*.log` |
 | run-spec K=1..4 MTP self-consistency | N/A — no model in the batch ships an MTP head (see verification) | N/A | — |
-| chat-template generation sanity | per downloaded model | pending | `gates/` |
+| chat sanity (MEMRA_CHAT=1, 200-250 tok real prompts) | Ornith-9B, Ornith-35B, KAT | **clean** — correct ChatML+`<think>` render, coherent on-topic output, no looping, KAT hits Eos naturally on the short prompt | `gates/*-chat-sanity.log` |
+
+All GPU runs under `flock /tmp/gpu5090.lock`; sha256 of every downloaded artifact verified
+against the HF LFS pointer before gating. Download transcript: `downloads.log`; the deep
+code-review prompt: `deep-prompt.txt`.
+
+## Observed speeds (SINGLE RUNS — sanity ballpark, NOT board numbers)
+
+Gate-run readings, one run each, no interleave, thermal regime unpinned — per the
+measurement protocol these are not comparable to the README board and must not be
+published as such:
+
+| model / quant | prefill | decode (Stage-B) |
+|---|---|---|
+| Ornith-9B Q8_0 (9.5 GB) | 706-719 tok/s @pp22 | 84.5 tok/s |
+| Ornith-35B Q4_K_M (21.2 GB) | 431 @pp22, 402 @pp302 | 103.4-132.7 tok/s |
+| KAT-Coder IQ4_XS (18.8 GB) | 149 @pp22 (cold), 213 @pp302 | 84.4 (cold) - 103.2 tok/s |
+| control Qwen3.6-35B IQ4_XS (17.9 GB) | 349 @pp22 | 166.4 tok/s |
+| control Qwen3.5-9B NVFP4 (5.3 GB) | 646 @pp22 | 134.3 tok/s |
+
+Consistent with the DRAM wall: the new quants are simply bigger than the board artifacts
+(Q8_0 9.5 GB vs NVFP4 5.3 GB; Q4_K_M 21.2 GB vs IQ4_XS 17.9 GB), so decode scales down
+accordingly. Nothing suggests a kernel problem — the same-family board artifacts hold
+their numbers in the same session.
+
+## Verdict
+
+| model | verdict |
+|---|---|
+| Ornith-1.0-9B (Q8_0) | **ONBOARDED** — zero code change, all gates green |
+| Ornith-1.0-35B (Q4_K_M) | **ONBOARDED** — zero code change, all gates green |
+| KAT-Coder-V2.5-Dev (IQ4_XS) | **ONBOARDED** — zero code change, all gates green |
+| Qwen-AgentWorld-35B-A3B | **VERIFIED, NOT DOWNLOADED** — header metadata proves the same qwen35moe stack + template family; support-by-construction, artifact skipped to keep disk/bandwidth for the higher-demand Ornith-35B (3.45M vs 586K dl/30d) |
+
+MTP/spec-decode for this batch is future work: the GGUFs ship without NextN heads. The
+existing own-gen trimmed-draft regime (`docs/DRAFT-REGIME.md`) applies unchanged if a
+draft is wanted — Ornith/KAT are post-trains of the same backbones the 9B/35B drafts
+were built from, but a per-model own-gen draft build + acceptance measurement is its own
+lane.
