@@ -256,6 +256,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- FUSED ACT-EPILOGUE (MoE prefill MMA arms): mmq_iq_fused_act_quant must produce a
+    //     BYTE-IDENTICAL block_q8_1_mmq D4 scratch to the two-pass chain
+    //     moe_pairs_{silu,gelu}_mul -> mmq_iq_quantize_act. Covers both activations and the
+    //     ragged/padded in_f (gemma 704 -> GGML_PAD 512-multiple zero tail — the padded-k
+    //     down-GEMM contract rides those zero bytes). ANY nonzero diff = FAIL. ---
+    for (name, in_f, n_pairs, act_kind) in [("silu", 768usize, 33usize, 0i32),
+                                            ("silu", 512, 7, 0),
+                                            ("gelu", 704, 29, 1)] {
+        let n = n_pairs * in_f;
+        let g: Vec<f32> = (0..n).map(|i| pr(i + 17) * 4.0).collect();
+        let u: Vec<f32> = (0..n).map(|i| pr(i + 29) * 4.0).collect();
+        let gd = e.htod(&g)?;
+        let ud = e.htod(&u)?;
+        // two-pass reference: f32 act buffer, then the D4 quantizer re-reads it.
+        let act = if act_kind == 0 { e.moe_pairs_silu_mul(&gd, &ud, n)? }
+                  else { e.moe_pairs_gelu_mul(&gd, &ud, n)? };
+        let scr_ref = e.mmq_iq_quantize_act(&act, in_f, n_pairs)?;
+        // fused: activation in registers, only the quantized scratch is written.
+        let scr_f = e.mmq_iq_fused_act_quant(&gd, &ud, in_f, n_pairs, act_kind)?;
+        let b_ref: Vec<u8> = e.stream().clone_dtoh(&scr_ref)?;
+        let b_f: Vec<u8> = e.stream().clone_dtoh(&scr_f)?;
+        e.stream().synchronize()?;
+        let nbad = b_ref.iter().zip(&b_f).filter(|(a, b)| a != b).count();
+        println!("iq fused act+quant [{name} in_f={in_f} n_pairs={n_pairs}]: \
+                  byte_mismatch={nbad}/{} {}",
+                 b_ref.len(), if nbad == 0 && b_ref.len() == b_f.len() { "OK" }
+                              else { fails += 1; "FAIL" });
+    }
+
     // --- naive SDPA (1 head, no GQA, causal, head_dim=64, T=T_kv=4) ---
     {
         let (hd, nh, nhkv, t, tkv) = (64usize, 2usize, 1usize, 4usize, 4usize);

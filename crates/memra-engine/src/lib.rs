@@ -37,6 +37,14 @@ pub fn moe_f16g_on() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_MOE_F16G").as_deref() == Ok("1"))
 }
 
+/// Fused act-epilogue (silu/gelu-mul + q8_1_mmq quantize in one launch) for the MoE prefill
+/// MMA arms. Byte-identical to the two-pass path (kernel-check gated) — default ON.
+/// MEMRA_MOE_FUSE_ACTQ=0 is the rollback/A-B seam.
+pub fn moe_fuse_actq_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_MOE_FUSE_ACTQ").as_deref() != Ok("0"))
+}
+
 pub fn router_kernel_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
