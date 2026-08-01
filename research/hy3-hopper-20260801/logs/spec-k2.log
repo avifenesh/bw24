@@ -1,0 +1,12 @@
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded memra-repack (81 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   31 tok in 24.105s = 1.29 tok/s (gen-only; this run's prime 0.092s)
+  tokens: [2417, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13, 15, 13]
+
+[generate_spec K=2] 32 tok in 57.454s = 0.54 tok/s (0.42x vs generate; this run's prime 1.197s)
+  acceptance: 0/62 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+=== SELF-CONSISTENCY PASS ===

@@ -1,0 +1,25 @@
+=== baseline r1 12:48:12Z ===
+r1 exit=0
+verify-prefill argmax=478  decode argmax=478  logit maxdiff=1.888e0  MATCH
+generated 128 tokens in 51.814s = 2.47 tok/s (ST greedy decode)
+MoE cache DECODE-WINDOW: 6476 slots | hits=34529 misses=208159 (hit-rate=14.2%) | staged 524.20 GB H2D (3905.6 MB/token)
+storage DECODE-WINDOW: 0.04 GB physical reads
+=== baseline r2 13:05:50Z ===
+r2 exit=0
+verify-prefill argmax=478  decode argmax=478  logit maxdiff=1.888e0  MATCH
+generated 128 tokens in 51.538s = 2.48 tok/s (ST greedy decode)
+MoE cache DECODE-WINDOW: 6476 slots | hits=34529 misses=208159 (hit-rate=14.2%) | staged 524.20 GB H2D (3905.6 MB/token)
+storage DECODE-WINDOW: 0.01 GB physical reads
+=== baseline r3 13:23:15Z ===
+r3 exit=0
+verify-prefill argmax=478  decode argmax=478  logit maxdiff=1.888e0  MATCH
+generated 128 tokens in 51.284s = 2.50 tok/s (ST greedy decode)
+MoE cache DECODE-WINDOW: 6476 slots | hits=34529 misses=208159 (hit-rate=14.2%) | staged 524.20 GB H2D (3905.6 MB/token)
+storage DECODE-WINDOW: 0.00 GB physical reads
+=== graph-door probe NGEN=256 13:40:37Z ===
+probe exit=0
+verify-prefill argmax=478  decode argmax=478  logit maxdiff=1.888e0  MATCH
+generated 256 tokens in 102.442s = 2.50 tok/s (ST greedy decode)
+MoE cache DECODE-WINDOW: 6472 slots | hits=69759 misses=415617 (hit-rate=14.4%) | staged 1046.42 GB H2D (3898.2 MB/token)
+storage DECODE-WINDOW: 0.00 GB physical reads
+BATTERY-DONE

@@ -1,0 +1,5 @@
+/home/ubuntu/.cache/uv/archive-v0/cDSvJsqKsBwHvdyZ/lib/python3.12/site-packages/huggingface_hub/constants.py:298: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Fetching 1 files:   0%|          | 0/1 [00:00<?, ?it/s]Fetching 1 files: 100%|██████████| 1/1 [00:06<00:00,  6.57s/it]Fetching 1 files: 100%|██████████| 1/1 [00:06<00:00,  6.57s/it]
+[32m✓ Downloaded[0m
+  path: /opt/dlami/nvme/models/hy3-sparse-source-dl

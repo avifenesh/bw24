@@ -52,7 +52,9 @@ an eye on under PP-2 (where the resident path replaces staged dispatch).
 
 ## MTP
 
-`optional MTP skipped` — the 103.5-layer runtime artifact strips the MTP block from the
-trunk load; run-gen greedy does not exercise MTP/spec decode. frspec draft tables ship in
-the runtime dir for run-spec. MTP-on-Hopper is therefore still unproven — carried as a gap
-(gaps.md G3), not attempted as big work today.
+run-gen's trunk load reports `optional MTP skipped` (greedy decode does not use it), but
+the follow-up run-spec probe loaded the full stack — `loaded memra-repack (81 layers,
+nextn=1)` — so the MTP block loads and forwards on sm_90a. Spec exactness PASSES
+(self-consistency identical to greedy) but draft acceptance is 0/62 = 0.0%, i.e. spec
+currently gives slowdown, not speedup, on Hopper. Full evidence + required cross-check:
+gaps.md G2 (`logs/spec-k2.log`).
