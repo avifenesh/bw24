@@ -117,6 +117,7 @@ genuinely useful even if you never touch the code:
 ## Where to look first
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — hard hardware constraints and the sm_120a feasibility ledger.
+- [`docs/DRAFT-REGIME.md`](docs/DRAFT-REGIME.md) — the standard drafter pipeline (own-gen ranks → byte-verbatim extraction → trim/quantize, adopt on e2e only). Any PR touching drafts, trims, or acceptance follows it — its three laws were each violated at measured cost before being written down.
 - [`docs/decisions/`](docs/decisions/) — design decision records.
 - [`research/benchmarks.md`](research/benchmarks.md) — the exact A/B measurement protocol referenced above.
 - [`research/tune-data/`](research/tune-data/) — labeled corpus of tuning experiments (config → measured result, wins and losses both) — check before re-trying something already measured.

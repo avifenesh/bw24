@@ -2,6 +2,73 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
 
+## CURRENT STATE (2026-08-02, v0.63.0)
+
+- **THE EXACTNESS ARC (the wave's headline): a real serving defect found + fixed.** The
+  onboards' greedy c=1-vs-c=16 serve gate failed byte identity (Ornith-35B 6/16, KAT
+  7/16) and the razor chain pinned a REAL bug: the cuBLASLt prefill router GEMM + shexp
+  gate dot are m-DEPENDENT, so under concat prime batching a request's own expert
+  selection changed with its CO-ARRIVALS (16% of (layer,token) pairs at total_m=75; the
+  SUPPORTED q35 has the same m=65/75 thresholds — never post-train-specific; the
+  "tighter post-train margins" theory REFUTED). Fix: prefill rides decode's m-invariant
+  `router_gemv`/`sigmoid_dot_rows` at every t — `MEMRA_ROUTER_PREFILL_EXACT` default
+  ON, serve gate 16/16 on all four models. Then `lane/fast-router` recovered the cost
+  bit-identically: an 8x8 register-tile batch twin with IDENTICAL per-row FP chains
+  (kernel-check weight-oracle m-sweep mism=0), `ROUTER_BATCH_MIN_T=8` swept,
+  `MEMRA_ROUTER_BATCH=0` perf-only seam — 5090 q35 board-2048 prefill 3524 -> 3167 ->
+  **3417 (70% back, -3.1% vs the banned kernel)**. **New serving contract wording:
+  greedy serving is isolated-identical under concurrent load at defaults** (README +
+  docs/SERVING.md). H100 re-cells: **q35 row 218 -> 215, 1.02x -> 1.00x dead-even**
+  (fix cost -13% Hopper expert prefill; decode unchanged), **q27 STANDS 1.31x** (proven
+  not on the fixed path). Board stays loss-free; the q35 post-twin H100 re-cell is IN
+  FLIGHT on a parallel lane at this writing — the published row is the post-fix 215.
+  Receipts: `research/concat-prime-exact-20260802/`,
+  `research/router-fix-recells-20260802/`, `research/fast-router-20260802/`; ledger
+  round 52.
+- **Ornith-1.0-9B PUBLISHES as supported model #8** — first community post-train over
+  the deployment bar: best-vs-best e2e **2.21x/1.67x/1.47x** ≥ 1.1x on every class
+  (llama best = plain; its draftless spec doors are structurally broken on this arch —
+  M-RoPE faults, screened), own-gen donor-block drafter ADOPTED (2.16/1.77/1.70x
+  spec-vs-plain @K=3). In-bring-up: **35B HOLD** — resident-if-fits inverted the decode
+  leg vs llama (**1.086x**, was 0.72x) and its drafter is adopted (1.38/1.09/1.05x
+  @K=2), but Q4_K expert prefill (0.27x resident) still fails the e2e bar — binding
+  lever = the sm_120a Q4_K expert-prefill lane (priced: p2/p3 can't clear on decode
+  alone; KQRP refuted on the 5090, -3.3%). **KAT HOLD** — best acceptance of the batch
+  but the plain-decode anomaly (~104 vs ~170 tok/s same arch class) makes drafting
+  net-negative; anomaly lane queued. **AgentWorld** same-stack by construction,
+  unbenched. Receipts `research/ornith-bar-20260802/`,
+  `research/ornith-drafters-20260801/`.
+- **RESIDENT-IF-FITS is the MoE residency default** — exact expert-bank bytes from the
+  GGUF header (per-layer x n_layer misprojects UD-quants both ways) vs free − non-expert
+  bytes − measured headroom; new machine knob `MEMRA_MOE_RESIDENT_HEADROOM_GB` (default
+  2.0, FLAGS §2 updated in-lane). The old 0.80xfree budget spilled the Ornith-35B
+  19.5GB bank that fits: fix = **+50.4% decode / +118% prefill**, bit-identical token
+  streams, spill seam re-verified (`MEMRA_MOE_RESIDENT=0`). Guard: q35 IQ4_XS decision
+  unchanged pre/post, board-row decode no regression. Serve: **VRAM-aware admission
+  wait** (fast-router's bonus fix, worker.rs) — free ≥ 2x observed per-session cost or
+  the request waits in the never-rejected FIFO; c=8 32/32 OK no-OOM at the new default.
+  BRANCH FINDING (pre-existing, OPEN): naked q35 pp512 greedy flips to early-EOS on a
+  near-tie first token seeded by the batched-prime last-position logits;
+  `MEMRA_PRIME_TOKENWISE=1` restores the oracle stream — run-gen's argmax gate does not
+  cover the batched-prime seed position. Receipts `research/residency-cap-20260802/`.
+- **Hy3 on sm_90a: first light + K-sweep verdict** — the layer103.5 artifact loads,
+  forwards, and drafts EXACTLY on Hopper (206/206 kernel-check; run-spec K=1..8
+  self-consistency PASS x3). At the 1-GPU spill floor **spec SUBTRACTS at every K**
+  (best K=1 0.84x; accepted count exactly 10 at every K — the nextn=1 head cannot
+  chain); the first-light 23.8%/1.16x point decomposed into (real chat-content rate,
+  cold-denominator artifact) — **the 1.16x is REFUTED** and no spec tok/s from that box
+  enters the $/Mtok table as a positive. Floor row = plain greedy 2.49 tok/s median
+  N=3, spec OFF; PP-2 must run its own K=1 sweep. Receipts
+  `research/hy3-hopper-20260801/`, `research/hy3-spec-20260802/`; docs/HY3-SPILL.md
+  updated.
+- **Releases:** v0.63.0 = this state: the exactness arc + bit-identical recovery,
+  Ornith-9B supported, resident-if-fits, VRAM-aware admission, Hy3 sm_90a receipts.
+  Docs sweep done (README standing/support/Ornith section, SERVING isolation contract,
+  FLAGS audit: ROUTER_PREFILL_EXACT / ROUTER_BATCH / MOE_RESIDENT_HEADROOM_GB /
+  MOE_WEIGHT_TRACE / KC_MODELS_DIR in; sigmoid-dot batch twin + 8x16 tile killed with
+  zero doc survivors; ledger round 52). Perf board `--check` green — no generated
+  numbers moved.
+
 ## CURRENT STATE (2026-08-01, v0.62.0)
 
 - **Board unchanged at 7/7** (round-50 state; g26 1.023x). Round 51 (`lane/sk-bm128`):

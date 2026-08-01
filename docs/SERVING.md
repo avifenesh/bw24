@@ -39,6 +39,29 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
   `research/spec-serving-20260801/`).
 
+## The isolation contract
+
+Greedy serving is **isolated-identical under concurrent load at defaults**: a request's
+output tokens are byte-identical whether it arrives alone or inside a full batch. This is
+gated, not assumed — the serve gate replays the same prompts at c=1 and c=16 and
+byte-compares every stream. It is also a fixed defect, not a freebie: the batched
+cuBLASLt prefill router and shared-expert-gate GEMMs were m-dependent, so under
+cross-request prefill batching a MoE request's own expert selection changed with its
+co-arrivals (the supported Qwen3.6-35B had the same defect as the onboards whose serve
+gate exposed it — Ornith-35B 6/16, KAT 7/16, both 16/16 after the fix). Default
+`MEMRA_ROUTER_PREFILL_EXACT` routes prefill through decode's m-invariant router/gate
+kernels; a bit-identical batched twin recovers most of the prefill cost
+(`MEMRA_ROUTER_BATCH`, FLAGS §3). Receipts: `research/concat-prime-exact-20260802/`,
+`research/fast-router-20260802/`.
+
+**Admission is VRAM-aware** (2026-08-02): once the first admitted session reveals the
+model's per-session VRAM cost, further admissions require free ≥ 2x that cost — otherwise
+the request *waits* in the same never-rejected FIFO as the session-count cap instead of
+failing with a cache-alloc OOM (the c=16 8192-ctx failure mode under resident-if-fits,
+caught by the serve gate as instant HTTP 400s — `research/fast-router-20260802/RESULTS.md`).
+The first session always admits; an OOM with no active sessions is real capacity and
+still errors loudly, with the CUDA error quoted.
+
 ## The exact-16 decode chunk tier
 
 The batched tick decodes sessions in per-model chunks. Default width is **16 on models
@@ -52,9 +75,10 @@ tier engages automatically on the next deploy; the H100 numbers above are chunk-
 and the chunk-16 fleet effect is pending on-box re-validation.
 
 **Capacity envelope (24GB):** the mirror costs ~model-size VRAM, so c=32 sessions at the
-default `MEMRA_CTX=8192` OOM (captured `CUDA_ERROR_OUT_OF_MEMORY`; ~27 sessions admit).
-Set `MEMRA_CTX` to the workload — 2048 clears the same cell (machine-specific config per
-the flags doctrine).
+default `MEMRA_CTX=8192` exceed VRAM (captured `CUDA_ERROR_OUT_OF_MEMORY` in the
+pre-admission-wait receipts; ~27 sessions fit — since the VRAM-aware admission wait the
+overflow queues instead of erroring). Set `MEMRA_CTX` to the workload — 2048 clears the
+same cell (machine-specific config per the flags doctrine).
 
 ## Knobs
 

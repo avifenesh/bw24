@@ -13,8 +13,9 @@ serves two architectures, auto-detected at build time: **RTX 50-series Blackwell
 (sm_120a)**, tuned single-user against llama.cpp, and **H100 Hopper (sm_90a)**, measured
 model-by-model against vLLM on the same box. Every kernel is hand-written against
 measured hardware limits, and exactness is the contract: speculative and graph-replay
-output is gated token-identical to plain decode, so speed never changes what the model
-says.
+output is gated token-identical to plain decode, and greedy serving is
+isolated-identical under concurrent load — speed never changes what the model says,
+and batching never changes what a request gets back.
 
 **Use memra when** you serve one model on an RTX 50-series card and want measured,
 exactness-gated speed, or you want a single-GPU H100 engine whose wins *and* losses
@@ -23,10 +24,18 @@ against vLLM are published per model. **Use something else when** you have anoth
 [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU serving
 (vLLM, SGLang).
 
-**Standing (2026-08-01):** seven supported models on the 5090, all fully gated; MTP-spec
+**Standing (2026-08-02):** eight supported models on the 5090, all fully gated; MTP-spec
 cells run 1.06–2.3x llama.cpp (one Gemma near-parity cell, 0.98x, still open), plain
-cells sit at the DRAM wall or above. On the H100, a full per-model board against vLLM
-0.26: **no end-to-end losses** — seven wins of seven (1.02-1.81x); decode wins 7 of 7. The last losses fell
+cells sit at the DRAM wall or above. This wave's headline is a real serving defect the
+exactness discipline caught and fixed: the batched F32 prefill router GEMM was
+m-dependent, so under cross-request prefill batching a MoE request's own expert routing
+could change with its co-arrivals. The fix routes prefill through the decode path's
+m-invariant router/gate kernels (default on), and a bit-identical batched twin then
+recovered 70% of the prefill it cost — the serving contract above is now explicit and
+gated, not assumed (receipts: [`research/concat-prime-exact-20260802/`](research/concat-prime-exact-20260802/),
+[`research/fast-router-20260802/`](research/fast-router-20260802/)). On the H100, a
+full per-model board against vLLM 0.26: **no end-to-end losses** — six wins and a
+dead-even 35B cell (1.00-1.81x); decode wins 7 of 7. The last losses fell
 in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
 got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
 f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
@@ -79,7 +88,11 @@ and a router-default re-arbitration on real prompts). The 35B cell slipped from
 shexp gates, `MEMRA_ROUTER_PREFILL_EXACT` default ON): expert prefill pays −13%
 on Hopper (8428 → 7311 pp2048) so a session's routing no longer depends on its
 co-arrivals — decode is untouched, and the dense 27B row is unaffected (no MoE
-router; re-cell bit-stable). Receipts `research/router-fix-recells-20260802/`. The last two e2e losses — both MoE
+router; re-cell bit-stable). Receipts `research/router-fix-recells-20260802/`. A
+bit-identical batched twin of the exact router kernel has since recovered 70% of that
+prefill cost on the 5090 (`research/fast-router-20260802/`; `MEMRA_ROUTER_BATCH=0` is
+its perf-only rollback seam) — the H100 row stands at its post-fix re-cell until the
+on-box re-cell with the twin lands. The last two e2e losses — both MoE
 expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
 reached full dequant coverage and became the Hopper default (expert prefill +53%), the
 27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors
@@ -114,9 +127,9 @@ core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds
 
 | Tier | Models | State |
 |---|---|---|
-| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS on the 5090; Q8_0 / Q4_K_M MTP-baked / IQ4_XS on the H100 board); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first |
+| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS on the 5090; Q8_0 / Q4_K_M MTP-baked / IQ4_XS on the H100 board); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters); Ornith-1.0-9B (Q8_0 + donor-block own-gen drafter — the first community post-train over the deployment bar: best-vs-best e2e 2.21/1.67/1.47x, [receipts](research/ornith-bar-20260802/)) | Board-published, fully gated, exactness-first |
 | **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Correctness-gated end-to-end; [docs/HY3-SPILL.md](docs/HY3-SPILL.md) |
-| **In bring-up** | Ornith-1.0 9B/35B, KAT-Coder-V2.5 (HF's #2/#3 most-downloaded GGUF repos); Qwen-AgentWorld-35B-A3B verified same-stack | Onboarded with zero code change (native `qwen35`/`qwen35moe` arch strings; argmax + chat gates green on the 5090 — [receipts](research/onboard-ornith-20260801/)). Not yet supported: that label requires the per-model llama.cpp head-to-head and a trimmed MTP drafter, both in flight |
+| **In bring-up** | Ornith-1.0-35B, KAT-Coder-V2.5 (with Ornith-9B, the onboarding wave's top-downloaded HF GGUF repos); Qwen-AgentWorld-35B-A3B verified same-stack | Onboarded with zero code change (native `qwen35`/`qwen35moe` arch strings; argmax + chat gates green — [receipts](research/onboard-ornith-20260801/)). 35B: HOLD — the resident-if-fits default inverted its decode leg vs llama.cpp (1.086x, [receipts](research/residency-cap-20260802/)) and its own-gen drafter is adopted (1.38/1.09/1.05x), but the Q4_K expert-prefill gap (0.27x) still fails the e2e bar ([priced](research/ornith-bar-20260802/)). KAT: HOLD — best drafter acceptance of the batch, but a plain-decode anomaly (~104 vs ~170 tok/s on the same arch class) makes drafting net-negative; the anomaly lane is queued. AgentWorld: same-stack by construction (header bytes verified), unbenched |
 | **In progress** | MiniMax-M3 REAP50 (safetensors spill) | Loads + generates; router tuning open |
 
 ## Quick start
@@ -202,6 +215,27 @@ per-model adaptive-K floor (+20% on 12B/31B spec at unchanged exactness), and an
 draft-confidence cut. One near-parity cell remains (26B 1.7k spec, 0.98x). Exact prompts
 and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md).
 
+## Performance — Ornith-1.0-9B (Q8_0), RTX 5090
+
+Supported model #8, and the first community post-train to clear the deployment bar
+(best-vs-best e2e ≥ 1.1x on every prompt class). Each engine at its measured best on the
+same GGUF: memra runs the regime drafter at K=3 (donor-block own-gen trim — the published
+model ships no MTP head, [docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md)); llama.cpp's best
+is plain — its draftless speculative doors are structurally broken on this arch (M-RoPE
+position faults, screened in the receipts). Interleaved N=3 medians, same session
+([`research/ornith-bar-20260802/`](research/ornith-bar-20260802/)):
+
+| Prompt class | memra e2e, 256 tok (spec K=3) | llama.cpp e2e (plain best) | Ratio |
+|---|---:|---:|---:|
+| code short | 1.395 s | 3.084 s | **2.21x** |
+| code medium (1.8k ctx) | 2.050 s | 3.429 s | **1.67x** |
+| agentic long (6.3k ctx) | 2.984 s | 4.376 s | **1.47x** |
+
+Spec-vs-own-plain: 2.16/1.77/1.70x at 47-61% acceptance
+([`research/ornith-drafters-20260801/`](research/ornith-drafters-20260801/)); build the
+drafter with the standard two commands in [docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md)
+(donor-block variant — donor pairs and receipts documented there).
+
 ## Known gaps
 
 - **5090 prefill** trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4
@@ -224,8 +258,10 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
   draft depth + confidence cut; K=1..8 self-consistency gate.
 - **Hopper wgmma/TMA kernels** — FA3-class prefill attention, fused GDN chunk family,
   canonical descriptor pairings for bf16/tf32/s8.
-- **MoE on 24 GB** — expert-major CSR batching, frozen SLRU expert residency, bounded
-  host LRU, mirrored positioned reads across VRAM→RAM→NVMe.
+- **MoE on 24 GB** — resident-if-fits expert residency (exact GGUF bank accounting +
+  measured headroom; +50.4% Ornith-35B decode over the old spill default), expert-major
+  CSR batching, frozen SLRU spill cache, bounded host LRU, mirrored positioned reads
+  across VRAM→RAM→NVMe.
 - **Quantized-KV attention** — fused FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3
   KV per layer class), split-K, graph-replayable device-length counters.
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic;
@@ -234,7 +270,10 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
   across sequences, chunked 16-wide on models with a bit-exact 16-batch kernel class:
   +18.8% at c=16 on a 5090 single replica, same-mirror interleaved N=4), cross-request
   prefill batching, KV prefix reuse, speculative
-  serving, and a flat `/metrics` endpoint. Multi-GPU boxes serve as a replica fleet:
+  serving, and a flat `/metrics` endpoint. Greedy serving is isolated-identical under
+  concurrent load at defaults — a request's tokens never depend on its co-arrivals
+  (m-invariant prefill router/gate kernels, serve-gate c=1-vs-c=16 byte identity).
+  Multi-GPU boxes serve as a replica fleet:
   supervisor + admission proxy + load harness, measured at 1,477 tok/s managed on
   3xH100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
 - **Loaders** — GGUF (memory-mapped) and safetensors (modelopt NVFP4 byte-exact).
@@ -292,6 +331,7 @@ Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
 - [`HANDOVER.md`](HANDOVER.md) — living state-of-work.
 - [`docs/FLAGS.md`](docs/FLAGS.md) — the audited flag catalog.
 - [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.
+- [`docs/DRAFT-REGIME.md`](docs/DRAFT-REGIME.md) — the standard drafter pipeline (own-gen ranks, byte-verbatim extraction, trim + quantize).
 - [`docs/SERVING.md`](docs/SERVING.md) — multi-user replica-fleet serving runbook.
 - [`docs/HY3-SPILL.md`](docs/HY3-SPILL.md) — Hy3 spill runbook.
 - [`research/`](research/) — every experiment as JSONL, wins and losses both;

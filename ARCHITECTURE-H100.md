@@ -2440,3 +2440,62 @@ yet; do not quote the 5090 delta as a fleet claim). The emit-defer arm (one D2H 
 instead of per chunk) measured FLAT (±0.7% at every load point — 3 saved syncs vs a
 ~100ms weight-bound tick) and was KILLED per the flags doctrine; the JSONL rows are the
 record.
+
+## Round 52 — the exactness arc: the m-dependent prefill router changed expert routing by co-arrival (2026-08-02, lanes concat-prime-exact / router-fix-recells / fast-router)
+
+A REAL serving defect, found by the serve gate and fixed at the dispatch level. The
+greedy c=1-vs-c=16 serve gate failed byte identity on the onboards (Ornith-35B 6/16,
+KAT 7/16) and the razor chain pinned the mechanism: solo-vs-concat divergence is a pure
+function of TOTAL m — piecewise-constant thresholds at m=65/75, reproduced ascending AND
+descending (not process state), while the determinism, session-offset, and content
+razors all came back BIT-IDENTICAL (no indexing/masking/rope defect). The m-invariance
+probes caught both culprits: the cuBLASLt prefill router GEMM (`ffn_gate_inp` — rows
+[0,19) move maxdiff 3.9e-3 between m=19 and m=65) and the cuBLASLt shexp gate dot
+(1.07e-4 between m=74 and m=75); 36 trunk weights probed m-INVARIANT. Route trace at
+total_m=75: **16% of (layer,token) pairs got a different expert SET than solo**
+(121/760; first set-diff layer3 tok6, expert 39->157). NOT post-train-specific: the
+SUPPORTED Qwen3.6-35B control has the SAME m=65/75 thresholds, and the "post-trains
+have ~10x tighter margins" theory is REFUTED — the supported control has the TIGHTEST
+prefill margins of the three (min 0.069 vs Ornith 0.207). Fix (b3a5465f): the MoE
+prefill router + shexp gate ride decode's m-invariant `router_gemv` /
+`sigmoid_dot_rows` at every t — `MEMRA_ROUTER_PREFILL_EXACT` default ON (`=0` is a
+numeric A/B seam that forfeits the isolation guarantee). Serve gate after: **16/16 on
+all four models** (Ornith-9B + q35 ctrl stayed 16/16 throughout). The serving contract
+is now explicit: **greedy serving is isolated-identical under concurrent load at
+defaults.** Receipts `research/concat-prime-exact-20260802/` (findings.jsonl + the full
+mscan/razor/trace/margin logs).
+
+H100 re-cells (`lane/router-fix-recells`, `research/router-fix-recells-20260802/`): the
+fix costs q35 board-2048 expert prefill **-13.0%** on Hopper (exact0 8444.2 vs naked
+7346.9, interleaved x3, same session — steeper than the 5090's -10%: the exact arms
+displace a larger share of the grouped-f16 expert-prefill budget). **q35 ROW MOVES:
+218 -> 215 e2e, 1.02x -> 1.00x dead-even** (N=5 same-session interleaved pair vs vLLM
+FP8; decode unchanged at 243.5). **q27 ROW STANDS at 1.31x** — bit-stable prefill AND
+decode vs the pre-fix session, and proven not-on-the-fixed-path three ways (gguf
+metadata: dense `qwen35`, `is_moe()`=false; code: the fix touches MoE-only arms;
+measurement). argmax MATCH on every run, both models. The exactness contract was paid
+out of the board's best cell and the board stays loss-free.
+
+Recovery (`lane/fast-router`, `research/fast-router-20260802/`): the fix's cost was a
+GEMV program at GEMM shape — one 8-warp block per (expert, token) output, operand rows
+re-streamed per output, zero reuse. The batch twin (`router_gemv_f32_w8_batch`) computes
+an 8x8 (expert x token) register tile whose per-row reduction chains are IDENTICAL to
+the w8 form (same tid-strided k order, same shuffle tree, same serial fold — only where
+operands come from changes), so **the fast form IS the exact form**. kernel-check gained
+a weight-oracle section — real q35 router weights, 32 m-points in 1..2048, bit-compare +
+m-invariance — mism=0 from first build through every iteration. Crossover swept, not
+guessed: `ROUTER_BATCH_MIN_T = 8` (t=4 0.68x, t=8 1.09x, t=2048 3.54x); decode t=1 and
+spec verify t<8 keep the plain form (bit-equal either way). 5090 recovery, interleaved
+x5 N=5 medians: q35 board-2048 prefill 3524 (pre-fix cuBLASLt) -> 3167 (fix) ->
+**3417 (twin)** — 70% of the regression back, -3.1% vs the banned m-dependent kernel;
+o35b resident pp512 -0.5% vs pre-fix. Killed arms (bit-identity-green before dying,
+JSONL is the record): the 8x16 tile (128 accumulators cost the occupancy its halved
+w-traffic needs) and the sigmoid-dot batch twin (out_f=1 is launch-latency-bound).
+`MEMRA_ROUTER_BATCH=0` is the perf-only rollback seam — it can never change output bits.
+Found on the way: the c=16 serve-admission OOM under resident-if-fits (instant HTTP 400s
+with zero mismatches, quoted `cache alloc failed: CUDA_ERROR_OUT_OF_MEMORY`) — fixed
+with a VRAM-aware admission wait in worker.rs (after the first admit observes a model's
+per-session VRAM cost, further admissions need free >= 2x that cost or the request waits
+in the never-rejected FIFO; first session always admits, empty-active OOM still errors).
+The H100 q35 row's post-twin re-cell is IN FLIGHT on a parallel lane as of this entry;
+the published row stands at the post-fix 215 / 1.00x.

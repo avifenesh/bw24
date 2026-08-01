@@ -66,6 +66,17 @@ importance-fused tier redistribution holds quality at matched bytes (38/56 vs 36
 screens at 95.7% bytes) — a method receipt, not a serving change. Sustained 10 tok/s remains
 the target; remaining lanes are system work on the served artifact.
 
+The sm_90a check (single H100 80GB, 2026-08-01) reproduces the speculative-decode class at
+the spill floor with a full K-sweep: run-spec K=1..8 self-consistency PASS x3 (the MTP head
+loads, forwards, and drafts exactly on Hopper), but spec is a net slowdown at every K — best
+K=1 at 0.84x, and the accepted count is exactly 10 at every K (the nextn=1 head cannot chain
+a second draft token). The first-light 23.8%/1.16x point decomposed into a real chat-content
+acceptance rate on a cold-cache denominator: warm, the same config's plain oracle runs 3.73
+tok/s and spec loses — the 1.16x is refuted, and the 1-GPU floor row is plain greedy decode
+(2.49 tok/s median, N=3), spec OFF. A resident multi-GPU regime changes the staging math and
+must run its own K=1 sweep before quoting any spec number
+(`research/hy3-hopper-20260801/`, `research/hy3-spec-20260802/`).
+
 ## Obtaining the published overlay
 
 The published Hy3 Layer103.5 expert overlay, its receipts, and the relocation tool are documented
