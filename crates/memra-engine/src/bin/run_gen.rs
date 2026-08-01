@@ -722,6 +722,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "decode-step diverges from prefill — cache threading bug"
     );
 
+    // --- gap #46: the BATCHED-PRIME config (prime_cache — what actually seeds generation in
+    //     generate/generate_with and serving) was never argmax-gated. forward_last and the
+    //     tokenwise loop can BOTH be green while the batched prime flips a near-tie first
+    //     token (Qwen3.6-35B pp512 probe: 365 -> 198 "\n" then EOS at 2 tokens;
+    //     research/residency-cap-20260802 §4, differential in
+    //     research/prime-gate-coverage-20260802). Compare its last-position logits against
+    //     the tokenwise reference above: a near-tie flip is the documented cross-config
+    //     drift class (REPORTED, non-fatal — MEMRA_PRIME_TOKENWISE=1 restores the tokenwise
+    //     stream); a wide-margin flip or drift beyond the calibrated bounds is structural
+    //     and fails hard. MEMRA_PRIME_GATE=0 skips (diagnostics seam).
+    if prompt.len() >= memra_engine::hybrid_forward::PRIME_MIN_T
+        && std::env::var("MEMRA_PRIME_TOKENWISE").is_err()
+        && std::env::var("MEMRA_PRIME_GATE").as_deref() != Ok("0")
+        && !e.frozen_cpu_experts_prefer_tokenwise_prime()
+    {
+        use memra_engine::forward::PrimeGateClass;
+        let mut pc = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 8)?;
+        let (l_bp, _, _) = model.prime_cache(&e, &prompt, &mut pc)?;
+        let v = memra_engine::forward::prime_gate_verdict(&dec_logits, &l_bp);
+        println!(
+            "batched-prime argmax={}  tokenwise argmax={}  logit maxdiff={:.3e}  {}",
+            v.bp_argmax,
+            v.tw_argmax,
+            v.maxdiff,
+            match v.class {
+                PrimeGateClass::Match => "MATCH".into(),
+                PrimeGateClass::NearTieFlip => format!(
+                    "FLIP-NEARTIE (tokenwise margin {:.4} — cross-config drift class; the \
+                     first generated token may differ from the tokenwise stream)",
+                    v.tw_margin
+                ),
+                PrimeGateClass::Structured =>
+                    format!("MISMATCH-STRUCTURED (tokenwise margin {:.4})", v.tw_margin),
+            }
+        );
+        if v.class == PrimeGateClass::Structured {
+            return Err(
+                "batched-prime last-position logits diverge structurally from the tokenwise reference"
+                    .into(),
+            );
+        }
+    }
+
     // --- time PREFILL tok/s (batched forward over the whole prompt) for the pp comparison vs
     //     llama-bench pp512. 1 warmup discarded, then time one forward of the full prompt. ---
     if prompt.len() >= 8 {

@@ -1,0 +1,19 @@
+prime-gate: qwen35 (32 layers) prompts=8 chat=false steps=16
+prompt  0 (T=512): tw=365 (margin 0.8927) bp=365 (margin 1.1714) fl=365 maxdiff=4.2356e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  1 (T=54): tw=271 (margin 0.9498) bp=271 (margin 0.8154) fl=271 maxdiff=4.7107e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  2 (T=36): tw=271 (margin 3.4743) bp=271 (margin 3.5513) fl=271 maxdiff=4.8430e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  3 (T=40): tw=198 (margin 1.2036) bp=198 (margin 1.0499) fl=198 maxdiff=4.4409e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  4 (T=79): tw=271 (margin 4.6374) bp=271 (margin 4.6989) fl=271 maxdiff=4.5903e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  5 (T=36): tw=279 (margin 2.5353) bp=279 (margin 2.5490) fl=279 maxdiff=8.5427e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  6 (T=21): tw=198 (margin 0.2605) bp=198 (margin 0.3564) fl=198 maxdiff=3.5834e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  7 (T=60): tw=271 (margin 0.3570) bp=271 (margin 0.3364) fl=271 maxdiff=3.2307e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=8.5427e-1 min flip margin=-
+prime-gate: ALL GREEN

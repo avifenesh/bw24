@@ -31,6 +31,10 @@ name = "prime-batch-gate"
 path = "src/bin/prime_batch_gate.rs"
 
 [[bin]]
+name = "prime-gate"
+path = "src/bin/prime_gate.rs"
+
+[[bin]]
 name = "concat-prime-probe"
 path = "src/bin/concat_prime_probe.rs"
 

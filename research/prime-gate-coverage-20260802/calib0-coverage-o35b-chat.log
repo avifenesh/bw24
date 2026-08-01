@@ -1,0 +1,36 @@
+[moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.93GB (expert budget 20.27GB) -> RESIDENT
+prime-gate: qwen35moe (40 layers) prompts=16 chat=true steps=16
+prompt  0 (T=21): tw=8160 (margin 0.0074) bp=8160 (margin 0.3260) fl=8160 maxdiff=9.5122e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  1 (T=22): tw=8160 (margin 2.5293) bp=8160 (margin 2.4311) fl=8160 maxdiff=1.3062e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  2 (T=22): tw=90700 (margin 0.9628) bp=90700 (margin 1.0336) fl=90700 maxdiff=1.2939e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  3 (T=21): tw=8160 (margin 2.5715) bp=8160 (margin 2.1529) fl=8160 maxdiff=1.5140e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  4 (T=22): tw=8160 (margin 0.4390) bp=90700 (margin 0.2608) fl=8160 maxdiff=1.3508e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): DIVERGED at step 0 (0-based) tw_eos=None bp_eos=None
+prompt  5 (T=22): tw=8160 (margin 0.8773) bp=8160 (margin 0.9478) fl=8160 maxdiff=1.1429e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  6 (T=19): tw=90700 (margin 0.4008) bp=90700 (margin 0.4143) fl=90700 maxdiff=1.1970e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  7 (T=23): tw=8160 (margin 0.5206) bp=8160 (margin 0.5943) fl=8160 maxdiff=8.4939e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  8 (T=20): tw=8160 (margin 1.8888) bp=8160 (margin 1.9655) fl=8160 maxdiff=1.0421e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  9 (T=20): tw=8160 (margin 1.3500) bp=8160 (margin 1.6982) fl=8160 maxdiff=1.1584e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 10 (T=22): tw=8160 (margin 3.2894) bp=8160 (margin 3.0170) fl=8160 maxdiff=9.4888e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 11 (T=22): tw=8160 (margin 0.6611) bp=8160 (margin 0.7272) fl=8160 maxdiff=1.0009e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 12 (T=21): tw=8160 (margin 2.7175) bp=8160 (margin 2.4324) fl=8160 maxdiff=1.3952e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 13 (T=22): tw=8160 (margin 0.5571) bp=8160 (margin 0.5312) fl=8160 maxdiff=1.3501e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 14 (T=21): tw=8160 (margin 2.4843) bp=8160 (margin 2.5148) fl=8160 maxdiff=1.2392e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 15 (T=21): tw=90700 (margin 0.0829) bp=8160 (margin 0.2065) fl=8160 maxdiff=9.0883e-1 det=BIT-IDENTICAL FLIP-NEARTIE
+          stream(16): DIVERGED at step 0 (0-based) tw_eos=None bp_eos=None
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=3 FLIP-NEARTIE=1 STRUCTURED=12 det_fails=0 | worst maxdiff=1.5140e0 min flip margin=0.0829
+Error: "prime-gate FAIL: structured=12 det_fails=0 neartie=1 (strict=false)"

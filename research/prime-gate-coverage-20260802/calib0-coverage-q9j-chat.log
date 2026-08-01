@@ -1,0 +1,35 @@
+prime-gate: qwen35 (32 layers) prompts=16 chat=true steps=16
+prompt  0 (T=21): tw=90700 (margin 12.0851) bp=90700 (margin 11.8371) fl=90700 maxdiff=8.2998e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  1 (T=22): tw=90700 (margin 9.3330) bp=90700 (margin 9.0386) fl=90700 maxdiff=8.6655e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  2 (T=22): tw=90700 (margin 10.6900) bp=90700 (margin 10.6251) fl=90700 maxdiff=1.0037e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  3 (T=21): tw=90700 (margin 9.7954) bp=90700 (margin 9.6731) fl=90700 maxdiff=9.2562e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  4 (T=22): tw=90700 (margin 10.9680) bp=90700 (margin 10.7851) fl=90700 maxdiff=8.9052e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  5 (T=22): tw=90700 (margin 12.3118) bp=90700 (margin 12.4547) fl=90700 maxdiff=8.1615e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  6 (T=19): tw=90700 (margin 11.9257) bp=90700 (margin 11.8542) fl=90700 maxdiff=8.4662e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  7 (T=23): tw=90700 (margin 11.3866) bp=90700 (margin 11.4571) fl=90700 maxdiff=7.9453e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  8 (T=20): tw=90700 (margin 9.9442) bp=90700 (margin 10.1857) fl=90700 maxdiff=8.4586e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  9 (T=20): tw=90700 (margin 11.2805) bp=90700 (margin 11.1065) fl=90700 maxdiff=8.1136e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 10 (T=22): tw=90700 (margin 11.5639) bp=90700 (margin 11.2985) fl=90700 maxdiff=7.9016e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 11 (T=22): tw=90700 (margin 11.9274) bp=90700 (margin 11.9585) fl=90700 maxdiff=7.4214e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 12 (T=21): tw=90700 (margin 10.8830) bp=90700 (margin 10.8463) fl=90700 maxdiff=8.0567e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 13 (T=22): tw=90700 (margin 9.5915) bp=90700 (margin 9.3145) fl=90700 maxdiff=9.6964e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 14 (T=21): tw=90700 (margin 10.6387) bp=90700 (margin 11.0020) fl=90700 maxdiff=8.0261e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt 15 (T=21): tw=90700 (margin 11.8504) bp=90700 (margin 11.4435) fl=90700 maxdiff=8.5931e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=15 FLIP-NEARTIE=0 STRUCTURED=1 det_fails=0 | worst maxdiff=1.0037e0 min flip margin=10.6900
+Error: "prime-gate FAIL: structured=1 det_fails=0 neartie=0 (strict=false)"

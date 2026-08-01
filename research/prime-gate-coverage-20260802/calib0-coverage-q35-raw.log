@@ -1,0 +1,20 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+prime-gate: qwen35moe (40 layers) prompts=8 chat=false steps=16
+prompt  0 (T=512): tw=365 (margin 0.6146) bp=198 (margin 0.6054) fl=365 maxdiff=2.4287e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): DIVERGED at step 0 (0-based) tw_eos=None bp_eos=Some(2)
+prompt  1 (T=54): tw=1921 (margin 0.8667) bp=1921 (margin 1.0181) fl=1921 maxdiff=7.0005e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  2 (T=36): tw=271 (margin 4.8103) bp=271 (margin 4.8723) fl=271 maxdiff=8.0913e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  3 (T=40): tw=198 (margin 0.6124) bp=198 (margin 1.3738) fl=198 maxdiff=1.2993e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  4 (T=79): tw=271 (margin 4.8987) bp=271 (margin 4.7463) fl=271 maxdiff=6.8274e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  5 (T=36): tw=279 (margin 1.6587) bp=279 (margin 1.7920) fl=279 maxdiff=2.0797e0 det=BIT-IDENTICAL STRUCTURED
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  6 (T=21): tw=271 (margin 1.4450) bp=271 (margin 1.4762) fl=271 maxdiff=5.0020e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  7 (T=60): tw=198 (margin 1.2126) bp=198 (margin 1.4555) fl=198 maxdiff=5.9975e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=5 FLIP-NEARTIE=0 STRUCTURED=3 det_fails=0 | worst maxdiff=2.4287e0 min flip margin=0.6124
+Error: "prime-gate FAIL: structured=3 det_fails=0 neartie=0 (strict=false)"

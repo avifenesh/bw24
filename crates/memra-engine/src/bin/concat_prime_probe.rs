@@ -22,6 +22,13 @@
 //!   margins <model> margins --prompts-file <f> [--steps N] [--chat] [--jsonl <out>]
 //!           per-prompt greedy top1-top2 logit-gap distribution (prefill + every decode
 //!           step) — the near-tie density that converts FP perturbation into argmax flips.
+//!   twpos   <model> twpos --prompt-a <txt|@file> [--chat] [--every N]
+//!           SOLO batched-vs-tokenwise prime, per-POSITION logit diff/flip profile
+//!           (gap #46 differential — scattered near-tie flips = FP class, boundary or
+//!           wide-margin structure = defect).
+//!   causal  <model> causal --prompt-a <txt|@file> --suffix <txt|@file> [--chat]
+//!           chunk-boundary content razor: prime(P) vs prime(P+S) rows of P must be
+//!           BIT-IDENTICAL when the chunk boundary sits at |P|.
 
 use memra_engine::cache::Cache;
 use memra_engine::forward::argmax;
@@ -57,6 +64,16 @@ fn encode_prompt(tok: &Tokenizer, text: &str, chat: bool) -> Vec<u32> {
         tok.encode(&rendered, true)
     } else {
         tok.encode(text, true)
+    }
+}
+
+/// `--prompt-x` values starting with '@' name a FILE whose whole (multi-line) content is
+/// the prompt — the pp512-class probe prompts don't fit on a CLI line.
+fn text_arg(rest: &[String], key: &str) -> Option<String> {
+    let v = arg(rest, key)?;
+    match v.strip_prefix('@') {
+        Some(path) => Some(std::fs::read_to_string(path).expect("prompt file unreadable")),
+        None => Some(v),
     }
 }
 
@@ -761,6 +778,129 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+
+        // SOLO batched-vs-tokenwise per-POSITION differential (gap #46, prime-path
+        // FP-composition family): the SAME prompt primed (1) tokenwise (decode_step loop,
+        // m=1 — the oracle-stream config) and (2) batched (prime_cache, prefill GEMMs).
+        // Per position: logit maxdiff + argmax flip + tokenwise margin, both sides through
+        // the SAME m=1 epilogue class (decode's rms_norm row + lm_head matvec). A defect
+        // shows structured position/boundary-dependent divergence (e.g. jumps at
+        // MEMRA_PRIME_CHUNK boundaries); the FP class scatters and flips only near-ties.
+        "twpos" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let every: usize = arg(&rest, "--every").and_then(|v| v.parse().ok()).unwrap_or(32);
+            let ta = encode_prompt(&cx.tok, &pa, chat);
+            let t = ta.len();
+            let n_embd = cx.model.cfg.n_embd as usize;
+            let eps = cx.model.cfg.rms_eps;
+            println!("twpos: T={t} chat={chat} chunk_env={:?}",
+                     std::env::var("MEMRA_PRIME_CHUNK").ok());
+
+            // batched prime -> full pre-output-norm hidden stack
+            let mut cb = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + 8))?;
+            let (_, _, hid) = cx.model.prime_cache(&cx.e, &ta, &mut cb)?;
+            let h_batch = cx.e.dtoh(&hid)?;
+            assert_eq!(h_batch.len(), t * n_embd);
+            let logits_row = |host: &[f32], p: usize|
+                              -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+                let d = cx.e.htod(&host[p * n_embd..(p + 1) * n_embd])?;
+                let mut hn = cx.e.uninit(n_embd)?;
+                cx.e.rms_norm(&d, cx.model.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+                Ok(cx.e.dtoh(&cx.e.matmul(&cx.model.output, &hn, 1)?)?)
+            };
+
+            // tokenwise loop, comparing on the fly (position p = logits after token p)
+            let mut ct = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + 8))?;
+            let mut flips: Vec<usize> = Vec::new();
+            let (mut md_max, mut md_max_pos) = (0.0f32, 0usize);
+            println!(" pos | maxdiff | argmax tw/bp | tw_margin");
+            for (p, &tk) in ta.iter().enumerate() {
+                let ltw = cx.model.decode_step(&cx.e, tk, &mut ct)?;
+                let lbp = logits_row(&h_batch, p)?;
+                let md = maxdiff(&ltw, &lbp);
+                let (a_tw, v1, _, v2) = top2(&ltw);
+                let (a_bp, ..) = top2(&lbp);
+                let flip = a_tw != a_bp;
+                if flip { flips.push(p); }
+                if md > md_max { md_max = md; md_max_pos = p; }
+                if flip || p % every == 0 || p + 1 == t {
+                    println!("{p:4} | {md:.4e} | {a_tw}/{a_bp}{} | {:.6}",
+                             if flip { " FLIP" } else { "" }, v1 - v2);
+                }
+            }
+            println!("twpos summary: {}/{t} argmax flips at positions {:?}",
+                     flips.len(), flips);
+            println!("twpos summary: max maxdiff {md_max:.4e} at pos {md_max_pos} \
+                      (scattered small + near-tie-only flips = FP class; boundary-clustered \
+                      or wide-margin flips = structured)");
+        }
+
+        // SOLO CONTENT/CAUSALITY razor for the chunked prime: rows of a prefix P must be
+        // BIT-IDENTICAL between prime(P) and prime(P+S) when a chunk boundary falls exactly
+        // at |P| (chunk 0 processes P at identical m in both runs; S is later content and
+        // must be invisible backwards). The monolithic arm (one chunk over P+S) legally
+        // DIFFERs (m changes — numeric-config knob, the concat lane's r5 analog).
+        // QWEN-STACK ONLY: gemma4_prime ignores MEMRA_PRIME_CHUNK (monolithic v0), so the
+        // c1 arm's bit-identity demand does not apply there.
+        //   causal <model> causal --prompt-a <txt|@f> --suffix <txt|@f> [--chat]
+        "causal" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let ps = text_arg(&rest, "--suffix").expect("--suffix");
+            let ta = encode_prompt(&cx.tok, &pa, chat);
+            let ts_ = cx.tok.encode(&ps, false);
+            assert!(ts_.len() >= 16, "suffix must be >= 16 tokens (chunker merges shorter tails)");
+            let t = ta.len();
+            let n_embd = cx.model.cfg.n_embd as usize;
+            let eps = cx.model.cfg.rms_eps;
+            let mut cat = ta.clone();
+            cat.extend_from_slice(&ts_);
+            println!("causal: T_p={t} T_s={} chat={chat}", ts_.len());
+
+            let prime_hid = |toks: &[u32]| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+                let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(toks.len() + 8))?;
+                let (_, _, hid) = cx.model.prime_cache(&cx.e, toks, &mut c)?;
+                Ok(cx.e.dtoh(&hid)?)
+            };
+            let logits_row = |host: &[f32], p: usize|
+                              -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+                let d = cx.e.htod(&host[p * n_embd..(p + 1) * n_embd])?;
+                let mut hn = cx.e.uninit(n_embd)?;
+                cx.e.rms_norm(&d, cx.model.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+                Ok(cx.e.dtoh(&cx.e.matmul(&cx.model.output, &hn, 1)?)?)
+            };
+            let bits = |a: &[f32]| -> Vec<u32> { a.iter().map(|v| v.to_bits()).collect() };
+            let mut defect = 0usize;
+            let mut run_arm = |name: &str, chunk: &str, must_be_exact: bool|
+                               -> Result<(), Box<dyn std::error::Error>> {
+                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", chunk); }
+                let h_p = prime_hid(&ta)?;
+                let h_ps = prime_hid(&cat)?;
+                let head = &h_ps[..t * n_embd];
+                let hid_same = bits(head) == bits(&h_p);
+                let lp = logits_row(&h_p, t - 1)?;
+                let lps = logits_row(&h_ps, t - 1)?;
+                let log_same = bits(&lp) == bits(&lps);
+                let (a1, ..) = top2(&lp);
+                let (a2, ..) = top2(&lps);
+                let tag = if hid_same && log_same { "BIT-IDENTICAL" }
+                          else if must_be_exact { defect += 1; "*** DIFFER (DEFECT) ***" }
+                          else { "DIFFER (expected: numeric config change)" };
+                println!("{name}: {tag}  hid_maxdiff={:.4e} lastP_logit_maxdiff={:.4e} \
+                          argmax {a1} vs {a2}{}",
+                         maxdiff(head, &h_p), maxdiff(&lp, &lps),
+                         if a1 == a2 { "" } else { " FLIP" });
+                Ok(())
+            };
+            // chunk boundary exactly at |P|: P's rows/KV computed at identical m -> exact.
+            run_arm("c1 chunk@|P|  prime(P) vs prime(P+S) rows[0,|P|)", &t.to_string(), true)?;
+            // monolithic: P's rows inside an m=|P|+|S| pass — the legal m knob.
+            run_arm("c2 monolithic prime(P) vs prime(P+S) rows[0,|P|)", "0", false)?;
+            println!("causal verdict: {}",
+                     if defect == 0 { "NO DEFECT — later content invisible across chunk \
+                                       boundary; only the GEMM m moves rows" }
+                     else { "*** DEFECT: suffix content leaked backwards across a chunk \
+                             boundary ***" });
         }
 
         m => return Err(format!("unknown mode {m}").into()),

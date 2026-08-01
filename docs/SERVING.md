@@ -87,3 +87,23 @@ cataloged in [FLAGS.md §7](FLAGS.md) under "Serving (memra-server)"; fleet topo
 (`GPUS`, `REPLICAS_PER_GPU`, `CAP`, ports, health cadence) are env-overridable at the top of
 `tools/serve-fleet.sh`. The exactness contract holds under batching: the decode-batch gate
 battery (gate1-3, gate3c lean-vs-full) runs inside `tools/validate-h100.sh`.
+
+## First-token cross-config drift (batched prime) — stated honestly
+
+Serving primes prompts BATCHED (`prime_cache`, prefill GEMMs) while the historical oracle
+stream is tokenwise (`decode_step`, m=1). These are different numeric configs by design —
+same law as forward-vs-decode and the decode-batch gate's config mode — so on near-tie
+prompts the FIRST generated token of a request can differ from the tokenwise oracle
+stream, and everything after it follows the new prefix. Measured on the six-model
+2026-08-02 sweep (`research/prime-gate-coverage-20260802/`, 144 prompts): **10/144 first
+tokens flip (~7%)**, every flip at a tokenwise top1-top2 margin <= 0.70, batched prime
+bit-deterministic, no content leakage across chunk boundaries, and forward_last sides
+with the batched prime in 8/10 flips — the tokenwise config is usually the outlier, so
+this is config roulette on a near-tie, not a wrong path. On the gemma prefill lanes the
+config can even move per PROCESS (cuBLASLt heuristic algo selection; one observed
+instance in the 144-row double pass, bit-deterministic within a process). Dense Q8_0
+models (9B judge, Ornith-9B — the fleet class) flipped 0/48. Consequences can be visible (the Qwen3.6-35B
+pp512 probe greedy-emits `"\n"` + EOS at 2 tokens where the tokenwise stream writes 128):
+within contract, but real. `MEMRA_PRIME_TOKENWISE=1` pins the oracle stream at prefill
+cost; the run-gen `batched-prime` gate line + the `prime-gate` battery bound the class
+(structured divergence fails hard, near-tie flips are reported).
