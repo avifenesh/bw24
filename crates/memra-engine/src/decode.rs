@@ -581,10 +581,17 @@ impl HybridModel {
         cache: &mut Cache,
     ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         if self.is_gemma4_e4b() {
+            crate::pp::warn_unwired_once("gemma4-e4b eager decode");
             return self.gemma4_e4b_decode_step_h(e, token, cache);
         }
         if self.cfg.gemma4.is_some() {
+            // pp2 door for the gemma4 arm lives inside gemma4_decode_step_h.
             return self.gemma4_decode_step_h(e, token, cache);
+        }
+        // M1-PP2 door (crate::pp): 2-stage split of this walk with an explicit activation
+        // handoff at the boundary. Default OFF — unset env means this branch never taken.
+        if let Some(split) = crate::pp::pp2_split(self.layers.len()) {
+            return self.decode_step_h_pp2(e, token, cache, split);
         }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -668,6 +675,138 @@ impl HybridModel {
         };
         // head-MIPS feasibility probe (MEMRA_DUMP_HN=<path>): append pre-head hiddens for
         // offline bound analysis. Diagnostic only.
+        if let Ok(path) = std::env::var("MEMRA_DUMP_HN") {
+            let hh = e.dtoh(&hn)?;
+            use std::io::Write;
+            let mut fo = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            for v in &hh {
+                fo.write_all(&v.to_le_bytes())?;
+            }
+        }
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        let host = e.dtoh(&logits)?;
+        cache.pos += 1;
+        Ok((host, h_seed))
+    }
+
+    /// M1-PP2 stage subgraph: run layers [lo, hi) of the generic eager walk. Enters with a
+    /// MATERIALIZED residual `x` (no pending fusion pair from outside the range) and exits
+    /// with the range's final residual materialized (the trailing add executed, exactly like
+    /// the last layer of an unsplit walk). Body is the `decode_step_h` loop verbatim with the
+    /// cross-layer add+norm fusion carry LOCAL to the range — so the only state a stage
+    /// boundary has to move is the [n_embd] hidden state. Bit-identity of the cut relies on
+    /// the kernel-check-pinned `add_rms_norm_q8_1 == add then rms_norm_q8_1` identity
+    /// (`pp2-gate` verifies end-to-end on real weights).
+    #[allow(clippy::too_many_arguments)]
+    fn decode_layers_eager(
+        &self,
+        e: &Engine,
+        mut x: CudaSlice<f32>,
+        lo: usize,
+        hi: usize,
+        pos_d: &CudaSlice<i32>,
+        pos: usize,
+        cache: &mut Cache,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let mut pending: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
+        for il in lo..hi {
+            let layer = &self.layers[il];
+            let anorm = layer.attn_norm.float_data();
+            let fuse = std::env::var("MEMRA_NO_FUSE_NORMQ").is_err()
+                && self.mixer_in_q8_1_fast(e, &layer.mixer);
+            // take() FIRST, branch on fuse after (see decode_step_h: a tuple pattern drops
+            // the taken pair when fuse is false and silently loses the residual add).
+            let taken = pending.take();
+            let mixed = match (taken, fuse) {
+                (Some((x1, f1)), true) => {
+                    let mut x2 = e.uninit(n_embd)?;
+                    let (hq, hd) = e.add_rms_norm_q8_1(&x1, &f1, anorm, &mut x2, n_embd, 1, eps)?;
+                    x = x2;
+                    let h0 = e.zeros(0)?;
+                    match &layer.mixer {
+                        Mixer::Full(fa) => self.full_attn_decode_pre(
+                            e,
+                            fa,
+                            &h0,
+                            Some((&hq, &hd)),
+                            pos_d,
+                            pos,
+                            cache,
+                            il,
+                        )?,
+                        Mixer::Linear(la) => {
+                            self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)?
+                        }
+                    }
+                }
+                (taken, _) => {
+                    if let Some((x1, f1)) = taken {
+                        let mut x2 = e.uninit(n_embd)?;
+                        e.add(&x1, &f1, &mut x2, n_embd)?;
+                        x = x2;
+                    }
+                    self.attn_in_norm_mixer(e, layer, &x, pos_d, pos, cache, il, n_embd, eps)?
+                }
+            };
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
+            pending = Some((x1, ffn_out));
+        }
+        // range's final add (no next norm inside the range to fuse with)
+        if let Some((x1, f1)) = pending.take() {
+            let mut x2 = e.uninit(n_embd)?;
+            e.add(&x1, &f1, &mut x2, n_embd)?;
+            x = x2;
+        }
+        Ok(x)
+    }
+
+    /// M1-PP2 (increment 1): `decode_step_h` as TWO stage subgraphs on one device with an
+    /// explicit activation handoff at the layer-`split` boundary. Stage 0 = embed + layers
+    /// [0, split); stage 1 = layers [split, n) + output_norm + lm head. The handoff is two
+    /// REAL dtod copies — stage 0 publishes its residual into a dedicated boundary buffer
+    /// (TX), stage 1 copies out of it into its own working buffer (RX) — never an alias, so
+    /// increment 2 swaps the middle of the seam for a P2P transport without touching either
+    /// stage. Per-layer KV/linear state stays owned by the stage that runs the layer;
+    /// `cache.pos` is snapshotted once and advanced once. Door: MEMRA_PP_STAGES=2
+    /// (+ MEMRA_PP_SPLIT), see crate::pp. Gate: `pp2-gate` (bit-identical logits vs unsplit).
+    fn decode_step_h_pp2(
+        &self,
+        e: &Engine,
+        token: u32,
+        cache: &mut Cache,
+        split: usize,
+    ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let pos = cache.pos;
+        let pos_d = e.htod_i32(&[pos as i32])?;
+
+        // ---- STAGE 0: embed (the table lives with stage 0) + layers [0, split) ----
+        let x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+        let x = self.decode_layers_eager(e, x, 0, split, &pos_d, pos, cache)?;
+
+        // ---- STAGE BOUNDARY: explicit [n_embd] activation handoff (TX copy, RX copy) ----
+        let boundary_tx = e.clone_dtod(&x)?;
+        let boundary_rx = e.clone_dtod(&boundary_tx)?;
+
+        // ---- STAGE 1: layers [split, n) + output_norm + head ----
+        let x = self.decode_layers_eager(e, boundary_rx, split, self.layers.len(), &pos_d, pos, cache)?;
+
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let h_seed = if crate::spec::spec_hpost() {
+            e.clone_dtod(&hn)?
+        } else {
+            e.clone_dtod(&x)?
+        };
+        // same diagnostics door as decode_step_h (MEMRA_DUMP_HN) so the arms stay observably
+        // interchangeable.
         if let Ok(path) = std::env::var("MEMRA_DUMP_HN") {
             let hh = e.dtoh(&hn)?;
             use std::io::Write;
