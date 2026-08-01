@@ -1,0 +1,16 @@
+{"cfg": "A-default-kqrp", "run": "r1", "prime_s": 0.416, "prefill": 4923.1, "plain": 87.84, "spec": 103.64, "acc": 62.0, "e2e_plain": 81.99, "e2e_spec": 95.59, "f16_mirrors": "183t/22420MB", "kqrp_tensors": 449, "gate": "PASS"}
+{"cfg": "A-default-kqrp", "run": "r2", "prime_s": 0.415, "prefill": 4934.9, "plain": 89.46, "spec": 105.48, "acc": 62.0, "e2e_plain": 83.41, "e2e_spec": 97.17, "f16_mirrors": "183t/22420MB", "kqrp_tensors": 449, "gate": "PASS"}
+{"cfg": "A-default-kqrp", "run": "r3", "prime_s": 0.415, "prefill": 4934.9, "plain": 89.14, "spec": 105.31, "acc": 62.0, "e2e_plain": 83.13, "e2e_spec": 97.01, "f16_mirrors": "183t/22420MB", "kqrp_tensors": 449, "gate": "PASS"}
+{"cfg": "B-bud43008-kqrp", "run": "r1", "prime_s": 0.312, "prefill": 6564.1, "plain": 89.08, "spec": 107.05, "acc": 61.0, "e2e_plain": 84.49, "e2e_spec": 100.49, "f16_mirrors": "265t/32660MB", "kqrp_tensors": 449, "gate": "PASS"}
+{"cfg": "B-bud43008-kqrp", "run": "r2", "prime_s": 0.311, "prefill": 6585.2, "plain": 88.08, "spec": 106.66, "acc": 61.0, "e2e_plain": 83.61, "e2e_spec": 100.15, "f16_mirrors": "265t/32660MB", "kqrp_tensors": 449, "gate": "PASS"}
+{"cfg": "B-bud43008-kqrp", "run": "r3", "prime_s": 0.312, "prefill": 6564.1, "plain": 89.12, "spec": 107.8, "acc": 61.0, "e2e_plain": 84.53, "e2e_spec": 101.18, "f16_mirrors": "265t/32660MB", "kqrp_tensors": 449, "gate": "PASS"}
+{"cfg": "C-fullf16-nokqrp", "run": "r1", "prime_s": 0.256, "prefill": 8000.0, "plain": 76.84, "spec": 101.12, "acc": 60.7, "e2e_plain": 74.0, "e2e_spec": 96.29, "f16_mirrors": "288t/35600MB", "kqrp_tensors": 96, "gate": "PASS"}
+{"cfg": "C-fullf16-nokqrp", "run": "r2", "prime_s": 0.254, "prefill": 8063.0, "plain": 76.83, "spec": 101.28, "acc": 60.7, "e2e_plain": 74.01, "e2e_spec": 96.43, "f16_mirrors": "288t/35600MB", "kqrp_tensors": 96, "gate": "PASS"}
+{"cfg": "C-fullf16-nokqrp", "run": "r3", "prime_s": 0.255, "prefill": 8031.4, "plain": 77.93, "spec": 102.74, "acc": 60.7, "e2e_plain": 75.02, "e2e_spec": 97.76, "f16_mirrors": "288t/35600MB", "kqrp_tensors": 96, "gate": "PASS"}
+
+cfg                 prefill   plain    spec   acc e2e_plain e2e_spec x_vllm_plain x_vllm_spec
+A-default-kqrp       4934.9   89.14  105.31  62.0     83.13    97.01       1.140x      1.331x
+B-bud43008-kqrp      6564.1   89.08  107.05  61.0     84.49   100.49       1.159x      1.378x
+C-fullf16-nokqrp     8031.4   76.84  101.28  60.7     74.01    96.43       1.015x      1.323x
+
+WINNER: B-bud43008-kqrp  (e2e_plain 84.49 = 1.16x vLLM 72.9; e2e_spec 100.49 = 1.38x)  N=3 medians
