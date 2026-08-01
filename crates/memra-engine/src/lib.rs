@@ -66,9 +66,6 @@ pub fn moe_f16g_mode() -> u8 {
         Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 3 },
     })
 }
-pub fn moe_f16g_on() -> bool {
-    moe_f16g_mode() != 0
-}
 /// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs
 /// as a persistent problem-visitor over the real CSR tiles with two tile forms. Returns
 /// (shape_sel, cross) for the FFI:
