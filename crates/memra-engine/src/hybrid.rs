@@ -141,11 +141,11 @@ pub(crate) fn load_ffn(
                 }
             };
             // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs to device when a global
-            // budget (MEMRA_MOE_RESIDENT_GB, default = 80% of free VRAM at first-layer load) covers
-            // the whole model's expert bytes. Decision is made ONCE (first MoE layer): total expert
-            // bytes = per-layer bytes x n_moe_layers (uniform layers; UD-quant variance is small and
-            // the budget has 20% slack). Failure to fit => None => the SLRU spill machinery.
-            let dev_exps = build_dev_exps(e, cfg, &gate_exps, &up_exps, &down_exps)?;
+            // budget (MEMRA_MOE_RESIDENT_GB override; default = free VRAM minus the file's non-expert
+            // bytes minus a measured headroom reserve) covers the whole model's expert bytes, summed
+            // exactly from the GGUF header. Decision is made ONCE (first MoE layer). Failure to fit
+            // => None => the SLRU spill machinery.
+            let dev_exps = build_dev_exps(e, src, cfg, &gate_exps, &up_exps, &down_exps)?;
             // Device macro row [3*n_expert]: gate, up, down (ones when the artifact carries none).
             let mut macro_row = vec![1.0f32; 3 * n_expert];
             for (slot, exps) in [(0usize, &gate_exps), (1, &up_exps), (2, &down_exps)] {
@@ -185,11 +185,20 @@ pub(crate) fn load_ffn(
     )
 }
 
-/// Decide + build the resident expert slabs for one layer. Budget check runs once (static):
-/// projected total = this layer's expert bytes x (n_layer MoE layers, approximated as all);
-/// fits => every subsequent layer uploads too (uniform). MEMRA_MOE_RESIDENT=0 forces the SLRU path.
+/// Decide + build the resident expert slabs for one layer. Budget check runs once (static),
+/// RESIDENT-IF-FITS (2026-08-02, research/residency-cap-20260802/): the bank is resident when
+/// its EXACT byte total (summed from the GGUF header — UD-quants make per-layer bytes
+/// non-uniform, Ornith-35B blk.0 is +7% over the mean, so first-layer x n_layer misprojects)
+/// plus the file's non-expert bytes plus a measured headroom reserve fits free VRAM. The old
+/// default (0.80 x free vs first-layer x n_layer) reserved 20% of the card (4.8GB on 24GB)
+/// and spilled the Ornith-35B bank that fits — a priced -33% decode / -54% prefill. Measured
+/// need beside the weights at board shape is ~1.7GB (CUDA ctx + KV + workspace); reserve
+/// default 2.0GB, machine-specific override `MEMRA_MOE_RESIDENT_HEADROOM_GB` (VRAM-budget
+/// class). `MEMRA_MOE_RESIDENT_GB` stays the absolute expert-budget override;
+/// MEMRA_MOE_RESIDENT=0 forces the SLRU path. Fits => every subsequent layer uploads too.
 fn build_dev_exps(
     e: &Engine,
+    src: &dyn TensorSource,
     cfg: &ModelConfig,
     gate: &HostExps,
     up: &HostExps,
@@ -208,14 +217,36 @@ fn build_dev_exps(
         if std::env::var("MEMRA_MOE_RESIDENT").as_deref() == Ok("0") { return false; }
         if gate.tiers.is_some() { return false; }   // tiered/spill loads keep the cache path
         let (free, _total) = match e.ctx().mem_get_info() { Ok(v) => v, Err(_) => return false };
+        // EXACT bank + trunk accounting from the GGUF header (metadata only, no data reads).
+        // Non-GGUF sources keep the first-layer upper bound with trunk unknown (the ST spill
+        // profiles load tiered and never reach this decision).
+        let (projected, trunk) = match src.gguf() {
+            Some(g) => {
+                let (mut exps, mut rest) = (0usize, 0usize);
+                for t in &g.tensors {
+                    if t.name.starts_with("blk.") && t.name.contains("_exps.") {
+                        exps += t.n_bytes as usize;
+                    } else {
+                        rest += t.n_bytes as usize;
+                    }
+                }
+                if exps > 0 { (exps, rest) } else { (per_layer * cfg.n_layer as usize, 0) }
+            }
+            None => (per_layer * cfg.n_layer as usize, 0),
+        };
         let budget = std::env::var("MEMRA_MOE_RESIDENT_GB").ok()
             .and_then(|v| v.parse::<f64>().ok())
             .map(|gb| (gb * 1e9) as usize)
-            .unwrap_or((free as f64 * 0.80) as usize);
-        let projected = per_layer * cfg.n_layer as usize;   // upper bound (dense layers shrink it)
+            .unwrap_or_else(|| {
+                let reserve = std::env::var("MEMRA_MOE_RESIDENT_HEADROOM_GB").ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|gb| (gb * 1e9) as usize)
+                    .unwrap_or(2_000_000_000);
+                (free as usize).saturating_sub(trunk + reserve)
+            });
         let ok = projected <= budget;
-        eprintln!("[moe] resident-experts decision: per-layer {}MB x {} layers = {:.1}GB vs budget {:.1}GB -> {}",
-                  per_layer / 1_000_000, cfg.n_layer, projected as f64 / 1e9, budget as f64 / 1e9,
+        eprintln!("[moe] resident-experts decision: experts {:.2}GB + trunk {:.2}GB vs free {:.2}GB (expert budget {:.2}GB) -> {}",
+                  projected as f64 / 1e9, trunk as f64 / 1e9, free as f64 / 1e9, budget as f64 / 1e9,
                   if ok { "RESIDENT" } else { "SLRU cache" });
         ok
     });

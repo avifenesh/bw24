@@ -1,0 +1,55 @@
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"prefill_toks","value":493.6,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"decode_toks","value":137.68,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"argmax_match","value":1,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"peak_vram_mib","value":19986,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"prefill_toks","value":1081.4,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"decode_toks","value":205.64,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"argmax_match","value":1,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"peak_vram_mib","value":21900,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"llama","metric":"ERROR","value":0,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"prefill_toks","value":496.8,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"decode_toks","value":138.11,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"argmax_match","value":1,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"peak_vram_mib","value":19986,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"prefill_toks","value":1079.2,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"decode_toks","value":206.07,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"argmax_match","value":1,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"peak_vram_mib","value":21394,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"llama","metric":"ERROR","value":0,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"prefill_toks","value":495.8,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"decode_toks","value":138.50,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"argmax_match","value":1,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"peak_vram_mib","value":19986,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"prefill_toks","value":1085.8,"rep":3,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"decode_toks","value":208.19,"rep":3,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"argmax_match","value":1,"rep":3,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"peak_vram_mib","value":21394,"rep":3,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"llama","metric":"ERROR","value":0,"rep":3,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"prefill_toks","value":495.2,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"decode_toks","value":138.57,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"argmax_match","value":1,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"peak_vram_mib","value":19986,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"prefill_toks","value":1076.2,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"decode_toks","value":208.07,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"argmax_match","value":1,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"peak_vram_mib","value":21394,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"llama","metric":"ERROR","value":0,"rep":4,"profile":"performance","temp_c":69}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"prefill_toks","value":494.8,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"decode_toks","value":138.19,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"argmax_match","value":1,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"slru","metric":"peak_vram_mib","value":19986,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"prefill_toks","value":1076.5,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"decode_toks","value":207.77,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"argmax_match","value":1,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"resident","metric":"peak_vram_mib","value":21394,"rep":5,"profile":"performance","temp_c":68}
+{"ts":"2026-08-01T18:02:42Z","git":"9c697367","cell":"o35b-residency","arm":"llama","metric":"ERROR","value":0,"rep":5,"profile":"performance","temp_c":70}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "prefill_toks", "value": 3244.421895, "rep": 1, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "decode_toks", "value": 190.044495, "rep": 1, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "prefill_toks", "value": 3971.009582, "rep": 2, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "decode_toks", "value": 191.284451, "rep": 2, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "prefill_toks", "value": 3970.181117, "rep": 3, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "decode_toks", "value": 191.589483, "rep": 3, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "prefill_toks", "value": 3937.177413, "rep": 4, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "decode_toks", "value": 191.489623, "rep": 4, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "prefill_toks", "value": 3934.815811, "rep": 5, "note": "reparsed-from-raw-log"}
+{"ts": "2026-08-01T18:02:42Z", "git": "9c697367", "cell": "o35b-residency", "profile": "performance", "arm": "llama", "metric": "decode_toks", "value": 190.387279, "rep": 5, "note": "reparsed-from-raw-log"}

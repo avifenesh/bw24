@@ -88,7 +88,8 @@ HANDOVER.md sections from that date.
 | `MEMRA_MOE_HARD_VRAM_FRAC` | 0.80 | machine-specific hard ceiling for the SLRU allocation (`0.10..=0.95`). Raise only after a local OOM-gated sweep. Hy3 on the 24GB RTX 5090 validated `0.85` at 21.21GiB peak framebuffer use: 2,006 slots, exact argmax/tokens, and 0.53 -> 1.03 tok/s on the warm repeat together with worker depth 16 |
 | `MEMRA_MOE_SLOTS` | auto | force an exact SLRU slot count (spill experiments used 64/512) |
 | `MEMRA_MOE_RESIDENT` | on | `0` forces the SLRU path even when experts fit VRAM (fits-VRAM resident = 169.55 vs 28.5 tok/s on the local 35B) |
-| `MEMRA_MOE_RESIDENT_GB` | 80% of free | resident-experts budget override (g7e M3 partial-resident tier) |
+| `MEMRA_MOE_RESIDENT_GB` | free − trunk − headroom | resident-experts budget override, absolute GB (g7e M3 partial-resident tier). Default is RESIDENT-IF-FITS (2026-08-02): exact expert-bank bytes summed from the GGUF header (per-layer x n_layer misprojects UD-quants both ways: Ornith-35B +7%, Qwen3.6-35B −2%) vs free VRAM minus the file's non-expert bytes minus the headroom reserve. The old 0.80 x free default reserved 20% of the card and spilled the Ornith-35B 19.5GB bank that fits: −33% decode / −54% prefill (research/residency-cap-20260802/) |
+| `MEMRA_MOE_RESIDENT_HEADROOM_GB` | 2.0 | machine-specific headroom the resident decision reserves beside weights (CUDA ctx + KV + workspace; measured ~1.7GB at board shape on the 24GB 5090, serve c=8 peaked 23220/24463 MiB). Raise it on rigs co-running other GPU work or serving many long-ctx sessions |
 | `MEMRA_MOE_PINNED` | pinned when MOE_CACHE on | force pinned host expert slabs |
 | `MEMRA_MOE_SIZE_AWARE` | off | `1` partitions SLRU slots by expert projection size so mixed-size Hy3 tiers cannot strand capacity |
 | `MEMRA_MOE_LFU` | off | `1` enables frequency-aware GPU SLRU eviction; this is separate from the fixed LRU policy in the optional CPU projection cache |
