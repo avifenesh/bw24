@@ -41,4 +41,13 @@ for rep in 1 2 3 4; do
     point defer ""                       "$c" "$rep"
   done
 done
+# Phase 2 — the chunk-16 serve pair (both arms carry the q8rp mirror so chunk width is
+# the only variable; c8m pins the width with the door, c16m rides the auto exact-16
+# policy — the server log line "decode chunk cap 16 (exact-16 tier)" is the receipt).
+for rep in 1 2 3 4; do
+  for c in 16 32; do
+    point c8m  "MEMRA_Q8RP=1 MEMRA_DECODE_BATCH_CAP=8" "$c" "$rep"
+    point c16m "MEMRA_Q8RP=1"                          "$c" "$rep"
+  done
+done
 echo SERVE-AB-DONE

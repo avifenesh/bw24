@@ -1,0 +1,31 @@
+--- round 1 2026-08-01T11:42:46Z
+round=1 arm=c8-naked CHUNKSWEEP seqs=32 chunk=8: aggregate 304.0 tok/s (105.25 ms/tick, median of 1)
+round=1 arm=c8-q8rp CHUNKSWEEP seqs=32 chunk=8: aggregate 325.7 tok/s (98.25 ms/tick, median of 1)
+round=1 arm=c16-q8rp CHUNKSWEEP seqs=32 chunk=16: aggregate 364.0 tok/s (87.92 ms/tick, median of 1)
+round=1 arm=c16-gemm CHUNKSWEEP seqs=32 chunk=16: aggregate 227.6 tok/s (140.58 ms/tick, median of 1)
+round=1 arm=c32-gemm CHUNKSWEEP seqs=32 chunk=32: aggregate 341.9 tok/s (93.59 ms/tick, median of 1)
+--- round 2 2026-08-01T11:50:08Z
+round=2 arm=c8-naked CHUNKSWEEP seqs=32 chunk=8: aggregate 306.2 tok/s (104.52 ms/tick, median of 1)
+round=2 arm=c8-q8rp CHUNKSWEEP seqs=32 chunk=8: aggregate 326.9 tok/s (97.89 ms/tick, median of 1)
+round=2 arm=c16-q8rp CHUNKSWEEP seqs=32 chunk=16: aggregate 368.9 tok/s (86.75 ms/tick, median of 1)
+round=2 arm=c16-gemm CHUNKSWEEP seqs=32 chunk=16: aggregate 227.0 tok/s (140.96 ms/tick, median of 1)
+round=2 arm=c32-gemm CHUNKSWEEP seqs=32 chunk=32: aggregate 344.2 tok/s (92.97 ms/tick, median of 1)
+--- round 3 2026-08-01T11:54:19Z
+round=3 arm=c8-naked CHUNKSWEEP seqs=32 chunk=8: aggregate 300.4 tok/s (106.54 ms/tick, median of 1)
+round=3 arm=c8-q8rp CHUNKSWEEP seqs=32 chunk=8: aggregate 314.7 tok/s (101.69 ms/tick, median of 1)
+round=3 arm=c16-q8rp CHUNKSWEEP seqs=32 chunk=16: aggregate 360.6 tok/s (88.75 ms/tick, median of 1)
+round=3 arm=c16-gemm CHUNKSWEEP seqs=32 chunk=16: aggregate 227.2 tok/s (140.84 ms/tick, median of 1)
+round=3 arm=c32-gemm CHUNKSWEEP seqs=32 chunk=32: aggregate 336.7 tok/s (95.03 ms/tick, median of 1)
+--- round 4 2026-08-01T11:58:52Z
+round=4 arm=c8-naked CHUNKSWEEP seqs=32 chunk=8: aggregate 279.9 tok/s (114.33 ms/tick, median of 1)
+round=4 arm=c8-q8rp CHUNKSWEEP seqs=32 chunk=8: aggregate 319.5 tok/s (100.17 ms/tick, median of 1)
+round=4 arm=c16-q8rp CHUNKSWEEP seqs=32 chunk=16: aggregate 366.5 tok/s (87.31 ms/tick, median of 1)
+round=4 arm=c16-gemm CHUNKSWEEP seqs=32 chunk=16: aggregate 227.6 tok/s (140.61 ms/tick, median of 1)
+round=4 arm=c32-gemm CHUNKSWEEP seqs=32 chunk=32: aggregate 342.8 tok/s (93.35 ms/tick, median of 1)
+--- round 5 2026-08-01T12:03:27Z
+round=5 arm=c8-naked CHUNKSWEEP seqs=32 chunk=8: aggregate 302.7 tok/s (105.71 ms/tick, median of 1)
+round=5 arm=c8-q8rp CHUNKSWEEP seqs=32 chunk=8: aggregate 320.5 tok/s (99.84 ms/tick, median of 1)
+round=5 arm=c16-q8rp CHUNKSWEEP seqs=32 chunk=16: aggregate 372.8 tok/s (85.83 ms/tick, median of 1)
+round=5 arm=c16-gemm CHUNKSWEEP seqs=32 chunk=16: aggregate 224.4 tok/s (142.60 ms/tick, median of 1)
+round=5 arm=c32-gemm CHUNKSWEEP seqs=32 chunk=32: aggregate 338.0 tok/s (94.68 ms/tick, median of 1)
+CHUNKSWEEP-DONE

@@ -1,0 +1,12 @@
+=== kernel-check 9B naked 2026-08-01T12:09:00Z
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+moe cache-HIT bit-identity (stage==cache): OK
+moe async-prefetch ordering + protected victim: OK
+
+ALL GREEN: kernels match CPU reference.
+=== kernel-check 9B MEMRA_Q8RP=1 2026-08-01T12:13:38Z
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+moe cache-HIT bit-identity (stage==cache): OK
+moe async-prefetch ordering + protected victim: OK
+
+ALL GREEN: kernels match CPU reference.

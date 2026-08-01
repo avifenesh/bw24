@@ -36,5 +36,5 @@ run_arm() { # $1 arm  $2 env
 }
 run_arm base "MEMRA_SERVE_TOKDEFER=0"
 run_arm defer ""
-run_arm c16m "MEMRA_Q8RP=1 MEMRA_DECODE_BATCH_CAP=16"
+run_arm c16m "MEMRA_Q8RP=1"   # auto exact-16 policy — server log carries the cap-16 line
 echo SERVE-EXACT-DONE
