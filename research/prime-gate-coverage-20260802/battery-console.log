@@ -1,0 +1,38 @@
+=== research/prime-gate-coverage-20260802/battery-kernel-check.log: env[] target/release/kernel-check
+=== research/prime-gate-coverage-20260802/battery-run-gen-q35.log: env[MEMRA_NGEN=32 MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-gen /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+=== research/prime-gate-coverage-20260802/battery-run-gen-q9j.log: env[MEMRA_NGEN=32 MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-gen /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+=== research/prime-gate-coverage-20260802/battery-run-gen-o9b.log: env[MEMRA_NGEN=32 MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-gen /data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
+=== research/prime-gate-coverage-20260802/battery-run-gen-o35b.log: env[MEMRA_NGEN=32 MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-gen /data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+=== research/prime-gate-coverage-20260802/battery-run-gen-kat.log: env[MEMRA_NGEN=32 MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-gen /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf
+=== research/prime-gate-coverage-20260802/battery-run-gen-g12.log: env[MEMRA_NGEN=32 MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-gen /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+=== research/prime-gate-coverage-20260802/battery-decode-batch-q35.log: env[] target/release/decode-batch-gate /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+=== research/prime-gate-coverage-20260802/battery-decode-batch-q9j.log: env[] target/release/decode-batch-gate /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+FAIL: research/prime-gate-coverage-20260802/battery-decode-batch-q9j.log
+=== research/prime-gate-coverage-20260802/battery-prime-batch-q35.log: env[] target/release/prime-batch-gate /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf --carried
+=== research/prime-gate-coverage-20260802/battery-prime-batch-q9j.log: env[] target/release/prime-batch-gate /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf --carried
+=== research/prime-gate-coverage-20260802/battery-run-spec-q35.log: env[MEMRA_NGEN=64 MEMRA_DRAFT=/data/ai-ml/hf-models/qwen36-35b-moe/draft-35b-owntrim-nvfp4head-q4blk.gguf MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt] target/release/run-spec /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+
+==== verdicts ====
+kernel-check FAIL-lines: 0
+battery-run-gen-g12.log:prefill argmax=11129  decode argmax=11129  logit maxdiff=3.387e0  MATCH
+battery-run-gen-g12.log:batched-prime argmax=11129  tokenwise argmax=11129  logit maxdiff=3.387e0  MATCH
+battery-run-gen-kat.log:prefill argmax=365  decode argmax=365  logit maxdiff=9.520e-1  MATCH
+battery-run-gen-kat.log:batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=1.093e0  MATCH
+battery-run-gen-o35b.log:prefill argmax=365  decode argmax=365  logit maxdiff=1.332e0  MATCH
+battery-run-gen-o35b.log:batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=1.834e0  MATCH
+battery-run-gen-o9b.log:prefill argmax=365  decode argmax=365  logit maxdiff=4.615e-1  MATCH
+battery-run-gen-o9b.log:batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=4.236e-1  MATCH
+battery-run-gen-q35.log:prefill argmax=365  decode argmax=365  logit maxdiff=1.426e0  MATCH
+battery-run-gen-q35.log:batched-prime argmax=198  tokenwise argmax=365  logit maxdiff=2.429e0  FLIP-NEARTIE (tokenwise margin 0.6146 — cross-config drift class; the first generated token may differ from the tokenwise stream)
+battery-run-gen-q9j.log:prefill argmax=365  decode argmax=365  logit maxdiff=3.640e-1  MATCH
+battery-run-gen-q9j.log:batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=3.974e-1  MATCH
+battery-decode-batch-q35.log:ALL GREEN: decode_step_batch exactness battery
+battery-decode-batch-q9j.log:gate1 seed 0 step 1: token diverged FAIL
+battery-decode-batch-q9j.log:gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+battery-decode-batch-q9j.log:Error: "decode-batch-gate FAILED"
+battery-prime-batch-q35.log:ALL GREEN: prime-batch gate (batch=3, uneven lengths)
+battery-prime-batch-q9j.log:ALL GREEN: prime-batch gate (batch=3, uneven lengths)
+battery-run-spec-q35.log:  acceptance: 47/126 = 37.3%   self-consistency: PASS (identical to generate)
+battery-run-spec-q35.log:  acceptance: 47/144 = 32.6%   self-consistency: PASS (identical to generate)
+battery-run-spec-q35.log:=== SELF-CONSISTENCY PASS ===
+script-detected failures: 1

@@ -1,0 +1,6 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+prime-gate: qwen35moe (40 layers) prompts=1 chat=false steps=16
+prompt  0 (T=512): tw=365 (margin 0.0930) bp=365 (margin 0.3763) fl=365 maxdiff=9.9963e-1 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prime-gate SUMMARY: 1 prompts (0 skipped short) | MATCH=1 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=9.9963e-1 min flip margin=-
+prime-gate: ALL GREEN

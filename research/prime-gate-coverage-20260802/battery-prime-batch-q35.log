@@ -1,0 +1,15 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+loaded qwen35moe (40 layers); batch=3
+seq 0 (T=24): prefill argmax batched=68 individual=68 MATCH
+seq 1 (T=41): prefill argmax batched=248046 individual=248046 MATCH
+seq 2 (T=58): prefill argmax batched=78 individual=78 MATCH
+seq 0: decode-16 stream MATCH
+seq 1: decode-16 stream MATCH
+seq 2: decode-16 stream MATCH
+carried seq 0 (P=40,S=18): suffix argmax batched=220 single=220 MATCH
+carried seq 1 (P=53,S=25): suffix argmax batched=248046 single=248046 MATCH
+carried seq 2 (P=66,S=32): suffix argmax batched=220 single=220 MATCH
+carried seq 0: decode-16 stream MATCH
+carried seq 1: decode-16 stream MATCH
+carried seq 2: decode-16 stream MATCH
+ALL GREEN: prime-batch gate (batch=3, uneven lengths)

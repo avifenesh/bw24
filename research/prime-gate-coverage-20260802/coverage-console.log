@@ -1,0 +1,181 @@
+=== q35 raw arm ===
+prompt  0 (T=512): tw=365 (margin 0.6146) bp=198 (margin 0.6054) fl=365 maxdiff=2.4287e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  1 (T=54): tw=1921 (margin 0.8667) bp=1921 (margin 1.0181) fl=1921 maxdiff=7.0005e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=36): tw=271 (margin 4.8103) bp=271 (margin 4.8723) fl=271 maxdiff=8.0913e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=40): tw=198 (margin 0.6124) bp=198 (margin 1.3738) fl=198 maxdiff=1.2993e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=79): tw=271 (margin 4.8987) bp=271 (margin 4.7463) fl=271 maxdiff=6.8274e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=36): tw=279 (margin 1.6587) bp=279 (margin 1.7920) fl=279 maxdiff=2.0797e0 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=271 (margin 1.4450) bp=271 (margin 1.4762) fl=271 maxdiff=5.0020e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=60): tw=198 (margin 1.2126) bp=198 (margin 1.4555) fl=198 maxdiff=5.9975e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=7 FLIP-NEARTIE=1 STRUCTURED=0 det_fails=0 | worst maxdiff=2.4287e0 min flip margin=0.6146
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
+=== q35 chat arm ===
+prompt  0 (T=21): tw=8160 (margin 0.7069) bp=8160 (margin 0.4543) fl=8160 maxdiff=7.9281e-1 det=BIT-IDENTICAL MATCH
+prompt  1 (T=22): tw=8160 (margin 0.6837) bp=8160 (margin 0.5088) fl=8160 maxdiff=8.5688e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=22): tw=90700 (margin 1.3637) bp=90700 (margin 1.5442) fl=90700 maxdiff=7.0025e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=21): tw=8160 (margin 0.1246) bp=90700 (margin 0.2853) fl=90700 maxdiff=1.3111e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  4 (T=22): tw=8160 (margin 0.8500) bp=8160 (margin 0.3413) fl=8160 maxdiff=1.1745e0 det=BIT-IDENTICAL MATCH
+prompt  5 (T=22): tw=90700 (margin 0.1911) bp=90700 (margin 0.4072) fl=90700 maxdiff=8.6279e-1 det=BIT-IDENTICAL MATCH
+prompt  6 (T=19): tw=90700 (margin 1.0791) bp=90700 (margin 1.2170) fl=90700 maxdiff=5.2652e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=23): tw=8160 (margin 0.4973) bp=8160 (margin 0.0693) fl=8160 maxdiff=9.2579e-1 det=BIT-IDENTICAL MATCH
+prompt  8 (T=20): tw=8160 (margin 0.7456) bp=8160 (margin 0.4222) fl=8160 maxdiff=1.2324e0 det=BIT-IDENTICAL MATCH
+prompt  9 (T=20): tw=8160 (margin 1.2096) bp=8160 (margin 0.4018) fl=8160 maxdiff=7.3333e-1 det=BIT-IDENTICAL MATCH
+prompt 10 (T=22): tw=8160 (margin 1.1640) bp=8160 (margin 0.7714) fl=8160 maxdiff=9.1442e-1 det=BIT-IDENTICAL MATCH
+prompt 11 (T=22): tw=8160 (margin 1.0212) bp=8160 (margin 0.5139) fl=8160 maxdiff=1.0912e0 det=BIT-IDENTICAL MATCH
+prompt 12 (T=21): tw=8160 (margin 1.4190) bp=8160 (margin 1.0674) fl=8160 maxdiff=9.3225e-1 det=BIT-IDENTICAL MATCH
+prompt 13 (T=22): tw=90700 (margin 0.1696) bp=90700 (margin 0.1223) fl=8160 maxdiff=9.5193e-1 det=BIT-IDENTICAL MATCH
+prompt 14 (T=21): tw=8160 (margin 0.3747) bp=8160 (margin 0.2364) fl=8160 maxdiff=1.1378e0 det=BIT-IDENTICAL MATCH
+prompt 15 (T=21): tw=90700 (margin 0.5739) bp=90700 (margin 0.5956) fl=90700 maxdiff=6.9543e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=15 FLIP-NEARTIE=1 STRUCTURED=0 det_fails=0 | worst maxdiff=1.3111e0 min flip margin=0.1246
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
+=== q9j raw arm ===
+prompt  0 (T=512): tw=365 (margin 0.7828) bp=365 (margin 0.5561) fl=365 maxdiff=3.9736e-1 det=BIT-IDENTICAL MATCH
+prompt  1 (T=54): tw=271 (margin 1.2959) bp=271 (margin 1.2028) fl=271 maxdiff=4.2915e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=36): tw=271 (margin 3.2293) bp=271 (margin 3.2827) fl=271 maxdiff=4.6420e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=40): tw=198 (margin 1.4503) bp=198 (margin 1.3587) fl=198 maxdiff=3.4330e-1 det=BIT-IDENTICAL MATCH
+prompt  4 (T=79): tw=271 (margin 4.0884) bp=271 (margin 4.0070) fl=271 maxdiff=3.9079e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=36): tw=279 (margin 2.7952) bp=279 (margin 2.7346) fl=279 maxdiff=5.4888e-1 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=198 (margin 0.4270) bp=198 (margin 0.5440) fl=198 maxdiff=3.1639e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=60): tw=271 (margin 0.2572) bp=271 (margin 0.2114) fl=271 maxdiff=3.8389e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=5.4888e-1 min flip margin=-
+prime-gate: ALL GREEN
+=== q9j chat arm ===
+prompt  0 (T=21): tw=90700 (margin 12.0851) bp=90700 (margin 11.8371) fl=90700 maxdiff=8.2998e-1 det=BIT-IDENTICAL MATCH
+prompt  1 (T=22): tw=90700 (margin 9.3330) bp=90700 (margin 9.0386) fl=90700 maxdiff=8.6655e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=22): tw=90700 (margin 10.6900) bp=90700 (margin 10.6251) fl=90700 maxdiff=1.0037e0 det=BIT-IDENTICAL MATCH
+prompt  3 (T=21): tw=90700 (margin 9.7954) bp=90700 (margin 9.6731) fl=90700 maxdiff=9.2562e-1 det=BIT-IDENTICAL MATCH
+prompt  4 (T=22): tw=90700 (margin 10.9680) bp=90700 (margin 10.7851) fl=90700 maxdiff=8.9052e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=22): tw=90700 (margin 12.3118) bp=90700 (margin 12.4547) fl=90700 maxdiff=8.1615e-1 det=BIT-IDENTICAL MATCH
+prompt  6 (T=19): tw=90700 (margin 11.9257) bp=90700 (margin 11.8542) fl=90700 maxdiff=8.4662e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=23): tw=90700 (margin 11.3866) bp=90700 (margin 11.4571) fl=90700 maxdiff=7.9453e-1 det=BIT-IDENTICAL MATCH
+prompt  8 (T=20): tw=90700 (margin 9.9442) bp=90700 (margin 10.1857) fl=90700 maxdiff=8.4586e-1 det=BIT-IDENTICAL MATCH
+prompt  9 (T=20): tw=90700 (margin 11.2805) bp=90700 (margin 11.1065) fl=90700 maxdiff=8.1136e-1 det=BIT-IDENTICAL MATCH
+prompt 10 (T=22): tw=90700 (margin 11.5639) bp=90700 (margin 11.2985) fl=90700 maxdiff=7.9016e-1 det=BIT-IDENTICAL MATCH
+prompt 11 (T=22): tw=90700 (margin 11.9274) bp=90700 (margin 11.9585) fl=90700 maxdiff=7.4214e-1 det=BIT-IDENTICAL MATCH
+prompt 12 (T=21): tw=90700 (margin 10.8830) bp=90700 (margin 10.8463) fl=90700 maxdiff=8.0567e-1 det=BIT-IDENTICAL MATCH
+prompt 13 (T=22): tw=90700 (margin 9.5915) bp=90700 (margin 9.3145) fl=90700 maxdiff=9.6964e-1 det=BIT-IDENTICAL MATCH
+prompt 14 (T=21): tw=90700 (margin 10.6387) bp=90700 (margin 11.0020) fl=90700 maxdiff=8.0261e-1 det=BIT-IDENTICAL MATCH
+prompt 15 (T=21): tw=90700 (margin 11.8504) bp=90700 (margin 11.4435) fl=90700 maxdiff=8.5931e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=16 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=1.0037e0 min flip margin=-
+prime-gate: ALL GREEN
+=== o9b raw arm ===
+prompt  0 (T=512): tw=365 (margin 0.8927) bp=365 (margin 1.1714) fl=365 maxdiff=4.2356e-1 det=BIT-IDENTICAL MATCH
+prompt  1 (T=54): tw=271 (margin 0.9498) bp=271 (margin 0.8154) fl=271 maxdiff=4.7107e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=36): tw=271 (margin 3.4743) bp=271 (margin 3.5513) fl=271 maxdiff=4.8430e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=40): tw=198 (margin 1.2036) bp=198 (margin 1.0499) fl=198 maxdiff=4.4409e-1 det=BIT-IDENTICAL MATCH
+prompt  4 (T=79): tw=271 (margin 4.6374) bp=271 (margin 4.6989) fl=271 maxdiff=4.5903e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=36): tw=279 (margin 2.5353) bp=279 (margin 2.5490) fl=279 maxdiff=8.5427e-1 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=198 (margin 0.2605) bp=198 (margin 0.3564) fl=198 maxdiff=3.5834e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=60): tw=271 (margin 0.3570) bp=271 (margin 0.3364) fl=271 maxdiff=3.2307e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=8.5427e-1 min flip margin=-
+prime-gate: ALL GREEN
+=== o9b chat arm ===
+prompt  0 (T=21): tw=90700 (margin 10.6321) bp=90700 (margin 10.5450) fl=90700 maxdiff=9.1782e-1 det=BIT-IDENTICAL MATCH
+prompt  1 (T=22): tw=90700 (margin 8.7684) bp=90700 (margin 8.9935) fl=90700 maxdiff=9.0737e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=22): tw=90700 (margin 10.5767) bp=90700 (margin 10.9924) fl=90700 maxdiff=8.5904e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=21): tw=90700 (margin 8.8733) bp=90700 (margin 9.4249) fl=90700 maxdiff=9.8980e-1 det=BIT-IDENTICAL MATCH
+prompt  4 (T=22): tw=90700 (margin 9.9968) bp=90700 (margin 9.5864) fl=90700 maxdiff=9.5062e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=22): tw=90700 (margin 11.1437) bp=90700 (margin 11.0444) fl=90700 maxdiff=9.2289e-1 det=BIT-IDENTICAL MATCH
+prompt  6 (T=19): tw=90700 (margin 10.2068) bp=90700 (margin 10.5729) fl=90700 maxdiff=1.0246e0 det=BIT-IDENTICAL MATCH
+prompt  7 (T=23): tw=90700 (margin 9.9844) bp=90700 (margin 9.9317) fl=90700 maxdiff=9.2969e-1 det=BIT-IDENTICAL MATCH
+prompt  8 (T=20): tw=90700 (margin 10.3960) bp=90700 (margin 9.7645) fl=90700 maxdiff=1.0793e0 det=BIT-IDENTICAL MATCH
+prompt  9 (T=20): tw=90700 (margin 9.1156) bp=90700 (margin 8.8703) fl=90700 maxdiff=1.1302e0 det=BIT-IDENTICAL MATCH
+prompt 10 (T=22): tw=90700 (margin 9.3629) bp=90700 (margin 9.5849) fl=90700 maxdiff=8.6503e-1 det=BIT-IDENTICAL MATCH
+prompt 11 (T=22): tw=90700 (margin 11.0724) bp=90700 (margin 11.1508) fl=90700 maxdiff=8.2588e-1 det=BIT-IDENTICAL MATCH
+prompt 12 (T=21): tw=90700 (margin 10.7712) bp=90700 (margin 10.7133) fl=90700 maxdiff=9.3271e-1 det=BIT-IDENTICAL MATCH
+prompt 13 (T=22): tw=90700 (margin 8.5375) bp=90700 (margin 8.8311) fl=90700 maxdiff=8.5396e-1 det=BIT-IDENTICAL MATCH
+prompt 14 (T=21): tw=90700 (margin 8.5557) bp=90700 (margin 9.3349) fl=90700 maxdiff=9.3665e-1 det=BIT-IDENTICAL MATCH
+prompt 15 (T=21): tw=90700 (margin 10.7866) bp=90700 (margin 10.9959) fl=90700 maxdiff=9.2725e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=16 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=1.1302e0 min flip margin=-
+prime-gate: ALL GREEN
+=== o35b raw arm ===
+prompt  0 (T=512): tw=365 (margin 2.4042) bp=365 (margin 1.3708) fl=365 maxdiff=1.8345e0 det=BIT-IDENTICAL MATCH
+prompt  1 (T=54): tw=1921 (margin 0.5336) bp=1921 (margin 0.3782) fl=1921 maxdiff=7.5098e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=36): tw=271 (margin 5.1899) bp=271 (margin 5.2931) fl=271 maxdiff=7.4630e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=40): tw=4770 (margin 0.5658) bp=198 (margin 0.4109) fl=198 maxdiff=1.7397e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  4 (T=79): tw=271 (margin 4.7696) bp=271 (margin 4.8877) fl=271 maxdiff=7.6270e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=36): tw=279 (margin 2.0879) bp=279 (margin 1.8932) fl=279 maxdiff=1.3200e0 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=271 (margin 1.2647) bp=271 (margin 1.3185) fl=271 maxdiff=9.2146e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=60): tw=198 (margin 1.4849) bp=198 (margin 1.5304) fl=198 maxdiff=8.1049e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=7 FLIP-NEARTIE=1 STRUCTURED=0 det_fails=0 | worst maxdiff=1.8345e0 min flip margin=0.5658
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
+=== o35b chat arm ===
+prompt  0 (T=21): tw=8160 (margin 0.0074) bp=8160 (margin 0.3260) fl=8160 maxdiff=9.5122e-1 det=BIT-IDENTICAL MATCH
+prompt  1 (T=22): tw=8160 (margin 2.5293) bp=8160 (margin 2.4311) fl=8160 maxdiff=1.3062e0 det=BIT-IDENTICAL MATCH
+prompt  2 (T=22): tw=90700 (margin 0.9628) bp=90700 (margin 1.0336) fl=90700 maxdiff=1.2939e0 det=BIT-IDENTICAL MATCH
+prompt  3 (T=21): tw=8160 (margin 2.5715) bp=8160 (margin 2.1529) fl=8160 maxdiff=1.5140e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=22): tw=8160 (margin 0.4390) bp=90700 (margin 0.2608) fl=8160 maxdiff=1.3508e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  5 (T=22): tw=8160 (margin 0.8773) bp=8160 (margin 0.9478) fl=8160 maxdiff=1.1429e0 det=BIT-IDENTICAL MATCH
+prompt  6 (T=19): tw=90700 (margin 0.4008) bp=90700 (margin 0.4143) fl=90700 maxdiff=1.1970e0 det=BIT-IDENTICAL MATCH
+prompt  7 (T=23): tw=8160 (margin 0.5206) bp=8160 (margin 0.5943) fl=8160 maxdiff=8.4939e-1 det=BIT-IDENTICAL MATCH
+prompt  8 (T=20): tw=8160 (margin 1.8888) bp=8160 (margin 1.9655) fl=8160 maxdiff=1.0421e0 det=BIT-IDENTICAL MATCH
+prompt  9 (T=20): tw=8160 (margin 1.3500) bp=8160 (margin 1.6982) fl=8160 maxdiff=1.1584e0 det=BIT-IDENTICAL MATCH
+prompt 10 (T=22): tw=8160 (margin 3.2894) bp=8160 (margin 3.0170) fl=8160 maxdiff=9.4888e-1 det=BIT-IDENTICAL MATCH
+prompt 11 (T=22): tw=8160 (margin 0.6611) bp=8160 (margin 0.7272) fl=8160 maxdiff=1.0009e0 det=BIT-IDENTICAL MATCH
+prompt 12 (T=21): tw=8160 (margin 2.7175) bp=8160 (margin 2.4324) fl=8160 maxdiff=1.3952e0 det=BIT-IDENTICAL MATCH
+prompt 13 (T=22): tw=8160 (margin 0.5571) bp=8160 (margin 0.5312) fl=8160 maxdiff=1.3501e0 det=BIT-IDENTICAL MATCH
+prompt 14 (T=21): tw=8160 (margin 2.4843) bp=8160 (margin 2.5148) fl=8160 maxdiff=1.2392e0 det=BIT-IDENTICAL MATCH
+prompt 15 (T=21): tw=90700 (margin 0.0829) bp=8160 (margin 0.2065) fl=8160 maxdiff=9.0883e-1 det=BIT-IDENTICAL FLIP-NEARTIE
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=14 FLIP-NEARTIE=2 STRUCTURED=0 det_fails=0 | worst maxdiff=1.5140e0 min flip margin=0.0829
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
+=== kat raw arm ===
+prompt  0 (T=512): tw=365 (margin 0.8846) bp=365 (margin 1.0910) fl=365 maxdiff=1.0928e0 det=BIT-IDENTICAL MATCH
+prompt  1 (T=54): tw=1921 (margin 0.6889) bp=1921 (margin 0.8153) fl=1921 maxdiff=6.7702e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=36): tw=271 (margin 4.8610) bp=271 (margin 4.8172) fl=271 maxdiff=9.4520e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=40): tw=198 (margin 1.0384) bp=198 (margin 1.0966) fl=198 maxdiff=1.1841e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=79): tw=271 (margin 4.7300) bp=271 (margin 4.8357) fl=271 maxdiff=6.1964e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=36): tw=279 (margin 3.4981) bp=279 (margin 3.0653) fl=279 maxdiff=1.4329e0 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=271 (margin 1.0793) bp=271 (margin 1.1434) fl=271 maxdiff=9.1954e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=60): tw=198 (margin 1.4602) bp=198 (margin 1.3611) fl=198 maxdiff=7.4898e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=1.4329e0 min flip margin=-
+prime-gate: ALL GREEN
+=== kat chat arm ===
+prompt  0 (T=21): tw=760 (margin 0.7985) bp=760 (margin 1.1256) fl=760 maxdiff=2.0375e0 det=BIT-IDENTICAL MATCH
+prompt  1 (T=22): tw=90700 (margin 0.0142) bp=760 (margin 0.5737) fl=760 maxdiff=2.5348e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  2 (T=22): tw=760 (margin 0.1969) bp=760 (margin 0.2642) fl=760 maxdiff=1.0103e0 det=BIT-IDENTICAL MATCH
+prompt  3 (T=21): tw=760 (margin 0.3222) bp=760 (margin 0.6100) fl=760 maxdiff=1.6415e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=22): tw=760 (margin 1.9377) bp=760 (margin 2.0124) fl=760 maxdiff=1.3737e0 det=BIT-IDENTICAL MATCH
+prompt  5 (T=22): tw=90700 (margin 1.0767) bp=90700 (margin 0.9915) fl=90700 maxdiff=9.2185e-1 det=BIT-IDENTICAL MATCH
+prompt  6 (T=19): tw=760 (margin 0.4318) bp=760 (margin 0.1155) fl=760 maxdiff=1.7551e0 det=BIT-IDENTICAL MATCH
+prompt  7 (T=23): tw=760 (margin 0.7077) bp=760 (margin 0.6314) fl=760 maxdiff=9.7542e-1 det=BIT-IDENTICAL MATCH
+prompt  8 (T=20): tw=90700 (margin 0.5539) bp=90700 (margin 1.5873) fl=90700 maxdiff=2.5244e0 det=BIT-IDENTICAL MATCH
+prompt  9 (T=20): tw=90700 (margin 1.3455) bp=90700 (margin 1.2395) fl=90700 maxdiff=8.2175e-1 det=BIT-IDENTICAL MATCH
+prompt 10 (T=22): tw=90700 (margin 0.8791) bp=90700 (margin 0.6421) fl=90700 maxdiff=2.3537e0 det=BIT-IDENTICAL MATCH
+prompt 11 (T=22): tw=760 (margin 0.7694) bp=760 (margin 0.8088) fl=760 maxdiff=1.7207e0 det=BIT-IDENTICAL MATCH
+prompt 12 (T=21): tw=8160 (margin 0.4857) bp=8160 (margin 0.5755) fl=8160 maxdiff=1.5308e0 det=BIT-IDENTICAL MATCH
+prompt 13 (T=22): tw=90700 (margin 1.1879) bp=90700 (margin 1.0769) fl=90700 maxdiff=1.2763e0 det=BIT-IDENTICAL MATCH
+prompt 14 (T=21): tw=90700 (margin 1.0838) bp=90700 (margin 1.1796) fl=90700 maxdiff=8.4661e-1 det=BIT-IDENTICAL MATCH
+prompt 15 (T=21): tw=90700 (margin 0.0770) bp=760 (margin 0.5768) fl=760 maxdiff=3.1304e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=14 FLIP-NEARTIE=2 STRUCTURED=0 det_fails=0 | worst maxdiff=3.1304e0 min flip margin=0.0142
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
+=== g12 raw arm ===
+prompt  0 (T=560): tw=11129 (margin 0.1399) bp=11129 (margin 0.5520) fl=11129 maxdiff=2.4424e0 det=BIT-IDENTICAL MATCH
+prompt  1 (T=54): tw=18868 (margin 1.2906) bp=18868 (margin 1.3241) fl=18868 maxdiff=2.5048e0 det=BIT-IDENTICAL MATCH
+prompt  2 (T=39): tw=107 (margin 2.5031) bp=107 (margin 1.8196) fl=107 maxdiff=2.0214e0 det=BIT-IDENTICAL MATCH
+prompt  3 (T=41): tw=106 (margin 1.9399) bp=106 (margin 0.9495) fl=106 maxdiff=3.1761e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=80): tw=236743 (margin 2.0626) bp=236743 (margin 1.7022) fl=236743 maxdiff=3.8987e0 det=BIT-IDENTICAL MATCH
+prompt  5 (T=37): tw=236771 (margin 0.3172) bp=506 (margin 0.0993) fl=506 maxdiff=2.7986e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  6 (T=22): tw=108 (margin 1.3428) bp=108 (margin 0.5875) fl=108 maxdiff=3.0295e0 det=BIT-IDENTICAL MATCH
+prompt  7 (T=63): tw=900 (margin 0.6970) bp=236862 (margin 0.1591) fl=236862 maxdiff=4.0686e0 det=BIT-IDENTICAL FLIP-NEARTIE
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=6 FLIP-NEARTIE=2 STRUCTURED=0 det_fails=0 | worst maxdiff=4.0686e0 min flip margin=0.3172
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
+=== g12 chat arm ===
+prompt  0 (T=23): tw=818 (margin 0.4908) bp=818 (margin 0.3687) fl=818 maxdiff=1.0709e0 det=BIT-IDENTICAL MATCH
+prompt  1 (T=24): tw=236776 (margin 9.3227) bp=236776 (margin 9.0672) fl=236776 maxdiff=9.9331e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=24): tw=818 (margin 3.7022) bp=818 (margin 3.7093) fl=818 maxdiff=1.0451e0 det=BIT-IDENTICAL MATCH
+prompt  3 (T=23): tw=818 (margin 4.4270) bp=818 (margin 3.9752) fl=818 maxdiff=1.4201e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=24): tw=5988 (margin 3.8329) bp=5988 (margin 3.6407) fl=5988 maxdiff=1.2412e0 det=BIT-IDENTICAL MATCH
+prompt  5 (T=24): tw=236874 (margin 6.0481) bp=236874 (margin 5.6820) fl=236874 maxdiff=1.1897e0 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=818 (margin 5.6254) bp=818 (margin 5.6024) fl=818 maxdiff=1.0750e0 det=BIT-IDENTICAL MATCH
+prompt  7 (T=23): tw=57360 (margin 5.8400) bp=57360 (margin 6.0882) fl=57360 maxdiff=1.0481e0 det=BIT-IDENTICAL MATCH
+prompt  8 (T=22): tw=102145 (margin 11.4492) bp=102145 (margin 11.4203) fl=102145 maxdiff=9.7769e-1 det=BIT-IDENTICAL MATCH
+prompt  9 (T=22): tw=818 (margin 11.4579) bp=818 (margin 11.5416) fl=818 maxdiff=8.0026e-1 det=BIT-IDENTICAL MATCH
+prompt 10 (T=23): tw=236780 (margin 8.2663) bp=236780 (margin 7.6923) fl=236780 maxdiff=1.1735e0 det=BIT-IDENTICAL MATCH
+prompt 11 (T=24): tw=818 (margin 5.7453) bp=818 (margin 6.1410) fl=818 maxdiff=1.2946e0 det=BIT-IDENTICAL MATCH
+prompt 12 (T=23): tw=52213 (margin 5.6172) bp=52213 (margin 5.6148) fl=52213 maxdiff=1.2826e0 det=BIT-IDENTICAL MATCH
+prompt 13 (T=24): tw=236776 (margin 4.2252) bp=236776 (margin 4.2300) fl=236776 maxdiff=1.1117e0 det=BIT-IDENTICAL MATCH
+prompt 14 (T=23): tw=64714 (margin 10.8757) bp=64714 (margin 11.1332) fl=64714 maxdiff=1.0916e0 det=BIT-IDENTICAL MATCH
+prompt 15 (T=23): tw=178559 (margin 0.8330) bp=178559 (margin 1.1864) fl=178559 maxdiff=1.5807e0 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 16 prompts (0 skipped short) | MATCH=16 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=1.5807e0 min flip margin=-
+prime-gate: ALL GREEN
+coverage sweep done; script-detected non-green runs: 0

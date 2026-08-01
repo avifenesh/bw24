@@ -1,0 +1,21 @@
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+prime-gate: gemma4 (48 layers) prompts=8 chat=false steps=16
+prompt  0 (T=560): tw=11129 (margin 0.1399) bp=11129 (margin 0.5520) fl=11129 maxdiff=2.4424e0 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  1 (T=54): tw=18868 (margin 1.2906) bp=18868 (margin 1.3241) fl=18868 maxdiff=2.5048e0 det=BIT-IDENTICAL MATCH
+          stream(16): DIVERGED at step 15 (0-based) tw_eos=None bp_eos=None
+prompt  2 (T=39): tw=107 (margin 2.5031) bp=107 (margin 1.8196) fl=107 maxdiff=2.0214e0 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  3 (T=41): tw=106 (margin 1.9399) bp=106 (margin 0.9495) fl=106 maxdiff=3.1761e0 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  4 (T=80): tw=236743 (margin 2.0626) bp=236743 (margin 1.7022) fl=236743 maxdiff=3.8987e0 det=BIT-IDENTICAL MATCH
+          stream(16): DIVERGED at step 1 (0-based) tw_eos=None bp_eos=None
+prompt  5 (T=37): tw=236771 (margin 0.3172) bp=506 (margin 0.0993) fl=506 maxdiff=2.7986e0 det=BIT-IDENTICAL FLIP-NEARTIE
+          stream(16): DIVERGED at step 0 (0-based) tw_eos=None bp_eos=None
+prompt  6 (T=22): tw=108 (margin 1.3428) bp=108 (margin 0.5875) fl=108 maxdiff=3.0295e0 det=BIT-IDENTICAL MATCH
+          stream(16): MATCH tw_eos=None bp_eos=None
+prompt  7 (T=63): tw=900 (margin 0.6970) bp=236862 (margin 0.1591) fl=236862 maxdiff=4.0686e0 det=BIT-IDENTICAL FLIP-NEARTIE
+          stream(16): DIVERGED at step 0 (0-based) tw_eos=None bp_eos=None
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=6 FLIP-NEARTIE=2 STRUCTURED=0 det_fails=0 | worst maxdiff=4.0686e0 min flip margin=0.3172
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)

@@ -24,9 +24,16 @@ or individually:
 
 ```bash
 ./target/release/kernel-check          # every quant kernel vs a CPU reference
-./target/release/run-gen  ...          # prefill argmax MUST match decode argmax
+./target/release/run-gen  ...          # prefill argmax MUST match decode argmax; the
+                                       # batched-prime line (#46) must not be MISMATCH-STRUCTURED
 ./target/release/run-spec ...          # K=1..8 self-consistency: every K token-identical to plain decode
 ```
+
+run-gen prints a second gate line on text prompts >= 16 tokens: `batched-prime argmax=...`
+compares `prime_cache` (the config that seeds real generation and serving) against the
+tokenwise reference. `FLIP-NEARTIE` there is the documented cross-config drift class
+(reported, non-fatal); `MISMATCH-STRUCTURED` fails the run. Multi-prompt battery:
+`./target/release/prime-gate <model.gguf> --prompts-file <f> [--chat]`.
 
 Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel that reduces in different floating-point order can flip an argmax at tight logit margins — has silently broken "faster" kernels before (`research/tune-data/`) — so a green run *right now, on your branch* is required, not an assumption.
 

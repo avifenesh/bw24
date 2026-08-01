@@ -72,6 +72,20 @@ out=$(target/release/kernel-check 2>&1 | tail -1)
 echo "$out" | grep -q "ALL GREEN" || { echo "kernel-check FAIL"; exit 1; }
 echo "kernel-check: GREEN"
 
+# prime-gate (#46): batched-prime vs tokenwise first-token agreement on the mixed prompt
+# set — near-tie flips report, structured divergence or non-determinism exits non-zero.
+Q35="$MODELS/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+if [ -f "$Q35" ]; then
+    if ! target/release/prime-gate "$Q35" \
+            --prompts-file research/prime-gate-coverage-20260802/prompts-mixed.txt \
+            --steps 0 > /tmp/prime-gate-ci.log 2>&1; then
+        echo "prime-gate FAIL (q35)"; tail -3 /tmp/prime-gate-ci.log; exit 1
+    fi
+    grep "prime-gate" /tmp/prime-gate-ci.log | tail -2
+else
+    echo "prime-gate: SKIP (no q35 model at $Q35)"
+fi
+
 G31="$MODELS/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf"
 DEPTH=research/gemma4-bringup/depth-prompt-1736-ids.txt
 if [ -f "$G31" ]; then

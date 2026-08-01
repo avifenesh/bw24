@@ -1870,7 +1870,9 @@ impl Engine {
     /// efficiently: T>=PRIME_MIN_T bypasses the CPU backend and transiently rereads every missing
     /// expert through the GPU spill path. Replay the short prompt through decode after freezing,
     /// while leaving the profiling warmup's established batched behavior untouched.
-    pub(crate) fn frozen_cpu_experts_prefer_tokenwise_prime(&self) -> bool {
+    /// (`pub`: run-gen's #46 batched-prime gate skips itself when generation will take the
+    /// tokenwise arm anyway.)
+    pub fn frozen_cpu_experts_prefer_tokenwise_prime(&self) -> bool {
         crate::cpu_experts::configured()
             && self.moe_cache_frozen()
             && std::env::var("MEMRA_CPU_EXPERT_BATCHED_PRIME").as_deref() != Ok("1")
