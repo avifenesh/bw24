@@ -50,6 +50,32 @@ Serve: `MEMRA_MTP_DRAFT=draft.gguf ./target/release/memra-server` (or run-spec).
 Validate before trusting: `frspec-owngen model.gguf out.gguf --validate` A/Bs
 baseline-vs-trimmed spec e2e and prints a GOOD/WASH/BAD verdict.
 
+On a shared-GPU rig, run the corpus in bounded chunks instead of holding the GPU lock
+for the whole generation: `--corpus-out corpus-ids.txt --limit 64` generates 64 prompts,
+appends their ids, and exits; rerunning the same command resumes (greedy temp-0 makes the
+segmented corpus identical to a single-run corpus). The final chunk writes the ranks.
+
+## Targets that ship no NextN head (donor-block variant)
+
+Some published GGUFs of supported arches strip the NextN/MTP block entirely
+(`nextn_predict_layers` absent, one fewer block — Ornith-1.0-9B/35B, KAT-Coder-V2.5).
+`run-spec`/spec serving on such a file needs an external head: build the draft from the
+same-backbone DONOR GGUF that carries the block, trimmed with the TARGET's own ranks:
+
+- **Extraction source** = the donor (law 2 still byte-verbatim, just from the donor's
+  bytes): `make-trimmed-draft.sh <donor.gguf> <target-ranks.txt> <draft.gguf>`. The donor
+  must match the target's trunk interface — the loader asserts n_embd, head_dim, n_head,
+  n_head_kv; vocab must be identical for the d2t map.
+- **Ranks** = ALWAYS the target's own generations (law 1 is not relaxed by the donor).
+- At load, draft-token embedding comes from the SERVING model's token_embd (the draft
+  file's copy is ignored), so only the donor's NextN block + trimmed lm head ride along.
+  Verify-based spec stays exact regardless — donor/target post-train drift costs
+  acceptance (speed), never correctness. Gate exactly like any draft: run-spec K=1..8
+  self-consistency + acceptance > 0, adopt on e2e only.
+- Donor pairs in service: Qwen3.5-9B-NVFP4-MTP → Ornith-1.0-9B;
+  Qwen3.6-35B-A3B-UD-IQ4_XS (blk.40) → Ornith-1.0-35B, KAT-Coder-V2.5-Dev
+  (receipts: `research/ornith-drafters-20260801/`).
+
 ## Prebuilt drafts
 
 Every board model's draft (built by exactly this pipeline, from exactly the published

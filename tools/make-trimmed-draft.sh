@@ -7,10 +7,16 @@
 # Measured on the unsloth 27B artifact: 101 tok/s @ 85.2% acceptance (K=3), beating
 # the prior daily draft (99.6 @ 83.3%). Serve with MEMRA_MTP_DRAFT=<out>.
 #
+# DONOR VARIANT (targets that ship NO NextN head, e.g. Ornith-1.0 / KAT-Coder): pass the
+# same-backbone DONOR GGUF that carries the head as <model.gguf> and the TARGET's own-gen
+# ranks as <ranks.txt>. The loader takes token_embd from the serving model, so only the
+# donor's NextN block + trimmed head ride in the draft file; verification stays lossless —
+# donor/target drift costs acceptance only. See docs/DRAFT-REGIME.md.
+#
 # usage: make-trimmed-draft.sh <model.gguf> <ranks.txt> <out-draft.gguf> [topN] [imatrix.gguf]
 set -euo pipefail
 MODEL=$1; RANKS=$2; OUT=$3; TOPN=${4:-32768}; IMATRIX=${5:-}
-PY=${MEMRA_CONVERT_PY:-/data/projects/bench-engines/vllm-venv/bin/python}
+PY=${MEMRA_CONVERT_PY:-python3}   # needs numpy + the llama.cpp gguf-py on PYTHONPATH (set below)
 GGUFPY=${MEMRA_GGUFPY:-/data/projects/llama.cpp/gguf-py}
 QUANT=${MEMRA_QUANTIZE:-/data/projects/llama.cpp/build/bin/llama-quantize}
 HERE="$(cd "$(dirname "$0")" && pwd)"
