@@ -1,0 +1,85 @@
+=== rep1 q35-board2048 base ===
+pp-only rep 0: 0.3807s = 5379.9 tok/s
+pp-only rep 1: 0.3780s = 5417.6 tok/s
+pp-only rep 2: 0.3783s = 5413.2 tok/s
+pp-only rep 3: 0.3780s = 5418.1 tok/s
+pp-only rep 4: 0.3787s = 5407.8 tok/s
+pp-only MEDIAN: 2048 tok in 0.3783s = 5413.2 tok/s (pp2048, 5 reps)
+=== rep1 g26-d1736 base ===
+pp-only rep 0: 0.1725s = 10065.9 tok/s
+pp-only rep 1: 0.1728s = 10043.6 tok/s
+pp-only rep 2: 0.1728s = 10045.4 tok/s
+pp-only rep 3: 0.1728s = 10045.8 tok/s
+pp-only rep 4: 0.1728s = 10047.8 tok/s
+pp-only MEDIAN: 1736 tok in 0.1728s = 10045.8 tok/s (pp1736, 5 reps)
+=== rep1 q35-board2048 exit ===
+pp-only rep 0: 0.3776s = 5423.9 tok/s
+pp-only rep 1: 0.3773s = 5428.5 tok/s
+pp-only rep 2: 0.3775s = 5424.5 tok/s
+pp-only rep 3: 0.3826s = 5352.9 tok/s
+pp-only rep 4: 0.3774s = 5426.1 tok/s
+pp-only MEDIAN: 2048 tok in 0.3775s = 5424.5 tok/s (pp2048, 5 reps)
+=== rep1 g26-d1736 exit ===
+pp-only rep 0: 0.1659s = 10462.7 tok/s
+pp-only rep 1: 0.1663s = 10439.4 tok/s
+pp-only rep 2: 0.1662s = 10445.9 tok/s
+pp-only rep 3: 0.1687s = 10289.2 tok/s
+pp-only rep 4: 0.1663s = 10442.0 tok/s
+pp-only MEDIAN: 1736 tok in 0.1663s = 10442.0 tok/s (pp1736, 5 reps)
+=== rep2 q35-board2048 base ===
+pp-only rep 0: 0.3787s = 5408.1 tok/s
+pp-only rep 1: 0.3780s = 5417.3 tok/s
+pp-only rep 2: 0.3790s = 5403.7 tok/s
+pp-only rep 3: 0.3781s = 5416.3 tok/s
+pp-only rep 4: 0.3781s = 5416.7 tok/s
+pp-only MEDIAN: 2048 tok in 0.3781s = 5416.3 tok/s (pp2048, 5 reps)
+=== rep2 g26-d1736 base ===
+pp-only rep 0: 0.1726s = 10060.7 tok/s
+pp-only rep 1: 0.1728s = 10046.2 tok/s
+pp-only rep 2: 0.1757s = 9878.4 tok/s
+pp-only rep 3: 0.1727s = 10053.4 tok/s
+pp-only rep 4: 0.1727s = 10053.2 tok/s
+pp-only MEDIAN: 1736 tok in 0.1727s = 10053.2 tok/s (pp1736, 5 reps)
+=== rep2 q35-board2048 exit ===
+pp-only rep 0: 0.3784s = 5411.7 tok/s
+pp-only rep 1: 0.3775s = 5425.2 tok/s
+pp-only rep 2: 0.3776s = 5423.5 tok/s
+pp-only rep 3: 0.3775s = 5424.5 tok/s
+pp-only rep 4: 0.3787s = 5407.6 tok/s
+pp-only MEDIAN: 2048 tok in 0.3776s = 5423.5 tok/s (pp2048, 5 reps)
+=== rep2 g26-d1736 exit ===
+pp-only rep 0: 0.1664s = 10432.0 tok/s
+pp-only rep 1: 0.1670s = 10396.6 tok/s
+pp-only rep 2: 0.1664s = 10431.7 tok/s
+pp-only rep 3: 0.1666s = 10423.2 tok/s
+pp-only rep 4: 0.1665s = 10428.7 tok/s
+pp-only MEDIAN: 1736 tok in 0.1665s = 10428.7 tok/s (pp1736, 5 reps)
+=== rep3 q35-board2048 base ===
+pp-only rep 0: 0.3797s = 5394.2 tok/s
+pp-only rep 1: 0.3790s = 5404.2 tok/s
+pp-only rep 2: 0.3839s = 5334.9 tok/s
+pp-only rep 3: 0.3789s = 5405.2 tok/s
+pp-only rep 4: 0.3852s = 5316.8 tok/s
+pp-only MEDIAN: 2048 tok in 0.3797s = 5394.2 tok/s (pp2048, 5 reps)
+=== rep3 g26-d1736 base ===
+pp-only rep 0: 0.1727s = 10053.8 tok/s
+pp-only rep 1: 0.1727s = 10052.4 tok/s
+pp-only rep 2: 0.1727s = 10053.5 tok/s
+pp-only rep 3: 0.1733s = 10016.8 tok/s
+pp-only rep 4: 0.1727s = 10054.5 tok/s
+pp-only MEDIAN: 1736 tok in 0.1727s = 10053.5 tok/s (pp1736, 5 reps)
+=== rep3 q35-board2048 exit ===
+pp-only rep 0: 0.3774s = 5427.3 tok/s
+pp-only rep 1: 0.3782s = 5414.8 tok/s
+pp-only rep 2: 0.3772s = 5428.9 tok/s
+pp-only rep 3: 0.3775s = 5425.1 tok/s
+pp-only rep 4: 0.3770s = 5432.3 tok/s
+pp-only MEDIAN: 2048 tok in 0.3774s = 5427.3 tok/s (pp2048, 5 reps)
+=== rep3 g26-d1736 exit ===
+pp-only rep 0: 0.1663s = 10436.7 tok/s
+pp-only rep 1: 0.1662s = 10443.8 tok/s
+pp-only rep 2: 0.1663s = 10439.2 tok/s
+pp-only rep 3: 0.1670s = 10395.0 tok/s
+pp-only rep 4: 0.1663s = 10441.3 tok/s
+pp-only MEDIAN: 1736 tok in 0.1663s = 10439.2 tok/s (pp1736, 5 reps)
+=== PERF DONE ===
