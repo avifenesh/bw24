@@ -224,7 +224,6 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `MEMRA_MOE_PAIRS=0` | per-expert loop for real prefill (no pair-batched launches) | 2026-07-06 |
 | `MEMRA_MOE_PREWARM=0` | organic SLRU residency (no one-shot layer prewarm) | 2026-07-05 |
 | `MEMRA_MOE_MMA=0` | dp4a expert prefill (no int8-MMA expert MMQ; t floor 16 keeps verify on dp4a) | 1.5x pp 2026-07-05; spec-safety floor 2026-07-06 |
-| `MEMRA_MMQ_IQEXP_RAGGED=0` | fixed-MMQ_X expert-MMQ token tile (no ragged {64,96,128} avg-pairs dispatch) | ragged tiles 2026-08-01 |
 | `MEMRA_MOE_DEVQ8_GU` / `MEMRA_MOE_DEVQ8_DOWN` | force dev-q8 kernel variants (auto = measured winners w8h2 / GU=v, +2.5% 35B) | down8 merge 2026-07-08 |
 | `MEMRA_MOE_DEVQ8_WPB` (default 4) | warps/block for the `_r` twins (probe knob) | 2026-07-06 |
 | `MEMRA_MOE_GU_IL=1` | interleave gate/up expert rows at resident upload (locality probe; measured neutral) | 2026-07-11 |

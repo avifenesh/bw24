@@ -193,9 +193,7 @@ unsafe extern "C" {
     /// Expert-segmented IQ MMA MMQ. Same CSR shape as moe_pairs_matvec_q8_dec: `table` = [3,n_expert]
     /// device slab ptrs, CSR ex_ids/ex_off/ex_pairs group pairs by expert, pair_tok gathers the
     /// activation row. y = [n_pairs, out_f] pair-major. `act_scratch` pre-quantized over n_tokens.
-    /// qtype: 5=IQ4_XS, 6=IQ3_S. `n_pairs` drives the ragged token-tile dispatch (the launcher
-    /// picks the smallest tile in {64,96,MMQ_X} covering n_pairs/n_active). Returns 0 or
-    /// 1000+cudaError.
+    /// qtype: 5=IQ4_XS, 6=IQ3_S. Returns 0 or 1000+cudaError.
     pub fn memra_mmq_iq_experts(
         table: *const u64,
         proj: i32,
@@ -209,7 +207,6 @@ unsafe extern "C" {
         in_f: i32,
         out_f: i32,
         n_active: i32,
-        n_pairs: i32,
         n_tokens: i32,
         qtype: i32,
         row_bytes: i64,
@@ -892,7 +889,6 @@ impl Engine {
                     in_f as i32,
                     out_f as i32,
                     n_active as i32,
-                    n_pairs as i32,
                     n_tokens as i32,
                     qtype,
                     row_bytes as i64,
