@@ -1,0 +1,7 @@
+[fleet] supervisor up (interval 5s, grace 120s)
+[fleet] 01:57:19 replica :8088 UNHEALTHY past grace — restarting
+[fleet] launched replica :8088 on GPU 6 (pid 131186)
+[fleet] 01:59:37 proxy UNHEALTHY — restarting
+[fleet] launched proxy :8080 cap=8 -> 6 backends
+[fleet] 02:00:28 replica :8090 UNHEALTHY past grace — restarting
+[fleet] launched replica :8090 on GPU 7 (pid 135300)

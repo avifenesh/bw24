@@ -354,4 +354,112 @@ behavior-identical at chunk 8 (control row, round 2) and hash-identical.
 - `run-pair-sweep.sh` — the exact driver.
 - End state: 3-replica + proxy steady state restored (8085/8086/8087 + :8080),
   greedy hash verified, no MPS processes, extra replicas killed, GPUs 0-4 never
-  touched.
+  touched. (Superseded by R4: the pair-packed fleet is now the steady state.)
+
+---
+
+# Round 4 — productized: admission proxy + fleet supervisor (2026-08-01)
+
+## R4.1 What shipped
+
+**Admission proxy** (`tools/serve-proxy.py`, rewrite): least-outstanding routing now
+enforces a per-backend outstanding cap (`--cap`, default 8 — the exactness-tier batch
+width AND the timeslice anti-thrash bound from R2/R3, enforced AT the proxy so
+over-admission can never reach a replica), a bounded FIFO wait queue (`--queue-max`
+256) with a deadline (`--queue-deadline` 30s) -> 429 + Retry-After on
+overflow/timeout, a `/metrics` endpoint (per-backend counters, queue
+depth/peak/waits p50/p95, TTFB/latency p50/p95, 429 + 5xx counts), and a **passive
+circuit breaker**: the first connection-level failure (refused/reset/
+RemoteDisconnected) marks the backend DOWN immediately — the 2s active probe
+restores it. The breaker came out of the chaos check: a killed backend's slots free
+instantly, making it least-outstanding, so the router preferentially fed the corpse
+for the probe interval — 100/768 fast-fail 502s. With the breaker: 8/768 (exactly
+the in-flight cap).
+
+**Fleet supervisor** (`tools/serve-fleet.sh`): declarative config (GPUS x
+REPLICAS_PER_GPU x MODEL, env-overridable), gpu-major port layout from BASE_PORT,
+pidfile discipline under `$FLEET_RUN`, a health loop (5s interval, 120s model-load
+grace) that restarts dead replicas AND the proxy, `start|stop|status|restart`
+commands, nohup re-exec so the supervisor survives ssh HUP. systemd-free by design
+(userland box). Default config = the measured sweet spot: pairs on GPUs 5/6/7,
+cap 8, ports 8085-8090, proxy :8080.
+
+## R4.2 Validation (through the NEW proxy, 6 backends, cap 8)
+
+| point | agg tok/s | p50 | p95 | err | queue evidence |
+|---|---:|---:|---:|---:|---|
+| c=48 | 1367.9 | 4.43s | 4.65s | 0 | queue mostly empty |
+| **c=96** | **1378.6** | 7.94s | 8.97s | 0 | peak depth 49, 240 enqueued, wait p95 4.50s, **zero 429s** |
+| c=48 + replica SIGKILL (no breaker) | 1355.6 | 4.49s | 5.03s | 100 | the storm that motivated the breaker |
+| c=48 + replica SIGKILL (breaker) | 1387.0 | 4.53s | 4.97s | **8** | = in-flight on victim |
+
+**c=96 HOLD verdict: PASS.** Throughput flat vs c=48 (1378.6 vs 1367.9 — the cap
+sheds the surplus 48 to the queue instead of letting them thrash the replicas),
+queue-wait visible in /metrics (p95 4.50s = exactly one service generation), p95
+client latency 8.97s = queue + service, no 429s (30s deadline never approached at
+this depth; 429s begin when queue wait crosses it, i.e. around c ≈ 48 + 30/4.4*48
+≈ 375 offered concurrent).
+
+Proxy admission overhead: 1368-1387 proxied vs 1480 direct = ~6-7% (up from ~1%
+for the cap-less round-1 proxy at c=24; the admission lock + 96 Python threads is
+the cost). Acceptable v1; a Rust/asyncio proxy is the hardening path if this
+matters later.
+
+## R4.3 Chaos timelines (measured, from proxy/supervisor logs)
+
+Replica SIGKILL (with breaker), victim :8090 mid c=48 run:
+- 02:00:26 kill -9
+- 02:00:26 proxy: passive DOWN (RemoteDisconnected — same second)
+- 02:00:28 supervisor: unhealthy past grace -> restart (+2s)
+- 02:00:33 proxy: backend UP (+7s; model reload is page-cache-warm)
+- errors: 8/768 (the in-flight requests on the victim); aggregate 1387 tok/s
+  across the run — recovery invisible in throughput.
+- post-restart greedy hash on ALL SIX replicas: `dbd1c98f9fed4efe` (match).
+
+Proxy SIGKILL (deploy path doubles as chaos): killed 01:59:35, supervisor
+relaunched it 01:59:37 (+2s) with the updated code — zero replica impact.
+
+## R4.4 Fleet ops runbook
+
+```
+# start the default fleet (pairs on GPUs 5/6/7, cap 8, proxy :8080)
+tools/serve-fleet.sh start
+
+# check / stop / bounce
+tools/serve-fleet.sh status
+tools/serve-fleet.sh stop
+tools/serve-fleet.sh restart
+
+# scale: more/fewer replicas per GPU or different GPUs (declarative)
+GPUS="5 6 7" REPLICAS_PER_GPU=3 tools/serve-fleet.sh restart
+GPUS="5" REPLICAS_PER_GPU=1 tools/serve-fleet.sh restart
+
+# different model / ports / admission
+MODEL=~/models/other.gguf BASE_PORT=9085 PROXY_PORT=9080 CAP=8 tools/serve-fleet.sh start
+
+# observe
+curl -s localhost:8080/health   # per-backend up/down + outstanding
+curl -s localhost:8080/metrics  # queue depth/waits, TTFB, 429s, 5xx
+tail -f ~/darklane-fleet/logs/supervisor.log   # restarts
+tail -f ~/darklane-fleet/logs/proxy.log        # UP/DOWN transitions
+
+# on-box paths: binaries from ~/memra/target/release, run state in ~/darklane-fleet/
+```
+
+Steady state after R4: the 6-replica pair-packed fleet + admission proxy + supervisor
+IS the serving stack (replaces the round-1 3-replica layout). Client-visible number:
+**~1380 tok/s sustained through the proxy at any offered concurrency 48-96+, with
+byte-exact outputs and self-healing replicas.**
+
+## R4.5 Round-4 receipts
+
+- `r4-points.jsonl` / `r4-per-request.jsonl` — c48/c96/chaos1/chaos2 points.
+- `metrics-r4.log` — /metrics sampled at 2 Hz through c48+c96 (queue depth curve).
+- `chaos-metrics.log` — healthy-backend set + 5xx counter through the first kill.
+- `logs/fleet-supervisor.log`, `logs/fleet-proxy.log` — the chaos timelines quoted
+  above.
+- Code: `tools/serve-proxy.py` (admission + breaker rewrite),
+  `tools/serve-fleet.sh` (supervisor).
+- Remaining gaps (unchanged): session affinity/KV reuse; per-seq-serial tick
+  batching (the per-replica 305 lever); model diversity; Rust/asyncio proxy if the
+  ~7% admission overhead matters.
