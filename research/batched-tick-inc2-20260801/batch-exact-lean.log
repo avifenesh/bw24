@@ -1,0 +1,2 @@
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T07:37:54+0000", "label": "lean", "base": "http://127.0.0.1:8094", "n": 16, "max_tokens": 96, "wall_s": 2.9626146709997556, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}

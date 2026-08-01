@@ -672,7 +672,12 @@ pub fn run(
                         let s = unsafe { &mut *base.add(i) };
                         caches.push(s.cache.as_mut().unwrap());
                     }
-                    lm.model.decode_step_batch_sampled(&engine, &toks, &mut caches, &samp)
+                    // LEAN LOGITS (inc2 component 3): device-sampled rows skip the
+                    // [n_vocab] D2H — their last_logits comes back EMPTY and the row is
+                    // parked on-device (cache.last_logits_dev) for the retire-time pool
+                    // park below. MEMRA_SERVE_LEANLOGITS=0 restores the full D2H.
+                    lm.model.decode_step_batch_sampled_lean(&engine, &toks, &mut caches,
+                                                            &samp, serve_leanlogits())
                 };
                 match logits {
                     Ok((rows, next_toks)) => {
@@ -724,12 +729,26 @@ pub fn run(
                 }
             } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
                 if let Some(cache) = s.cache {
-                    let pool = reuse.entry(s.model.clone()).or_default();
-                    if pool.len() >= reuse_pool_per_model() { pool.remove(0); } // LRU: oldest first
-                    let cap = cache.max_ctx;
-                    pool.push(ReuseEntry {
-                        fed: s.fed, cache, last_logits: s.last_logits, cap,
-                    });
+                    // LEAN LOGITS (inc2 component 3): device-sampled sessions carried no
+                    // host last_logits — recover the final row from the device park with
+                    // ONE D2H here (retire-time, pool-bound sessions only). A session with
+                    // neither host nor device logits cannot serve an empty-suffix resume:
+                    // skip parking it rather than park a poisoned entry.
+                    let last_logits = if s.last_logits.is_empty() {
+                        cache.last_logits_dev.as_ref()
+                            .and_then(|d| engine.dtoh(d).ok())
+                            .unwrap_or_default()
+                    } else {
+                        s.last_logits
+                    };
+                    if !last_logits.is_empty() {
+                        let pool = reuse.entry(s.model.clone()).or_default();
+                        if pool.len() >= reuse_pool_per_model() { pool.remove(0); } // LRU: oldest first
+                        let cap = cache.max_ctx;
+                        pool.push(ReuseEntry {
+                            fed: s.fed, cache, last_logits, cap,
+                        });
+                    }
                 }
             }
         }
@@ -1143,6 +1162,15 @@ fn advance_token_emit(
 fn serve_devsample() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MEMRA_SERVE_DEVSAMPLE").as_deref() != Ok("0"))
+}
+
+/// LEAN LOGITS (inc2 component 3, default ON): device-sampled rows skip the [n_vocab]
+/// logits D2H; the last row parks on-device per cache and is D2H'd once at retire (the
+/// reuse-pool consumer). MEMRA_SERVE_LEANLOGITS=0 is the rollback/A-B seam (full D2H,
+/// the exact pre-change tick).
+fn serve_leanlogits() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_SERVE_LEANLOGITS").as_deref() != Ok("0"))
 }
 
 fn group_chunks(active: &[Session], ready: &[(usize, u32)]) -> Vec<Vec<(usize, u32)>> {

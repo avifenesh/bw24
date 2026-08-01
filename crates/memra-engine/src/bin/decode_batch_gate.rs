@@ -269,8 +269,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 g3_fail += 1;
             }
         }
+        // (c) LEAN-LOGITS identity (inc2 component 3): the lean tick must (i) produce the
+        //     SAME device tokens as the full tick, (ii) park every sampled row's logits
+        //     on-device BIT-IDENTICALLY to the full tick's returned host row, (iii) leave
+        //     unsampled rows' returned host rows bit-identical. Mixed metas (alternating
+        //     greedy-device / host rows) exercise the partial-D2H path.
+        {
+            let n_s = steps.min(8);
+            let mut caches_f: Vec<Cache> = Vec::new();
+            let mut caches_l: Vec<Cache> = Vec::new();
+            for p in prompts.iter().take(b_n) {
+                let mut c = Cache::new(&e, &model.cfg, ctx)?;
+                let _ = model.prime_cache(&e, p, &mut c)?;
+                caches_f.push(c);
+                let mut c = Cache::new(&e, &model.cfg, ctx)?;
+                let _ = model.prime_cache(&e, p, &mut c)?;
+                caches_l.push(c);
+            }
+            let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
+            for _s in 0..n_s {
+                let samp: Vec<Option<(f32, u64, u32)>> = (0..b_n)
+                    .map(|bi| if bi % 2 == 0 { Some((0.0, 0, 0)) } else { None })
+                    .collect();
+                let (rows_f, next_f) = {
+                    let mut refs: Vec<&mut Cache> = caches_f.iter_mut().collect();
+                    model.decode_step_batch_sampled_lean(&e, &toks, &mut refs, &samp, false)?
+                };
+                let (rows_l, next_l) = {
+                    let mut refs: Vec<&mut Cache> = caches_l.iter_mut().collect();
+                    model.decode_step_batch_sampled_lean(&e, &toks, &mut refs, &samp, true)?
+                };
+                for bi in 0..b_n {
+                    if samp[bi].is_some() {
+                        if next_f[bi] != next_l[bi] {
+                            println!("gate3c seq {bi}: lean token {:?} != full token {:?} FAIL",
+                                     next_l[bi], next_f[bi]);
+                            g3_fail += 1;
+                        }
+                        if !rows_l[bi].is_empty() {
+                            println!("gate3c seq {bi}: lean sampled row NOT empty FAIL");
+                            g3_fail += 1;
+                        }
+                        let parked = e.dtoh(caches_l[bi].last_logits_dev.as_ref()
+                                            .expect("lean row missing device park"))?;
+                        let r = &rows_f[bi];
+                        if !(parked.len() == r.len()
+                             && parked.iter().zip(r.iter()).all(|(a, b)| a.to_bits() == b.to_bits())) {
+                            println!("gate3c seq {bi}: parked device logits != full host row FAIL");
+                            g3_fail += 1;
+                        }
+                        toks[bi] = next_f[bi].unwrap();
+                    } else {
+                        let (r, l) = (&rows_f[bi], &rows_l[bi]);
+                        if !(r.len() == l.len()
+                             && r.iter().zip(l.iter()).all(|(a, b)| a.to_bits() == b.to_bits())) {
+                            println!("gate3c seq {bi}: unsampled row lean != full FAIL");
+                            g3_fail += 1;
+                        }
+                        toks[bi] = argmax(r) as u32;
+                    }
+                }
+                if g3_fail > 8 { break; }
+            }
+        }
     }
-    println!("gate3 (device sampling: greedy==host-argmax + sampled B={b_n} vs isolated): {}",
+    println!("gate3 (device sampling: greedy==host-argmax + sampled B={b_n} vs isolated \
+              + lean-logits identity): {}",
              if g3_fail == 0 { "PASS" } else { "FAIL" });
 
     if g1_fail + g2_fail + g3_fail == 0 {

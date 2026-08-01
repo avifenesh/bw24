@@ -1,0 +1,31 @@
+[server] starting; models config = [("qwen", "/home/ubuntu/models/Qwen3.5-9B-Q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /home/ubuntu/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[worker]   loaded "qwen": 32 layers, eos=248046
+[server] worker ready; serving models: ["qwen"]
+[server] listening on http://127.0.0.1:8094
+[prime-batch] B=5 tokens=1130 in 128.8ms
+[prime-batch] B=6 tokens=1356 in 143.4ms
+[prime-batch] B=6 tokens=1356 in 145.1ms
+[prime-batch] B=6 tokens=1356 in 145.8ms
+[prime-batch] B=6 tokens=1356 in 145.7ms
+[prime-batch] B=3 tokens=678 in 85.1ms
+[prime-batch] B=5 tokens=1130 in 127.0ms
+[prime-batch] B=6 tokens=1356 in 142.6ms
+[prime-batch] B=6 tokens=1356 in 142.9ms
+[prime-batch] B=6 tokens=1356 in 143.2ms
+[prime-batch] B=6 tokens=1356 in 143.1ms
+[prime-batch] B=3 tokens=678 in 83.6ms
+[prime-batch] B=5 tokens=1130 in 127.4ms
+[prime-batch] B=6 tokens=1356 in 143.2ms
+[prime-batch] B=6 tokens=1356 in 142.7ms
+[prime-batch] B=6 tokens=1356 in 142.5ms
+[prime-batch] B=6 tokens=1356 in 142.9ms
+[prime-batch] B=3 tokens=678 in 83.7ms
+[prime-batch] B=5 tokens=1130 in 127.2ms
+[prime-batch] B=6 tokens=1356 in 142.5ms
+[prime-batch] B=6 tokens=1356 in 142.8ms
+[prime-batch] B=6 tokens=1356 in 142.5ms
+[prime-batch] B=6 tokens=1356 in 142.3ms
+[prime-batch] B=3 tokens=678 in 83.6ms
