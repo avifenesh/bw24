@@ -2291,3 +2291,29 @@ and 61-64% DRAM — the paired-lane chunk redundancy and the byte-granular meta/
 reads are the residue; a lane->chunk remap (each lane owns its own 32B chunk) is the
 follow-up probe. Mirrors are VRAM-paid (trunk-sized) — hopper-lane only, 5090 untouched
 (sm_120a build byte-identical, MEMRA_KQRP defaults off without memra_hopper_mma).
+
+Round 49 — q27 KQRP MIRROR v2: LANE->CHUNK REMAP (2026-08-01, lane/q4k-remap): the
+round-48 residue attacked head-on. Receipt arithmetic first (research/
+q4k-chunk-remap-20260801/): the hot 4352-grid q4_K shape's 3,046,400 excessive sectors
+decompose EXACTLY into a-loads 2x16 exc x 5 iters x 17408 rows = 2,785,280 + meta byte
+reads ~261k; the qs paired-lane redundancy never shows in "excessive" (per-instruction
+metric) — it doubles L1TEX weight wavefronts instead (every qs sector requested twice).
+Fix (mirror layout v2, load-time = free; plane offsets unchanged, Rust untouched):
+(a) qs/ql intra-superblock chunk repack — each grp owns one 16B nibble-packed chunk
+(wpack[k] = k<4 ? wv[k]&0x0F0F0F0F : (wv[k-4]>>4)&0x0F0F0F0F, byte-equal to v1), q6_K
+qh crumb-repacked to 8B/grp; warp windows become dense 512B/256B, ONE load per plane
+per g-iter. (b) q4_K meta = ONE int4 + register extraction; q6_K scales = ONE 2B load.
+Same values, same fold order — 13 KQRP bit-bad=0 gates + argmax MATCH + K=1..8 PASS
+(acceptance per-K identical to base). ncu (dedicated GPU 2, 8xH100 box, interleaved):
+q4_K hot 24.53 -> 23.81us, DRAM 63.6 -> 65.7%, TOTAL sectors -22% (9.59M -> 7.50M);
+q6_K 2560-grid 26.43 -> 23.71us (-10.3%, DRAM 50.9 -> 56.7); q6_K 1280-grid 43.46 ->
+36.54us (-15.9%, DRAM 51.6 -> 61.5). E2E interleaved x5 medians, plain ranges cleanly
+separated: short 90.66 -> 92.89 (+2.5%), board-2048 88.74 -> 92.24 (+3.9%), agentic
+90.87 -> 93.20 (+2.6%); spec K=3 flat within noise (-1.1/+0.9/-0.8%, ranges overlap).
+REFUTED with numbers (receipts mmvq-after-c-*): the a-side dense-window + warp-shuffle
+exchange (16 SHFL/iter) achieves the coalescing goal — ncu's uncoalesced rule stops
+firing entirely — yet REGRESSES every shape (hot q4_K 23.81 -> 27.33us, DRAM 57%;
+q6_K 44.06us): SHFL through the LSU pipe costs more than the a-sector savings on a
+latency-bound kernel. Killed same-day; direct a-loads stay. Residual excessive
+(37%/34%) is now PURELY the activation 16B@32B-stride loads — only reachable via a
+global q8_1 activation-buffer layout change (touches every mmvq consumer; unprobed).
