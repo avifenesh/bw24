@@ -36,12 +36,18 @@ pub use memra_sampling as sampler;
 ///                     stream sync per projection (round-47 ledgered defect).
 ///   MEMRA_MOE_F16G=2  single-kernel grouped GEMM on the engine stream (round 49): ordered by
 ///                     construction, zero syncs, f32 C with the act row-scale folded in.
+/// DEFAULT (2026-08-01, round 49 promotion): mode 1 on the Hopper lane — with the 41/41
+/// dequant coverage fix the q35 board-2048 prime measured 5490 (MMQ) / 8380 (mode 1,
+/// +53%) / 7990 (mode 2) x3 interleaved on the H100, argmax MATCH — the last board loss
+/// flips. The 5090 measured FLAT (858GB/s makes the dequant-workspace traffic cancel the
+/// GEMM win), so sm_120a keeps the MMQ default. MEMRA_MOE_F16G=0 kills anywhere.
 pub fn moe_f16g_mode() -> u8 {
     static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *M.get_or_init(|| match std::env::var("MEMRA_MOE_F16G").as_deref() {
-        Ok("1") => 1,
+        Ok("0") => 0,
         Ok("2") => 2,
-        _ => 0,
+        Ok(_) => 1,
+        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 0 },
     })
 }
 pub fn moe_f16g_on() -> bool {

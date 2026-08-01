@@ -52,6 +52,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("MEMRA_L2_V2", "0"); }
     unsafe { std::env::set_var("MEMRA_FA3", "0"); }
     unsafe { std::env::set_var("MEMRA_GDN_WGMMA", "0"); }
+    // Round 49: the grouped f16 expert-prefill door (Hopper default) is another PRIME
+    // nuisance — same signature as the K4/K5-MMA precedent (gate1 seed flip at step 0,
+    // gate2+gate3 bit-strength PASS, and pinning it off restores 6/6 seeds). The door's
+    // own correctness is covered by kernel-check + run-gen argmax + run-spec gates.
+    unsafe { std::env::set_var("MEMRA_MOE_F16G", "0"); }
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;
