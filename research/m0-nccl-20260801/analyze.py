@@ -21,6 +21,8 @@ EXT = [
     "nccl_ga2a_n4",
     "peer_a2a_n4",
     "peer_ga2a_n4",
+    "nccl_a2a_n8",        # n=8, all GPUs 0-7 (5-7 idle-resident fleet, coordinator-cleared;
+    "nccl_ga2a_n8",       #  0% util before/after — receipts/n8_set.txt)
     "nccl_gpp_0_2",       # NCCL ping-pong, 50 RT/graph (launch-free floor)
     "peer_gpp_0_2",       # UVA peer-copy ping-pong, 50 RT/graph
 ]
