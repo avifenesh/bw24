@@ -243,9 +243,10 @@ pub static FUSED_MR1_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Per-model router-GEMV form (2026-07-31): the 8-warp twin is +8.8% on the H100 q35
 /// decode step (router was 14.8% of it) with argmax + spec self-consistency green on
-/// qwen-class MoE both rigs; the gemma-4 26B's knife-edge prefill-vs-decode gate flips
-/// on ANY router fold-order change (same class as its stream-K verdict), so gemma4
-/// loading stores false. MEMRA_ROUTER_V2 env overrides either way.
+/// qwen-class MoE both rigs. The gemma-4 26B knife-edge block (2026-07-31, single
+/// synthetic prompt) was RE-ARBITRATED 2026-08-01 on 6 real prompts — gate outcomes
+/// identical to the lone-warp arm, +13% g26 decode — so gemma4 rides the default too
+/// (research/g26-decode-20260801/). MEMRA_ROUTER_V2 env overrides either way.
 pub static ROUTER_W8_DEFAULT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
@@ -2353,19 +2354,37 @@ impl Engine {
         Ok(())
     }
 
-    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry only for now).
+    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8. Geometry variants (2026-08-01 g26 decode
+    /// dig — the base lone-warp-CTA form was the last router-class latency kernel in the g26
+    /// decode chain): `_j8` packs the 8 slots into one CTA (warp j = slot j), `_j8r2` adds 2
+    /// rows/warp. Per-(row,slot) FP order is BIT-IDENTICAL across all three (same dot loop,
+    /// same warp tree) — geometry, not a numeric config. MEMRA_MOE_DEVQ8_GGU forces:
+    /// 0=base | j8 | j8r2 (probe knob class, same as MEMRA_MOE_DEVQ8_GU); auto = j8
+    /// (measured winner, receipts research/g26-decode-20260801/).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_gate_up_gelu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                     in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
                                     qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        static GGU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let mode = GGU.get_or_init(|| std::env::var("MEMRA_MOE_DEVQ8_GGU").unwrap_or_default())
+                      .as_str();
         let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
         let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
                                         rb_g as i64, rb_u as i64);
-        let f = self.func("moe_gate_up_gelu8_dev_q8");
-        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
-                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (f, cfg) = match mode {
+            "0" => (self.func("moe_gate_up_gelu8_dev_q8"),
+                    LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                   block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+            "j8r2" => (self.func("moe_gate_up_gelu8_dev_q8_j8r2"),
+                       LaunchConfig { grid_dim: (n_ff.div_ceil(2) as u32, 1, 1),
+                                      block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+            // auto (and "j8"): slot-packed winner.
+            _ => (self.func("moe_gate_up_gelu8_dev_q8_j8"),
+                  LaunchConfig { grid_dim: (n_ff as u32, 1, 1),
+                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+        };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
