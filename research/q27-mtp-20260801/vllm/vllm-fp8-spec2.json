@@ -1,0 +1,42 @@
+{
+ "engine": "vllm",
+ "model": "Qwen/Qwen3.6-27B-FP8",
+ "ngen": 512,
+ "prompt_tokens": 2048,
+ "spec_k": 2,
+ "runs": [
+  {
+   "run": 1,
+   "prefill_tps": 13999.4,
+   "decode_tps": 138.43,
+   "ttft_s": 0.1463
+  },
+  {
+   "run": 2,
+   "prefill_tps": 13606.7,
+   "decode_tps": 138.54,
+   "ttft_s": 0.1505
+  },
+  {
+   "run": 3,
+   "prefill_tps": 13470.9,
+   "decode_tps": 138.61,
+   "ttft_s": 0.152
+  },
+  {
+   "run": 4,
+   "prefill_tps": 13730.2,
+   "decode_tps": 138.49,
+   "ttft_s": 0.1492
+  },
+  {
+   "run": 5,
+   "prefill_tps": 13747.2,
+   "decode_tps": 138.49,
+   "ttft_s": 0.149
+  }
+ ],
+ "decode_tps_median": 138.49,
+ "prefill_tps_median": 13730.2,
+ "e2e_tps_median": 133.12
+}
