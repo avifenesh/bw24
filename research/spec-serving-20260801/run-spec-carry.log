@@ -1,0 +1,32 @@
+[q8rp] split-plane decode mirrors built: 449 tensors
+loaded qwen35 (65 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   31 tok in 0.347s = 89.40 tok/s (gen-only; this run's prime 0.011s)
+  tokens: [271, 2, 1369, 740, 7508, 63730, 271, 550, 9680, 3852, 271, 1948, 740, 7508, 63730, 471, 33307, 314, 12419, 24464, 11, 12419, 1980, 46076, 11, 12419, 237840, 1821, 11, 12419, 54946, 11]
+
+[generate_spec K=1] 32 tok in 0.331s = 93.60 tok/s (1.05x vs generate; this run's prime 0.011s)
+  acceptance: 14/18 = 77.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.354s = 87.55 tok/s (0.98x vs generate; this run's prime 0.011s)
+  acceptance: 15/28 = 53.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.377s = 82.24 tok/s (0.92x vs generate; this run's prime 0.011s)
+  acceptance: 15/33 = 45.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.375s = 82.57 tok/s (0.92x vs generate; this run's prime 0.011s)
+  acceptance: 16/33 = 48.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.382s = 81.11 tok/s (0.91x vs generate; this run's prime 0.011s)
+  acceptance: 16/36 = 44.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.396s = 78.28 tok/s (0.88x vs generate; this run's prime 0.011s)
+  acceptance: 16/39 = 41.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.402s = 77.17 tok/s (0.86x vs generate; this run's prime 0.011s)
+  acceptance: 16/39 = 41.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.399s = 77.72 tok/s (0.87x vs generate; this run's prime 0.011s)
+  acceptance: 16/39 = 41.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

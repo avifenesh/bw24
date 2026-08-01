@@ -1,0 +1,7 @@
+soak server pid=336649
+soak points completed: 95
+server alive at end: 1
+--- error scan ---
+0
+total request errors: 0
+SOAK DONE

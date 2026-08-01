@@ -2291,3 +2291,90 @@ and 61-64% DRAM — the paired-lane chunk redundancy and the byte-granular meta/
 reads are the residue; a lane->chunk remap (each lane owns its own 32B chunk) is the
 follow-up probe. Mirrors are VRAM-paid (trunk-sized) — hopper-lane only, 5090 untouched
 (sm_120a build byte-identical, MEMRA_KQRP defaults off without memra_hopper_mma).
+
+Round 49 — q27 KQRP MIRROR v2: LANE->CHUNK REMAP (2026-08-01, lane/q4k-remap): the
+round-48 residue attacked head-on. Receipt arithmetic first (research/
+q4k-chunk-remap-20260801/): the hot 4352-grid q4_K shape's 3,046,400 excessive sectors
+decompose EXACTLY into a-loads 2x16 exc x 5 iters x 17408 rows = 2,785,280 + meta byte
+reads ~261k; the qs paired-lane redundancy never shows in "excessive" (per-instruction
+metric) — it doubles L1TEX weight wavefronts instead (every qs sector requested twice).
+Fix (mirror layout v2, load-time = free; plane offsets unchanged, Rust untouched):
+(a) qs/ql intra-superblock chunk repack — each grp owns one 16B nibble-packed chunk
+(wpack[k] = k<4 ? wv[k]&0x0F0F0F0F : (wv[k-4]>>4)&0x0F0F0F0F, byte-equal to v1), q6_K
+qh crumb-repacked to 8B/grp; warp windows become dense 512B/256B, ONE load per plane
+per g-iter. (b) q4_K meta = ONE int4 + register extraction; q6_K scales = ONE 2B load.
+Same values, same fold order — 13 KQRP bit-bad=0 gates + argmax MATCH + K=1..8 PASS
+(acceptance per-K identical to base). ncu (dedicated GPU 2, 8xH100 box, interleaved):
+q4_K hot 24.53 -> 23.81us, DRAM 63.6 -> 65.7%, TOTAL sectors -22% (9.59M -> 7.50M);
+q6_K 2560-grid 26.43 -> 23.71us (-10.3%, DRAM 50.9 -> 56.7); q6_K 1280-grid 43.46 ->
+36.54us (-15.9%, DRAM 51.6 -> 61.5). E2E interleaved x5 medians, plain ranges cleanly
+separated: short 90.66 -> 92.89 (+2.5%), board-2048 88.74 -> 92.24 (+3.9%), agentic
+90.87 -> 93.20 (+2.6%); spec K=3 flat within noise (-1.1/+0.9/-0.8%, ranges overlap).
+REFUTED with numbers (receipts mmvq-after-c-*): the a-side dense-window + warp-shuffle
+exchange (16 SHFL/iter) achieves the coalescing goal — ncu's uncoalesced rule stops
+firing entirely — yet REGRESSES every shape (hot q4_K 23.81 -> 27.33us, DRAM 57%;
+q6_K 44.06us): SHFL through the LSU pipe costs more than the a-sector savings on a
+latency-bound kernel. Killed same-day; direct a-loads stay. Residual excessive
+(37%/34%) is now PURELY the activation 16B@32B-stride loads — only reachable via a
+global q8_1 activation-buffer layout change (touches every mmvq consumer; unprobed).
+
+## Round 49 — q27 Q4_K f16 PREFILL MIRRORS: +54% pp2048 default, +105% at full coverage (2026-08-01, lane/q4k-f16-mirrors)
+
+Q4_K joins the f16-mirror carve-out (Q8_0 07-26, Q4_0 campaign-A, Q6_K round 47): the
+q27 trunk bulk (294 Q4_K tensors) rode mul_mat_q_q45k int8-MMA for prefill — good, but
+the cuBLASLt f16 lane beats that class at large m. memra_q4kf16_dequant_kernel
+(f16_prefill.cu): 144B superblock, d*sc*q - dmin*mn, get_scale_min_k4 6-bit unpack
+verified against qmatvec.cu's deq_q4_k; admission in build_q8_f16 (in_f%256, 144B rows);
+model-class-agnostic carve-out in the Q8RP walk, arbitrated by per-model argmax gates.
+DESIGN: Q4_K admits as a SECOND budget pass so MEMRA_PP_F16_BUDGET_MB keeps FULL Q6_K
+coverage as its floor (Q6_K replaces a ~10x dequant-GEMM; Q4_K upgrades a working MMA
+arm — a joint walk would evict late-layer Q6_K mirrors for the weaker lever).
+NUMBERS (interleaved x3, N=3 medians, same-session, GPU 3; receipts
+research/q4k-f16-mirrors-20260801/): pp2048 board 3205 -> 4935 (+54%), agentic-634
+2781 -> 4403 (+58%); plain decode FLAT (88.5/90.2 -> 89.6/89.8 — decode never touches
+the mirror). Budget probe (x2): default 32768MB admits 183/294 (22.4GB) after Q6_K;
+43008MB admits 265/294 (32.7GB) -> pp2048 6564 (+105% vs base, +33% vs default), VRAM
+peak 76.3/81.5GB. SPEC-ACCEPTANCE FIND: at default budget board-2048 spec K=3 drops
+109.9 -> 101.4 (acc 66.1 -> 57.3) while agentic RISES 144.2 -> 146.4 (acc 84 -> 86);
+at 43008 the board acceptance RECOVERS (64.8, spec 109.4 ~ parity) — the dip is a
+partial-coverage artifact (layer-prefix mirror mixes f16-prime and int8-prime numerics
+mid-trunk), single-prompt evidence per the round-45/48 roulette law. e2e board-2048:
+plain 72.5 -> 78.2 (+7.9%); spec 86.3 -> 87.1 default / ~96.5 (+11.8%) at 43008.
+GATES ALL GREEN: kernel-check 0 fails — Q4_K f16 gates NEW (rel 4.1-4.4e-3, band 1e-2)
+plus the round-47 Q6_K f16 gates that had NO battery entry (law 3: added, rel
+3.5-4.3e-3); run-gen argmax MATCH both budgets (maxdiff 6.5e-1 / 5.1e-1 — NO round-45
+flip, the class HOLDS on the q27 hybrid); run-spec K=1..8 all PASS; q35 argmax MATCH
+(zero Q4_K tensors — untouched; ditto q9-Q8_0 and the gemma q4_0 artifacts, so the
+fleet blast radius is q27 only); validate-h100 --quick ALL GATES GREEN on the new
+binary (graph-decode/graph-session included — the captured prime graph bakes f16 GEMM
+pointers, the untested surface for mirrors joining the prime path). Default budget stays 32768 (a hopper-wide bump moves
+VRAM on every model per box); serving configs set MEMRA_PP_F16_BUDGET_MB per model —
+machine-specific config per flags doctrine. NEXT RUNG: Q5_K (48 tensors, 3GB @2B/w)
+is the remaining non-f16 trunk class; full-coverage budget as a q27 serving default is
+the open owner call (5.2GB headroom at 43008).
+
+Round 49b — Q5_K f16 mirrors landed as the THIRD budget pass (strictly after all
+Q4_K, so the default composition and every banked 49 gate stays byte-identical —
+verified: same 183 q4k mirrors, argmax maxdiff bit-same 6.513e-1). memra_q5kf16_
+dequant_kernel: 176B superblock, same get_scale_min_k4, qh bit g of qh[l], verified
+vs deq_q5_k. Battery case added (blk.0.ssm_out Q5_K GEMM rel 3.2e-7 + f16 mirror rel
+2.4-6.0e-3); q5k-active argmax MATCH (4.231e-1); K-sweep 8/8 PASS. Marginal probe
+(x2, KQRP off to free VRAM): full stack q6k+q4k(35.6GB)+q5k(2.9GB) -> pp2048 prime
+0.254s = 8063 tok/s (+152% vs base); q5k tail ~9.5ms/GB. ON THIS BOX the tier is
+dark in the serving config (full q4k+q6k already exceeds the budget that fits beside
+the round-48 KQRP decode mirrors) — it pays on bigger-VRAM boxes; implemented +
+battery-gated either way. The REAL owner call this exposes: on 80GB, f16-mirror
+budget vs KQRP decode mirrors compete for the same ~15GB — prefill 6564->8063 vs
+decode +15% cannot both max out; per-box serving configs choose.
+
+## Round 49 — ZERO LOSSES (2026-08-01): the board sweep completes
+
+Final same-session cells on the promoted tree: **q35 e2e 217.8 vs 214.3 (1.02x)** —
+decode 242.9 (shexp dot + KQRP stack) x prefill 8428 (the grouped f16 expert lane at
+41/41 dequant coverage, Hopper default; the round-47 "flat" verdict was a 1-of-41-layers
+coverage artifact). **q27 e2e 95.5 vs 72.9 (1.31x)** — decode 103.7 (KQRP + layout v2)
+x prefill 4821 (Q4_K/Q5_K/Q6_K f16 mirrors, default budget; 43008MB serving config
+measured 1.16x plain/1.38x spec on the board shape). Board: 6 wins + 1 even + 0 losses,
+decode 7/7. Batteries: validate-h100 ALL GREEN (f16g default + gate prime-nuisance pin,
+the K4/K5 precedent), 5090 correctness + serve-smoke GREEN. The M0 comms spike banked
+the multi-GPU floor (PP ~free, EP<=4, graphed a2a mandatory) for the GLM-5.2 build.

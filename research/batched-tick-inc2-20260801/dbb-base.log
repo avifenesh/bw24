@@ -1,0 +1,7 @@
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 layers); steps=256 reps=5 batches=[1, 8]
+B=1: aggregate 157.3 tok/s, per-seq 157.3 tok/s (median of 5)
+B=8: aggregate 503.6 tok/s, per-seq 62.9 tok/s (median of 5)
+scale B=1: 1.00x aggregate vs B=1
+scale B=8: 3.20x aggregate vs B=1
+[host-sample] n_vocab=248320 greedy argmax 143 us/row | temp0.7 sample 1327 us/row | x B=8 rows/tick = 1.14 ms (greedy) / 10.62 ms (temp) [sink 7121538]

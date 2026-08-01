@@ -25,14 +25,15 @@ against vLLM are published per model. **Use something else when** you have anoth
 
 **Standing (2026-08-01):** seven supported models on the 5090, all fully gated; every
 MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
-wall or above. On the H100, a full per-model board against vLLM 0.26: end-to-end wins
-on 5 of 7 models (1.14–1.81x) with the 26B MoE now dead even (its decode flipped to a
-win when a knife-edged router default was re-arbitrated on real prompts) and one honest
-loss left (35B MoE, 0.92x, expert-prefill-bound). Decode wins 7 of 7. Multi-user
-serving measured on 3×H100: 1,480 tok/s raw / ~1,380 through the admission-capped
-self-healing fleet — plus a +67% single-replica jump from device-side batched sampling.
-Every number is a same-session interleaved measurement on a real-text prompt with the
-argmax exactness gate green; trimmed MTP drafter heads are published ready-to-use at
+wall or above. On the H100, a full per-model board against vLLM 0.26: **no end-to-end
+losses** — six wins (1.02-1.81x) and one dead-even cell; decode wins 7 of 7. The last
+two losses fell in one day: the 35B MoE's expert prefill jumped +53% when the grouped
+f16 expert lane got full dequant coverage, and the 27B gained a +54% prefill and +16%
+decode from K-quant f16 mirrors and split-plane layout v2. Multi-user serving measured
+on 3xH100: 1,480 tok/s managed fleet, with per-replica throughput since raised +25-36%
+by batching the decode tick's per-sequence work. Every number is a same-session
+interleaved measurement on a real-text prompt with the argmax exactness gate green;
+trimmed MTP drafter heads are published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
 
 Running memra on your own rig? A [hardware validation

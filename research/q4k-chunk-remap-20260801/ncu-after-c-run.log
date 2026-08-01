@@ -1,0 +1,38 @@
+==PROF== Connected to process 299178 (/home/ubuntu/arc2/target/release/run-gen)
+[q8rp] split-plane decode mirrors built: 449 tensors
+loaded qwen35 (64 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%
+==WARNING== Backing up device memory in system memory. Kernel replay might be slow. Consider using "--replay-mode application" to avoid memory save-and-restore.
+....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q6_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q6_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_rp": 0%....50%....100% - 39 passes
+prefill argmax=271  decode argmax=271  logit maxdiff=4.065e-1  MATCH
+generated 16 tokens in 2.730s = 5.86 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.165s) [stop: MaxNew]
+tokens: [271, 2, 1369, 740, 7508, 63730, 271, 550, 9680, 3852, 271, 1948, 740, 7508, 63730, 471]
+==PROF== Disconnected from process 299178
+==PROF== Report: /home/ubuntu/arc2/research/q4k-chunk-remap-20260801/mmvq-after-c.ncu-rep

@@ -1,0 +1,38 @@
+   Compiling libc v0.2.186
+   Compiling memra-engine v0.0.0 (/home/ubuntu/arc4/crates/memra-engine)
+   Compiling cudarc v0.19.8
+   Compiling proc-macro2 v1.0.106
+   Compiling serde_core v1.0.228
+   Compiling httparse v1.10.1
+   Compiling quote v1.0.46
+   Compiling rustversion v1.0.22
+   Compiling syn v2.0.118
+   Compiling memmap2 v0.9.11
+   Compiling errno v0.3.14
+   Compiling memra-gguf v0.0.0 (/home/ubuntu/arc4/crates/memra-gguf)
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.1
+   Compiling memra-tokenizer v0.0.0 (/home/ubuntu/arc4/crates/memra-tokenizer)
+   Compiling socket2 v0.6.4
+   Compiling zmij v1.0.21
+   Compiling serde_json v1.0.150
+   Compiling memra-runtime v0.0.0 (/home/ubuntu/arc4/crates/memra-runtime)
+   Compiling memra-kv v0.0.0 (/home/ubuntu/arc4/crates/memra-kv)
+   Compiling tokio-macros v2.7.0
+   Compiling serde_derive v1.0.228
+   Compiling tokio v1.52.3
+   Compiling async-trait v0.1.89
+   Compiling axum-core v0.4.5
+   Compiling serde v1.0.228
+   Compiling hyper v1.10.1
+   Compiling serde_urlencoded v0.7.1
+   Compiling tower v0.5.3
+   Compiling async-stream-impl v0.3.6
+   Compiling hyper-util v0.1.20
+   Compiling serde_path_to_error v0.1.20
+   Compiling axum v0.7.9
+   Compiling async-stream v0.3.6
+   Compiling memra-probe v0.0.0 (/home/ubuntu/arc4/crates/memra-probe)
+warning: memra-engine@0.0.0: MEMRA_CUDA_ARCH auto-detected 90a (compute_cap 9.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-server v0.0.0 (/home/ubuntu/arc4/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 3m 55s

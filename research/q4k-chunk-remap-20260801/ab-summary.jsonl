@@ -1,0 +1,41 @@
+{"bin": "base", "cls": "short", "run": "r1", "plain": 91.15, "spec": 134.13, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r2", "plain": 89.58, "spec": 132.29, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r3", "plain": 89.60, "spec": 132.85, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r4", "plain": 90.73, "spec": 133.78, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r5", "plain": 90.66, "spec": 134.00, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r1", "plain": 88.74, "spec": 110.07, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r2", "plain": 88.12, "spec": 109.31, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r3", "plain": 89.27, "spec": 110.62, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r4", "plain": 89.28, "spec": 111.07, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r5", "plain": 88.14, "spec": 109.70, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r1", "plain": 91.33, "spec": 145.54, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r2", "plain": 90.87, "spec": 144.58, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r3", "plain": 90.15, "spec": 144.35, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r4", "plain": 91.22, "spec": 145.50, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r5", "plain": 90.06, "spec": 143.93, "acc": 84.0, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r1", "plain": 92.62, "spec": 132.35, "acc": 76.3, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r2", "plain": 92.89, "spec": 131.90, "acc": 76.3, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r3", "plain": 92.41, "spec": 132.16, "acc": 76.3, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r4", "plain": 93.79, "spec": 134.03, "acc": 76.3, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r5", "plain": 93.89, "spec": 133.75, "acc": 76.3, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r1", "plain": 90.73, "spec": 109.19, "acc": 66.1, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r2", "plain": 92.24, "spec": 111.01, "acc": 66.1, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r3", "plain": 90.93, "spec": 109.70, "acc": 66.1, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r4", "plain": 93.00, "spec": 111.83, "acc": 66.1, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r5", "plain": 92.42, "spec": 111.40, "acc": 66.1, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r1", "plain": 92.69, "spec": 143.34, "acc": 84.0, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r2", "plain": 92.95, "spec": 143.44, "acc": 84.0, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r3", "plain": 94.13, "spec": 145.17, "acc": 84.0, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r4", "plain": 93.20, "spec": 142.36, "acc": 84.0, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r5", "plain": 94.68, "spec": 145.57, "acc": 84.0, "gate": "PASS"}
+
+bin   class        n  plain_med  plain_range      spec_med  spec_range        acc  gates
+base  short        5     90.66  [89.58,91.15]    133.78  [132.29,134.13]   76.3  PASS
+base  board2048    5     88.74  [88.12,89.28]    110.07  [109.31,111.07]   66.1  PASS
+base  agentic500   5     90.87  [90.06,91.33]    144.58  [143.93,145.54]   84.0  PASS
+new   short        5     92.89  [92.41,93.89]    132.35  [131.90,134.03]   76.3  PASS
+new   board2048    5     92.24  [90.73,93.00]    111.01  [109.19,111.83]   66.1  PASS
+new   agentic500   5     93.20  [92.69,94.68]    143.44  [142.36,145.57]   84.0  PASS
+delta short        plain +2.5%  spec -1.1%
+delta board2048    plain +3.9%  spec +0.9%
+delta agentic500   plain +2.6%  spec -0.8%

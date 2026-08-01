@@ -222,6 +222,20 @@ fn q8_expert_dec_supported(qt: i32) -> bool {
     qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS || qt == crate::QT_Q4_0
 }
 
+/// Grouped-f16 door (MEMRA_MOE_F16G) per-projection admission: the qtype has a dequant-to-f16
+/// kernel in cu/moe_f16_grouped.cu AND the projection's k dimension tiles its block size.
+/// Round 49 widened coverage to q35's UD mix (gate/up IQ3_S x39 + Q3_K x1 + IQ4_XS x1; down
+/// IQ4_XS x37 + Q6_K x3 + Q4_K x1) — the round-47 IQ4_XS/Q4_0-only table admitted ~1 of 41
+/// q35 layers, which is why that cell measured FLAT.
+fn f16g_proj_ok(qt: i32, in_f: usize) -> bool {
+    match qt {
+        crate::QT_Q4_0 => in_f % 32 == 0,
+        crate::QT_IQ4_XS | crate::QT_IQ3_S | crate::QT_Q3_K | crate::QT_Q4_K
+        | crate::QT_Q6_K => in_f % 256 == 0,
+        _ => false,
+    }
+}
+
 /// STAGE 3 prewarm gate (MEMRA_MOE_PREWARM, default ON; `=0` leaves residency organic). One-shot
 /// per layer: force-admit every block while FREE slots cover the whole layer (never evicts).
 fn moe_prewarm_enabled() -> bool {
@@ -3164,17 +3178,23 @@ impl HybridModel {
             && q8_expert_dec_supported(m.gate_exps.qtype) && q8_expert_dec_supported(m.up_exps.qtype)
             && q8_expert_dec_supported(m.down_exps.qtype)
             && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
-        if use_mma {
-            // GROUPED f16 LANE (MEMRA_MOE_F16G=1, round 46 arc 2, experimental door): dequant
+        // GROUPED f16 LANE admission (MEMRA_MOE_F16G, rounds 46-49): its own door, no longer a
+        // subset of the MMQ arm — q35's k-quant stragglers (Q6_K/Q4_K down, one Q3_K gate/up
+        // layer) fail q8_expert_dec_supported but dequant fine to f16, so f16g must be able to
+        // take a layer the MMQ arm would reject. Same t >= mma_t floor as MMA: decode and
+        // spec-verify batches must ride the dp4a path whose FP order matches the T=1 chain.
+        let f16g = crate::moe_f16g_on() && t >= mma_t
+            && f16g_proj_ok(m.gate_exps.qtype, n_embd)
+            && f16g_proj_ok(m.up_exps.qtype, n_embd)
+            && f16g_proj_ok(m.down_exps.qtype, n_ff_exp);
+        if use_mma || f16g {
+            // GROUPED f16 LANE (MEMRA_MOE_F16G, rounds 46-49, experimental door): dequant
             // the active experts ONCE per projection to f16 and run one grouped f16 GEMM over
             // the CSR groups. f16-mirror numeric class — argmax/spec gated before promotion.
             // NOTE: the pair-gather kernel needs pair p ordered EXPERT-MAJOR (ex_pairs order);
             // the y rows come back in that same CSR order, so gate/up/down all stay pair-major
             // in ex_pairs order — but moe_pairs_silu_mul and the scatter consume PAIR-ID order.
             // We therefore gather activations per ex_pairs and scatter y back through ex_pairs.
-            let f16g = crate::moe_f16g_on()
-                && matches!(m.gate_exps.qtype, 5 | 12) && matches!(m.up_exps.qtype, 5 | 12)
-                && matches!(m.down_exps.qtype, 5 | 12);
             let y_down = if f16g {
                 // CSR order end-to-end: gather z rows by the pair's TOKEN (pair p's token is
                 // p / n_used — the trivial CSR above), silu in CSR order (elementwise), one
@@ -3182,16 +3202,16 @@ impl HybridModel {
                 let csr_tok: Vec<i32> = ex_pairs.iter().map(|&p| p / n_used as i32).collect();
                 let csr_tok_d = e.htod_i32(&csr_tok)?;
                 let (z_f16, z_s) = e.moe_f16g_act(z, Some(&csr_tok_d), n_embd, n_pairs)?;
-                let g_csr = e.moe_f16_grouped(&dev.ptr_row, 0, n_expert, &exi, &ex_off, &z_f16,
-                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                let g_csr = e.moe_f16_grouped(&dev.ptr_row, 0, n_expert, &exi, &ex_off, &exo,
+                                              &z_f16, &z_s, n_embd, n_ff_exp, n_active, n_pairs,
                                               m.gate_exps.qtype, rbg_d)?;
-                let u_csr = e.moe_f16_grouped(&dev.ptr_row, 1, n_expert, &exi, &ex_off, &z_f16,
-                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                let u_csr = e.moe_f16_grouped(&dev.ptr_row, 1, n_expert, &exi, &ex_off, &exo,
+                                              &z_f16, &z_s, n_embd, n_ff_exp, n_active, n_pairs,
                                               m.up_exps.qtype, rbu_d)?;
                 let act_csr = e.moe_pairs_silu_mul(&g_csr, &u_csr, n_pairs * n_ff_exp)?;
                 let (a_f16, a_s) = e.moe_f16g_act(&act_csr, None, n_ff_exp, n_pairs)?;
-                let d_csr = e.moe_f16_grouped(&dev.ptr_row, 2, n_expert, &exi, &ex_off, &a_f16,
-                                              &a_s, n_ff_exp, n_embd, n_active, n_pairs,
+                let d_csr = e.moe_f16_grouped(&dev.ptr_row, 2, n_expert, &exi, &ex_off, &exo,
+                                              &a_f16, &a_s, n_ff_exp, n_embd, n_active, n_pairs,
                                               m.down_exps.qtype, m.down_exps.row_bytes)?;
                 e.rows_permute(&d_csr, &exp_d, n_pairs, n_embd)?
             } else {
@@ -4651,21 +4671,22 @@ impl HybridModel {
             // ragged down k (704) needs no padding here — cublas takes any k.
             // f16-mirror numeric class, argmax/spec gated.
             if crate::moe_f16g_on()
-                && matches!(m.gate_exps.qtype, 5 | 12) && matches!(m.up_exps.qtype, 5 | 12)
-                && matches!(m.down_exps.qtype, 5 | 12) {
+                && f16g_proj_ok(m.gate_exps.qtype, n_embd)
+                && f16g_proj_ok(m.up_exps.qtype, n_embd)
+                && f16g_proj_ok(m.down_exps.qtype, n_ff_exp) {
                 let csr_tok: Vec<i32> = ex_pairs.iter().map(|&p| p / n_used as i32).collect();
                 let csr_tok_d = e.htod_i32(&csr_tok)?;
                 let (z_f16, z_s) = e.moe_f16g_act(moe_in, Some(&csr_tok_d), n_embd, n_pairs)?;
-                let g_csr = e.moe_f16_grouped(&dev.ptr_row, 0, n_expert, &exi, &ex_off, &z_f16,
-                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                let g_csr = e.moe_f16_grouped(&dev.ptr_row, 0, n_expert, &exi, &ex_off, &exo,
+                                              &z_f16, &z_s, n_embd, n_ff_exp, n_active, n_pairs,
                                               m.gate_exps.qtype, m.gate_exps.row_bytes)?;
-                let u_csr = e.moe_f16_grouped(&dev.ptr_row, 1, n_expert, &exi, &ex_off, &z_f16,
-                                              &z_s, n_embd, n_ff_exp, n_active, n_pairs,
+                let u_csr = e.moe_f16_grouped(&dev.ptr_row, 1, n_expert, &exi, &ex_off, &exo,
+                                              &z_f16, &z_s, n_embd, n_ff_exp, n_active, n_pairs,
                                               m.up_exps.qtype, m.up_exps.row_bytes)?;
                 let act_csr = e.moe_pairs_gelu_mul(&g_csr, &u_csr, n_pairs * n_ff_exp)?;
                 let (a_f16, a_s) = e.moe_f16g_act(&act_csr, None, n_ff_exp, n_pairs)?;
-                let d_csr = e.moe_f16_grouped(&dev.ptr_row, 2, n_expert, &exi, &ex_off, &a_f16,
-                                              &a_s, n_ff_exp, n_embd, n_active, n_pairs,
+                let d_csr = e.moe_f16_grouped(&dev.ptr_row, 2, n_expert, &exi, &ex_off, &exo,
+                                              &a_f16, &a_s, n_ff_exp, n_embd, n_active, n_pairs,
                                               m.down_exps.qtype, m.down_exps.row_bytes)?;
                 let y_down = e.rows_permute(&d_csr, &exp_d, n_pairs, n_embd)?;
                 let mut moe_out = e.uninit(t * n_embd)?;

@@ -1,0 +1,26 @@
+{"bin": "base", "cls": "agentic500", "run": "r1", "ntok": 634, "prefill": 2780.7, "prime_s": 0.228, "plain": 90.21, "spec": 144.15, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r2", "ntok": 634, "prefill": 2780.7, "prime_s": 0.228, "plain": 90.45, "spec": 144.97, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "agentic500", "run": "r3", "ntok": 634, "prefill": 2780.7, "prime_s": 0.228, "plain": 89.76, "spec": 143.21, "acc": 84.0, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r1", "ntok": 2048, "prefill": 3205.0, "prime_s": 0.639, "plain": 88.46, "spec": 109.91, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r2", "ntok": 2048, "prefill": 3200.0, "prime_s": 0.64, "plain": 88.39, "spec": 109.34, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "board2048", "run": "r3", "ntok": 2048, "prefill": 3205.0, "prime_s": 0.639, "plain": 89.41, "spec": 110.93, "acc": 66.1, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r1", "ntok": 28, "prefill": 354.4, "prime_s": 0.079, "plain": 89.25, "spec": 132.26, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r2", "ntok": 28, "prefill": 354.4, "prime_s": 0.079, "plain": 90.88, "spec": 133.35, "acc": 76.3, "gate": "PASS"}
+{"bin": "base", "cls": "short", "run": "r3", "ntok": 28, "prefill": 354.4, "prime_s": 0.079, "plain": 90.36, "spec": 132.95, "acc": 76.3, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r1", "ntok": 634, "prefill": 4402.8, "prime_s": 0.144, "plain": 89.75, "spec": 146.26, "acc": 86.0, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r2", "ntok": 634, "prefill": 4402.8, "prime_s": 0.144, "plain": 89.81, "spec": 146.43, "acc": 86.0, "gate": "PASS"}
+{"bin": "new", "cls": "agentic500", "run": "r3", "ntok": 634, "prefill": 4402.8, "prime_s": 0.144, "plain": 89.73, "spec": 146.45, "acc": 86.0, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r1", "ntok": 2048, "prefill": 4934.9, "prime_s": 0.415, "plain": 89.68, "spec": 101.39, "acc": 57.3, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r2", "ntok": 2048, "prefill": 4923.1, "prime_s": 0.416, "plain": 88.09, "spec": 100.22, "acc": 57.3, "gate": "PASS"}
+{"bin": "new", "cls": "board2048", "run": "r3", "ntok": 2048, "prefill": 4934.9, "prime_s": 0.415, "plain": 89.55, "spec": 101.59, "acc": 57.3, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r1", "ntok": 28, "prefill": 549.0, "prime_s": 0.051, "plain": 89.24, "spec": 132.41, "acc": 76.2, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r2", "ntok": 28, "prefill": 549.0, "prime_s": 0.051, "plain": 89.63, "spec": 132.38, "acc": 76.2, "gate": "PASS"}
+{"bin": "new", "cls": "short", "run": "r3", "ntok": 28, "prefill": 560.0, "prime_s": 0.05, "plain": 90.64, "spec": 133.44, "acc": 76.2, "gate": "PASS"}
+
+bin   class       prefill_med  plain_med  spec_med acc_med
+base  agentic500      2780.7      90.21    144.15    84.0
+base  board2048       3205.0      88.46    109.91    66.1
+base  short            354.4      90.36    132.95    76.3
+new   agentic500      4402.8      89.75    146.43    86.0
+new   board2048       4934.9      89.55    101.39    57.3
+new   short            549.0      89.63    132.41    76.2

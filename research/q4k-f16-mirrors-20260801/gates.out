@@ -1,0 +1,28 @@
+== kernel-check (q27 model arg) ==
+kernel-check rc=0 fails=0
+GEMM blk.3.attn_q.weight f16 T=16: rel=4.24e-3 OK
+GEMM blk.3.attn_q.weight f16 T=64: rel=4.32e-3 OK
+GEMM blk.3.attn_q.weight f16 T=128: rel=4.14e-3 OK
+GEMM blk.3.attn_q.weight f16 T=512: rel=4.39e-3 OK
+GEMM output.weight f16 T=16: rel=3.71e-3 OK
+GEMM output.weight f16 T=64: rel=3.54e-3 OK
+GEMM output.weight f16 T=128: rel=3.64e-3 OK
+GEMM output.weight f16 T=512: rel=4.27e-3 OK
+== run-gen argmax q27 board-2048 ==
+run-gen q27 rc=0
+prefill argmax=64  decode argmax=64  logit maxdiff=6.513e-1  MATCH
+== run-spec K=1..8 q27 board-2048 (HPOST=1 PMIN=0.3) ==
+run-spec q27 rc=0
+  acceptance: 104/151 = 68.9%   self-consistency: PASS (identical to generate)
+  acceptance: 137/204 = 67.2%   self-consistency: PASS (identical to generate)
+  acceptance: 142/248 = 57.3%   self-consistency: PASS (identical to generate)
+  acceptance: 149/270 = 55.2%   self-consistency: PASS (identical to generate)
+  acceptance: 151/294 = 51.4%   self-consistency: PASS (identical to generate)
+  acceptance: 152/306 = 49.7%   self-consistency: PASS (identical to generate)
+  acceptance: 152/319 = 47.6%   self-consistency: PASS (identical to generate)
+  acceptance: 153/321 = 47.7%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+== run-gen argmax q35 board-2048 (no-regression; zero Q4_K tensors) ==
+run-gen q35 rc=0
+prefill argmax=485  decode argmax=485  logit maxdiff=8.402e-1  MATCH
+GATES-DONE

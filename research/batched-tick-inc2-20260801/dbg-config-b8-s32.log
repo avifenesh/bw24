@@ -1,0 +1,12 @@
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 layers); steps=32 batch=8
+gate1 seed 0: agreement all 32 steps
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3: agreement all 32 steps
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5 step 13: token diverged — accepted cross-config drift (WARN)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=8 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=8 vs isolated): PASS
+ALL GREEN: decode_step_batch exactness battery

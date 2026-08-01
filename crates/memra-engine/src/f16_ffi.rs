@@ -74,6 +74,22 @@ unsafe extern "C" {
         nsb_row: i64,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+    /// GGUF Q4_K 144B superblocks -> row-major fp16 mirror (round 49: the q27 trunk bulk).
+    fn memra_q4_K_dequant_f16(
+        w_q4k: *const core::ffi::c_void,
+        w_f16: *mut core::ffi::c_void,
+        out_f: i64,
+        nsb_row: i64,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+    /// GGUF Q5_K 176B superblocks -> row-major fp16 mirror (round 49b: q27 ssm_out).
+    fn memra_q5_K_dequant_f16(
+        w_q5k: *const core::ffi::c_void,
+        w_f16: *mut core::ffi::c_void,
+        out_f: i64,
+        nsb_row: i64,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
 }
 
 /// MEMRA_PP_F16 gate, read once. DEFAULT ON on the Hopper lane (80GB — the mirror costs
@@ -511,14 +527,21 @@ impl crate::Engine {
         // f16 lane — int4 magnitudes exact in fp16, same rounding class as Q8_0.
         // Q6_K admitted round 47: the q27 Q4_K_M mix packs attn_v/ffn_down/head as Q6_K
         // with NO MMQ arm — its 6.7ms/call dequant-GEMMs were the prefill wall.
+        // Q4_K admitted round 49: the q27 trunk bulk (294 tensors) rides mul_mat_q_q45k
+        // int8-MMA; the Lt f16 lane beats that class at large m (campaign-A precedent).
+        // Q5_K admitted round 49b: q27's 48 ssm_out projections — same MMQ class.
         let q4 = *qtype == crate::QT_Q4_0;
         let q6k = *qtype == crate::QT_Q6_K;
-        if (*qtype != crate::QT_Q8_0 && !q4 && !q6k) || f16.is_some() || ne.len() != 2 {
+        let q4k = *qtype == crate::QT_Q4_K;
+        let q5k = *qtype == crate::QT_Q5_K;
+        if (*qtype != crate::QT_Q8_0 && !q4 && !q6k && !q4k && !q5k)
+            || f16.is_some() || ne.len() != 2 {
             return Ok(());
         }
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
-        if q6k {
-            if in_f % 256 != 0 || *row_bytes != (in_f / 256) * 210 {
+        if q6k || q4k || q5k {
+            let sb = if q6k { 210 } else if q5k { 176 } else { 144 };
+            if in_f % 256 != 0 || *row_bytes != (in_f / 256) * sb {
                 return Ok(());
             }
         } else if in_f % 32 != 0 || *row_bytes != (in_f / 32) * (if q4 { 18 } else { 34 }) {
@@ -542,6 +565,8 @@ impl crate::Engine {
             return Ok(());
         }
         let mut mirror = if q6k { self.build_q6k_f16_raw(bytes, in_f, out_f)? }
+                         else if q4k { self.build_q4k_f16_raw(bytes, in_f, out_f)? }
+                         else if q5k { self.build_q5k_f16_raw(bytes, in_f, out_f)? }
                          else if q4 { self.build_q4_f16_raw(bytes, in_f, out_f)? }
                          else { self.build_q8_f16_raw(bytes, in_f, out_f)? };
         // W8A8 ACCURACY PILOT (MEMRA_W8A8_SIM=1, 2026-07-31, round-41 arc): fake-quant
@@ -634,6 +659,68 @@ impl crate::Engine {
         };
         if rc != 0 {
             return Err(format!("memra_q4_0_dequant_f16 rc={rc}").into());
+        }
+        Ok(dst)
+    }
+
+    /// Q5_K twin (176B superblocks, round 49b). Also the kernel_check gate entry for the
+    /// Q5_K f16-mirror class.
+    pub fn build_q5k_f16_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(in_f % 256 == 0);
+        let nsb = in_f / 256;
+        let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
+        let rc = {
+            let stream = &self.gpu.stream;
+            let (s_p, _gs) = bytes.device_ptr(stream);
+            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            unsafe {
+                memra_q5_K_dequant_f16(
+                    s_p as *const core::ffi::c_void,
+                    d_p as *mut core::ffi::c_void,
+                    out_f as i64,
+                    nsb as i64,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!("memra_q5_K_dequant_f16 rc={rc}").into());
+        }
+        Ok(dst)
+    }
+
+    /// Q4_K twin of `build_q6k_f16_raw` (144B superblocks, round 49). Also the kernel_check
+    /// gate entry for the Q4_K f16-mirror class.
+    pub fn build_q4k_f16_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(in_f % 256 == 0);
+        let nsb = in_f / 256;
+        let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
+        let rc = {
+            let stream = &self.gpu.stream;
+            let (s_p, _gs) = bytes.device_ptr(stream);
+            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            unsafe {
+                memra_q4_K_dequant_f16(
+                    s_p as *const core::ffi::c_void,
+                    d_p as *mut core::ffi::c_void,
+                    out_f as i64,
+                    nsb as i64,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!("memra_q4_K_dequant_f16 rc={rc}").into());
         }
         Ok(dst)
     }

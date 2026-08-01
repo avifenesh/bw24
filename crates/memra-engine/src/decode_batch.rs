@@ -110,6 +110,26 @@ impl HybridModel {
         caches: &mut [&mut Cache],
         samp: &[Option<(f32, u64, u32)>],
     ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        self.decode_step_batch_sampled_lean(e, tokens, caches, samp, false)
+    }
+
+    /// `decode_step_batch_sampled` + LEAN LOGITS (increment 2 component 3, 2026-08-01):
+    /// with `lean`, device-sampled rows SKIP the [n_vocab] logits D2H (9.4%/32.5% of the
+    /// pre-/post-inc2 tick profile) — their returned row is EMPTY. The audit-mapped
+    /// consumers: (a) the next tick's host sample — never fires, `device_next` carries the
+    /// token; (b) the graph-promotion argmax — reads only prefill logits (generated empty);
+    /// (c) the KV-reuse pool park at retire — the REAL consumer, served by a per-cache
+    /// device park: the row is dtod-copied into `cache.last_logits_dev` (device bandwidth)
+    /// and D2H'd ONCE at retire by the worker. Rows without a device sample keep a per-row
+    /// D2H. `lean=false` is bit-for-bit the previous method (gates + non-serving callers).
+    pub fn decode_step_batch_sampled_lean(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+        lean: bool,
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
         // MEMRA_DECODE_BATCH_CAP (experimental door, serving-lane tier probe 2026-08-01):
@@ -148,33 +168,71 @@ impl HybridModel {
         // sequence's pointer from these arrays — states stay per-cache (no pooling refactor),
         // yet conv/prep/scan collapse from 3xB launches per layer to 3. Rebuilt every step
         // because the ssm ping-pong swaps pointers host-side after each scan.
+        // INCREMENT 2 (2026-08-01): the SAME table now also carries, for every FULL-attn
+        // layer, [k0,v0,k1,v1,...] cache base addresses — the z-batched seqs append and
+        // seqs fa_decode kernels read their sequence's cache through it (the MoE
+        // expert-table pattern), collapsing 2xB launches per attn layer to 2.
         let mut lin_base: Vec<Option<usize>> = vec![None; self.layers.len()];
+        let mut attn_base: Vec<Option<usize>> = vec![None; self.layers.len()];
         let mut ptrs: Vec<u64> = Vec::new();
         {
             use cudarc::driver::DevicePtr;
             let s = &e.gpu.stream;
             for (il, layer) in self.layers.iter().enumerate() {
-                if matches!(layer.mixer, Mixer::Linear(_)) {
-                    lin_base[il] = Some(ptrs.len());
-                    for c in caches.iter() {
-                        let rl = c.recur[il].as_ref().unwrap();
-                        let (p, _g) = rl.conv_state.device_ptr(s);
-                        ptrs.push(p as u64);
+                match &layer.mixer {
+                    Mixer::Linear(_) => {
+                        lin_base[il] = Some(ptrs.len());
+                        for c in caches.iter() {
+                            let rl = c.recur[il].as_ref().unwrap();
+                            let (p, _g) = rl.conv_state.device_ptr(s);
+                            ptrs.push(p as u64);
+                        }
+                        for c in caches.iter() {
+                            let rl = c.recur[il].as_ref().unwrap();
+                            let (p, _g) = rl.ssm_state.device_ptr(s);
+                            ptrs.push(p as u64);
+                        }
+                        for c in caches.iter() {
+                            let rl = c.recur[il].as_ref().unwrap();
+                            let (p, _g) = rl.ssm_state_alt.device_ptr(s);
+                            ptrs.push(p as u64);
+                        }
                     }
-                    for c in caches.iter() {
-                        let rl = c.recur[il].as_ref().unwrap();
-                        let (p, _g) = rl.ssm_state.device_ptr(s);
-                        ptrs.push(p as u64);
-                    }
-                    for c in caches.iter() {
-                        let rl = c.recur[il].as_ref().unwrap();
-                        let (p, _g) = rl.ssm_state_alt.device_ptr(s);
-                        ptrs.push(p as u64);
+                    Mixer::Full(_) => {
+                        attn_base[il] = Some(ptrs.len());
+                        for c in caches.iter() {
+                            let kvl = c.kv[il].as_ref().unwrap();
+                            let (pk, _g) = kvl.k.device_ptr(s);
+                            let (pv, _g2) = kvl.v.device_ptr(s);
+                            ptrs.push(pk as u64);
+                            ptrs.push(pv as u64);
+                        }
                     }
                 }
             }
         }
         let ptr_table = if ptrs.is_empty() { None } else { Some(e.htod_u64(&ptrs)?) };
+
+        // INCREMENT 2 arm picks (per STEP — t_kv is layer-invariant within a tick):
+        // - seqs APPEND: format-only condition (per-row program is t_kv-independent);
+        //   default flash module only (fp8-KV rides the per-seq g-module path).
+        // - seqs FA: every row must take the v4 eager arm at ITS OWN t_kv AND all rows
+        //   must share ONE fa_split_keys rung (the rows-twins' straddle law) — a rung
+        //   crossing inside the batch keeps the per-seq loop for that step, so each
+        //   sequence always executes the exact program its isolated run would.
+        // MEMRA_BATCH_APPEND=0 / MEMRA_BATCH_FA=0 are the rollback/A-B seams.
+        let t_kvs: Vec<usize> = caches.iter().map(|c| c.pos + 1).collect();
+        let t_kv_max = *t_kvs.iter().max().unwrap();
+        let seqs_append = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("MEMRA_BATCH_APPEND").as_deref() != Ok("0"))
+        } && !Engine::kv_fp8_on();
+        let sp0 = crate::fa_split_keys(t_kvs[0], cfg.n_head_kv as usize);
+        let seqs_fa = {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("MEMRA_BATCH_FA").as_deref() != Ok("0"))
+        } && t_kvs.iter().all(|&t| crate::fa_seqs_eligible(t, head_dim))
+          && t_kvs.iter().all(|&t| crate::fa_split_keys(t, cfg.n_head_kv as usize) == sp0);
 
         // Embed all B tokens -> x [B, n_embd] (host gather, one H2D).
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
@@ -233,38 +291,81 @@ impl HybridModel {
                                 cfg.rope_freq_base, 1.0)?;
                     ph_mark(1, &mut ph_last)?;
 
-                    // Per-sequence: append this row's k/v into that cache, attend, place the
-                    // attention row. Row views — no scratch copies on the append side.
+                    // INCREMENT 2 (2026-08-01): the per-seq (append, attend) launch train
+                    // becomes two phases. Phase A appends all B rows (one z-batched launch,
+                    // or the per-seq loop on the seam/fp8 path); phase B attends all B
+                    // sequences (one blockIdx.z launch + one combine on the batched arm —
+                    // which also reads q / writes attn at row offsets, killing the per-seq
+                    // q/a dtod copies — or the per-seq loop when any row is outside the v4
+                    // arm / a split rung crosses inside the batch). Caches are disjoint per
+                    // sequence, so the phase split leaves every row's math untouched.
                     let q_dim = n_head * head_dim;
                     let kv_dim = n_head_kv * head_dim;
                     let mut attn = e.uninit(b_n * q_dim)?;
-                    for (bi, cache) in caches.iter_mut().enumerate() {
-                        let kvl = cache.kv[il].as_mut().unwrap();
-                        let k_row = k.slice(bi * kv_dim..(bi + 1) * kv_dim);
-                        let v_row = v.slice(bi * kv_dim..(bi + 1) * kv_dim);
-                        e.append_kv_quantized_view(
-                            &k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len,
-                            kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                            Engine::kv_fp8_on(),
-                        )?;
-                        kvl.len += 1;
-                        ph_mark(2, &mut ph_last)?;
-                        let t_kv = kvl.len;
-                        let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
-                        let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
-                        // fa_decode wants a q slice starting at row bi: v1 scratch-copies the
-                        // row (q8-class µs cost). A q-view fa_decode twin is a v2 cleanup.
-                        let mut q_row = e.uninit(q_dim)?;
-                        e.dtod_copy_view(&q.slice(bi * q_dim..(bi + 1) * q_dim), &mut q_row)?;
-                        ph_mark(3, &mut ph_last)?;
-                        let mut a_row = e.uninit(q_dim)?;
-                        e.fa_decode_kvmod(
-                            &q_row, &k_view, &v_view, &mut a_row, head_dim, n_head, n_head_kv,
-                            t_kv, scale, kvl.k_tok_bytes, kvl.v_tok_bytes, Engine::kv_fp8_on(),
-                        )?;
+                    // ---- phase A: KV append (all B rows) ----
+                    if seqs_append {
+                        let (kdk, kdv, ktb, vtb) = {
+                            let kvl = caches[0].kv[il].as_ref().unwrap();
+                            (kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)
+                        };
+                        let base = attn_base[il].expect("full layer missing from pointer table");
+                        let table = ptr_table.as_ref().expect("pointer table missing");
+                        let kv_view = table.slice(base..base + 2 * b_n);
+                        e.append_kv_quantized_seqs(&k, &v, &kv_view, &pos_d, b_n,
+                                                   kdk, kdv, ktb, vtb)?;
+                        for cache in caches.iter_mut() {
+                            let kvl = cache.kv[il].as_mut().unwrap();
+                            debug_assert_eq!(kvl.len, cache.pos, "kv len / pos out of lockstep");
+                            kvl.len += 1;
+                        }
+                    } else {
+                        for (bi, cache) in caches.iter_mut().enumerate() {
+                            let kvl = cache.kv[il].as_mut().unwrap();
+                            let k_row = k.slice(bi * kv_dim..(bi + 1) * kv_dim);
+                            let v_row = v.slice(bi * kv_dim..(bi + 1) * kv_dim);
+                            e.append_kv_quantized_view(
+                                &k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len,
+                                kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                Engine::kv_fp8_on(),
+                            )?;
+                            kvl.len += 1;
+                        }
+                    }
+                    ph_mark(2, &mut ph_last)?;
+                    // ---- phase B: attention (all B sequences) ----
+                    if seqs_fa {
+                        let (ktb, vtb) = {
+                            let kvl = caches[0].kv[il].as_ref().unwrap();
+                            (kvl.k_tok_bytes, kvl.v_tok_bytes)
+                        };
+                        let base = attn_base[il].expect("full layer missing from pointer table");
+                        let table = ptr_table.as_ref().expect("pointer table missing");
+                        let kv_view = table.slice(base..base + 2 * b_n);
+                        e.fa_decode_batch_seqs_v4(&q, &kv_view, &pos_d, &mut attn,
+                                                  head_dim, n_head, n_head_kv, b_n,
+                                                  t_kv_max, scale, sp0, ktb, vtb)?;
                         ph_mark(4, &mut ph_last)?;
-                        e.dtod_copy_into(&a_row, &mut attn, bi * q_dim)?;
-                        ph_mark(3, &mut ph_last)?;
+                    } else {
+                        for (bi, cache) in caches.iter_mut().enumerate() {
+                            let kvl = cache.kv[il].as_mut().unwrap();
+                            let t_kv = kvl.len;
+                            let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
+                            let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+                            // fa_decode wants a q slice starting at row bi: the fallback arm
+                            // scratch-copies the row (q8-class µs cost); the seqs arm above
+                            // reads/writes row offsets in place.
+                            let mut q_row = e.uninit(q_dim)?;
+                            e.dtod_copy_view(&q.slice(bi * q_dim..(bi + 1) * q_dim), &mut q_row)?;
+                            ph_mark(3, &mut ph_last)?;
+                            let mut a_row = e.uninit(q_dim)?;
+                            e.fa_decode_kvmod(
+                                &q_row, &k_view, &v_view, &mut a_row, head_dim, n_head, n_head_kv,
+                                t_kv, scale, kvl.k_tok_bytes, kvl.v_tok_bytes, Engine::kv_fp8_on(),
+                            )?;
+                            ph_mark(4, &mut ph_last)?;
+                            e.dtod_copy_into(&a_row, &mut attn, bi * q_dim)?;
+                            ph_mark(3, &mut ph_last)?;
+                        }
                     }
 
                     // Output gate (element-wise — batches whole) + o-proj at m=B.
@@ -418,12 +519,36 @@ impl HybridModel {
             }
         }
 
-        let host = e.dtoh(&logits)?;
+        let lean_any = lean && samp.iter().take(b_n).any(|s| s.is_some());
+        let rows: Vec<Vec<f32>> = if lean_any {
+            // LEAN: park device-sampled rows on-device (per-cache buffer, dtod); D2H only
+            // the rows that still need host logits. No sampled rows + no fallback rows =
+            // the big D2H disappears (the [B] token readback above already synced).
+            for (bi, s) in samp.iter().take(b_n).enumerate() {
+                if s.is_none() { continue; }
+                let cache = &mut caches[bi];
+                if cache.last_logits_dev.as_ref().map(|d| d.len() < n_vocab).unwrap_or(true) {
+                    cache.last_logits_dev = Some(e.uninit(n_vocab)?);
+                }
+                let dst = cache.last_logits_dev.as_mut().unwrap();
+                e.dtod_copy_view(&logits.slice(bi * n_vocab..(bi + 1) * n_vocab), dst)?;
+            }
+            (0..b_n)
+                .map(|bi| {
+                    if samp.get(bi).copied().flatten().is_some() {
+                        Ok(Vec::new())
+                    } else {
+                        e.dtoh_view(&logits.slice(bi * n_vocab..(bi + 1) * n_vocab))
+                    }
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            let host = e.dtoh(&logits)?;
+            (0..b_n).map(|bi| host[bi * n_vocab..(bi + 1) * n_vocab].to_vec()).collect()
+        };
         for c in caches.iter_mut() {
             c.pos += 1;
         }
-        let rows: Vec<Vec<f32>> =
-            (0..b_n).map(|bi| host[bi * n_vocab..(bi + 1) * n_vocab].to_vec()).collect();
         ph_mark(11, &mut ph_last)?;
         Ok((rows, next))
     }

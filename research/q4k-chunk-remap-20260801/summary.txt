@@ -1,0 +1,51 @@
+q4_K/q6_K KQRP mirror v2 — lane->chunk remap (2026-08-01)
+=========================================================
+Box: 8xH100 p5 (18.117.231.105), GPU 2 DEDICATED (no co-tenant), CUDA 13.3.1, sm_90a build.
+Model: Qwen3.6-27B-Q4_K_M.gguf. Base binary: merged v0.59.0 (v1 KQRP split-plane mirrors).
+New binary: v2 mirror layout (this lane). All runs same box, same GPU, same session,
+interleaved base/new. ncu 2025.4.1, --set full, launch-skip 60, launch-count 24 (decode m=1).
+
+WHAT CHANGED (bit-identity contract held: same values, same fold order, only addresses):
+ (a) qs/ql planes: intra-superblock lane->chunk repack — each grp (0..7) owns one contiguous
+     16B nibble-packed chunk; q6_K qh crumb-repacked to 8B/grp. Warp g-iter weight windows
+     become dense contiguous 512B (qs/ql) + 256B (qh): ONE load instead of a paired-lane
+     16B@32B-stride PAIR over shared bytes (v1 requested every weight sector twice).
+ (b) q4_K meta: ONE int4 load of the 16B header, d/dmin/scales register-extracted (v1 did
+     2B+2B+2-3 byte loads); q6_K scales: ONE aligned 2B load (is0/is1 plane-adjacent).
+ Plane offsets/sizes unchanged -> q4k/q6k_rp_planes + Rust build_kq_rp4_raw untouched;
+ builders (q4_K/q6_K_split_rp_build) do the permutation at load time (free).
+
+GATES (new binary): kernel-check ALL GREEN, all 13 KQRP entries bit-bad=0 (q4_K m=1,
+ b2/b4/b8; q6_K m=1, b2/b4/b8/b16 tiers). run-gen argmax MATCH (board-2048). run-spec
+ K=1..8 all PASS (HPOST=1 PMIN=0.3), acceptance per-K identical to base receipts
+ (79.0/72.4/66.1/60.7/58.5/56.0/55.2/53.1) — bit-identity corroborated e2e.
+
+NCU (m=1 decode shapes, medians; full table in ncu-summary.txt):
+ q4_K grid=4352 (hot): dur 24.53 -> 23.81us (-2.9%), DRAM 63.60 -> 65.69%,
+   excessive sectors 3,046,400 -> 2,785,280, TOTAL sectors 9,591,808 -> 7,502,848 (-22%).
+ q4_K 256/1280/1536/2560: -5.7%/-1.4%/-1.5%/-2.0% dur; 3072 +1.5% (n=1, noise).
+ q6_K grid=2560: dur 26.43 -> 23.71us (-10.3%), DRAM 50.87 -> 56.67%, exc 1.74M -> 1.64M.
+ q6_K grid=1280: dur 43.46 -> 36.54us (-15.9%), DRAM 51.63 -> 61.48%.
+ Residual excessive (37%/34% of total): the ACTIVATION 16B@32B-stride loads — arithmetic
+ matches exactly (2 instr x 16 exc x nsb/32 iters x rows); weight-side waste is DEAD.
+
+REFUTED (increment c, receipts mmvq-after-c-*): dense a-window + warp-shuffle exchange
+ (lane loads window chunks l, l+32; pair arrives via 16 SHFL/iter). Coalescing GOAL was
+ achieved — the ncu uncoalesced-access rule stops firing entirely — but every shape
+ REGRESSED: hot q4_K 23.81 -> 27.33us, DRAM 57.09%; q6_K 2560 26.62us; q6_K 1280 44.06us.
+ SHFL cost through the LSU pipe exceeds the a-side sector savings on this latency-bound
+ kernel. Reverted; direct a-loads stay. (The remaining a-side waste is only reachable via
+ a global q8_1 activation-buffer layout change — out of this lane, would touch every mmvq.)
+
+E2E A/B (run-spec, plain [generate] + spec K=3 HPOST PMIN0.3, NGEN=256, interleaved x5,
+ medians, dedicated GPU — thermal regime: single-kernel bursts, no sustained load):
+ class        base_plain  new_plain  delta   base_spec  new_spec  delta
+ short          90.66      92.89     +2.5%    133.78     132.35   -1.1%
+ board2048      88.74      92.24     +3.9%    110.07     111.01   +0.9%
+ agentic500     90.87      93.20     +2.6%    144.58     143.44   -0.8%
+ Plain ranges cleanly separated (new min > base max, all 3 classes). Spec ranges overlap
+ -> flat within noise (verify rides batched _rp twins; drafting m=1 gains offset by ~0).
+ Acceptance identical per class (76.3/66.1/84.0) — bit-identity again.
+
+VERDICT: v2 remap kept (a+b). Plain q27 decode +2.5..+3.9% e2e on top of the v1 KQRP
+ +15%; q6_K rp kernels -10..-16% duration. Spec flat. Increment (c) refuted with numbers.

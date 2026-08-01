@@ -29,12 +29,29 @@ pub use memra_sampling as sampler;
 /// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
 /// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
 /// ~240 per-column cuBLAS gemv launches/round). MEMRA_ROUTER_KERNEL=0 is the rollback seam.
-/// MoE grouped f16 GEMM door (MEMRA_MOE_F16G=1, round 46 arc 2, experimental until gated):
-/// per-layer expert dequant to f16 + cublasGemmGroupedBatchedEx over the CSR groups.
-/// f16-mirror numeric class.
+/// MoE grouped f16 GEMM door (experimental until gated), f16-mirror numeric class:
+/// per-layer expert dequant to f16 + one grouped f16 GEMM over the CSR groups.
+///   MEMRA_MOE_F16G=1  cublasGemmGroupedBatchedEx (round 46 arc 2). The grouped API issues
+///                     through cublas-internal streams NOT ordered with ours — v1 pays a full
+///                     stream sync per projection (round-47 ledgered defect).
+///   MEMRA_MOE_F16G=2  single-kernel grouped GEMM on the engine stream (round 49): ordered by
+///                     construction, zero syncs, f32 C with the act row-scale folded in.
+/// DEFAULT (2026-08-01, round 49 promotion): mode 1 on the Hopper lane — with the 41/41
+/// dequant coverage fix the q35 board-2048 prime measured 5490 (MMQ) / 8380 (mode 1,
+/// +53%) / 7990 (mode 2) x3 interleaved on the H100, argmax MATCH — the last board loss
+/// flips. The 5090 measured FLAT (858GB/s makes the dequant-workspace traffic cancel the
+/// GEMM win), so sm_120a keeps the MMQ default. MEMRA_MOE_F16G=0 kills anywhere.
+pub fn moe_f16g_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match std::env::var("MEMRA_MOE_F16G").as_deref() {
+        Ok("0") => 0,
+        Ok("2") => 2,
+        Ok(_) => 1,
+        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 0 },
+    })
+}
 pub fn moe_f16g_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("MEMRA_MOE_F16G").as_deref() == Ok("1"))
+    moe_f16g_mode() != 0
 }
 
 /// Fused act-epilogue (silu/gelu-mul + q8_1_mmq quantize in one launch) for the MoE prefill
@@ -521,6 +538,24 @@ fn fa_v3_active(head_dim: usize) -> bool {
     fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
         && !Engine::kv_fp8_on()
 }
+
+/// BATCHED-TICK increment 2 (2026-08-01): true iff a row at this t_kv would take the v4
+/// eager arm in `fa_decode_kvmod`'s dispatch — the exact precondition for the z-batched
+/// `fa_decode_vec_q_seqs_v4` twin to reproduce its per-seq program bit-identically.
+/// Mirrors the kvmod predicates: vec on + above the vec floor + hd256 + inside the v4
+/// window + the PRODUCTION v4 body (the noB3/stage phase probes are wrong-output) + the
+/// default flash module (no fp8-KV g-module). Callers must ALSO group rows on one
+/// `fa_split_keys` rung (the rows-twins' straddle law) before batching.
+pub fn fa_seqs_eligible(t_kv: usize, head_dim: usize) -> bool {
+    std::env::var("MEMRA_NO_FA_VEC").is_err()
+        && t_kv >= fa_vec_min_tkv()
+        && head_dim == 256
+        && fa_v4_at(t_kv)
+        && !matches!(fa_v4_mode(), "noB3" | "stage")
+        && !Engine::kv_fp8_on()
+}
+/// Public twin of the crate-private split ladder (kernel-check builds the seqs-vs-loop pin).
+pub fn fa_split_keys_pub(t_kv: usize, n_head_kv: usize) -> usize { fa_split_keys(t_kv, n_head_kv) }
 
 /// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
 /// DtoH staging. cudarc's `alloc_pinned` uses CU_MEMHOSTALLOC_WRITECOMBINED, which is right for
@@ -3397,6 +3432,13 @@ impl Engine {
     }
     pub fn htod_u64(&self, v: &[u64]) -> Result<CudaSlice<u64>, Box<dyn std::error::Error>> {
         Ok(self.gpu.stream.clone_htod(v)?)
+    }
+    /// View twin of `dtoh` (lean-logits component 3: D2H one row of a [B, n_vocab] stack).
+    pub fn dtoh_view(&self, d: &cudarc::driver::CudaView<f32>)
+                     -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let v = self.gpu.stream.clone_dtoh(d)?;
+        self.gpu.stream.synchronize()?;
+        Ok(v)
     }
     pub fn dtoh(&self, d: &CudaSlice<f32>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let v = self.gpu.stream.clone_dtoh(d)?;
@@ -8144,6 +8186,93 @@ impl Engine {
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
+    /// BATCHED-TICK increment 2: ONE fa_decode launch covering ALL B sequences of the
+    /// batched decode step (blockIdx.z = sequence). Per-seq K/V cache bases ride a device
+    /// pointer table (`kv_ptrs`, [2B] interleaved k0,v0,...); per-seq key bounds ride the
+    /// tick's position table (`pos_seq`, T_kv = pos+1). v4-lane only: the CALLER
+    /// (decode_batch) gates every row through `fa_seqs_eligible` AND one `fa_split_keys`
+    /// rung (`split_keys`), so each sequence's split partition, key walk and combine order
+    /// reproduce its per-seq eager v4 program exactly (kernel-check pins seqs-vs-loop bit
+    /// identity; decode-batch-gate strict pins the whole tick vs decode_step_h).
+    /// q is the stacked [B, n_head, head_dim] tick buffer read in place (no per-seq q
+    /// copies); o is written [B, n_head, head_dim] in place (no per-seq a copies).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_decode_batch_seqs_v4(&self, q: &CudaSlice<f32>,
+                                   kv_ptrs: &cudarc::driver::CudaView<u64>,
+                                   pos_seq: &CudaSlice<i32>, o: &mut CudaSlice<f32>,
+                                   head_dim: usize, n_head: usize, n_head_kv: usize,
+                                   b_n: usize, t_kv_max: usize, scale: f32,
+                                   split_keys: usize, k_tok_bytes: usize, v_tok_bytes: usize)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(head_dim == 256, "seqs twin is v4-stamped (hd256 only)");
+        let n_splits_max = (t_kv_max + split_keys - 1) / split_keys;
+        let o_len = b_n * n_head * n_splits_max * head_dim;
+        let ml_len = b_n * n_head * n_splits_max;
+        let mut part_guard = self.fa_part_pool.lock().unwrap();
+        if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+        }
+        let pg = part_guard.as_mut().unwrap();
+        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        let (nspm, spk) = (n_splits_max as i32, split_keys as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let gqa = (n_head / n_head_kv).max(1) as u32;
+        let f = self.func("fa_decode_vec_q_seqs_v4");
+        // fa_v4_smem (11520B) + sV bf16 tile — the v4 eager arm's sizing on the default module.
+        let shmem = (11520 + 32 * head_dim * 2) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, b_n as u32),
+            block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
+        {
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(kv_ptrs).arg(pos_seq).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(&scale).arg(&nspm).arg(&spk).arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+        }
+        let fc = self.func("fa_decode_combine_seqs");
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, b_n as u32, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
+          .arg(pos_seq).arg(&nspm).arg(&spk);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
+    /// BATCHED-TICK increment 2: z-batched decode KV append — one launch appends this
+    /// step's B rows, each into ITS OWN sequence cache at slot pos_seq[z], through the same
+    /// [2B] interleaved pointer table the seqs FA reads. Each (block, z) warp executes the
+    /// per-token appender's exact warp program on row z of the stacked [B, kv_dim] k/v —
+    /// written cache bytes are BIT-IDENTICAL to the B per-seq calls it replaces
+    /// (kernel-check pins the bytes). Default flash module only (callers exclude fp8-KV).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_kv_quantized_seqs(&self, k_rows: &CudaSlice<f32>, v_rows: &CudaSlice<f32>,
+                                    kv_ptrs: &cudarc::driver::CudaView<u64>,
+                                    pos_seq: &CudaSlice<i32>, b_n: usize,
+                                    kv_dim_k: usize, kv_dim_v: usize,
+                                    k_tok_bytes: usize, v_tok_bytes: usize)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("append_quantize_kv_q8_0_q5_1_seqs");
+        let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk, b_n as u32, 1),
+            block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_rows).arg(v_rows).arg(kv_ptrs).arg(pos_seq)
+         .arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
         Ok(())
     }
 

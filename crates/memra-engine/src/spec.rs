@@ -181,11 +181,74 @@ pub struct SpecSession {
     /// session's randomness never repeats between generate_spec_session calls. (0,0) at admit.
     pub sctr: u32,
     pub uctr: u32,
+    /// PERSISTENT DRAFT-GRAPH CONTEXT (2026-08-01, the serve-burst fixed-cost fix): the captured
+    /// draft graph(s) + every device I/O buffer they bake, carried ACROSS generate_spec_session
+    /// calls. Before this, every serve burst re-captured the draft graph (2 warmup forwards +
+    /// instantiate) — measured ~16ms/burst on H100 q27 (MEMRA_SPEC_BURST sweep,
+    /// research/spec-serving-20260801). None before the first turn; error paths drop it
+    /// (next burst recaptures — serve retires errored sessions anyway).
+    pub(crate) draft_ctx: Option<DraftGraphCtx>,
+    /// PENDING-CARRY across bursts (2026-08-01, the serve burst-boundary fix): the bonus token
+    /// emitted by the last round but NOT committed to the caches. The old tail committed it with
+    /// a solo T=1 trunk pass (+ draft fill), and the next burst's setup fed the stashed next_pred
+    /// with ANOTHER solo pass — 2x ~11.5ms/burst measured on H100 q27 ([spec-setup] trace).
+    /// Carrying it lets the next empty-suffix greedy burst consume it as round-0 verify col 0,
+    /// exactly like a mid-burst full-accept boundary (no solo passes). INVARIANT: when set,
+    /// `committed` (== cache rows) EXCLUDES this token although it was already emitted in the
+    /// last burst's output, and `last_h` holds the hidden of the last COMMITTED row (its
+    /// predecessor — the chain-seed/fill anchor). `next_pred` is None (unknown without the
+    /// commit pass). Non-empty-suffix or sampled turns must flush first (spec_flush_pending);
+    /// generate_spec_session_sampled does this at entry, and serve parks only flushed sessions.
+    pub pending_tok: Option<u32>,
 }
 impl SpecSession {
     /// Context capacity of the session's caches (the server's ContextFull guard).
     pub fn cache_max_ctx(&self) -> usize {
         self.cache.max_ctx
+    }
+}
+
+/// Per-session persistent draft-graph context: the captured CUDA graph(s) plus the device
+/// buffers whose POINTERS the capture bakes. Reuse legality: the greedy capture bakes only
+/// session-stable pointers (the session's own MtpScratch KV — allocated once, never realloc'd;
+/// the model's resident embedding; the process-wide OnceLock p_min) and the g_* buffers held
+/// HERE — so one capture serves the session's whole lifetime. The sampled capture additionally
+/// bakes (seed, temp) as capture-time constants and needs k q-slots — keyed by `s_key`, dropped
+/// and recaptured when a pool-resumed request changes them. `*_failed` memoizes a failed capture
+/// so the eager fallback doesn't pay a doomed capture attempt every burst.
+pub(crate) struct DraftGraphCtx {
+    g_tok: CudaSlice<u32>,
+    g_pos: CudaSlice<i32>,
+    g_seed: CudaSlice<f32>,
+    g_p: CudaSlice<f32>,
+    g_ctr: CudaSlice<u32>,
+    g_q: CudaSlice<f32>,
+    g_perturb: CudaSlice<f32>,
+    q_slots: Vec<CudaSlice<f32>>,
+    graph: Option<cudarc::driver::CudaGraph>,
+    graph_failed: bool,
+    graph_s: Option<cudarc::driver::CudaGraph>,
+    graph_s_failed: bool,
+    /// (seed, temp.to_bits(), k) baked into graph_s at its capture.
+    s_key: Option<(u64, u32, usize)>,
+}
+impl DraftGraphCtx {
+    fn new(e: &Engine, n_embd: usize, qlen: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(DraftGraphCtx {
+            g_tok: e.alloc_u32_zeroed(1)?,
+            g_pos: e.htod_i32(&[0])?,
+            g_seed: e.zeros(n_embd)?,
+            g_p: e.zeros(1)?,
+            g_ctr: e.alloc_u32_zeroed(1)?,
+            g_q: e.zeros(qlen)?,
+            g_perturb: e.zeros(qlen)?,
+            q_slots: Vec::new(),
+            graph: None,
+            graph_failed: false,
+            graph_s: None,
+            graph_s_failed: false,
+            s_key: None,
+        })
     }
 }
 
@@ -1941,7 +2004,47 @@ impl HybridModel {
             next_pred: None,
             sctr: 0,
             uctr: 0,
+            draft_ctx: None,
+            pending_tok: None,
         })
+    }
+
+    /// Commit a carried pending bonus (see SpecSession::pending_tok): one T=1 trunk pass
+    /// (its logits' argmax becomes next_pred) + the draft-KV fill at the carried anchor —
+    /// byte-identical to the pre-carry session tail. Required before a non-empty-suffix
+    /// prime, a sampled turn, or parking a session for pool reuse. No-op without a pending.
+    pub fn spec_flush_pending(
+        &self,
+        e: &Engine,
+        sess: &mut SpecSession,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(b) = sess.pending_tok.take() else {
+            return Ok(());
+        };
+        let mtp = self.mtp.as_ref().expect("pending carry requires an MTP head");
+        let n_embd = self.cfg.n_embd as usize;
+        let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
+        let embd_gpu = if spec_host_embd() {
+            None
+        } else {
+            Some(
+                self.embd_gpu
+                    .get_or_init(|| e.upload_u8(&self.embd.raw).expect("embed table upload")),
+            )
+        };
+        let embd_dev = embd_gpu.map(|g| (g, embd_qt, embd_rb));
+        let pos_b = sess.cache.pos;
+        sess.scratch.set_len(e, pos_b)?;
+        let (lg_b, hb) = self.decode_step_h(e, b, &mut sess.cache)?;
+        sess.next_pred = Some(argmax(&lg_b) as u32);
+        let anchor = sess
+            .last_h
+            .as_ref()
+            .expect("pending carry requires last_h (the predecessor-row anchor)");
+        self.mtp_kv_fill(e, mtp, &[b], anchor, pos_b, &mut sess.scratch, embd_dev)?;
+        sess.last_h = Some(hb);
+        sess.committed.push(b);
+        Ok(())
     }
 
     /// One spec-decode turn on a live session. `suffix` = the NEW tokens only (turn N+1's user
@@ -1971,6 +2074,15 @@ impl HybridModel {
         k: usize,
         sampling: Option<SpecSampling>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        // PENDING-CARRY entry flush: a carried bonus precedes any new suffix in the sequence,
+        // so it must commit BEFORE the suffix primes; the sampled path doesn't carry (its
+        // round-0 accept needs the commit pass's logits). Empty-suffix greedy bursts — the
+        // serve continuation case — consume the carry in-loop with zero solo passes.
+        if sess.pending_tok.is_some()
+            && (!suffix.is_empty() || sampling.map_or(false, |s| s.temp > 0.0))
+        {
+            self.spec_flush_pending(e, sess)?;
+        }
         let mtp_dense = self
             .mtp
             .as_ref()
@@ -2081,7 +2193,7 @@ impl HybridModel {
         };
         let mut own_cache;
         let mut own_scratch;
-        let (cache, scratch, mut sess_tail): (
+        let (cache, scratch, mut sess_tail, mut sess_draft_slot, mut sess_pending_slot): (
             &mut Cache,
             &mut MtpScratch,
             Option<(
@@ -2091,6 +2203,8 @@ impl HybridModel {
                 &mut u32,
                 &mut u32,
             )>,
+            Option<&mut Option<DraftGraphCtx>>,
+            Option<&mut Option<u32>>,
         ) = match sess.take() {
             Some(sr) => {
                 let SpecSession {
@@ -2101,11 +2215,15 @@ impl HybridModel {
                     next_pred,
                     sctr: s_sctr,
                     uctr: s_uctr,
+                    draft_ctx,
+                    pending_tok,
                 } = sr;
                 (
                     cache,
                     scratch,
                     Some((committed, last_h, next_pred, s_sctr, s_uctr)),
+                    Some(draft_ctx),
+                    Some(pending_tok),
                 )
             }
             None => {
@@ -2117,10 +2235,15 @@ impl HybridModel {
                     max_ctx,
                     self.mtp.as_ref().and_then(|m| m.geom.as_ref()),
                 )?;
-                (&mut own_cache, &mut own_scratch, None)
+                (&mut own_cache, &mut own_scratch, None, None, None)
             }
         };
         let base = cache.pos;
+        // PENDING-CARRY consume (2026-08-01): a carried bonus reaches here only on the
+        // empty-suffix GREEDY continuation path (generate_spec_session_sampled flushed every
+        // other case). It enters the round loop as round-0's pending — verify col 0 — exactly
+        // like a mid-burst full-accept boundary: no init feed, no tail commit pass.
+        let carried_pending: Option<u32> = sess_pending_slot.as_mut().and_then(|s| s.take());
         // PERSISTENT DRAFT KV (the only mode since 2026-07-08 — the legacy round-local scratch,
         // MEMRA_SPEC_KVLOCAL, measured -35 acceptance pts on the 27B p3 sweep and was removed;
         // acceptance-only — exactness is verify's job either way).
@@ -2168,8 +2291,8 @@ impl HybridModel {
                     .as_ref()
                     .map_or(false, |(c, lh, np, _, _)| !c.is_empty()
                         && lh.is_some()
-                        && np.is_some()),
-                "empty-suffix continuation needs a primed session (committed + last_h + next_pred)"
+                        && (np.is_some() || carried_pending.is_some())),
+                "empty-suffix continuation needs a primed session (committed + last_h + next_pred|pending)"
             );
         }
         let mut prime_logits;
@@ -2229,12 +2352,18 @@ impl HybridModel {
 
         // First generated token = argmax of the prompt's last logits (== greedy's first token).
         // Emit it, then FEED it to establish the loop invariant below.
-        let mut last_token = if continuation {
+        // PENDING-CARRY: the carried bonus was already emitted by the LAST burst — it becomes
+        // last_token WITHOUT re-emission, and round 0 consumes it as pending (no init feed).
+        let mut last_token = if let Some(b) = carried_pending {
+            b
+        } else if continuation {
             sess_tail.as_ref().unwrap().2.unwrap()
         } else {
             argmax(&prime_logits) as u32
         };
-        out.push(last_token);
+        if carried_pending.is_none() {
+            out.push(last_token);
+        }
         if continuation {
             // draft-KV invariant: entries [0..base) are the session's exact fills; truncate any
             // overhang so the chain's first append lands at slot base (== committed.len()).
@@ -2342,14 +2471,36 @@ impl HybridModel {
         };
         let mut pen_hist_d: Option<CudaSlice<u32>> = None;
         let mut pcol_buf: Option<CudaSlice<f32>> = None; // penalized p-column scratch
-        let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut *cache)?;
-        let mut last_pred = argmax(&init_logits) as u32;
-        // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
-        let mut last_col_logits: Option<CudaSlice<f32>> = if sampled {
-            Some(e.htod(&init_logits)?)
+        // MEMRA_SPEC_SETUP_TRACE=1 (diagnostics): per-call wall decomposition of the burst
+        // SETUP + TAIL segments (the round loop's internals are MEMRA_SPEC_PHASE's job) —
+        // built to pin the serve per-burst fixed cost (research/spec-serving-20260801).
+        let setup_trace = std::env::var("MEMRA_SPEC_SETUP_TRACE").as_deref() == Ok("1");
+        let t_ent = std::time::Instant::now();
+        // INIT FEED — skipped on a pending carry: last_token (the carried bonus) is NOT in the
+        // caches and must NOT be fed solo; round 0's batched verify commits it as col 0. Its
+        // seed/anchor hidden is the carried last_h (copied below); last_pred is dead in the
+        // pending path (t_pred reads verify col 0 — the accept walk overwrites it).
+        let mut last_pred = 0u32;
+        let mut last_col_logits: Option<CudaSlice<f32>> = None;
+        let h_seed0: CudaSlice<f32> = if carried_pending.is_none() {
+            let (init_logits, h) = self.decode_step_h(e, last_token, &mut *cache)?;
+            last_pred = argmax(&init_logits) as u32;
+            // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
+            if sampled {
+                last_col_logits = Some(e.htod(&init_logits)?);
+            }
+            h
         } else {
-            None
+            // predecessor-row anchor: hidden of the last COMMITTED row (the carry contract).
+            let lh = sess_tail
+                .as_ref()
+                .unwrap()
+                .1
+                .as_ref()
+                .expect("pending carry requires last_h");
+            e.clone_dtod(lh)?
         };
+        let t_init = t_ent.elapsed();
         let mut last_col_stats: Option<(f32, f32, f32)> = None;
         // PERSISTENT h_seed buffer (allocated BEFORE any graph capture so no captured scratch can
         // alias it): every path that updates the round seed copies INTO it — no per-round allocs,
@@ -2416,20 +2567,34 @@ impl HybridModel {
         // warmups mutate scratch len_d / pos / tok / seed — all reset at every round start, so the
         // only restore needed is the scratch counter. Capture failure (e.g. a non-capturable
         // cuBLAS path in an exotic head) falls back to the eager draft chain.
-        let mut g_tok = e.alloc_u32_zeroed(1)?;
-        let mut g_pos = e.htod_i32(&[0])?;
-        let mut g_seed = e.zeros(n_embd)?;
-        let mut g_p = e.zeros(1)?;
-        let mut draft_graph: Option<cudarc::driver::CudaGraph> = None;
-        if graph_draft && !sampled {
+        // PER-SESSION PERSISTENCE (2026-08-01): session calls reuse the DraftGraphCtx parked on
+        // the SpecSession — the capture (2 warmup head forwards + instantiate) ran ONCE at the
+        // session's first burst, not per burst (measured ~16ms/burst fixed cost on H100 q27,
+        // research/spec-serving-20260801). Reuse is pointer-exact: the graph bakes the session's
+        // own scratch KV (never realloc'd), the model's resident embedding, the OnceLock p_min,
+        // and the g_* buffers carried in the ctx — replay dispatch is identical to a fresh
+        // capture, so draft tokens are bit-identical (drafts never decide exactness anyway; the
+        // verify arbitrates). Single-shot calls (sess=None) build a fresh ctx and drop it.
+        let mut dctx: DraftGraphCtx = match sess_draft_slot.as_mut().and_then(|s| s.take()) {
+            Some(c) => c,
+            None => DraftGraphCtx::new(e, n_embd, if sampled { d_vocab } else { 1 })?,
+        };
+        // A session that ran greedy bursts first sized g_q/g_perturb at 1; a sampled resume
+        // needs d_vocab. Realloc is legal exactly while graph_s is None (nothing baked them).
+        if sampled && dctx.g_q.len() < d_vocab {
+            dctx.g_q = e.zeros(d_vocab)?;
+            dctx.g_perturb = e.zeros(d_vocab)?;
+        }
+        if graph_draft && !sampled && dctx.graph.is_none() && !dctx.graph_failed {
+            let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, .. } = &mut dctx;
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(
                     e,
                     mtp,
-                    &mut g_tok,
-                    &mut g_pos,
-                    &mut g_seed,
-                    &mut g_p,
+                    g_tok,
+                    g_pos,
+                    g_seed,
+                    g_p,
                     &mut *scratch,
                     p_min > 0.0,
                     true,
@@ -2443,11 +2608,12 @@ impl HybridModel {
             });
             match cap_res {
                 Ok(g) => {
-                    scratch.set_len(e, 0)?;
-                    draft_graph = Some(g);
+                    scratch.set_len(e, base)?;
+                    dctx.graph = Some(g);
                 }
                 Err(err) => {
-                    scratch.set_len(e, 0)?;
+                    scratch.set_len(e, base)?;
+                    dctx.graph_failed = true;
                     if debug_spec {
                         eprintln!("[spec] draft-graph capture failed ({err}); eager fallback");
                     }
@@ -2461,27 +2627,30 @@ impl HybridModel {
         // counter lives in the persistent device g_ctr (bumped in-graph, host-seeded from sctr
         // once per round); the raw head logits land in the persistent g_q for the host's
         // per-replay async D2D into the round's q slot (q_slots, K x d_vocab, allocated once).
-        // seed/temp are capture-time constants — capture happens once per generate call, exactly
-        // like the greedy graph (no extra recapture cost beyond today's per-call capture).
-        let mut g_ctr = e.alloc_u32_zeroed(1)?;
-        let mut g_q = e.zeros(if sampled { d_vocab } else { 1 })?;
-        let mut g_perturb = e.zeros(if sampled { d_vocab } else { 1 })?;
-        let mut q_slots: Vec<CudaSlice<f32>> = Vec::new();
-        let mut draft_graph_s: Option<cudarc::driver::CudaGraph> = None;
+        // seed/temp are capture-time constants — baked into graph_s, so a pool-resumed request
+        // with a different (seed, temp, k) drops the parked sampled graph and recaptures.
         // COMPOSITION RULE (fspec x gsd merge): the in-graph chain samples from the RAW
         // softmax — it can hold neither per-row filter stats nor the varying penalty history.
         // The sampled graph therefore engages only in the PURE-TEMP regime; filters/penalties
         // force the eager draft (which computes stats/penalties per row).
         let pure_temp = sp.top_k == 0 && sp.top_p >= 1.0 && sp.min_p <= 0.0 && !pen_on;
-        if graph_draft && sampled && pure_temp {
+        let s_key = (sp_seed, sp_temp.to_bits(), k);
+        if sampled && dctx.s_key.is_some_and(|old| old != s_key) {
+            dctx.graph_s = None;
+            dctx.graph_s_failed = false;
+            dctx.s_key = None;
+            dctx.q_slots.clear();
+        }
+        if graph_draft && sampled && pure_temp && dctx.graph_s.is_none() && !dctx.graph_s_failed {
+            let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, g_ctr, g_perturb, g_q, .. } = &mut dctx;
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(
                     e,
                     mtp,
-                    &mut g_tok,
-                    &mut g_pos,
-                    &mut g_seed,
-                    &mut g_p,
+                    g_tok,
+                    g_pos,
+                    g_seed,
+                    g_p,
                     &mut *scratch,
                     p_min > 0.0,
                     true,
@@ -2489,20 +2658,22 @@ impl HybridModel {
                     embd_qt,
                     embd_rb,
                     d_vocab,
-                    Some((&mut g_ctr, &mut g_perturb, &mut g_q, sp_seed, sp_temp)),
+                    Some((g_ctr, g_perturb, g_q, sp_seed, sp_temp)),
                     None,
                 )
             });
             match cap_res {
                 Ok(g) => {
-                    scratch.set_len(e, 0)?;
+                    scratch.set_len(e, base)?;
                     for _ in 0..k {
-                        q_slots.push(e.zeros(d_vocab)?);
+                        dctx.q_slots.push(e.zeros(d_vocab)?);
                     }
-                    draft_graph_s = Some(g);
+                    dctx.graph_s = Some(g);
+                    dctx.s_key = Some(s_key);
                 }
                 Err(err) => {
-                    scratch.set_len(e, 0)?;
+                    scratch.set_len(e, base)?;
+                    dctx.graph_s_failed = true;
                     if debug_spec {
                         eprintln!(
                             "[spec] sampled draft-graph capture failed ({err}); eager fallback"
@@ -2511,6 +2682,7 @@ impl HybridModel {
                 }
             }
         }
+        let t_cap = t_ent.elapsed();
         // PERSISTENT DRAFT KV: fill the MTP block's K/V for every prompt position from the exact
         // trunk hiddens collected during prime — ONE batched K/V-only pass (overwrites any
         // capture-warmup garbage; capture left len at 0). last_token (the init feed) needs no
@@ -2612,10 +2784,10 @@ impl HybridModel {
                     self.mtp_head_forward_cap(
                         e,
                         mtp,
-                        &mut g_tok,
-                        &mut g_pos,
-                        &mut g_seed,
-                        &mut g_p,
+                        &mut dctx.g_tok,
+                        &mut dctx.g_pos,
+                        &mut dctx.g_seed,
+                        &mut dctx.g_p,
                         &mut *scratch,
                         true,
                         true,
@@ -2645,7 +2817,7 @@ impl HybridModel {
         let stream_active = stream_on && stream_graph.is_some();
         if debug_spec {
             eprintln!("[spec] stream_on={stream_on} env={} samp={sampled} dg={} captured={} active={stream_active} session={session_mode} replay={spec_replay}",
-                      crate::spec::spec_stream(), draft_graph.is_some(), stream_graph.is_some());
+                      crate::spec::spec_stream(), dctx.graph.is_some(), stream_graph.is_some());
         }
         let t_v_s = k + 1;
         // ROUND-STREAM buffers + ptr tables now live in the model-generic round_stream
@@ -2673,6 +2845,7 @@ impl HybridModel {
             None
         };
 
+        let t_fill = t_ent.elapsed();
         let mut round = 0usize;
         // ADAPTIVE DRAFT LENGTH (MEMRA_SPEC_ADAPT=1, opt-in — the gemma_spec accepted-run law,
         // ported 2026-08-01): next round's draft depth = last round's accepted run + 1, clamped
@@ -2755,7 +2928,9 @@ impl HybridModel {
         // pass of any kind). Verify still
         // checks every emitted token against the target -> exactness holds by construction; only
         // DRAFT QUALITY can shift, which the acceptance numbers arbitrate.
-        let mut pending: Option<u32> = None; // bonus emitted but not yet committed to cache
+        // bonus emitted but not yet committed to cache. A carried pending (see SpecSession::
+        // pending_tok) enters round 0 directly — the burst boundary becomes a plain round edge.
+        let mut pending: Option<u32> = carried_pending;
                                              // MEMRA_SPEC_PHASE=1: per-round wall decomposition (draft / verify / accept+commit) —
                                              // no tracing, no extra syncs (each phase is naturally sync-bounded: draft readbacks,
                                              // the verify accept readback). Printed once at loop end via spec-stats.
@@ -2791,9 +2966,9 @@ impl HybridModel {
                     e.i32_copy_add(&pos_ctr, &mut pos_start_d, 0)?;
                     cache.snapshot_into(e, &mut snap)?; // device D2Ds, stream-ordered
                     e.i32_copy_add(&pos_ctr, &mut scratch.kv.len_d, 0)?; // draft-KV rollback
-                    e.i32_copy_add(&pos_ctr, &mut g_pos, 1)?; // rope pos = pos + base
-                    e.u32_copy(&pend_d, &mut g_tok)?;
-                    e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
+                    e.i32_copy_add(&pos_ctr, &mut dctx.g_pos, 1)?; // rope pos = pos + base
+                    e.u32_copy(&pend_d, &mut dctx.g_tok)?;
+                    e.copy_into(&mut dctx.g_seed, 0, &h_seed_buf, n_embd)?;
                     sg.launch()?;
                     e.spec_assemble_verify(
                         &g_tokp2k,
@@ -2896,24 +3071,24 @@ impl HybridModel {
                 draft_logits.clear();
                 draft_stats.clear();
             }
-            if let (false, Some(gr)) = (sampled || pen_on, &draft_graph) {
+            if let (false, Some(gr)) = (sampled || pen_on, &dctx.graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
                 // inc'd in-graph); the host only reads 4B token (+4B p) and decides the break.
-                e.set_i32_one(&mut g_pos, (pos + base0) as i32)?;
-                e.set_u32_one(&mut g_tok, last_token)?;
-                e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
+                e.set_i32_one(&mut dctx.g_pos, (pos + base0) as i32)?;
+                e.set_u32_one(&mut dctx.g_tok, last_token)?;
+                e.copy_into(&mut dctx.g_seed, 0, &h_seed_buf, n_embd)?;
                 for j in 0..k_this {
                     gr.launch()?;
                     scratch.kv.len += 1; // host mirror (len_d advanced in-graph)
-                    let idx = e.dtoh_u32_one(&g_tok)?;
+                    let idx = e.dtoh_u32_one(&dctx.g_tok)?;
                     // trimmed draft vocab -> target token id (identity when no d2t map)
                     let d = match &mtp.d2t {
                         Some(map) => map[idx as usize],
                         None => idx,
                     };
                     if p_min > 0.0 {
-                        let p = e.dtoh(&g_p)?[0];
+                        let p = e.dtoh(&dctx.g_p)?[0];
                         if p < p_min && (j > 0 || (pmin0 && base0 == 1)) {
                             break;
                         }
@@ -2922,20 +3097,20 @@ impl HybridModel {
                     // with a trimmed head the NEXT embed must read the TARGET id, not the draft
                     // index the argmax wrote — patch the persistent token buffer (4B htod).
                     if d != idx {
-                        e.set_u32_one(&mut g_tok, d)?;
+                        e.set_u32_one(&mut dctx.g_tok, d)?;
                     }
                 }
-            } else if let (true, Some(gr)) = (sampled, &draft_graph_s) {
+            } else if let (true, Some(gr)) = (sampled, &dctx.graph_s) {
                 // SAMPLED GRAPH DRAFT: one replay per drafted token — head forward + gumbel +
                 // argmax in ONE dispatch; the host reads 4B token (+4B p), D2Ds q into slot j,
                 // and decides the break. Event-counter continuity: g_ctr is host-seeded to
                 // sctr-1 ONCE per round (outside the graph); the in-graph bump runs BEFORE the
                 // perturb, so replay j consumes counter sctr+j — exactly the eager arm's Philox
                 // stream. Host sctr advances in lockstep (computed, no readback needed).
-                e.set_i32_one(&mut g_pos, (pos + base0) as i32)?;
-                e.set_u32_one(&mut g_tok, last_token)?;
-                e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
-                e.set_u32_one(&mut g_ctr, sctr.wrapping_sub(1))?;
+                e.set_i32_one(&mut dctx.g_pos, (pos + base0) as i32)?;
+                e.set_u32_one(&mut dctx.g_tok, last_token)?;
+                e.copy_into(&mut dctx.g_seed, 0, &h_seed_buf, n_embd)?;
+                e.set_u32_one(&mut dctx.g_ctr, sctr.wrapping_sub(1))?;
                 for j in 0..k_this {
                     gr.launch()?;
                     scratch.kv.len += 1; // host mirror (len_d advanced in-graph)
@@ -2943,15 +3118,15 @@ impl HybridModel {
                                // counts the p-min-discarded token too)
                                // q retention: ONE async D2D of the persistent head-logits buffer into this
                                // round's slot j (stream-ordered after the replay, before the next one).
-                    e.copy_into(&mut q_slots[j], 0, &g_q, d_vocab)?;
-                    let idx = e.dtoh_u32_one(&g_tok)?;
+                    e.copy_into(&mut dctx.q_slots[j], 0, &dctx.g_q, d_vocab)?;
+                    let idx = e.dtoh_u32_one(&dctx.g_tok)?;
                     let d = match &mtp.d2t {
                         Some(map) => map[idx as usize],
                         None => idx,
                     };
                     draft_idx.push(idx);
                     if p_min > 0.0 {
-                        let p = e.dtoh(&g_p)?[0];
+                        let p = e.dtoh(&dctx.g_p)?[0];
                         if p < p_min && (j > 0 || (pmin0 && base0 == 1)) {
                             break;
                         }
@@ -2959,7 +3134,7 @@ impl HybridModel {
                     draft.push(d);
                     // trimmed head: the NEXT embed must read the TARGET id (see the greedy arm).
                     if d != idx {
-                        e.set_u32_one(&mut g_tok, d)?;
+                        e.set_u32_one(&mut dctx.g_tok, d)?;
                     }
                 }
                 // uniform accept path: fill draft_stats per used slot (pure-temp regime — the
@@ -2968,7 +3143,7 @@ impl HybridModel {
                     let rows0 = e.htod_i32(&[0])?;
                     let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
                     e.filter_stats(
-                        &q_slots[j],
+                        &dctx.q_slots[j],
                         d_vocab,
                         &rows0,
                         &mut th_d,
@@ -3303,8 +3478,8 @@ impl HybridModel {
                 // FILTERED q_j: stats from draft_stats (eager pushes in-chain; the graph arm
                 // computes them post-replay — graph engages only filter/penalty-free, so the
                 // stats degenerate to th=0/full-Z there, keeping ONE accept path).
-                let q_bufs: &[CudaSlice<f32>] = if draft_graph_s.is_some() {
-                    &q_slots
+                let q_bufs: &[CudaSlice<f32>] = if dctx.graph_s.is_some() {
+                    &dctx.q_slots
                 } else {
                     &draft_logits
                 };
@@ -3776,34 +3951,85 @@ impl HybridModel {
         }
         // SESSION TAIL: leave the session in the exact invariant the next turn's suffix prime
         // expects — every row in `committed` has trunk KV/recur state AND an exact draft-KV row.
+        // Park the draft-graph ctx back on the session (the serve-burst fixed-cost fix): the next
+        // burst replays instead of recapturing. Error paths (`?` above) drop it — recaptured then.
+        if let Some(slot) = sess_draft_slot.take() {
+            *slot = Some(dctx);
+        }
+        let t_rounds = t_ent.elapsed();
         if let Some((committed, last_h, next_pred_slot, sctr_slot, uctr_slot)) = sess_tail.take() {
             *sctr_slot = sctr;
             *uctr_slot = uctr;
             *next_pred_slot = Some(last_pred);
+            let mut stashed_pending = false;
             if let Some(b) = pending.take() {
-                // pending bonus: in `out` but NOT in the caches — commit it (one T=1 pass) and
-                // fill its draft-KV row (pairing: its row carries the predecessor's hidden,
-                // which is exactly the carried fill_prev).
-                let pos_b = cache.pos;
-                scratch.set_len(e, pos_b)?;
-                let (lg_b, hb) = self.decode_step_h(e, b, &mut *cache)?;
-                // after a FULL-accept exit `last_pred` is STALE (it predicted the bonus itself —
-                // the prediction AFTER the bonus never materialized; it would have been the next
-                // round's verify col 0). The bonus commit's own logits ARE that prediction.
-                *next_pred_slot = Some(argmax(&lg_b) as u32);
-                self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch, embd_dev)?;
-                *last_h = Some(hb);
+                if !sampled {
+                    // PENDING-CARRY (2026-08-01): stash the bonus on the session instead of
+                    // committing it with a solo T=1 pass — the next empty-suffix greedy burst
+                    // consumes it as round-0 verify col 0 (a plain round edge; the old tail
+                    // commit + next burst's init feed were 11.6+11.5ms solo trunk passes per
+                    // burst on H100 q27, [spec-setup] trace). b stays in `out` (emitted) but
+                    // OUT of `committed` (cache rows == committed); the consuming call
+                    // prepends it once its verify commits the row. next_pred is unknowable
+                    // without the commit pass — None; callers gate on pending_tok too.
+                    debug_assert_eq!(out.last(), Some(&b), "pending must be the last emitted");
+                    if let Some(slot) = sess_pending_slot.take() {
+                        *slot = Some(b);
+                    }
+                    *next_pred_slot = None;
+                    // fill_prev = hidden of the last COMMITTED row (b's predecessor) — the
+                    // exact chain-seed/fill anchor the consuming burst (or a flush) needs.
+                    *last_h = Some(e.clone_dtod(&fill_prev)?);
+                    stashed_pending = true;
+                } else {
+                    // SAMPLED tail (unchanged): commit the bonus (one T=1 pass) + draft fill —
+                    // the sampled round-0 accept needs this pass's logits (last_col_logits).
+                    let pos_b = cache.pos;
+                    scratch.set_len(e, pos_b)?;
+                    let (lg_b, hb) = self.decode_step_h(e, b, &mut *cache)?;
+                    // after a FULL-accept exit `last_pred` is STALE (it predicted the bonus
+                    // itself — the prediction AFTER the bonus never materialized; it would have
+                    // been the next round's verify col 0). The commit's logits ARE that
+                    // prediction.
+                    *next_pred_slot = Some(argmax(&lg_b) as u32);
+                    self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch, embd_dev)?;
+                    *last_h = Some(hb);
+                }
             } else {
                 // fill_prev tracks the hidden of the last COMMITTED row throughout the loop.
                 *last_h = Some(e.clone_dtod(&fill_prev)?);
             }
             committed.extend_from_slice(prompt);
-            committed.extend_from_slice(&out); // FULL out incl. overshoot — it's all committed
+            if let Some(cb) = carried_pending {
+                // the consumed carry's cache row landed in round 0's verify (every pending
+                // round commits col 0) — it joins `committed` here, in sequence order.
+                committed.push(cb);
+            }
+            if stashed_pending {
+                committed.extend_from_slice(&out[..out.len() - 1]); // all but the stashed bonus
+            } else {
+                committed.extend_from_slice(&out); // FULL out incl. overshoot — all committed
+            }
             debug_assert_eq!(
                 cache.pos,
                 committed.len(),
                 "session invariant: cache rows == committed tokens"
             );
+            if setup_trace {
+                e.stream().synchronize()?; // bound the async tail fill in the trace
+                let t_tail = t_ent.elapsed();
+                eprintln!(
+                    "[spec-setup] init={:.2}ms cap={:.2}ms fill={:.2}ms rounds={:.2}ms tail={:.2}ms total={:.2}ms out={} cont={}",
+                    t_init.as_secs_f64() * 1e3,
+                    (t_cap - t_init).as_secs_f64() * 1e3,
+                    (t_fill - t_cap).as_secs_f64() * 1e3,
+                    (t_rounds - t_fill).as_secs_f64() * 1e3,
+                    (t_tail - t_rounds).as_secs_f64() * 1e3,
+                    t_tail.as_secs_f64() * 1e3,
+                    out.len(),
+                    continuation
+                );
+            }
             return Ok((out, total_drafted, total_accepted));
         }
         out.truncate(max_new);

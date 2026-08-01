@@ -153,6 +153,104 @@ extern "C" int memra_q6_K_dequant_f16(const void* w_q6, void* w_f16, long out_f,
     return ce == cudaSuccess ? 0 : 10000 + (int)ce;
 }
 
+// GGUF Q4_K (144B superblocks: fp16 d + fp16 dmin + u8 scales[12] (6-bit packed) + u8 qs[128],
+// 256 vals) -> row-major fp16 (round 49: the q27 trunk BULK — 294 Q4_K tensors ride
+// mul_mat_q_q45k int8-MMA; the Lt f16 lane beats that class at large m, campaign-A Q4_0
+// precedent). value = d*sc*q - dmin*mn per 32-group; unpack verified against qmatvec.cu's
+// deq_q4_k / q4k_scale_min (get_scale_min_k4 6-bit packing, line ~111): groups 0-3 read
+// sc[j]&63 / sc[j+4]&63, groups 4-7 splice the high 2 bits of sc[j-4]/sc[j] above the low
+// nibble of sc[j+4]. Each 64-val chunk shares 32 qs bytes: even group = low nibble, odd =
+// high. One thread per superblock (load-time only).
+extern "C" __global__ void memra_q4kf16_dequant_kernel(const unsigned char* __restrict__ src,
+                                                       __half* __restrict__ dst,
+                                                       size_t nsb_total, int nsb_row) {
+    size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (i >= nsb_total) return;
+    const unsigned char* b = src + i * 144;
+    float d = __half2float(*(const __half*)b);
+    float dmin = __half2float(*(const __half*)(b + 2));
+    const unsigned char* sc = b + 4;
+    const unsigned char* qs = b + 16;
+    __half* o = dst + i * 256;
+    #pragma unroll
+    for (int g = 0; g < 8; g++) {
+        unsigned char s8, m8;
+        if (g < 4) { s8 = sc[g] & 63; m8 = sc[g + 4] & 63; }
+        else {
+            s8 = (sc[g + 4] & 0xF) | ((sc[g - 4] >> 6) << 4);
+            m8 = (sc[g + 4] >> 4) | ((sc[g] >> 6) << 4);
+        }
+        const unsigned char* q = qs + (g >> 1) * 32;
+        float dl = d * (float)s8, ml = dmin * (float)m8;
+        #pragma unroll
+        for (int l = 0; l < 32; l++) {
+            int v = (g & 1) ? (q[l] >> 4) : (q[l] & 0xF);
+            o[g * 32 + l] = __float2half(dl * (float)v - ml);
+        }
+    }
+}
+
+extern "C" int memra_q4_K_dequant_f16(const void* w_q4k, void* w_f16, long out_f, long nsb_row,
+                                      void* stream_v) {
+    cudaStream_t stream = (cudaStream_t)stream_v;
+    size_t nsb_total = (size_t)out_f * (size_t)nsb_row;
+    int threads = 256;
+    size_t blocks = (nsb_total + threads - 1) / threads;
+    memra_q4kf16_dequant_kernel<<<(unsigned)blocks, threads, 0, stream>>>(
+        (const unsigned char*)w_q4k, (__half*)w_f16, nsb_total, (int)nsb_row);
+    cudaError_t ce = cudaGetLastError();
+    return ce == cudaSuccess ? 0 : 10000 + (int)ce;
+}
+
+// GGUF Q5_K (176B superblocks: fp16 d + fp16 dmin + u8 scales[12] (6-bit, same
+// get_scale_min_k4 as Q4_K) + u8 qh[32] + u8 ql[128], 256 vals) -> row-major fp16
+// (round 49b: q27's 48 ssm_out projections — the last mul_mat_q_q45k prefill class).
+// value = d*sc*(nib | qh_bit<<4) - dmin*mn; unpack verified against qmatvec.cu's
+// deq_q5_k (line ~213): the qh bit index for group g, lane l is simply bit g of qh[l].
+// One thread per superblock (load-time only).
+extern "C" __global__ void memra_q5kf16_dequant_kernel(const unsigned char* __restrict__ src,
+                                                       __half* __restrict__ dst,
+                                                       size_t nsb_total, int nsb_row) {
+    size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (i >= nsb_total) return;
+    const unsigned char* b = src + i * 176;
+    float d = __half2float(*(const __half*)b);
+    float dmin = __half2float(*(const __half*)(b + 2));
+    const unsigned char* sc = b + 4;
+    const unsigned char* qh = b + 16;
+    const unsigned char* ql = b + 48;
+    __half* o = dst + i * 256;
+    #pragma unroll
+    for (int g = 0; g < 8; g++) {
+        unsigned char s8, m8;
+        if (g < 4) { s8 = sc[g] & 63; m8 = sc[g + 4] & 63; }
+        else {
+            s8 = (sc[g + 4] & 0xF) | ((sc[g - 4] >> 6) << 4);
+            m8 = (sc[g + 4] >> 4) | ((sc[g] >> 6) << 4);
+        }
+        const unsigned char* q = ql + (g >> 1) * 32;
+        float dl = d * (float)s8, ml = dmin * (float)m8;
+        #pragma unroll
+        for (int l = 0; l < 32; l++) {
+            int nib = (g & 1) ? (q[l] >> 4) : (q[l] & 0xF);
+            int w = nib | (((qh[l] >> g) & 1) << 4);
+            o[g * 32 + l] = __float2half(dl * (float)w - ml);
+        }
+    }
+}
+
+extern "C" int memra_q5_K_dequant_f16(const void* w_q5k, void* w_f16, long out_f, long nsb_row,
+                                      void* stream_v) {
+    cudaStream_t stream = (cudaStream_t)stream_v;
+    size_t nsb_total = (size_t)out_f * (size_t)nsb_row;
+    int threads = 256;
+    size_t blocks = (nsb_total + threads - 1) / threads;
+    memra_q5kf16_dequant_kernel<<<(unsigned)blocks, threads, 0, stream>>>(
+        (const unsigned char*)w_q5k, (__half*)w_f16, nsb_total, (int)nsb_row);
+    cudaError_t ce = cudaGetLastError();
+    return ce == cudaSuccess ? 0 : 10000 + (int)ce;
+}
+
 // ---- host: cached cuBLASLt plans (fp8_prefill.cu pattern) ------------------------------------
 
 namespace {

@@ -1,0 +1,4 @@
+   Compiling memra-engine v0.0.0 (/home/ubuntu/arc2/crates/memra-engine)
+warning: memra-engine@0.0.0: MEMRA_CUDA_ARCH auto-detected 90a (compute_cap 9.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-server v0.0.0 (/home/ubuntu/arc2/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 3m 53s
