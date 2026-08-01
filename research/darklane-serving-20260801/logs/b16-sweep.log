@@ -1,0 +1,52 @@
+########## b16-chunk=8 1785545854 ##########
+BASELINE_VRAM b16-chunk=8 1785545861 16659
+GREEDY_HASH b16-chunk=8 dbd1c98f9fed4efe
+[ref] loaded 24 isolated references from /home/ubuntu/darklane-serving-20260801/isolated-refs.json
+{"ts": "2026-08-01T00:57:46+0000", "label": "b16-chunk8", "base": "http://127.0.0.1:8085", "n": 24, "max_tokens": 64, "wall_s": 4.589527797000301, "n_match": 24, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+PHASE b16-chunk8-c8 START 1785545866
+{"ts": "2026-08-01T00:58:00+0000", "label": "b16-chunk8", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 13.554661037999722, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 302.1838752379788, "req_per_s": 2.3608115252967092, "lat_p50_s": 3.3962260540001807, "lat_p95_s": 3.5000076759997683, "lat_mean_s": 3.385631914250098, "lat_max_s": 3.5006232380001165, "errors_sample": []}
+PHASE b16-chunk8-c8 END 1785545880 VRAM 23093
+PHASE b16-chunk8-c16 START 1785545880
+{"ts": "2026-08-01T00:58:27+0000", "label": "b16-chunk8", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 26.837111437999738, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 305.24894674024495, "req_per_s": 2.3847573964081636, "lat_p50_s": 6.702071200999853, "lat_p95_s": 6.766586544000347, "lat_mean_s": 6.70660692682813, "lat_max_s": 6.7679316130006555, "errors_sample": []}
+PHASE b16-chunk8-c16 END 1785545907 VRAM 23093
+PHASE b16-chunk8-c32 START 1785545908
+{"ts": "2026-08-01T00:59:35+0000", "label": "b16-chunk8", "base": "http://127.0.0.1:8085", "concurrency": 32, "requests": 128, "max_tokens": 128, "greedy": false, "wall_s": 67.72762869300004, "n_ok": 128, "n_err": 0, "completion_tokens_total": 16384, "agg_tok_s": 241.91013794778496, "req_per_s": 1.88992295271707, "lat_p50_s": 17.062015973000598, "lat_p95_s": 17.46984421399975, "lat_mean_s": 16.927925118046893, "lat_max_s": 17.474307671000133, "errors_sample": []}
+PHASE b16-chunk8-c32 END 1785545975 VRAM 25493
+PHASE b16-chunk8-c64 START 1785545976
+{"ts": "2026-08-01T01:01:26+0000", "label": "b16-chunk8", "base": "http://127.0.0.1:8085", "concurrency": 64, "requests": 256, "max_tokens": 128, "greedy": false, "wall_s": 110.19835545600017, "n_ok": 256, "n_err": 0, "completion_tokens_total": 32768, "agg_tok_s": 297.3547097359684, "req_per_s": 2.3230836698122532, "lat_p50_s": 27.560916135000298, "lat_p95_s": 27.835703984000247, "lat_mean_s": 27.536189764500016, "lat_max_s": 27.844279280000592, "errors_sample": []}
+PHASE b16-chunk8-c64 END 1785546086 VRAM 32341
+########## b16-chunk=15 1785546086 ##########
+BASELINE_VRAM b16-chunk=15 1785546093 16659
+GREEDY_HASH b16-chunk=15 dbd1c98f9fed4efe
+[ref] loaded 24 isolated references from /home/ubuntu/darklane-serving-20260801/isolated-refs.json
+{"ts": "2026-08-01T01:01:39+0000", "label": "b16-chunk15", "base": "http://127.0.0.1:8085", "n": 24, "max_tokens": 64, "wall_s": 5.021638956999595, "n_match": 24, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+PHASE b16-chunk15-c8 START 1785546099
+{"ts": "2026-08-01T01:01:55+0000", "label": "b16-chunk15", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 15.562732924000557, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 263.19284794017284, "req_per_s": 2.0561941245326003, "lat_p50_s": 3.889544326999385, "lat_p95_s": 3.9396480840005097, "lat_mean_s": 3.8885604968437235, "lat_max_s": 3.939922870999908, "errors_sample": []}
+PHASE b16-chunk15-c8 END 1785546115 VRAM 23093
+PHASE b16-chunk15-c16 START 1785546115
+{"ts": "2026-08-01T01:02:27+0000", "label": "b16-chunk15", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 31.493789039999683, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 260.1147797616696, "req_per_s": 2.0321467168880436, "lat_p50_s": 7.871883692000665, "lat_p95_s": 7.981030390000342, "lat_mean_s": 7.869728958906251, "lat_max_s": 7.984650108000096, "errors_sample": []}
+PHASE b16-chunk15-c16 END 1785546147 VRAM 23093
+PHASE b16-chunk15-c32 START 1785546147
+{"ts": "2026-08-01T01:03:28+0000", "label": "b16-chunk15", "base": "http://127.0.0.1:8085", "concurrency": 32, "requests": 128, "max_tokens": 128, "greedy": false, "wall_s": 60.814086155998666, "n_ok": 128, "n_err": 0, "completion_tokens_total": 16384, "agg_tok_s": 269.4112669550308, "req_per_s": 2.104775523086178, "lat_p50_s": 15.209046029000092, "lat_p95_s": 15.302980895001383, "lat_mean_s": 15.198268710179804, "lat_max_s": 15.305984031001572, "errors_sample": []}
+PHASE b16-chunk15-c32 END 1785546208 VRAM 25493
+PHASE b16-chunk15-c64 START 1785546208
+{"ts": "2026-08-01T01:05:28+0000", "label": "b16-chunk15", "base": "http://127.0.0.1:8085", "concurrency": 64, "requests": 256, "max_tokens": 128, "greedy": false, "wall_s": 119.396724481001, "n_ok": 256, "n_err": 0, "completion_tokens_total": 32768, "agg_tok_s": 274.44638990254884, "req_per_s": 2.144112421113663, "lat_p50_s": 29.83487543099909, "lat_p95_s": 30.208951579999848, "lat_mean_s": 29.832426900929725, "lat_max_s": 30.217739370000345, "errors_sample": []}
+PHASE b16-chunk15-c64 END 1785546328 VRAM 32341
+########## b16-chunk=16 1785546328 ##########
+BASELINE_VRAM b16-chunk=16 1785546337 16659
+GREEDY_HASH b16-chunk=16 dbd1c98f9fed4efe
+[ref] loaded 24 isolated references from /home/ubuntu/darklane-serving-20260801/isolated-refs.json
+{"ts": "2026-08-01T01:05:45+0000", "label": "b16-chunk16", "base": "http://127.0.0.1:8085", "n": 24, "max_tokens": 64, "wall_s": 7.132728721999229, "n_match": 21, "n_mismatch": 3, "n_err": 0, "verdict": "FAIL", "mismatches": [{"i": 5, "diverge_at_char": 151, "ref_sha": "f52b96556883", "out_sha": "b90d1822e95c", "ref_tail": "Concepts:**\n    *   Yeast is a microorga", "out_tail": "Mechanisms:**\n    *   Yeast is a microor"}, {"i": 6, "diverge_at_char": 74, "ref_sha": "bf25525a213c", "out_sha": "93cf07c7339f", "ref_tail": " (hydrologic cycle).\n    *   Constraint:", "out_tail": ".\n    *   Constraint: Exactly two senten"}, {"i": 23, "diverge_at_char": 63, "ref_sha": "dbbb83ff7bd2", "out_sha": "4f628055e403", "ref_tail": "Gold standard in economics.\n    *   Cons", "out_tail": "The gold standard in economics.\n    *   "}]}
+PHASE b16-chunk16-c8 START 1785546345
+{"ts": "2026-08-01T01:05:59+0000", "label": "b16-chunk16", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 13.36396921099913, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 306.4957674871634, "req_per_s": 2.394498183493464, "lat_p50_s": 3.3534784949988534, "lat_p95_s": 3.3811777489991073, "lat_mean_s": 3.338928465343713, "lat_max_s": 3.3816336689997115, "errors_sample": []}
+PHASE b16-chunk16-c8 END 1785546359 VRAM 23093
+PHASE b16-chunk16-c16 START 1785546359
+{"ts": "2026-08-01T01:06:44+0000", "label": "b16-chunk16", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 45.14202108899917, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 181.4717153192846, "req_per_s": 1.417747775931911, "lat_p50_s": 11.282690719001039, "lat_p95_s": 11.353381708999223, "lat_mean_s": 11.282862889843727, "lat_max_s": 11.35517723799967, "errors_sample": []}
+PHASE b16-chunk16-c16 END 1785546404 VRAM 23093
+PHASE b16-chunk16-c32 START 1785546404
+{"ts": "2026-08-01T01:08:15+0000", "label": "b16-chunk16", "base": "http://127.0.0.1:8085", "concurrency": 32, "requests": 128, "max_tokens": 128, "greedy": false, "wall_s": 90.45669692400043, "n_ok": 128, "n_err": 0, "completion_tokens_total": 16384, "agg_tok_s": 181.12534015878833, "req_per_s": 1.4150417199905339, "lat_p50_s": 22.61434837699926, "lat_p95_s": 22.662198047000857, "lat_mean_s": 22.609620836382774, "lat_max_s": 22.667256486000042, "errors_sample": []}
+PHASE b16-chunk16-c32 END 1785546495 VRAM 25493
+PHASE b16-chunk16-c64 START 1785546495
+{"ts": "2026-08-01T01:11:17+0000", "label": "b16-chunk16", "base": "http://127.0.0.1:8085", "concurrency": 64, "requests": 256, "max_tokens": 128, "greedy": false, "wall_s": 181.66566734000116, "n_ok": 256, "n_err": 0, "completion_tokens_total": 32768, "agg_tok_s": 180.37530414963982, "req_per_s": 1.409182063669061, "lat_p50_s": 45.318705959998624, "lat_p95_s": 45.74526579299891, "lat_mean_s": 45.39155883779693, "lat_max_s": 45.75580358099978, "errors_sample": []}
+PHASE b16-chunk16-c64 END 1785546677 VRAM 32341
+B16 SWEEP DONE

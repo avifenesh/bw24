@@ -1,0 +1,21 @@
+GREEDY_HASH pair-mps 8085 dbd1c98f9fed4efe
+GREEDY_HASH pair-mps 8088 dbd1c98f9fed4efe
+GREEDY_HASH_CONCURRENT pair-mps dbd1c98f9fed4efe
+dbd1c98f9fed4efe
+PHASE pair-mps-c8 START 1785547704
+{"ts": "2026-08-01T01:28:35+0000", "label": "pair-mps-r8088", "base": "http://127.0.0.1:8088", "concurrency": 4, "requests": 16, "max_tokens": 128, "greedy": false, "wall_s": 10.37276838499929, "n_ok": 16, "n_err": 0, "completion_tokens_total": 2048, "agg_tok_s": 197.4400588141678, "req_per_s": 1.542500459485686, "lat_p50_s": 2.589916675000495, "lat_p95_s": 2.604993660999753, "lat_mean_s": 2.591041562249984, "lat_max_s": 2.6053230470006383, "errors_sample": []}
+{"ts": "2026-08-01T01:28:35+0000", "label": "pair-mps-r8085", "base": "http://127.0.0.1:8085", "concurrency": 4, "requests": 16, "max_tokens": 128, "greedy": false, "wall_s": 10.462101240000266, "n_ok": 16, "n_err": 0, "completion_tokens_total": 2048, "agg_tok_s": 195.75417528648845, "req_per_s": 1.529329494425691, "lat_p50_s": 2.6090156070004014, "lat_p95_s": 2.744739683001171, "lat_mean_s": 2.6138954811874555, "lat_max_s": 2.745005377999405, "errors_sample": []}
+PHASE pair-mps-c8 END 1785547715 VRAM 38586
+PHASE pair-mps-c16 START 1785547715
+{"ts": "2026-08-01T01:28:53+0000", "label": "pair-mps-r8088", "base": "http://127.0.0.1:8088", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 17.791383142000996, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 230.22380931870163, "req_per_s": 1.7986235103023565, "lat_p50_s": 4.447585528001582, "lat_p95_s": 4.615109226000641, "lat_mean_s": 4.444389899468831, "lat_max_s": 4.615320769999016, "errors_sample": []}
+{"ts": "2026-08-01T01:28:53+0000", "label": "pair-mps-r8085", "base": "http://127.0.0.1:8085", "concurrency": 8, "requests": 32, "max_tokens": 128, "greedy": false, "wall_s": 17.832931066999663, "n_ok": 32, "n_err": 0, "completion_tokens_total": 4096, "agg_tok_s": 229.6874240477362, "req_per_s": 1.794433000372939, "lat_p50_s": 4.448315053999977, "lat_p95_s": 4.6386942739991355, "lat_mean_s": 4.45564314084379, "lat_max_s": 4.639045111000087, "errors_sample": []}
+PHASE pair-mps-c16 END 1785547733 VRAM 40538
+PHASE pair-mps-c24 START 1785547733
+{"ts": "2026-08-01T01:29:21+0000", "label": "pair-mps-r8085", "base": "http://127.0.0.1:8085", "concurrency": 12, "requests": 48, "max_tokens": 128, "greedy": false, "wall_s": 27.370384227000613, "n_ok": 48, "n_err": 0, "completion_tokens_total": 6144, "agg_tok_s": 224.47620570627595, "req_per_s": 1.7537203570802808, "lat_p50_s": 6.833955806998347, "lat_p95_s": 7.047886144999211, "lat_mean_s": 6.8379425532084115, "lat_max_s": 7.048830375999387, "errors_sample": []}
+{"ts": "2026-08-01T01:29:21+0000", "label": "pair-mps-r8088", "base": "http://127.0.0.1:8088", "concurrency": 12, "requests": 48, "max_tokens": 128, "greedy": false, "wall_s": 27.546159734998582, "n_ok": 48, "n_err": 0, "completion_tokens_total": 6144, "agg_tok_s": 223.04379481956548, "req_per_s": 1.7425296470278553, "lat_p50_s": 6.92464443100107, "lat_p95_s": 7.090966892999859, "lat_mean_s": 6.883162920437485, "lat_max_s": 7.092954505998932, "errors_sample": []}
+PHASE pair-mps-c24 END 1785547761 VRAM 42490
+PHASE pair-mps-c32 START 1785547761
+{"ts": "2026-08-01T01:29:57+0000", "label": "pair-mps-r8085", "base": "http://127.0.0.1:8085", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 36.255858687, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 225.94968914464977, "req_per_s": 1.7652319464425763, "lat_p50_s": 9.102325284999097, "lat_p95_s": 9.11281525799859, "lat_mean_s": 9.058469009468865, "lat_max_s": 9.113501472998905, "errors_sample": []}
+{"ts": "2026-08-01T01:29:58+0000", "label": "pair-mps-r8088", "base": "http://127.0.0.1:8088", "concurrency": 16, "requests": 64, "max_tokens": 128, "greedy": false, "wall_s": 36.294559759999174, "n_ok": 64, "n_err": 0, "completion_tokens_total": 8192, "agg_tok_s": 225.70875784608737, "req_per_s": 1.7633496706725575, "lat_p50_s": 9.10507714599953, "lat_p95_s": 9.195505997999135, "lat_mean_s": 9.068837503218703, "lat_max_s": 9.198105715000565, "errors_sample": []}
+PHASE pair-mps-c32 END 1785547798 VRAM 44186
+PAIR SWEEP pair-mps DONE

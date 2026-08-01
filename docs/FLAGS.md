@@ -352,6 +352,7 @@ battery is `tools/validate-h100.sh <model.gguf> [--quick]`.
 | `MEMRA_PRIME_BATCH_HOLD_MS` | 4 | batch-formation hold for staggered arrivals |
 | `MEMRA_SERVE_GS` | ON | solo greedy interactive sessions ride GraphSession replay. Round 35: promotion happens AFTER chunked prefill (`graph_session_from_cache`) — the old token-wise re-prime was a 3x end-to-end loss on long prompts (6.4 -> 2.8s measured) |
 | `MEMRA_GS_MIN` | 384 | min generation budget for GraphSession promotion (capture amortization) |
+| `MEMRA_DECODE_BATCH_CAP` | 8 | batched-decode chunk width (engine assert + scheduler chunking, clamp 1..32). 8 = the exactness tier. MEASUREMENT DOOR ONLY above 8: the 2026-08-01 serving-lane probe (9B Q8_0-rp, H100, `research/darklane-serving-20260801/`) measured every wider setting flat-or-worse — 15 (b16_rp, still bit-exact) 260-274 tok/s vs 8's ~305; 16 (m=16 GEMM tier) 169-181 tok/s AND 3/24 outputs shift; the tick is per-seq-serial-bound, not weight-BW-bound. Do not raise as a serving default |
 
 ### Tuning / diagnostic seams (sm_90a lane)
 

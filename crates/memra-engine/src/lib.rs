@@ -4875,8 +4875,11 @@ impl Engine {
         // dp4a program). MEMRA_MMVQ=1 (the daily config) is dispatch-unchanged.
         if (2..=16).contains(&m) && fast && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
-            // b16 tier (2026-07-11, spec K>7): only Q4_0/Q6_K have b16 kernels.
-            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, .. } if *qtype == QT_Q4_0 || *qtype == QT_Q6_K);
+            // b16 tier (2026-07-11, spec K>7): Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's
+            // b16 exists only as the split-plane _rp twin, so it joins iff the q8rp mirror
+            // is present (rp4) — the mirror pick below then routes to the _rp family.
+            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, rp4, .. }
+                if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || (*qtype == QT_Q8_0 && rp4.is_some()));
             if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
@@ -5036,7 +5039,10 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K) {
+            // b16 tier: Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's b16 exists ONLY as the
+            // split-plane _rp twin (qmatvec_q8_0_mmvq_b16_rp — the q8rp mirror lane was built
+            // for the m<=16 family, hybrid.rs), so Q8_0 joins iff the mirror is present (mrp).
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && mrp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
@@ -5119,7 +5125,8 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K) {
+            // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note).
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -6062,6 +6069,9 @@ impl Engine {
         Some(match (qtype, mcols) {
             (QT_Q8_0, 2) => "qmatvec_q8_0_mmvq_b2", (QT_Q8_0, 4) => "qmatvec_q8_0_mmvq_b4",
             (QT_Q8_0, 8) => "qmatvec_q8_0_mmvq_b8",
+            // rp-ONLY tier: qmatvec_q8_0_mmvq_b16 has no base twin — the mcols==16 dispatch
+            // appends _rp, and every caller gates Q8_0 m>8 on the q8rp mirror being present.
+            (QT_Q8_0, 16) => "qmatvec_q8_0_mmvq_b16",
             (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_b2", (QT_Q4_K, 4) => "qmatvec_q4_K_mmvq_b4",
             (QT_Q4_K, 8) => "qmatvec_q4_K_mmvq_b8",
             (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",

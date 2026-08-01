@@ -1,0 +1,44 @@
+[2026-08-01 01:26:37.957 Server 96348] Startup
+[2026-08-01 01:26:37.958 Server 96348] Connecting to control daemon on socket: /home/ubuntu/darklane-serving-20260801/mps/pipe/control
+[2026-08-01 01:26:37.958 Server 96348] Initializing server process
+[2026-08-01 01:26:38.316 Server 96348] Creating server context on device 0 (NVIDIA H100 80GB HBM3)
+[2026-08-01 01:26:38.380 Server 96348] Created anonymous shared memory region mps.shm.1000.96348
+[2026-08-01 01:26:38.380 Server 96348] CUDA MPS Server for Linux/Unix. Binary version: 13020
+[2026-08-01 01:26:38.380 Server 96348] Display Driver version: 595
+[2026-08-01 01:26:38.380 Server 96348] Active Threads Percentage set to 100.0
+[2026-08-01 01:26:38.380 Server 96348] Server Priority set to 0
+[2026-08-01 01:26:38.380 Server 96348] Static Partitioning mode disabled
+[2026-08-01 01:26:38.380 Server 96348] Server has started
+[2026-08-01 01:26:38.380 Server 96348] Received new client request from PID 95959
+[2026-08-01 01:26:38.380 Server 96348] Priority level of client {95959} is: 0 (NORMAL)
+[2026-08-01 01:26:38.380 Server 96348] Client {PID: 95959, Context ID: 0} connected
+[2026-08-01 01:26:38.380 Server 96348] Creating worker thread for client {PID: 95959, Context ID: 0}
+[2026-08-01 01:26:38.380 Server 96348] Received new client request from PID 95958
+[2026-08-01 01:26:38.380 Server 96348] Priority level of client {95958} is: 0 (NORMAL)
+[2026-08-01 01:26:38.380 Server 96348] Client {PID: 95958, Context ID: 0} connected
+[2026-08-01 01:26:38.380 Server 96348] Creating worker thread for client {PID: 95958, Context ID: 0}
+[2026-08-01 01:26:38.766 Server 96348] Received new client request from PID 95958
+[2026-08-01 01:26:38.766 Server 96348] Priority level of client {95958} is: 0 (NORMAL)
+[2026-08-01 01:26:38.766 Server 96348] Client {PID: 95958, Context ID: 1} connected
+[2026-08-01 01:26:38.766 Server 96348] Creating worker thread for client {PID: 95958, Context ID: 1}
+[2026-08-01 01:26:38.766 Server 96348] Device NVIDIA H100 80GB HBM3 (uuid GPU-ce5a8157-8f02-1c06-d9dd-adbf28a4aa05) is associated
+[2026-08-01 01:26:38.766 Server 96348] Status of client {PID: 95958, Context ID: 1} is ACTIVE
+[2026-08-01 01:26:38.767 Client 95958] Static partitioning mode disabled
+[2026-08-01 01:26:38.804 Server 96348] Received new client request from PID 95959
+[2026-08-01 01:26:38.804 Server 96348] Priority level of client {95959} is: 0 (NORMAL)
+[2026-08-01 01:26:38.804 Server 96348] Client {PID: 95959, Context ID: 1} connected
+[2026-08-01 01:26:38.804 Server 96348] Creating worker thread for client {PID: 95959, Context ID: 1}
+[2026-08-01 01:26:38.804 Server 96348] Device NVIDIA H100 80GB HBM3 (uuid GPU-ce5a8157-8f02-1c06-d9dd-adbf28a4aa05) is associated
+[2026-08-01 01:26:38.804 Server 96348] Status of client {PID: 95959, Context ID: 1} is ACTIVE
+[2026-08-01 01:26:38.805 Client 95959] Static partitioning mode disabled
+[2026-08-01 01:30:55.515 Server 96348] Server failed to receive command: the remote procedural call between the MPS server and the MPS client failed, assuming client {PID: 95958, Context ID: 1} exit
+[2026-08-01 01:30:55.515 Server 96348] Client {PID: 95958, Context ID: 1} exiting. Number of active client contexts is 1.
+[2026-08-01 01:30:55.528 Server 96348] Server failed to receive command: the remote procedural call between the MPS server and the MPS client failed, assuming client {PID: 95959, Context ID: 1} exit
+[2026-08-01 01:30:55.528 Server 96348] Client {PID: 95959, Context ID: 1} exiting. Number of active client contexts is 0.
+[2026-08-01 01:30:55.697 Server 96348] Server failed to receive command: the remote procedural call between the MPS server and the MPS client failed, assuming client {PID: 95958, Context ID: 0} exit
+[2026-08-01 01:30:55.697 Server 96348] Client process 95958 disconnected
+[2026-08-01 01:30:55.712 Server 96348] Server failed to receive command: the remote procedural call between the MPS server and the MPS client failed, assuming client {PID: 95959, Context ID: 0} exit
+[2026-08-01 01:30:55.712 Server 96348] Client process 95959 disconnected
+[2026-08-01 01:30:58.518 Server 96348] Server has been notified to shutdown
+[2026-08-01 01:30:58.518 Server 96348] Waiting for current clients to finish
+[2026-08-01 01:30:58.518 Server 96348] Exiting
