@@ -1,0 +1,3 @@
+[fleet] supervisor up (interval 5s, grace 120s)
+[fleet] 10:04:21 replica :8090 UNHEALTHY past grace — restarting
+[fleet] launched replica :8090 on GPU 7 (pid 424916)

@@ -1,0 +1,23 @@
+=== V0.60.0 GREEDY DETERMINISM 2026-08-01T10:00:26Z — binary ~/fleet-v060/target/release/memra-server (v0.60.0, commit 36bc1d9f) ===
+GREEDY_HASH v060 8085 dbd1c98f9fed4efe
+GREEDY_HASH v060 8086 dbd1c98f9fed4efe
+GREEDY_HASH v060 8087 dbd1c98f9fed4efe
+GREEDY_HASH v060 8088 dbd1c98f9fed4efe
+GREEDY_HASH v060 8089 dbd1c98f9fed4efe
+GREEDY_HASH v060 8090 dbd1c98f9fed4efe
+--- concurrent (all 6 simultaneously):
+GREEDY_HASH_CONCURRENT v060 8089 dbd1c98f9fed4efe
+GREEDY_HASH_CONCURRENT v060 8090 dbd1c98f9fed4efe
+GREEDY_HASH_CONCURRENT v060 8085 dbd1c98f9fed4efe
+GREEDY_HASH_CONCURRENT v060 8086 dbd1c98f9fed4efe
+GREEDY_HASH_CONCURRENT v060 8088 dbd1c98f9fed4efe
+GREEDY_HASH_CONCURRENT v060 8087 dbd1c98f9fed4efe
+--- greedy completion text (replica 8085):
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Task: List the first eight prime numbers.
+    *   Format: Comma-separated.
+    *   Constraint: Nothing else (no explanations, no introductions, no conclusions).
+
+2.  **Identify Prime Numbers

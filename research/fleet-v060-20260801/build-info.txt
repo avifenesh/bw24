@@ -1,0 +1,9 @@
+commit 36bc1d9f (tag v0.60.0), built on-box 2026-08-01 from rsynced worktree (no .git on box)
+binary: -rwxrwxr-x 2 ubuntu ubuntu 8717584 Aug  1 09:58 /home/ubuntu/fleet-v060/target/release/memra-server
+binary sha256: 2eb0e797e9b1c95a4b96b980d40bc63e5dcda31e7af94fcd3b60b06288e81478  /home/ubuntu/fleet-v060/target/release/memra-server
+old binary was: -rwxrwxr-x 2 ubuntu ubuntu 8251000 Aug  1 00:56 /home/ubuntu/memra/target/release/memra-server
+old binary sha256: 0aa369efb5b794e57c8bcbfe4303dd35c7658e62b461b8de2414a0f7db4fcf95  /home/ubuntu/memra/target/release/memra-server
+rustc: rustc 1.97.1 (8bab26f4f 2026-07-14)
+nvcc: Build cuda_13.3.r13.3/compiler.38244171_0
+model: -rw-rw-r-- 1 ubuntu ubuntu 9527502048 Jul 25 16:15 /home/ubuntu/models/Qwen3.5-9B-Q8_0.gguf
+fleet: GPUS=5,6,7 REPLICAS_PER_GPU=2 CAP=8 ports 8085-8090 proxy 8080, FLEET_RUN=~/darklane-fleet
