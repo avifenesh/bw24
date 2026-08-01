@@ -26,12 +26,13 @@ against vLLM are published per model. **Use something else when** you have anoth
 **Standing (2026-08-01):** seven supported models on the 5090, all fully gated; every
 MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
 wall or above. On the H100, a full per-model board against vLLM 0.26: end-to-end wins
-on 5 of 7 models (1.08–1.81x), decode wins on 6 of 7 (the 27B hybrid joined the board
-this release and edges vLLM's FP8 untuned); the two e2e losses (0.92x, 0.89x) are MoE
-expert-prefill cells, moving release-by-release (the 26B's expert prefill doubled in
-one release). Every number is a same-session interleaved measurement on a real-text
-prompt with the argmax exactness gate green; trimmed MTP drafter heads are published
-ready-to-use at
+on 5 of 7 models (1.14–1.81x) with the 26B MoE now dead even (its decode flipped to a
+win when a knife-edged router default was re-arbitrated on real prompts) and one honest
+loss left (35B MoE, 0.92x, expert-prefill-bound). Decode wins 7 of 7. Multi-user
+serving measured on 3×H100: 1,480 tok/s raw / ~1,380 through the admission-capped
+self-healing fleet — plus a +67% single-replica jump from device-side batched sampling.
+Every number is a same-session interleaved measurement on a real-text prompt with the
+argmax exactness gate green; trimmed MTP drafter heads are published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
 
 Running memra on your own rig? A [hardware validation
@@ -69,8 +70,8 @@ GGUFs); memra serves its GGUF artifacts.
 | Gemma-4 26B MoE | 171 | 191 (FP8-dyn) | 0.89x |
 
 Wins on exact math (the bf16-row wins carry a quant-advantage caveat — those vLLM arms
-move 4x the weight bytes). Decode alone wins 5 of 6 cells (1.07–1.85x; the 35B MoE
-decode loss flipped to a win when its per-layer shared-expert gate left cuBLASLt).
+move 4x the weight bytes). Decode wins every cell (1.05–1.85x; the last two decode losses fell to the shexp
+fused dot and a router-default re-arbitration on real prompts).
 The two e2e losses are MoE expert-prefill cells, and they are moving: the expert
 GEMM's async-data-movement rebuild doubled the 26B's expert prefill in one release
 (0.83x → 0.89x e2e), with the remaining kernel rungs mapped in the ledger. The dense-model prefill gaps are the int8-GEMM dtype edge — a Q8_0-exact
