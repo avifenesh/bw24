@@ -76,6 +76,28 @@ turn) for 1-2 premium/interactive sessions, and plain batched servers for bulk t
 switch is process-level (`MEMRA_SERVE_SPEC`), so the tiers are separate server processes —
 which is also how you'd deploy them anyway.
 
+### 2b. Burst-size sensitivity (the latency-tier tuning knob, measured)
+
+`MEMRA_SPEC_BURST` (tokens per solo burst before the scheduler moves to the next session)
+at c=4/c=8, x2 interleaved rounds (`burst-points.jsonl`):
+
+| burst | agg tok/s (c4 / c8) | p50 lat (c4 / c8) | vs default 32 |
+|---|---|---|---|
+| 8   | 105.6 / 105.7 | 4.89s / 9.76s | -16% |
+| 32  | 125.8 / 126.2 | 4.06s / 8.11s | — |
+| 128 | 131.5 / 131.8 | 3.88s / 7.76s | +4.4% |
+
+- The per-burst fixed cost is real and measurable: 128 tokens take 1.211s of engine time at
+  burst=8 (16 bursts) vs 0.971s at burst=128 (1 burst) -> **~16 ms fixed cost per burst**
+  (draft-graph recapture + session setup, the `worker.rs:1174` comment). Design item (f)
+  (persistent per-session draft graphs) is worth ~4% aggregate at the default burst=32 all
+  by itself, and is what would make SMALL bursts (fine-grained fairness) affordable.
+- In this uniform closed-loop workload bigger bursts win latency too (fewer fixed costs,
+  everyone finishes sooner). The fairness cost of large bursts appears only for a short
+  interactive request arriving among long ones: worst-case stall = (c-1) x burst_time
+  (~1s/128-tok burst -> ~7s at c=8) — that is the real reason burst=32 is the default, and
+  it is a workload policy, not a throughput optimum.
+
 ## 3. What multi-session spec serving would take (file map, effort classes)
 
 Target design: **round-lockstep batched verify.** Per tick, collect the live spec sessions,
@@ -150,6 +172,8 @@ GPU seconds — the flat ~126 tok/s line above IS that ceiling.
 
 - `points.jsonl` — 28 load points (24 matrix + 4 make-up round), each with agg tok/s,
   p50/p95 latency, error counts. `per-request.jsonl` — every request.
+- `burst-points.jsonl` / `burst-per-request.jsonl` / `burst-driver.log` /
+  `server-spec-burst*.log` — the burst-size sensitivity sweep (`run_burst.sh`).
 - `summarize.py` — the median table + acceptance aggregation (run on box).
 - `server-{plain,spec}-r*.log` — per-arm per-round server logs (spec logs carry per-burst
   `[spec-acc]` acceptance telemetry).
