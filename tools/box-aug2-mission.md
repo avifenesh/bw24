@@ -119,7 +119,13 @@ Sequence:
    carrying the real SKU. Bit-gate first, then interleaved ×5 throughput.
 3. 2×H100-per-replica fleet point: 4 replicas (GPUs 0-7 paired), serve-fleet + load-serve,
    in-window denominators.
-4. Exit artifact: exactness receipts + a tok/s and $/Mtok table vs the 5 incumbent Hy3
+4. **Spec K=1 wires in** per `research/hy3-accept-profile-20260802/` (all realistic
+   classes clear S_est 1.22-1.38x; priority code-gen > code-review = agentic > chat).
+   The spike measures φ (resident 2-position verify cost) in S=(1+r)/(1+φ) — r is
+   already priced per class. K stays 1 (the nextn=1 head never chains). NEVER
+   calibrate on the synthetic d1736 prompt (8.5% — understates real classes 5-9x);
+   the $/Mtok floor row stays plain 2.49 tok/s (`research/hy3-spec-20260802/`).
+5. Exit artifact: exactness receipts + a tok/s and $/Mtok table vs the 5 incumbent Hy3
    endpoints (pricing pinned in `research/model-demand-20260801/`).
 Receipts → `~/receipts/hy3-spike/`.
 
