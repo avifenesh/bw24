@@ -1171,38 +1171,45 @@ impl HybridModel {
                 // replace a ~10x dequant-GEMM (no MMQ arm exists), Q4_K mirrors upgrade a
                 // working int8-MMA arm — a joint walk would evict late-layer Q6_K mirrors
                 // for the weaker lever. Layer-order prefix within the Q4_K class.
+                // Round 49b: Q5_K (q27's 48 ssm_out — the last mul_mat_q_q45k class) rides
+                // a THIRD pass strictly after all Q4_K, so the default-budget composition
+                // (and its banked gates) stays byte-identical: the 32GB default is exhausted
+                // by the Q4_K pass; Q5_K mirrors only light up under a raised
+                // MEMRA_PP_F16_BUDGET_MB (machine-specific config).
                 if q8rp_on && crate::f16_ffi::pp_f16_enabled() {
-                    let (mut n4, mut b4) = (0usize, 0usize);
-                    let mut mir4 = |w: &mut crate::model::GpuTensor|
-                                   -> Result<(), Box<dyn std::error::Error>> {
-                        if matches!(w, crate::model::GpuTensor::Quant { qtype, f16: None, .. }
-                                    if *qtype == crate::QT_Q4_K) {
-                            e_ref.build_q8_f16(w)?;
-                            if let crate::model::GpuTensor::Quant { f16: Some(m), .. } = w {
-                                n4 += 1;
-                                b4 += m.len();
+                    for (want, tag) in [(crate::QT_Q4_K, "q4kf16"), (crate::QT_Q5_K, "q5kf16")] {
+                        let (mut n4, mut b4) = (0usize, 0usize);
+                        let mut mirk = |w: &mut crate::model::GpuTensor|
+                                       -> Result<(), Box<dyn std::error::Error>> {
+                            if matches!(w, crate::model::GpuTensor::Quant { qtype, f16: None, .. }
+                                        if *qtype == want) {
+                                e_ref.build_q8_f16(w)?;
+                                if let crate::model::GpuTensor::Quant { f16: Some(m), .. } = w {
+                                    n4 += 1;
+                                    b4 += m.len();
+                                }
+                            }
+                            Ok(())
+                        };
+                        for layer in layers.iter_mut() {
+                            match &mut layer.mixer {
+                                Mixer::Full(fa) => {
+                                    for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mirk(w)?; }
+                                }
+                                Mixer::Linear(la) => {
+                                    for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
+                                              &mut la.ssm_alpha, &mut la.ssm_out] { mirk(w)?; }
+                                }
+                            }
+                            if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
+                                for w in [ffn_gate, ffn_up, ffn_down] { mirk(w)?; }
                             }
                         }
-                        Ok(())
-                    };
-                    for layer in layers.iter_mut() {
-                        match &mut layer.mixer {
-                            Mixer::Full(fa) => {
-                                for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mir4(w)?; }
-                            }
-                            Mixer::Linear(la) => {
-                                for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
-                                          &mut la.ssm_alpha, &mut la.ssm_out] { mir4(w)?; }
-                            }
+                        mirk(&mut output)?;
+                        if n4 > 0 {
+                            eprintln!("[{tag}] prefill fp16 mirrors built: {n4} tensors \
+                                       ({} MB)", b4 >> 20);
                         }
-                        if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
-                            for w in [ffn_gate, ffn_up, ffn_down] { mir4(w)?; }
-                        }
-                    }
-                    mir4(&mut output)?;
-                    if n4 > 0 {
-                        eprintln!("[q4kf16] prefill fp16 mirrors built: {n4} Q4_K tensors \
-                                   ({} MB)", b4 >> 20);
                     }
                 }
             }

@@ -2326,3 +2326,17 @@ VRAM on every model per box); serving configs set MEMRA_PP_F16_BUDGET_MB per mod
 machine-specific config per flags doctrine. NEXT RUNG: Q5_K (48 tensors, 3GB @2B/w)
 is the remaining non-f16 trunk class; full-coverage budget as a q27 serving default is
 the open owner call (5.2GB headroom at 43008).
+
+Round 49b — Q5_K f16 mirrors landed as the THIRD budget pass (strictly after all
+Q4_K, so the default composition and every banked 49 gate stays byte-identical —
+verified: same 183 q4k mirrors, argmax maxdiff bit-same 6.513e-1). memra_q5kf16_
+dequant_kernel: 176B superblock, same get_scale_min_k4, qh bit g of qh[l], verified
+vs deq_q5_k. Battery case added (blk.0.ssm_out Q5_K GEMM rel 3.2e-7 + f16 mirror rel
+2.4-6.0e-3); q5k-active argmax MATCH (4.231e-1); K-sweep 8/8 PASS. Marginal probe
+(x2, KQRP off to free VRAM): full stack q6k+q4k(35.6GB)+q5k(2.9GB) -> pp2048 prime
+0.254s = 8063 tok/s (+152% vs base); q5k tail ~9.5ms/GB. ON THIS BOX the tier is
+dark in the serving config (full q4k+q6k already exceeds the budget that fits beside
+the round-48 KQRP decode mirrors) — it pays on bigger-VRAM boxes; implemented +
+battery-gated either way. The REAL owner call this exposes: on 80GB, f16-mirror
+budget vs KQRP decode mirrors compete for the same ~15GB — prefill 6564->8063 vs
+decode +15% cannot both max out; per-box serving configs choose.

@@ -79,6 +79,28 @@ probe-bud43008-agentic-r1.log: prime 0.105s = 6038 tok/s (base 2781 = +117%; def
 budget new 4403 = +37%), plain 90.18, spec K=3 146.27, acceptance 84.7% (base 84.0) —
 no acceptance regression on the agentic class at fuller coverage.
 
+## Round 49b increment: Q5_K f16 mirrors (48 ssm_out tensors, 176B superblock)
+
+Q5_K (the last mul_mat_q_q45k prefill class in q27 — GDN ssm_out [6144,5120] x48) rides a
+THIRD budget pass strictly after all Q4_K, so the default-budget composition — and every
+banked 49 gate/A/B above — stays byte-identical (verified: 49b binary at default budget
+builds the same 183 Q4_K mirrors / 22420 MB, zero q5k, argmax maxdiff bit-same 6.513e-1).
+Unpack per qmatvec.cu deq_q5_k: same get_scale_min_k4 scales, qh bit g of qh[l].
+
+- Gates (49b binary): kernel-check rc=0 fails=0 — NEW battery case blk.0.ssm_out.weight
+  Q5_K GEMM (rel 3.2e-7) + Q5_K f16 mirror (rel 2.4-6.0e-3, band 1e-2)
+  (kernel-check-q5k.log); run-gen argmax MATCH default (6.513e-1) AND q5k-active config
+  (4.231e-1, MEMRA_KQRP=0 MEMRA_PP_F16_BUDGET_MB=50688); run-spec K=1..8 8/8 PASS
+  (runspec-k1-8-q27-49b.log).
+- Marginal value probe (x2 interleaved, KQRP off to free VRAM; probe-q5k-bud*.log):
+  budget 47616 = full q4k (288 tensors, 35.6GB) + 27/48 q5k -> prime 0.266-0.267s;
+  budget 50688 = + full q5k (2880 MB) -> prime 0.254-0.255s = 8063 tok/s (+152% vs
+  base 3205). Q5_K tail marginal ~9.5ms/GB.
+- ON THIS BOX the Q5_K tier is dark in the serving config: full q4k+q6k = 45GB budget
+  already exceeds what fits beside the KQRP decode mirrors (round 48, +15% decode), and
+  Q5_K only admits after the whole Q4_K class. It pays on bigger-VRAM boxes or KQRP-off
+  diagnostic runs; the class is now implemented + battery-gated either way.
+
 ## Next wall (nsys, ONE whole-run capture at 43008 — unwindowed, direction only)
 
 nsys-kern-sum-bud43008.txt (run-gen NGEN=8 board-2048; the .nsys-rep binary, 237MB,
