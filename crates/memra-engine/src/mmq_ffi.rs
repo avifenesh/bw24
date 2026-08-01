@@ -1157,12 +1157,12 @@ impl Engine {
         let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
         let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
         {
-            let stream = &self.gpu.stream;
-            let (w_p, _g0) = w_f16.device_ptr(stream);
-            let (a_p, _g1) = act_f16.device_ptr(stream);
-            let (s_p, _g2) = row_scale.device_ptr(stream);
-            let (off_p, _g3) = ex_off_dev.device_ptr(stream);
-            let (y_p, _g4) = y.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _g0) = w_f16.device_ptr(&stream);
+            let (a_p, _g1) = act_f16.device_ptr(&stream);
+            let (s_p, _g2) = row_scale.device_ptr(&stream);
+            let (off_p, _g3) = ex_off_dev.device_ptr(&stream);
+            let (y_p, _g4) = y.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_moe_f16g_gemm_sk(w_p as *const core::ffi::c_void,
                     a_p as *const core::ffi::c_void, y_p as *mut f32,
