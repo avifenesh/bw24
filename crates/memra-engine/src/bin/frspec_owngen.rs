@@ -135,7 +135,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("usage: frspec-owngen <model.gguf|hf_dir|hf:spec> <out.gguf> [topN] \
-                   [--preset code|chat|agentic|mixed] [--ngen N] [--temp T] [--raw] [--validate] [prompts...]");
+                   [--preset code|chat|agentic|mixed] [--ngen N] [--temp T] [--raw] [--validate] \
+                   [--corpus-out ids.txt] [--limit N] [prompts...]");
         std::process::exit(1);
     }
     let model_arg = memra_gguf::hf::resolve_arg(&args[1])?;
