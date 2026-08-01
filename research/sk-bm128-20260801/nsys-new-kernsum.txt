@@ -1,0 +1,49 @@
+
+NOTICE: Existing SQLite export found: nsys-new.sqlite
+        It is assumed file was previously exported from: nsys-new.nsys-rep
+        Consider using --force-export=true if needed.
+
+Processing [nsys-new.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  -----------  -----------  ---------  ---------  -----------  ----------------------------------------------------------------------------------------------------
+     17.9      199,476,502        156  1,278,695.5  1,233,029.5  1,079,415  2,467,531    170,674.2  dequant_iq3s_f16_kernel(const unsigned long long *, int, int, const int *, __half *, int, int, long)
+     17.3      192,895,371        240    803,730.7    772,137.0    548,219  1,229,622    138,450.5  moe_f16g_sk128v_kernel(const __half *, const __half *, float *, const float *, const int *, int, in…
+     14.7      163,788,106        240    682,450.4    654,283.0    500,572  1,785,041    139,188.0  moe_f16g_sk32v_kernel(const __half *, const __half *, float *, const float *, const int *, int, int…
+     12.7      141,409,099         78  1,812,937.2  1,714,849.0  1,277,045  3,115,878    292,858.1  dequant_iq4xs_f16_kernel(const unsigned long long *, int, int, const int *, __half *, int, int, lon…
+      9.8      109,450,836        500    218,901.7     58,975.5     40,608    739,962    209,477.9  void mul_mat_q_q8_0<(int)128, (bool)0>(const char *, const int *, float *, int, int, int, int, int,…
+      3.6       40,443,555         60    674,059.3    638,458.5    593,371  1,029,079     82,198.8  gdn_chunk_state_f32                                                                                 
+      2.6       28,668,969         20  1,433,448.4  1,347,748.5  1,267,669  1,856,080    187,998.9  fa_prefill_bf16kv_pp                                                                                
+      2.3       25,648,775         80    320,609.7    313,965.0    307,965    579,931     30,517.7  rows_permute_f32                                                                                    
+      2.1       23,057,118         60    384,285.3    361,213.0    335,229    770,618     76,778.6  gdn_chunk_output_f32                                                                                
+      1.7       18,975,005         60    316,250.1    286,334.0    265,725    715,162     92,271.9  ssm_conv1d_gdn_f32                                                                                  
+      1.7       18,963,073        120    158,025.6    151,775.0    139,231    194,111     14,636.8  l2_norm_f32                                                                                         
+      1.7       18,407,655        160    115,047.8    111,903.0     61,311    187,934     44,628.0  gather_act_f16_kernel(const float *, const int *, __half *, float *, int, int)                      
+      1.3       14,533,221         80    181,665.3    176,446.5    164,831    222,398     14,274.2  moe_pairs_scatter                                                                                   
+      1.2       13,530,761         60    225,512.7    216,238.0    194,366    278,174     22,097.3  gdn_chunk_attn_f32                                                                                  
+      1.2       13,109,525        120    109,246.0    104,015.5     91,232    142,367     12,829.9  qmatvec_q8_0_dp4a                                                                                   
+      1.2       12,929,995         80    161,624.9    137,583.0    134,367  1,177,430    129,072.9  moe_pairs_silu_mul                                                                                  
+      0.9       10,332,106         60    172,201.8    171,358.5    164,735    185,726      5,428.5  gdn_chunk_solve32_f32                                                                               
+      0.8        8,742,262          6  1,457,043.7  1,433,220.0  1,197,974  1,778,737    207,836.3  dequant_q6k_f16_kernel(const unsigned long long *, int, int, const int *, __half *, int, int, long) 
+      0.7        7,953,179         60    132,553.0    121,807.0    115,007    566,235     57,468.3  gated_rmsnorm_f32                                                                                   
+      0.7        7,930,082        500     15,860.2     12,160.0      2,624     37,984      8,727.4  quantize_mmq_q8_1_d4_q8_0(const float *, void *, long, long, long, int)                             
+      0.6        6,666,660        202     33,003.3     24,655.5     12,288    514,140     40,034.9  rms_norm_f32                                                                                        
+      0.6        6,446,466        122     52,839.9     48,143.0      2,496    330,653     26,980.2  quantize_q8_1                                                                                       
+      0.6        6,340,325         80     79,254.1     73,711.0     61,183    316,606     27,705.8  void cutlass::Kernel2<cutlass_80_tensorop_s1688gemm_128x64_16x6_tn_align4>(T1::Params)              
+      0.4        4,826,268         80     60,328.3     58,495.0     50,176     72,383      4,813.4  add_scaled_rows_f32                                                                                 
+      0.4        4,162,332        160     26,014.6     26,128.0     22,399     32,672      2,370.7  add_f32                                                                                             
+      0.3        3,636,931         20    181,846.5    177,566.0    174,847    204,510      9,794.0  q_gate_split_f32                                                                                    
+      0.3        3,079,846         80     38,498.1     36,288.0     31,295     51,232      4,978.7  moe_router_topk_f32                                                                                 
+      0.2        2,619,433         20    130,971.6    129,087.0    127,679    141,919      4,406.1  mul_f32                                                                                             
+      0.2        2,506,185        160     15,663.7      1,648.0      1,056    131,647     37,479.4  sigmoid_f32                                                                                         
+      0.1        1,471,380          2    735,690.0    735,690.0    515,580    955,800    311,282.5  qmatvec_q6_K_mmvq                                                                                   
+      0.1          673,946         40     16,848.7     16,671.5      4,351     35,072     12,113.3  rope_neox_f32                                                                                       
+      0.1          653,241         80      8,165.5      7,999.5      7,168     10,016        723.8  std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, float, float, float, float, (bool…
+      0.0          486,494         80      6,081.2      5,728.0      5,088      8,032        767.0  silu_mul_f32                                                                                        
+      0.0          233,695         40      5,842.4      6,224.0      3,584      9,056      1,831.7  f32_to_bf16_bulk                                                                                    
+      0.0          229,983         60      3,833.1      3,600.0      3,008      4,927        491.9  gdn_chunk_cumgate_f32                                                                               
+      0.0          131,359         60      2,189.3      2,176.0      1,696      2,720        242.2  gdn_glog_f32                                                                                        
+      0.0           60,351          2     30,175.5     30,175.5     26,272     34,079      5,520.4  embed_gather_u32_t                                                                                  
+

@@ -249,12 +249,17 @@ unsafe extern "C" {
         src_f16: *const core::ffi::c_void, dst: *mut f32, n: usize,
         stream: *mut core::ffi::c_void,
     ) -> i32;
-    // Single-kernel grouped GEMM (MEMRA_MOE_F16G=2, round 49): one launch on OUR stream,
-    // f32 C with the act row-scale folded in — no cublas internal-stream race, no sync.
+    // Single-kernel grouped GEMM (MEMRA_MOE_F16G=2, rounds 49+51): on OUR stream, f32 C with
+    // the act row-scale folded in — no cublas internal-stream race, no sync. Round 51 runs it
+    // as a persistent problem-visitor over the real tiles with two tile forms (32x64x32
+    // 2-stage / 128x64x64 3-stage): shape_sel < 0 = the round-49 grid-scan kernel (rollback
+    // arm); else groups with m_e >= cross ride the 128 form. ex_off_host sizes the visitor
+    // grids host-side (the offsets are already there at the call site — no extra transfer).
     pub fn memra_moe_f16g_gemm_sk(
         w_f16: *const core::ffi::c_void, act_f16: *const core::ffi::c_void,
         y_f32: *mut f32, row_scale: *const f32, ex_off_dev: *const i32,
-        n_active: i32, max_m: i32, in_f: i32, out_f: i32,
+        ex_off_host: *const i32,
+        n_active: i32, max_m: i32, in_f: i32, out_f: i32, shape_sel: i32, cross: i32,
         stream: *mut core::ffi::c_void,
     ) -> i32;
 }
@@ -1072,11 +1077,12 @@ impl Engine {
             if sk {
                 let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
                 let (off_p, _g7) = ex_off_dev.device_ptr(stream);
+                let (shape_sel, cross) = crate::moe_f16g_sk_params();
                 let rc = unsafe {
                     memra_moe_f16g_gemm_sk(w_p as *const core::ffi::c_void,
                         a_p as *const core::ffi::c_void, y_p as *mut f32,
-                        s_p as *const f32, off_p as *const i32,
-                        n_active as i32, max_m, in_f as i32, out_f as i32,
+                        s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
+                        n_active as i32, max_m, in_f as i32, out_f as i32, shape_sel, cross,
                         stream.cu_stream() as *mut core::ffi::c_void)
                 };
                 if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
@@ -1134,6 +1140,37 @@ impl Engine {
             eprintln!("[f16g-debug] proj={proj} w: bad={wb} max={wm:.3e} | act: bad={ab} \
                        max={am:.3e} | y: bad={yb} max={ym:.3e} (na={n_active} np={n_pairs} \
                        in={in_f} out={out_f})");
+        }
+        Ok(y)
+    }
+
+    /// Raw sk grouped-GEMM entry for kernel-check ("f16g-sk" section): explicit shape/cross
+    /// instead of the env policy. shape_sel < 0 = the round-49 grid-scan rollback arm; else
+    /// the round-51 problem-visitor split at `cross` (1 forces all-128, i32::MAX all-32).
+    /// w_f16 = [n_active][out_f][in_f] f16 bytes, act_f16 = [n_pairs][in_f] f16 bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_f16g_gemm_sk_raw(&self, w_f16: &CudaSlice<u8>, act_f16: &CudaSlice<u8>,
+        row_scale: &CudaSlice<f32>, ex_off_host: &[i32], ex_off_dev: &CudaSlice<i32>,
+        in_f: usize, out_f: usize, n_pairs: usize, shape_sel: i32, cross: i32)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_active = ex_off_host.len() - 1;
+        let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        {
+            let stream = &self.gpu.stream;
+            let (w_p, _g0) = w_f16.device_ptr(stream);
+            let (a_p, _g1) = act_f16.device_ptr(stream);
+            let (s_p, _g2) = row_scale.device_ptr(stream);
+            let (off_p, _g3) = ex_off_dev.device_ptr(stream);
+            let (y_p, _g4) = y.device_ptr_mut(stream);
+            let rc = unsafe {
+                memra_moe_f16g_gemm_sk(w_p as *const core::ffi::c_void,
+                    a_p as *const core::ffi::c_void, y_p as *mut f32,
+                    s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
+                    n_active as i32, max_m, in_f as i32, out_f as i32, shape_sel, cross,
+                    stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
         }
         Ok(y)
     }

@@ -54,6 +54,30 @@ pub fn moe_f16g_mode() -> u8 {
 pub fn moe_f16g_on() -> bool {
     moe_f16g_mode() != 0
 }
+/// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs
+/// as a persistent problem-visitor over the real CSR tiles with two tile forms. Returns
+/// (shape_sel, cross) for the FFI:
+///   MEMRA_F16G_SK=0    -> (-1, _): the round-49 grid-scan kernel (rollback seam).
+///   MEMRA_F16G_SK=32   -> all groups on the 32x64x32 2-stage form (cross = i32::MAX).
+///   MEMRA_F16G_SK=128  -> all groups on the 128x64x64 3-stage form (cross = 1; groups fall
+///                         back to 32x64 in-launcher when the device/in_f can't take it).
+///   unset              -> hybrid split: groups with m_e >= MEMRA_F16G_SK_CROSS ride the 128
+///                         form. Default cross = 64 (5090 sweep 2026-08-01, receipts
+///                         research/sk-bm128-20260801/ — re-sweep on Hopper before flipping
+///                         mode 2 there).
+pub fn moe_f16g_sk_params() -> (i32, i32) {
+    static P: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
+    *P.get_or_init(|| match std::env::var("MEMRA_F16G_SK").as_deref() {
+        Ok("0") => (-1, 0),
+        Ok("32") => (0, i32::MAX),
+        Ok("128") => (0, 1),
+        _ => {
+            let cross = std::env::var("MEMRA_F16G_SK_CROSS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(64);
+            (0, cross)
+        }
+    })
+}
 /// Per-model door for the gemma-MoE (gelu) grouped path: round 49's Hopper default
 /// REGRESSED g26 board-2048 prefill -8.3% interleaved x5 on-box (def median 10380,
 /// wild 8.9k-11.7k spread; off 11317, ±0.13%) — the +6-15% probe verdict didn't
