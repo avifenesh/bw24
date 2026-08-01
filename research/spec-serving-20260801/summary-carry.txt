@@ -1,0 +1,51 @@
+point              agg med   n  range            p50_lat  err
+speccarry-c1           131.8  3  131.5- 132.3     0.97s  0
+speccarry-c2           132.0  3  131.9- 132.7     1.94s  0
+speccarry-c4           132.0  3  132.0- 132.7     3.88s  0
+speccarry-c8           132.2  3  132.1- 132.7     7.76s  0
+specpre2-c1           126.3  3  126.2- 126.7     1.01s  0
+specpre2-c8           126.4  3  126.2- 126.9     8.09s  0
+plaincarry-c1            72.5  3   72.4-  72.5     1.77s  0
+plaincarry-c2           111.2  3  111.2- 111.3     2.30s  0
+plaincarry-c4           157.7  3  155.6- 157.8     3.25s  0
+carryburst8-c4           131.0  2  130.6- 131.4     3.92s  0
+carryburst8-c8           131.4  2  131.0- 131.7     7.81s  0
+carryburst32-c4           132.4  2  131.4- 133.3     3.87s  0
+carryburst32-c8           132.6  2  131.7- 133.5     7.74s  0
+carryburst128-c4           132.2  2  131.4- 133.0     3.88s  0
+carryburst128-c8           132.4  2  131.7- 133.2     7.74s  0
+
+c=1: spec carry/pre = 1.044x  (126.3 -> 131.8)
+c=8: spec carry/pre = 1.046x  (126.4 -> 132.2)
+
+c=1: spec-carry/plain = 1.82x  (131.8 vs 72.5)
+c=2: spec-carry/plain = 1.19x  (132.0 vs 111.2)
+c=4: spec-carry/plain = 0.84x  (132.0 vs 157.7)
+
+carry burst=8 c=4: 131.0 tok/s
+carry burst=8 c=8: 131.4 tok/s
+carry burst=32 c=4: 132.4 tok/s
+carry burst=32 c=8: 132.6 tok/s
+carry burst=128 c=4: 132.2 tok/s
+carry burst=128 c=8: 132.4 tok/s
+
+carry acceptance: 17814/20156 = 0.884 (n_bursts=789)
+
+correctness byte-equality (vs PRE-fix spec captures + plain):
+  p1 specpost   vs spec-pre: len=745 common_prefix_exact=True
+  p1 speccarry  vs spec-pre: len=745 common_prefix_exact=True
+  p1 plain      vs spec-pre: len=734 common_prefix_exact=True
+  p2 specpost   vs spec-pre: len=373 common_prefix_exact=True
+  p2 speccarry  vs spec-pre: len=375 common_prefix_exact=True
+  p2 plain      vs spec-pre: len=373 common_prefix_exact=True
+
+[spec-setup] carry trace (continuation bursts):
+  [spec-setup] init=11.64ms cap=4.25ms fill=2.19ms rounds=93.16ms tail=0.02ms total=111.26ms out=17 cont=false
+  [spec-setup] init=12.19ms cap=2.36ms fill=1.88ms rounds=186.68ms tail=0.02ms total=203.12ms out=33 cont=false
+  [spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=206.89ms tail=0.02ms total=206.96ms out=34 cont=true
+  [spec-setup] init=0.01ms cap=0.03ms fill=0.02ms rounds=188.98ms tail=0.02ms total=189.06ms out=32 cont=true
+  [spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=254.05ms tail=0.02ms total=254.13ms out=29 cont=true
+  [spec-setup] init=12.04ms cap=2.03ms fill=1.89ms rounds=186.86ms tail=0.02ms total=202.83ms out=33 cont=false
+  [spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=209.05ms tail=0.03ms total=209.12ms out=34 cont=true
+  [spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=188.37ms tail=0.02ms total=188.44ms out=32 cont=true
+  [spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=253.68ms tail=0.02ms total=253.75ms out=29 cont=true

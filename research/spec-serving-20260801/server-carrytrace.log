@@ -1,0 +1,25 @@
+[server] starting; models config = [("q27", "/opt/dlami/nvme/models/Qwen3.6-27B-Q4_K_M.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /opt/dlami/nvme/models/Qwen3.6-27B-Q4_K_M.gguf
+[q8rp] split-plane decode mirrors built: 449 tensors
+[worker]   loaded "q27": 65 layers, eos=248046
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8186
+[spec-setup] init=11.64ms cap=4.25ms fill=2.19ms rounds=93.16ms tail=0.02ms total=111.26ms out=17 cont=false
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[spec-setup] init=12.19ms cap=2.36ms fill=1.88ms rounds=186.68ms tail=0.02ms total=203.12ms out=33 cont=false
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=206.89ms tail=0.02ms total=206.96ms out=34 cont=true
+[spec-acc] ctx=259 burst=25/25 cum=49/49=1.000
+[spec-setup] init=0.01ms cap=0.03ms fill=0.02ms rounds=188.98ms tail=0.02ms total=189.06ms out=32 cont=true
+[spec-acc] ctx=293 burst=24/24 cum=73/73=1.000
+[spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=254.05ms tail=0.02ms total=254.13ms out=29 cont=true
+[spec-acc] ctx=325 burst=18/30 cum=91/103=0.883
+[spec-setup] init=12.04ms cap=2.03ms fill=1.89ms rounds=186.86ms tail=0.02ms total=202.83ms out=33 cont=false
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=209.05ms tail=0.03ms total=209.12ms out=34 cont=true
+[spec-acc] ctx=259 burst=25/25 cum=49/49=1.000
+[spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=188.37ms tail=0.02ms total=188.44ms out=32 cont=true
+[spec-acc] ctx=293 burst=24/24 cum=73/73=1.000
+[spec-setup] init=0.01ms cap=0.02ms fill=0.02ms rounds=253.68ms tail=0.02ms total=253.75ms out=29 cont=true
+[spec-acc] ctx=325 burst=18/30 cum=91/103=0.883

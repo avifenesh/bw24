@@ -168,12 +168,69 @@ multi-session spec serving is a **multi-week engine lane**, not a scheduler twea
 no cheap intermediate: any composition that still issues B=1 trunk verifies spends the same
 GPU seconds — the flat ~126 tok/s line above IS that ceiling.
 
+## 3b. The per-burst fixed cost: found and killed (2026-08-01, same day)
+
+The ~16ms/burst estimate from §2b was investigated and fixed in two steps — the receipts for
+both live in this directory.
+
+**Step 1 — the recapture hypothesis was WRONG (measured).** The worker comment blamed the
+per-call draft-graph recapture. Implemented per-session graph persistence (`DraftGraphCtx` on
+`SpecSession`: the captured graph(s) + every baked I/O buffer survive across bursts; keyed
+sampled-graph invalidation; failed-capture memo). Result: **flat** — spec c1 125.4 -> 126.0
+(+0.4%, x3 interleaved, `postfix-points.jsonl`), burst sweep unchanged. The capture was only
+~2.2ms and only the FIRST burst of a session pays it now, but it was never the cost.
+
+**Step 2 — profiled, then removed the real cost.** `MEMRA_SPEC_SETUP_TRACE=1` (new diagnostics
+in `generate_spec_inner2`) decomposed a continuation burst: **init=11.4ms** (the setup's solo
+`decode_step_h` feeding the burst's first token) + **tail=11.6ms** (the session tail's solo
+pass committing the pending bonus) — two full trunk passes per burst boundary, each committing
+ONE token where the in-loop steady state commits ~3.7 tokens per trunk pass via the batched
+verify (`server-setuptrace.log`). Fix: **pending-carry** (`SpecSession::pending_tok`) — the
+bonus is stashed instead of committed; the next empty-suffix greedy burst consumes it as
+round-0 verify col 0, exactly like a mid-burst full-accept boundary. The burst boundary
+becomes a plain round edge (trace after: init=0.01ms, tail=0.02ms, `server-carrytrace.log`).
+Non-empty-suffix turns, sampled turns, and pool-parking flush first (`spec_flush_pending`,
+one pass per retired request instead of two per burst).
+
+Measured (x3 interleaved rounds, `carry-points.jsonl`, medians):
+
+| point | pre | carry | delta |
+|---|---|---|---|
+| spec c=1 | 126.3 | **131.8** | +4.4% |
+| spec c=8 | 126.4 | **132.2** | +4.6% |
+| burst=8 (c4) | 105.6 | **131.0** | +24% |
+| burst=32 (c4) | 125.9 | 132.4 | +5.2% |
+| burst=128 (c4) | 132.2 | 132.2 | flat |
+
+The burst sweep is now FLAT (131.0-132.6 across 8/32/128) — the fixed cost is gone, and the
+fairness knob is free: serve can run burst=8 (4x finer round-robin interleave for multi-session
+latency) at ~1% aggregate cost instead of -16%. Default stays 32.
+
+Exactness receipts: `session-gate` ALL TURNS MATCH (incl. the empty-suffix carry-consume turn;
+the harness's reference-prefix arithmetic was updated to track history independently instead of
+deriving it from `committed` — the oracle no longer reads the system under test's internals),
+`run-spec` K=1..8 self-consistency PASS (identical acceptance to pre-fix — single-shot path
+untouched), serve outputs byte-equal to the PRE-fix captures on both probe prompts
+(`summary-carry.txt`). Acceptance 0.884 vs 0.890 pre (boundary rounds now draft — a
+throughput-shape change, not an exactness one).
+
+**Updated crossover** (`carry-points.jsonl` vs same-window plain): c1 = **1.82x**, c2 = 1.19x,
+c4 = 0.84x — the fast lane widened but the crossover stays between c=2 and c=4. The remaining
+gap to the ~200ms/burst round loop is round-loop work itself (draft chains + verify + accept),
+i.e. the §3 batched-verify design — no boundary overhead left to harvest.
+
 ## 4. Receipts
 
 - `points.jsonl` — 28 load points (24 matrix + 4 make-up round), each with agg tok/s,
   p50/p95 latency, error counts. `per-request.jsonl` — every request.
 - `burst-points.jsonl` / `burst-per-request.jsonl` / `burst-driver.log` /
   `server-spec-burst*.log` — the burst-size sensitivity sweep (`run_burst.sh`).
+- `postfix-points.jsonl` + `summary-postfix.txt` (`run_postfix.sh`) — graph-persistence A/B
+  (the flat step-1 result); `carry-points.jsonl` + `summary-carry.txt` (`run_carry.sh`) — the
+  pending-carry A/B; `server-setuptrace.log` / `server-carrytrace.log` — the [spec-setup]
+  boundary decomposition before/after; `session-gate-*.log`, `run-spec-*.log` — engine gates;
+  `correctness-specpost-*`/`-speccarry-*`/`-plainpost-*` — serve byte-equality captures;
+  `validate-h100-quick-carry.log` — the quick battery on the carry build.
 - `summarize.py` — the median table + acceptance aggregation (run on box).
 - `server-{plain,spec}-r*.log` — per-arm per-round server logs (spec logs carry per-burst
   `[spec-acc]` acceptance telemetry).
