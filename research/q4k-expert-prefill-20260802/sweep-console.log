@@ -81,3 +81,77 @@ DOOR-SWEEP-DONE 2026-08-01T23:07:30Z
   [cross128] pp2048 med5 = 3425.6
   [cross256] pp2048 med5 = 3393.3
 KNOB-SWEEP-DONE 2026-08-01T23:14:22Z
+=== O35B BAR CHECK x3 2026-08-01T23:36:16Z git=8b38ef50 profile=performance ===
+  [memra rep1] pp2048_toks = 3465.7
+  [memra rep1] pp512_toks = 1647.6
+  [memra rep1] tg128_toks = 208.86
+  [llama] {"cell": "o35b-barcheck", "arm": "llama", "metric": "pp2048_toks", "value": 3815.776715, "rep": 1, "temp_c": 70}
+  [llama] {"cell": "o35b-barcheck", "arm": "llama", "metric": "tg128_toks", "value": 192.174437, "rep": 1, "temp_c": 70}
+  [memra-p1-code-short rep1] prompt_ntok = 27
+  [memra-p1-code-short rep1] plain_decode_toks = null
+  [memra-p1-code-short rep1] spec_k2_decode_toks = 272.03
+  [memra-p1-code-short rep1] prime_s = 0.096
+  [memra-p1-code-short rep1] spec_consistency_pass = 1
+  [memra-p2-code-medium rep1] prompt_ntok = 1845
+  [memra-p2-code-medium rep1] plain_decode_toks = null
+  [memra-p2-code-medium rep1] spec_k2_decode_toks = 244.48
+  [memra-p2-code-medium rep1] prime_s = 0.569
+  [memra-p2-code-medium rep1] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep1] prompt_ntok = 6257
+  [memra-p3-agentic-long rep1] plain_decode_toks = null
+  [memra-p3-agentic-long rep1] spec_k2_decode_toks = 228.15
+  [memra-p3-agentic-long rep1] prime_s = 1.618
+  [memra-p3-agentic-long rep1] spec_consistency_pass = 1
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp27_toks", "value": 1241.785874, "rep": 1, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp1845_toks", "value": 3679.556323, "rep": 1, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp6257_toks", "value": 3642.705455, "rep": 1, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "tg256_toks", "value": 191.606769, "rep": 1, "temp_c": 73}
+  [memra rep2] pp2048_toks = 3425.4
+  [memra rep2] pp512_toks = 1646.9
+  [memra rep2] tg128_toks = 207.99
+  [llama] {"cell": "o35b-barcheck", "arm": "llama", "metric": "pp2048_toks", "value": 3798.073571, "rep": 2, "temp_c": 72}
+  [llama] {"cell": "o35b-barcheck", "arm": "llama", "metric": "tg128_toks", "value": 192.09512, "rep": 2, "temp_c": 72}
+  [memra-p1-code-short rep2] prompt_ntok = 27
+  [memra-p1-code-short rep2] plain_decode_toks = null
+  [memra-p1-code-short rep2] spec_k2_decode_toks = 273.34
+  [memra-p1-code-short rep2] prime_s = 0.097
+  [memra-p1-code-short rep2] spec_consistency_pass = 1
+  [memra-p2-code-medium rep2] prompt_ntok = 1845
+  [memra-p2-code-medium rep2] plain_decode_toks = null
+  [memra-p2-code-medium rep2] spec_k2_decode_toks = 244.12
+  [memra-p2-code-medium rep2] prime_s = 0.569
+  [memra-p2-code-medium rep2] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep2] prompt_ntok = 6257
+  [memra-p3-agentic-long rep2] plain_decode_toks = null
+  [memra-p3-agentic-long rep2] spec_k2_decode_toks = 228.55
+  [memra-p3-agentic-long rep2] prime_s = 1.619
+  [memra-p3-agentic-long rep2] spec_consistency_pass = 1
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp27_toks", "value": 1258.248459, "rep": 2, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp1845_toks", "value": 3678.000457, "rep": 2, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp6257_toks", "value": 3644.541879, "rep": 2, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "tg256_toks", "value": 191.775067, "rep": 2, "temp_c": 73}
+  [memra rep3] pp2048_toks = 3450.3
+  [memra rep3] pp512_toks = 1654.1
+  [memra rep3] tg128_toks = 208.52
+  [llama] {"cell": "o35b-barcheck", "arm": "llama", "metric": "pp2048_toks", "value": 3803.714923, "rep": 3, "temp_c": 72}
+  [llama] {"cell": "o35b-barcheck", "arm": "llama", "metric": "tg128_toks", "value": 191.900513, "rep": 3, "temp_c": 72}
+  [memra-p1-code-short rep3] prompt_ntok = 27
+  [memra-p1-code-short rep3] plain_decode_toks = null
+  [memra-p1-code-short rep3] spec_k2_decode_toks = 273.79
+  [memra-p1-code-short rep3] prime_s = 0.096
+  [memra-p1-code-short rep3] spec_consistency_pass = 1
+  [memra-p2-code-medium rep3] prompt_ntok = 1845
+  [memra-p2-code-medium rep3] plain_decode_toks = null
+  [memra-p2-code-medium rep3] spec_k2_decode_toks = 244.03
+  [memra-p2-code-medium rep3] prime_s = 0.569
+  [memra-p2-code-medium rep3] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep3] prompt_ntok = 6257
+  [memra-p3-agentic-long rep3] plain_decode_toks = null
+  [memra-p3-agentic-long rep3] spec_k2_decode_toks = 228.67
+  [memra-p3-agentic-long rep3] prime_s = 1.618
+  [memra-p3-agentic-long rep3] spec_consistency_pass = 1
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp27_toks", "value": 1244.326275, "rep": 3, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp1845_toks", "value": 3677.751931, "rep": 3, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "pp6257_toks", "value": 3639.837277, "rep": 3, "temp_c": 73}
+  [llama-class] {"cell": "o35b-barcheck", "arm": "llama-class", "metric": "tg256_toks", "value": 191.699823, "rep": 3, "temp_c": 73}
+BARCHECK-DONE 2026-08-01T23:40:08Z
