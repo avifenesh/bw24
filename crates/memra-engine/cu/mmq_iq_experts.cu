@@ -18,6 +18,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 
 #define WARP_SIZE 32
 #define GGML_PAD(x,n) (((x)+(n)-1)/(n)*(n))
@@ -486,6 +487,16 @@ static __global__ void quantize_mmq_q8_1_d4_kernel(const float* __restrict__ x, 
     yb[ib].d4[iqs/32] = amax==0.0f?0.0f:1.0f/di;
 }
 
+// Per-variant dynamic smem: ids + the Y ping-pong scale with the token tile mmq_x; tile_x and
+// the W staging ring are MMQ_Y-row-sized (the out-row tile stays 128 for every token-tile
+// variant), so only the first two terms shrink with a smaller tile.
+static size_t iqexp_smem_bytes(int mmq_x){
+    return (size_t)mmq_x*sizeof(int)
+        + 2*GGML_PAD((size_t)mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)  // Y ping-pong
+        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int)
+        + 2*(size_t)MMQ_Y*W_STAGE_STRIDE;              // W kb-slice staging ring
+}
+
 // ======================= C-ABI launchers =======================
 extern "C" {
 
@@ -507,27 +518,54 @@ int memra_mmq_iq_quantize_act(const float* act_f32, void* act_scratch, int in_f,
 
 // Expert-segmented IQ MMA MMQ. y[n_pairs, out_f]. `act_scratch` pre-quantized via
 // memra_mmq_iq_quantize_act (token-major over n_tokens). qtype: 5=IQ4_XS, 6=IQ3_S.
+//
+// RAGGED TOKEN-TILE dispatch (2026-08-01): groups average ~65 pairs on q35 gate/up — a fixed
+// 128-token tile pads 65 to 128 (~50% wasted gather + MMA + write-back masking). Pick the
+// smallest tile in {64,96,MMQ_X} that still covers the CEIL-AVERAGE group (n_pairs/n_active)
+// in ONE pass. Never pick a tile smaller than avg: each extra token-tile pass over a group
+// re-stages and re-dequants the SAME W kb-slices, and W dequant is the expensive leg
+// (a 65-avg set on a 64 tile = half the groups pay 2x W dequant). Larger-than-avg outlier
+// groups take extra passes exactly as before. MEMRA_MMQ_X_IQEXP (build seam) stays the
+// ceiling: a pinned MMQ_X<=96 build never dispatches above it. MEMRA_MMQ_IQEXP_RAGGED=0
+// pins the legacy fixed-MMQ_X tile (rollback seam).
 int memra_mmq_iq_experts(const unsigned long long* table, int proj, int n_expert,
         const int* ex_ids, const int* ex_off, const int* ex_pairs, const int* pair_tok,
         const void* act_scratch, float* y,
-        int in_f, int out_f, int n_active, int n_tokens, int qtype, long row_bytes, void* stream){
+        int in_f, int out_f, int n_active, int n_pairs, int n_tokens, int qtype, long row_bytes, void* stream){
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+    if(n_active <= 0) return 0;
     const int nty = (out_f + MMQ_Y - 1)/MMQ_Y;
     dim3 grid((unsigned)nty, (unsigned)n_active, 1);
     dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
-    size_t smem = (size_t)MMQ_X*sizeof(int)
-        + 2*GGML_PAD((size_t)MMQ_X*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)  // Y ping-pong
-        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int)
-        + 2*(size_t)MMQ_Y*W_STAGE_STRIDE;              // W kb-slice staging ring
     const int* Yq = (const int*)act_scratch;
     const bool nc = (out_f % MMQ_Y) != 0;
-    if(nc){
-        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mmq_iq_experts_kernel<MMQ_X,true><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
-    } else {
-        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mmq_iq_experts_kernel<MMQ_X,false><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
-    }
+    // MEMRA_MMQ_IQEXP_RAGGED: 0 = legacy fixed MMQ_X tile (rollback), 1 = ragged floor 64
+    // (default), 96 = ragged floor 96 (probe arm: isolates the 2-pass tax of tile 64).
+    static int ragged = -2;
+    if(ragged < -1){ const char* rv = getenv("MEMRA_MMQ_IQEXP_RAGGED"); ragged = rv ? atoi(rv) : 1; }
+    const int avg = (n_pairs + n_active - 1)/n_active;   // ceil: T>=avg <=> ceil(avg/T)==1
+    int mx = MMQ_X;
+    if(ragged == 1 && avg <= 64 && 64 < MMQ_X)  mx = 64;
+    else if(ragged >= 1 && avg <= 96 && 96 < MMQ_X) mx = 96;
+    // MEMRA_MMQ_IQEXP_DIAG=1: print the first 24 dispatch decisions (diagnostics only).
+    static int diag = -1;
+    if(diag < 0){ const char* dv = getenv("MEMRA_MMQ_IQEXP_DIAG"); diag = (dv && dv[0]=='1') ? 24 : 0; }
+    if(diag > 0){ diag--; fprintf(stderr, "[iqexp] proj=%d n_active=%d n_pairs=%d avg=%d tile=%d nc=%d\n",
+                                  proj, n_active, n_pairs, avg, mx, (int)nc); }
+    #define IQEXP_LAUNCH(MX) do { \
+        const size_t smem = iqexp_smem_bytes(MX); \
+        if(nc){ \
+            cudaFuncSetAttribute(mmq_iq_experts_kernel<MX,true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+            mmq_iq_experts_kernel<MX,true><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens); \
+        } else { \
+            cudaFuncSetAttribute(mmq_iq_experts_kernel<MX,false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+            mmq_iq_experts_kernel<MX,false><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens); \
+        } \
+    } while(0)
+    if(mx == 64)      IQEXP_LAUNCH(64);
+    else if(mx == 96) IQEXP_LAUNCH(96);
+    else              IQEXP_LAUNCH(MMQ_X);
+    #undef IQEXP_LAUNCH
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
 }
 
