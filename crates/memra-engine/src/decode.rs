@@ -2225,7 +2225,24 @@ impl HybridModel {
                 Ok("0") => false,
                 _ => budget >= 256,
             };
-            if gen_graph && budget > 0 {
+            // SLRU expert cache is capture-ILLEGAL: a cache miss drains/H2Ds on the compute
+            // stream mid-decode, which CUDA forbids while capturing (Ornith-35B Q4_K_M on the
+            // 24GB rig died with CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED, 2026-08-01 — any MoE
+            // model whose experts overflow the residency budget hit this at budget >= 256).
+            // The door only opens with every MoE layer's experts device-resident; =1 cannot
+            // legalize a capture, so this closes the forced door too.
+            let moe_resident = self.layers.iter().all(|l| match &l.ffn {
+                crate::hybrid::Ffn::Moe(m) => m.dev_exps.is_some(),
+                _ => true,
+            });
+            if gen_graph && !moe_resident {
+                static NOTICE: std::sync::Once = std::sync::Once::new();
+                NOTICE.call_once(|| eprintln!(
+                    "[gen-graph] door CLOSED: MoE experts on the SLRU cache path \
+                     (capture-illegal) — eager decode"
+                ));
+            }
+            if gen_graph && moe_resident && budget > 0 {
                 let head_dim = self.cfg.head_dim_k as usize;
                 let mut gs = GraphDecodeState::new(e)?;
                 gs.pos_d = pos_d;
