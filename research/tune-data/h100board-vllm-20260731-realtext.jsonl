@@ -28,3 +28,7 @@
 {"ts":"2026-08-01T09:12:32Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q35-p2048g512","arm":"memra","artifact":"Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","decode_tps":242.86,"prefill_tps":8428.3}
 {"ts":"2026-08-01T09:23:58Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q27-p2048g512","arm":"vllm","artifact":"Qwen/Qwen3.6-27B-FP8","decode_tps":74.28,"prefill_tps":15133.4}
 {"ts":"2026-08-01T09:23:58Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q27-p2048g512","arm":"memra","artifact":"Qwen3.6-27B-Q4_K_M.gguf","decode_tps":103.74,"prefill_tps":4820.9}
+{"ts":"2026-08-01T19:26:29Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q35-p2048g512","arm":"vllm","artifact":"Qwen/Qwen3.6-35B-A3B-FP8","decode_tps":224.97,"prefill_tps":18050.8}
+{"ts":"2026-08-01T19:26:29Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q35-p2048g512","arm":"memra","artifact":"Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","decode_tps":243.51,"prefill_tps":7310.5}
+{"ts":"2026-08-01T19:32:04Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q27-p2048g512","arm":"vllm","artifact":"Qwen/Qwen3.6-27B-FP8","decode_tps":74.33,"prefill_tps":15071.3}
+{"ts":"2026-08-01T19:32:04Z","git":"rsync-tree","rig":"h100-darklanes","cell":"q27-p2048g512","arm":"memra","artifact":"Qwen3.6-27B-Q4_K_M.gguf","decode_tps":103.73,"prefill_tps":4820.4}
