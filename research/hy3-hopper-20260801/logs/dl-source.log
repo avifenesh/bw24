@@ -1,0 +1,13 @@
+Downloading hf-xet (4.2MiB)
+ Downloaded hf-xet
+Installed 15 packages in 8ms
+warning: The package `huggingface-hub==1.26.0` does not have an extra named `hf-transfer`
+warning: The package `huggingface-hub==1.26.0` does not have an extra named `cli`
+/home/ubuntu/.cache/uv/archive-v0/7omjNDMX3cEFlREK/lib/python3.12/site-packages/huggingface_hub/constants.py:298: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+/home/ubuntu/.cache/uv/archive-v0/7omjNDMX3cEFlREK/lib/python3.12/site-packages/huggingface_hub/cli/download.py:158: UserWarning: Ignoring `--include` since filenames have been explicitly set.
+  warnings.warn("Ignoring `--include` since filenames have been explicitly set.")
+Fetching 25 files:   0%|          | 0/25 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 25 files:   4%|▍         | 1/25 [00:00<00:06,  3.45it/s]Fetching 25 files:   8%|▊         | 2/25 [00:00<00:05,  4.10it/s]Fetching 25 files:  16%|█▌        | 4/25 [00:13<01:26,  4.13s/it]Fetching 25 files:  20%|██        | 5/25 [00:13<00:59,  2.99s/it]Fetching 25 files:  32%|███▏      | 8/25 [00:15<00:26,  1.57s/it]Fetching 25 files:  36%|███▌      | 9/25 [00:15<00:20,  1.28s/it]Fetching 25 files:  40%|████      | 10/25 [00:15<00:15,  1.06s/it]Fetching 25 files:  48%|████▊     | 12/25 [00:17<00:13,  1.03s/it]Fetching 25 files:  52%|█████▏    | 13/25 [00:19<00:14,  1.17s/it]Fetching 25 files:  56%|█████▌    | 14/25 [00:20<00:11,  1.07s/it]Fetching 25 files:  64%|██████▍   | 16/25 [00:21<00:07,  1.28it/s]Fetching 25 files:  68%|██████▊   | 17/25 [00:21<00:05,  1.57it/s]Fetching 25 files:  72%|███████▏  | 18/25 [00:21<00:03,  1.93it/s]Fetching 25 files:  84%|████████▍ | 21/25 [00:22<00:01,  2.47it/s]Fetching 25 files:  88%|████████▊ | 22/25 [00:26<00:03,  1.13s/it]Fetching 25 files:  92%|█████████▏| 23/25 [00:27<00:02,  1.05s/it]Fetching 25 files:  96%|█████████▌| 24/25 [00:28<00:01,  1.15s/it]Fetching 25 files: 100%|██████████| 25/25 [00:29<00:00,  1.14s/it]Fetching 25 files: 100%|██████████| 25/25 [00:29<00:00,  1.18s/it]
+[32m✓ Downloaded[0m
+  path: /opt/dlami/nvme/models/hy3-sparse-source-dl

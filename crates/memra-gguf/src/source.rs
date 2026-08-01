@@ -311,9 +311,17 @@ impl Hy3RepackSource {
             if path.is_absolute() { path } else { dir.join(path) }
         });
         let format = top.string("format");
+        // "bw24-*" is the pre-rename spelling: published overlay artifacts (e.g. the Hy3
+        // layer103.5 runtime manifest, sha-pinned on HF) carry it on disk and must keep
+        // loading byte-identical after the memra rename.
         let is_overlay = matches!(
             format.as_deref(),
-            Some("memra-expert-overlay-v1" | "memra-expert-overlay-v2")
+            Some(
+                "memra-expert-overlay-v1"
+                    | "memra-expert-overlay-v2"
+                    | "bw24-expert-overlay-v1"
+                    | "bw24-expert-overlay-v2"
+            )
         );
         let fallback = if is_overlay {
             let source = source_dir.as_deref().ok_or_else(|| {
