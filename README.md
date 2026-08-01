@@ -34,8 +34,8 @@ m-invariant router/gate kernels (default on), and a bit-identical batched twin t
 recovered 70% of the prefill it cost — the serving contract above is now explicit and
 gated, not assumed (receipts: [`research/concat-prime-exact-20260802/`](research/concat-prime-exact-20260802/),
 [`research/fast-router-20260802/`](research/fast-router-20260802/)). On the H100, a
-full per-model board against vLLM 0.26: **no end-to-end losses** — six wins and a
-dead-even 35B cell (1.00-1.81x); decode wins 7 of 7. The last losses fell
+full per-model board against vLLM 0.26: **no end-to-end losses** — seven wins of
+seven (1.01-1.81x); decode wins 7 of 7. The last losses fell
 in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
 got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
 f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
@@ -78,21 +78,22 @@ row). Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-d
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
 | Gemma-4 26B MoE | **196** | 191 (FP8-dyn) | **1.02x** |
-| Qwen3.6-35B MoE | **215** | 214 (FP8) | **1.00x** |
+| Qwen3.6-35B MoE | **217** | 215 (FP8) | **1.01x** |
 
-Zero losses: six wins and a dead-even 35B cell, on exact math (the bf16-row wins
-carry a quant-advantage caveat — those vLLM arms move 4x the weight bytes). Decode
+Zero losses: seven wins of seven, on exact math (the bf16-row wins carry a
+quant-advantage caveat — those vLLM arms move 4x the weight bytes). Decode
 wins every cell (1.05–1.85x; the last two decode losses fell to the shexp fused dot
-and a router-default re-arbitration on real prompts). The 35B cell slipped from
-218/1.02x when the concat-prime exactness fix landed (m-invariant prefill router +
-shexp gates, `MEMRA_ROUTER_PREFILL_EXACT` default ON): expert prefill pays −13%
-on Hopper (8428 → 7311 pp2048) so a session's routing no longer depends on its
-co-arrivals — decode is untouched, and the dense 27B row is unaffected (no MoE
-router; re-cell bit-stable). Receipts `research/router-fix-recells-20260802/`. A
-bit-identical batched twin of the exact router kernel has since recovered 70% of that
-prefill cost on the 5090 (`research/fast-router-20260802/`; `MEMRA_ROUTER_BATCH=0` is
-its perf-only rollback seam) — the H100 row stands at its post-fix re-cell until the
-on-box re-cell with the twin lands. The last two e2e losses — both MoE
+and a router-default re-arbitration on real prompts). The 35B cell tells the
+exactness story in one row: it slipped from 218/1.02x to dead-even when the
+concat-prime fix landed (m-invariant prefill router + shexp gates,
+`MEMRA_ROUTER_PREFILL_EXACT` default ON, −13% Hopper expert prefill) so a session's
+routing no longer depends on its co-arrivals — then a bit-identical batched twin of
+the exact kernel recovered 82% of that cost (8136 pp2048, kernel-check-pinned mism=0;
+`MEMRA_ROUTER_BATCH=0` is its perf-only rollback seam) and the row finished at
+217/1.01x, ahead again with the contract held. Decode never moved; the dense 27B row
+was never on the path (re-cell bit-stable). Receipts
+`research/router-fix-recells-20260802/`, `research/fast-router-20260802/`,
+`research/q35-recell-final-20260802/`. The last two e2e losses — both MoE
 expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
 reached full dequant coverage and became the Hopper default (expert prefill +53%), the
 27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors
