@@ -26,3 +26,12 @@ prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 
 
 [generate_spec K=6] 128 tok in 0.971s = 130.82 tok/s (1.08x vs generate; this run's prime 0.062s)
   acceptance: 83/264 = 31.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 128 tok in 1.089s = 116.64 tok/s (0.96x vs generate; this run's prime 0.063s)
+  acceptance: 83/308 = 26.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 128 tok in 1.262s = 100.67 tok/s (0.83x vs generate; this run's prime 0.065s)
+  acceptance: 83/352 = 23.6%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== rc=0

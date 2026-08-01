@@ -1,0 +1,8 @@
+# ornith9b drafter manifest — 2026-08-01T18:48:57+03:00, lane/ornith-drafters
+# role sha256 bytes path
+target d0e4bebaa8b3450c62090df1408f2ee5ccb2094f9c610ffde564a654483d4f37 9527500992 /data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
+donor 52c9cceb190055e0591a9a30c21f7200572eaf3ff1c59f6e9a1eda838a8f39de 5657607424 /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+ranks-gguf d40d7f4f22af495dbd0bdb253f0a02360e987b2e2a51814631a77871649bbedf 131168 /data/ai-ml/hf-models/ornith-1.0-9b-gguf/owngen-ranks-32768.gguf
+ranks-txt 5aed091cac51da9ea886063d69f50cf47be54668d98ed73f622b50bfc02a3b0b 185575 /data/ai-ml/hf-models/ornith-1.0-9b-gguf/owngen-ranks-32768.gguf.txt
+corpus-ids 81ef8eeb5826281a6f67c0fa48253d20beee231523622d6335d0e6dfd850d3e9 573542 /home/avifenesh/projects/wt-ornith-drafters/research/ornith-drafters-20260801/corpus/ornith9b-owngen-ids.txt
+draft 5f2de011deaedf595f1a23d827dfd57fc1c685b9b52694e2c740555ff39280e8 936838816 /data/ai-ml/hf-models/ornith-1.0-9b-gguf/draft-ornith9b-owntrim-nvfp4head-q4blk.gguf
