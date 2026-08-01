@@ -1,0 +1,5 @@
+=== H100 vLLM BOARD 2026-08-01T10:53:26Z git=rsync-tree filter=g26 ===
+== g26 (vllm vs memra, p2048/g512, N=5 medians) ==
+  [g26/vllm] decode 194.73 tok/s prefill 43964.4 tok/s (RedHatAI/gemma-4-26b-a4b-it-FP8-dynamic)
+  [g26/memra] decode 210.30 tok/s prefill 11337.1 tok/s (gemma-4-26B_q4_0-it.gguf)
+=== H100 vLLM BOARD DONE 10:58:14Z — rows in research/tune-data/h100board-vllm-20260731-realtext.jsonl ===

@@ -1,0 +1,19 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING 08-01 10:53:42 [cuda.py:323] Forcing --disable_chunked_mm_input for models with multimodal-bidirectional attention.
+(EngineCore pid=910943) Loading safetensors checkpoint shards:   0% Completed | 0/1 [00:00<?, ?it/s]
+(EngineCore pid=910943) Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:07<00:00,  7.14s/it]
+(EngineCore pid=910943) Loading safetensors checkpoint shards: 100% Completed | 1/1 [00:07<00:00,  7.14s/it]
+(EngineCore pid=910943) 
+(EngineCore pid=910943) /home/ubuntu/vllm-env/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2214: UserWarning: Argument aux_data (position 18) cannot be converted to a JitArgument for function 'cutlass___call___vllmvllm_flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tens'. Its type `<class 'vllm.vllm_flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'vllm.vllm_flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+(EngineCore pid=910943)   exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+(EngineCore pid=910943) /home/ubuntu/vllm-env/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2214: UserWarning: Argument aux_data (position 18) cannot be converted to a JitArgument for function 'cutlass___call___vllmvllm_flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i641_None_10'. Its type `<class 'vllm.vllm_flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'vllm.vllm_flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+(EngineCore pid=910943)   exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+(EngineCore pid=910943) Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/5 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  40%|████      | 2/5 [00:00<00:00, 13.96it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  80%|████████  | 4/5 [00:00<00:00, 14.26it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 5/5 [00:00<00:00, 14.27it/s]
+(EngineCore pid=910943) Capturing CUDA graphs (decode, FULL):   0%|          | 0/4 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL):  50%|█████     | 2/4 [00:00<00:00, 13.93it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 4/4 [00:00<00:00,  4.47it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 4/4 [00:00<00:00,  4.98it/s]
+(EngineCore pid=910943) WARNING 08-01 10:55:43 [jit_monitor.py:135] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+{'run': 1, 'prefill_tps': 43964.4, 'decode_tps': 194.72, 'ttft_s': 0.0466}
+{'run': 2, 'prefill_tps': 43878.6, 'decode_tps': 194.8, 'ttft_s': 0.0467}
+{'run': 3, 'prefill_tps': 43914.8, 'decode_tps': 194.72, 'ttft_s': 0.0466}
+{'run': 4, 'prefill_tps': 44124.6, 'decode_tps': 194.75, 'ttft_s': 0.0464}
+{'run': 5, 'prefill_tps': 44435.4, 'decode_tps': 194.73, 'ttft_s': 0.0461}
+median decode tok/s: 194.73

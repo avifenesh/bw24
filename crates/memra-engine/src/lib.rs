@@ -18,6 +18,7 @@ pub mod cache {
 }
 pub mod decode;
 pub mod decode_batch;
+pub mod pp;
 pub mod spec;
 pub mod gemma_spec;
 pub mod round_stream;
@@ -52,6 +53,16 @@ pub fn moe_f16g_mode() -> u8 {
 }
 pub fn moe_f16g_on() -> bool {
     moe_f16g_mode() != 0
+}
+/// Per-model door for the gemma-MoE (gelu) grouped path: round 49's Hopper default
+/// REGRESSED g26 board-2048 prefill -8.3% interleaved x5 on-box (def median 10380,
+/// wild 8.9k-11.7k spread; off 11317, ±0.13%) — the +6-15% probe verdict didn't
+/// survive the board workload (stale-verdict law, round 50). The silu/qwen class
+/// keeps the round-49 default (q35 +53% board-2048). Explicit MEMRA_MOE_F16G=1/2
+/// still opens this door for A/B.
+pub fn moe_f16g_gemma_on() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| !matches!(std::env::var("MEMRA_MOE_F16G").as_deref(), Ok("0") | Err(_)))
 }
 
 /// Fused act-epilogue (silu/gelu-mul + q8_1_mmq quantize in one launch) for the MoE prefill

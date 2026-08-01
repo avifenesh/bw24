@@ -1,0 +1,3 @@
+[proxy] listening on http://127.0.0.1:8080 -> ['http://127.0.0.1:8085', 'http://127.0.0.1:8086', 'http://127.0.0.1:8087', 'http://127.0.0.1:8088', 'http://127.0.0.1:8089', 'http://127.0.0.1:8090'] cap=8 queue=256/30.0s
+[proxy] backend http://127.0.0.1:8090 -> DOWN (passive: RemoteDisconnected, 10:04:19)
+[proxy] backend http://127.0.0.1:8090 -> UP (10:04:28)

@@ -1,12 +1,12 @@
 # Contributing to memra
 
-Issues welcome anytime. PRs welcome **only when they carry proof**, per the rules below — no CI runner on sm_120a hardware, so a human reviewer is the only gate between claim and merged code. Unproven PRs (no gates run, no numbers, "should be faster", AI-generated diffs with no on-device verification) will be closed, not debated. This is not gatekeeping: every accepted kernel becomes load-bearing in a correctness contract (see [Correctness discipline](README.md#correctness-discipline)), and reverting a bad merge costs far more than rejecting an unproven one.
+Issues welcome anytime. PRs welcome **only when they carry proof**, per the rules below — CI is compile-only (no GPU runners on either target arch), so a human reviewer is the only gate between claim and merged code. Unproven PRs (no gates run, no numbers, "should be faster", AI-generated diffs with no on-device verification) will be closed, not debated. This is not gatekeeping: every accepted kernel becomes load-bearing in a correctness contract (see [Correctness discipline](README.md#correctness-discipline)), and reverting a bad merge costs far more than rejecting an unproven one.
 
 ## Before you write code
 
 1. Read [`research/tune-data/*.jsonl`](research/tune-data/) for your target kernel/model. Labeled corpus of *every* prior tuning attempt, wins and losses both — if your idea was already tried and rejected, the record says why. Re-proposing a measured loss without new evidence is spam.
 2. Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the sm_120a hardware ledger — several plausible optimizations (e.g. NVFP4 grouped/MoE GEMM, sm_90/sm_100 kernel ports) are already known infeasible on this silicon; check before spending effort.
-3. Have access to an sm_120a (consumer Blackwell) GPU. If you don't, open an issue describing the idea instead of a PR — someone with the hardware can implement and measure it, crediting you. PRs that cannot be run and gated on target hardware will not be merged sight-unseen.
+3. Have access to a target GPU: sm_120a (consumer Blackwell) for the main lane, or an H100 (sm_90a) for Hopper-lane changes — its evidence ledger is [`ARCHITECTURE-H100.md`](ARCHITECTURE-H100.md). If you don't, open an issue describing the idea instead of a PR — someone with the hardware can implement and measure it, crediting you. PRs that cannot be run and gated on target hardware will not be merged sight-unseen.
 
 ## Required proof, in order
 
@@ -29,6 +29,12 @@ or individually:
 ```
 
 Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel that reduces in different floating-point order can flip an argmax at tight logit margins — has silently broken "faster" kernels before (`research/tune-data/`) — so a green run *right now, on your branch* is required, not an assumption.
+
+Changes touching the Hopper (sm_90a) lane additionally run its one-command battery on an
+H100: `tools/validate-h100.sh <model.gguf> [--quick]` — kernel-check config pins (incl. the
+KQRP, f16-mirror, and batched-seqs pins), decode-batch (config + strict, gates 1–3 incl.
+gate3c lean-logits), decode-dc, graph-decode, and graph-session. `ALL GATES GREEN` output
+pasted, same rule as above.
 
 ### 1b. Perf regression battery (local CI)
 
@@ -87,10 +93,11 @@ output end to end — show them running.
 
 ## Scope
 
-This is a from-scratch engine tuned for one exact machine (RTX 5090 Laptop, sm_120a). See
-[Limitations](README.md#limitations) before proposing portability work — an `arch/sm89-l40s`
-branch exists for Ada, but sm_120a is the only tuned target, and tuning choices elsewhere in the
-codebase assume this exact memory/compute ratio.
+This is a from-scratch engine tuned for two exact memory/compute ratios: the RTX 5090 Laptop
+(sm_120a, the primary target) and the H100 SXM (sm_90a, compile-gated Hopper lane). See
+[Limitations](README.md#limitations) before proposing portability work — other GPUs compile
+via the portable arch (`MEMRA_CUDA_ARCH=89` builds the Ada correctness-first eval lane) but
+are untuned, and tuning choices throughout the codebase assume the two target ratios.
 
 ## Validation reports from your rig are the easiest contribution
 
@@ -103,9 +110,9 @@ genuinely useful even if you never touch the code:
   A perf battery (`MEMRA_MODELS_DIR=... tools/local-ci.sh --perf`) plus an interleaved
   llama.cpp pairing (protocol: [`research/benchmarks.md`](research/benchmarks.md)) is exactly
   the evidence that moves those cards from "should work" to "supported".
-- **Older NVIDIA (Ada/Ampere):** the main build targets sm_120a; `arch/sm89-l40s` exists for
-  Ada. "What breaks where" reports map the compatibility floor — correctness output alone
-  advances the story.
+- **Older NVIDIA (Ada/Ampere):** the main build targets sm_120a; `MEMRA_CUDA_ARCH=89` builds
+  the in-tree Ada eval lane. "What breaks where" reports map the compatibility floor —
+  correctness output alone advances the story.
 
 ## Where to look first
 

@@ -1,0 +1,6 @@
+=== ncu f16g2 (sk) sudo
+Terminated
+rc=143
+=== ncu f16g1 (cublas cutlass grouped) sudo
+rc=0
+=== NCU DONE

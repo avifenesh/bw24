@@ -4669,8 +4669,10 @@ impl HybridModel {
             // f16 once per projection + one grouped f16 GEMM over the CSR groups; CSR order
             // end-to-end (gelu is elementwise), one row permute before the scatter. The
             // ragged down k (704) needs no padding here — cublas takes any k.
-            // f16-mirror numeric class, argmax/spec gated.
-            if crate::moe_f16g_on()
+            // f16-mirror numeric class, argmax/spec gated. PER-MODEL default OFF (round 50):
+            // the gelu class regressed g26 board-2048 prefill -8.3% under the round-49
+            // Hopper default — see moe_f16g_gemma_on.
+            if crate::moe_f16g_gemma_on()
                 && f16g_proj_ok(m.gate_exps.qtype, n_embd)
                 && f16g_proj_ok(m.up_exps.qtype, n_embd)
                 && f16g_proj_ok(m.down_exps.qtype, n_ff_exp) {
@@ -6313,6 +6315,11 @@ impl HybridModel {
     /// h_seed = pre-output_norm hidden). Advances cache.pos.
     pub(crate) fn gemma4_decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
                                        -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        // M1-PP2 door (crate::pp): 2-stage split with an explicit activation handoff.
+        // Default OFF — unset env means this branch is never taken.
+        if let Some(split) = crate::pp::pp2_split(self.layers.len()) {
+            return self.gemma4_decode_step_h_pp2(e, token, cache, split);
+        }
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let pos_d = e.htod_i32(&[cache.pos as i32])?;
@@ -6344,6 +6351,75 @@ impl HybridModel {
         let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, self.output.out_features())?;   // R4 on device (262k host tanh ~ms/step)
+        self.gemma4_suppress(e, &mut ld, 1)?;
+        let logits = e.dtoh(&ld)?;
+        cache.pos += 1;
+        Ok((logits, h_seed))
+    }
+
+    /// M1-PP2 stage subgraph (gemma4 arm): layers [lo, hi) of the gemma4 T=1 walk with the
+    /// pre-quantized next-norm carry LOCAL to the range. Enters with a materialized residual
+    /// `x` (the range head runs its own `rms_norm_q8_1` against ITS layer's attn_norm — for
+    /// lo == 0 that is exactly the unsplit loop's il==0 arm); exits with the residual
+    /// materialized (range tail passes next_norm = None, exactly the unsplit last-layer arm).
+    /// Bit-identity of the cut relies on the kernel-check-pinned `add_scale_rms_norm_q8_1 ==
+    /// add_scale then rms_norm_q8_1` identity (`pp2-gate` verifies end-to-end).
+    fn gemma4_decode_layers(&self, e: &Engine, mut x: CudaSlice<f32>, lo: usize, hi: usize,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
+        for il in lo..hi {
+            let layer = &self.layers[il];
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                // range head: il == lo — norm against THIS layer's attn_norm.
+                None => e.rms_norm_q8_1(&x, self.layers[il].attn_norm.float_data(), n_embd, 1, eps)?,
+            };
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            let o = self.gemma4_decode_attn(e, fa, il, &hq, &hdq, pos_d, cache)?;
+            let mut cur = e.uninit(n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, 1, eps)?;
+            let next_norm = if il + 1 < hi {
+                Some(self.layers[il + 1].attn_norm.float_data())
+            } else { None };
+            let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, 1, next_norm)?;
+            x = xn;
+            h_carry = hn;
+        }
+        Ok(x)
+    }
+
+    /// M1-PP2 (increment 1): `gemma4_decode_step_h` as TWO stage subgraphs on one device.
+    /// Stage 0 = embed+scale + layers [0, split); explicit [n_embd] activation handoff
+    /// (TX dtod copy into a dedicated boundary buffer, RX dtod copy out — never an alias);
+    /// stage 1 = layers [split, n) + output_norm + softcapped head. Same ownership contract
+    /// as the generic arm (see crate::pp). Gate: `pp2-gate` (bit-identical logits vs unsplit).
+    fn gemma4_decode_step_h_pp2(&self, e: &Engine, token: u32, cache: &mut Cache, split: usize)
+                                -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let pos_d = e.htod_i32(&[cache.pos as i32])?;
+
+        // ---- STAGE 0: embed + sqrt(n_embd) scale + layers [0, split) ----
+        let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        let x = self.gemma4_decode_layers(e, x, 0, split, &pos_d, cache)?;
+
+        // ---- STAGE BOUNDARY: explicit [n_embd] activation handoff (TX copy, RX copy) ----
+        let boundary_tx = e.clone_dtod(&x)?;
+        let boundary_rx = e.clone_dtod(&boundary_tx)?;
+
+        // ---- STAGE 1: layers [split, n) + output_norm + softcapped head ----
+        let x = self.gemma4_decode_layers(e, boundary_rx, split, self.layers.len(), &pos_d, cache)?;
+
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let h_seed = e.clone_dtod(&x)?;
+        let mut ld = e.matmul(&self.output, &hn, 1)?;
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        e.softcap(&mut ld, cap, self.output.out_features())?;
         self.gemma4_suppress(e, &mut ld, 1)?;
         let logits = e.dtoh(&ld)?;
         cache.pos += 1;

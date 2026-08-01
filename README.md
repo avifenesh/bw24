@@ -26,12 +26,13 @@ against vLLM are published per model. **Use something else when** you have anoth
 **Standing (2026-08-01):** seven supported models on the 5090, all fully gated; every
 MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
 wall or above. On the H100, a full per-model board against vLLM 0.26: **no end-to-end
-losses** — six wins (1.02-1.81x) and one dead-even cell; decode wins 7 of 7. The last
-two losses fell in one day: the 35B MoE's expert prefill jumped +53% when the grouped
-f16 expert lane got full dequant coverage, and the 27B gained a +54% prefill and +16%
-decode from K-quant f16 mirrors and split-plane layout v2. Multi-user serving measured
-on 3xH100: 1,480 tok/s managed fleet, with per-replica throughput since raised +25-36%
-by batching the decode tick's per-sequence work. Every number is a same-session
+losses** — seven wins of seven (1.02-1.81x); decode wins 7 of 7. The last losses fell
+in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
+got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
+f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
+arbitration narrowed that f16g default per dispatch class. Multi-user serving measured
+on 3xH100: 1,477 tok/s managed fleet (chaos-tested: kill a replica mid-load, the
+breaker + supervisor recover in seconds with only in-flight requests lost). Every number is a same-session
 interleaved measurement on a real-text prompt with the argmax exactness gate green;
 trimmed MTP drafter heads are published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
@@ -53,38 +54,50 @@ is byte-for-byte the tuned 5090 engine.
 
 ## The H100 build (sm_90a)
 
-The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, same session
-(2026-07-31). One number per arm: **end-to-end tok/s** — 512 tokens generated on a
-~2100-token real-text prompt, single request, total wall time (N=5 medians, argmax
-exactness gate green on every published row). Cross-artifact by design: vLLM serves
-what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it rejects these
-GGUFs); memra serves its GGUF artifacts.
+The full per-model board against vLLM 0.26 on 1×H100 80GB, same box, every cell a
+same-session interleaved pair (final cells 2026-08-01). One number per arm:
+**end-to-end tok/s** — 512 tokens generated on a ~2100-token real-text prompt, single
+request, total wall time (N=5 medians, argmax exactness gate green on every published
+row). Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-dynamic
+/ bf16 HF checkpoints — it rejects these GGUFs); memra serves its GGUF artifacts.
 
 | model | memra e2e | vLLM 0.26 e2e (artifact) | ratio |
 |---|---:|---:|---:|
 | Gemma-4 12B | **146** | 81 (bf16) | **1.81x** |
+| Qwen3.6-27B | **96** | 73 (FP8) | **1.31x** |
 | Gemma-4 31B | **75** | 64 (FP8-dyn) | **1.18x** |
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
-| Qwen3.6-27B | **79** | 73 (FP8) | **1.08x** |
-| Qwen3.6-35B MoE | 197 | 214 (FP8) | 0.92x |
-| Gemma-4 26B MoE | 171 | 191 (FP8-dyn) | 0.89x |
+| Qwen3.6-35B MoE | **218** | 214 (FP8) | **1.02x** |
+| Gemma-4 26B MoE | **196** | 191 (FP8-dyn) | **1.02x** |
 
-Wins on exact math (the bf16-row wins carry a quant-advantage caveat — those vLLM arms
-move 4x the weight bytes). Decode wins every cell (1.05–1.85x; the last two decode losses fell to the shexp
-fused dot and a router-default re-arbitration on real prompts).
-The two e2e losses are MoE expert-prefill cells, and they are moving: the expert
-GEMM's async-data-movement rebuild doubled the 26B's expert prefill in one release
-(0.83x → 0.89x e2e), with the remaining kernel rungs mapped in the ledger. The dense-model prefill gaps are the int8-GEMM dtype edge — a Q8_0-exact
-int8 GEMM is mechanism-refuted on Hopper (per-32-block rescale costs 5.4x naive / 17x
-pipelined; ptxas serializes cross-bank GMMA register reads), so crossing it means
-w8a8-class numerics that change model outputs — an accuracy-bar decision with measured
-receipts, not an engineering unknown.
+Zero losses: seven wins, on exact math (the bf16-row wins carry a quant-advantage
+caveat — those vLLM arms move 4x the weight bytes). Decode wins every cell
+(1.05–1.85x; the last two decode losses fell to the shexp fused dot and a
+router-default re-arbitration on real prompts). The last two e2e losses — both MoE
+expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
+reached full dequant coverage and became the Hopper default (expert prefill +53%), the
+27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors
+(+16% decode, bit-identical). The 26B cell flipped from dead-even to a win in round 50,
+when a cross-box interleaved arbitration caught that same f16g default *regressing* the
+gemma expert class −6 to −8% and narrowed it per-model — the board is tuned per
+dispatch class, not per flag. Per-cell prefill still trails vLLM on the dense models —
+the int8-GEMM dtype edge: a Q8_0-exact int8 GEMM is mechanism-refuted on Hopper
+(per-32-block rescale costs 5.4x naive / 17x pipelined; ptxas serializes cross-bank
+GMMA register reads), so crossing it means w8a8-class numerics that change model
+outputs — an accuracy-bar decision with measured receipts, not an engineering unknown.
 
 Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4.8x the
-mma kernel), fused wgmma GDN chunk kernels with varlen twins, Q4_0/Q8_0→fp16 prefill
-mirrors on the cuBLASLt lane, cross-request prefill batching, per-session CUDA-graph
-decode, and the Hopper wgmma toolkit
+mma kernel), fused wgmma GDN chunk kernels with varlen twins, f16 prefill mirrors on
+the cuBLASLt lane for the Q8_0/Q4_0/Q4_K/Q5_K/Q6_K classes, K-quant split-plane decode
+mirrors (bit-identical layout v2, 27B decode +15-16%), the grouped f16 expert lane (one
+grouped GEMM over the routed experts — Hopper default for the qwen/silu MoE class, 35B
+expert prefill +53%; per-model off for the gemma class after the round-50 regression
+arbitration), a
+batched serving decode tick (z-batched attention + KV append, device-side sampling,
+lean logits: 654-659 tok/s/replica, +25-36%), an MTP speculative serving fast lane
+(1.82x plain serving at c=1 on the 27B), cross-request prefill batching, per-session
+CUDA-graph decode with kernel-class segment recapture, and the Hopper wgmma toolkit
 ([`cu/wgmma_common.cuh`](crates/memra-engine/cu/wgmma_common.cuh)) — canonical
 core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds.
 
@@ -96,7 +109,7 @@ core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds
 
 | Tier | Models | State |
 |---|---|---|
-| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first |
+| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS on the 5090; Q8_0 / Q4_K_M MTP-baked / IQ4_XS on the H100 board); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first |
 | **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Correctness-gated end-to-end; [docs/HY3-SPILL.md](docs/HY3-SPILL.md) |
 | **In progress** | MiniMax-M3 REAP50 (safetensors spill) | Loads + generates; router tuning open |
 
@@ -188,11 +201,11 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
 - **5090 prefill** trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4
   prefill at W4A4 (FP4 activations), a numeric class memra's exactness gates reject.
   Output quality outranks the prefill column.
-- **H100 prefill** trails vLLM on every model (12–70% by cell) while decode wins 5 of
-  6 — the e2e wins come from decode dominating the p2048/g512 shape. MoE cells are
-  gated on the expert-GEMM kernel rate (mapped rung); dense cells on the int8-GEMM
-  dtype edge, refused by the accuracy laws (full refutation ledger in
-  [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)).
+- **H100 prefill** still trails vLLM per cell (the e2e board is loss-free because
+  decode wins 7 of 7 and dominates the p2048/g512 shape). The MoE expert-prefill gaps
+  largely closed in round 49 (grouped f16 expert lane, K-quant f16 mirrors); the dense
+  cells sit on the int8-GEMM dtype edge, refused by the accuracy laws (full refutation
+  ledger in [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)).
 - Gemma plain margins are thin where both engines sit at the DRAM wall (1.02–1.06x).
 - Hy3 native spill serves at a 5.13 tok/s N=3 median, tuning toward 10
   ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
@@ -211,8 +224,11 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
   KV per layer class), split-K, graph-replayable device-length counters.
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic;
   per-session capture for serving.
-- **Serving** — OpenAI-compatible server with batched decode, cross-request prefill
-  batching, KV prefix reuse, speculative serving, and a flat `/metrics` endpoint.
+- **Serving** — OpenAI-compatible server with batched decode (one z-batched tick
+  across sequences), cross-request prefill batching, KV prefix reuse, speculative
+  serving, and a flat `/metrics` endpoint. Multi-GPU boxes serve as a replica fleet:
+  supervisor + admission proxy + load harness, measured at 1,477 tok/s managed on
+  3xH100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
 - **Loaders** — GGUF (memory-mapped) and safetensors (modelopt NVFP4 byte-exact).
 
 ## Correctness discipline
@@ -253,7 +269,10 @@ Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
   via the portable arch but are untuned — use
   [llama.cpp](https://github.com/ggml-org/llama.cpp) or
   [mistral.rs](https://github.com/EricLBuehler/mistral.rs) there.
-- Single GPU; no tensor parallelism. Batched decode serving on both architectures.
+- One GPU per engine process; no tensor parallelism yet (the multi-GPU build is in
+  progress — the NVLink/NCCL comms floor is measured in the ledger). Multi-GPU boxes
+  serve today as a replica fleet ([docs/SERVING.md](docs/SERVING.md)); batched decode
+  serving on both architectures.
 - Moving research codebase; APIs and flags change without notice.
 
 ## Docs
@@ -263,6 +282,7 @@ Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
 - [`HANDOVER.md`](HANDOVER.md) — living state-of-work.
 - [`docs/FLAGS.md`](docs/FLAGS.md) — the audited flag catalog.
 - [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.
+- [`docs/SERVING.md`](docs/SERVING.md) — multi-user replica-fleet serving runbook.
 - [`docs/HY3-SPILL.md`](docs/HY3-SPILL.md) — Hy3 spill runbook.
 - [`research/`](research/) — every experiment as JSONL, wins and losses both;
   [`research/benchmarks.md`](research/benchmarks.md) is the measurement protocol.

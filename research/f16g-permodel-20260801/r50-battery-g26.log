@@ -1,0 +1,33 @@
+== build (sm_90a; cu sources touched to defeat rsync-stale fatbins) ==
+   Compiling memra-engine v0.0.0 (/home/ubuntu/memra/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 3m 47s
+   Compiling memra-server v0.0.0 (/home/ubuntu/memra/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 2.72s
+== gate: policy tests ==
+
+== gate: kernel-check ==
+== gate: decode-batch (config B=8) ==
+[moe] resident-experts decision: per-layer 428MB x 30 layers = 12.8GB vs budget 67.0GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 1 tensors
+[q4rp] split-plane decode mirrors built: 210 trunk tensors
+
+thread 'main' (908189) panicked at crates/memra-engine/src/decode_batch.rs:149:9:
+decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+BATCH-GATE(config) FAIL
+== gate: decode-batch (strict, equalized composition) ==
+[moe] resident-experts decision: per-layer 428MB x 30 layers = 12.8GB vs budget 67.0GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 1 tensors
+[q4rp] split-plane decode mirrors built: 210 trunk tensors
+
+thread 'main' (908204) panicked at crates/memra-engine/src/decode_batch.rs:149:9:
+decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+BATCH-GATE(strict) FAIL
+== gate: decode-dc (device counters, bit-identity) ==
+== gate: graph-decode (capture/replay bit-identity) ==
+GRAPH-DECODE-GATE FAIL
+== gate: graph-session (serving GraphSession vs generate_graph) ==
+GRAPH-SESSION-GATE FAIL
+VALIDATE-H100: FAILURES (1)
+BATTERY_G26_EXIT=1

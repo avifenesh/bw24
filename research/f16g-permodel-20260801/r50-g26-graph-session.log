@@ -1,0 +1,5 @@
+[moe] resident-experts decision: per-layer 428MB x 30 layers = 12.8GB vs budget 67.0GB -> RESIDENT
+[q8rp] split-plane decode mirrors built: 1 tensors
+[q4rp] split-plane decode mirrors built: 210 trunk tensors
+loaded gemma4 (30 layers); steps=96
+Error: "slotted tail: dense ffn only"

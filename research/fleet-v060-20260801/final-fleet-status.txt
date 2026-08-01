@@ -1,0 +1,12 @@
+supervisor: up (pid 420681)
+proxy :8080: up
+replica :8085 (GPU 5): up
+replica :8086 (GPU 5): up
+replica :8087 (GPU 6): up
+replica :8088 (GPU 6): up
+replica :8089 (GPU 7): up
+replica :8090 (GPU 7): up
+index, memory.used [MiB], utilization.gpu [%], temperature.gpu
+5, 40743 MiB, 0 %, 37
+6, 40615 MiB, 0 %, 40
+7, 40583 MiB, 0 %, 38

@@ -1,0 +1,5 @@
+=== ncu f16g2 (sk)
+rc=1
+=== ncu f16g1 (cublas cutlass grouped)
+rc=0
+=== NCU DONE
