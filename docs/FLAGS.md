@@ -354,6 +354,8 @@ battery is `tools/validate-h100.sh <model.gguf> [--quick]`.
 | `MEMRA_SERVE_GS` | ON | solo greedy interactive sessions ride GraphSession replay. Round 35: promotion happens AFTER chunked prefill (`graph_session_from_cache`) — the old token-wise re-prime was a 3x end-to-end loss on long prompts (6.4 -> 2.8s measured) |
 | `MEMRA_GS_MIN` | 384 | min generation budget for GraphSession promotion (capture amortization) |
 | `MEMRA_DECODE_BATCH_CAP` | 8 | batched-decode chunk width (engine assert + scheduler chunking, clamp 1..32). 8 = the exactness tier. MEASUREMENT DOOR ONLY above 8: the 2026-08-01 serving-lane probe (9B Q8_0-rp, H100, `research/darklane-serving-20260801/`) measured every wider setting flat-or-worse — 15 (b16_rp, still bit-exact) 260-274 tok/s vs 8's ~305; 16 (m=16 GEMM tier) 169-181 tok/s AND 3/24 outputs shift; the tick is per-seq-serial-bound, not weight-BW-bound. Do not raise as a serving default |
+| `MEMRA_SERVE_DEVSAMPLE` | ON | `0` = host-sample every batched-tick row from last_logits (the pre-2026-08-01 tick). Default: greedy-no-penalty rows sample via device argmax (bit-identical to host argmax), pure-temperature rows via seeded per-row gumbel draw (distribution-equal, batch-composition-independent — decode-batch-gate gate3); top-k/top-p/min-p/penalty rows keep the host path. Kills the measured 1.36 ms/row host temp-sample at 248k vocab (~45% of the B=8 9B tick) |
+| `MEMRA_BATCH_PHASE` | off | `1` = sync-bounded per-phase accumulators inside decode_step_batch (12 phases, printed by decode-batch-bench). Shares rank the tick; the added syncs inflate the total — diagnosis only |
 
 ### Tuning / diagnostic seams (sm_90a lane)
 

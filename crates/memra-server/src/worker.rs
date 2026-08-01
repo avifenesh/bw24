@@ -201,6 +201,12 @@ struct Session {
     spec_accepted: usize,
     sampler: Sampler,
     last_logits: Vec<f32>,
+    /// Token pre-sampled ON DEVICE by the last batched tick (decode_step_batch_sampled) —
+    /// consumed by the next advance_sample_emit instead of the O(n_vocab) host sample
+    /// (measured 1.36 ms/row at 248k vocab). None = host-sample from last_logits (fallback
+    /// rows: penalties/top-k/top-p/min-p configs; non-batched paths). Dropped un-consumed
+    /// when a session finishes — same semantics as an unsampled last_logits.
+    device_next: Option<u32>,
     /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
     /// This is exactly the sequence whose KV + recurrent state live in `cache` — the resume
     /// point for KV PREFIX REUSE on retire (see ReusePool).
@@ -629,6 +635,34 @@ pub fn run(
                 let idxs: Vec<usize> = chunk.iter().map(|&(i, _)| i).collect();
                 let model_name = active[idxs[0]].model.clone();
                 let lm = &loaded[&model_name];
+                // DEVICE-SIDE SAMPLING metas (MEMRA_SERVE_DEVSAMPLE=0 reverts to host): rows
+                // whose sampler is greedy-no-penalties (device argmax, bit-identical) or
+                // pure-temperature (seeded gumbel draw — top-k/top-p/min-p/penalty configs
+                // keep the host path) sample on device inside the batched step; the next
+                // tick's advance_sample_emit consumes the token instead of the O(n_vocab)
+                // host sample. Counter = generated.len() — a session-progress function,
+                // independent of batch composition (the isolation contract, gate3).
+                let samp: Vec<Option<(f32, u64, u32)>> = idxs
+                    .iter()
+                    .map(|&i| {
+                        if !serve_devsample() {
+                            return None;
+                        }
+                        let s = &active[i];
+                        let sm = &s.sampler;
+                        let no_pen = sm.penalty_repeat() == 1.0
+                            && sm.penalty_freq() == 0.0
+                            && sm.penalty_present() == 0.0;
+                        if !no_pen || sm.top_k() != 0 || sm.top_p() < 1.0 || sm.min_p() > 0.0 {
+                            return None;
+                        }
+                        if sm.is_greedy() {
+                            Some((0.0, 0, 0))
+                        } else {
+                            Some((sm.temperature(), sm.seed(), s.generated.len() as u32))
+                        }
+                    })
+                    .collect();
                 let logits = {
                     // split-borrow: pull the caches out via split_at_mut-style indexing
                     let mut caches: Vec<&mut Cache> = Vec::with_capacity(idxs.len());
@@ -638,12 +672,13 @@ pub fn run(
                         let s = unsafe { &mut *base.add(i) };
                         caches.push(s.cache.as_mut().unwrap());
                     }
-                    lm.model.decode_step_batch(&engine, &toks, &mut caches)
+                    lm.model.decode_step_batch_sampled(&engine, &toks, &mut caches, &samp)
                 };
                 match logits {
-                    Ok(rows) => {
+                    Ok((rows, next_toks)) => {
                         for (k, &i) in idxs.iter().enumerate() {
                             active[i].last_logits = rows[k].clone();
+                            active[i].device_next = next_toks[k];
                             active[i].fed.push(toks[k]);
                             n_tokens_out += 1;
                         }
@@ -928,6 +963,7 @@ fn admit(
         spec_drafted: 0,
         spec_accepted: 0,
         last_logits: seed_logits,
+        device_next: None,
         fed: seed_fed,
         prefill_queue: if let Some(ts) = text_suffix { ts.into_iter().collect() }
                        else if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
@@ -1041,7 +1077,13 @@ fn advance_sample_emit(
         finish(s, StopReason::MaxNew);
         return (false, None);
     }
-    let next = s.sampler.sample(&s.last_logits);
+    // Device-presampled token from the last batched tick (Session.device_next): skips the
+    // O(n_vocab) host sample (measured 1.36 ms/row at 248k vocab). Greedy device rows are
+    // bit-identical to host argmax; temp rows are the seeded device draw (gate3 contract).
+    let next = match s.device_next.take() {
+        Some(t) => t,
+        None => s.sampler.sample(&s.last_logits),
+    };
     s.sampler.accept(next);
     s.generated.push(next);
     if s.params.eos.contains(&next) {
@@ -1095,6 +1137,14 @@ fn advance_token_emit(
 
 /// Group ready (session_idx, token) pairs into batched-step chunks: same model, <= 8 rows
 /// (the exactness-tier cap), input order preserved (caller sorted interactive first).
+/// Device-side batched-tick sampling (default ON — measured 1.36 ms/row host temp-sample at
+/// the 9B's 248k vocab, ~45% of the B=8 serving tick). MEMRA_SERVE_DEVSAMPLE=0 is the
+/// rollback/A-B seam: every row host-samples from last_logits as before.
+fn serve_devsample() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_SERVE_DEVSAMPLE").as_deref() != Ok("0"))
+}
+
 fn group_chunks(active: &[Session], ready: &[(usize, u32)]) -> Vec<Vec<(usize, u32)>> {
     let cap = memra_engine::hybrid::HybridModel::decode_batch_cap();
     let mut chunks: Vec<Vec<(usize, u32)>> = Vec::new();
@@ -1219,7 +1269,10 @@ fn step_session(
         return Ok(false);
     }
 
-    let next = s.sampler.sample(&s.last_logits);
+    let next = match s.device_next.take() {
+        Some(t) => t,
+        None => s.sampler.sample(&s.last_logits),
+    };
     s.sampler.accept(next);
     s.generated.push(next);
 

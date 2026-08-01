@@ -83,5 +83,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("scale B={b_n}: {:.2}x aggregate vs B=1", agg / base);
         }
     }
+
+    // MEMRA_BATCH_PHASE=1: engine tick decomposition (sync-bounded — shares rank, not walltime).
+    if memra_engine::decode_batch::batch_phase_on() {
+        println!("{}", memra_engine::decode_batch::batch_phase_report());
+    }
+
+    // Host sample/emit cost at the serving vocab (the worker tick's per-seq host stage): time
+    // greedy argmax vs the load harness's temp-0.7 sample on REAL last-step logits, per row.
+    {
+        use memra_engine::sampler::{Sampler, SamplerConfig};
+        let b_n = *batches.last().unwrap();
+        let mut caches: Vec<Cache> = Vec::new();
+        let mut toks: Vec<u32> = Vec::new();
+        for i in 0..b_n {
+            let prompt: Vec<u32> = (0..512u32).map(|j| 55 + i as u32 * 97 + j * 31).collect();
+            let mut c = Cache::new(&e, &model.cfg, 640)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            toks.push(*prompt.last().unwrap());
+            caches.push(c);
+        }
+        let mut cache_refs: Vec<&mut Cache> = caches.iter_mut().collect();
+        let rows = model.decode_step_batch(&e, &toks, &mut cache_refs)?;
+        let reps = 50usize;
+        let t0 = std::time::Instant::now();
+        let mut sink = 0u32;
+        for _ in 0..reps {
+            for r in &rows {
+                sink = sink.wrapping_add(argmax(r) as u32);
+            }
+        }
+        let greedy_us = t0.elapsed().as_secs_f64() * 1e6 / (reps * rows.len()) as f64;
+        let mut smp = Sampler::new(SamplerConfig { temperature: 0.7, seed: 7, ..Default::default() });
+        let t1 = std::time::Instant::now();
+        for _ in 0..reps {
+            for r in &rows {
+                sink = sink.wrapping_add(smp.sample(r));
+            }
+        }
+        let temp_us = t1.elapsed().as_secs_f64() * 1e6 / (reps * rows.len()) as f64;
+        println!("[host-sample] n_vocab={} greedy argmax {greedy_us:.0} us/row | temp0.7 sample \
+                  {temp_us:.0} us/row | x B={b_n} rows/tick = {:.2} ms (greedy) / {:.2} ms (temp) [sink {sink}]",
+                 rows[0].len(), greedy_us * b_n as f64 / 1e3, temp_us * b_n as f64 / 1e3);
+    }
     Ok(())
 }
