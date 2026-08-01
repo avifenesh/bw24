@@ -18,6 +18,7 @@ pub mod cache {
 }
 pub mod decode;
 pub mod decode_batch;
+pub mod pp;
 pub mod spec;
 pub mod gemma_spec;
 pub mod round_stream;

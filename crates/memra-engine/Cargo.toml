@@ -162,3 +162,7 @@ path = "src/bin/decode_batch_bench.rs"
 [[bin]]
 name = "graph-session-gate"
 path = "src/bin/graph_session_gate.rs"
+
+[[bin]]
+name = "pp2-gate"
+path = "src/bin/pp2_gate.rs"
