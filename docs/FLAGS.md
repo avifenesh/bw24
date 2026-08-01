@@ -173,7 +173,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `MEMRA_SPEC_REPLAY=1` | legacy rollback+replay partial accept (also the j==0 fallback) | replay-free default 2026-07-03 (+10–32%) |
 | `MEMRA_SPEC_NOREFRESH=1` | chain-approximate draft-KV entries (no true-hidden refresh) | refresh default 2026-07-03 (+4–6% acc) |
 | `MEMRA_SPEC_NOGRAPH=1` | eager draft chain (no CUDA-graph draft) | graph draft 2026-07-03 |
-| `MEMRA_PRIME_TOKENWISE=1` | force tokenwise decode-step prime in every phase (<16-tok prompts take it anyway). Frozen Hy3 CPU/GPU expert serving selects tokenwise automatically after its profiling warmup | batched prime 2026-07-03 (23x TTFT at 6k) |
+| `MEMRA_PRIME_TOKENWISE=1` | force tokenwise decode-step prime in every phase (<16-tok prompts take it anyway). Frozen Hy3 CPU/GPU expert serving selects tokenwise automatically after its profiling warmup. Also the bisect knob for a pinned OPEN correctness item: on this tree the naked q35 pp512 greedy stream flips to early-EOS on a near-tie FIRST token — the flip lives in the batched-prime path's last-position logits, `=1` restores the tokenwise-oracle stream, and run-gen's argmax gate does not cover the batched-prime seed position (`research/residency-cap-20260802/RESULTS.md` §4, probed pre-patch — not a residency effect) | batched prime 2026-07-03 (23x TTFT at 6k) |
 | `MEMRA_PRIME_APPEND_LOOP=1` | per-row KV append instead of the batched `_rows` kernel | measured equal 2026-07-03 |
 | `MEMRA_PRIME_DEQW=0` | inline-dequant prefill FA (no bf16 dequant-once workspace) | deqw default 2026-07-05 (32k prime 1.60x) |
 | `MEMRA_GEMMA_GKV=0` | gemma GLOBAL (hd512) layers back to q8_0/q5_1 KV (default = e4m3 via the kf8vf8 module) | fp8-globals default-on 2026-07-11 — the depth-plain lever (dequant-latency-bound, ncu) |
@@ -243,6 +243,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `MEMRA_MOE_STATS=1` | per-layer expert-cache hit/miss/staged-bytes prints (forces the stats-visible dispatch path) |
 | `MEMRA_SPILL_STATS=1` | print cumulative positioned-read snapshots when server requests finish: reads, logical bytes, errors, short reads, mmap fallbacks, buffer waits, and worker ring-full events. Snapshots are totals, not per-request deltas; do not sum them |
 | `MEMRA_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
+| `MEMRA_MOE_WEIGHT_TRACE=<path>` | append the PREFILL router's per-(layer, token) selected experts + weights — the routing-divergence oracle behind the m-invariance razor (`concat_prime_probe`, `research/concat-prime-exact-20260802/`). Forces the stats-visible dispatch path; diagnosis only |
 | `MEMRA_DUMP_HN=<path>` | append pre-head hidden states per decode step (head-MIPS feasibility probe, offline bound analysis; both decode arms share the door so they stay observably identical). Diagnostic only |
 | `MEMRA_F16G_DEBUG=1` | grouped f16 expert lane stage bisect: full NaN/Inf scans of w/act/y plus post-permute/post-scatter bad-value counts — localizes a corrupt stage. Adds D2H syncs; diagnosis only |
 | `MEMRA_FA_V4_MAX=1` | force the v4 FA lane at every t_kv (bypass the crossover) — correctness-forcing knob for the fp8 lane matrix (2026-07-12 closure battery) |
@@ -279,6 +280,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `MEMRA_FA_FLOOR=1` | prefill-FA floor kernel variant (fa_hd128_check gate bin) |
 | `MEMRA_MSCALE_PROFILE` / `MEMRA_MSCALE_NOEAGER` | verify-mscale probe bin controls |
 | `MEMRA_TEST_MODEL`, `MEMRA_LLAMA_TOKENIZE`, `MEMRA_ST_TEST_DIR` | test-suite input paths (tokenizer parity, safetensors header tests) |
+| `MEMRA_KC_MODELS_DIR` | model dir for kernel-check's REAL-WEIGHT sections (the router weight-oracle bit-identity + m-invariance sweep added by `lane/fast-router`; battery scripts set it, unset skips with a note) |
 
 ## 5. Experimental doors (opt-in, documented block)
 
