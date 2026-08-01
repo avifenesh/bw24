@@ -1,0 +1,361 @@
+[405785] run-gen@127.0.0.1
+  void Kernel2<cutlass_80_tensorop_f16_s16816gemm_f16_grouped_128x64_64x3_align8>(Params) (264, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         2.62
+    SM Frequency                    Ghz         1.59
+    Elapsed Cycles                cycle      1213346
+    Memory Throughput                 %        24.12
+    DRAM Throughput                   %        24.12
+    Duration                         us       759.87
+    L1/TEX Cache Throughput           %        55.22
+    L2 Cache Throughput               %        25.28
+    SM Active Cycles              cycle    355085.73
+    Compute (SM) Throughput           %        12.05
+    ----------------------- ----------- ------------
+
+    OPT   This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak           
+          performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak           
+          typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential       
+          reasons.                                                                                                      
+
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        22.65
+    Issued Warp Per Scheduler                        0.23
+    No Eligible                            %        77.35
+    Active Warps Per Scheduler          warp         1.98
+    Eligible Warps Per Scheduler        warp         0.26
+    ---------------------------- ----------- ------------
+
+    OPT   Est. Local Speedup: 75.88%                                                                                    
+          Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only    
+          issues an instruction every 4.4 cycles. This might leave hardware resources underutilized and may lead to     
+          less optimal performance. Out of the maximum of 16 warps per scheduler, this workload allocates an average    
+          of 1.98 active warps per scheduler, but only an average of 0.26 warps were eligible per cycle. Eligible       
+          warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no      
+          eligible warp results in no instruction being issued and the issue slot remains unused. To increase the       
+          number of eligible warps, avoid possible load imbalances due to highly different execution durations per      
+          warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.      
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                   128
+    Cluster Scheduling Policy                           PolicySpread
+    Cluster Size                                                   0
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                    264
+    Registers Per Thread             register/thread             200
+    Shared Memory Configuration Size           Kbyte          167.94
+    Driver Shared Memory Per Block       Kbyte/block            1.02
+    Dynamic Shared Memory Per Block      Kbyte/block           73.74
+    Static Shared Memory Per Block        byte/block               0
+    # SMs                                         SM             132
+    Stack Size                                                  1024
+    Threads                                   thread           33792
+    # TPCs                                                        66
+    Enabled TPC IDs                                              all
+    Uses Green Context                                             0
+    Waves Per SM                                                   1
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Max Active Clusters                 cluster            0
+    Max Cluster Size                      block            8
+    Overall GPU Occupancy                     %            0
+    Cluster Occupancy                         %            0
+    Block Limit Barriers                  block           32
+    Block Limit SM                        block           32
+    Block Limit Registers                 block            2
+    Block Limit Shared Mem                block            2
+    Block Limit Warps                     block           16
+    Theoretical Active Warps per SM        warp            8
+    Theoretical Occupancy                     %        12.50
+    Achieved Occupancy                        %        12.38
+    Achieved Active Warps Per SM           warp         7.92
+    ------------------------------- ----------- ------------
+
+    OPT   Est. Speedup: 75.88%                                                                                          
+          The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the       
+          hardware maximum of 16. This kernel's theoretical occupancy (12.5%) is limited by the number of required      
+          registers, and the required amount of shared memory.                                                          
+
+  void Kernel2<cutlass_80_tensorop_f16_s16816gemm_f16_grouped_128x64_64x3_align8>(Params) (264, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         2.62
+    SM Frequency                    Ghz         1.59
+    Elapsed Cycles                cycle      1017469
+    Memory Throughput                 %        28.39
+    DRAM Throughput                   %        28.39
+    Duration                         us       638.50
+    L1/TEX Cache Throughput           %        57.95
+    L2 Cache Throughput               %        31.30
+    SM Active Cycles              cycle    406735.70
+    Compute (SM) Throughput           %        14.38
+    ----------------------- ----------- ------------
+
+    OPT   This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak           
+          performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak           
+          typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential       
+          reasons.                                                                                                      
+
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        27.66
+    Issued Warp Per Scheduler                        0.28
+    No Eligible                            %        72.34
+    Active Warps Per Scheduler          warp         1.99
+    Eligible Warps Per Scheduler        warp         0.32
+    ---------------------------- ----------- ------------
+
+    OPT   Est. Local Speedup: 71.61%                                                                                    
+          Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only    
+          issues an instruction every 3.6 cycles. This might leave hardware resources underutilized and may lead to     
+          less optimal performance. Out of the maximum of 16 warps per scheduler, this workload allocates an average    
+          of 1.99 active warps per scheduler, but only an average of 0.32 warps were eligible per cycle. Eligible       
+          warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no      
+          eligible warp results in no instruction being issued and the issue slot remains unused. To increase the       
+          number of eligible warps, avoid possible load imbalances due to highly different execution durations per      
+          warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.      
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                   128
+    Cluster Scheduling Policy                           PolicySpread
+    Cluster Size                                                   0
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                    264
+    Registers Per Thread             register/thread             200
+    Shared Memory Configuration Size           Kbyte          167.94
+    Driver Shared Memory Per Block       Kbyte/block            1.02
+    Dynamic Shared Memory Per Block      Kbyte/block           73.74
+    Static Shared Memory Per Block        byte/block               0
+    # SMs                                         SM             132
+    Stack Size                                                  1024
+    Threads                                   thread           33792
+    # TPCs                                                        66
+    Enabled TPC IDs                                              all
+    Uses Green Context                                             0
+    Waves Per SM                                                   1
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Max Active Clusters                 cluster            0
+    Max Cluster Size                      block            8
+    Overall GPU Occupancy                     %            0
+    Cluster Occupancy                         %            0
+    Block Limit Barriers                  block           32
+    Block Limit SM                        block           32
+    Block Limit Registers                 block            2
+    Block Limit Shared Mem                block            2
+    Block Limit Warps                     block           16
+    Theoretical Active Warps per SM        warp            8
+    Theoretical Occupancy                     %        12.50
+    Achieved Occupancy                        %        12.40
+    Achieved Active Warps Per SM           warp         7.94
+    ------------------------------- ----------- ------------
+
+    OPT   Est. Speedup: 71.61%                                                                                          
+          The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the       
+          hardware maximum of 16. This kernel's theoretical occupancy (12.5%) is limited by the number of required      
+          registers, and the required amount of shared memory.                                                          
+
+  void Kernel2<cutlass_80_tensorop_f16_s16816gemm_f16_grouped_128x64_64x3_align8>(Params) (264, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         2.62
+    SM Frequency                    Ghz         1.59
+    Elapsed Cycles                cycle      1238008
+    Memory Throughput                 %        23.14
+    DRAM Throughput                   %        23.14
+    Duration                         us       775.81
+    L1/TEX Cache Throughput           %        58.30
+    L2 Cache Throughput               %        24.47
+    SM Active Cycles              cycle    353581.36
+    Compute (SM) Throughput           %        12.41
+    ----------------------- ----------- ------------
+
+    OPT   This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak           
+          performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak           
+          typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential       
+          reasons.                                                                                                      
+
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        23.94
+    Issued Warp Per Scheduler                        0.24
+    No Eligible                            %        76.06
+    Active Warps Per Scheduler          warp         1.96
+    Eligible Warps Per Scheduler        warp         0.27
+    ---------------------------- ----------- ------------
+
+    OPT   Est. Local Speedup: 76.06%                                                                                    
+          Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only    
+          issues an instruction every 4.2 cycles. This might leave hardware resources underutilized and may lead to     
+          less optimal performance. Out of the maximum of 16 warps per scheduler, this workload allocates an average    
+          of 1.96 active warps per scheduler, but only an average of 0.27 warps were eligible per cycle. Eligible       
+          warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no      
+          eligible warp results in no instruction being issued and the issue slot remains unused. To increase the       
+          number of eligible warps, avoid possible load imbalances due to highly different execution durations per      
+          warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.      
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                   128
+    Cluster Scheduling Policy                           PolicySpread
+    Cluster Size                                                   0
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                    264
+    Registers Per Thread             register/thread             200
+    Shared Memory Configuration Size           Kbyte          167.94
+    Driver Shared Memory Per Block       Kbyte/block            1.02
+    Dynamic Shared Memory Per Block      Kbyte/block           73.74
+    Static Shared Memory Per Block        byte/block               0
+    # SMs                                         SM             132
+    Stack Size                                                  1024
+    Threads                                   thread           33792
+    # TPCs                                                        66
+    Enabled TPC IDs                                              all
+    Uses Green Context                                             0
+    Waves Per SM                                                   1
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Max Active Clusters                 cluster            0
+    Max Cluster Size                      block            8
+    Overall GPU Occupancy                     %            0
+    Cluster Occupancy                         %            0
+    Block Limit Barriers                  block           32
+    Block Limit SM                        block           32
+    Block Limit Registers                 block            2
+    Block Limit Shared Mem                block            2
+    Block Limit Warps                     block           16
+    Theoretical Active Warps per SM        warp            8
+    Theoretical Occupancy                     %        12.50
+    Achieved Occupancy                        %        12.24
+    Achieved Active Warps Per SM           warp         7.84
+    ------------------------------- ----------- ------------
+
+    OPT   Est. Speedup: 76.06%                                                                                          
+          The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the       
+          hardware maximum of 16. This kernel's theoretical occupancy (12.5%) is limited by the number of required      
+          registers, and the required amount of shared memory.                                                          
+
+  void Kernel2<cutlass_80_tensorop_f16_s16816gemm_f16_grouped_128x64_64x3_align8>(Params) (264, 1, 1)x(128, 1, 1), Context 1, Stream 13, Device 0, CC 9.0
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         2.62
+    SM Frequency                    Ghz         1.60
+    Elapsed Cycles                cycle      1506727
+    Memory Throughput                 %        19.05
+    DRAM Throughput                   %        19.05
+    Duration                         us       942.46
+    L1/TEX Cache Throughput           %        58.50
+    L2 Cache Throughput               %        20.07
+    SM Active Cycles              cycle    352469.29
+    Compute (SM) Throughput           %        10.20
+    ----------------------- ----------- ------------
+
+    OPT   This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak           
+          performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak           
+          typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential       
+          reasons.                                                                                                      
+
+    Section: Scheduler Statistics
+    ---------------------------- ----------- ------------
+    Metric Name                  Metric Unit Metric Value
+    ---------------------------- ----------- ------------
+    One or More Eligible                   %        23.96
+    Issued Warp Per Scheduler                        0.24
+    No Eligible                            %        76.04
+    Active Warps Per Scheduler          warp         1.96
+    Eligible Warps Per Scheduler        warp         0.27
+    ---------------------------- ----------- ------------
+
+    OPT   Est. Local Speedup: 76.04%                                                                                    
+          Every scheduler is capable of issuing one instruction per cycle, but for this workload each scheduler only    
+          issues an instruction every 4.2 cycles. This might leave hardware resources underutilized and may lead to     
+          less optimal performance. Out of the maximum of 16 warps per scheduler, this workload allocates an average    
+          of 1.96 active warps per scheduler, but only an average of 0.27 warps were eligible per cycle. Eligible       
+          warps are the subset of active warps that are ready to issue their next instruction. Every cycle with no      
+          eligible warp results in no instruction being issued and the issue slot remains unused. To increase the       
+          number of eligible warps, avoid possible load imbalances due to highly different execution durations per      
+          warp. Reducing stalls indicated on the Warp State Statistics and Source Counters sections can help, too.      
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                   128
+    Cluster Scheduling Policy                           PolicySpread
+    Cluster Size                                                   0
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                    264
+    Registers Per Thread             register/thread             200
+    Shared Memory Configuration Size           Kbyte          167.94
+    Driver Shared Memory Per Block       Kbyte/block            1.02
+    Dynamic Shared Memory Per Block      Kbyte/block           73.74
+    Static Shared Memory Per Block        byte/block               0
+    # SMs                                         SM             132
+    Stack Size                                                  1024
+    Threads                                   thread           33792
+    # TPCs                                                        66
+    Enabled TPC IDs                                              all
+    Uses Green Context                                             0
+    Waves Per SM                                                   1
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Max Active Clusters                 cluster            0
+    Max Cluster Size                      block            8
+    Overall GPU Occupancy                     %            0
+    Cluster Occupancy                         %            0
+    Block Limit Barriers                  block           32
+    Block Limit SM                        block           32
+    Block Limit Registers                 block            2
+    Block Limit Shared Mem                block            2
+    Block Limit Warps                     block           16
+    Theoretical Active Warps per SM        warp            8
+    Theoretical Occupancy                     %        12.50
+    Achieved Occupancy                        %        12.23
+    Achieved Active Warps Per SM           warp         7.83
+    ------------------------------- ----------- ------------
+
+    OPT   Est. Speedup: 76.04%                                                                                          
+          The 2.00 theoretical warps per scheduler this kernel can issue according to its occupancy are below the       
+          hardware maximum of 16. This kernel's theoretical occupancy (12.5%) is limited by the number of required      
+          registers, and the required amount of shared memory.                                                          
+
