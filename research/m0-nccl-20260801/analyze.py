@@ -17,6 +17,10 @@ EXT = [
     "peer_a2a_uva",       # same but UVA cudaMemcpyDefault (eager: slower, graph-only path)
     "peer_ga2a",          # UVA peer-copy a2a in a CUDA graph, n=3
     "peer_ga2a_n2",       # ... n=2
+    "nccl_a2a_n4",        # n=4 scaling points, GPUs {0,2,3,4}
+    "nccl_ga2a_n4",
+    "peer_a2a_n4",
+    "peer_ga2a_n4",
     "nccl_gpp_0_2",       # NCCL ping-pong, 50 RT/graph (launch-free floor)
     "peer_gpp_0_2",       # UVA peer-copy ping-pong, 50 RT/graph
 ]
