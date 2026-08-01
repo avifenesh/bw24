@@ -2378,3 +2378,20 @@ measured 1.16x plain/1.38x spec on the board shape). Board: 6 wins + 1 even + 0 
 decode 7/7. Batteries: validate-h100 ALL GREEN (f16g default + gate prime-nuisance pin,
 the K4/K5 precedent), 5090 correctness + serve-smoke GREEN. The M0 comms spike banked
 the multi-GPU floor (PP ~free, EP<=4, graphed a2a mandatory) for the GLM-5.2 build.
+
+## Round 50 — the f16g default is PER-MODEL: gemma-gelu class OFF (2026-08-01, lane/f16g-permodel)
+
+The round-49 Hopper default (`MEMRA_MOE_F16G=1`) REGRESSED g26 board-2048 prefill -8.3%:
+interleaved x5 on-box, def median 10380 tok/s with a wild 8.9k-11.7k spread vs off 11317
+±0.13% (the +6-15% probe verdict didn't survive the board workload — the stale-verdict
+law claims another one). Fix: `moe_f16g_gemma_on()` — the gemma gelu-MoE dispatch site
+(hybrid_forward.rs) defaults OFF, explicit `=1`/`=2` still opens the door; the silu/qwen
+admission (q35, +53%) keeps the round-49 default. Gate verification: g26 naked 11322
+(off arm) / =1 10244+9828 (door opens), q35 naked 8455 / =0 5498 (default untouched),
+argmax MATCH on all arms. Batteries: q35 validate-h100 --quick ALL GATES GREEN; g26
+kernel-check + decode-dc green, decode-batch/graph gates = the round-46 pre-existing
+gemma-MoE coverage gap (verbatim panics receipted). New naked g26 cell (N=5 medians both
+arms, 10:53Z same-session block): memra prefill 11337.1 / decode 210.30 -> e2e 978.9 vs
+vLLM FP8-dynamic 43964.4 / 194.73 -> 956.7 = **1.023x** (decode is the cell's best to
+date: 180.87 -> 182.09 -> 204.57 -> 210.30). Receipts:
+`research/f16g-permodel-20260801/` (A/B, gate logs, batteries, board jsonl + raw runs).

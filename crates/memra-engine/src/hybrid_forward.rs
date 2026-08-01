@@ -4669,8 +4669,10 @@ impl HybridModel {
             // f16 once per projection + one grouped f16 GEMM over the CSR groups; CSR order
             // end-to-end (gelu is elementwise), one row permute before the scatter. The
             // ragged down k (704) needs no padding here — cublas takes any k.
-            // f16-mirror numeric class, argmax/spec gated.
-            if crate::moe_f16g_on()
+            // f16-mirror numeric class, argmax/spec gated. PER-MODEL default OFF (round 50):
+            // the gelu class regressed g26 board-2048 prefill -8.3% under the round-49
+            // Hopper default — see moe_f16g_gemma_on.
+            if crate::moe_f16g_gemma_on()
                 && f16g_proj_ok(m.gate_exps.qtype, n_embd)
                 && f16g_proj_ok(m.up_exps.qtype, n_embd)
                 && f16g_proj_ok(m.down_exps.qtype, n_ff_exp) {
