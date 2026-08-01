@@ -2366,3 +2366,15 @@ the round-48 KQRP decode mirrors) — it pays on bigger-VRAM boxes; implemented 
 battery-gated either way. The REAL owner call this exposes: on 80GB, f16-mirror
 budget vs KQRP decode mirrors compete for the same ~15GB — prefill 6564->8063 vs
 decode +15% cannot both max out; per-box serving configs choose.
+
+## Round 49 — ZERO LOSSES (2026-08-01): the board sweep completes
+
+Final same-session cells on the promoted tree: **q35 e2e 217.8 vs 214.3 (1.02x)** —
+decode 242.9 (shexp dot + KQRP stack) x prefill 8428 (the grouped f16 expert lane at
+41/41 dequant coverage, Hopper default; the round-47 "flat" verdict was a 1-of-41-layers
+coverage artifact). **q27 e2e 95.5 vs 72.9 (1.31x)** — decode 103.7 (KQRP + layout v2)
+x prefill 4821 (Q4_K/Q5_K/Q6_K f16 mirrors, default budget; 43008MB serving config
+measured 1.16x plain/1.38x spec on the board shape). Board: 6 wins + 1 even + 0 losses,
+decode 7/7. Batteries: validate-h100 ALL GREEN (f16g default + gate prime-nuisance pin,
+the K4/K5 precedent), 5090 correctness + serve-smoke GREEN. The M0 comms spike banked
+the multi-GPU floor (PP ~free, EP<=4, graphed a2a mandatory) for the GLM-5.2 build.
