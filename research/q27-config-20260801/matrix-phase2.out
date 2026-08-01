@@ -1,0 +1,7 @@
+A-default-kqrp r2 rc=0
+B-bud43008-kqrp r2 rc=0
+C-fullf16-nokqrp r2 rc=0
+A-default-kqrp r3 rc=0
+B-bud43008-kqrp r3 rc=0
+C-fullf16-nokqrp r3 rc=0
+PHASE2-DONE
