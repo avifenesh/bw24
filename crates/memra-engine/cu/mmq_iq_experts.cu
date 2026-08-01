@@ -278,11 +278,20 @@ static __device__ __forceinline__ void load_tiles_iq3s(const uint8_t* __restrict
 }
 
 // ======================= vec_dot (nvfp4_w4a8 machinery, verbatim) =======================
-template<int mmq_x, int mmq_y>
-static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00){
+// jexit (swapab-probe residue, 2026-08-01): ragged token tiles skip j0 strips whose 8-token
+// block lies entirely past j_max. Each warp's strips stride the whole token axis (j0 +
+// (ty%ntx)*8), so the skip is load-balanced at 8-token granularity — ceil8(65)/128 = 0.5625
+// of the mma work at q35 gate/up's ~65-pair groups. The skipped strips' sum slots are exactly
+// the writeback's discarded j>j_max columns, so live output slots are bit-identical. Dispatch
+// at the call site keeps full tiles (cnt == mmq_x) on the jexit=false instantiation — the
+// guard folds away and full-tile codegen is unchanged (the naked runtime check cost +2.1% at
+// m=128 in the swapab microbench; research/swapab-20260801/).
+template<int mmq_x, int mmq_y, bool jexit>
+static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00, int j_max){
     typedef tile<16,4,int> tA; typedef tile<16,8,int> tA8; typedef tile<8,4,int> tB; typedef tile<16,8,int> tC;
     constexpr int g=mmq_get_granularity_device(mmq_x); constexpr int rpw=2*g; constexpr int ntx=rpw/tC::I;
-    y += (threadIdx.y%ntx)*(tC::J*MMQ_TILE_Y_K);
+    const int joff = (threadIdx.y%ntx)*tC::J;
+    y += joff*MMQ_TILE_Y_K;
     const int* x_qs=x; const float* x_df=(const float*)x_qs + MMQ_TILE_NE_K*2;
     const int* y_qs=(const int*)y+4; const float* y_df=(const float*)y;
     const int i0=(threadIdx.y/ntx)*(ntx*tA::I);
@@ -301,6 +310,7 @@ static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, f
     }
     #pragma unroll
     for(int j0=0;j0<mmq_x;j0+=ntx*tC::J){
+        if(jexit && j0+joff > j_max) continue;   // strip fully past the tile's live tokens
         #pragma unroll
         for(int k01=0;k01<MMQ_TILE_NE_K;k01+=8){
             tB B[2]; float dB[tC::ne/2];
@@ -399,6 +409,13 @@ mmq_iq_experts_kernel(
         }
         __syncthreads();
         float sum[mmq_x*mmq_y/(MMQ_NWARPS*MMQ_WARP_SIZE)] = {0.0f};
+        // full tiles take the jexit=false instantiation (guard folds away, codegen unchanged);
+        // ragged tiles skip dead 8-token j0 strips (live sum slots bit-identical — the skipped
+        // slots are the writeback's discarded j>j_max columns).
+        auto vdot = [&](const int* ty, int k00){
+            if(cnt == mmq_x) vec_dot_mma<mmq_x,mmq_y,false>(tile_x, ty, sum, k00, j_max);
+            else             vec_dot_mma<mmq_x,mmq_y,true >(tile_x, ty, sum, k00, j_max);
+        };
         if(staged) stage_w(0, 0);
         for(int kb=0;kb<nsblk;kb++){
             if(staged){
@@ -439,10 +456,10 @@ mmq_iq_experts_kernel(
             // pending groups (issue order): [W(kb+1) if staged], Y(h0), Y(h1).
             asm volatile("cp.async.wait_group 1;");    // W(kb+1)+Y(h0) done; Y(h1) in flight
             __syncthreads();
-            vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y, sum, 0*MMQ_TILE_NE_K);
+            vdot(tile_y, 0*MMQ_TILE_NE_K);
             asm volatile("cp.async.wait_group 0;");    // Y(h1) done (overlapped the h0 mma)
             __syncthreads();
-            vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y + ybuf_stride, sum, 1*MMQ_TILE_NE_K);
+            vdot(tile_y + ybuf_stride, 1*MMQ_TILE_NE_K);
             __syncthreads();
         }
         // write-back (nvfp4_w4a8 machinery): row = ids[j] (pair id), col = it*mmq_y + i.
