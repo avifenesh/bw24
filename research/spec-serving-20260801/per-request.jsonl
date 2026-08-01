@@ -1,0 +1,448 @@
+{"ok": true, "latency_s": 1.7617710039994563, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7631566540003405, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7680852980010968, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7633359369974642, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7623007759975735, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7609133789992484, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7610134280002967, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7614326069997333, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "plain-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 2.3073395270002948, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3079794100012805, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.298094970999955, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 2, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.298091510998347, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.297985219000111, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 4, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.2979932089983777, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.2976616109990573, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 6, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.297583030001988, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "plain-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 3.245740491998731, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2450961280010233, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2447531610014266, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2464238469983684, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.243578156001604, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 5, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.243597554999724, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 6, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.243226278002112, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 7, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2444771049995325, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.23047178699926, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 10, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2307882839995727, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 9, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2306285510021553, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 11, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2313365660011186, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 8, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.242558434001694, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 12, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.242186486000719, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 15, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2424221000001126, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 14, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.24272599699907, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 13, "label": "plain-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 5.598927786002605, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.599915527000121, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.599507077997259, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.890277373997378, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 4, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.891200644000492, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.890128621998883, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 6, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.890687823000917, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 5, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.8904965090005135, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 7, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.602191917998425, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 8, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.602081696000823, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 9, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.601749129000382, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 10, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.603046854997956, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 11, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.602777520001837, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 12, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.601985553999839, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 15, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.602918382999633, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 13, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.602919083001325, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 14, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.6051565800007666, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 16, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605074458999297, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 18, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605469096997695, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 17, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.60520493200238, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 19, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605012247000559, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 21, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.604943296002602, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 22, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.60547092699926, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 20, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605228241998702, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 23, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605773266997858, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 25, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.606460230999801, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 24, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.6061211849992105, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 26, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.340811689002294, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 27, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.340627184999903, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 29, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.34048345300107, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 30, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.340902530999301, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 28, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.340433150999161, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 31, "label": "plain-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 1.012231882999913, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0111674899999343, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0161469750019023, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0116234800007078, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0197102800011635, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.012243329998455, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0118965119982022, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0120074340011342, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "spec-r1-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.5748911699993187, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.034650715002499, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.023659102000238, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0232608830010577, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 3, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0287484010004846, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0299237750004977, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 5, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0264185500018357, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0245785010010877, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 7, "label": "spec-r1-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.6783870379986183, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.5578930390001915, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.8068749270023545, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.057052290998399, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.050691505999566, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 4, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.048720978000347, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.04802450400166, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 6, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0474067220020515, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 7, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.045625364000443, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 8, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.047530154999549, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 9, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0475546149973525, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 10, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.047677967002528, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 11, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.050339465000434, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 12, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.049193629998626, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 13, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.049208280001039, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 14, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.050216941999679, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 15, "label": "spec-r1-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.889531013999658, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 6.604623339000682, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 6.852031097998406, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 4, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.10256387499976, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.351187329997629, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.599640612999792, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 5, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.848564675001398, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 6, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.097296422998625, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 7, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092120984998473, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.09221274599986, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 9, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092910310999287, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 10, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.093286499002716, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 11, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.093925613000465, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 12, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.09463991800294, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 13, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.094995524999831, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 14, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.096141300000454, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 15, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.094563380000181, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 16, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092323796998244, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 17, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092536567000934, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 18, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092368328998418, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 19, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092016605998651, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 20, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092062252002506, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 21, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092448755000078, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 22, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.091785936001543, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 23, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.093656039000052, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 24, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092225807999057, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 25, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092503644998942, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 26, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092316319998645, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 27, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.092606406000414, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 28, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.091883851000603, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 29, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.091445611000381, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 30, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.091053413001646, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 31, "label": "spec-r1-c8", "concurrency": 8}
+{"ok": true, "latency_s": 1.7752233299979707, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.846814592001465, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7620841310017568, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7695881809995626, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7658340310008498, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.762591271999554, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7658418280007027, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7624151449999772, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "plain-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 2.311461377001251, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3112984740000684, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3002905809989898, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 3, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3007111289989552, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3009321440003987, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3012265600009414, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 4, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3035143480010447, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3034918079974886, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 7, "label": "plain-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 3.325836267998966, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.3253269479973824, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.325258455999574, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.326324208999722, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2435812990006525, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2434976370022923, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 5, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.243363073997898, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 6, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.243357453000499, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 7, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2336698779981816, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2334254720008175, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 10, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.233449904000736, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 11, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2340112359997875, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 9, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2502576609986136, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 12, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2498780220012122, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 15, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2501134679987445, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 14, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2505459359999804, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 13, "label": "plain-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 5.618553299998894, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.617945466998208, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.618726183001854, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.618028979002702, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.984535052997671, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 4, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.983743155997217, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 6, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.983642824998242, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 7, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.984696036000969, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 5, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.631453110003349, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.630963629999314, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 11, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.631524862001243, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 10, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.632147674998123, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 9, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.6315908930009755, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 13, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.632114283998817, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 12, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.6319561609998345, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 14, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.632021771998552, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 15, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.623708207000163, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 17, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.6236260250007035, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 18, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.624512104001042, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 16, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.623887970999931, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 19, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.622758805999183, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 23, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.6238137090003875, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 20, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.623379018998094, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 22, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.624270008000167, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 21, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.623544309000863, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 26, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.62386525599868, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 25, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.624171393003053, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 24, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.623886737001158, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 27, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.279650265001692, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 29, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.279014750998613, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 31, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.279717626999627, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 30, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.2802073570019274, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 28, "label": "plain-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 1.067952098997921, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0494157180000911, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.023395274001814, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0253848879983707, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0249884390032094, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0217696689978766, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.029971324998769, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.024893402998714, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "spec-r2-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.6118745430030685, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.081688233996829, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0523702509999566, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0486247519984317, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 3, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0514012109997566, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.050665345002926, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 5, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0487047629976587, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.047355204998894, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 7, "label": "spec-r2-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.7723696069988364, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.6624523760001466, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.9147169860007125, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.167024346003018, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0990337889998045, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.097340594998968, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 5, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.097271251001075, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 6, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.096963191001123, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 7, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0946723419983755, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.094733554000413, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 9, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.094590889999381, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 10, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.094931877996714, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 11, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.09745016099987, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 12, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.097361959000409, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 13, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.097705636999308, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 14, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0975345430015295, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 15, "label": "spec-r2-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.959345860999747, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 6.695872750002309, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 6.948415719001787, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.201523821000592, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.45306152899866, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 5, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.706274823001877, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 4, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.9579753350008104, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 6, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.210275339999498, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 7, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.197986582003068, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.19751775199984, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 9, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.197302267999476, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 10, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.19786356899931, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 11, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.198414572001639, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 12, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.198208467998484, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 13, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.19829941900025, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 14, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.198312639000505, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 15, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.203088492999086, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 16, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.201479890998598, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 17, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.201758607003285, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 18, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.201496303001477, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 19, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.201675195999997, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 20, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.202235478998773, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 21, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.202532055001939, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 22, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.202999215998716, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 23, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.200840805002372, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 24, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.20184292599879, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 25, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.201085499000328, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 26, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.200938547000987, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 27, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.200343814001826, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 28, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.200198490998446, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 29, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.199915525001416, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 30, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.199508366000373, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 31, "label": "spec-r2-c8", "concurrency": 8}
+{"ok": true, "latency_s": 1.7876456740013964, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7853521350007213, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7464168939986848, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7504814390013053, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7540563749971625, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.749667803000193, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7476537580005242, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7477782459973241, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "plain-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 2.2919757189993106, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.29171130299801, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.28096310500041, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 3, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.281266701000277, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.2812956829984614, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 4, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.281422134998138, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.281304972999351, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 6, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.2811888400028693, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "plain-r3-c2", "concurrency": 2}
+{"ok": false, "latency_s": 2.394307705002575, "error": "RemoteDisconnected: Remote end closed connection without response", "worker": 3, "req_index": 3, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 2.3959591800012277, "error": "RemoteDisconnected: Remote end closed connection without response", "worker": 0, "req_index": 0, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 2.3953966579974804, "error": "RemoteDisconnected: Remote end closed connection without response", "worker": 2, "req_index": 2, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 2.3962223550006456, "error": "RemoteDisconnected: Remote end closed connection without response", "worker": 1, "req_index": 1, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0005934519977017771, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 6, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0013284880005812738, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 4, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0014021599999978207, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 5, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0010421719998703338, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 7, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0006565839976246934, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 9, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.001009831001283601, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 8, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0005785219982499257, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 12, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0011934150024899282, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 10, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0010927440016530454, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 11, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0007237249992613215, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 13, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0003933279986085836, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 15, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0006942150030226912, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 14, "label": "plain-r3-c4", "concurrency": 4}
+{"ok": false, "latency_s": 0.0006802940006309655, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 0, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0014567010002792813, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 1, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0010786230013763998, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 3, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0009121690018218942, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 4, "req_index": 5, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.001950990998011548, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 2, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0017276769976888318, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 4, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0012219359996379353, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 6, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.001587994000146864, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 7, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0008264770003734156, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 12, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0013904189981985837, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 4, "req_index": 9, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0009012689988594502, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 13, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0016118849998747464, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 10, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0010047209980257321, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 7, "req_index": 14, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.002352960000280291, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 5, "req_index": 8, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.00080701700062491, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 4, "req_index": 17, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0011543649998202454, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 16, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.001500292000855552, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 15, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0012266159974387847, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 18, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0010929730015050154, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 19, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0027699989987013396, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 6, "req_index": 11, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0008777680013736244, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 4, "req_index": 22, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0012022850023640785, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 5, "req_index": 21, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0010659720028343145, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 23, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0010475519993633498, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 24, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0019067100001848303, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 7, "req_index": 20, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0009546199980832171, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 6, "req_index": 27, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.00034056699951179326, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 2, "req_index": 31, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.001215045002027182, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 0, "req_index": 26, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0014587209989258554, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 1, "req_index": 25, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0011226839997107163, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 4, "req_index": 28, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0009775210019142833, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 5, "req_index": 29, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": false, "latency_s": 0.0008717680029803887, "error": "URLError: <urlopen error [Errno 111] Connection refused>", "worker": 3, "req_index": 30, "label": "plain-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 1.013497976000508, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.070780742000352, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0093059659993742, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0091471929990803, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.016865126999619, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0088899780021165, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.0218789129976358, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.009626073999243, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "spec-r3-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.5668977499990433, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0248372349997226, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.018172654999944, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 2, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.018656144999113, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0200043949989777, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 4, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.028072836001229, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.037925634998828, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 6, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.0297995029977756, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "spec-r3-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.6754932869989716, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.550079161999747, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.7983292559983965, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.046670660001837, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.039369584002998, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0547709519996715, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 5, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.054988256000797, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 6, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.055014836998453, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 7, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.053494824998779, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.038145457998326, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 9, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.037860931999603, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 10, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0379995059993234, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 11, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.042929279999953, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 12, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.0422152249993815, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 13, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.043134114999702, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 14, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.043036562001362, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 15, "label": "spec-r3-c4", "concurrency": 4}
+{"ok": true, "latency_s": 4.892607657002372, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 6.602787240000907, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 6.851564354001312, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.099689834998571, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.3476619709981605, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 5, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.596996207001212, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 4, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 7.844881502001954, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 6, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.093462651999289, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 7, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080009663000965, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078643874003319, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 9, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078248076002637, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 10, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078469832998962, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 11, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078654428001755, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 12, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078440774999763, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 13, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078474476998963, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 14, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.078086208999594, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 15, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.082262838001043, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 16, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080610363002052, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 17, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080664054999943, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 18, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080817076999665, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 19, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080897689000267, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 20, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.081138443998498, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 21, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.081617423998978, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 22, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.082070373999159, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 23, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.079563048002456, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 24, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.081293680003, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 25, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.081462033002026, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 26, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.081320868001058, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 27, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080852346000029, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 28, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080962377000105, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 29, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.08022285900006, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 30, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 8.080156805001025, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 31, "label": "spec-r3-c8", "concurrency": 8}
+{"ok": true, "latency_s": 1.7661622570012696, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7716558140018606, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 1, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7651602859987179, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7688142229999357, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 3, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7635479410018888, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.7663166700003785, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.766107204999571, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 1.763098251001793, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 7, "label": "plain-r4-c1", "concurrency": 1}
+{"ok": true, "latency_s": 2.315249686998868, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3151715040003182, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3014769520013942, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 3, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3022287679996225, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 2, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.3005760129999544, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 5, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.300896290002129, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 4, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.297949186999176, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 7, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 2.2982428729992534, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 6, "label": "plain-r4-c2", "concurrency": 2}
+{"ok": true, "latency_s": 3.2875569540010474, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2872199670018745, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2872798579992377, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.587470538001071, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.282809164000355, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 5, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.282567697999184, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 6, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2835672500004875, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 4, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.305454354001995, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 7, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2890128289982385, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 10, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2895136199986155, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 9, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.289982959999179, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 8, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.313474877999397, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 11, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2837427249978646, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 12, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.2837220939982217, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 13, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.283657633000985, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 14, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 3.000663490001898, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 15, "label": "plain-r4-c4", "concurrency": 4}
+{"ok": true, "latency_s": 5.592776180001238, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 0, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.5925959769992915, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 1, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.592647238001518, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 2, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.885087361999467, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 3, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.884499088999291, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 5, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.88566797400199, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 4, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.884674863002147, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 7, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.885154442999919, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 6, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.594400966001558, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 8, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.594380164999166, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 9, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.5941339600030915, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 10, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.594038647999696, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 11, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.593278171003476, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 13, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.593267030999414, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 14, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.593301982000412, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 15, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.5951548310004, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 12, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.592986486000882, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 18, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.593419143999199, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 17, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.593996505998803, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 16, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.593488665999757, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 22, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.592764799999713, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 23, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.594316532999073, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 19, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.594177880000643, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 21, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.594547267999587, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 20, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605817168001522, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 2, "req_index": 24, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.60577567600194, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 1, "req_index": 25, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.605651514000783, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 0, "req_index": 26, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.33975367200037, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 6, "req_index": 27, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.340126851002424, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 5, "req_index": 28, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.340052138999454, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 3, "req_index": 29, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.339750373001152, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 4, "req_index": 31, "label": "plain-r4-c8", "concurrency": 8}
+{"ok": true, "latency_s": 5.34007610000117, "completion_tokens": 128, "prompt_tokens": 0, "finish_reason": "length", "worker": 7, "req_index": 30, "label": "plain-r4-c8", "concurrency": 8}
