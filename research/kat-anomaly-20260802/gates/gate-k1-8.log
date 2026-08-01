@@ -1,0 +1,37 @@
+=== 2026-08-02T01:02:02+03:00 MEMRA_NGEN=128 MEMRA_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. MEMRA_MTP_DRAFT=/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/draft-katcoder-owntrim-nvfp4head-q4blk.gguf
+[moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+[mtp-draft] loading external MTP draft: /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/draft-katcoder-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.40, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35moe (40 layers, nextn=0)
+text prompt (145 chars) -> 27 tokens
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13]
+
+[generate]   127 tok in 0.680s = 186.64 tok/s (gen-only; this run's prime 0.083s)
+  tokens: [271, 71093, 12305, 198, 1445, 18904, 1120, 11906, 11, 5586, 1358, 1005, 5829, 25, 198, 262, 4071, 32, 2357, 303, 264, 90651, 52589, 1103, 71483, 198, 1031, 262, 687, 1259, 2251, 3676, 701, 11, 795, 25, 5586, 8, 1411, 2168, 25, 198, 285, 638, 2127, 25, 5586, 283, 795, 198, 285, 638, 28044, 25, 11906, 58, 1888, 60, 283, 2168, 198, 285, 638, 4381, 25, 11906, 58, 1888, 60, 283, 2168, 1358, 1005, 53019, 391, 32794, 25, 198, 262, 4071, 32, 90651, 52589, 1103, 12250, 5479, 11, 3572, 11, 321, 9637, 7289, 71483, 198, 1031, 262, 687, 1259, 2251, 3676, 701, 8, 1411, 2168, 25, 198, 285, 638, 15569, 25, 11906, 58, 1888, 60, 283, 2168, 198, 285, 638, 37429, 25, 11906, 58, 1888, 60, 283, 2168, 198]
+
+[generate_spec K=1] 128 tok in 0.606s = 209.64 tok/s (1.12x vs generate; this run's prime 0.086s)
+  acceptance: 61/66 = 92.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 128 tok in 0.555s = 228.64 tok/s (1.23x vs generate; this run's prime 0.085s)
+  acceptance: 80/96 = 83.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 128 tok in 0.550s = 230.85 tok/s (1.24x vs generate; this run's prime 0.086s)
+  acceptance: 88/117 = 75.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 128 tok in 0.606s = 209.56 tok/s (1.12x vs generate; this run's prime 0.087s)
+  acceptance: 91/144 = 63.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 128 tok in 0.641s = 198.16 tok/s (1.06x vs generate; this run's prime 0.087s)
+  acceptance: 97/165 = 58.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 128 tok in 0.682s = 186.14 tok/s (1.00x vs generate; this run's prime 0.087s)
+  acceptance: 99/186 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 128 tok in 0.766s = 165.87 tok/s (0.89x vs generate; this run's prime 0.087s)
+  acceptance: 96/217 = 44.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 128 tok in 0.866s = 146.60 tok/s (0.79x vs generate; this run's prime 0.087s)
+  acceptance: 97/248 = 39.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== rc=0
