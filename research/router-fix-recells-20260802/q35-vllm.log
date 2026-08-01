@@ -1,0 +1,62 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+WARNING 08-01 19:27:00 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=958632) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(EngineCore pid=958632) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=958632) WARNING 08-01 19:27:25 [qwen_gdn_linear_attn.py:157] FlashInfer GDN prefill is JIT-compiled; first run may take a while. Set --gdn-prefill-backend triton to skip JIT.
+(EngineCore pid=958632) Loading safetensors checkpoint shards:   0% Completed | 0/42 [00:00<?, ?it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:   2% Completed | 1/42 [00:00<00:16,  2.44it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:   5% Completed | 2/42 [00:00<00:16,  2.44it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:   7% Completed | 3/42 [00:01<00:16,  2.42it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  10% Completed | 4/42 [00:02<00:23,  1.59it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  12% Completed | 5/42 [00:05<00:55,  1.51s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  14% Completed | 6/42 [00:08<01:13,  2.05s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  17% Completed | 7/42 [00:11<01:24,  2.40s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  19% Completed | 8/42 [00:14<01:30,  2.66s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  21% Completed | 9/42 [00:17<01:33,  2.85s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  24% Completed | 10/42 [00:21<01:35,  2.97s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  26% Completed | 11/42 [00:21<01:07,  2.19s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  29% Completed | 12/42 [00:22<00:49,  1.65s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  31% Completed | 13/42 [00:22<00:36,  1.27s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  33% Completed | 14/42 [00:22<00:28,  1.01s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  36% Completed | 15/42 [00:23<00:22,  1.20it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  38% Completed | 16/42 [00:23<00:18,  1.42it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  40% Completed | 17/42 [00:24<00:15,  1.63it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  43% Completed | 18/42 [00:24<00:13,  1.81it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  45% Completed | 19/42 [00:24<00:11,  1.96it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  48% Completed | 20/42 [00:25<00:10,  2.09it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  50% Completed | 21/42 [00:25<00:09,  2.18it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  52% Completed | 22/42 [00:26<00:08,  2.26it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  55% Completed | 23/42 [00:26<00:08,  2.32it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  57% Completed | 24/42 [00:26<00:07,  2.34it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  60% Completed | 25/42 [00:29<00:16,  1.05it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  62% Completed | 26/42 [00:32<00:26,  1.64s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  64% Completed | 27/42 [00:35<00:31,  2.13s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  67% Completed | 28/42 [00:38<00:34,  2.45s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  69% Completed | 29/42 [00:42<00:34,  2.68s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  71% Completed | 30/42 [00:45<00:34,  2.85s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  74% Completed | 31/42 [00:48<00:32,  2.96s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  76% Completed | 32/42 [00:51<00:30,  3.03s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  79% Completed | 33/42 [00:52<00:20,  2.32s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  81% Completed | 34/42 [00:52<00:13,  1.74s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  83% Completed | 35/42 [00:53<00:09,  1.33s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  86% Completed | 36/42 [00:53<00:06,  1.05s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  88% Completed | 37/42 [00:53<00:04,  1.18it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  90% Completed | 38/42 [00:54<00:02,  1.42it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  93% Completed | 39/42 [00:54<00:01,  1.65it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  95% Completed | 40/42 [00:55<00:01,  1.86it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards:  98% Completed | 41/42 [00:56<00:00,  1.22it/s]
+(EngineCore pid=958632) Loading safetensors checkpoint shards: 100% Completed | 42/42 [01:05<00:00,  3.22s/it]
+(EngineCore pid=958632) Loading safetensors checkpoint shards: 100% Completed | 42/42 [01:05<00:00,  1.56s/it]
+(EngineCore pid=958632) 
+(EngineCore pid=958632) WARNING 08-01 19:29:30 [fused_moe.py:1107] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs/E=256,N=512,device_name=NVIDIA_H100_80GB_HBM3,dtype=fp8_w8a8,block_shape=[128,128].json
+(EngineCore pid=958632) DeepGEMM warmup:   0%|          | 0/1949 [00:00<?, ?it/s]DeepGEMM warmup:  22%|██▏       | 434/1949 [00:00<00:00, 4306.38it/s]DeepGEMM warmup:  48%|████▊     | 940/1949 [00:00<00:00, 4742.57it/s]DeepGEMM warmup: 100%|██████████| 1949/1949 [00:00<00:00, 6705.65it/s]
+(EngineCore pid=958632) Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/5 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  20%|██        | 1/5 [00:00<00:00,  6.68it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  40%|████      | 2/5 [00:00<00:00,  6.88it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  60%|██████    | 3/5 [00:00<00:00,  6.95it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  80%|████████  | 4/5 [00:00<00:00,  6.99it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 5/5 [00:00<00:00,  4.14it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 5/5 [00:00<00:00,  5.04it/s]
+(EngineCore pid=958632) Capturing CUDA graphs (decode, FULL):   0%|          | 0/4 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL):  25%|██▌       | 1/4 [00:00<00:00,  3.48it/s]Capturing CUDA graphs (decode, FULL):  50%|█████     | 2/4 [00:00<00:00,  4.81it/s]Capturing CUDA graphs (decode, FULL):  75%|███████▌  | 3/4 [00:00<00:00,  5.49it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 4/4 [00:00<00:00,  4.46it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 4/4 [00:00<00:00,  4.55it/s]
+(EngineCore pid=958632) WARNING 08-01 19:29:50 [jit_monitor.py:135] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+{'run': 1, 'prefill_tps': 17798.4, 'decode_tps': 224.97, 'ttft_s': 0.1151}
+{'run': 2, 'prefill_tps': 18245.5, 'decode_tps': 224.89, 'ttft_s': 0.1122}
+{'run': 3, 'prefill_tps': 18152.4, 'decode_tps': 224.85, 'ttft_s': 0.1128}
+{'run': 4, 'prefill_tps': 18050.8, 'decode_tps': 224.99, 'ttft_s': 0.1135}
+{'run': 5, 'prefill_tps': 17873.1, 'decode_tps': 225.0, 'ttft_s': 0.1146}
+median decode tok/s: 224.97

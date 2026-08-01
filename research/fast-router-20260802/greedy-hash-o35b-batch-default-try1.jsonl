@@ -1,0 +1,1 @@
+{"ts": "2026-08-02T00:05:16+0300", "label": "o35b-batch-default", "base": "http://127.0.0.1:8123", "n": 16, "max_tokens": 96, "wall_s": 3.161583209002856, "n_match": 13, "n_mismatch": 0, "n_err": 3, "verdict": "FAIL", "mismatches": []}

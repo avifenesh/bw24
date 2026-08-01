@@ -1,0 +1,15 @@
+=== weight=wq ===
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+
+thread 'main' (2651184) panicked at crates/memra-engine/src/bin/concat_prime_probe.rs:550:26:
+layer 0 is not full-attn; use --weight head
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+=== weight=head ===
+  m | rows[0,19) vs m=19 | maxdiff
+  73 | BIT-IDENTICAL | 0.000000e0
+  74 | BIT-IDENTICAL | 0.000000e0
+  75 | BIT-IDENTICAL | 0.000000e0
+  76 | BIT-IDENTICAL | 0.000000e0
+  77 | BIT-IDENTICAL | 0.000000e0
+gemm verdict: prefill GEMM rows are m-INVARIANT over this range

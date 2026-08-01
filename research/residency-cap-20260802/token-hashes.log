@@ -1,0 +1,10 @@
+  [slru rep1] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep1] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [slru rep2] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep2] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [slru rep3] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep3] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [slru rep4] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep4] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [slru rep5] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep5] decision=RESIDENT tokens_sha=61c48f62f98e5dbc

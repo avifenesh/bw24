@@ -1,0 +1,11 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[worker]   loaded "m": 40 layers, eos=248046
+[server] worker ready; serving models: ["m"]
+[worker] m: decode chunk cap 8
+[server] listening on http://127.0.0.1:8121
+[prime-batch] B=5 tokens=108 in 273.7ms
+[prime-batch] B=6 tokens=126 in 289.2ms
+[prime-batch] B=5 tokens=107 in 222.3ms

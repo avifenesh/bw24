@@ -1916,6 +1916,90 @@ extern "C" __global__ void sigmoid_dot_rows_f32(
     }
 }
 
+// FAST-ROUTER batch twin (lane/fast-router, 2026-08-02): the w8 form above is decode's
+// m-invariant router, but at prefill m it is a GEMV program at GEMM shape — every
+// (expert, token) block re-streams both full rows with zero operand reuse (the concat-prime
+// exactness fix routed prefill through it and q35 board-2048 prefill paid -10%). This twin
+// keeps EVERY per-row FP chain BIT-IDENTICAL to router_gemv_f32_w8 — same tid-strided k
+// order (i = tid + j*256, one serial FFMA chain per output), same shfl_down tree, same
+// serial 8-partial fold in warp order — and changes only WHERE operands come from: an
+// 8x8 (expert x token) register tile per block turns 16 row-streams into 64 outputs
+// (4 FFMAs per load instead of 0.5). m-invariance by construction: a row's chain never
+// sees m. Edge tiles clamp row pointers (redundant compute) and guard stores.
+template <int TT>
+__device__ __forceinline__ void router_gemv_w8_batch_impl(
+        const float* __restrict__ w,   // [n_experts, n_embd] row-major
+        const float* __restrict__ x,   // [t, n_embd]
+        float* __restrict__ y,         // [t, n_experts]
+        int n_embd, int n_experts, int t) {
+    const int e0 = blockIdx.x * 8;
+    const int t0 = blockIdx.y * TT;
+    if (e0 >= n_experts || t0 >= t) return;
+    const int tid = threadIdx.x + threadIdx.y * 32;
+    const float* wr[8]; const float* xr[TT];
+#pragma unroll
+    for (int a = 0; a < 8; a++) wr[a] = w + (size_t) min(e0 + a, n_experts - 1) * n_embd;
+#pragma unroll
+    for (int b = 0; b < TT; b++) xr[b] = x + (size_t) min(t0 + b, t - 1) * n_embd;
+    float acc[8][TT];
+#pragma unroll
+    for (int a = 0; a < 8; a++)
+#pragma unroll
+        for (int b = 0; b < TT; b++) acc[a][b] = 0.0f;
+    for (int i = tid; i < n_embd; i += 256) {
+        float wv[8], xv[TT];
+#pragma unroll
+        for (int a = 0; a < 8; a++) wv[a] = wr[a][i];
+#pragma unroll
+        for (int b = 0; b < TT; b++) xv[b] = xr[b][i];
+#pragma unroll
+        for (int a = 0; a < 8; a++)
+#pragma unroll
+            for (int b = 0; b < TT; b++) acc[a][b] += wv[a] * xv[b];
+    }
+    __shared__ float ps[8][8][TT];      // [warp][a][b]
+#pragma unroll
+    for (int a = 0; a < 8; a++)
+#pragma unroll
+        for (int b = 0; b < TT; b++) {
+            float s = acc[a][b];
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xFFFFFFFF, s, off);
+            if (threadIdx.x == 0) ps[threadIdx.y][a][b] = s;
+        }
+    __syncthreads();
+    // one output per thread: tid 0..8*TT-1 owns (a,b); the 8-partial fold keeps warp order
+    // 0..7, identical to the w8 form's ps[0]+..+ps[7] serial fold.
+    if (tid < 8 * TT) {
+        const int a = tid / TT, b = tid % TT;
+        const int e = e0 + a, tok = t0 + b;
+        if (e < n_experts && tok < t) {
+            float s = 0.0f;
+#pragma unroll
+            for (int wi = 0; wi < 8; ++wi) s += ps[wi][a][b];
+            y[(size_t) tok * n_experts + e] = s;
+        }
+    }
+}
+
+// Tile arbitration (2026-08-02, 5090): TT=16 (half the per-output w-row traffic) measured
+// SLOWER than TT=8 at every t (652 vs 448us at t=2048 — the 128-accumulator register
+// pressure costs the occupancy the traffic gain needs); killed, crossover-router-tiles.jsonl
+// is the record. Remaining gap to the m-DEPENDENT cuBLASLt GEMM (68us at t=2048) is the
+// price of the fixed per-row 256-way chain: cuBLAS's k-split is exactly the reduction shape
+// the exactness contract bans, and larger register tiles are occupancy-bound. A shared
+// new-chain numeric config for decode+prefill would need full battery re-arbitration.
+extern "C" __global__ void router_gemv_f32_w8_batch(
+        const float* __restrict__ w, const float* __restrict__ x, float* __restrict__ y,
+        int n_embd, int n_experts, int t) {
+    router_gemv_w8_batch_impl<8>(w, x, y, n_embd, n_experts, t);
+}
+
+// (A same-shape 8-token batch twin of sigmoid_dot_rows_f32 was built and proven
+// bit-identical on this lane, but measured SLOWER at every prefill t on the 5090 —
+// launch-latency-bound out_f=1 op, ~7us/layer at m=2048. Killed per flags doctrine;
+// research/fast-router-20260802/crossover-router.jsonl is the record.)
+
 // f32 row permute: dst[idx[i]] = src[i] (the grouped-GEMM lane's CSR -> pair-id reorder).
 extern "C" __global__ void rows_permute_f32(const float* __restrict__ src,
                                             const int* __restrict__ idx,

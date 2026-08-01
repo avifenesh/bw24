@@ -101,6 +101,20 @@ pub fn moe_fuse_actq_on() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_MOE_FUSE_ACTQ").as_deref() != Ok("0"))
 }
 
+/// PREFILL router m-invariance (lane/concat-prime-exact, 2026-08-02). The batched cuBLASLt
+/// router GEMM changes a row's logits when OTHER rows join the call (probed: first change at
+/// m=65 on the Ornith-35B router, 3.9e-3 — while the MMQ/f16 trunk GEMMs are bit-identical
+/// across m). Feeding a top-k discontinuity, that made a served request's expert selection a
+/// function of its CO-ARRIVALS under cross-request prime batching. The in-house router GEMV
+/// is m-invariant, so prefill uses it too and routing depends on a session's own tokens only.
+/// DEFAULT ON: it is the serving isolation contract, and it is the same kernel decode and spec
+/// verify already use (dispatch parity, one router kernel for every t).
+/// MEMRA_ROUTER_PREFILL_EXACT=0 reverts to the batched GEMM.
+pub fn router_prefill_exact_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_ROUTER_PREFILL_EXACT").as_deref() != Ok("0"))
+}
+
 pub fn router_kernel_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -108,6 +122,26 @@ pub fn router_kernel_on() -> bool {
         if !on { eprintln!("[memra] router kernel OFF (rollback: per-column cuBLAS gemv)"); }
         on
     })
+}
+
+/// FAST-ROUTER batch twin (lane/fast-router, 2026-08-02). The concat-prime exactness fix
+/// (router_prefill_exact_on) routes prefill through router_gemv — m-invariant, but a
+/// per-(expert,token) GEMV program with zero operand reuse, so q35 board-2048 prefill paid
+/// -10% on the 5090. router_gemv_f32_w8_batch register-tiles (8x8 expert-x-token) the same
+/// per-row FP chains (BIT-IDENTICAL per row — kernel-check sweeps m=1..2048 on real router
+/// weights), so the t crossover below is pure perf, not a numeric config. Swept on-box
+/// (research/fast-router-20260802/crossover-router*.jsonl): plain wins t<=4, batch +7-9%
+/// at t=8, 1.9x at t=16 rising to 3.45x at t=2048 — MIN_T=8. Decode t=1 and spec verify
+/// t<8 keep the plain w8 form. MEMRA_ROUTER_BATCH=0 forces plain at every t (rollback
+/// seam, perf-only: bits are equal by the kernel-check gate).
+/// Killed arms (same sweep, JSONL is the record): the 8x16 tile lost to 8x8 at every t
+/// (128-accumulator register pressure beats the halved w-traffic), and the same-shape
+/// sigmoid_dot_rows twin (out_f=1) measured 0.62-0.89x at every prefill t
+/// (launch-latency-bound, ~7us/layer at m=2048) — both bit-identity-PASSED before dying.
+pub const ROUTER_BATCH_MIN_T: usize = 8;
+pub fn router_batch_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_ROUTER_BATCH").as_deref() != Ok("0"))
 }
 mod cpu_experts;
 pub mod moe_cache;
@@ -1307,7 +1341,6 @@ impl Engine {
     pub fn router_gemv(&self, w: &CudaSlice<f32>, x: &CudaSlice<f32>, n_embd: usize,
                        n_experts: usize, t: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let mut y = self.alloc_uninit::<f32>(t * n_experts)?;
         // float4 v2 probed 2026-07-14: +0.25% but flips near-tie routing (new FP order,
         // stream differs) — too small to justify a numeric config change; deleted.
         // w8 twin (2026-07-31): on the 132-SM H100 the lone-warp form is 14.8% of the q35
@@ -1318,10 +1351,37 @@ impl Engine {
             Ok(_) => true,
             Err(_) => ROUTER_W8_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
         };
-        let f = if w8 { self.func("router_gemv_f32_w8") } else { self.func("router_gemv_f32") };
+        // FAST-ROUTER batch twin (lane/fast-router, 2026-08-02): at prefill m the per-(e,tok)
+        // w8 form re-streams both operand rows per output (GEMV program at GEMM shape — the
+        // concat-prime exactness fix paid -10% q35 board-2048 prefill through it). The batch
+        // twin (8x8 expert-x-token register tile) is BIT-IDENTICAL per row (same k order,
+        // same tree, same fold — kernel-check sweeps m=1..2048 on real router weights), so
+        // the crossover is pure perf, not a numeric config. MIN_T from the on-box sweep
+        // (research/fast-router-20260802/crossover-router*.jsonl); decode t=1 and small-t
+        // spec verify keep the plain w8 form. MEMRA_ROUTER_BATCH=0: rollback seam
+        // (perf-only, bits equal).
+        let batch = w8 && t >= ROUTER_BATCH_MIN_T && router_batch_on();
+        self.router_gemv_form(w, x, n_embd, n_experts, t, w8, batch)
+    }
+
+    /// Form-explicit router GEMV launch (kernel-check bit-identity gate + crossover bench
+    /// force both forms; `batch` requires `w8`).
+    pub fn router_gemv_form(&self, w: &CudaSlice<f32>, x: &CudaSlice<f32>, n_embd: usize,
+                            n_experts: usize, t: usize, w8: bool, batch: bool)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        debug_assert!(!batch || w8, "batch twin exists for the w8 form only");
+        let mut y = self.alloc_uninit::<f32>(t * n_experts)?;
+        let f = if batch { self.func("router_gemv_f32_w8_batch") }
+                else if w8 { self.func("router_gemv_f32_w8") }
+                else { self.func("router_gemv_f32") };
         let (ne, nx, ti) = (n_embd as i32, n_experts as i32, t as i32);
-        let cfg = LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1),
-                                 block_dim: (32, if w8 { 8 } else { 1 }, 1), shared_mem_bytes: 0 };
+        let cfg = if batch {
+            LaunchConfig { grid_dim: (n_experts.div_ceil(8) as u32, t.div_ceil(8) as u32, 1),
+                           block_dim: (32, 8, 1), shared_mem_bytes: 0 }
+        } else {
+            LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1),
+                           block_dim: (32, if w8 { 8 } else { 1 }, 1), shared_mem_bytes: 0 }
+        };
         let __s_b = self.gpu.stream();
         let mut b = __s_b.launch_builder(&f);
         b.arg(w).arg(x).arg(&mut y).arg(&ne).arg(&nx).arg(&ti);
@@ -1359,6 +1419,11 @@ impl Engine {
             self.sigmoid(&gs, &mut g, t)?;
             return Ok(g);
         }
+        // FAST-ROUTER lane note (2026-08-02): a register-tiled 8-token batch twin of this
+        // kernel was built, proven bit-identical, and measured SLOWER at every prefill t on
+        // the 5090 (0.62-0.89x — launch-latency-bound op, ~7us/layer at m=2048;
+        // research/fast-router-20260802/crossover-router.jsonl). Dispatch arm killed per
+        // flags doctrine; this per-token form serves every t.
         let mut g = self.alloc_uninit::<f32>(t)?;
         let f = self.func("sigmoid_dot_rows_f32");
         let (ne, ti) = (n_embd as i32, t as i32);

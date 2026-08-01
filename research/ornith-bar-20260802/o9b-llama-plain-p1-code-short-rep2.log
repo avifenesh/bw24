@@ -1,0 +1,89 @@
+0.00.028.138 I llama_completion: llama backend init
+0.00.028.148 I llama_completion: load the model and apply lora adapter, if any
+0.01.406.505 I llama_completion: llama threadpool init, n_threads = 4
+0.01.406.524 I llama_completion: chat template is available, enabling conversation mode (disable it with -no-cnv)
+0.01.406.524 W *** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?
+0.01.406.612 I llama_completion: chat template example:
+<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+
+0.01.406.613 I 
+0.01.406.652 I system_info: n_threads = 4 (n_threads_batch = 4) / 24 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | FA_ALL_QUANTS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.01.406.653 I 
+0.01.406.864 I llama_completion: interactive mode on.
+0.01.406.867 I sampler seed: 3147046103
+0.01.406.871 I sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = -1
+	top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.01.406.877 I sampler chain: logits -> logit-bias -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+0.01.406.878 I generate: n_ctx = 8192, n_batch = 2048, n_predict = 256, n_keep = 0
+0.01.406.878 I 
+0.01.406.878 I == Running in interactive mode. ==
+0.01.406.878 I  - Press Ctrl+C to interject at any time.
+0.01.406.878 I  - Press Return to return control to the AI.
+ - To return control without starting a new line, end your input with '/'.
+ - If you want to submit another line, end your input with '\'.
+0.01.406.878 I  - Not using system message. To change it, set a different value via -sys PROMPT
+0.01.406.878 I 
+user
+Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.
+assistant
+<think>
+The user wants a Python function that implements a doubly-linked list with:
+1. Insert operation
+2. Delete operation
+3. Reverse operation
+
+I need to include:
+- Full type hints
+- Docstrings
+- Proper implementation of a doubly-linked list
+
+Let me design this carefully:
+
+1. I'll create a Node class for the doubly-linked list
+2. I'll create a DoublyLinkedList class with the required operations
+3. I'll include proper type hints throughout
+4. I'll add comprehensive docstrings
+
+Let me think about the operations:
+- Insert: insert at head, tail, or at a specific position
+- Delete: delete by value, by position, or delete head/tail
+- Reverse: reverse the entire list
+
+I'll make it comprehensive with multiple insert/delete variants.
+</think>
+
+```python
+from typing import Any, Optional
+
+
+class Node:
+    """A node in a doubly-linked list."""
+
+    __slots__ = ('value', 'prev', 'next')
+
+    def __init__(self, value: Any) -> None:
+        self.value: Any = value
+        self.prev: Optional['Node'] = None
+        self.next: Optional['Node'] = None
+> EOF by user
+
+
+0.04.559.616 I common_perf_print:    sampling time =      86.67 ms
+0.04.559.616 I common_perf_print:    samplers time =      33.26 ms /   291 tokens
+0.04.559.620 I common_perf_print:        load time =      36.75 ms
+0.04.559.621 I common_perf_print: prompt eval time =      36.34 ms /    35 tokens (    1.04 ms per token,   963.02 tokens per second)
+0.04.559.621 I common_perf_print:        eval time =    3028.01 ms /   255 runs   (   11.87 ms per token,    84.21 tokens per second)
+0.04.559.622 I common_perf_print:       total time =    3153.12 ms /   290 tokens
+0.04.559.622 I common_perf_print: unaccounted time =       2.09 ms /   0.1 %      (total - sampling - prompt eval - eval) / (total)
+0.04.559.622 I common_perf_print:    graphs reused =        254

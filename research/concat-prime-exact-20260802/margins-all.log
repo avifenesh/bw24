@@ -1,0 +1,15 @@
+===== o35b =====
+prompt 13: prefill_margin=0.531199 min=0.069780 p10=0.809082 p50=10.681786 (T=22 steps=96)
+prompt 14: prefill_margin=2.514780 min=0.738913 p10=2.190023 p50=11.419880 (T=21 steps=96)
+prompt 15: prefill_margin=0.206486 min=0.062302 p10=2.725868 p50=10.993544 (T=21 steps=96)
+ALL (1552 margins): min=0.012859 p1=0.126907 p5=0.766741 p10=1.853329 p50=10.415604
+===== q35ctrl =====
+prompt 13: prefill_margin=0.122326 min=0.089354 p10=1.000082 p50=9.618391 (T=22 steps=96)
+prompt 14: prefill_margin=0.236359 min=0.113806 p10=2.217411 p50=10.045376 (T=21 steps=96)
+prompt 15: prefill_margin=0.595617 min=0.009399 p10=0.527399 p50=7.260548 (T=21 steps=96)
+ALL (1552 margins): min=0.009399 p1=0.181271 p5=0.635822 p10=1.415859 p50=9.781521
+===== kat =====
+prompt 13: prefill_margin=1.076864 min=0.073685 p10=1.122097 p50=8.184622 (T=22 steps=96)
+prompt 14: prefill_margin=1.179605 min=0.093519 p10=0.963045 p50=7.572630 (T=21 steps=96)
+prompt 15: prefill_margin=0.576824 min=0.003744 p10=1.028051 p50=5.483601 (T=21 steps=96)
+ALL (1552 margins): min=0.003744 p1=0.094490 p5=0.502628 p10=0.963045 p50=6.854690

@@ -20,6 +20,16 @@
 //!                         (default); a --raw code/wiki corpus left the 31B chat cell with
 //!                         10.9% unproposable tokens (-15 acceptance pts, 2026-07-19)
 //!            --validate   reload with the trim applied and A/B spec acceptance (K=3)
+//!            --corpus-out F  append each prompt's generated ids to F (one line per prompt)
+//!                         and RESUME past already-generated prompts on rerun — the
+//!                         gemma-gate MEMRA_GEN_CORPUS pattern. Lets a shared-GPU rig run
+//!                         the corpus in bounded chunks (with --limit) instead of holding
+//!                         the GPU lock for the whole generation. Greedy (temp 0) makes
+//!                         the segmented corpus IDENTICAL to a single-run corpus; the
+//!                         resume assumes the same prompt set/order every invocation.
+//!            --limit N    generate at most N prompts this invocation, then exit WITHOUT
+//!                         writing ranks (requires --corpus-out; rerun to continue; the
+//!                         final invocation — all prompts done — writes the ranks)
 //!
 //! Output: <out.gguf> (d2t i32 [topN]) + <out.gguf>.txt (one id/line, rank order).
 //! Serve with:  MEMRA_FRSPEC_TRIM=<out.gguf> ...        (qwen MTP heads)
@@ -125,7 +135,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("usage: frspec-owngen <model.gguf|hf_dir|hf:spec> <out.gguf> [topN] \
-                   [--preset code|chat|agentic|mixed] [--ngen N] [--temp T] [--raw] [--validate] [prompts...]");
+                   [--preset code|chat|agentic|mixed] [--ngen N] [--temp T] [--raw] [--validate] \
+                   [--corpus-out ids.txt] [--limit N] [prompts...]");
         std::process::exit(1);
     }
     let model_arg = memra_gguf::hf::resolve_arg(&args[1])?;
@@ -135,6 +146,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut raw, mut validate) = (false, false);
     let mut preset = "mixed".to_string();
     let mut sources: Vec<String> = Vec::new();
+    let mut corpus_out: Option<String> = None;
+    let mut limit = 0usize;
     let mut i = 3;
     if i < args.len() && let Ok(n) = args[3].parse::<usize>() {
         top_n = n;
@@ -147,8 +160,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--preset" => { preset = args[i + 1].clone(); i += 2; }
             "--raw" => { raw = true; i += 1; }
             "--validate" => { validate = true; i += 1; }
+            "--corpus-out" => { corpus_out = Some(args[i + 1].clone()); i += 2; }
+            "--limit" => { limit = args[i + 1].parse()?; i += 2; }
             s => { sources.push(s.to_string()); i += 1; }
         }
+    }
+    if limit > 0 && corpus_out.is_none() {
+        return Err("--limit requires --corpus-out (a bounded chunk must be resumable)".into());
     }
 
     // Gather prompts: explicit sources win; otherwise the built-in pack (preset subset).
@@ -203,8 +221,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut counts = vec![0u64; vocab];
     let mut total = 0u64;
+    // --corpus-out resume: every existing line is one already-generated prompt; recount its
+    // ids so the final ranks see the WHOLE corpus regardless of how many chunks produced it.
+    let mut done = 0usize;
+    if let Some(cp) = &corpus_out
+        && let Ok(text) = std::fs::read_to_string(cp)
+    {
+        for line in text.lines() {
+            for id in line.split_whitespace().filter_map(|s| s.parse::<u32>().ok()) {
+                if (id as usize) < vocab {
+                    counts[id as usize] += 1;
+                    total += 1;
+                }
+            }
+            done += 1;
+        }
+        eprintln!("[frspec-owngen] corpus resume: {done}/{} prompts already in {cp} \
+                   ({total} tokens)", prompts.len());
+    }
+    let end = if limit > 0 { (done + limit).min(prompts.len()) } else { prompts.len() };
     let params = GenParams { max_new: ngen, max_ctx: None, eos: vec![tok.eos_id()] };
-    for (pi, prompt) in prompts.iter().enumerate() {
+    for (pi, prompt) in prompts.iter().enumerate().take(end).skip(done) {
         let text = if raw { prompt.clone() } else { tok.apply_chat_template(&[("user", prompt)], true) };
         let ids = tok.encode(&text, true);
         let mut sampler = Sampler::new(SamplerConfig {
@@ -217,8 +254,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 total += 1;
             }
         }
+        if let Some(cp) = &corpus_out {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(cp)?;
+            writeln!(f, "{}", out.tokens.iter().map(|t| t.to_string())
+                .collect::<Vec<_>>().join(" "))?;
+        }
         eprintln!("[frspec-owngen] prompt {}/{}: +{} tokens (total {})",
                   pi + 1, prompts.len(), out.tokens.len(), total);
+    }
+    if end < prompts.len() {
+        eprintln!("[frspec-owngen] PARTIAL: {end}/{} prompts in corpus — rerun the same \
+                   command to resume; ranks NOT written", prompts.len());
+        return Ok(());
     }
 
     let baseline = if validate && model.mtp.is_some() {

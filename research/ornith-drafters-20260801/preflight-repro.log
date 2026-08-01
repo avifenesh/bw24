@@ -1,0 +1,25 @@
+Pre-flight reproducibility receipt — 2026-08-01, lane/ornith-drafters @ 7ae7fca4
+
+Purpose: prove the reconstructed pipeline (RECIPE.md §2-4) with the CURRENT environment
+(system python3 + numpy 2.3.5 + /data/projects/llama.cpp/gguf-py + llama-quantize) is
+byte-identical to the regime that produced the production drafters (the vllm-venv python
+that make-trimmed-draft.sh defaulted to no longer exists).
+
+Commands (CPU-only, workspace /data/ai-ml/hf-models/.tmp-drafter-work):
+  PYTHONPATH=/data/projects/llama.cpp/gguf-py python3 tools/extract_mtp_draft.py \
+    /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf preflight-9b-full.gguf
+    -> extracted 18 tensors (blk.32..32 + head/embd), 1587MB
+  PYTHONPATH=/data/projects/llama.cpp/gguf-py python3 tools/trim_draft_head.py \
+    preflight-9b-full.gguf /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/owngen-ranks-32768.gguf.txt \
+    preflight-9b-trim.gguf 32768
+    -> output.weight: 248320 -> 32768 rows (Q6_K -> Q6_K, 3360B/row, 795MB -> 105MB)
+  llama-quantize --allow-requantize --output-tensor-type nvfp4 --token-embedding-type q5_k \
+    preflight-9b-trim.gguf preflight-9b-final.gguf Q4_K_M
+
+Result: sha256(preflight rebuild) == sha256(production draft, built 2026-07-18):
+  b2cec2af426aa3d5e8bdd2bc9cee2b26278358e4efc59598d7f5ab3ec36bc045  preflight-9b-final.gguf
+  b2cec2af426aa3d5e8bdd2bc9cee2b26278358e4efc59598d7f5ab3ec36bc045  /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf
+
+BIT-IDENTICAL. Also confirms the q9 production draft's provenance: donor
+Qwen3.5-9B-NVFP4-MTP-GGUF.gguf + owngen-ranks-32768.gguf.txt + topN 32768 through
+exactly tools/make-trimmed-draft.sh's three steps. Intermediates deleted after hashing.

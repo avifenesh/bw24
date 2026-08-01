@@ -1,0 +1,16 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.93GB (expert budget 20.27GB) -> RESIDENT
+[worker]   loaded "m": 40 layers, eos=248046
+[worker] m: decode chunk cap 8
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8099
+[prime-batch] B=2 tokens=452 in 396.6ms
+[prime-batch] B=6 tokens=1356 in 1226.5ms
+[prime-batch] B=2 tokens=452 in 405.7ms
+[prime-batch] B=6 tokens=1356 in 1213.4ms
+[prime-batch] B=2 tokens=452 in 407.2ms
+[prime-batch] B=6 tokens=1356 in 1216.9ms
+[prime-batch] B=2 tokens=452 in 408.2ms
+[prime-batch] B=6 tokens=1356 in 1223.4ms

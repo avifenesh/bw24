@@ -1,0 +1,13 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+mscan: T_a=19 co_max=75 L=52..60 solo_argmax=90700 solo_margin=0.103943
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L
+ 52 |      71 |  90700 | EXACT | 0.000000000e0 | -
+ 53 |      72 |  90700 | EXACT | 0.000000000e0 | same
+ 54 |      73 |  90700 | EXACT | 0.000000000e0 | same
+ 55 |      74 |  90700 | EXACT | 0.000000000e0 | same
+ 56 |      75 |  90700 | differs | 1.166911125e0 | CHANGED
+ 57 |      76 |  90700 | differs | 1.166911125e0 | same
+ 58 |      77 |  90700 | differs | 1.166911125e0 | same
+ 59 |      78 |  90700 | differs | 1.166911125e0 | same
+ 60 |      79 |  90700 | differs | 1.166911125e0 | same

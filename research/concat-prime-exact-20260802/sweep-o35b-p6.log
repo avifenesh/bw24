@@ -1,0 +1,11 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+sweep: T_a=19 co_n=5 co_T=20 bmax=6 chat=true
+solo: argmax=90700 margin=0.372957
+ B | total_m | argmax | flip | margin  | maxdiff_vs_solo | perm | tail
+ 2 |      39 |  90700 | -    | 0.372957 | 0.000000000e0 | EXACT | EXACT
+ 3 |      59 |  90700 | -    | 0.372957 | 0.000000000e0 | EXACT | EXACT
+ 4 |      79 |   8160 | YES  | 0.080517 | 1.148240328e0 | EXACT | EXACT
+ 5 |      99 |   8160 | YES  | 0.080517 | 1.148240328e0 | EXACT | EXACT
+ 6 |     119 |   8160 | YES  | 0.080517 | 1.148240328e0 | EXACT | EXACT
+sweep verdict: content/offset INVARIANT at every B (no indexing defect); solo-vs-concat differences are shape/m-driven

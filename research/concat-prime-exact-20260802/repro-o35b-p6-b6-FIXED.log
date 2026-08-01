@@ -1,0 +1,37 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+repro: T_a=19 b=6 slot=0 co_T=[23, 20, 20, 22, 22] steps=96 chat=true
+prefill: solo argmax=90700 margin=0.414314  batch argmax=90700 margin=0.414314  logit maxdiff=0.000000e0  MATCH
+  step 1: agree tok=8340 solo-margin=8.095119 maxdiff=0.000000e0
+  step 2: agree tok=25 solo-margin=12.435614 maxdiff=0.000000e0
+  step 3: agree tok=271 solo-margin=3.286095 maxdiff=0.000000e0
+  step 4: agree tok=16 solo-margin=13.395233 maxdiff=0.000000e0
+  step 5: agree tok=13 solo-margin=14.079651 maxdiff=0.000000e0
+  step 6: agree tok=220 solo-margin=12.906422 maxdiff=0.000000e0
+  step 7: agree tok=2972 solo-margin=12.522564 maxdiff=0.000000e0
+  step 8: agree tok=1847 solo-margin=7.268002 maxdiff=0.000000e0
+  step 16: agree tok=256 solo-margin=9.607796 maxdiff=0.000000e0
+  step 32: agree tok=17 solo-margin=11.976755 maxdiff=0.000000e0
+  step 48: agree tok=11036 solo-margin=0.958872 maxdiff=0.000000e0
+  step 64: agree tok=57927 solo-margin=6.123482 maxdiff=0.000000e0
+  step 80: agree tok=36405 solo-margin=10.433208 maxdiff=0.000000e0
+  step 96: agree tok=49485 solo-margin=0.748344 maxdiff=0.000000e0
+verdict: streams MATCH for 96 steps
+solo : Thinking Process:
+
+1.  **Deconstruct the request:**
+    *   Topic: Water cycle.
+    *   Constraint: Two sentences.
+
+2.  **Drafting - Attempt 1 (Mental outline of key processes):**
+    *   The water cycle involves evaporation, condensation, precipitation, and collection.
+    *   Sun heats water -> water turns to vapor -> rises -> cools -> forms clouds -> falls as rain/snow -> collects
+batch: Thinking Process:
+
+1.  **Deconstruct the request:**
+    *   Topic: Water cycle.
+    *   Constraint: Two sentences.
+
+2.  **Drafting - Attempt 1 (Mental outline of key processes):**
+    *   The water cycle involves evaporation, condensation, precipitation, and collection.
+    *   Sun heats water -> water turns to vapor -> rises -> cools -> forms clouds -> falls as rain/snow -> collects

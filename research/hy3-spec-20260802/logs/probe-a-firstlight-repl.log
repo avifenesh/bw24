@@ -1,0 +1,13 @@
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded memra-repack (81 layers, nextn=1)
+text prompt (45 chars, chat-templated) -> 25 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 280, 1230, 17628, 3892, 252, 15318, 316, 7571, 13, 120007, 120029, 120030]
+
+[generate]   31 tok in 8.304s = 3.73 tok/s (gen-only; this run's prime 5.085s)
+  tokens: [628, 15318, 8205, 7571, 1775, 17732, 280, 252, 10413, 1307, 91387, 17196, 289, 8197, 1307, 3086, 4111, 18411, 5001, 15873, 20218, 11, 289, 100357, 29418, 18746, 252, 30378, 11, 7519, 41877, 10997]
+
+[generate_spec K=2] 32 tok in 14.887s = 2.08 tok/s (0.56x vs generate; this run's prime 4.944s)
+  acceptance: 10/42 = 23.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+PROBEA-DONE rc=0

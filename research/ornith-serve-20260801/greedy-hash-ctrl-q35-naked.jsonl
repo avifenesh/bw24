@@ -1,0 +1,1 @@
+{"ts": "2026-08-01T17:57:19+0300", "label": "ctrl-q35-naked", "base": "http://127.0.0.1:8098", "n": 16, "max_tokens": 96, "wall_s": 7.40088943799492, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}

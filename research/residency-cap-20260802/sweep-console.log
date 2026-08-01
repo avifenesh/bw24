@@ -1,0 +1,82 @@
+=== O35B RESIDENCY SWEEP x5 2026-08-01T18:02:42Z git=9c697367 profile=performance ===
+  [slru rep1] prefill_toks = 493.6
+  [slru rep1] decode_toks = 137.68
+  [slru rep1] argmax_match = 1
+  [slru rep1] peak_vram_mib = 19986
+  [slru rep1] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep1] prefill_toks = 1081.4
+  [resident rep1] decode_toks = 205.64
+  [resident rep1] argmax_match = 1
+  [resident rep1] peak_vram_mib = 21900
+  [resident rep1] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [llama rep1] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 673526483 ],
+    "samples_ts": [ 190.044 ]
+  }
+]
+  [slru rep2] prefill_toks = 496.8
+  [slru rep2] decode_toks = 138.11
+  [slru rep2] argmax_match = 1
+  [slru rep2] peak_vram_mib = 19986
+  [slru rep2] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep2] prefill_toks = 1079.2
+  [resident rep2] decode_toks = 206.07
+  [resident rep2] argmax_match = 1
+  [resident rep2] peak_vram_mib = 21394
+  [resident rep2] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [llama rep2] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 669160506 ],
+    "samples_ts": [ 191.284 ]
+  }
+]
+  [slru rep3] prefill_toks = 495.8
+  [slru rep3] decode_toks = 138.50
+  [slru rep3] argmax_match = 1
+  [slru rep3] peak_vram_mib = 19986
+  [slru rep3] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep3] prefill_toks = 1085.8
+  [resident rep3] decode_toks = 208.19
+  [resident rep3] argmax_match = 1
+  [resident rep3] peak_vram_mib = 21394
+  [resident rep3] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [llama rep3] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 668095127 ],
+    "samples_ts": [ 191.589 ]
+  }
+]
+  [slru rep4] prefill_toks = 495.2
+  [slru rep4] decode_toks = 138.57
+  [slru rep4] argmax_match = 1
+  [slru rep4] peak_vram_mib = 19986
+  [slru rep4] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep4] prefill_toks = 1076.2
+  [resident rep4] decode_toks = 208.07
+  [resident rep4] argmax_match = 1
+  [resident rep4] peak_vram_mib = 21394
+  [resident rep4] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [llama rep4] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 668443531 ],
+    "samples_ts": [ 191.49 ]
+  }
+]
+  [slru rep5] prefill_toks = 494.8
+  [slru rep5] decode_toks = 138.19
+  [slru rep5] argmax_match = 1
+  [slru rep5] peak_vram_mib = 19986
+  [slru rep5] decision=SLRU_cache tokens_sha=61c48f62f98e5dbc
+  [resident rep5] prefill_toks = 1076.5
+  [resident rep5] decode_toks = 207.77
+  [resident rep5] argmax_match = 1
+  [resident rep5] peak_vram_mib = 21394
+  [resident rep5] decision=RESIDENT tokens_sha=61c48f62f98e5dbc
+  [llama rep5] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 672313825 ],
+    "samples_ts": [ 190.387 ]
+  }
+]
+RESIDENCY-SWEEP-DONE 2026-08-01T18:08:36Z

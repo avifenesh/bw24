@@ -20,7 +20,16 @@ under flock, `logs/prefix-fail-g1.log`):
     missing embed token_embd.weight
 
 ## G2 — MTP spec decode on sm_90a: WORKS (exact, accepting, 1.16x) — acceptance-rate
-sweep still owed [coverage gap CLOSED for correctness, OPEN for rate; SPIKE-INPUT]
+sweep still owed [coverage gap CLOSED for correctness, rate CLOSED by
+`research/hy3-spec-20260802/` (K=1..8, N=3, board-d1736); SPIKE-INPUT]
+
+CLOSURE NOTE (2026-08-01, lane/hy3-spec-sweep): the sweep landed and REFUTES the 1.16x
+below — it was a cold-denominator artifact (plain oracle 0.61 tok/s first-ever-touch vs
+3.73 warm; same config re-run warm is 0.56x). The 23.8% acceptance replicated bit-exactly
+on the merged tip build. At the 1-GPU spill floor spec is a slowdown at every K (best
+K=1 = 0.84x median, N=3); accepted count is exactly 10 at all Ks (the nextn=1 head never
+chains). Full verdict + PP-2 caveat: `research/hy3-spec-20260802/SUMMARY.md`. The 5090
+same-artifact acceptance reference remains owed.
 
 Two probes today, both `MEMRA_SPEC_K=2 run-spec <runtime-dir>`:
 

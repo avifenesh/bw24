@@ -1,0 +1,34 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[mtp-draft] loading external MTP draft: /data/ai-ml/hf-models/ornith-1.0-35b-gguf/draft-ornith35b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.40, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35moe (40 layers, nextn=0)
+prompt tokens: [55]
+
+[generate]   31 tok in 0.262s = 118.17 tok/s (gen-only; this run's prime 0.005s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 99151, 111427, 96580, 97327, 109007, 97039, 95865, 113009, 110863, 3709, 96580, 105821, 100572, 109966, 97598, 106342, 97082, 98874, 95839, 109007, 3709, 96402, 96244, 102173, 96172, 97328]
+
+[generate_spec K=1] 32 tok in 0.306s = 101.16 tok/s (0.86x vs generate; this run's prime 0.007s)
+  acceptance: 3/28 = 10.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.329s = 94.16 tok/s (0.80x vs generate; this run's prime 0.006s)
+  acceptance: 4/54 = 7.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.373s = 83.10 tok/s (0.70x vs generate; this run's prime 0.006s)
+  acceptance: 4/81 = 4.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.421s = 73.56 tok/s (0.62x vs generate; this run's prime 0.006s)
+  acceptance: 4/108 = 3.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.479s = 64.76 tok/s (0.55x vs generate; this run's prime 0.005s)
+  acceptance: 4/135 = 3.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.544s = 57.00 tok/s (0.48x vs generate; this run's prime 0.006s)
+  acceptance: 4/162 = 2.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.603s = 51.43 tok/s (0.44x vs generate; this run's prime 0.006s)
+  acceptance: 4/189 = 2.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.690s = 44.91 tok/s (0.38x vs generate; this run's prime 0.006s)
+  acceptance: 4/216 = 1.9%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

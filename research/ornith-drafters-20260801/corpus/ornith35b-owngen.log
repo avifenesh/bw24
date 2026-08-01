@@ -1,0 +1,354 @@
+=== chunk start 2026-08-01T17:46:18+03:00 limit=64 model=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[frspec-owngen] 254 prompts, ngen 512, temp 0, vocab 248320
+[moe-cache] unknown compute-stream drain failed (DriverError(CUDA_ERROR_STREAM_CAPTURE_INVALIDATED, "operation failed due to a previous error during capture")); leaking GPU slots for safety
+Error: DriverError(CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED, "operation not permitted when stream is capturing")
+=== chunk start 2026-08-01T17:51:38+03:00 limit=64 model=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[frspec-owngen] 254 prompts, ngen 512, temp 0, vocab 248320
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 1/254: +512 tokens (total 512)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 2/254: +512 tokens (total 1024)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 3/254: +512 tokens (total 1536)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 4/254: +512 tokens (total 2048)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 5/254: +512 tokens (total 2560)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 6/254: +512 tokens (total 3072)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 7/254: +512 tokens (total 3584)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 8/254: +512 tokens (total 4096)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 9/254: +512 tokens (total 4608)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 10/254: +512 tokens (total 5120)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 11/254: +512 tokens (total 5632)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 12/254: +512 tokens (total 6144)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 13/254: +512 tokens (total 6656)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 14/254: +512 tokens (total 7168)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 15/254: +512 tokens (total 7680)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 16/254: +512 tokens (total 8192)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 17/254: +512 tokens (total 8704)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 18/254: +512 tokens (total 9216)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 19/254: +512 tokens (total 9728)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 20/254: +512 tokens (total 10240)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 21/254: +512 tokens (total 10752)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 22/254: +512 tokens (total 11264)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 23/254: +512 tokens (total 11776)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 24/254: +512 tokens (total 12288)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 25/254: +512 tokens (total 12800)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 26/254: +512 tokens (total 13312)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 27/254: +512 tokens (total 13824)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 28/254: +512 tokens (total 14336)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 29/254: +512 tokens (total 14848)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 30/254: +512 tokens (total 15360)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 31/254: +512 tokens (total 15872)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 32/254: +512 tokens (total 16384)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 33/254: +512 tokens (total 16896)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 34/254: +512 tokens (total 17408)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 35/254: +512 tokens (total 17920)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 36/254: +512 tokens (total 18432)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 37/254: +512 tokens (total 18944)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 38/254: +512 tokens (total 19456)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 39/254: +512 tokens (total 19968)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 40/254: +512 tokens (total 20480)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 41/254: +512 tokens (total 20992)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 42/254: +512 tokens (total 21504)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 43/254: +512 tokens (total 22016)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 44/254: +512 tokens (total 22528)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 45/254: +512 tokens (total 23040)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 46/254: +512 tokens (total 23552)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 47/254: +512 tokens (total 24064)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 48/254: +512 tokens (total 24576)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 49/254: +512 tokens (total 25088)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 50/254: +512 tokens (total 25600)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 51/254: +512 tokens (total 26112)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 52/254: +512 tokens (total 26624)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 53/254: +512 tokens (total 27136)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 54/254: +512 tokens (total 27648)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 55/254: +512 tokens (total 28160)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 56/254: +512 tokens (total 28672)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 57/254: +512 tokens (total 29184)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 58/254: +512 tokens (total 29696)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 59/254: +512 tokens (total 30208)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 60/254: +512 tokens (total 30720)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 61/254: +512 tokens (total 31232)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 62/254: +175 tokens (total 31407)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 63/254: +512 tokens (total 31919)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 64/254: +512 tokens (total 32431)
+[frspec-owngen] PARTIAL: 64/254 prompts in corpus — rerun the same command to resume; ranks NOT written
+=== chunk end 2026-08-01T17:56:47+03:00 rc=0
+=== chunk start 2026-08-01T17:58:17+03:00 limit=64 model=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[frspec-owngen] 254 prompts, ngen 512, temp 0, vocab 248320
+[frspec-owngen] corpus resume: 64/254 prompts already in /home/avifenesh/projects/wt-ornith-drafters/research/ornith-drafters-20260801/corpus/ornith35b-owngen-ids.txt (32431 tokens)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 65/254: +512 tokens (total 32943)
+[frspec-owngen] prompt 66/254: +512 tokens (total 33455)
+[frspec-owngen] prompt 67/254: +512 tokens (total 33967)
+[frspec-owngen] prompt 68/254: +512 tokens (total 34479)
+[frspec-owngen] prompt 69/254: +512 tokens (total 34991)
+[frspec-owngen] prompt 70/254: +512 tokens (total 35503)
+[frspec-owngen] prompt 71/254: +512 tokens (total 36015)
+[frspec-owngen] prompt 72/254: +512 tokens (total 36527)
+[frspec-owngen] prompt 73/254: +512 tokens (total 37039)
+[frspec-owngen] prompt 74/254: +512 tokens (total 37551)
+[frspec-owngen] prompt 75/254: +512 tokens (total 38063)
+[frspec-owngen] prompt 76/254: +512 tokens (total 38575)
+[frspec-owngen] prompt 77/254: +512 tokens (total 39087)
+[frspec-owngen] prompt 78/254: +512 tokens (total 39599)
+[frspec-owngen] prompt 79/254: +512 tokens (total 40111)
+[frspec-owngen] prompt 80/254: +512 tokens (total 40623)
+[frspec-owngen] prompt 81/254: +512 tokens (total 41135)
+[frspec-owngen] prompt 82/254: +512 tokens (total 41647)
+[frspec-owngen] prompt 83/254: +512 tokens (total 42159)
+[frspec-owngen] prompt 84/254: +512 tokens (total 42671)
+[frspec-owngen] prompt 85/254: +512 tokens (total 43183)
+[frspec-owngen] prompt 86/254: +512 tokens (total 43695)
+[frspec-owngen] prompt 87/254: +512 tokens (total 44207)
+[frspec-owngen] prompt 88/254: +512 tokens (total 44719)
+[frspec-owngen] prompt 89/254: +512 tokens (total 45231)
+[frspec-owngen] prompt 90/254: +512 tokens (total 45743)
+[frspec-owngen] prompt 91/254: +512 tokens (total 46255)
+[frspec-owngen] prompt 92/254: +512 tokens (total 46767)
+[frspec-owngen] prompt 93/254: +512 tokens (total 47279)
+[frspec-owngen] prompt 94/254: +512 tokens (total 47791)
+[frspec-owngen] prompt 95/254: +512 tokens (total 48303)
+[frspec-owngen] prompt 96/254: +512 tokens (total 48815)
+[frspec-owngen] prompt 97/254: +512 tokens (total 49327)
+[frspec-owngen] prompt 98/254: +321 tokens (total 49648)
+[frspec-owngen] prompt 99/254: +132 tokens (total 49780)
+[frspec-owngen] prompt 100/254: +512 tokens (total 50292)
+[frspec-owngen] prompt 101/254: +512 tokens (total 50804)
+[frspec-owngen] prompt 102/254: +512 tokens (total 51316)
+[frspec-owngen] prompt 103/254: +340 tokens (total 51656)
+[frspec-owngen] prompt 104/254: +183 tokens (total 51839)
+[frspec-owngen] prompt 105/254: +512 tokens (total 52351)
+[frspec-owngen] prompt 106/254: +512 tokens (total 52863)
+[frspec-owngen] prompt 107/254: +512 tokens (total 53375)
+[frspec-owngen] prompt 108/254: +512 tokens (total 53887)
+[frspec-owngen] prompt 109/254: +512 tokens (total 54399)
+[frspec-owngen] prompt 110/254: +512 tokens (total 54911)
+[frspec-owngen] prompt 111/254: +512 tokens (total 55423)
+[frspec-owngen] prompt 112/254: +512 tokens (total 55935)
+[frspec-owngen] prompt 113/254: +512 tokens (total 56447)
+[frspec-owngen] prompt 114/254: +512 tokens (total 56959)
+[frspec-owngen] prompt 115/254: +512 tokens (total 57471)
+[frspec-owngen] prompt 116/254: +490 tokens (total 57961)
+[frspec-owngen] prompt 117/254: +512 tokens (total 58473)
+[frspec-owngen] prompt 118/254: +512 tokens (total 58985)
+[frspec-owngen] prompt 119/254: +512 tokens (total 59497)
+[frspec-owngen] prompt 120/254: +512 tokens (total 60009)
+[frspec-owngen] prompt 121/254: +512 tokens (total 60521)
+[frspec-owngen] prompt 122/254: +512 tokens (total 61033)
+[frspec-owngen] prompt 123/254: +512 tokens (total 61545)
+[frspec-owngen] prompt 124/254: +512 tokens (total 62057)
+[frspec-owngen] prompt 125/254: +512 tokens (total 62569)
+[frspec-owngen] prompt 126/254: +512 tokens (total 63081)
+[frspec-owngen] prompt 127/254: +512 tokens (total 63593)
+[frspec-owngen] prompt 128/254: +512 tokens (total 64105)
+[frspec-owngen] PARTIAL: 128/254 prompts in corpus — rerun the same command to resume; ranks NOT written
+=== chunk end 2026-08-01T18:04:29+03:00 rc=0
+=== chunk start 2026-08-01T18:04:34+03:00 limit=64 model=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[frspec-owngen] 254 prompts, ngen 512, temp 0, vocab 248320
+[frspec-owngen] corpus resume: 128/254 prompts already in /home/avifenesh/projects/wt-ornith-drafters/research/ornith-drafters-20260801/corpus/ornith35b-owngen-ids.txt (64105 tokens)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 129/254: +512 tokens (total 64617)
+[frspec-owngen] prompt 130/254: +512 tokens (total 65129)
+[frspec-owngen] prompt 131/254: +512 tokens (total 65641)
+[frspec-owngen] prompt 132/254: +512 tokens (total 66153)
+[frspec-owngen] prompt 133/254: +512 tokens (total 66665)
+[frspec-owngen] prompt 134/254: +512 tokens (total 67177)
+[frspec-owngen] prompt 135/254: +512 tokens (total 67689)
+[frspec-owngen] prompt 136/254: +512 tokens (total 68201)
+[frspec-owngen] prompt 137/254: +512 tokens (total 68713)
+[frspec-owngen] prompt 138/254: +512 tokens (total 69225)
+[frspec-owngen] prompt 139/254: +512 tokens (total 69737)
+[frspec-owngen] prompt 140/254: +512 tokens (total 70249)
+[frspec-owngen] prompt 141/254: +512 tokens (total 70761)
+[frspec-owngen] prompt 142/254: +512 tokens (total 71273)
+[frspec-owngen] prompt 143/254: +512 tokens (total 71785)
+[frspec-owngen] prompt 144/254: +512 tokens (total 72297)
+[frspec-owngen] prompt 145/254: +512 tokens (total 72809)
+[frspec-owngen] prompt 146/254: +512 tokens (total 73321)
+[frspec-owngen] prompt 147/254: +512 tokens (total 73833)
+[frspec-owngen] prompt 148/254: +512 tokens (total 74345)
+[frspec-owngen] prompt 149/254: +512 tokens (total 74857)
+[frspec-owngen] prompt 150/254: +512 tokens (total 75369)
+[frspec-owngen] prompt 151/254: +512 tokens (total 75881)
+[frspec-owngen] prompt 152/254: +512 tokens (total 76393)
+[frspec-owngen] prompt 153/254: +512 tokens (total 76905)
+[frspec-owngen] prompt 154/254: +512 tokens (total 77417)
+[frspec-owngen] prompt 155/254: +512 tokens (total 77929)
+[frspec-owngen] prompt 156/254: +512 tokens (total 78441)
+[frspec-owngen] prompt 157/254: +512 tokens (total 78953)
+[frspec-owngen] prompt 158/254: +512 tokens (total 79465)
+[frspec-owngen] prompt 159/254: +512 tokens (total 79977)
+[frspec-owngen] prompt 160/254: +512 tokens (total 80489)
+[frspec-owngen] prompt 161/254: +512 tokens (total 81001)
+[frspec-owngen] prompt 162/254: +512 tokens (total 81513)
+[frspec-owngen] prompt 163/254: +512 tokens (total 82025)
+[frspec-owngen] prompt 164/254: +512 tokens (total 82537)
+[frspec-owngen] prompt 165/254: +512 tokens (total 83049)
+[frspec-owngen] prompt 166/254: +512 tokens (total 83561)
+[frspec-owngen] prompt 167/254: +512 tokens (total 84073)
+[frspec-owngen] prompt 168/254: +512 tokens (total 84585)
+[frspec-owngen] prompt 169/254: +512 tokens (total 85097)
+[frspec-owngen] prompt 170/254: +512 tokens (total 85609)
+[frspec-owngen] prompt 171/254: +512 tokens (total 86121)
+[frspec-owngen] prompt 172/254: +512 tokens (total 86633)
+[frspec-owngen] prompt 173/254: +512 tokens (total 87145)
+[frspec-owngen] prompt 174/254: +512 tokens (total 87657)
+[frspec-owngen] prompt 175/254: +512 tokens (total 88169)
+[frspec-owngen] prompt 176/254: +512 tokens (total 88681)
+[frspec-owngen] prompt 177/254: +512 tokens (total 89193)
+[frspec-owngen] prompt 178/254: +512 tokens (total 89705)
+[frspec-owngen] prompt 179/254: +512 tokens (total 90217)
+[frspec-owngen] prompt 180/254: +512 tokens (total 90729)
+[frspec-owngen] prompt 181/254: +512 tokens (total 91241)
+[frspec-owngen] prompt 182/254: +512 tokens (total 91753)
+[frspec-owngen] prompt 183/254: +512 tokens (total 92265)
+[frspec-owngen] prompt 184/254: +512 tokens (total 92777)
+[frspec-owngen] prompt 185/254: +512 tokens (total 93289)
+[frspec-owngen] prompt 186/254: +512 tokens (total 93801)
+[frspec-owngen] prompt 187/254: +512 tokens (total 94313)
+[frspec-owngen] prompt 188/254: +512 tokens (total 94825)
+[frspec-owngen] prompt 189/254: +512 tokens (total 95337)
+[frspec-owngen] prompt 190/254: +512 tokens (total 95849)
+[frspec-owngen] prompt 191/254: +512 tokens (total 96361)
+[frspec-owngen] prompt 192/254: +512 tokens (total 96873)
+[frspec-owngen] PARTIAL: 192/254 prompts in corpus — rerun the same command to resume; ranks NOT written
+=== chunk end 2026-08-01T18:09:44+03:00 rc=0
+=== chunk start 2026-08-01T18:09:49+03:00 limit=64 model=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[frspec-owngen] 254 prompts, ngen 512, temp 0, vocab 248320
+[frspec-owngen] corpus resume: 192/254 prompts already in /home/avifenesh/projects/wt-ornith-drafters/research/ornith-drafters-20260801/corpus/ornith35b-owngen-ids.txt (96873 tokens)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 193/254: +512 tokens (total 97385)
+[frspec-owngen] prompt 194/254: +512 tokens (total 97897)
+[frspec-owngen] prompt 195/254: +512 tokens (total 98409)
+[frspec-owngen] prompt 196/254: +512 tokens (total 98921)
+[frspec-owngen] prompt 197/254: +512 tokens (total 99433)
+[frspec-owngen] prompt 198/254: +512 tokens (total 99945)
+[frspec-owngen] prompt 199/254: +512 tokens (total 100457)
+[frspec-owngen] prompt 200/254: +512 tokens (total 100969)
+[frspec-owngen] prompt 201/254: +512 tokens (total 101481)
+[frspec-owngen] prompt 202/254: +512 tokens (total 101993)
+[frspec-owngen] prompt 203/254: +512 tokens (total 102505)
+[frspec-owngen] prompt 204/254: +512 tokens (total 103017)
+[frspec-owngen] prompt 205/254: +512 tokens (total 103529)
+[frspec-owngen] prompt 206/254: +512 tokens (total 104041)
+[frspec-owngen] prompt 207/254: +512 tokens (total 104553)
+[frspec-owngen] prompt 208/254: +512 tokens (total 105065)
+[frspec-owngen] prompt 209/254: +512 tokens (total 105577)
+[frspec-owngen] prompt 210/254: +512 tokens (total 106089)
+[frspec-owngen] prompt 211/254: +512 tokens (total 106601)
+[frspec-owngen] prompt 212/254: +512 tokens (total 107113)
+[frspec-owngen] prompt 213/254: +512 tokens (total 107625)
+[frspec-owngen] prompt 214/254: +512 tokens (total 108137)
+[frspec-owngen] prompt 215/254: +512 tokens (total 108649)
+[frspec-owngen] prompt 216/254: +512 tokens (total 109161)
+[frspec-owngen] prompt 217/254: +512 tokens (total 109673)
+[frspec-owngen] prompt 218/254: +512 tokens (total 110185)
+[frspec-owngen] prompt 219/254: +512 tokens (total 110697)
+[frspec-owngen] prompt 220/254: +512 tokens (total 111209)
+[frspec-owngen] prompt 221/254: +512 tokens (total 111721)
+[frspec-owngen] prompt 222/254: +512 tokens (total 112233)
+[frspec-owngen] prompt 223/254: +512 tokens (total 112745)
+[frspec-owngen] prompt 224/254: +512 tokens (total 113257)
+[frspec-owngen] prompt 225/254: +512 tokens (total 113769)
+[frspec-owngen] prompt 226/254: +512 tokens (total 114281)
+[frspec-owngen] prompt 227/254: +512 tokens (total 114793)
+[frspec-owngen] prompt 228/254: +512 tokens (total 115305)
+[frspec-owngen] prompt 229/254: +512 tokens (total 115817)
+[frspec-owngen] prompt 230/254: +512 tokens (total 116329)
+[frspec-owngen] prompt 231/254: +512 tokens (total 116841)
+[frspec-owngen] prompt 232/254: +512 tokens (total 117353)
+[frspec-owngen] prompt 233/254: +512 tokens (total 117865)
+[frspec-owngen] prompt 234/254: +512 tokens (total 118377)
+[frspec-owngen] prompt 235/254: +512 tokens (total 118889)
+[frspec-owngen] prompt 236/254: +512 tokens (total 119401)
+[frspec-owngen] prompt 237/254: +512 tokens (total 119913)
+[frspec-owngen] prompt 238/254: +512 tokens (total 120425)
+[frspec-owngen] prompt 239/254: +512 tokens (total 120937)
+[frspec-owngen] prompt 240/254: +512 tokens (total 121449)
+[frspec-owngen] prompt 241/254: +512 tokens (total 121961)
+[frspec-owngen] prompt 242/254: +512 tokens (total 122473)
+[frspec-owngen] prompt 243/254: +512 tokens (total 122985)
+[frspec-owngen] prompt 244/254: +512 tokens (total 123497)
+[frspec-owngen] prompt 245/254: +512 tokens (total 124009)
+[frspec-owngen] prompt 246/254: +512 tokens (total 124521)
+[frspec-owngen] prompt 247/254: +512 tokens (total 125033)
+[frspec-owngen] prompt 248/254: +512 tokens (total 125545)
+[frspec-owngen] prompt 249/254: +512 tokens (total 126057)
+[frspec-owngen] prompt 250/254: +512 tokens (total 126569)
+[frspec-owngen] prompt 251/254: +512 tokens (total 127081)
+[frspec-owngen] prompt 252/254: +512 tokens (total 127593)
+[frspec-owngen] prompt 253/254: +512 tokens (total 128105)
+[frspec-owngen] prompt 254/254: +512 tokens (total 128617)
+[frspec-owngen] top 32768 covers 100.00% of 128617 own-generated tokens (11367 distinct)
+[frspec-owngen] WARNING: 128617 tokens is a SMALL corpus for topN 32768 — ranks past the distribution head are noise (measured -6.5 acceptance pts at 2.5k tokens). Aim for >= 131072 generated tokens: more prompts, --ngen 512+, or a dataset source.
+[frspec-owngen] wrote /data/ai-ml/hf-models/ornith-1.0-35b-gguf/owngen-ranks-32768.gguf + /data/ai-ml/hf-models/ornith-1.0-35b-gguf/owngen-ranks-32768.gguf.txt
+serve with:
+  MEMRA_FRSPEC_TRIM=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/owngen-ranks-32768.gguf ...            # qwen MTP heads
+  MEMRA_GEMMA_DRAFT_RANKS=/data/ai-ml/hf-models/ornith-1.0-35b-gguf/owngen-ranks-32768.gguf.txt ...  # gemma drafters
+=== chunk end 2026-08-01T18:14:57+03:00 rc=0
