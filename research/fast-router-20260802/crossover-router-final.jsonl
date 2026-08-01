@@ -1,0 +1,23 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU
+weights: /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf (n_embd=2048, n_experts=256)
+{"bench":"router-batch-crossover","weights":"/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","n_embd":2048,"n_experts":256,"passes":5}
+{"op":"router","t":1,"n_iter":4000,"plain_us":1.837,"batch_us":5.348,"cublas_us":3.599,"speedup":0.343}
+{"op":"router","t":2,"n_iter":4000,"plain_us":2.638,"batch_us":5.423,"cublas_us":5.244,"speedup":0.487}
+{"op":"router","t":4,"n_iter":4000,"plain_us":3.817,"batch_us":5.615,"cublas_us":5.277,"speedup":0.680}
+{"op":"router","t":8,"n_iter":2500,"plain_us":6.498,"batch_us":5.965,"cublas_us":5.391,"speedup":1.089}
+{"op":"router","t":12,"n_iter":1666,"plain_us":9.345,"batch_us":6.261,"cublas_us":5.734,"speedup":1.492}
+{"op":"router","t":16,"n_iter":1250,"plain_us":12.130,"batch_us":6.466,"cublas_us":5.881,"speedup":1.876}
+{"op":"router","t":24,"n_iter":833,"plain_us":17.751,"batch_us":10.069,"cublas_us":5.916,"speedup":1.763}
+{"op":"router","t":32,"n_iter":625,"plain_us":24.669,"batch_us":11.095,"cublas_us":6.288,"speedup":2.223}
+{"op":"router","t":48,"n_iter":416,"plain_us":35.406,"batch_us":17.303,"cublas_us":6.620,"speedup":2.046}
+{"op":"router","t":64,"n_iter":312,"plain_us":50.712,"batch_us":22.591,"cublas_us":6.967,"speedup":2.245}
+{"op":"router","t":96,"n_iter":208,"plain_us":73.357,"batch_us":28.753,"cublas_us":11.226,"speedup":2.551}
+{"op":"router","t":128,"n_iter":156,"plain_us":95.923,"batch_us":36.321,"cublas_us":11.289,"speedup":2.641}
+{"op":"router","t":192,"n_iter":104,"plain_us":146.028,"batch_us":52.777,"cublas_us":10.379,"speedup":2.767}
+{"op":"router","t":256,"n_iter":78,"plain_us":197.535,"batch_us":66.033,"cublas_us":11.763,"speedup":2.991}
+{"op":"router","t":384,"n_iter":52,"plain_us":296.022,"batch_us":94.671,"cublas_us":18.253,"speedup":3.127}
+{"op":"router","t":512,"n_iter":39,"plain_us":400.256,"batch_us":124.343,"cublas_us":21.015,"speedup":3.219}
+{"op":"router","t":768,"n_iter":30,"plain_us":600.383,"batch_us":177.263,"cublas_us":35.088,"speedup":3.387}
+{"op":"router","t":1024,"n_iter":30,"plain_us":808.860,"batch_us":236.246,"cublas_us":36.158,"speedup":3.424}
+{"op":"router","t":1536,"n_iter":30,"plain_us":1195.559,"batch_us":341.585,"cublas_us":68.790,"speedup":3.500}
+{"op":"router","t":2048,"n_iter":30,"plain_us":1604.590,"batch_us":453.159,"cublas_us":68.931,"speedup":3.541}

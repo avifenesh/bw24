@@ -1,0 +1,23 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU
+weights: /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf (n_embd=2048, n_experts=256)
+{"bench":"router-batch-crossover","weights":"/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","n_embd":2048,"n_experts":256,"passes":5}
+{"op":"router","t":1,"n_iter":4000,"plain_us":1.836,"batch8_us":5.354,"batch16_us":9.429,"cublas_us":3.563,"b8_speedup":0.343,"b16_speedup":0.195}
+{"op":"router","t":2,"n_iter":4000,"plain_us":2.637,"batch8_us":5.433,"batch16_us":9.441,"cublas_us":5.214,"b8_speedup":0.485,"b16_speedup":0.279}
+{"op":"router","t":4,"n_iter":4000,"plain_us":3.812,"batch8_us":5.679,"batch16_us":9.467,"cublas_us":5.245,"b8_speedup":0.671,"b16_speedup":0.403}
+{"op":"router","t":8,"n_iter":2500,"plain_us":6.492,"batch8_us":5.944,"batch16_us":10.107,"cublas_us":5.282,"b8_speedup":1.092,"b16_speedup":0.642}
+{"op":"router","t":12,"n_iter":1666,"plain_us":9.299,"batch8_us":6.089,"batch16_us":10.696,"cublas_us":5.482,"b8_speedup":1.527,"b16_speedup":0.869}
+{"op":"router","t":16,"n_iter":1250,"plain_us":12.045,"batch8_us":6.233,"batch16_us":10.571,"cublas_us":5.777,"b8_speedup":1.932,"b16_speedup":1.139}
+{"op":"router","t":24,"n_iter":833,"plain_us":17.728,"batch8_us":9.610,"batch16_us":11.776,"cublas_us":6.043,"b8_speedup":1.845,"b16_speedup":1.505}
+{"op":"router","t":32,"n_iter":625,"plain_us":23.513,"batch8_us":10.676,"batch16_us":12.046,"cublas_us":6.053,"b8_speedup":2.203,"b16_speedup":1.952}
+{"op":"router","t":48,"n_iter":416,"plain_us":35.035,"batch8_us":16.352,"batch16_us":23.863,"cublas_us":6.262,"b8_speedup":2.143,"b16_speedup":1.468}
+{"op":"router","t":64,"n_iter":312,"plain_us":46.988,"batch8_us":20.888,"batch16_us":25.055,"cublas_us":6.556,"b8_speedup":2.249,"b16_speedup":1.875}
+{"op":"router","t":96,"n_iter":208,"plain_us":71.833,"batch8_us":28.197,"batch16_us":35.928,"cublas_us":10.996,"b8_speedup":2.548,"b16_speedup":1.999}
+{"op":"router","t":128,"n_iter":156,"plain_us":91.625,"batch8_us":34.939,"batch16_us":51.092,"cublas_us":11.228,"b8_speedup":2.622,"b16_speedup":1.793}
+{"op":"router","t":192,"n_iter":104,"plain_us":139.767,"batch8_us":51.091,"batch16_us":59.740,"cublas_us":9.736,"b8_speedup":2.736,"b16_speedup":2.340}
+{"op":"router","t":256,"n_iter":78,"plain_us":187.273,"batch8_us":62.582,"batch16_us":85.581,"cublas_us":10.915,"b8_speedup":2.992,"b16_speedup":2.188}
+{"op":"router","t":384,"n_iter":52,"plain_us":285.989,"batch8_us":91.062,"batch16_us":125.050,"cublas_us":17.521,"b8_speedup":3.141,"b16_speedup":2.287}
+{"op":"router","t":512,"n_iter":39,"plain_us":386.372,"batch8_us":119.119,"batch16_us":163.921,"cublas_us":20.125,"b8_speedup":3.244,"b16_speedup":2.357}
+{"op":"router","t":768,"n_iter":30,"plain_us":581.071,"batch8_us":173.789,"batch16_us":245.157,"cublas_us":35.194,"b8_speedup":3.344,"b16_speedup":2.370}
+{"op":"router","t":1024,"n_iter":30,"plain_us":781.941,"batch8_us":228.939,"batch16_us":328.726,"cublas_us":35.724,"b8_speedup":3.415,"b16_speedup":2.379}
+{"op":"router","t":1536,"n_iter":30,"plain_us":1134.464,"batch8_us":331.389,"batch16_us":481.282,"cublas_us":66.919,"b8_speedup":3.423,"b16_speedup":2.357}
+{"op":"router","t":2048,"n_iter":30,"plain_us":1544.286,"batch8_us":447.735,"batch16_us":652.599,"cublas_us":68.258,"b8_speedup":3.449,"b16_speedup":2.366}

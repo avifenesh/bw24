@@ -39,6 +39,10 @@ name = "kernel-check"
 path = "src/bin/kernel_check.rs"
 
 [[bin]]
+name = "router-batch-bench"
+path = "src/bin/router_batch_bench.rs"
+
+[[bin]]
 name = "mvq-msweep"
 path = "src/bin/mvq_msweep.rs"
 

@@ -2554,6 +2554,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- FAST-ROUTER batch-twin bit-identity (lane/fast-router, 2026-08-02): the prefill-exact
+    // contract routes prefill through decode's m-invariant router_gemv; router_gemv_f32_w8_batch
+    // register-tiles the SAME per-row FP chains for GEMM-shaped m. Gate: bitwise equality vs
+    // the per-(expert,token) w8 form at every m in a 1..2048 sweep on the REAL q35 router
+    // weights, plus m-invariance of the batch form itself (rows of y(m) == the m=2048 run's
+    // prefix). Any bit diff = a broken reduction order — fix the kernel, not the gate.
+    // Crossover between forms is therefore pure perf, never a numeric config. (The shexp
+    // sigmoid-dot twin passed this same gate but measured slower at every t — killed;
+    // research/fast-router-20260802/.) ---
+    {
+        use memra_gguf::{GgufFile, GgmlType};
+        let gguf_q35 = kc_model("fast-router-batch", "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+            &["/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+              "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"],
+            &gguf_arg);
+        if let Some(p) = gguf_q35 {
+            let g = GgufFile::open(&p)?;
+            let tw = g.find("blk.0.ffn_gate_inp.weight").expect("gate_inp");
+            assert!(matches!(tw.ggml_type, GgmlType::F32), "gate_inp must be F32");
+            let n_embd = tw.ne[0] as usize;
+            let n_experts = tw.ne[1] as usize;
+            let le = |b: &[u8]| f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            let wf: Vec<f32> = g.tensor_data(tw).chunks_exact(4).map(le).collect();
+            let t_max = 2048usize;
+            let x: Vec<f32> = (0..t_max * n_embd).map(|i| (pr(i + 7) - 0.5) * 4.0).collect();
+            let wd = e.htod(&wf)?; let xd = e.htod(&x)?;
+            // m=2048 plain-w8 run: its row prefixes are the m-invariance oracle.
+            let yref = e.dtoh(&e.router_gemv_form(&wd, &xd, n_embd, n_experts, t_max, true, false)?)?;
+            let ms: [usize; 32] = [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65,
+                                   75, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1023, 1024,
+                                   1025, 2047, 2048];
+            let (mut r_bits, mut r_minv) = (0usize, 0usize);
+            for &m in &ms {
+                let y_p = e.dtoh(&e.router_gemv_form(&wd, &xd, n_embd, n_experts, m, true, false)?)?;
+                let y_b = e.dtoh(&e.router_gemv_form(&wd, &xd, n_embd, n_experts, m, true, true)?)?;
+                r_bits += y_p.iter().zip(&y_b).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                r_minv += y_b.iter().zip(&yref[..m * n_experts])
+                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            }
+            println!("router batch-twin bit-identity (real q35 router, {} m-points 1..{t_max}): mism={r_bits} {}",
+                     ms.len(), if r_bits == 0 { "OK" } else { fails += 1; "FAIL" });
+            println!("router batch-twin m-invariance (rows vs plain m={t_max} prefix): mism={r_minv} {}",
+                     if r_minv == 0 { "OK" } else { fails += 1; "FAIL" });
+        }
+    }
+
     // --- EDGE-1 §C.2/C.3: copy-stream prefetch publication + store-before-reuse ordering. Fill an
     // 8-slot cache without synchronizing, asynchronously replace one victim, then dispatch/read it.
     // The read must see the new bytes, while the explicitly protected current block stays resident.

@@ -50,8 +50,12 @@ def ask(base, model, prompt, max_tokens, timeout=600):
     req = urllib.request.Request(base + "/v1/chat/completions",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        # evidence discipline: quote the server's error body, not just the status line.
+        raise RuntimeError(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
     return d["choices"][0]["message"]["content"]
 
 
@@ -117,11 +121,16 @@ def main():
                            "out_sha": hashlib.sha256(b.encode()).hexdigest()[:12],
                            "ref_tail": a[k:k + 40], "out_tail": b[k:k + 40]})
 
+    # evidence discipline: failure causes are quoted, never inferred — carry the raw
+    # per-request error strings into the row (they were previously swallowed).
+    errors = [{"i": i, "err": e} for i, e in enumerate(errs) if e]
+
     verdict = "PASS" if (n_match == args.n and n_err == 0) else "FAIL"
     row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "label": args.label,
            "base": args.base, "n": args.n, "max_tokens": args.max_tokens,
            "wall_s": wall, "n_match": n_match, "n_mismatch": args.n - n_match - n_err,
-           "n_err": n_err, "verdict": verdict, "mismatches": mismatches[:8]}
+           "n_err": n_err, "verdict": verdict, "mismatches": mismatches[:8],
+           "errors": errors[:8]}
     print(json.dumps(row))
     if args.out:
         with open(args.out, "a") as f:

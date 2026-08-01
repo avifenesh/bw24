@@ -336,6 +336,9 @@ pub fn run(
     // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc).
     let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
     let mut spec_reuse: HashMap<String, Vec<SpecReuseEntry>> = HashMap::new();
+    // Observed VRAM cost of one admitted session, per model (free-VRAM delta across the first
+    // successful admit) — feeds the VRAM-aware admission wait below.
+    let mut session_vram_cost: HashMap<String, usize> = HashMap::new();
 
     // ---- serving counters + engine-truth step stats (30s percentile window) ----
     let mut step_stats = StepStats::new(30.0);
@@ -381,8 +384,44 @@ pub fn run(
                 requeue.push_back(req);   // waits (FIFO), never rejected
                 continue;
             }
+            // VRAM-AWARE ADMISSION (lane/fast-router, 2026-08-02). Evidence: c=16 on the
+            // RESIDENT Ornith-35B 400'd 1-3 requests per burst with a quoted `cache alloc
+            // failed: CUDA_ERROR_OUT_OF_MEMORY` (research/fast-router-20260802/greedy-hash-
+            // o35b-batch-default-try{1,2}) — resident-if-fits plans a ~2GB reserve while
+            // sixteen 8192-ctx session caches want more than that. Admission already WAITS
+            // on the session-count axis; extend the same FIFO-wait to the VRAM axis: once a
+            // model's per-session cost has been observed, admit the next session only while
+            // free VRAM covers TWO of them (one to allocate + one of headroom for prefill/
+            // decode transients); otherwise the request waits for a finisher. The first
+            // session always passes (the residency planner's reserve guarantees one), and an
+            // OOM with no active sessions still errors — that is a real capacity failure,
+            // quoted to the client.
+            if !active.is_empty() {
+                if let (Some(&cost), Ok((free, _))) =
+                    (session_vram_cost.get(&req.model), engine.ctx().mem_get_info()) {
+                    if free < cost.saturating_mul(2) {
+                        requeue.push_back(req);   // waits (FIFO), never rejected
+                        continue;
+                    }
+                }
+            }
+            let model_key = req.model.clone();
+            let free_before = engine.ctx().mem_get_info().map(|(f, _)| f).ok();
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
-                Ok(s) => { n_admitted += 1; active.push(s); }
+                Ok(s) => {
+                    n_admitted += 1;
+                    active.push(s);
+                    if !session_vram_cost.contains_key(&model_key) {
+                        if let (Some(fb), Ok((fa, _))) = (free_before, engine.ctx().mem_get_info()) {
+                            let cost = fb.saturating_sub(fa);
+                            if cost > 0 {
+                                eprintln!("[worker] observed session VRAM cost for {model_key:?}: \
+                                           {:.0}MB (admission gate = 2x)", cost as f64 / 1e6);
+                                session_vram_cost.insert(model_key, cost);
+                            }
+                        }
+                    }
+                }
                 Err((tx, msg)) => { let _ = tx.send(Event::Error(msg)); }
             }
         }

@@ -1,0 +1,102 @@
+=== rep 1/5 ===
+  [q35-board2048/exact0 rep1] prefill_toks = 3539.2
+  [q35-board2048/exact0 rep1] decode_toks = 174.73
+  [q35-board2048/exact0 rep1] argmax_match_lines = 1
+  [q35-board2048/plain rep1] prefill_toks = 3178.3
+  [q35-board2048/plain rep1] decode_toks = 176.33
+  [q35-board2048/plain rep1] argmax_match_lines = 1
+  [q35-board2048/batch rep1] prefill_toks = 3427.6
+  [q35-board2048/batch rep1] decode_toks = 176.70
+  [q35-board2048/batch rep1] argmax_match_lines = 1
+  [o35b-pp512/exact0 rep1] prefill_toks = 1081.7
+  [o35b-pp512/exact0 rep1] decode_toks = 206.00
+  [o35b-pp512/exact0 rep1] argmax_match_lines = 1
+  [o35b-pp512/plain rep1] prefill_toks = 1052.3
+  [o35b-pp512/plain rep1] decode_toks = 203.22
+  [o35b-pp512/plain rep1] argmax_match_lines = 1
+  [o35b-pp512/batch rep1] prefill_toks = 1080.0
+  [o35b-pp512/batch rep1] decode_toks = 206.54
+  [o35b-pp512/batch rep1] argmax_match_lines = 1
+=== rep 2/5 ===
+  [q35-board2048/exact0 rep2] prefill_toks = 3528.3
+  [q35-board2048/exact0 rep2] decode_toks = 178.56
+  [q35-board2048/exact0 rep2] argmax_match_lines = 1
+  [q35-board2048/plain rep2] prefill_toks = 3167.3
+  [q35-board2048/plain rep2] decode_toks = 180.19
+  [q35-board2048/plain rep2] argmax_match_lines = 1
+  [q35-board2048/batch rep2] prefill_toks = 3421.9
+  [q35-board2048/batch rep2] decode_toks = 179.85
+  [q35-board2048/batch rep2] argmax_match_lines = 1
+  [o35b-pp512/exact0 rep2] prefill_toks = 1080.9
+  [o35b-pp512/exact0 rep2] decode_toks = 200.05
+  [o35b-pp512/exact0 rep2] argmax_match_lines = 1
+  [o35b-pp512/plain rep2] prefill_toks = 1049.4
+  [o35b-pp512/plain rep2] decode_toks = 208.40
+  [o35b-pp512/plain rep2] argmax_match_lines = 1
+  [o35b-pp512/batch rep2] prefill_toks = 1075.2
+  [o35b-pp512/batch rep2] decode_toks = 208.79
+  [o35b-pp512/batch rep2] argmax_match_lines = 1
+=== rep 3/5 ===
+  [q35-board2048/exact0 rep3] prefill_toks = 3524.1
+  [q35-board2048/exact0 rep3] decode_toks = 180.31
+  [q35-board2048/exact0 rep3] argmax_match_lines = 1
+  [q35-board2048/plain rep3] prefill_toks = 3165.7
+  [q35-board2048/plain rep3] decode_toks = 179.95
+  [q35-board2048/plain rep3] argmax_match_lines = 1
+  [q35-board2048/batch rep3] prefill_toks = 3416.6
+  [q35-board2048/batch rep3] decode_toks = 179.97
+  [q35-board2048/batch rep3] argmax_match_lines = 1
+  [o35b-pp512/exact0 rep3] prefill_toks = 1079.7
+  [o35b-pp512/exact0 rep3] decode_toks = 203.16
+  [o35b-pp512/exact0 rep3] argmax_match_lines = 1
+  [o35b-pp512/plain rep3] prefill_toks = 1049.4
+  [o35b-pp512/plain rep3] decode_toks = 206.20
+  [o35b-pp512/plain rep3] argmax_match_lines = 1
+  [o35b-pp512/batch rep3] prefill_toks = 1071.4
+  [o35b-pp512/batch rep3] decode_toks = 203.69
+  [o35b-pp512/batch rep3] argmax_match_lines = 1
+=== rep 4/5 ===
+  [q35-board2048/exact0 rep4] prefill_toks = 3518.5
+  [q35-board2048/exact0 rep4] decode_toks = 178.50
+  [q35-board2048/exact0 rep4] argmax_match_lines = 1
+  [q35-board2048/plain rep4] prefill_toks = 3167.5
+  [q35-board2048/plain rep4] decode_toks = 180.08
+  [q35-board2048/plain rep4] argmax_match_lines = 1
+  [q35-board2048/batch rep4] prefill_toks = 3414.4
+  [q35-board2048/batch rep4] decode_toks = 179.86
+  [q35-board2048/batch rep4] argmax_match_lines = 1
+  [o35b-pp512/exact0 rep4] prefill_toks = 1079.4
+  [o35b-pp512/exact0 rep4] decode_toks = 205.83
+  [o35b-pp512/exact0 rep4] argmax_match_lines = 1
+  [o35b-pp512/plain rep4] prefill_toks = 1047.4
+  [o35b-pp512/plain rep4] decode_toks = 208.07
+  [o35b-pp512/plain rep4] argmax_match_lines = 1
+  [o35b-pp512/batch rep4] prefill_toks = 1074.7
+  [o35b-pp512/batch rep4] decode_toks = 208.42
+  [o35b-pp512/batch rep4] argmax_match_lines = 1
+=== rep 5/5 ===
+  [q35-board2048/exact0 rep5] prefill_toks = 3523.1
+  [q35-board2048/exact0 rep5] decode_toks = 174.33
+  [q35-board2048/exact0 rep5] argmax_match_lines = 1
+  [q35-board2048/plain rep5] prefill_toks = 3157.8
+  [q35-board2048/plain rep5] decode_toks = 177.82
+  [q35-board2048/plain rep5] argmax_match_lines = 1
+  [q35-board2048/batch rep5] prefill_toks = 3394.8
+  [q35-board2048/batch rep5] decode_toks = 177.53
+  [q35-board2048/batch rep5] argmax_match_lines = 1
+  [o35b-pp512/exact0 rep5] prefill_toks = 1077.0
+  [o35b-pp512/exact0 rep5] decode_toks = 207.35
+  [o35b-pp512/exact0 rep5] argmax_match_lines = 1
+  [o35b-pp512/plain rep5] prefill_toks = 1042.3
+  [o35b-pp512/plain rep5] decode_toks = 207.78
+  [o35b-pp512/plain rep5] argmax_match_lines = 1
+  [o35b-pp512/batch rep5] prefill_toks = 1067.6
+  [o35b-pp512/batch rep5] decode_toks = 208.24
+  [o35b-pp512/batch rep5] argmax_match_lines = 1
+=== medians ===
+o35b-pp512       batch    N=5 median=1074.7 range=[1067.6,1080.0]
+o35b-pp512       exact0   N=5 median=1079.7 range=[1077.0,1081.7]
+o35b-pp512       plain    N=5 median=1049.4 range=[1042.3,1052.3]
+q35-board2048    batch    N=5 median=3416.6 range=[3394.8,3427.6]
+q35-board2048    exact0   N=5 median=3524.1 range=[3518.5,3539.2]
+q35-board2048    plain    N=5 median=3167.3 range=[3157.8,3178.3]

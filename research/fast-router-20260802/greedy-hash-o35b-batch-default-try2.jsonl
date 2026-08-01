@@ -1,0 +1,1 @@
+{"ts": "2026-08-02T00:06:58+0300", "label": "o35b-batch-default", "base": "http://127.0.0.1:8123", "n": 16, "max_tokens": 96, "wall_s": 3.5368446380016394, "n_match": 15, "n_mismatch": 0, "n_err": 1, "verdict": "FAIL", "mismatches": [], "errors": [{"i": 12, "err": "HTTP Error 400: Bad Request"}]}
