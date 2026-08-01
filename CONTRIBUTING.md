@@ -32,7 +32,7 @@ Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel tha
 
 Changes touching the Hopper (sm_90a) lane additionally run its one-command battery on an
 H100: `tools/validate-h100.sh <model.gguf> [--quick]` — kernel-check config pins (incl. the
-KQRP, f16-mirror, and batched-seqs pins), decode-batch (config + strict, gates 1–3 incl.
+KQRP, f16-mirror, f16g-sk, and batched-seqs pins), decode-batch (config + strict, gates 1–3 incl.
 gate3c lean-logits), decode-dc, graph-decode, and graph-session. `ALL GATES GREEN` output
 pasted, same rule as above.
 

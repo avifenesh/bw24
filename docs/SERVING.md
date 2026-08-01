@@ -14,18 +14,47 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 | `tools/load-serve.py` | concurrent OpenAI-format load harness: aggregate output tok/s, p50/p95 latency, JSONL per load point |
 | `tools/serve-smoke.sh` | OpenAI-surface smoke gate for a single server |
 
-## Measured numbers (H100, Qwen3.5-9B Q8_0; receipts in `research/`)
+## Measured numbers (Qwen3.5-9B Q8_0; receipts in `research/`)
 
-- **Single replica:** temp-0.7 c=8/16/32 medians **654/657/659 tok/s** after the batched
-  decode tick (z-batched FA + KV append, device sampling, lean logits — +25-36% over the
-  pre-batched tick; N=4, `research/batched-tick-inc2-20260801/`).
-- **Pair-packed fleet, 3 GPUs x 2 replicas:** **1,480 tok/s** aggregate direct, 0 errors;
-  ~1,380 through the admission proxy at c=96 (~6-7% proxy overhead;
-  `research/darklane-serving-20260801/REPORT.md`).
+- **Single replica (H100):** temp-0.7 c=8/16/32 medians **654/657/659 tok/s** after the
+  batched decode tick (z-batched FA + KV append, device sampling, lean logits — +25-36%
+  over the pre-batched tick; N=4, `research/batched-tick-inc2-20260801/`; chunk-8 era —
+  see the exact-16 tier below).
+- **Managed fleet, 3 H100s x 2 replicas (v0.60-validated):** **1,477 tok/s** through the
+  admission proxy at c=96 (N=2 interleaved passes: 1477.0/1473.1), zero 429s/5xx —
+  managed now matches the v0.59-era 1,480 direct number (the ~7% admission-overhead gap
+  closed at the fleet level). Chaos-tested: SIGKILL a replica mid-load, breaker DOWN the
+  same second, supervisor restart +2s, backend UP +9s, 8/768 requests lost (exactly the
+  victim's in-flight cap), aggregate across the kill 1,487 tok/s; greedy hash identical
+  on all 6 replicas in every condition, 18/18 (`research/fleet-v060-20260801/SUMMARY.md`).
+  The proxy cap (8) was calibrated on the v0.59 core — the cap re-sweep is pending the
+  next box window (stale-verdict risk flagged in the validation summary).
+- **Single replica (RTX 5090, exact-16 tier):** with the Q8_0 split-plane mirror
+  (`MEMRA_Q8RP=1` on 24GB; Hopper default), the worker auto-selects decode chunk 16 —
+  c=16 median **494.5 tok/s vs 416.4** at chunk 8, same mirror, interleaved N=4
+  (**+18.8%**; +33.8% vs the mirror-less baseline); c=32 at `MEMRA_CTX=2048` runs
+  **502.1** with 128/128 ok (single run; `research/batched-tick-inc3-20260801/`).
 - **Spec fast lane:** MTP speculative serving is a single-stream latency tier — 1.82x plain
   serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
   c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
   `research/spec-serving-20260801/`).
+
+## The exact-16 decode chunk tier
+
+The batched tick decodes sessions in per-model chunks. Default width is **16 on models
+where every matmul has a bit-exact 16-batch kernel class** (`decode_batch_exact16_ok`:
+the b16 batched-mmvq family — Q8_0 qualifies only through its `_rp` mirror twin), **8
+otherwise**; `MEMRA_DECODE_BATCH_CAP` stays the explicit measurement door. Qualifying
+steps scope out every m>=16 GEMM/MMQ arm, so chunk-16 output is bit-identical to
+isolated decode (gate2 bit-checked at steps 32 and 160). B=32 has no exact kernel class
+— chunk policy stays <=16. On the H100 fleet model (9B Q8_0, mirror on by default) the
+tier engages automatically on the next deploy; the H100 numbers above are chunk-8-era
+and the chunk-16 fleet effect is pending on-box re-validation.
+
+**Capacity envelope (24GB):** the mirror costs ~model-size VRAM, so c=32 sessions at the
+default `MEMRA_CTX=8192` OOM (captured `CUDA_ERROR_OUT_OF_MEMORY`; ~27 sessions admit).
+Set `MEMRA_CTX` to the workload — 2048 clears the same cell (machine-specific config per
+the flags doctrine).
 
 ## Knobs
 

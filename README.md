@@ -23,10 +23,10 @@ against vLLM are published per model. **Use something else when** you have anoth
 [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU serving
 (vLLM, SGLang).
 
-**Standing (2026-08-01):** seven supported models on the 5090, all fully gated; every
-MTP-spec cell is at or above 1.13x llama.cpp (up to 2.2x), plain cells sit at the DRAM
-wall or above. On the H100, a full per-model board against vLLM 0.26: **no end-to-end
-losses** — seven wins of seven (1.02-1.81x); decode wins 7 of 7. The last losses fell
+**Standing (2026-08-01):** seven supported models on the 5090, all fully gated; MTP-spec
+cells run 1.06–2.3x llama.cpp (one Gemma near-parity cell, 0.98x, still open), plain
+cells sit at the DRAM wall or above. On the H100, a full per-model board against vLLM
+0.26: **no end-to-end losses** — seven wins of seven (1.02-1.81x); decode wins 7 of 7. The last losses fell
 in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
 got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
 f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
@@ -111,6 +111,7 @@ core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds
 |---|---|---|
 | **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS on the 5090; Q8_0 / Q4_K_M MTP-baked / IQ4_XS on the H100 board); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first |
 | **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Correctness-gated end-to-end; [docs/HY3-SPILL.md](docs/HY3-SPILL.md) |
+| **In bring-up** | Ornith-1.0 9B/35B, KAT-Coder-V2.5 (HF's #2/#3 most-downloaded GGUF repos); Qwen-AgentWorld-35B-A3B verified same-stack | Onboarded with zero code change (native `qwen35`/`qwen35moe` arch strings; argmax + chat gates green on the 5090 — [receipts](research/onboard-ornith-20260801/)). Not yet supported: that label requires the per-model llama.cpp head-to-head and a trimmed MTP drafter, both in flight |
 | **In progress** | MiniMax-M3 REAP50 (safetensors spill) | Loads + generates; router tuning open |
 
 ## Quick start
@@ -225,7 +226,9 @@ and llama.cpp's swept-best flags: [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SET
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic;
   per-session capture for serving.
 - **Serving** — OpenAI-compatible server with batched decode (one z-batched tick
-  across sequences), cross-request prefill batching, KV prefix reuse, speculative
+  across sequences, chunked 16-wide on models with a bit-exact 16-batch kernel class:
+  +18.8% at c=16 on a 5090 single replica, same-mirror interleaved N=4), cross-request
+  prefill batching, KV prefix reuse, speculative
   serving, and a flat `/metrics` endpoint. Multi-GPU boxes serve as a replica fleet:
   supervisor + admission proxy + load harness, measured at 1,477 tok/s managed on
   3xH100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
@@ -269,10 +272,12 @@ Hopper, `tools/validate-h100.sh` is the equivalent one-command battery.
   via the portable arch but are untuned — use
   [llama.cpp](https://github.com/ggml-org/llama.cpp) or
   [mistral.rs](https://github.com/EricLBuehler/mistral.rs) there.
-- One GPU per engine process; no tensor parallelism yet (the multi-GPU build is in
-  progress — the NVLink/NCCL comms floor is measured in the ledger). Multi-GPU boxes
-  serve today as a replica fleet ([docs/SERVING.md](docs/SERVING.md)); batched decode
-  serving on both architectures.
+- One GPU per engine process; no tensor parallelism yet. The multi-GPU build is under
+  way: the NVLink/NCCL comms floor is measured (M0) and the two-stage pipeline-parallel
+  seam (M1, `MEMRA_PP_STAGES`) is merged bit-identical — per-stage streams/events and
+  real peer-to-peer transport — default off, pending the cross-device gate on an
+  8-GPU box. Multi-GPU boxes serve today as a replica fleet
+  ([docs/SERVING.md](docs/SERVING.md)); batched decode serving on both architectures.
 - Moving research codebase; APIs and flags change without notice.
 
 ## Docs

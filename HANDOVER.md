@@ -1,6 +1,50 @@
-# bw24 — Session Handover
+# memra — Session Handover
 
-_Internal living document: the cold-start state for whoever (or whatever) works on bw24 next. Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
+_Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
+
+## CURRENT STATE (2026-08-01, v0.62.0)
+
+- **Board unchanged at 7/7** (round-50 state; g26 1.023x). Round 51 (`lane/sk-bm128`):
+  the mode-2 grouped GEMM rebuilt as a persistent problem-visitor + BM128/BN64/BK64
+  3-stage form — **+4.8% 5090 mode-2 arm / +4.2% H100, byte-identical**, but 96.9% of
+  cublas mode 1: **parity NOT reached, mode 1 keeps the Hopper default**. Priced
+  residual: the 32x64 2-stage tail form (41.3ms = 31% of GEMM stage); next rung = a
+  deeper tail form. Receipts `research/sk-bm128-20260801/`; ledger round 51.
+- **Serving (batched-tick inc3, 5090 lane):** per-model EXACT-16 decode chunk tier —
+  `decode_batch_exact16_ok` (every matmul bit-exact in the b16 class; Q8_0 only via the
+  q8rp mirror), qualifying steps scope out all m>=16 GEMM arms; single 5090 replica
+  c=16 **494.5 vs 416.4 tok/s (+18.8% same-mirror; +33.8% vs naked)**. B=32 has no
+  exact class; the emit-defer (per-tick D2H) arm measured FLAT and was KILLED.
+  MEMRA_CTX envelope on 24GB mirror config: c=32 @8192 OOMs (~27 admit), 2048 clears
+  at 502.1. H100 fleet numbers stay **v0.60-validated 1,477 tok/s managed**
+  (chaos-tested); the chunk-16 Hopper inheritance (q8rp default-on there) AND the
+  proxy cap re-sweep are PENDING the Aug-2 box. Receipts
+  `research/batched-tick-inc3-20260801/`; runbook `docs/SERVING.md`.
+- **Multi-GPU M1 increment 2 merged:** real pp2 transport — per-stage streams + events,
+  `MEMRA_PP_DEVICES` placement with stage-owned KV (`Cache::new_pp2`), peer-copy
+  boundary, `MEMRA_PP_OVERLAP` double-buffer seed — **17/17 pp2-gate bit-identical
+  across every knob**; the `Gpu::stream()` ambient seam measured free (naked A/B).
+  Default OFF. Cross-device gate (`MEMRA_PP_DEVICES=0,1 pp2-gate <model>`) pending the
+  8x box. M0 floor stands (PP ~free, EP<=4, graphed a2a mandatory). Receipts
+  `research/m1-inc2-20260801/` + `research/m1-pp2-20260801/`.
+- **Models:** Ornith-1.0-9B/35B + KAT-Coder-V2.5 ONBOARDED with **zero code change**
+  (native `qwen35`/`qwen35moe` arch strings; argmax + chat gates green; HF's #2/#3
+  most-downloaded GGUF repos), AgentWorld-35B verified same-stack from header bytes —
+  pre-deployment tier: the supported label waits on the per-model llama.cpp
+  head-to-head (1.1x e2e delivery bar) + a trimmed MTP drafter, both lanes running
+  (`research/onboard-ornith-20260801/`). GLM-5.2 MLA bring-up increments 1-2 merged:
+  ground truth + CPU f32 reference, then the glm-dsa parse arm, micro fixture, loader
+  arm, and CPU block gate (`research/mla-bringup-20260801/`,
+  `research/mla-inc2-20260801/`); the `Mixer::Mla` refusal arm is wired into the
+  exact-16 admission check.
+- **Research/ops:** live-sourced model-demand study
+  (`research/model-demand-20260801/REPORT.md`), product-vision assessment gating the
+  Aug-2 window (`research/product-vision-20260801/ASSESSMENT.md`), and the Aug-2
+  8xH100 block paid/scheduled with hour-zero automation (`tools/box-aug2-mission.md`,
+  `tools/provision-aug2.sh`).
+- **Releases:** v0.61.0 tagged (round-50 per-model f16g arbitration + fleet validation
+  + M1 increment 1). v0.62.0 = this state: sk128 visitor, M1 inc2, exact-16 serve
+  tier, the onboards, MLA plumbing. Flags doctrine unchanged; catalog `docs/FLAGS.md`.
 
 ## CURRENT STATE (2026-08-01, v0.60.0 cold-start)
 
