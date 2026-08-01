@@ -177,7 +177,7 @@ impl HybridModel {
         let mut ptrs: Vec<u64> = Vec::new();
         {
             use cudarc::driver::DevicePtr;
-            let s = &e.gpu.stream;
+            let s = &e.gpu.stream();
             for (il, layer) in self.layers.iter().enumerate() {
                 match &layer.mixer {
                     Mixer::Linear(_) => {

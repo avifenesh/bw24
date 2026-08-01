@@ -135,9 +135,9 @@ impl crate::Engine {
         n: usize,
         k: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let stream = &self.gpu.stream;
-        let (src, _g1) = sfb_linear.device_ptr(stream);
-        let (dst, _g2) = sfb_swizzled.device_ptr_mut(stream);
+        let stream = self.gpu.stream();
+        let (src, _g1) = sfb_linear.device_ptr(&stream);
+        let (dst, _g2) = sfb_swizzled.device_ptr_mut(&stream);
         let rc = unsafe {
             memra_cutlass_repack_sfb(
                 src as *const core::ffi::c_void,
@@ -161,9 +161,9 @@ impl crate::Engine {
         m: usize,
         k: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let stream = &self.gpu.stream;
-        let (src, _g1) = sfa_linear.device_ptr(stream);
-        let (dst, _g2) = sfa_swizzled.device_ptr_mut(stream);
+        let stream = self.gpu.stream();
+        let (src, _g1) = sfa_linear.device_ptr(&stream);
+        let (dst, _g2) = sfa_swizzled.device_ptr_mut(&stream);
         let rc = unsafe {
             memra_cutlass_repack_sfa(
                 src as *const core::ffi::c_void,
@@ -191,10 +191,10 @@ impl crate::Engine {
         n: usize,
         k: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let stream = &self.gpu.stream;
-        let (s, _g0) = src.device_ptr(stream);
-        let (p, _g1) = b_packed.device_ptr_mut(stream);
-        let (sc, _g2) = sfb_linear.device_ptr_mut(stream);
+        let stream = self.gpu.stream();
+        let (s, _g0) = src.device_ptr(&stream);
+        let (p, _g1) = b_packed.device_ptr_mut(&stream);
+        let (sc, _g2) = sfb_linear.device_ptr_mut(&stream);
         let rc = unsafe {
             memra_gguf_nvfp4_deinterleave(
                 s as *const core::ffi::c_void,
@@ -278,9 +278,9 @@ impl crate::Engine {
         //    Full-overwrite of the leading prefix; resident buffers reused.
         self.cutlass_nvfp4_quant_ref(x, &mut s.a_packed, &mut s.sfa_linear, m, k)?;
         {
-            let stream = &self.gpu.stream;
-            let (src, _g1) = s.sfa_linear.device_ptr(stream);
-            let (dst, _g2) = s.sfa_sw.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (src, _g1) = s.sfa_linear.device_ptr(&stream);
+            let (dst, _g2) = s.sfa_sw.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_cutlass_repack_sfa(
                     src as *const core::ffi::c_void,
@@ -296,22 +296,22 @@ impl crate::Engine {
         }
 
         // 2) Write alpha IN PLACE into the resident [1] f32 (no fresh htod alloc per call).
-        self.gpu.stream.memcpy_htod(&[alpha], &mut s.alpha)?;
+        self.gpu.stream().memcpy_htod(&[alpha], &mut s.alpha)?;
 
         // 3) Run the GEMM into the resident y[m,n] (full overwrite), reusing the resident workspace.
         //    The raw FFI reads workspace.len() as the byte count; the resident workspace is sized to
         //    the max shape's query and CUTLASS accepts a workspace >= its requirement, so a larger
         //    resident workspace is safe for any smaller shape.
         {
-            let stream = &self.gpu.stream;
+            let stream = self.gpu.stream();
             let ws_bytes = s.workspace.len();
-            let (a_p, _ga) = s.a_packed.device_ptr(stream);
-            let (b_p, _gb) = b_packed.device_ptr(stream);
-            let (sfa_p, _gsa) = s.sfa_sw.device_ptr(stream);
-            let (sfb_p, _gsb) = sfb_swizzled.device_ptr(stream);
-            let (al_p, _gal) = s.alpha.device_ptr(stream);
-            let (d_p, _gd) = s.y.device_ptr_mut(stream);
-            let (ws_p, _gw) = s.workspace.device_ptr_mut(stream);
+            let (a_p, _ga) = s.a_packed.device_ptr(&stream);
+            let (b_p, _gb) = b_packed.device_ptr(&stream);
+            let (sfa_p, _gsa) = s.sfa_sw.device_ptr(&stream);
+            let (sfb_p, _gsb) = sfb_swizzled.device_ptr(&stream);
+            let (al_p, _gal) = s.alpha.device_ptr(&stream);
+            let (d_p, _gd) = s.y.device_ptr_mut(&stream);
+            let (ws_p, _gw) = s.workspace.device_ptr_mut(&stream);
             let rc = unsafe {
                 memra_cutlass_fp4_gemm(
                     a_p as *const core::ffi::c_void,
@@ -412,10 +412,10 @@ impl crate::Engine {
         rows: usize,
         k: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let stream = &self.gpu.stream;
-        let (s, _g0) = src.device_ptr(stream);
-        let (p, _g1) = packed.device_ptr_mut(stream);
-        let (sc, _g2) = scales_linear.device_ptr_mut(stream);
+        let stream = self.gpu.stream();
+        let (s, _g0) = src.device_ptr(&stream);
+        let (p, _g1) = packed.device_ptr_mut(&stream);
+        let (sc, _g2) = scales_linear.device_ptr_mut(&stream);
         let rc = unsafe {
             memra_nvfp4_quant_ref(
                 s as *const core::ffi::c_void,
@@ -441,10 +441,10 @@ impl crate::Engine {
         rows: usize,
         k: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let stream = &self.gpu.stream;
-        let (p, _g0) = packed.device_ptr(stream);
-        let (sc, _g1) = scales_linear.device_ptr(stream);
-        let (d, _g2) = dst.device_ptr_mut(stream);
+        let stream = self.gpu.stream();
+        let (p, _g0) = packed.device_ptr(&stream);
+        let (sc, _g1) = scales_linear.device_ptr(&stream);
+        let (d, _g2) = dst.device_ptr_mut(&stream);
         let rc = unsafe {
             memra_nvfp4_dequant_ref(
                 p as *const core::ffi::c_void,
@@ -479,16 +479,16 @@ impl crate::Engine {
         k: usize,
         workspace: &mut CudaSlice<u8>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let stream = &self.gpu.stream;
+        let stream = self.gpu.stream();
         let ws_bytes = workspace.len();
         // Hold every SyncOnDrop guard for the lifetime of the FFI call (cudarc's sync-on-drop token).
-        let (a_p, _ga) = a_e2m1.device_ptr(stream);
-        let (b_p, _gb) = b_e2m1.device_ptr(stream);
-        let (sfa_p, _gsa) = sfa.device_ptr(stream);
-        let (sfb_p, _gsb) = sfb.device_ptr(stream);
-        let (al_p, _gal) = alpha_dev.device_ptr(stream);
-        let (d_p, _gd) = d.device_ptr_mut(stream);
-        let (ws_p, _gw) = workspace.device_ptr_mut(stream);
+        let (a_p, _ga) = a_e2m1.device_ptr(&stream);
+        let (b_p, _gb) = b_e2m1.device_ptr(&stream);
+        let (sfa_p, _gsa) = sfa.device_ptr(&stream);
+        let (sfb_p, _gsb) = sfb.device_ptr(&stream);
+        let (al_p, _gal) = alpha_dev.device_ptr(&stream);
+        let (d_p, _gd) = d.device_ptr_mut(&stream);
+        let (ws_p, _gw) = workspace.device_ptr_mut(&stream);
         let rc = unsafe {
             memra_cutlass_fp4_gemm(
                 a_p as *const core::ffi::c_void,

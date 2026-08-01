@@ -53,7 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // three proj rows at real allocations so any addressing slip faults loudly.
     let down_slab = rand_slab(n_expert * stride, 136, 101);
     let down_d = e.htod_bytes(&down_slab)?;
-    let (pd, _ev) = down_d.device_ptr(e.stream());
+    let __s_ev = e.stream();
+    let (pd, _ev) = down_d.device_ptr(&__s_ev);
     let mut table_h = vec![0u64; 3 * n_expert];
     for ex in 0..n_expert {
         table_h[ex] = pd + (ex * stride) as u64;                // proj rows 0/1 also
@@ -90,7 +91,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pad_slab = vec![hb(1); 4];
     pad_slab.extend_from_slice(&down_slab);
     let pad_d = e.htod_bytes(&pad_slab)?;
-    let (pp, _ev2) = pad_d.device_ptr(e.stream());
+    let __s_ev2 = e.stream();
+    let (pp, _ev2) = pad_d.device_ptr(&__s_ev2);
     let mut table_pad_h = vec![0u64; 3 * n_expert];
     for ex in 0..n_expert {
         let p = pp + 4 + (ex * stride) as u64;
@@ -114,8 +116,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let up_slab = rand_slab(n_expert * gstride, 136, 303);
     let gate_d = e.htod_bytes(&gate_slab)?;
     let up_d = e.htod_bytes(&up_slab)?;
-    let (pg, _e0) = gate_d.device_ptr(e.stream());
-    let (pu, _e1) = up_d.device_ptr(e.stream());
+    let __s_e0 = e.stream();
+    let (pg, _e0) = gate_d.device_ptr(&__s_e0);
+    let __s_e1 = e.stream();
+    let (pu, _e1) = up_d.device_ptr(&__s_e1);
     let mut gtable_h = vec![0u64; 3 * n_expert];
     for ex in 0..n_expert {
         gtable_h[ex] = pg + (ex * gstride) as u64;
@@ -143,8 +147,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let i_up = rand_slab(n_expert * istride, 110, 505);
     let ig_d = e.htod_bytes(&i_gate)?;
     let iu_d = e.htod_bytes(&i_up)?;
-    let (pig, _e2) = ig_d.device_ptr(e.stream());
-    let (piu, _e3) = iu_d.device_ptr(e.stream());
+    let __s_e2 = e.stream();
+    let (pig, _e2) = ig_d.device_ptr(&__s_e2);
+    let __s_e3 = e.stream();
+    let (piu, _e3) = iu_d.device_ptr(&__s_e3);
     let mut itable_h = vec![0u64; 3 * n_expert];
     for ex in 0..n_expert {
         itable_h[ex] = pig + (ex * istride) as u64;

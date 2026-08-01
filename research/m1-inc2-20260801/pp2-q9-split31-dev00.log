@@ -1,0 +1,2 @@
+pp2-gate increment-2 config: streams=per-stage overlap=0 devices=0,0
+pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,31), stage1=[31,32); streams=per-stage overlap=0 devices=0,0)

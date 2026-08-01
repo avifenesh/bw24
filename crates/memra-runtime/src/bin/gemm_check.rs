@@ -23,8 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let x: Vec<f32> = (0..m * in_f).map(pr).collect();
     let w: Vec<f32> = (0..out_f * in_f).map(|i| pr(i + 777)).collect();
     let y_cpu = cpu_linear(&x, &w, m, in_f, out_f);
-    let xd = gpu.stream.clone_htod(&x)?;
-    let wd = gpu.stream.clone_htod(&w)?;
+    let xd = gpu.stream().clone_htod(&x)?;
+    let wd = gpu.stream().clone_htod(&w)?;
     let y_gpu = gpu.linear_f32(&xd, &wd, m, in_f, out_f)?;
     let d1 = max_abs_diff(&y_cpu, &y_gpu);
     // cuBLASLt on Blackwell uses TF32 (19-bit mantissa) for f32 compute by default →
@@ -49,8 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 4242) * 0.1).collect();
 
         let y_cpu = cpu_linear(&x, &w, m, in_f, out_f);
-        let xd = gpu.stream.clone_htod(&x)?;
-        let wd = gpu.stream.clone_htod(&w)?;
+        let xd = gpu.stream().clone_htod(&x)?;
+        let wd = gpu.stream().clone_htod(&w)?;
         let y_gpu = gpu.linear_f32(&xd, &wd, m, in_f, out_f)?;
         let d2 = max_abs_diff(&y_cpu, &y_gpu);
         // tolerance scaled by magnitude (large reductions accumulate f32 error)

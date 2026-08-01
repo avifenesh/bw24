@@ -166,3 +166,7 @@ path = "src/bin/graph_session_gate.rs"
 [[bin]]
 name = "pp2-gate"
 path = "src/bin/pp2_gate.rs"
+
+[[bin]]
+name = "pp-transport-smoke"
+path = "src/bin/pp_transport_smoke.rs"

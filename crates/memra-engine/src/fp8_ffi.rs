@@ -137,15 +137,15 @@ impl crate::Engine {
 
         let mut y = self.uninit(m * out_f)?; // full-overwrite GEMM output: skip memset
         let rc = {
-            let stream = &self.gpu.stream;
+            let stream = self.gpu.stream();
             // Hold every SyncOnDrop guard across the FFI call (same pattern as cutlass_ffi);
             // the block scope drops them before `y` is returned.
-            let (w_p, _gw) = w_bytes.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (q_p, _gq) = s.xq.device_ptr_mut(stream);
-            let (sc_p, _gs) = s.scales.device_ptr_mut(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            let (w_p, _gw) = w_bytes.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (q_p, _gq) = s.xq.device_ptr_mut(&stream);
+            let (sc_p, _gs) = s.scales.device_ptr_mut(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(&stream);
             unsafe {
                 memra_fp8_pp_gemm(
                     w_p as *const core::ffi::c_void,

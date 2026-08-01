@@ -210,12 +210,12 @@ impl crate::Engine {
         }
         let mut y = self.uninit(m * out_f)?; // full-overwrite GEMM output: skip memset
         let rc = {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = w16.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (h_p, _gh) = s.xh.device_ptr_mut(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w16.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (h_p, _gh) = s.xh.device_ptr_mut(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(&stream);
             unsafe {
                 memra_f16_pp_gemm(
                     w_p as *const core::ffi::c_void,
@@ -272,9 +272,9 @@ impl crate::Engine {
             let xq = self.htod(&hx)?;
             let mut xh = self.alloc_u8_uninit(nelem * 2)?;
             let rc = {
-                let stream = &self.gpu.stream;
-                let (x_p, _gx) = xq.device_ptr(stream);
-                let (h_p, _gh) = xh.device_ptr_mut(stream);
+                let stream = self.gpu.stream();
+                let (x_p, _gx) = xq.device_ptr(&stream);
+                let (h_p, _gh) = xh.device_ptr_mut(&stream);
                 unsafe {
                     memra_f16_cvt(x_p as *const f32, h_p as *mut core::ffi::c_void,
                                   nelem, stream.cu_stream() as *mut core::ffi::c_void)
@@ -285,9 +285,9 @@ impl crate::Engine {
         }
         let mut xh = self.alloc_u8_uninit(nelem * 2)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (x_p, _gx) = x.device_ptr(stream);
-            let (h_p, _gh) = xh.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (h_p, _gh) = xh.device_ptr_mut(&stream);
             unsafe {
                 memra_f16_cvt(
                     x_p as *const f32,
@@ -331,11 +331,11 @@ impl crate::Engine {
         }
         let s = guard.as_mut().unwrap();
         let rc = {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = w16.device_ptr(stream);
-            let (h_p, _gh) = xh.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w16.device_ptr(&stream);
+            let (h_p, _gh) = xh.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(&stream);
             unsafe {
                 memra_f16_pp_gemm_pre(
                     w_p as *const core::ffi::c_void,
@@ -390,11 +390,11 @@ impl crate::Engine {
         }
         let s = guard.as_mut().unwrap();
         let rc = {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = w16.device_ptr(stream);
-            let (h_p, _gh) = xh.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w16.device_ptr(&stream);
+            let (h_p, _gh) = xh.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(&stream);
             unsafe {
                 memra_f16_pp_gemm_pre(
                     w_p as *const core::ffi::c_void,
@@ -446,11 +446,11 @@ impl crate::Engine {
         let s = guard.as_mut().unwrap();
         let mut y = self.uninit(m * out_f)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (w_p, _gw) = w16.device_ptr(stream);
-            let (h_p, _gh) = xh.device_ptr(stream);
-            let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w16.device_ptr(&stream);
+            let (h_p, _gh) = xh.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(&stream);
             unsafe {
                 memra_f16_pp_gemm_pre(
                     w_p as *const core::ffi::c_void,
@@ -486,9 +486,9 @@ impl crate::Engine {
         let nblk = in_f / 32;
         let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (s_p, _gs) = bytes.device_ptr(stream);
-            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (s_p, _gs) = bytes.device_ptr(&stream);
+            let (d_p, _gd) = dst.device_ptr_mut(&stream);
             unsafe {
                 memra_q8_0_dequant_f16(
                     s_p as *const core::ffi::c_void,
@@ -644,9 +644,9 @@ impl crate::Engine {
         let nblk = in_f / 32;
         let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (s_p, _gs) = bytes.device_ptr(stream);
-            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (s_p, _gs) = bytes.device_ptr(&stream);
+            let (d_p, _gd) = dst.device_ptr_mut(&stream);
             unsafe {
                 memra_q4_0_dequant_f16(
                     s_p as *const core::ffi::c_void,
@@ -675,9 +675,9 @@ impl crate::Engine {
         let nsb = in_f / 256;
         let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (s_p, _gs) = bytes.device_ptr(stream);
-            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (s_p, _gs) = bytes.device_ptr(&stream);
+            let (d_p, _gd) = dst.device_ptr_mut(&stream);
             unsafe {
                 memra_q5_K_dequant_f16(
                     s_p as *const core::ffi::c_void,
@@ -706,9 +706,9 @@ impl crate::Engine {
         let nsb = in_f / 256;
         let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (s_p, _gs) = bytes.device_ptr(stream);
-            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (s_p, _gs) = bytes.device_ptr(&stream);
+            let (d_p, _gd) = dst.device_ptr_mut(&stream);
             unsafe {
                 memra_q4_K_dequant_f16(
                     s_p as *const core::ffi::c_void,
@@ -735,9 +735,9 @@ impl crate::Engine {
         let nsb = in_f / 256;
         let mut dst = self.alloc_u8_uninit(out_f * in_f * 2)?;
         let rc = {
-            let stream = &self.gpu.stream;
-            let (s_p, _gs) = bytes.device_ptr(stream);
-            let (d_p, _gd) = dst.device_ptr_mut(stream);
+            let stream = self.gpu.stream();
+            let (s_p, _gs) = bytes.device_ptr(&stream);
+            let (d_p, _gd) = dst.device_ptr_mut(&stream);
             unsafe {
                 memra_q6_K_dequant_f16(
                     s_p as *const core::ffi::c_void,
