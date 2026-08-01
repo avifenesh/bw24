@@ -1,0 +1,6 @@
+{"arm":"llama","rep":1,"pp512":3992.13,"tg128":194.62,"temp_c":66}
+{"arm":"memra","rep":1,"prefill":496.8,"decode":139.00,"argmax_match":1,"temp_c":64}
+{"arm":"llama","rep":2,"pp512":3952.28,"tg128":193.15,"temp_c":73}
+{"arm":"memra","rep":2,"prefill":495.6,"decode":139.10,"argmax_match":1,"temp_c":67}
+{"arm":"llama","rep":3,"pp512":3952.94,"tg128":192.99,"temp_c":73}
+{"arm":"memra","rep":3,"prefill":495.7,"decode":139.11,"argmax_match":1,"temp_c":67}

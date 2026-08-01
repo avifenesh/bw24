@@ -1,0 +1,424 @@
+
+
+Here is a Rust HTTP server source file:
+
+```rust
+//! bw24-server (BASE-4): a minimal OpenAI-ish HTTP server that serves 2-4 concurrent agents across
+//! DIFFERENT models on one endpoint via a single GPU worker thread + step-interleave scheduler.
+//!
+//! Architecture (see worker.rs): axum runs on a tokio runtime; ONE dedicated std::thread owns the
+//! Engine + every loaded HybridModel (CUDA context is thread-affine). Handlers submit `Cmd`s over a
+//! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
+//!
+//! Endpoints:
+//!   GET  /health                 -> {"status":"ok","models":[...]}
+//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
+//!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
+//!                                     seed?,stop?,chat?,stream?}. stream=true => SSE token-by-token;
+//!                                     else a single JSON {text,tokens,stop_reason}.
+//!
+//! CONFIG: BW24_MODELS="name=/path.gguf,name2=/path2.gguf" (comma-separated name=path pairs).
+//! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. BW24_ADDR sets the bind addr.
+
+mod worker;
+
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
+
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{sse::{Event as SseEvent, Sse}, IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use bw24_engine::decode::GenParams;
+use bw24_engine::sampler::SamplerConfig;
+use worker::{Cmd, Event, Request};
+
+#[derive(Clone)]
+struct AppState {
+    cmd_tx: Sender<Cmd>,
+    models: Arc<Vec<String>>,
+}
+
+/// POST /v1/completions request body.
+#[derive(Deserialize)]
+struct CompletionReq {
+    model: String,
+    #[serde(default)]
+    prompt: String,
+    /// raw token-id prompt (the exact-token validation-gate path; bypasses the tokenizer).
+    #[serde(default)]
+    prompt_ids: Vec<u32>,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: usize,
+    #[serde(default)]
+    temperature: f32,
+    #[serde(default = "one")]
+    top_p: f32,
+    #[serde(default)]
+    top_k: usize,
+    #[serde(default)]
+    min_p: f32,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    stop: Vec<String>,
+    /// wrap the prompt in the model's chat template (single user turn).
+    #[serde(default)]
+    chat: bool,
+    /// stream tokens via SSE; else return one JSON when done.
+    #[serde(default)]
+    stream: bool,
+    /// optional hard context cap.
+    #[serde(default)]
+    max_ctx: Option<usize>,
+}
+fn default_max_tokens() -> usize { 128 }
+fn one() -> f32 { 1.0 }
+
+#[derive(Serialize)]
+struct CompletionResp {
+    model: String,
+    text: String,
+    tokens: Vec<u32>,
+    stop_reason: String,
+    n_tokens: usize,
+    elapsed_s: f64,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let models = parse_models_config();
+    eprintln!("[server] starting; models config = {models:?}");
+
+    // Spawn the GPU worker thread and block until every model is loaded (or it fails).
+    let (cmd_tx, model_names) = match worker::spawn(models) {
+        Ok(v) => v,
+        Err(err) => { eprintln!("[server] FATAL: worker init failed: {err}"); std::process::exit(1); }
+    };
+    eprintln!("[server] worker ready; serving models: {model_names:?}");
+
+    let state = AppState { cmd_tx, models: model_names };
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/models", get(list_models))
+        .route("/v1/completions", post(completions))
+        .with_state(state);
+
+    let addr = std::env::var("BW24_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("[server] listening on http://{addr}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// BW24_MODELS="name=/path.gguf,name2=/path2.gguf". Falls back to the BASE-4 test pair.
+fn parse_models_config() -> Vec<(String, String)> {
+    if let Ok(spec) = std::env::var("BW24_MODELS") {
+        let mut out = Vec::new();
+        for entry in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            if let Some((name, path)) = entry.split_once('=') {
+                out.push((name.trim().to_string(), path.trim().to_string()));
+            } else {
+                eprintln!("[server] WARN: bad BW24_MODELS entry {entry:?} (want name=/path); skipping");
+            }
+        }
+        if !out.is_empty() { return out; }
+    }
+    // Default: the BASE-4 test pair (main=27B, judge=9B).
+    vec![
+        ("main".into(),  "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf".into()),
+        ("judge".into(), "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf".into()),
+    ]
+}
+
+async fn health(State(st): State<AppState>) -> impl IntoResponse {
+    Json(json!({ "status": "ok", "models": *st.models }))
+}
+
+async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
+    let data: Vec<_> = st.models.iter().map(|m| json!({ "id": m, "object": "model" })).collect();
+    Json(json!({ "object": "list", "data": data }))
+}
+
+/// Build the (GenParams, SamplerConfig, stop, prompt) from a request body.
+fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Request {
+    let params = GenParams {
+        max_new: req.max_tokens,
+        max_ctx: req.max_ctx,
+        eos: Vec::new(), // worker adds the model's own eos id
+    };
+    let sampler_cfg = SamplerConfig {
+        temperature: req.temperature,
+        top_k: req.top_k,
+        top_p: req.top_p,
+        min_p: req.min_p,
+        seed: req.seed,
+        ..Default::default()
+    };
+    Request {
+        model: req.model.clone(),
+        prompt_ids: req.prompt_ids.clone(),
+        prompt_text: req.prompt.clone(),
+        chat: req.chat,
+        params,
+        sampler_cfg,
+        stop_strings: req.stop.clone(),
+        tx,
+    }
+}
+
+async fn completions(State(st): State<AppState>, Json(req): Json<Comple
+```
+
+Refactor this to add graceful shutdown: catch SIGTERM/SIGINT, stop accepting new requests, drain in-flight sessions with a 30s deadline, then exit. Show the complete modified sections with explanations.
+
+Here is the refactored Rust source with graceful shutdown logic added.
+
+###0.02.069.508 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1861
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.069.509 E decode: failed to initialize batch
+0.02.069.510 E llama_decode: failed to decode, ret = -1
+###0.02.069.782 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1862
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.069.782 E decode: failed to initialize batch
+0.02.069.783 E llama_decode: failed to decode, ret = -1
+###0.02.070.009 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1863
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.070.010 E decode: failed to initialize batch
+0.02.070.010 E llama_decode: failed to decode, ret = -1
+### are0.02.070.487 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1865
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.070.488 E decode: failed to initialize batch
+0.02.070.488 E llama_decode: failed to decode, ret = -1
+###0.02.070.714 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1866
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.070.715 E decode: failed to initialize batch
+0.02.070.715 E llama_decode: failed to decode, ret = -1
+### are0.02.071.194 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1868
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.071.195 E decode: failed to initialize batch
+0.02.071.195 E llama_decode: failed to decode, ret = -1
+### are0.02.071.639 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1870
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.071.640 E decode: failed to initialize batch
+0.02.071.640 E llama_decode: failed to decode, ret = -1
+### are the0.02.072.367 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1873
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.072.367 E decode: failed to initialize batch
+0.02.072.367 E llama_decode: failed to decode, ret = -1
+###0.02.072.587 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1874
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.072.587 E decode: failed to initialize batch
+0.02.072.588 E llama_decode: failed to decode, ret = -1
+###0.02.072.807 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1875
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.072.808 E decode: failed to initialize batch
+0.02.072.808 E llama_decode: failed to decode, ret = -1
+###0.02.073.034 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1876
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1876
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.073.034 E decode: failed to initialize batch
+0.02.073.035 E llama_decode: failed to decode, ret = -1
+### Ref0.02.095.087 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1878
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.095.088 E decode: failed to initialize batch
+0.02.095.088 E llama_decode: failed to decode, ret = -1
+ Ref0.02.095.377 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1879
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.095.378 E decode: failed to initialize batch
+0.02.095.378 E llama_decode: failed to decode, ret = -1
+ Ref0.02.095.604 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1880
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.095.604 E decode: failed to initialize batch
+0.02.095.604 E llama_decode: failed to decode, ret = -1
+ Ref the0.02.096.124 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1882
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.096.124 E decode: failed to initialize batch
+0.02.096.125 E llama_decode: failed to decode, ret = -1
+ Ref0.02.096.366 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1883
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.096.367 E decode: failed to initialize batch
+0.02.096.367 E llama_decode: failed to decode, ret = -1
+ Ref the0.02.096.839 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1885
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.096.840 E decode: failed to initialize batch
+0.02.096.840 E llama_decode: failed to decode, ret = -1
+ Ref the0.02.097.291 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1887
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.097.291 E decode: failed to initialize batch
+0.02.097.291 E llama_decode: failed to decode, ret = -1
+ Ref the the0.02.098.010 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1890
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.098.010 E decode: failed to initialize batch
+0.02.098.010 E llama_decode: failed to decode, ret = -1
+ Ref0.02.098.254 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1891
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.098.255 E decode: failed to initialize batch
+0.02.098.255 E llama_decode: failed to decode, ret = -1
+ Ref0.02.098.484 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1892
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.098.485 E decode: failed to initialize batch
+0.02.098.485 E llama_decode: failed to decode, ret = -1
+ Ref0.02.098.708 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1893
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1893
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.098.709 E decode: failed to initialize batch
+0.02.098.709 E llama_decode: failed to decode, ret = -1
+ Refact0.02.115.904 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1895
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.115.904 E decode: failed to initialize batch
+0.02.115.904 E llama_decode: failed to decode, ret = -1
+act0.02.116.197 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1896
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.116.197 E decode: failed to initialize batch
+0.02.116.197 E llama_decode: failed to decode, ret = -1
+act0.02.116.425 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1897
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.116.425 E decode: failed to initialize batch
+0.02.116.425 E llama_decode: failed to decode, ret = -1
+act###0.02.117.013 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1899
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.117.014 E decode: failed to initialize batch
+0.02.117.014 E llama_decode: failed to decode, ret = -1
+act0.02.117.249 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1900
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.117.249 E decode: failed to initialize batch
+0.02.117.249 E llama_decode: failed to decode, ret = -1
+act0.02.117.474 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1901
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.117.474 E decode: failed to initialize batch
+0.02.117.474 E llama_decode: failed to decode, ret = -1
+act###act Ref0.02.118.504 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1905
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.118.504 E decode: failed to initialize batch
+0.02.118.504 E llama_decode: failed to decode, ret = -1
+act0.02.118.725 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1906
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.118.725 E decode: failed to initialize batch
+0.02.118.726 E llama_decode: failed to decode, ret = -1
+act0.02.118.946 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1907
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.118.947 E decode: failed to initialize batch
+0.02.118.947 E llama_decode: failed to decode, ret = -1
+act###0.02.119.404 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1910
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1909
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.119.405 E decode: failed to initialize batch
+0.02.119.405 E llama_decode: failed to decode, ret = -1
+act### Ref0.02.137.941 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1912
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1912
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.137.942 E decode: failed to initialize batch
+0.02.137.942 E llama_decode: failed to decode, ret = -1
+ Ref Ref Ref Ref0.02.166.291 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1920
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1916
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.166.293 E decode: failed to initialize batch
+0.02.166.293 E llama_decode: failed to decode, ret = -1
+ Ref Ref Ref Ref Refact0.02.167.847 W find_slot: non-consecutive token position 1926 after 1920 for sequence 0 with 5 new tokens
+0.02.167.868 W find_slot: non-consecutive token position 1926 after 1920 for sequence 0 with 5 new tokens
+actactact0.02.183.447 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1926
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1925
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.183.448 E decode: failed to initialize batch
+0.02.183.449 E llama_decode: failed to decode, ret = -1
+act0.02.183.720 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 1926
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 1926
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.183.720 E decode: failed to initialize batch
+0.02.183.720 E llama_decode: failed to decode, ret = -1
+actactactactact0.02.185.573 E get_logits_ith: invalid logits id 5, reason: batch.logits[5] != true
+/home/avifenesh/projects/llama.cpp/common/sampling.cpp:154: GGML_ASSERT(logits != nullptr) failed
+[New LWP 2240880]
+[New LWP 2240812]
+[New LWP 2240811]
+[New LWP 2240738]
+[New LWP 2240737]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/x86_64-linux-gnu/libthread_db.so.1".
+__syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+⚠️ warning: 56	../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+56	in ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S
+#1  0x00007c2152aa061c in __internal_syscall_cancel (a1=<optimized out>, a2=<optimized out>, a3=<optimized out>, a4=<optimized out>, a5=0, a6=0, nr=61) at ./nptl/cancellation.c:49
+⚠️ warning: 49	./nptl/cancellation.c: No such file or directory
+#2  __syscall_cancel (a1=<optimized out>, a2=<optimized out>, a3=<optimized out>, a4=<optimized out>, a5=a5@entry=0, a6=a6@entry=0, nr=61) at ./nptl/cancellation.c:75
+75	in ./nptl/cancellation.c
+#3  0x00007c2152b1cd4f in __GI___wait4 (pid=<optimized out>, stat_loc=<optimized out>, options=<optimized out>, usage=<optimized out>) at ../sysdeps/unix/sysv/linux/wait4.c:30
+⚠️ warning: 30	../sysdeps/unix/sysv/linux/wait4.c: No such file or directory
+#4  0x00007c2153bec633 in ggml_print_backtrace () from /data/projects/llama.cpp/build/bin/libggml-base.so.0
+#5  0x00007c2153bec7db in ggml_abort () from /data/projects/llama.cpp/build/bin/libggml-base.so.0
+#6  0x00007c21538dcc75 in common_sampler_sample(common_sampler*, llama_context*, int, bool) () from /data/projects/llama.cpp/build/bin/libllama-common.so.0
+#7  0x0000642bf5ad05d6 in main ()
+[Inferior 1 (process 2240706) detached]

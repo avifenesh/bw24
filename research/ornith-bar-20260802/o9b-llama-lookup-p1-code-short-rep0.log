@@ -1,0 +1,242 @@
+
+
+Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.
+
+Here is a complete implementation of a doubly-linked list with insert, delete, and reverse operations,0.01.831.242 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 47
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 46
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.01.831.243 E decode: failed to initialize batch
+0.01.831.243 E llama_decode: failed to decode, ret = -1
+ operations0.01.831.537 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 47
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 47
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.01.831.537 E decode: failed to initialize batch
+0.01.831.537 E llama_decode: failed to decode, ret = -1
+ operations for:
+- Insert at the beginning
+- Insert at the end0.01.981.943 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 62
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 62
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.01.981.944 E decode: failed to initialize batch
+0.01.981.944 E llama_decode: failed to decode, ret = -1
+ at the end
+0.01.998.808 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 66
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 66
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.01.998.809 E decode: failed to initialize batch
+0.01.998.809 E llama_decode: failed to decode, ret = -1
+ the end
+-0.02.012.803 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 70
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 70
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.012.804 E decode: failed to initialize batch
+0.02.012.804 E llama_decode: failed to decode, ret = -1
+ end
+- Delete0.02.026.884 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 74
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 74
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.026.884 E decode: failed to initialize batch
+0.02.026.884 E llama_decode: failed to decode, ret = -1
+
+- Delete0.02.041.087 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 78
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 77
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.041.088 E decode: failed to initialize batch
+0.02.041.088 E llama_decode: failed to decode, ret = -1
+-0.02.041.344 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 78
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 78
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.041.344 E decode: failed to initialize batch
+0.02.041.344 E llama_decode: failed to decode, ret = -1
+- Insert at the end
+-0.02.085.136 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 87
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 85
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.085.136 E decode: failed to initialize batch
+0.02.085.137 E llama_decode: failed to decode, ret = -1
+-0.02.085.400 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 87
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 86
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.085.401 E decode: failed to initialize batch
+0.02.085.401 E llama_decode: failed to decode, ret = -1
+-0.02.085.624 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 87
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 87
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.085.624 E decode: failed to initialize batch
+0.02.085.625 E llama_decode: failed to decode, ret = -1
+- end0.02.086.120 W find_slot: non-consecutive token position 92 after 87 for sequence 0 with 4 new tokens
+0.02.086.130 W find_slot: non-consecutive token position 92 after 87 for sequence 0 with 4 new tokens
+
+- Delete the first0.02.113.682 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 96
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 94
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.113.682 E decode: failed to initialize batch
+0.02.113.683 E llama_decode: failed to decode, ret = -1
+ first0.02.113.932 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 96
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 95
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.113.933 E decode: failed to initialize batch
+0.02.113.933 E llama_decode: failed to decode, ret = -1
+ first0.02.114.167 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 96
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 96
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.114.168 E decode: failed to initialize batch
+0.02.114.168 E llama_decode: failed to decode, ret = -1
+ first
+0.02.114.649 W find_slot: non-consecutive token position 99 after 96 for sequence 0 with 2 new tokens
+0.02.114.657 W find_slot: non-consecutive token position 99 after 96 for sequence 0 with 2 new tokens
+- Delete the first element0.02.156.359 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 104
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 103
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.156.360 E decode: failed to initialize batch
+0.02.156.360 E llama_decode: failed to decode, ret = -1
+ first0.02.156.621 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 104
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 104
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.156.621 E decode: failed to initialize batch
+0.02.156.621 E llama_decode: failed to decode, ret = -1
+ first
+0.02.171.507 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 108
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 106
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.171.508 E decode: failed to initialize batch
+0.02.171.508 E llama_decode: failed to decode, ret = -1
+
+0.02.171.786 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 108
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 107
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.171.787 E decode: failed to initialize batch
+0.02.171.787 E llama_decode: failed to decode, ret = -1
+
+0.02.172.014 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 108
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 108
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.172.014 E decode: failed to initialize batch
+0.02.172.014 E llama_decode: failed to decode, ret = -1
+
+-0.02.185.705 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 112
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 110
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.185.705 E decode: failed to initialize batch
+0.02.185.706 E llama_decode: failed to decode, ret = -1
+-0.02.185.969 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 112
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 111
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.185.969 E decode: failed to initialize batch
+0.02.185.969 E llama_decode: failed to decode, ret = -1
+---0.02.186.724 W find_slot: non-consecutive token position 117 after 112 for sequence 0 with 4 new tokens
+0.02.186.733 W find_slot: non-consecutive token position 117 after 112 for sequence 0 with 4 new tokens
+ Delete0.02.200.335 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 117
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 115
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.200.335 E decode: failed to initialize batch
+0.02.200.335 E llama_decode: failed to decode, ret = -1
+ Delete0.02.200.590 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 117
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 116
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.200.590 E decode: failed to initialize batch
+0.02.200.590 E llama_decode: failed to decode, ret = -1
+ Delete0.02.200.811 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 117
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 117
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.200.811 E decode: failed to initialize batch
+0.02.200.811 E llama_decode: failed to decode, ret = -1
+ Delete the0.02.214.624 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 121
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 119
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.214.624 E decode: failed to initialize batch
+0.02.214.624 E llama_decode: failed to decode, ret = -1
+ the0.02.214.881 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 121
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 120
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.214.881 E decode: failed to initialize batch
+0.02.214.881 E llama_decode: failed to decode, ret = -1
+ the0.02.215.106 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 121
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 121
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.215.106 E decode: failed to initialize batch
+0.02.215.106 E llama_decode: failed to decode, ret = -1
+ the first0.02.228.888 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 125
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 123
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.228.888 E decode: failed to initialize batch
+0.02.228.889 E llama_decode: failed to decode, ret = -1
+ first0.02.229.154 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 125
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 124
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.229.154 E decode: failed to initialize batch
+0.02.229.154 E llama_decode: failed to decode, ret = -1
+ first the the the the0.02.257.800 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 130
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 129
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.257.801 E decode: failed to initialize batch
+0.02.257.801 E llama_decode: failed to decode, ret = -1
+ the0.02.258.044 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 130
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 130
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.258.044 E decode: failed to initialize batch
+0.02.258.044 E llama_decode: failed to decode, ret = -1
+ the the first0.02.258.743 W find_slot: non-consecutive token position 136 after 130 for sequence 0 with 4 new tokens
+0.02.258.754 W find_slot: non-consecutive token position 136 after 130 for sequence 0 with 4 new tokens
+ first first first0.02.273.964 E init: the tokens of sequence 0 in the input batch have inconsistent sequence positions:
+ - the last position stored in the memory module of the context (i.e. the KV cache) for sequence 0 is X = 136
+ - the tokens for sequence 0 in the input batch have a starting position of Y = 136
+ for M-RoPE, it is required that the position satisfies: X < Y
+0.02.273.965 E decode: failed to initialize batch
+0.02.273.965 E llama_decode: failed to decode, ret = -1
+ first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first first
+
+0.02.809.376 I encoded   27 tokens in    0.026 seconds, speed: 10802.645 t/s
+0.02.809.377 I decoded  259 tokens in    1.164 seconds, speed:  222.593 t/s
+0.02.809.377 I 
+0.02.809.378 I n_draft      = 3
+0.02.809.378 I n_predict    = 259
+0.02.809.378 I n_drafted    = 226
+0.02.809.378 I t_draft_flat = 0.02 ms
+0.02.809.379 I t_draft      = 0.46 ms, 2.02 us per token, 495614.04 tokens per second
+0.02.809.379 I n_accept     = 145
+0.02.809.379 I accept       = 64.159%
+0.02.809.379 I 
+target:
+
+0.02.809.382 I common_perf_print:    sampling time =      70.35 ms
+0.02.809.382 I common_perf_print:    samplers time =      24.16 ms /   259 tokens
+0.02.809.385 I common_perf_print:        load time =    1152.88 ms
+0.02.809.385 I common_perf_print: prompt eval time =     808.90 ms /   257 tokens (    3.15 ms per token,   317.71 tokens per second)
+0.02.809.386 I common_perf_print:        eval time =     278.76 ms /    23 runs   (   12.12 ms per token,    82.51 tokens per second)
+0.02.809.386 I common_perf_print:       total time =    1190.61 ms /   280 tokens
+0.02.809.387 I common_perf_print: unaccounted time =      32.60 ms /   2.7 %      (total - sampling - prompt eval - eval) / (total)
+0.02.809.387 I common_perf_print:    graphs reused =         70
+
+

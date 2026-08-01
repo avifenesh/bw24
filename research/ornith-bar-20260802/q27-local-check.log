@@ -1,0 +1,18 @@
+=== q27-class local check (2026-08-01T20:20:12+03:00) ===
+Mission: KQRP sweep wants the q27-class check (Q4_K/Q6_K dense-trunk hybrid, Qwen3.6-27B-Q4_K_M.gguf)
+q27 gguf lives at /opt/dlami/nvme on the boxes; local candidates checked:
+
+-- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M.gguf (2.0GB):
+      8 f32
+      7 q4_K
+      3 q6_K
+   -> 18 tensors, single nextn block = MTP-HEAD-ONLY extension gguf, not a runnable q27 model
+
+-- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf (16GB):
+    504 nvfp4
+    360 f32
+      2 q5_K
+   -> NVFP4 trunk (504 tensors) + q5_K embd/head = the 5090 daily, ZERO q4_K tensors; not q27-class
+
+No other 27B gguf under /data/ai-ml/hf-models (find -iname '*27*gguf'). VERDICT: no local
+q27-class artifact -> per mission, Ornith-35B alone is the KQRP sweep on this rig.

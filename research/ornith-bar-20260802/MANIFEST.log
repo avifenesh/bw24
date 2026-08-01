@@ -1,0 +1,9 @@
+=== ornith-bar manifest 2026-08-01T17:42:36Z ===
+memra tree: /home/avifenesh/projects/wt-ornith-bar @ 595f5c4391dc886b53ff09942627e24f387466c5 (lane/ornith-bar from restructure/public-split)
+llama.cpp: bb090d1f1 (convert: accept mixed NVFP4 + FP8 compressed-tensors config )
+driver: 595.71.05 gpu: NVIDIA GeForce RTX 5090 Laptop GPU
+platform_profile: performance
+models:
+  /data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf (9527500992 bytes, sha256 in research/onboard-ornith-20260801 + ornith-drafters manifests)
+  /data/ai-ml/hf-models/ornith-1.0-9b-gguf/draft-ornith9b-owntrim-nvfp4head-q4blk.gguf (936838816 bytes, sha256 in research/onboard-ornith-20260801 + ornith-drafters manifests)
+  /data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf (21166757760 bytes, sha256 in research/onboard-ornith-20260801 + ornith-drafters manifests)

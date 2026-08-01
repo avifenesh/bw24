@@ -1,0 +1,25 @@
+=== Ornith-9B best-vs-best (N=3 medians, interleaved same-session) ===
+
+[p1-code-short] memra=run-spec drafter K=3, llama=llama-plain
+  decode : memra spec 188.07 (plain 86.97, acc 61.1%) vs llama 84.21  -> ratio 2.23x
+  prefill: memra 794.1 (27 tok in 0.034s) vs llama 811.1  -> ratio 0.98x
+  e2e    : memra 1.395s vs llama 3.084s (prime + 256/decode)  -> ratio 2.21x  >= 1.1x BAR: PASS
+  memra self-consistency: 3/3 PASS; reps decode memra=[187.43, 188.07, 188.32] llama=[82.13, 84.21, 84.39]
+
+[p2-code-medium] memra=run-spec drafter K=3, llama=llama-plain
+  decode : memra spec 150.37 (plain 85.03, acc 47.0%) vs llama 83.91  -> ratio 1.79x
+  prefill: memra 5301.7 (1845 tok in 0.348s) vs llama 4923.0  -> ratio 1.08x
+  e2e    : memra 2.050s vs llama 3.429s (prime + 256/decode)  -> ratio 1.67x  >= 1.1x BAR: PASS
+  memra self-consistency: 3/3 PASS; reps decode memra=[150.21, 150.37, 151.28] llama=[83.83, 83.91, 84.34]
+
+[p3-agentic-long] memra=run-spec drafter K=3, llama=llama-plain
+  decode : memra spec 144.79 (plain 84.89, acc 47.8%) vs llama 82.59  -> ratio 1.75x
+  prefill: memra 5145.6 (6257 tok in 1.216s) vs llama 4909.1  -> ratio 1.05x
+  e2e    : memra 2.984s vs llama 4.376s (prime + 256/decode)  -> ratio 1.47x  >= 1.1x BAR: PASS
+  memra self-consistency: 3/3 PASS; reps decode memra=[144.35, 144.79, 145.38] llama=[82.5, 82.59, 82.76]
+
+=== Ornith-35B KQRP sweep (interleaved x5, board shape pp512/tg128) ===
+  decode_toks  : off 139.16 [135.88, 139.1, 139.16, 139.23, 139.42] | on 134.54 [133.96, 134.45, 134.54, 134.81, 134.96] | on/off 0.967x
+  prefill_toks : off 496.10 [482.3, 494.7, 496.1, 496.2, 496.3] | on 491.20 [489.7, 491.0, 491.2, 491.5, 491.6] | on/off 0.990x
+  argmax MATCH : off 5/5 | on 5/5
+  mirrors built: on [191, 191, 191, 191, 191] | off [0, 0, 0, 0, 0]
