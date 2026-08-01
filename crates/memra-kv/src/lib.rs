@@ -133,6 +133,14 @@ pub struct Cache {
     pub recur: Vec<Option<RecurLayer>>,
     pub pos: usize,
     pub max_ctx: usize,
+    /// BATCHED-TICK increment 2 component 3 (lean logits, 2026-08-01): device-side park of
+    /// this session's LAST logits row. Device-sampled rows in the batched serving tick skip
+    /// the [n_vocab] logits D2H entirely; the tick instead dtod-copies the row here (device
+    /// bandwidth, ~µs) so the ONE consumer that truly needs the final row — the KV-reuse
+    /// pool's park-at-retire (an empty-suffix resume samples from parked last_logits) —
+    /// can D2H it once at retire. Lazily allocated on the first lean tick; None on every
+    /// non-lean path (zero cost). Travels with the Cache into the reuse pool.
+    pub last_logits_dev: Option<CudaSlice<f32>>,
     /// DFlash tap sink (dflash lane, 2026-07-13): when armed, the gemma4 verify/prime
     /// trunks copy the residual stream AFTER each tapped layer into `buf` rows
     /// ([t, n_taps*hidden] row-major — the drafter fc input layout). None on every
@@ -278,7 +286,7 @@ impl Cache {
                 }
             }
         }
-        Ok(Cache { kv, recur, pos: 0, max_ctx, dflash_taps: None })
+        Ok(Cache { kv, recur, pos: 0, max_ctx, dflash_taps: None, last_logits_dev: None })
     }
 
     /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).

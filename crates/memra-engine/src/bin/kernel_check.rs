@@ -2103,6 +2103,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // --- BATCHED-TICK increment 2: z-batched SEQS decode (append + FA) vs the per-seq
+        // loop: BYTE identity. The seqs append twin must write bit-identical cache bytes to
+        // B per-seq append calls, and fa_decode_vec_q_seqs_v4 + combine_seqs must reproduce
+        // the per-seq eager v4 (fa_decode) program exactly — same in-kernel split partition
+        // (ONE-PARTITION LAW at the shared rung), same walk, same combine order. Depths mix
+        // uneven sequences crossing split boundaries within one fa_split_keys rung.
+        {
+            use cudarc::driver::DevicePtr;
+            for depths in [vec![96usize, 128, 257, 511], vec![200; 8]] {
+                let b_n = depths.len();
+                let sp0 = memra_engine::fa_split_keys_pub(depths[0], nhkv);
+                let eligible = depths.iter().all(|&t| memra_engine::fa_seqs_eligible(t, hd))
+                    && depths.iter().all(|&t| memra_engine::fa_split_keys_pub(t, nhkv) == sp0);
+                if !eligible { continue; }   // non-v4 geometry/config: the seqs arm never fires
+                let t_kv_max = *depths.iter().max().unwrap();
+                // per-seq caches primed to depth-1 tokens from a shared random pool
+                let kpool: Vec<f32> = (0..kv_dim_k*t_kv_max).map(|i| pr(i+13)*0.2).collect();
+                let vpool: Vec<f32> = (0..kv_dim_v*t_kv_max).map(|i| pr(i+17)*0.2).collect();
+                let kpd = e.htod(&kpool)?; let vpd = e.htod(&vpool)?;
+                let mut kcs: Vec<_> = Vec::new(); let mut vcs: Vec<_> = Vec::new();
+                let mut kcs2: Vec<_> = Vec::new(); let mut vcs2: Vec<_> = Vec::new();
+                for &tkv in &depths {
+                    let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
+                    let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
+                    for tok in 0..tkv-1 {
+                        let k_row = kpd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                        let v_row = vpd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                        e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                                   kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes,false)?;
+                    }
+                    // twin cache with the SAME primed prefix (bytes copied via re-append)
+                    let mut kc2 = e.alloc_u8(tkv * k_tok_bytes)?;
+                    let mut vc2 = e.alloc_u8(tkv * v_tok_bytes)?;
+                    for tok in 0..tkv-1 {
+                        let k_row = kpd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                        let v_row = vpd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                        e.append_kv_quantized_view(&k_row,&v_row,&mut kc2,&mut vc2,tok,
+                                                   kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes,false)?;
+                    }
+                    kcs.push(kc); vcs.push(vc); kcs2.push(kc2); vcs2.push(vc2);
+                }
+                // this tick's stacked new rows + positions (slot = depth-1)
+                let knew: Vec<f32> = (0..kv_dim_k*b_n).map(|i| pr(i+23)*0.2).collect();
+                let vnew: Vec<f32> = (0..kv_dim_v*b_n).map(|i| pr(i+27)*0.2).collect();
+                let knd = e.htod(&knew)?; let vnd = e.htod(&vnew)?;
+                let pos: Vec<i32> = depths.iter().map(|&t| (t - 1) as i32).collect();
+                let pos_d = e.htod_i32(&pos)?;
+                // arm 1 (loop): per-seq append into kcs/vcs
+                for z in 0..b_n {
+                    let k_row = knd.slice(z*kv_dim_k..(z+1)*kv_dim_k);
+                    let v_row = vnd.slice(z*kv_dim_v..(z+1)*kv_dim_v);
+                    e.append_kv_quantized_view(&k_row,&v_row,&mut kcs[z],&mut vcs[z],depths[z]-1,
+                                               kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes,false)?;
+                }
+                // arm 2 (seqs): one z-batched launch into kcs2/vcs2 via the pointer table
+                let mut ptrs2: Vec<u64> = Vec::new();
+                for z in 0..b_n {
+                    let (pk, _g) = kcs2[z].device_ptr(&e.gpu.stream);
+                    let (pv, _g2) = vcs2[z].device_ptr(&e.gpu.stream);
+                    ptrs2.push(pk as u64); ptrs2.push(pv as u64);
+                }
+                let table2 = e.htod_u64(&ptrs2)?;
+                let tv2 = table2.slice(0..2*b_n);
+                e.append_kv_quantized_seqs(&knd,&vnd,&tv2,&pos_d,b_n,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                let mut ap_diff = 0usize;
+                for z in 0..b_n {
+                    let a = e.dtoh_u8(&kcs[z])?; let b = e.dtoh_u8(&kcs2[z])?;
+                    ap_diff += a.iter().zip(&b).filter(|(x,y)| x != y).count();
+                    let a = e.dtoh_u8(&vcs[z])?; let b = e.dtoh_u8(&vcs2[z])?;
+                    ap_diff += a.iter().zip(&b).filter(|(x,y)| x != y).count();
+                }
+                println!("append_kv_seqs vs per-seq loop B={b_n}: bytediff={ap_diff} {}",
+                         if ap_diff == 0 {"OK"} else {fails+=1;"FAIL"});
+                // FA: per-seq eager loop (q-row copies, the fallback arm's exact program)
+                // vs one seqs launch reading the SAME caches (arm-1 set — isolates FA).
+                let q: Vec<f32> = (0..hd*nh*b_n).map(|i| pr(i+31)*0.2).collect();
+                let qd = e.htod(&q)?;
+                let mut o_loop = e.zeros(hd*nh*b_n)?;
+                for z in 0..b_n {
+                    let kview = e.view_u8(&kcs[z], depths[z]*k_tok_bytes);
+                    let vview = e.view_u8(&vcs[z], depths[z]*v_tok_bytes);
+                    let mut q_row = e.zeros(hd*nh)?;
+                    let q_src = qd.slice(z*nh*hd..(z+1)*nh*hd);
+                    e.copy_view_into(&mut q_row, 0, &q_src, nh*hd)?;
+                    let mut o_row = e.zeros(hd*nh)?;
+                    e.fa_decode(&q_row,&kview,&vview,&mut o_row,hd,nh,nhkv,depths[z],scale,
+                                k_tok_bytes,v_tok_bytes)?;
+                    e.copy_into(&mut o_loop, z*nh*hd, &o_row, nh*hd)?;
+                }
+                let mut ptrs1: Vec<u64> = Vec::new();
+                for z in 0..b_n {
+                    let (pk, _g) = kcs[z].device_ptr(&e.gpu.stream);
+                    let (pv, _g2) = vcs[z].device_ptr(&e.gpu.stream);
+                    ptrs1.push(pk as u64); ptrs1.push(pv as u64);
+                }
+                let table1 = e.htod_u64(&ptrs1)?;
+                let tv1 = table1.slice(0..2*b_n);
+                let mut o_seqs = e.zeros(hd*nh*b_n)?;
+                e.fa_decode_batch_seqs_v4(&qd,&tv1,&pos_d,&mut o_seqs,hd,nh,nhkv,b_n,
+                                          t_kv_max,scale,sp0,k_tok_bytes,v_tok_bytes)?;
+                let a = e.dtoh(&o_loop)?; let b = e.dtoh(&o_seqs)?;
+                let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+                println!("fa_decode_seqs_v4 vs per-seq loop B={b_n} depths={depths:?}: bitdiff={bitdiff} {}",
+                         if bitdiff == 0 {"OK"} else {fails+=1;"FAIL"});
+            }
+        }
+
         // --- ARC B: fa_prefill_view_ws (dequant-once bf16 workspace) vs fa_prefill_view: BYTE
         // identity. The workspace stores __float2bfloat16(dq_*_elem(...)) — the identical value
         // fa_prefill_q stages to smem — and fa_prefill_qw's MMA/softmax/PV code is byte-identical,
