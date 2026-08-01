@@ -192,7 +192,9 @@ greedy-hash still `28ca31bb8fb5aae3` (4/4 arms across the day).
 | decode-batch-gate config B=12/16 + mirror, s32+s160 | gate2 bit PASS + gate3 PASS — no cap door needed (auto exact-16 admission) |
 | decode-batch-gate B=16 naked | REFUSED (engine assert — the exact-tier guard) |
 | decode-batch-gate B=32 door | gate2 FAIL step 0 (no exact class at 32 — documented wall) |
-| check-batch-exact x3 arms | PASS 16/16 each, shared refs |
+| check-batch-exact x4 arms (incl post-kill) | PASS 16/16 each, shared refs |
+| run-spec K=1..8 | N/A for this GGUF — no MTP head (nextn=0, captured runspec-9b-inc3.log); spec path untouched by this lane |
+| cargo test -p memra-server | 7/7 pass |
 
 ## Incidents
 

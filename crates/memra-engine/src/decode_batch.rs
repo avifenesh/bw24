@@ -13,8 +13,13 @@
 //!   bit-identical to m=1 (the spec-exactness machinery decode_step_t relies on). Each
 //!   sequence's token stream must equal its isolated single-seq run (worker.rs contract:
 //!   "byte-identical to isolated").
-//! - B >= 16 would cross into the GEMM tier (block-scale f32 rounding — a DIFFERENT
-//!   numeric config). Deliberately refused in v1: assert B <= 8.
+//! - 9 <= B <= 16 (the EXACT-16 tier, inc3 2026-08-01): admitted iff
+//!   `decode_batch_exact16_ok` — every matmul rides the b16 batched-mmvq class
+//!   (bit-identical per (token,row) to m=1; Q8_0 needs the q8rp mirror) under a
+//!   verify_exact scope that disables the m>=16 GEMM/MMQ arms. gate2 bit-strength
+//!   PASS at B=12/16 (research/batched-tick-inc3-20260801). Refused otherwise.
+//! - B > 16 crosses into GEMM/dp4a-tail numeric configs with NO exact kernel class —
+//!   refused (MEMRA_DECODE_BATCH_CAP stays a measurement door).
 //!
 //! v1 scope: the hybrid (Qwen3.5-class) non-gemma4 trunk. Fused m=1 micro-launches
 //! (fused3 QKV, cross-layer add+norm+q8 chain) are NOT used — the unfused sequence is
