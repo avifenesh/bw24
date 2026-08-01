@@ -1,0 +1,25 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+repro: T_a=19 b=6 slot=0 co_T=[23, 20, 20, 22, 22] steps=96 chat=true
+prefill: solo argmax=90700 margin=0.372957  batch argmax=8160 margin=0.080517  logit maxdiff=1.148240e0  ARGMAX FLIP
+verdict: DIVERGED at prefill argmax (step 0)
+solo : Thinking Process:
+
+1.  **Deconstruct the request:**
+    *   Topic: Water cycle.
+    *   Constraint: Two sentences.
+
+2.  **Drafting - Attempt 1 (Mental outline):**
+    *   The water cycle is the continuous movement of water on, above, and below the surface of the Earth. It involves evaporation, condensation, precipitation, and collection.
+    *   *Critique:* Good content, but
+batch: Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Topic:** Water cycle
+   - **Constraint:** Exactly two sentences
+   - **Goal:** Explain clearly and concisely
+
+2.  **Identify Key Components of the Water Cycle:**
+   - Evaporation (water turns to vapor from oceans/lakes)
+   - Condensation (vapor cools and forms clouds)
+   - Precipitation (water falls

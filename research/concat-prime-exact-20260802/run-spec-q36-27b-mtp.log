@@ -1,0 +1,5 @@
+[loader-law] WARNING: output.weight loads as 2D Float ne=[5120, 248320] (src BF16) — a Float matmul weight rides cuBLAS f32 GEMV and poisons all-or-nothing q8-fast predicates (uses_q8_1_fast/mixer_in_q8_1_fast). If matmul-class: Q8_0-encode at load (model.rs ssm arm / source.rs BF16+F8 gates). If deliberately Float: add it to float_2d_audited with the audit rationale.
+
+thread 'main' (48361) panicked at crates/memra-engine/src/model.rs:297:32:
+missing tensor blk.0.attn_norm.weight
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,8 @@
+===== MEMRA_ROUTER_PREFILL_EXACT=0 (ctrl q35) =====
+mscan: T_a=19 co_max=75 L=40..75 solo_argmax=90700 solo_margin=1.236401
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L
+ 46 |      65 |  90700 | differs | 1.001717567e0 | CHANGED
+ 56 |      75 |  90700 | differs | 1.061245441e0 | CHANGED
+===== MEMRA_ROUTER_PREFILL_EXACT=1 (ctrl q35) =====
+mscan: T_a=19 co_max=75 L=40..75 solo_argmax=90700 solo_margin=1.216972
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L

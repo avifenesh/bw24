@@ -1,0 +1,11 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf
+[moe] resident-experts decision: per-layer 427MB x 40 layers = 17.1GB vs budget 19.1GB -> RESIDENT
+[worker]   loaded "m": 40 layers, eos=248046
+[server] worker ready; serving models: ["m"]
+[worker] m: decode chunk cap 8
+[server] listening on http://127.0.0.1:8121
+[prime-batch] B=3 tokens=65 in 493.4ms
+[prime-batch] B=6 tokens=127 in 862.7ms
+[prime-batch] B=6 tokens=128 in 867.2ms

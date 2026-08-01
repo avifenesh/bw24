@@ -1,0 +1,8 @@
+{"label": "kat-exact0", "verdict": "FAIL", "n_match": 7, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 11.847}
+{"label": "kat-exact1", "verdict": "PASS", "n_match": 16, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 11.796}
+{"label": "o35b-exact0", "verdict": "FAIL", "n_match": 6, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 6.382}
+{"label": "o35b-exact1", "verdict": "PASS", "n_match": 16, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 6.357}
+{"label": "o9b-exact0", "verdict": "PASS", "n_match": 16, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 4.07}
+{"label": "o9b-exact1", "verdict": "PASS", "n_match": 16, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 4.055}
+{"label": "q35ctrl-exact0", "verdict": "PASS", "n_match": 16, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 7.018}
+{"label": "q35ctrl-exact1", "verdict": "PASS", "n_match": 16, "n": 16, "n_err": 0, "max_tokens": 96, "wall_s": 7.07}

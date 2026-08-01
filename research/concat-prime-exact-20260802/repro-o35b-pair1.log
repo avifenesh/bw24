@@ -1,0 +1,41 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+repro: T_a=21 T_b=22 steps=96 chat=true
+prefill: solo argmax=8160 margin=0.641418  batch argmax=8160 margin=0.641418  logit maxdiff=0.000000e0  MATCH
+  step 1: agree tok=579 solo-margin=9.754973 maxdiff=0.000000e0
+  step 2: agree tok=264 solo-margin=5.870213 maxdiff=0.000000e0
+  step 3: agree tok=7047 solo-margin=10.694391 maxdiff=0.000000e0
+  step 4: agree tok=1817 solo-margin=12.578676 maxdiff=0.000000e0
+  step 5: agree tok=25 solo-margin=10.080263 maxdiff=0.000000e0
+  step 6: agree tok=271 solo-margin=11.347095 maxdiff=0.000000e0
+  step 7: agree tok=16 solo-margin=11.164898 maxdiff=0.000000e0
+  step 8: agree tok=13 solo-margin=14.438108 maxdiff=0.000000e0
+  step 16: agree tok=198 solo-margin=10.391662 maxdiff=0.000000e0
+  step 32: agree tok=66172 solo-margin=0.875841 maxdiff=0.000000e0
+  step 48: agree tok=2785 solo-margin=0.088793 maxdiff=0.000000e0
+  step 64: agree tok=82 solo-margin=6.094994 maxdiff=0.000000e0
+  step 80: agree tok=7318 solo-margin=7.089649 maxdiff=0.000000e0
+  step 96: agree tok=50952 solo-margin=7.412064 maxdiff=0.000000e0
+verdict: streams MATCH for 96 steps
+solo : Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Topic:** Roman aqueduct system
+   - **Constraint:** Exactly two sentences
+   - **Goal:** Explain it clearly and concisely within the constraint
+
+2.  **Identify Key Facts about Roman Aqueducts:**
+   - Engineered water supply systems
+   - Used gravity to transport water from distant sources to cities/towns
+   - Featured arches, tunnels
+batch: Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Topic:** Roman aqueduct system
+   - **Constraint:** Exactly two sentences
+   - **Goal:** Explain it clearly and concisely within the constraint
+
+2.  **Identify Key Facts about Roman Aqueducts:**
+   - Engineered water supply systems
+   - Used gravity to transport water from distant sources to cities/towns
+   - Featured arches, tunnels

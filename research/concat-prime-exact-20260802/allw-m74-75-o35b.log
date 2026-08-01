@@ -1,0 +1,39 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+allw: m0=74 m1=75 compare rows[0,19) over first 4 layers
+lm_head                      in=  2048 out= 248320 m-INVARIANT maxdiff=0.000000e0
+l0.gdn.wqkv                  in=  2048 out=   8192 m-INVARIANT maxdiff=0.000000e0
+l0.gdn.wqkv_gate             in=  2048 out=   4096 m-INVARIANT maxdiff=0.000000e0
+l0.gdn.ssm_beta              in=  2048 out=     32 m-INVARIANT maxdiff=0.000000e0
+l0.gdn.ssm_alpha             in=  2048 out=     32 m-INVARIANT maxdiff=0.000000e0
+l0.gdn.ssm_out               in=  4096 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l0.moe.router(gate_inp)      in=  2048 out=    256 m-INVARIANT maxdiff=0.000000e0
+l0.moe.shexp_gate            in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l0.moe.shexp_up              in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l0.moe.shexp_down            in=   512 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l1.gdn.wqkv                  in=  2048 out=   8192 m-INVARIANT maxdiff=0.000000e0
+l1.gdn.wqkv_gate             in=  2048 out=   4096 m-INVARIANT maxdiff=0.000000e0
+l1.gdn.ssm_beta              in=  2048 out=     32 m-INVARIANT maxdiff=0.000000e0
+l1.gdn.ssm_alpha             in=  2048 out=     32 m-INVARIANT maxdiff=0.000000e0
+l1.gdn.ssm_out               in=  4096 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l1.moe.router(gate_inp)      in=  2048 out=    256 m-INVARIANT maxdiff=0.000000e0
+l1.moe.shexp_gate            in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l1.moe.shexp_up              in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l1.moe.shexp_down            in=   512 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l2.gdn.wqkv                  in=  2048 out=   8192 m-INVARIANT maxdiff=0.000000e0
+l2.gdn.wqkv_gate             in=  2048 out=   4096 m-INVARIANT maxdiff=0.000000e0
+l2.gdn.ssm_beta              in=  2048 out=     32 m-INVARIANT maxdiff=0.000000e0
+l2.gdn.ssm_alpha             in=  2048 out=     32 m-INVARIANT maxdiff=0.000000e0
+l2.gdn.ssm_out               in=  4096 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l2.moe.router(gate_inp)      in=  2048 out=    256 m-INVARIANT maxdiff=0.000000e0
+l2.moe.shexp_gate            in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l2.moe.shexp_up              in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l2.moe.shexp_down            in=   512 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l3.attn.wq                   in=  2048 out=   8192 m-INVARIANT maxdiff=0.000000e0
+l3.attn.wk                   in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l3.attn.wv                   in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l3.attn.wo                   in=  4096 out=   2048 m-INVARIANT maxdiff=0.000000e0
+l3.moe.router(gate_inp)      in=  2048 out=    256 m-INVARIANT maxdiff=0.000000e0
+l3.moe.shexp_gate            in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l3.moe.shexp_up              in=  2048 out=    512 m-INVARIANT maxdiff=0.000000e0
+l3.moe.shexp_down            in=   512 out=   2048 m-INVARIANT maxdiff=0.000000e0

@@ -1,0 +1,6 @@
+mscan: T_a=19 co_max=75 L=54..57 solo_argmax=90700 solo_margin=0.291197
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L
+ 54 |      73 |  90700 | EXACT | 0.000000000e0 | -
+ 55 |      74 |  90700 | EXACT | 0.000000000e0 | same
+ 56 |      75 |  90700 | differs | 1.299897194e0 | CHANGED
+ 57 |      76 |  90700 | differs | 1.299897194e0 | same

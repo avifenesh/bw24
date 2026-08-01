@@ -1,0 +1,33 @@
+=== serve gate o35b-exact1 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T20:58:49+0300", "label": "o35b-exact1", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 6.356932670023525, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+=== serve gate o35b-exact0 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T20:59:25+0300", "label": "o35b-exact0", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 6.381858848995762, "n_match": 6, "n_mismatch": 10, "n_err": 0, "verdict": "FAIL", "mismatches": [{"i": 0, "diverge_at_char": 184, "ref_sha": "85afc84c59ed", "out_sha": "464b746b59e0", "ref_tail": " within the constraint\n\n2.  **Identify K", "out_tail": "\n\n2.  **Identify Key Facts about Roman A"}, {"i": 2, "diverge_at_char": 288, "ref_sha": "4ba61d19c069", "out_sha": "e175f3a38d7b", "ref_tail": "that eat milkweed and grow.\n    *   They", "out_tail": "and eat milkweed.\n    *   They form a ch"}, {"i": 3, "diverge_at_char": 206, "ref_sha": "ff4baa109af3", "out_sha": "bf7c8375bfe4", "ref_tail": "for the blue sky.\n\n2.  **Identify Key Sc", "out_tail": "clearly.\n\n2.  **Identify Key Scientific "}, {"i": 4, "diverge_at_char": 0, "ref_sha": "3b1f8b4b5bc6", "out_sha": "cae3af38e786", "ref_tail": "Here's a thinking process:\n\n1.  **Analyz", "out_tail": "Thinking Process:\n\n1.  **Deconstruct the"}, {"i": 6, "diverge_at_char": 0, "ref_sha": "5b38271d1843", "out_sha": "dbb575b8279c", "ref_tail": "Thinking Process:\n\n1.  **Deconstruct the", "out_tail": "Here's a thinking process:\n\n1.  **Analyz"}, {"i": 7, "diverge_at_char": 341, "ref_sha": "41e7f888ad9c", "out_sha": "bd0618024d2e", "ref_tail": "moving plates that interact at their bou", "out_tail": "slowly moving plates that interact at th"}, {"i": 8, "diverge_at_char": 297, "ref_sha": "f2ece0e1bef8", "out_sha": "1b9fb298aeab", "ref_tail": "or instructions to make a pathogen compo", "out_tail": "(or instructions to make a part)\n   - Th"}, {"i": 11, "diverge_at_char": 384, "ref_sha": "413e2b7a24b9", "out_sha": "2ea0018a0e90", "ref_tail": "inconsistent regional measurements.\n  ", "out_tail": "chaotic local measurements.\n  "}]}
+=== serve gate kat-exact1 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T21:00:12+0300", "label": "kat-exact1", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 11.795681150979362, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+=== serve gate kat-exact0 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T21:01:23+0300", "label": "kat-exact0", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 11.84668543699081, "n_match": 7, "n_mismatch": 9, "n_err": 0, "verdict": "FAIL", "mismatches": [{"i": 1, "diverge_at_char": 2, "ref_sha": "7c0af4be0163", "out_sha": "e32f06892758", "ref_tail": "inking Process:\n\n1.  **Deconstruct the r", "out_tail": "e user wants a concise explanation of ho"}, {"i": 2, "diverge_at_char": 226, "ref_sha": "2da397e60658", "out_sha": "b7711255e78a", "ref_tail": "before forming a chrysalis. Inside the c", "out_tail": "and molts several times before forming a"}, {"i": 3, "diverge_at_char": 57, "ref_sha": "b341df092da9", "out_sha": "6e9cf0ffc761", "ref_tail": "two sentences.\n</think>\n\nSunlight reache", "out_tail": "exactly two sentences.\n</think>\n\nSunligh"}, {"i": 4, "diverge_at_char": 227, "ref_sha": "633828aa036d", "out_sha": "0f1863d73725", "ref_tail": "on the board than their opponent. Stones", "out_tail": "than their opponent. Stones are captured"}, {"i": 6, "diverge_at_char": 235, "ref_sha": "cad75a533043", "out_sha": "c2020a755169", "ref_tail": " into the atmosphere, condenses into clo", "out_tail": ", condenses into clouds in the atmospher"}, {"i": 7, "diverge_at_char": 184, "ref_sha": "6023f0ad082a", "out_sha": "98f5e4e10ffb", "ref_tail": "plates that constantly move and interact", "out_tail": "slabs called tectonic plates that consta"}, {"i": 8, "diverge_at_char": 291, "ref_sha": "374deef89020", "out_sha": "a3fbfecf28ba", "ref_tail": "into the body. This tricks the immune sy", "out_tail": "to the body. This tricks the immune syst"}, {"i": 11, "diverge_at_char": 15, "ref_sha": "d990a5f0d0b3", "out_sha": "ec31b2cb8feb", "ref_tail": "me to explain the history of the metric ", "out_tail": "a concise two-sentence explanation of th"}]}
+=== serve gate o9b-exact1 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T21:02:17+0300", "label": "o9b-exact1", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 4.055244518996915, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+=== serve gate o9b-exact0 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T21:02:46+0300", "label": "o9b-exact0", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 4.070102360012243, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+=== serve gate q35ctrl-exact1 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T21:03:45+0300", "label": "q35ctrl-exact1", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 7.069947718002368, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+=== serve gate q35ctrl-exact0 ===
+[ref] collected 16 isolated references
+{"ts": "2026-08-01T21:04:40+0300", "label": "q35ctrl-exact0", "base": "http://127.0.0.1:8121", "n": 16, "max_tokens": 96, "wall_s": 7.0181497399753425, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": []}
+=== summary ===
+kat-exact0             FAIL    7/16  errs=0
+kat-exact1             PASS   16/16  errs=0
+o35b-exact0            FAIL    6/16  errs=0
+o35b-exact1            PASS   16/16  errs=0
+o9b-exact0             PASS   16/16  errs=0
+o9b-exact1             PASS   16/16  errs=0
+q35ctrl-exact0         PASS   16/16  errs=0
+q35ctrl-exact1         PASS   16/16  errs=0

@@ -1,0 +1,8 @@
+===== KAT MEMRA_ROUTER_PREFILL_EXACT=0 =====
+mscan: T_a=19 co_max=75 L=40..75 solo_argmax=760 solo_margin=0.288059
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L
+ 46 |      65 |    760 | differs | 1.146946430e0 | CHANGED
+ 56 |      75 |    760 | differs | 1.106618643e0 | CHANGED
+===== KAT MEMRA_ROUTER_PREFILL_EXACT=1 =====
+mscan: T_a=19 co_max=75 L=40..75 solo_argmax=760 solo_margin=0.115503
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L
