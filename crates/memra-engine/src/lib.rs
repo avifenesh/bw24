@@ -18,6 +18,10 @@ pub mod cache {
 }
 pub mod decode;
 pub mod decode_batch;
+/// MLA (multi-head latent attention) CPU f32 reference — GLM-5.2 bring-up lane increment 1.
+/// Naive vs absorbed decode forms + NORM/NEOX rope permutation, unit-tested; the permanent
+/// oracle for the MLA kernel family (`research/mla-bringup-20260801/DESIGN.md`). No CUDA deps.
+pub mod mla;
 pub mod pp;
 pub mod spec;
 pub mod gemma_spec;
