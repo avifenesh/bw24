@@ -1,0 +1,11 @@
+=== OLD FLEET (v0.59-era binary Aug 1 00:56) baseline before teardown 2026-08-01T09:59:09Z ===
+GREEDY_HASH old-fleet 8085 dbd1c98f9fed4efe
+GREEDY_HASH old-fleet 8086 dbd1c98f9fed4efe
+GREEDY_HASH old-fleet 8087 dbd1c98f9fed4efe
+GREEDY_HASH old-fleet 8088 dbd1c98f9fed4efe
+GREEDY_HASH old-fleet 8089 dbd1c98f9fed4efe
+GREEDY_HASH old-fleet 8090 dbd1c98f9fed4efe
+--- /metrics snapshot:
+{"backends": [{"url": "http://127.0.0.1:8085", "healthy": true, "outstanding": 0, "total": 153, "errors": 0}, {"url": "http://127.0.0.1:8086", "healthy": true, "outstanding": 0, "total": 152, "errors": 0}, {"url": "http://127.0.0.1:8087", "healthy": true, "outstanding": 0, "total": 112, "errors": 0}, {"url": "http://127.0.0.1:8088", "healthy": true, "outstanding": 0, "total": 112, "errors": 0}, {"url": "http://127.0.0.1:8089", "healthy": true, "outstanding": 0, "total": 128, "errors": 0}, {"url": "http://127.0.0.1:8090", "healthy": true, "outstanding": 0, "total": 112, "errors": 8}], "queue": {"depth": 0, "peak_depth": 8, "enqueued_total": 72, "rejected_429": 0, "cap_per_backend": 8, "queue_max": 256, "queue_deadline_s": 30.0, "wait_p50_s": 0.0, "wait_p95_s": 0.0}, "requests": {"total": 769, "ok": 761, "err_5xx": 8, "ttfb_p50_s": 4.5162890539995715, "ttfb_p95_s": 4.804369397999835, "lat_p50_s": 4.517456618999859, "lat_p95_s": 4.804753686999902}}
+--- /health snapshot:
+{"status": "ok", "backends": [{"url": "http://127.0.0.1:8085", "healthy": true, "outstanding": 0, "total": 153, "errors": 0}, {"url": "http://127.0.0.1:8086", "healthy": true, "outstanding": 0, "total": 152, "errors": 0}, {"url": "http://127.0.0.1:8087", "healthy": true, "outstanding": 0, "total": 112, "errors": 0}, {"url": "http://127.0.0.1:8088", "healthy": true, "outstanding": 0, "total": 112, "errors": 0}, {"url": "http://127.0.0.1:8089", "healthy": true, "outstanding": 0, "total": 128, "errors": 0}, {"url": "http://127.0.0.1:8090", "healthy": true, "outstanding": 0, "total": 112, "errors": 8}]}

@@ -1,0 +1,21 @@
+=== V0.60.0 CHAOS: replica SIGKILL mid c=48 2026-08-01T10:03:54Z ===
+victim replica :8090 pid 419448
+KILL -9 419448 at 10:04:19.749
+{"ts": "2026-08-01T10:05:00+0000", "label": "v060-chaos-c48", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 768, "max_tokens": 128, "greedy": false, "wall_s": 65.32289217200014, "n_ok": 760, "n_err": 8, "completion_tokens_total": 97155, "agg_tok_s": 1487.3040180796572, "req_per_s": 11.634512415630072, "lat_p50_s": 4.096723370996187, "lat_p95_s": 4.4405738999994355, "lat_mean_s": 4.017508318693361, "lat_max_s": 5.51759782100271, "errors_sample": ["HTTPError: HTTP Error 502: Bad Gateway {\"error\": \"backend http://127.0.0.1:8090: Remote end closed connection without response\"}", "HTTPError: HTTP Error 502: Bad Gateway {\"error\": \"backend http://127.0.0.1:8090: Remote end closed connection without response\"}", "HTTPError: HTTP Error 502: Bad Gateway {\"error\": \"backend http://127.0.0.1:8090: Remote end closed connection without response\"}"]}
+--- load done 10:05:00; waiting for :8090 recovery
+replica :8090 healthy again at 10:05:00 (new pid 424916)
+--- proxy log breaker lines:
+[proxy] listening on http://127.0.0.1:8080 -> ['http://127.0.0.1:8085', 'http://127.0.0.1:8086', 'http://127.0.0.1:8087', 'http://127.0.0.1:8088', 'http://127.0.0.1:8089', 'http://127.0.0.1:8090'] cap=8 queue=256/30.0s
+[proxy] backend http://127.0.0.1:8090 -> DOWN (passive: RemoteDisconnected, 10:04:19)
+[proxy] backend http://127.0.0.1:8090 -> UP (10:04:28)
+--- supervisor log:
+[fleet] supervisor up (interval 5s, grace 120s)
+[fleet] 10:04:21 replica :8090 UNHEALTHY past grace — restarting
+[fleet] launched replica :8090 on GPU 7 (pid 424916)
+--- post-chaos-restart greedy hash, all 6 (2026-08-01T10:05:36Z):
+GREEDY_HASH post-chaos 8085 dbd1c98f9fed4efe
+GREEDY_HASH post-chaos 8086 dbd1c98f9fed4efe
+GREEDY_HASH post-chaos 8087 dbd1c98f9fed4efe
+GREEDY_HASH post-chaos 8088 dbd1c98f9fed4efe
+GREEDY_HASH post-chaos 8089 dbd1c98f9fed4efe
+GREEDY_HASH post-chaos 8090 dbd1c98f9fed4efe

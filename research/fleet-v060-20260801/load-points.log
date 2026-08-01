@@ -1,0 +1,17 @@
+=== V0.60.0 LOAD POINTS through proxy :8080 2026-08-01T10:00:55Z ===
+PHASE v060-c24 START 10:00:55
+{"ts": "2026-08-01T10:01:05+0000", "label": "v060-proxy-c24", "base": "http://127.0.0.1:8080", "concurrency": 24, "requests": 96, "max_tokens": 128, "greedy": false, "wall_s": 10.52198996500374, "n_ok": 96, "n_err": 0, "completion_tokens_total": 12288, "agg_tok_s": 1167.8399277009414, "req_per_s": 9.123749435163605, "lat_p50_s": 2.6023465269972803, "lat_p95_s": 2.746424566001224, "lat_mean_s": 2.5653381257916408, "lat_max_s": 2.8603531120024854, "errors_sample": []}
+PHASE v060-c24 END 10:01:05 VRAM5 38343
+PHASE v060-c48 START 10:01:05
+{"ts": "2026-08-01T10:01:22+0000", "label": "v060-proxy-c48", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 16.61322775000008, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1471.779016573097, "req_per_s": 11.557055792484341, "lat_p50_s": 4.101455580996117, "lat_p95_s": 4.238498148995859, "lat_mean_s": 4.050705281062316, "lat_max_s": 4.275321953005914, "errors_sample": []}
+PHASE v060-c48 END 10:01:22 VRAM5 40647
+PHASE v060-c96 START 10:01:22
+{"ts": "2026-08-01T10:01:47+0000", "label": "v060-proxy-c96", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 24.873942995000107, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1477.0074855998857, "req_per_s": 11.578381443500561, "lat_p50_s": 8.128191992997017, "lat_p95_s": 8.392603665000934, "lat_mean_s": 7.473055526555779, "lat_max_s": 8.533932042999368, "errors_sample": []}
+PHASE v060-c96 END 10:01:47 VRAM5 40647
+=== V0.60.0 LOAD POINTS pass 2 (warm) 2026-08-01T10:02:29Z ===
+PHASE v060-c24-p2 START 10:02:29
+{"ts": "2026-08-01T10:02:40+0000", "label": "v060-proxy-c24-p2", "base": "http://127.0.0.1:8080", "concurrency": 24, "requests": 96, "max_tokens": 128, "greedy": false, "wall_s": 10.570017894999182, "n_ok": 96, "n_err": 0, "completion_tokens_total": 12288, "agg_tok_s": 1162.5335095992239, "req_per_s": 9.082293043743936, "lat_p50_s": 2.6102866849978454, "lat_p95_s": 2.7611687530006748, "lat_mean_s": 2.584530834062283, "lat_max_s": 2.821013248998497, "errors_sample": []}
+PHASE v060-c48-p2 START 10:02:40
+{"ts": "2026-08-01T10:02:57+0000", "label": "v060-proxy-c48-p2", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 16.712574362005398, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1463.030139485108, "req_per_s": 11.488355763819097, "lat_p50_s": 4.09993588100042, "lat_p95_s": 4.354130728002929, "lat_mean_s": 4.062677029781526, "lat_max_s": 4.398810587001208, "errors_sample": []}
+PHASE v060-c96-p2 START 10:02:57
+{"ts": "2026-08-01T10:03:22+0000", "label": "v060-proxy-c96-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 24.93953347200295, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1473.1229852893239, "req_per_s": 11.547930530589435, "lat_p50_s": 8.121585059001518, "lat_p95_s": 8.48708114400506, "lat_mean_s": 7.482962429659791, "lat_max_s": 8.515246221999405, "errors_sample": []}
