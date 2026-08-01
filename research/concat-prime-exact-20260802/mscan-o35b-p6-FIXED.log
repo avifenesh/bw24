@@ -1,0 +1,35 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+mscan: T_a=19 co_max=75 L=42..72 solo_argmax=90700 solo_margin=0.103943
+  L | total_m | argmax | exact_vs_solo | maxdiff_vs_solo | vs_prev_L
+ 42 |      61 |  90700 | EXACT | 0.000000000e0 | -
+ 43 |      62 |  90700 | EXACT | 0.000000000e0 | same
+ 44 |      63 |  90700 | EXACT | 0.000000000e0 | same
+ 45 |      64 |  90700 | EXACT | 0.000000000e0 | same
+ 46 |      65 |  90700 | EXACT | 0.000000000e0 | same
+ 47 |      66 |  90700 | EXACT | 0.000000000e0 | same
+ 48 |      67 |  90700 | EXACT | 0.000000000e0 | same
+ 49 |      68 |  90700 | EXACT | 0.000000000e0 | same
+ 50 |      69 |  90700 | EXACT | 0.000000000e0 | same
+ 51 |      70 |  90700 | EXACT | 0.000000000e0 | same
+ 52 |      71 |  90700 | EXACT | 0.000000000e0 | same
+ 53 |      72 |  90700 | EXACT | 0.000000000e0 | same
+ 54 |      73 |  90700 | EXACT | 0.000000000e0 | same
+ 55 |      74 |  90700 | EXACT | 0.000000000e0 | same
+ 56 |      75 |  90700 | differs | 1.166911125e0 | CHANGED
+ 57 |      76 |  90700 | differs | 1.166911125e0 | same
+ 58 |      77 |  90700 | differs | 1.166911125e0 | same
+ 59 |      78 |  90700 | differs | 1.166911125e0 | same
+ 60 |      79 |  90700 | differs | 1.166911125e0 | same
+ 61 |      80 |  90700 | differs | 1.166911125e0 | same
+ 62 |      81 |  90700 | differs | 1.166911125e0 | same
+ 63 |      82 |  90700 | differs | 1.166911125e0 | same
+ 64 |      83 |  90700 | differs | 1.166911125e0 | same
+ 65 |      84 |  90700 | differs | 1.166911125e0 | same
+ 66 |      85 |  90700 | differs | 1.166911125e0 | same
+ 67 |      86 |  90700 | differs | 1.166911125e0 | same
+ 68 |      87 |  90700 | differs | 1.166911125e0 | same
+ 69 |      88 |  90700 | differs | 1.166911125e0 | same
+ 70 |      89 |  90700 | differs | 1.166911125e0 | same
+ 71 |      90 |  90700 | differs | 1.166911125e0 | same
+ 72 |      91 |  90700 | differs | 1.166911125e0 | same

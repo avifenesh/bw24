@@ -1,0 +1,60 @@
+=== weight=wq ===
+gemm probe weight=wq (il=3)
+gemm razor: weight out_f=8192 in_f=2048 base_m=19 L=44..58
+  m | rows[0,19) vs m=19 | maxdiff
+  63 | BIT-IDENTICAL | 0.000000e0
+  64 | BIT-IDENTICAL | 0.000000e0
+  65 | BIT-IDENTICAL | 0.000000e0
+  66 | BIT-IDENTICAL | 0.000000e0
+  67 | BIT-IDENTICAL | 0.000000e0
+  68 | BIT-IDENTICAL | 0.000000e0
+  69 | BIT-IDENTICAL | 0.000000e0
+  70 | BIT-IDENTICAL | 0.000000e0
+  71 | BIT-IDENTICAL | 0.000000e0
+  72 | BIT-IDENTICAL | 0.000000e0
+  73 | BIT-IDENTICAL | 0.000000e0
+  74 | BIT-IDENTICAL | 0.000000e0
+  75 | BIT-IDENTICAL | 0.000000e0
+  76 | BIT-IDENTICAL | 0.000000e0
+  77 | BIT-IDENTICAL | 0.000000e0
+gemm verdict: prefill GEMM rows are m-INVARIANT over this range
+=== weight=wqkv ===
+gemm probe weight=wqkv (il=0)
+gemm razor: weight out_f=8192 in_f=2048 base_m=19 L=44..58
+  m | rows[0,19) vs m=19 | maxdiff
+  63 | BIT-IDENTICAL | 0.000000e0
+  64 | BIT-IDENTICAL | 0.000000e0
+  65 | BIT-IDENTICAL | 0.000000e0
+  66 | BIT-IDENTICAL | 0.000000e0
+  67 | BIT-IDENTICAL | 0.000000e0
+  68 | BIT-IDENTICAL | 0.000000e0
+  69 | BIT-IDENTICAL | 0.000000e0
+  70 | BIT-IDENTICAL | 0.000000e0
+  71 | BIT-IDENTICAL | 0.000000e0
+  72 | BIT-IDENTICAL | 0.000000e0
+  73 | BIT-IDENTICAL | 0.000000e0
+  74 | BIT-IDENTICAL | 0.000000e0
+  75 | BIT-IDENTICAL | 0.000000e0
+  76 | BIT-IDENTICAL | 0.000000e0
+  77 | BIT-IDENTICAL | 0.000000e0
+gemm verdict: prefill GEMM rows are m-INVARIANT over this range
+=== weight=shexp ===
+gemm probe weight=shexp (il=0)
+gemm razor: weight out_f=512 in_f=2048 base_m=19 L=44..58
+  m | rows[0,19) vs m=19 | maxdiff
+  63 | BIT-IDENTICAL | 0.000000e0
+  64 | BIT-IDENTICAL | 0.000000e0
+  65 | BIT-IDENTICAL | 0.000000e0
+  66 | BIT-IDENTICAL | 0.000000e0
+  67 | BIT-IDENTICAL | 0.000000e0
+  68 | BIT-IDENTICAL | 0.000000e0
+  69 | BIT-IDENTICAL | 0.000000e0
+  70 | BIT-IDENTICAL | 0.000000e0
+  71 | BIT-IDENTICAL | 0.000000e0
+  72 | BIT-IDENTICAL | 0.000000e0
+  73 | BIT-IDENTICAL | 0.000000e0
+  74 | BIT-IDENTICAL | 0.000000e0
+  75 | BIT-IDENTICAL | 0.000000e0
+  76 | BIT-IDENTICAL | 0.000000e0
+  77 | BIT-IDENTICAL | 0.000000e0
+gemm verdict: prefill GEMM rows are m-INVARIANT over this range

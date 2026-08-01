@@ -2115,6 +2115,23 @@ impl HybridModel {
             } else {
                 e.matmul_decode_exact(&m.gate_inp, z, t)?
             }
+        } else if crate::router_prefill_exact_on() && crate::router_kernel_on() {
+            // SERVE ISOLATION (lane/concat-prime-exact, 2026-08-02): the cuBLASLt router GEMM
+            // is m-DEPENDENT — probed on the Ornith-35B router weight, rows [0,19) of an m=65
+            // call differ from the m=19 call by 3.9e-3 while the same probe on the lm_head /
+            // wq MMQ+f16 weights is BIT-IDENTICAL across m (research/concat-prime-exact-20260802,
+            // gemm-razor-router-o35b.log vs gemm-razor-o35b.log). Because the router feeds a
+            // top-k DISCONTINUITY, that perturbation reorders ties and at ~16% of (layer,token)
+            // pairs changes the selected expert SET — so a request's own prefill routing depended
+            // on how many OTHER requests' tokens shared its concat batch (cross-request prime
+            // batching, worker.rs task #13). The in-house router GEMV computes one row per
+            // (expert, token) block with a fixed per-row reduction order and is m-INVARIANT
+            // (same probe: BIT-IDENTICAL, gemm-razor-router-gemv-o35b.log), so routing prefill
+            // through it makes a session's routing a function of its OWN tokens alone — the
+            // serving isolation contract at the prime level. MEMRA_ROUTER_PREFILL_EXACT=0 reverts
+            // to the batched cuBLASLt GEMM (numeric-config rollback seam).
+            e.router_gemv(m.gate_inp.float_data(), z, cfg.n_embd as usize,
+                          m.gate_exps.n_expert, t)?
         } else {
             e.matmul(&m.gate_inp, z, t)?
         };
@@ -2669,10 +2686,16 @@ impl HybridModel {
             // out_f=1); M3 has no gate tensor -> weight 1.0. Decode + verify ride the fused
             // sigmoid-dot kernel (one fold order for both chains; kills the per-layer
             // cuBLASLt m=1 splitK GEMM — 40x/step, ~10% of the H100 q35 decode step).
-            // Real prefill keeps the batched cuBLASLt linear (large-t GEMV, negligible).
+            // SERVE ISOLATION (lane/concat-prime-exact, 2026-08-02): PREFILL rides it too.
+            // This out_f=1 cuBLASLt GEMV is the SECOND m-dependent op in the trunk (probed:
+            // rows [0,19) move by 1.07e-4 between m=74 and m=75 while sigmoid_dot_rows is
+            // BIT-IDENTICAL — allw-shexpgate-o35b.log). The gate multiplies the shared
+            // expert's contribution into every token's residual, so under cross-request
+            // concat prefill a session's hidden state depended on its co-arrivals' token
+            // count. MEMRA_ROUTER_PREFILL_EXACT=0 reverts to the batched cuBLASLt linear.
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    if t < PRIME_MIN_T {
+                    if t < PRIME_MIN_T || crate::router_prefill_exact_on() {
                         e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
                     } else {
                         let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
@@ -3258,7 +3281,14 @@ impl HybridModel {
                 Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
                 let sh = e.matmul(down_shexp, &sa, t)?;
                 // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+                // SERVE ISOLATION (lane/concat-prime-exact): the fused sigmoid-dot is the
+                // m-INVARIANT form — see the sequential arm's note. This is the PAIRS arm,
+                // i.e. the one real prefill actually takes on a resident-expert MoE model,
+                // so the concat-prime isolation fix has to land here as well.
                 let g = match &m.gate_inp_shexp {
+                    Some(gate_inp_shexp) if crate::router_prefill_exact_on() => {
+                        e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
+                    }
                     Some(gate_inp_shexp) => {
                         let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
                         let mut g = e.uninit(t)?;
@@ -3312,7 +3342,13 @@ impl HybridModel {
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
             // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+            // m-INVARIANT fused sigmoid-dot under router_prefill_exact (serve isolation,
+            // lane/concat-prime-exact) — every shexp-gate arm shares the same form so a
+            // dispatch choice cannot change bits.
             let g = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) if crate::router_prefill_exact_on() => {
+                    e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
+                }
                 Some(gate_inp_shexp) => {
                     let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
                     let mut g = e.uninit(t)?;
@@ -3588,7 +3624,9 @@ impl HybridModel {
             // between the two arms; prefill keeps the batched cuBLASLt linear).
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    if t < PRIME_MIN_T {
+                    // router_prefill_exact_on(): the fused sigmoid-dot is m-INVARIANT and
+                    // serves EVERY t (serve isolation, lane/concat-prime-exact).
+                    if t < PRIME_MIN_T || crate::router_prefill_exact_on() {
                         e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
                     } else {
                         let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
@@ -4117,7 +4155,9 @@ impl HybridModel {
             // dev decode arms (dispatch choice must not change bits).
             let g = match &m.gate_inp_shexp {
                 Some(gate_inp_shexp) => {
-                    if t < PRIME_MIN_T {
+                    // router_prefill_exact_on(): the fused sigmoid-dot is m-INVARIANT and
+                    // serves EVERY t (serve isolation, lane/concat-prime-exact).
+                    if t < PRIME_MIN_T || crate::router_prefill_exact_on() {
                         e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
                     } else {
                         let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;

@@ -1,0 +1,11 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 layers)
+razor: T_a=19 T_co=20 chat=true
+r4 determinism   [A,B] x2      : BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+r2 offset        [A,A] s0 vs s1: BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+r3 co-content    [A,B] vs [A,C]: BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+r3b co-content   [B,A] vs [C,A]: BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+r5 co-SHAPE      [A,B] vs [A,B-1]: BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+r1 batch-path    solo vs b=1   : BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+r6 concat        solo vs [A,B] : BIT-IDENTICAL  logit_maxdiff=0.000000e0 hid_maxdiff=0.000000e0 argmax 90700 vs 90700
+razor verdict: NO DEFECT — outputs depend on SHAPES only, not co-batch content or offset

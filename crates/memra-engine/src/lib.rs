@@ -101,6 +101,20 @@ pub fn moe_fuse_actq_on() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_MOE_FUSE_ACTQ").as_deref() != Ok("0"))
 }
 
+/// PREFILL router m-invariance (lane/concat-prime-exact, 2026-08-02). The batched cuBLASLt
+/// router GEMM changes a row's logits when OTHER rows join the call (probed: first change at
+/// m=65 on the Ornith-35B router, 3.9e-3 — while the MMQ/f16 trunk GEMMs are bit-identical
+/// across m). Feeding a top-k discontinuity, that made a served request's expert selection a
+/// function of its CO-ARRIVALS under cross-request prime batching. The in-house router GEMV
+/// is m-invariant, so prefill uses it too and routing depends on a session's own tokens only.
+/// DEFAULT ON: it is the serving isolation contract, and it is the same kernel decode and spec
+/// verify already use (dispatch parity, one router kernel for every t).
+/// MEMRA_ROUTER_PREFILL_EXACT=0 reverts to the batched GEMM.
+pub fn router_prefill_exact_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_ROUTER_PREFILL_EXACT").as_deref() != Ok("0"))
+}
+
 pub fn router_kernel_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
