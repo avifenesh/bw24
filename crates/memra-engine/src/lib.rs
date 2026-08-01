@@ -29,12 +29,23 @@ pub use memra_sampling as sampler;
 /// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
 /// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
 /// ~240 per-column cuBLAS gemv launches/round). MEMRA_ROUTER_KERNEL=0 is the rollback seam.
-/// MoE grouped f16 GEMM door (MEMRA_MOE_F16G=1, round 46 arc 2, experimental until gated):
-/// per-layer expert dequant to f16 + cublasGemmGroupedBatchedEx over the CSR groups.
-/// f16-mirror numeric class.
+/// MoE grouped f16 GEMM door (experimental until gated), f16-mirror numeric class:
+/// per-layer expert dequant to f16 + one grouped f16 GEMM over the CSR groups.
+///   MEMRA_MOE_F16G=1  cublasGemmGroupedBatchedEx (round 46 arc 2). The grouped API issues
+///                     through cublas-internal streams NOT ordered with ours — v1 pays a full
+///                     stream sync per projection (round-47 ledgered defect).
+///   MEMRA_MOE_F16G=2  single-kernel grouped GEMM on the engine stream (round 49): ordered by
+///                     construction, zero syncs, f32 C with the act row-scale folded in.
+pub fn moe_f16g_mode() -> u8 {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *M.get_or_init(|| match std::env::var("MEMRA_MOE_F16G").as_deref() {
+        Ok("1") => 1,
+        Ok("2") => 2,
+        _ => 0,
+    })
+}
 pub fn moe_f16g_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("MEMRA_MOE_F16G").as_deref() == Ok("1"))
+    moe_f16g_mode() != 0
 }
 
 /// Fused act-epilogue (silu/gelu-mul + q8_1_mmq quantize in one launch) for the MoE prefill
