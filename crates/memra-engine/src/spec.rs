@@ -2674,9 +2674,70 @@ impl HybridModel {
         };
 
         let mut round = 0usize;
-        // (Adaptive-K — MEMRA_SPEC_ADAPT, acceptance-EMA draft length — measured an HONEST LOSS
-        // to static per-class optima on 2026-07-07 (115.0/85.8/73.4 vs 121.6/92.7/75.6, EMA lag)
-        // and was removed 2026-07-08; rig5090.jsonl has the record. K is fixed per call.)
+        // ADAPTIVE DRAFT LENGTH (MEMRA_SPEC_ADAPT=1, opt-in — the gemma_spec accepted-run law,
+        // ported 2026-08-01): next round's draft depth = last round's accepted run + 1, clamped
+        // to [floor(pos), k_cap] — a miss shrinks the next draft to the miss point + 1,
+        // full-accept streaks re-deepen one step per round. NOT the 2026-07-07 acceptance-EMA
+        // (that arm measured an HONEST LOSS to static per-class optima — 115.0/85.8/73.4 vs
+        // 121.6/92.7/75.6, EMA lag — and was removed 2026-07-08; rig5090.jsonl has the record).
+        // The gemma law has no lag class: it reacts within one round, and was worth +7-20% on
+        // the gemma cells at unchanged exactness (2026-07-10 flip; floor sweep 2026-07-25;
+        // position key 2026-07-26). Signal = n_acc from the round's EXISTING accept readback —
+        // zero new syncs; the draft graph is a SINGLE-STEP capture replayed per drafted token,
+        // so a per-round depth needs no re-capture (unlike gemma's whole-chain graphs). qwen's
+        // in-round p-min cut already shortens chains mid-round, so gemma's one-round-late p-min
+        // fold into kc is unnecessary here — the accepted-run law sees the cut via n_acc.
+        // Exactness is the verify's job at ANY depth (same contract as p-min variable rounds).
+        // DEFAULT OFF on the qwen path until its cells gate a flip (gemma's is default-on).
+        // MEASURED 2026-08-01 (H100 GPU-3, interleaved x3, NGEN=256, same-invocation plain
+        // denominators; research/qwen-adaptive-k-20260801/): REFUTED on the tuned qwen configs.
+        // q27 K=3+HPOST+PMIN=0.3: short +0.8% (noise; law ~idles, len_hist identical), board
+        // -1.9%, agentic -0.5%; board PMIN=0 -2.1% (not p-min shadowing — the law itself);
+        // floor=1 -2.8% (gemma's floor-collapse, reproduced). q35 K=2 board: -6.4% (52/136
+        // rounds shrink to depth 1; no depth to reclaim at K=2). The gemma direction DOES
+        // appear at untuned depth-K — q27 K=6 floor=4 +1.5% over fixed K=6 — but stays -3.7%
+        // below fixed K=3: same verdict class as the retired EMA arm (honest loss to static
+        // per-class optima). Acceptance-rate rises under the law while tokens/round falls —
+        // it buys accept-% by adding rounds, and a round's fixed draft+verify cost wins.
+        // K=1..8 self-consistency PASS both models with the law ON (exactness held).
+        let adapt = std::env::var("MEMRA_SPEC_ADAPT").as_deref() == Ok("1");
+        // floor: per-model default keyed on n_embd (gemma's tiering — models with an expensive
+        // verify keep deep drafts after a miss); MEMRA_SPEC_ADAPT_FLOOR pins it everywhere.
+        let adapt_floor_env: Option<usize> = std::env::var("MEMRA_SPEC_ADAPT_FLOOR")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let adapt_floor_default: usize = if self.cfg.n_embd as usize >= 3500 {
+            4
+        } else if self.cfg.n_embd as usize >= 2500 {
+            2
+        } else {
+            1
+        };
+        let adapt_floor: usize = adapt_floor_env.unwrap_or(adapt_floor_default);
+        // position key: past floor_ctx a HIGH floor (>=4) relaxes to 1 — forced-deep drafts
+        // turn net-negative at depth (gemma 31B d1736 evidence); MEMRA_SPEC_FLOOR_CTX moves
+        // the boundary, an explicit MEMRA_SPEC_ADAPT_FLOOR pins the floor everywhere.
+        let floor_ctx: usize = std::env::var("MEMRA_SPEC_FLOOR_CTX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1024);
+        let floor_at = |pos: usize| -> usize {
+            if adapt_floor_env.is_some() || pos < floor_ctx {
+                adapt_floor
+            } else if adapt_floor >= 4 {
+                1
+            } else {
+                adapt_floor
+            }
+        };
+        // cap: MEMRA_SPEC_CAPMAX (gemma semantics, default 7). Binds only under adapt — the
+        // fixed-K default path is untouched by this whole block.
+        let cap_max: usize = std::env::var("MEMRA_SPEC_CAPMAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7);
+        let k_cap = k.min(cap_max).max(1);
+        let mut kc = k_cap;
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
         // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
         let mut snap = cache.snapshot(e)?;
@@ -2826,7 +2887,9 @@ impl HybridModel {
                 let w0 = pen_hist.len().saturating_sub(sp.penalty_last_n);
                 pen_hist_d = Some(e.htod_u32_v(&pen_hist[w0..])?);
             }
-            let k_this = k; // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
+            // fixed draft length by default; MEMRA_SPEC_ADAPT=1 drafts at last round's
+            // accepted run + 1 (the gemma law — see the setup block above the loop).
+            let k_this = if adapt { kc } else { k };
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             let mut draft_idx: Vec<u32> = Vec::with_capacity(k); // trimmed-vocab ids (== draft when untrimmed)
             if sampled {
@@ -3661,6 +3724,15 @@ impl HybridModel {
                 // stage (b) epilogue: fill_prev takes the gathered seed AFTER the refresh fills
                 // consumed the old value (both slots carry the same value in every non-replay arm).
                 e.copy_into(&mut fill_prev, 0, &h_seed_buf, n_embd)?;
+            }
+            // adaptive-K update (host math, zero syncs): next round drafts accepted-run + 1,
+            // clamped to [floor(pos), k_cap]. cache.pos is post-rollback here (the round's
+            // final position — the floor's position key reads the committed depth). Burst
+            // rounds (`continue` above) draft the captured fixed depth and skip this, exactly
+            // like gemma's burst arm.
+            if adapt {
+                let fl_now = floor_at(cache.pos);
+                kc = (n_acc + 1).clamp(fl_now.min(k_cap), k_cap);
             }
             ph_mark(&mut ph_rest, phase_on);
             round += 1;
