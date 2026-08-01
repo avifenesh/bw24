@@ -249,6 +249,14 @@ unsafe extern "C" {
         src_f16: *const core::ffi::c_void, dst: *mut f32, n: usize,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+    // Single-kernel grouped GEMM (MEMRA_MOE_F16G=2, round 49): one launch on OUR stream,
+    // f32 C with the act row-scale folded in — no cublas internal-stream race, no sync.
+    pub fn memra_moe_f16g_gemm_sk(
+        w_f16: *const core::ffi::c_void, act_f16: *const core::ffi::c_void,
+        y_f32: *mut f32, row_scale: *const f32, ex_off_dev: *const i32,
+        n_active: i32, max_m: i32, in_f: i32, out_f: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
 }
 
 /// W4A8-MMQ DEFAULT-FLIP seam (2026-07-05): the vendored MMQ prefill suite is DEFAULT-ON — NVFP4
@@ -986,11 +994,14 @@ impl Engine {
     }
 
     /// One projection through the grouped f16 lane: dequant the active experts' rows to an
-    /// f16 workspace, then cublasGemmGroupedBatchedEx over the CSR groups (variable m per
-    /// expert). y = f32 [n_pairs, out_f] pair-major — same layout as mmq_iq_experts.
-    /// f16-MIRROR numeric class (argmax/spec gated, not byte-identity). Errors on
-    /// unsupported qtype (caller keeps the MMQ arm as fallback).
-    #[allow(clippy::too_many_arguments)]
+    /// f16 workspace, then ONE grouped GEMM over the CSR groups (variable m per expert).
+    /// y = f32 [n_pairs, out_f] pair-major — same layout as mmq_iq_experts.
+    /// MEMRA_MOE_F16G=1: cublasGemmGroupedBatchedEx (+ h2f pass + per-projection sync — the
+    /// grouped API runs on internal streams unordered with ours, round-47 ledger).
+    /// MEMRA_MOE_F16G=2: single-kernel grouped GEMM on the engine stream (round 49) — the
+    /// row scale folds into the kernel epilogue; no f16 C, no h2f, NO sync (ordered by
+    /// construction). f16-MIRROR numeric class either way (argmax/spec gated, not
+    /// byte-identity). Errors on unsupported qtype (caller keeps the MMQ arm as fallback).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_f16_grouped(
         &self,
@@ -999,6 +1010,7 @@ impl Engine {
         n_expert: usize,
         ex_ids: &CudaSlice<i32>,
         ex_off_host: &[i32],
+        ex_off_dev: &CudaSlice<i32>,
         act_f16: &CudaSlice<u8>,
         act_scale: &CudaSlice<f32>,
         in_f: usize,
@@ -1008,37 +1020,39 @@ impl Engine {
         qtype: i32,
         row_bytes: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let sk = crate::moe_f16g_mode() >= 2 && in_f % 32 == 0;
         // one-time cublas grouped init (algo heuristics + module load cost ~10% of a cold
         // g26 prime when paid inside the first projection): a tiny dummy grouped GEMM at
-        // first use, synced, so the real prime runs warm.
-        static WARM: std::sync::Once = std::sync::Once::new();
-        let mut warm_err = None;
-        WARM.call_once(|| {
-            let r = (|| -> Result<(), Box<dyn std::error::Error>> {
-                let w = self.alloc_uninit::<u8>(2 * 32 * 64 * 2)?;
-                let a = self.alloc_uninit::<u8>(4 * 64 * 2)?;
-                let mut yw = self.alloc_uninit::<u8>(4 * 32 * 2)?;
-                let off = [0i32, 2, 4];
-                let stream = &self.gpu.stream;
-                let (w_p, _a1) = w.device_ptr(stream);
-                let (a_p, _a2) = a.device_ptr(stream);
-                let (y_p, _a3) = yw.device_ptr_mut(stream);
-                let rc = unsafe {
-                    memra_moe_f16g_gemm(w_p as *const core::ffi::c_void,
-                        a_p as *const core::ffi::c_void, y_p as *mut core::ffi::c_void,
-                        off.as_ptr(), 2, 64, 32,
-                        stream.cu_stream() as *mut core::ffi::c_void)
-                };
-                if rc != 0 { return Err(format!("f16g warmup rc={rc}").into()); }
-                self.gpu.stream.synchronize()?;
-                Ok(())
-            })();
-            if let Err(e) = r { warm_err = Some(e.to_string()); }
-        });
-        if let Some(we) = warm_err { return Err(we.into()); }
+        // first use, synced, so the real prime runs warm. The =2 path never touches cublas.
+        if !sk {
+            static WARM: std::sync::Once = std::sync::Once::new();
+            let mut warm_err = None;
+            WARM.call_once(|| {
+                let r = (|| -> Result<(), Box<dyn std::error::Error>> {
+                    let w = self.alloc_uninit::<u8>(2 * 32 * 64 * 2)?;
+                    let a = self.alloc_uninit::<u8>(4 * 64 * 2)?;
+                    let mut yw = self.alloc_uninit::<u8>(4 * 32 * 2)?;
+                    let off = [0i32, 2, 4];
+                    let stream = &self.gpu.stream;
+                    let (w_p, _a1) = w.device_ptr(stream);
+                    let (a_p, _a2) = a.device_ptr(stream);
+                    let (y_p, _a3) = yw.device_ptr_mut(stream);
+                    let rc = unsafe {
+                        memra_moe_f16g_gemm(w_p as *const core::ffi::c_void,
+                            a_p as *const core::ffi::c_void, y_p as *mut core::ffi::c_void,
+                            off.as_ptr(), 2, 64, 32,
+                            stream.cu_stream() as *mut core::ffi::c_void)
+                    };
+                    if rc != 0 { return Err(format!("f16g warmup rc={rc}").into()); }
+                    self.gpu.stream.synchronize()?;
+                    Ok(())
+                })();
+                if let Err(e) = r { warm_err = Some(e.to_string()); }
+            });
+            if let Some(we) = warm_err { return Err(we.into()); }
+        }
         let w_bytes = n_active * out_f * in_f * 2;
         let mut w_f16 = self.alloc_uninit::<u8>(w_bytes)?;
-        let mut y16 = self.alloc_uninit::<u8>(n_pairs * out_f * 2)?;
         let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
         {
             let stream = &self.gpu.stream;
@@ -1053,28 +1067,44 @@ impl Engine {
             };
             if rc != 0 { return Err(format!("memra_moe_f16g_dequant rc={rc}").into()); }
             let (a_p, _g3) = act_f16.device_ptr(stream);
-            let (y16_p, _g4) = y16.device_ptr_mut(stream);
-            let rc = unsafe {
-                memra_moe_f16g_gemm(w_p as *const core::ffi::c_void,
-                    a_p as *const core::ffi::c_void, y16_p as *mut core::ffi::c_void,
-                    ex_off_host.as_ptr(), n_active as i32, in_f as i32, out_f as i32,
-                    stream.cu_stream() as *mut core::ffi::c_void)
-            };
-            if rc != 0 { return Err(format!("memra_moe_f16g_gemm rc={rc}").into()); }
-            let (y_p, _g5) = y.device_ptr_mut(stream);
             let (s_p, _g6) = act_scale.device_ptr(stream);
-            let rc = unsafe {
-                memra_moe_f16g_h2f_scaled(y16_p as *const core::ffi::c_void, y_p as *mut f32,
-                    s_p as *const f32, out_f as i32, n_pairs as i32,
-                    stream.cu_stream() as *mut core::ffi::c_void)
-            };
-            if rc != 0 { return Err(format!("memra_moe_f16g_h2f_scaled rc={rc}").into()); }
+            let (y_p, _g5) = y.device_ptr_mut(stream);
+            if sk {
+                let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+                let (off_p, _g7) = ex_off_dev.device_ptr(stream);
+                let rc = unsafe {
+                    memra_moe_f16g_gemm_sk(w_p as *const core::ffi::c_void,
+                        a_p as *const core::ffi::c_void, y_p as *mut f32,
+                        s_p as *const f32, off_p as *const i32,
+                        n_active as i32, max_m, in_f as i32, out_f as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void)
+                };
+                if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
+            } else {
+                let mut y16 = self.alloc_uninit::<u8>(n_pairs * out_f * 2)?;
+                let (y16_p, _g4) = y16.device_ptr_mut(stream);
+                let rc = unsafe {
+                    memra_moe_f16g_gemm(w_p as *const core::ffi::c_void,
+                        a_p as *const core::ffi::c_void, y16_p as *mut core::ffi::c_void,
+                        ex_off_host.as_ptr(), n_active as i32, in_f as i32, out_f as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void)
+                };
+                if rc != 0 { return Err(format!("memra_moe_f16g_gemm rc={rc}").into()); }
+                let rc = unsafe {
+                    memra_moe_f16g_h2f_scaled(y16_p as *const core::ffi::c_void, y_p as *mut f32,
+                        s_p as *const f32, out_f as i32, n_pairs as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void)
+                };
+                if rc != 0 { return Err(format!("memra_moe_f16g_h2f_scaled rc={rc}").into()); }
+            }
         }
-        // cublasGemmGroupedBatchedEx issues through internal streams NOT ordered with ours
-        // (round 46: NaN race, clean under sync — 205=205 MATCH). Full sync per projection
-        // until the lane moves to a single-kernel grouped GEMM (CUTLASS) or the ordering
-        // contract is pinned down. ~90 syncs/prime; cost measured in the A/B.
-        self.gpu.stream.synchronize()?;
+        // MODE 1 ONLY: cublasGemmGroupedBatchedEx issues through internal streams NOT ordered
+        // with ours (round 46: NaN race, clean under sync — 205=205 MATCH). Full sync per
+        // projection. Mode 2 (single kernel, our stream) is ordered by construction — no sync,
+        // that is the point of this arc.
+        if !sk {
+            self.gpu.stream.synchronize()?;
+        }
         if std::env::var("MEMRA_F16G_DEBUG").is_ok() {
             // FULL NaN/Inf scan of w, act (through h2f) and y — localizes the corrupt stage.
             let wn = n_active * out_f * in_f;
