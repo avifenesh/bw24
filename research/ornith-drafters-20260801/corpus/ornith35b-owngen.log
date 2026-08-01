@@ -82,3 +82,57 @@ Error: DriverError(CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED, "operation not permitt
 [frspec-owngen] prompt 37/254: +512 tokens (total 18944)
 [gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
 [frspec-owngen] prompt 38/254: +512 tokens (total 19456)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 39/254: +512 tokens (total 19968)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 40/254: +512 tokens (total 20480)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 41/254: +512 tokens (total 20992)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 42/254: +512 tokens (total 21504)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 43/254: +512 tokens (total 22016)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 44/254: +512 tokens (total 22528)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 45/254: +512 tokens (total 23040)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 46/254: +512 tokens (total 23552)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 47/254: +512 tokens (total 24064)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 48/254: +512 tokens (total 24576)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 49/254: +512 tokens (total 25088)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 50/254: +512 tokens (total 25600)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 51/254: +512 tokens (total 26112)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 52/254: +512 tokens (total 26624)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 53/254: +512 tokens (total 27136)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 54/254: +512 tokens (total 27648)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 55/254: +512 tokens (total 28160)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 56/254: +512 tokens (total 28672)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 57/254: +512 tokens (total 29184)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 58/254: +512 tokens (total 29696)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 59/254: +512 tokens (total 30208)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 60/254: +512 tokens (total 30720)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 61/254: +512 tokens (total 31232)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 62/254: +175 tokens (total 31407)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 63/254: +512 tokens (total 31919)
+[gen-graph] door CLOSED: MoE experts on the SLRU cache path (capture-illegal) — eager decode
+[frspec-owngen] prompt 64/254: +512 tokens (total 32431)
+[frspec-owngen] PARTIAL: 64/254 prompts in corpus — rerun the same command to resume; ranks NOT written
+=== chunk end 2026-08-01T17:56:47+03:00 rc=0
