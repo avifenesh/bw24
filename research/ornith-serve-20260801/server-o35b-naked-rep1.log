@@ -1,0 +1,32 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+[worker]   loaded "m": 40 layers, eos=248046
+[server] worker ready; serving models: ["m"]
+[worker] m: decode chunk cap 8
+[server] listening on http://127.0.0.1:8098
+[prime-batch] B=3 tokens=678 in 1341.1ms
+[prime-batch] B=5 tokens=1130 in 2098.5ms
+[prime-batch] B=3 tokens=678 in 1388.6ms
+[prime-batch] B=5 tokens=1130 in 2106.6ms
+[prime-batch] B=3 tokens=678 in 1312.2ms
+[prime-batch] B=5 tokens=1130 in 2126.8ms
+[prime-batch] B=3 tokens=678 in 1389.1ms
+[prime-batch] B=5 tokens=1130 in 2110.4ms
+[prime-batch] B=2 tokens=452 in 961.6ms
+[prime-batch] B=6 tokens=1356 in 2509.9ms
+[prime-batch] B=6 tokens=1356 in 2503.7ms
+[prime-batch] B=2 tokens=452 in 967.9ms
+[prime-batch] B=2 tokens=452 in 1005.8ms
+[prime-batch] B=6 tokens=1356 in 2579.7ms
+[prime-batch] B=6 tokens=1356 in 2541.9ms
+[prime-batch] B=2 tokens=452 in 983.1ms
+[prime-batch] B=2 tokens=452 in 984.4ms
+[prime-batch] B=6 tokens=1356 in 2632.8ms
+[prime-batch] B=6 tokens=1356 in 2647.3ms
+[prime-batch] B=2 tokens=452 in 994.4ms
+[prime-batch] B=2 tokens=452 in 1026.9ms
+[prime-batch] B=6 tokens=1356 in 2658.6ms
+[prime-batch] B=6 tokens=1356 in 2623.2ms
+[prime-batch] B=2 tokens=452 in 992.7ms

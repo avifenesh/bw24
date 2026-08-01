@@ -1,0 +1,14 @@
+== o35b-q4km (interleaved x3) ==
+  [o35b-q4km/llama rep1] pp512 = 3513.40 tok/s
+  [o35b-q4km/llama rep1] tg128 = 191.94 tok/s
+  [o35b-q4km/memra rep1] prefill = 491.1 tok/s
+  [o35b-q4km/memra rep1] decode = 134.78 tok/s
+  [o35b-q4km/llama rep2] pp512 = 3385.63 tok/s
+  [o35b-q4km/llama rep2] tg128 = 192.19 tok/s
+  [o35b-q4km/memra rep2] prefill = 493.0 tok/s
+  [o35b-q4km/memra rep2] decode = 137.32 tok/s
+  [o35b-q4km/llama rep3] pp512 = 3359.34 tok/s
+  [o35b-q4km/llama rep3] tg128 = 190.10 tok/s
+  [o35b-q4km/memra rep3] prefill = 492.2 tok/s
+  [o35b-q4km/memra rep3] decode = 137.51 tok/s
+PHASE-DONE o35b 2026-08-01T16:33:30Z
