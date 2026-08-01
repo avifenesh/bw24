@@ -3203,9 +3203,17 @@ impl HybridModel {
             let up = e.mmq_iq_experts(&dev.ptr_row, 1, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
                                       n_embd, n_ff_exp, n_active, n_pairs, t,
                                       m.up_exps.qtype, rbu_d)?;
-            let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
-            // down: activation = act, pair-major [n_pairs, n_ff_exp]; pair_tok = identity.
-            let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
+            // down: activation = silu(gate)*up, pair-major [n_pairs, n_ff_exp]; pair_tok =
+            // identity. FUSED ACT-EPILOGUE (default on): one launch computes the activation in
+            // registers and writes ONLY the quantized scratch — the two-pass chain
+            // (moe_pairs_silu_mul writes act f32, mmq_iq_quantize_act re-reads it) is the
+            // MEMRA_MOE_FUSE_ACTQ=0 rollback. Scratch bytes are BYTE-IDENTICAL (kernel-check).
+            let a_scr = if crate::moe_fuse_actq_on() {
+                e.mmq_iq_fused_act_quant(&gate, &up, n_ff_exp, n_pairs, 0)?
+            } else {
+                let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
+                e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?
+            };
             let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
             let pself = e.htod_i32(&pair_self)?;
             e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
@@ -4691,7 +4699,6 @@ impl HybridModel {
                                            n_embd, n_ff_exp, n_expert, n_active, n_pairs,
                                            m.up_exps.qtype, m.up_exps.row_bytes)?)
             };
-            let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
             let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
             let pself = e.htod_i32(&pair_self)?;
             // DOWN through the int8-MMA expert GEMM (2026-07-31, g26 prefill lever): the
@@ -4701,13 +4708,23 @@ impl HybridModel {
             // zero int8 act values; the dev slab carries 144B tail slack for the OOB).
             // The old dp4a matvec was 11.3ms/call at m=T (the 0.07x prefill wall).
             // MEMRA_GEMMA_MOE_MMA=0 reverts down together with gate/up.
+            // FUSED ACT-EPILOGUE (default on): gelu_tanh(gate)*up + D4 quantize in one
+            // launch — no f32 act buffer (the fused kernel zero-pads the ragged tail
+            // exactly like the two-pass quantizer). MEMRA_MOE_FUSE_ACTQ=0 rollback.
+            // Scratch bytes are BYTE-IDENTICAL (kernel-check gated).
             let y_down = if mma {
                 let in_pad = n_ff_exp.div_ceil(256) * 256;
-                let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
+                let a_scr = if crate::moe_fuse_actq_on() {
+                    e.mmq_iq_fused_act_quant(&gate, &up, n_ff_exp, n_pairs, 1)?
+                } else {
+                    let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
+                    e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?
+                };
                 e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
                                  in_pad, n_embd, n_active, n_pairs, n_pairs,
                                  m.down_exps.qtype, m.down_exps.row_bytes)?
             } else {
+                let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
                 e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
                                           n_ff_exp, n_embd, n_expert, n_active, n_pairs,

@@ -1,0 +1,13 @@
+q35 fused rep1: prefill 2048 tok in 0.3774s = 5427.0 tok/s (pp2048)  argmax:1/0miss
+q35 twopass rep1: prefill 2048 tok in 0.3751s = 5459.7 tok/s (pp2048)  argmax:1/0miss
+q35 fused rep2: prefill 2048 tok in 0.3738s = 5478.5 tok/s (pp2048)  argmax:1/0miss
+q35 twopass rep2: prefill 2048 tok in 0.3752s = 5458.4 tok/s (pp2048)  argmax:1/0miss
+q35 fused rep3: prefill 2048 tok in 0.3745s = 5469.1 tok/s (pp2048)  argmax:1/0miss
+q35 twopass rep3: prefill 2048 tok in 0.3756s = 5452.9 tok/s (pp2048)  argmax:1/0miss
+g26 fused rep1: prefill 1736 tok in 0.1710s = 10149.1 tok/s (pp1736)  argmax:1/0miss
+g26 twopass rep1: prefill 1736 tok in 0.1735s = 10003.6 tok/s (pp1736)  argmax:1/0miss
+g26 fused rep2: prefill 1736 tok in 0.1716s = 10119.3 tok/s (pp1736)  argmax:1/0miss
+g26 twopass rep2: prefill 1736 tok in 0.1730s = 10035.9 tok/s (pp1736)  argmax:1/0miss
+g26 fused rep3: prefill 1736 tok in 0.1716s = 10117.5 tok/s (pp1736)  argmax:1/0miss
+g26 twopass rep3: prefill 1736 tok in 0.1731s = 10030.2 tok/s (pp1736)  argmax:1/0miss
+DONE

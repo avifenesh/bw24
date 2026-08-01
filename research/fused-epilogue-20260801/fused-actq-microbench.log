@@ -1,0 +1,3 @@
+GPU: NVIDIA H100 80GB HBM3
+q35-silu [16384x512] byte_mismatch=0: two-pass 72.9 us (1971 GB/s) | fused 29.3 us (2613 GB/s) | 2.49x epilogue, 43.6 us saved/layer-call
+g26-gelu [13888x704] byte_mismatch=0: two-pass 75.2 us (2293 GB/s) | fused 38.0 us (2479 GB/s) | 1.98x epilogue, 37.2 us saved/layer-call
