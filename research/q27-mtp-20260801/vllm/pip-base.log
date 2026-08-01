@@ -1,0 +1,68 @@
+Requirement already satisfied: pip in ./vllm-env/lib/python3.12/site-packages (24.0)
+Collecting pip
+  Downloading pip-26.2-py3-none-any.whl.metadata (4.6 kB)
+Collecting wheel
+  Downloading wheel-0.47.0-py3-none-any.whl.metadata (2.3 kB)
+Collecting packaging>=24.0 (from wheel)
+  Downloading packaging-26.2-py3-none-any.whl.metadata (3.5 kB)
+Downloading pip-26.2-py3-none-any.whl (1.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 20.1 MB/s eta 0:00:00
+Downloading wheel-0.47.0-py3-none-any.whl (32 kB)
+Downloading packaging-26.2-py3-none-any.whl (100 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.2/100.2 kB 9.7 MB/s eta 0:00:00
+Installing collected packages: pip, packaging, wheel
+  Attempting uninstall: pip
+    Found existing installation: pip 24.0
+    Uninstalling pip-24.0:
+      Successfully uninstalled pip-24.0
+Successfully installed packaging-26.2 pip-26.2 wheel-0.47.0
+Collecting huggingface_hub[hf_transfer]
+  Downloading huggingface_hub-1.26.0-py3-none-any.whl.metadata (16 kB)
+WARNING: huggingface-hub 1.26.0 does not provide the extra 'hf-transfer'
+Collecting click<9.0.0,>=8.4.2 (from huggingface_hub[hf_transfer])
+  Downloading click-8.4.2-py3-none-any.whl.metadata (2.6 kB)
+Collecting filelock>=3.10.0 (from huggingface_hub[hf_transfer])
+  Downloading filelock-3.32.2-py3-none-any.whl.metadata (2.0 kB)
+Collecting fsspec>=2023.5.0 (from huggingface_hub[hf_transfer])
+  Downloading fsspec-2026.7.0-py3-none-any.whl.metadata (10 kB)
+Collecting hf-xet<2.0.0,>=1.5.1 (from huggingface_hub[hf_transfer])
+  Downloading hf_xet-1.5.2-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+Collecting httpx<1,>=0.23.0 (from huggingface_hub[hf_transfer])
+  Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+Requirement already satisfied: packaging>=20.9 in ./vllm-env/lib/python3.12/site-packages (from huggingface_hub[hf_transfer]) (26.2)
+Collecting pyyaml>=5.1 (from huggingface_hub[hf_transfer])
+  Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting tqdm>=4.42.1 (from huggingface_hub[hf_transfer])
+  Downloading tqdm-4.70.0-py3-none-any.whl.metadata (57 kB)
+Collecting typing-extensions>=4.1.0 (from huggingface_hub[hf_transfer])
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting anyio (from httpx<1,>=0.23.0->huggingface_hub[hf_transfer])
+  Downloading anyio-4.14.2-py3-none-any.whl.metadata (4.6 kB)
+Collecting certifi (from httpx<1,>=0.23.0->huggingface_hub[hf_transfer])
+  Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+Collecting httpcore==1.* (from httpx<1,>=0.23.0->huggingface_hub[hf_transfer])
+  Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+Collecting idna (from httpx<1,>=0.23.0->huggingface_hub[hf_transfer])
+  Downloading idna-3.18-py3-none-any.whl.metadata (6.1 kB)
+Collecting h11>=0.16 (from httpcore==1.*->httpx<1,>=0.23.0->huggingface_hub[hf_transfer])
+  Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Downloading huggingface_hub-1.26.0-py3-none-any.whl (780 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 780.4/780.4 kB 17.0 MB/s  0:00:00
+Downloading click-8.4.2-py3-none-any.whl (119 kB)
+Downloading hf_xet-1.5.2-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.4/4.4 MB 75.2 MB/s  0:00:00
+Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+Downloading filelock-3.32.2-py3-none-any.whl (98 kB)
+Downloading fsspec-2026.7.0-py3-none-any.whl (206 kB)
+Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 49.3 MB/s  0:00:00
+Downloading tqdm-4.70.0-py3-none-any.whl (80 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Downloading anyio-4.14.2-py3-none-any.whl (125 kB)
+Downloading idna-3.18-py3-none-any.whl (65 kB)
+Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+Installing collected packages: typing-extensions, tqdm, pyyaml, idna, hf-xet, h11, fsspec, filelock, click, certifi, httpcore, anyio, httpx, huggingface_hub
+
+Successfully installed anyio-4.14.2 certifi-2026.7.22 click-8.4.2 filelock-3.32.2 fsspec-2026.7.0 h11-0.16.0 hf-xet-1.5.2 httpcore-1.0.9 httpx-0.28.1 huggingface_hub-1.26.0 idna-3.18 pyyaml-6.0.3 tqdm-4.70.0 typing-extensions-4.16.0

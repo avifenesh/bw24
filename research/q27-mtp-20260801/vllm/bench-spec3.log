@@ -1,0 +1,55 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING 08-01 01:37:02 [speculative.py:901] Enabling num_speculative_tokens > 1 will run multiple times of forward on same MTP layer,which may result in lower acceptance rate
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+WARNING 08-01 01:37:15 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=110244) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(EngineCore pid=110244) WARNING 08-01 01:37:25 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(EngineCore pid=110244) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=110244) WARNING 08-01 01:37:33 [qwen_gdn_linear_attn.py:157] FlashInfer GDN prefill is JIT-compiled; first run may take a while. Set --gdn-prefill-backend triton to skip JIT.
+(EngineCore pid=110244) Loading safetensors checkpoint shards:   0% Completed | 0/66 [00:00<?, ?it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:   5% Completed | 3/66 [00:00<00:02, 25.99it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:   9% Completed | 6/66 [00:00<00:02, 26.45it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  14% Completed | 9/66 [00:00<00:02, 26.64it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  18% Completed | 12/66 [00:00<00:01, 27.76it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  23% Completed | 15/66 [00:00<00:01, 28.02it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  27% Completed | 18/66 [00:00<00:01, 26.71it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  32% Completed | 21/66 [00:00<00:01, 25.65it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  36% Completed | 24/66 [00:00<00:01, 24.92it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  41% Completed | 27/66 [00:01<00:01, 25.51it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  45% Completed | 30/66 [00:01<00:01, 25.08it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  50% Completed | 33/66 [00:01<00:01, 26.01it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  56% Completed | 37/66 [00:01<00:01, 27.71it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  62% Completed | 41/66 [00:01<00:00, 28.82it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  67% Completed | 44/66 [00:01<00:00, 28.22it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  71% Completed | 47/66 [00:01<00:00, 26.67it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  76% Completed | 50/66 [00:01<00:00, 26.84it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  80% Completed | 53/66 [00:01<00:00, 25.94it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  85% Completed | 56/66 [00:02<00:00, 25.82it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  89% Completed | 59/66 [00:02<00:00, 26.66it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards:  94% Completed | 62/66 [00:02<00:00, 26.19it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:02<00:00, 12.80it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:02<00:00, 22.51it/s]
+(EngineCore pid=110244) 
+(EngineCore pid=110244) Loading safetensors checkpoint shards:   0% Completed | 0/66 [00:00<?, ?it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:00<00:00, 143.32it/s]
+(EngineCore pid=110244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:00<00:00, 143.25it/s]
+(EngineCore pid=110244) 
+(EngineCore pid=110244) WARNING 08-01 01:38:08 [kv_cache_utils.py:1237] Add 3 padding layers, may waste at most 6.25% KV cache memory
+(EngineCore pid=110244) WARNING 08-01 01:38:16 [kv_cache_utils.py:1237] Add 3 padding layers, may waste at most 6.25% KV cache memory
+(EngineCore pid=110244) DeepGEMM warmup:   0%|          | 0/2172 [00:00<?, ?it/s]DeepGEMM warmup:  22%|██▏       | 477/2172 [00:00<00:00, 1740.77it/s]DeepGEMM warmup:  41%|████      | 894/2172 [00:00<00:00, 2411.39it/s]DeepGEMM warmup:  61%|██████    | 1326/2172 [00:00<00:00, 1273.53it/s]DeepGEMM warmup:  80%|████████  | 1743/2172 [00:01<00:00, 1290.79it/s]DeepGEMM warmup: 100%|██████████| 2172/2172 [00:01<00:00, 1711.82it/s]
+(EngineCore pid=110244) 2026-08-01 01:38:18,594 - INFO - autotuner.py:651 - flashinfer.jit: [Autotuner]: Autotuning process starts ...
+(EngineCore pid=110244) 2026-08-01 01:38:18,875 - INFO - autotuner.py:674 - flashinfer.jit: [Autotuner]: Autotuning process ends
+(EngineCore pid=110244) WARNING 08-01 01:38:18 [kernel_warmup.py:258] No FlashInfer autotune cache entries found.Falling back to default tactics.
+(EngineCore pid=110244) Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):   0%|          | 0/9 [00:00<?, ?it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  11%|█         | 1/9 [00:00<00:00,  8.22it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  22%|██▏       | 2/9 [00:00<00:00,  8.77it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  33%|███▎      | 3/9 [00:00<00:00,  8.80it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  44%|████▍     | 4/9 [00:00<00:00,  8.86it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  56%|█████▌    | 5/9 [00:00<00:00,  8.93it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE):  78%|███████▊  | 7/9 [00:00<00:00,  9.63it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 9/9 [00:00<00:00,  9.90it/s]Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|██████████| 9/9 [00:00<00:00,  9.45it/s]
+(EngineCore pid=110244) Capturing CUDA graphs (decode, FULL):   0%|          | 0/5 [00:00<?, ?it/s]Capturing CUDA graphs (decode, FULL):  20%|██        | 1/5 [00:00<00:02,  1.73it/s]Capturing CUDA graphs (decode, FULL):  40%|████      | 2/5 [00:00<00:00,  3.10it/s]Capturing CUDA graphs (decode, FULL):  60%|██████    | 3/5 [00:00<00:00,  4.19it/s]Capturing CUDA graphs (decode, FULL):  80%|████████  | 4/5 [00:01<00:00,  5.01it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 5/5 [00:01<00:00,  4.09it/s]Capturing CUDA graphs (decode, FULL): 100%|██████████| 5/5 [00:01<00:00,  3.78it/s]
+(EngineCore pid=110244) WARNING 08-01 01:38:33 [jit_monitor.py:135] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=110244) WARNING 08-01 01:38:33 [jit_monitor.py:135] Triton kernel JIT compilation during inference: eagle_prepare_next_token_padded_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=110244) WARNING 08-01 01:38:33 [jit_monitor.py:135] Triton kernel JIT compilation during inference: eagle_step_slot_mapping_metadata_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=110244) WARNING 08-01 01:38:34 [jit_monitor.py:135] Triton kernel JIT compilation during inference: rejection_greedy_sample_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=110244) WARNING 08-01 01:38:34 [jit_monitor.py:135] Triton kernel JIT compilation during inference: eagle_prepare_inputs_padded_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+{'run': 1, 'prefill_tps': 13585.5, 'decode_tps': 147.05, 'ttft_s': 0.1507}
+{'run': 2, 'prefill_tps': 13655.4, 'decode_tps': 146.99, 'ttft_s': 0.15}
+{'run': 3, 'prefill_tps': 13578.3, 'decode_tps': 147.04, 'ttft_s': 0.1508}
+{'run': 4, 'prefill_tps': 13603.9, 'decode_tps': 146.99, 'ttft_s': 0.1505}
+{'run': 5, 'prefill_tps': 13260.7, 'decode_tps': 147.13, 'ttft_s': 0.1544}
+median decode tok/s: 147.04
