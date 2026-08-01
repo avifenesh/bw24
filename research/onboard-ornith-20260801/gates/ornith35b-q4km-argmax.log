@@ -1,0 +1,22 @@
+[moe] resident-experts decision: per-layer 522MB x 40 layers = 20.9GB vs budget 19.1GB -> SLRU cache
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Write a one-line Python function that reverses a string.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Write a one-line Python function that reverses a string."
+prompt tokens: [248045, 846, 198, 7734, 264, 799, 8187, 12654, 709, 421, 16915, 287, 264, 886, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=8160  decode argmax=8160  logit maxdiff=8.537e-1  MATCH
+prefill 22 tok in 0.0510s = 431.7 tok/s (pp22)
+generated 32 tokens in 0.310s = 103.39 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.052s) [stop: MaxNew]
+tokens: [8160, 579, 264, 7047, 1817, 25, 271, 16, 13, 220, 2972, 2014, 53983, 2570, 5952, 64700, 198, 256, 471, 2972, 6065, 64700, 9357, 264, 799, 8187, 12654, 709, 421, 16915, 287, 264]
+MoE cache: 21092 slots | cumulative hits=130107 misses=6213 (hit-rate=95.4%) | Stage-1 baseline = 581 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=94.2% | 34.5 MB/decode-token (vs 581 MB/token Stage-1 => 16.8x less PCIe)
+OUTPUT TEXT: "Here's a thinking process:\n\n1.  **Analyze User Request:**\n   - **Task:** Write a one-line Python function that reverses a"
+--- generated text ---
+Here's a thinking process:
+
+1.  **Analyze User Request:**
+   - **Task:** Write a one-line Python function that reverses a
