@@ -1,0 +1,22 @@
+=== chat-qa-short-r2 start 2026-08-01T21:03:55Z ===
+prompt file: /opt/dlami/nvme/hy3-accept-profile/prompts/chat-qa-short.txt (45 chars)
+tree commit: 2b9a6aa64fc1032ed24c272d2dab58c25fabc946 restructure/public-split tip == lane/hy3-spec-sweep base
+gpu-pre: 38, 136.81 W, 1830 MHz, 0 MiB
+concurrent compute apps pre:
+pid, process_name, used_gpu_memory [MiB]
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded memra-repack (81 layers, nextn=1)
+text prompt (45 chars, chat-templated) -> 25 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 280, 1230, 17628, 3892, 252, 15318, 316, 7571, 13, 120007, 120029, 120030]
+
+[generate]   127 tok in 31.427s = 4.04 tok/s (gen-only; this run's prime 5.097s)
+  tokens: [628, 15318, 8205, 7571, 1775, 17732, 280, 252, 10413, 1307, 91387, 17196, 289, 8197, 1307, 3086, 4111, 18411, 5001, 15873, 20218, 11, 289, 100357, 29418, 18746, 252, 30378, 11, 7519, 41877, 10997, 31604, 341, 85, 24843, 289, 7571, 8, 9750, 488, 2089, 51588, 445, 19709, 277, 936, 11803, 13, 1660, 31473, 549, 32690, 3007, 402, 252, 25315, 7571, 77566, 279, 252, 54639, 15318, 11, 5106, 4514, 562, 252, 29180, 445, 7674, 5868, 13, 120025, 120029, 120030, 628, 15318, 9508, 7571, 10694, 1775, 279, 100357, 29418, 11, 1448, 15443, 3605, 9559, 40877, 252, 18411, 11, 3858, 41877, 31604, 279, 20218, 341, 21763, 289, 74620, 8, 912, 14522, 1134, 5800, 4119, 31604, 13, 5251, 549, 32690, 3007, 17367, 1497, 8574, 562, 756, 16300, 11, 252, 3038, 15318, 3259, 377, 244]
+
+[generate_spec K=1] 128 tok in 42.961s = 2.96 tok/s (0.73x vs generate; this run's prime 4.946s)
+  acceptance: 40/87 = 46.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== chat-qa-short-r2 exit=0 2026-08-01T21:08:42Z ===
+gpu-post: 37, 133.57 W, 1830 MHz, 0 MiB
+concurrent compute apps post:
+pid, process_name, used_gpu_memory [MiB]
