@@ -1,0 +1,52 @@
+=== FINAL b32-door --batch 32 --steps 32 --mode config env: MEMRA_DECODE_BATCH_CAP=32 MEMRA_Q8RP=1 2026-08-01T11:40:04Z ===
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 layers); steps=32 batch=32
+gate1 seed 0 step 1: token diverged FAIL
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3 step 3: token diverged — accepted cross-config drift (WARN)
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5: agreement all 32 steps
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+gate2 seq 0 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.648e-1) FAIL
+gate2 seq 1 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.893e-1) FAIL
+gate2 seq 2 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.437e-1) FAIL
+gate2 seq 3 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.602e-1) FAIL
+gate2 seq 4 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.521e-1) FAIL
+gate2 seq 5 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.861e-1) FAIL
+gate2 seq 6 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.421e-1) FAIL
+gate2 seq 7 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.461e-1) FAIL
+gate2 seq 8 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.389e-1) FAIL
+gate2 seq 9 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.518e-1) FAIL
+gate2 seq 10 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.927e-1) FAIL
+gate2 seq 11 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 2.069e-1) FAIL
+gate2 seq 12 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.696e-1) FAIL
+gate2 seq 13 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.877e-1) FAIL
+gate2 seq 14 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.334e-1) FAIL
+gate2 seq 15 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.282e-1) FAIL
+gate2 seq 16 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.917e-1) FAIL
+gate2 seq 17 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.506e-1) FAIL
+gate2 seq 18 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.534e-1) FAIL
+gate2 seq 19 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.756e-1) FAIL
+gate2 seq 20 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.342e-1) FAIL
+gate2 seq 21 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.934e-1) FAIL
+gate2 seq 22 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.632e-1) FAIL
+gate2 seq 23 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.384e-1) FAIL
+gate2 seq 24 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.872e-1) FAIL
+gate2 seq 25 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.941e-1) FAIL
+gate2 seq 26 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.462e-1) FAIL
+gate2 seq 27 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.561e-1) FAIL
+gate2 seq 28 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.417e-1) FAIL
+gate2 seq 29 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.578e-1) FAIL
+gate2 seq 30 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.488e-1) FAIL
+gate2 seq 31 step 0: LOGIT BIT-DIFF vs isolated (maxdiff 1.835e-1) FAIL
+gate2 (B=32 vs isolated batched-B=1, bit-checked, 32 steps): FAIL
+gate3b seq 0: sampled stream DIVERGED batched-vs-isolated at step Some(8) FAIL
+gate3b seq 12: sampled stream DIVERGED batched-vs-isolated at step Some(11) FAIL
+gate3b seq 13: sampled stream DIVERGED batched-vs-isolated at step Some(11) FAIL
+gate3b seq 14: sampled stream DIVERGED batched-vs-isolated at step Some(11) FAIL
+gate3b seq 15: sampled stream DIVERGED batched-vs-isolated at step Some(8) FAIL
+gate3b seq 19: sampled stream DIVERGED batched-vs-isolated at step Some(4) FAIL
+gate3b seq 20: sampled stream DIVERGED batched-vs-isolated at step Some(12) FAIL
+gate3b seq 22: sampled stream DIVERGED batched-vs-isolated at step Some(2) FAIL
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
