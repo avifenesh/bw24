@@ -41,8 +41,12 @@
 ^crates/memra-engine/src/(spec|gemma_spec|dflash|eagle|round_stream)\.rs$	synthetic	-	q35spec,g31spec
 # --- engine Rust: MoE residency/spill ---
 ^crates/memra-engine/src/(moe_cache|spill|spill_pread|cpu_experts)\.rs$	d2-cache-bit-identity,fast-router-batch	q35,g26	-
-# --- engine Rust: forward passes / dispatch / graphs (engine-wide blast radius) ---
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|hybrid|model|pp|prime_graph|graph_update|mla|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
+# --- engine Rust: forward passes / graphs. kernel-check exercises Engine FFI wrappers, not
+# the forward passes — synthetic arms are a cheap link-sanity check; the REAL gate for these
+# files is the golden probes (three kernel classes + one spec probe). ---
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35	q35spec
+# --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
+^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
 # --- gate/bench binaries: build-only (they ARE the gates) ---
 ^crates/memra-engine/src/bin/	none	-	-
 ^crates/memra-engine/tests/	none	-	-

@@ -181,8 +181,10 @@ run_probe() {
         grep -qE "argmax=[0-9]+ +decode argmax=[0-9]+ .* MATCH$" "$log" || { echo "  $id: FAIL (no argmax MATCH, $((t1-t0))s)"; return 1; }
         grep -q "MISMATCH-STRUCTURED" "$log" && { echo "  $id: FAIL (batched-prime MISMATCH-STRUCTURED, $((t1-t0))s)"; return 1; }
     fi
-    PROBE_TOKS=$(grep -oE "tokens: \[[0-9, ]*\]" "$log" | head -1)
-    [ -n "$PROBE_TOKS" ] || { echo "  $id: FAIL (no tokens line, $((t1-t0))s)"; return 1; }
+    # ^-anchored: "prompt tokens: [...]" also contains the substring — pin the GENERATED line
+    # (run-gen "tokens: [...]" at col 0; run-spec indents its plain-generate line "  tokens:").
+    PROBE_TOKS=$(grep -oE "^ *tokens: \[[0-9, ]*\]" "$log" | head -1 | sed 's/^ *//')
+    [ -n "$PROBE_TOKS" ] || { echo "  $id: FAIL (no generated-tokens line, $((t1-t0))s)"; return 1; }
     if [ "$mode" = "check" ]; then
         local gfile="$GOLDENS/$id.tokens"
         if [ ! -f "$gfile" ]; then
