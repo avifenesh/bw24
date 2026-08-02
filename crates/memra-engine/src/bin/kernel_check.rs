@@ -2621,8 +2621,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 20260802/): any nonzero bit here means the rewrite stopped being a scheduling-only
         // change. Class geometry nkv=2/gqa=8 (q35/KAT/o35b), depths cross the sp8->sp64
         // ladder rung + tail tiles + a bucketed dc replay. MEMRA_FA_DEEP flips per pair.
-        {
-            let (hdd, nhd, nhkvd) = (256usize, 16usize, 2usize);
+        // Two geometries: the hybrid depth class (nkv=2/gqa=8: q35/KAT/o35b) and the
+        // qwen35 dense/MoE class (nkv=8/gqa=4: 9B/27B) — both ride the v4->deep dispatch.
+        for (hdd, nhd, nhkvd) in [(256usize, 16usize, 2usize), (256, 32, 8)] {
             let kvd = hdd * nhkvd;
             let ktb = (kvd / 32) * kbb;
             let vtb = (kvd / 32) * vbb;

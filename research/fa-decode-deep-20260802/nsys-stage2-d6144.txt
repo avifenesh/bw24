@@ -1,0 +1,5 @@
+ Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)              Name            
+      3.3          297,214         10  29,721.4  29,631.5    29,088    31,456        662.6  fa_decode_vec_q_v4_dc       
+      2.3          208,030         10  20,803.0  20,880.0    19,808    21,280        395.8  fa_decode_vec_q_v4_deep_dc  
+      0.8           76,607         10   7,660.7   7,647.5     7,552     7,808         72.6  fa_decode_combine_f32_deep  
+      0.8           74,559         10   7,455.9   7,456.0     7,200     7,904        202.5  fa_decode_combine_f32       

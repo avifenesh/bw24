@@ -1,0 +1,118 @@
+# fa-decode-deep: the deep-ctx rewrite of the v4 decode vec kernel (2026-08-02)
+
+Lane `lane/fa-decode-deep` (from `restructure/public-split` 6e03c838 — post depth-decode
+merge). Rig: RTX 5090 Laptop 24463 MiB sm_120a, 82 SMs. Every GPU run under
+`flock /tmp/gpu5090.lock`; two co-lanes shared the rig this session (their heat is inside
+the per-call bench spreads; the quiet-rig nsys cells are labeled). Follow-up to
+`research/depth-decode-20260802/` — the class-wide depth decay priced there
+(`fa_decode_vec_q_v4_dc` + combine = 12.3 → 44.3 µs/layer-token from d512 → d6144,
+162 GB/s effective = 19% of the card).
+
+## 1. Mechanism (ncu, CONFIRMED — receipts `ncu-v4-d6144.txt`)
+
+`fa_v4_smem.k_ints[32][64]`: row stride 64 words ≡ 0 mod 32 banks, so the v4 score
+phase's `k_ints[lane][c*8+w]` operand read serializes as a **32-way shared-memory bank
+conflict on every dp4a K operand** — measured **1,403,465 load-bank-conflict cycles per
+launch** at d6144 (`k_d[32][8]` is 8-way on top). Second order: the byte-wise staging
+store stream (477K store-conflict cycles/launch), and the barrier-serialized tile loop
+exposing the next tile's DRAM latency. This — not raw DRAM bandwidth — is why the vec
+kernel read KV at 19% of the card: the kernel is SM-cycle-bound (same ~56-60K elapsed
+cycles at locked 0.8 GHz and real ~2.9 GHz).
+
+## 2. The deep form (BIT-IDENTICAL — the strongly-preferred branch of the exactness law)
+
+`fa_decode_vec_q_v4_deep` / `_deep_dc` run the v4 program VERBATIM — same split
+partition (ONE-PARTITION law in the dc twin), same per-key dp4a order, same tile-max /
+B2 softmax bookkeeping / B3 accumulation order, same `[head][split]` partials into the
+UNCHANGED `fa_decode_combine_f32`. Only the physical smem layout and the load/store
+schedule move:
+
+- **A. bank-conflict row pads**: `k_ints[32][68]`, `k_d[32][9]` — read banks
+  `(68j+x) % 32` / `(9j+c) % 32` cover all 32; slot mapping and indexing expressions
+  unchanged. Load conflicts 1.40M → 3.5K/launch (−99.8%).
+- **B. packed staging stores**: the 8 funnelshift K ints and 8 dequanted V bf16 collect
+  in registers and land as 16 B stores (all row offsets 16 B-aligned). Store conflicts
+  382K → 28.6K/launch.
+- **C. L2 tile prefetch**: both first tiles' K/V lines issue `prefetch.global.L2` at walk
+  entry (before the q-quant barrier); tile+2 distance inside the loop (sp128 splits).
+- **D. hd256/dpl8 specialization** (dispatch is host-gated hd256): compile-time dpl kills
+  the per-slot B3 predicates. Measured flat vs C — kept for cost-free codegen.
+
+ptxas: **0 spill stores / 0 spill loads** (68 regs, both twins). smem 12160+16384 B
+(3 blocks/SM, same as v4's 27.9 KB class).
+
+Dispatch: `fa_deep_at` in both `fa_decode_kvmod` (eager) and `fa_decode_dc_q8` (graph,
+keyed on bucket_max — the fa_v4_at precedent), default KV module only (`!g`), probe modes
+excluded. **Rollback seam `MEMRA_FA_DEEP=0`**; `MEMRA_FA_DEEP_MIN` is a sweep/diagnostic
+seam. The rows-verify, seqs (batched tick) and combine kernels are untouched — deep's
+bits equal v4's bits, so every cross-kernel pin (rows-vs-loop, seqs-vs-loop, graph
+bit-identity) holds by construction and is re-verified below.
+
+## 3. Bit-identity verdict: GREEN everywhere measured
+
+- `fa-deep-bench` (production-appended synthetic KV, class geometry nkv=2/gqa=8):
+  deep-vs-v4 bitdiff=0 at 11 depths × {eager, dc exact-bucket, dc bucketed-replay},
+  including sp8→sp64 rung crossings (3071/3072/3073), tail tiles (513/4097/6143/6200)
+  and the ladder-straddle bucket case (deep reproduces v4's documented dc-vs-eager
+  straddle EXACTLY, element-for-element). 44/44 OK (`bench-stage2-stores.log`,
+  `floor-sweep.log`).
+- kernel-check: new standing FA-DEEP pin (deep-vs-v4 BYTE identity, geometries
+  nkv=2/gqa=8 AND nkv=8/gqa=4, depths {512,3071,3073,4096,6144,6200} eager+dc+replay) —
+  full battery **ALL GREEN** (`kernel-check-full.log`).
+
+## 4. Kernel-level result (quiet-rig nsys, real clocks, N=10 medians)
+
+| kernel @ d6144 | v4 | deep | ratio |
+|---|---|---|---|
+| vec (dc twin) | 29.7 µs | 20.8 µs | **1.43x** |
+| vec @ d2048 (sp8 rung) | 13.5 µs | 11.5 µs | 1.17x |
+| combine_f32 | 7.5 µs | 7.5 µs (unchanged kernel) | — |
+
+Effective KV-read bandwidth at d6144: 192 → **277 GB/s** on the same 5.7 MB of q8_0/q5_1
+bytes (production receipts had v4 at 162 GB/s under co-running load). The priced 2x+ was
+not fully reached in-kernel (1.43x); the residual is split across global-load latency
+(long-scoreboard 26%), MIO pressure, and the order-pinned B3 FMA chain — the next
+structural levers (cp.async raw pipeline, sV re-layout) all trade against the 3-blocks/SM
+smem cliff and were left un-built rather than risk the occupancy regression.
+
+REFUTED in-lane (receipts `nsys-combine-f4-*.txt`, JSONL-of-record = this file):
+- combine grid re-tile (n_head×hd/32 blocks of 32): FLAT — 7.66 vs 7.46 µs d6144, 18.6
+  vs 19.0 µs d2048. The 1-block/head shape already carries 128 warps.
+- combine float4 4-dims/thread: WORSE — 11.2 µs d6144 / 26.1 µs d2048 (32 warps lose
+  more latency cover than wide loads buy). Killed per flags doctrine.
+
+## 5. Engagement floor sweep (threshold choice)
+
+`fa-deep-bench sweep`, fine grid 96..6144, production dc call form, N=3 interleaved
+medians + per-rep values (`floor-sweep.log`): deep is flat-or-better at EVERY depth
+(1.01x–1.26x, no losing cell). **Swept floor = 0: always-on wherever v4 dispatched.**
+No engagement boundary ⇒ no new capture/recapture edge (the segmented-recapture law is
+satisfied trivially); the sp-ladder rung at 3072 remains the only geometry boundary, as
+before.
+
+## 6. Batteries (deep default-on)
+
+<!-- filled at battery completion: battery-console.log + gate-*.log -->
+
+## 7. The depth table — old vs new + vs-llama (e2e)
+
+<!-- filled from depth-ab.jsonl via summarize-ab.py -->
+
+## 8. Stale-verdict finding for a FOLLOW-UP lane (not built here)
+
+At the sp8 rung (d2048: 256 splits) the **combine (19 µs) now exceeds the deep vec
+kernel (11.5 µs)** — the 3072 sp8→sp64 rung was calibrated 2026-07-08 on the conflicted
+v4 core and is stale under the deep kernel (combine + partial-buffer cost scales with
+n_splits; sp64-at-d2048 would cut combine ~8x for a vec-side cost). A ladder move is a
+NEW NUMERIC CONFIG (split partition changes combine order) and needs its own full
+battery per model — priced, not shipped, in this bit-identical lane.
+
+## Files
+
+`fa_deep_bench.rs` (bit gate + floor sweep + ncu mode) → `bench-stage1-padprefetch.log`,
+`bench-stage2-stores.log`, `floor-sweep.log`; `ncu-v4-d6144.txt`;
+`nsys-stage2-d{2048,6144}.txt`, `nsys-stage3-d6144.txt`, `nsys-combine-f4-d{2048,6144}.txt`
+(quiet-rig kernel medians; `.nsys-rep` binaries local-only per .gitignore);
+`kernel-check-full.log`; `run-battery.sh` → `battery-console.log` + `gate-*.log`;
+`run-depth-ab.sh` → `depth-ab.jsonl`, `ab-console.log`, `mem-*.log`, `llama-*.log`;
+`summarize-ab.py`.

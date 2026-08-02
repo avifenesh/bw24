@@ -1,0 +1,4 @@
+=== fa-deep battery 2026-08-02T11:42:15Z git=74d2fc58 ===
+argmax kat: MATCH (1 gate lines) OK
+argmax q35: MATCH (2 gate lines) OK
+argmax o35b: MATCH (2 gate lines) OK
