@@ -48,6 +48,15 @@ pub use memra_sampling as sampler;
 /// GEMM win) — but that verdict is for expert banks the int8-MMA MMQ arm can take
 /// (IQ3_S/IQ4_XS/Q4_0). MEMRA_MOE_F16G=0 kills anywhere.
 ///
+/// HOPPER RE-VERDICT (2026-08-02, lane/h100-flip-full): mode 2 with full direct coverage
+/// (Q4_K/Q6_K/IQ4_XS/IQ3_S tile loaders, lane/iq-direct-loaders) + the deep tail
+/// (lane/sk-tail-form) FLIPS past cublas mode 1 on the H100 — q35 board-2048 prime
+/// 13163.6 (mode 2, cross=32) vs 8626.5 (mode 1) vs 8073.4 (round-51 sk form), +52.6%,
+/// interleaved x5 zero overlap, argmax MATCH 30/30. The round-54 NO-FLIP (8547 vs 8112)
+/// was coverage-priced at 5.2% direct; ~100% coverage kills the workspace pass and the
+/// verdict inverts. Hopper naked default -> mode 2 (this arm); the gemma (gelu) site
+/// stays env-explicit-only via moe_f16g_gemma_on (Err => closed, unaffected by this arm).
+///
 /// AUTO-KQUANT (mode 3, 2026-08-02, lane/q4k-expert-prefill): sm_120a's default when unset.
 /// The mode-2 sk form is admitted ONLY for layers the MMA MMQ arm rejects (k-quant expert
 /// projections — Q3_K/Q4_K/Q6_K), i.e. exactly where the baseline is the per-pair
@@ -63,7 +72,7 @@ pub fn moe_f16g_mode() -> u8 {
         Ok("0") => 0,
         Ok("2") => 2,
         Ok(_) => 1,
-        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 3 },
+        Err(_) => if cfg!(memra_hopper_mma) { 2 } else { 3 },
     })
 }
 /// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs
@@ -75,8 +84,10 @@ pub fn moe_f16g_mode() -> u8 {
 ///                         back to 32x64 in-launcher when the device/in_f can't take it).
 ///   unset              -> hybrid split: groups with m_e >= MEMRA_F16G_SK_CROSS ride the 128
 ///                         form. Default cross = 64 (5090 sweep 2026-08-01, receipts
-///                         research/sk-bm128-20260801/ — re-sweep on Hopper before flipping
-///                         mode 2 there).
+///                         research/sk-bm128-20260801/; H100 re-swept on the direct+tail
+///                         form 2026-08-02, lane/h100-flip-full: {16,32,64} ->
+///                         12868/13192/13225 — 64 wins there too, the pre-direct 32
+///                         verdict was stale).
 pub fn moe_f16g_sk_params() -> (i32, i32) {
     static P: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
     *P.get_or_init(|| match std::env::var("MEMRA_F16G_SK").as_deref() {
