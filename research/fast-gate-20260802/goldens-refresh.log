@@ -1,0 +1,34 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: research/fast-gate-20260802/goldens-refresh.log
+  changed: research/fast-gate-20260802/kernel-check-full-timed-DURING-OUTAGE-WINDOW.log
+  changed: research/fast-gate-20260802/kernel-check-full-timed.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-aw35.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-e4b.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-g12.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-g26.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-g31.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-k27.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-kat.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-o35.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-o9.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-q35.log
+  changed: research/fast-gate-20260802/refresh-logs/probe-q9.log
+  kernel-check scope: none
+  tier-1 argmax probes: none
+  tier-1 spec probes:   none
+  logs: /home/avifenesh/projects/wt-fast-gate/research/fast-gate-20260802/refresh-logs
+== fast-gate: refreshing goldens at d9e45d86 (2026-08-02T20:51:08Z) ==
+  g12: golden pinned (20 ids)
+  g31: golden pinned (20 ids)
+  e4b: golden pinned (20 ids)
+  g26: golden pinned (20 ids)
+  q9: golden pinned (20 ids)
+  k27: golden pinned (20 ids)
+  q35: golden pinned (1 ids)
+  aw35: golden pinned (20 ids)
+  o9: golden pinned (20 ids)
+  o35: golden pinned (20 ids)
+  kat: golden pinned (20 ids)
+  q35spec: golden pinned (32 ids)
+  g31spec: PASS (stream agreement 32/32, 19s)
+goldens refresh: 0 fail — remember: refresh is ONLY valid at full-battery green points.

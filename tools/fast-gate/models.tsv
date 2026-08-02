@@ -19,7 +19,8 @@ e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	re
 g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 q9	argmax	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 k27	argmax	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	@tools/fast-gate/prompts/probe.txt	20	-
-q35	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+# q35 chat-wrapped: the raw continuation hits EOS after 1 token (a 1-id golden is no net).
+q35	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	MEMRA_CHAT=1
 aw35	argmax	/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 o9	argmax	/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 o35	argmax	/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf	@tools/fast-gate/prompts/probe.txt	20	-
