@@ -1,54 +1,52 @@
-//! M1 pipeline-parallel 2-stage seam.
+//! M2 pipeline-parallel N-stage runtime (generalizes the M1 2-stage seam).
 //!
-//! Door: `MEMRA_PP_STAGES=2` (default OFF — unset/0/1 = no behavior change anywhere).
-//! Split: `MEMRA_PP_SPLIT=<i>` puts layers [0, i) in stage 0 and [i, n) in stage 1;
-//! default i = n_layers/2.
+//! Door: `MEMRA_PP_STAGES=N` (default OFF — unset/0/1 = no behavior change anywhere).
+//! Stage map: N stages over the trunk layers with N-1 cuts. `MEMRA_PP_SPLITS=c1,..,cN-1`
+//! sets the cuts explicitly (strictly increasing, in (0, n_layers)); `MEMRA_PP_SPLIT=<i>`
+//! is the N=2 back-compat spelling; default = even split (cut s = s*n_layers/N).
+//! Placement: `MEMRA_PP_DEVICES=d0,..,dN-1` maps stage s to device ds (default: all on
+//! the primary engine's device).
 //!
-//! Increment 1 (merged): seam + gate, single device — the eager decode walk runs as two
-//! stage subgraphs with an explicit activation handoff (TX copy into a dedicated boundary
-//! buffer, RX copy out — never an alias). Cross-layer launch fusions (the generic loop's
-//! pending (x1, ffn_out) add-carry; gemma4's pre-quantized next-norm carry) are LOCAL to
-//! a stage: the boundary materializes the residual with the same kernels the last layer
-//! of an unsplit walk uses (the kernel-check-pinned `add_rms_norm_q8_1 == add then
-//! rms_norm_q8_1` / `add_scale_rms_norm_q8_1` identities), so split logits are
-//! BIT-IDENTICAL to unsplit — `pp2-gate` proves it per step.
+//! M1 history (increments 1-2, merged + hardened on the 8x box 2026-08-02): seam + gate
+//! single-device; then real transport — per-stage streams/events, device placement,
+//! peer-copy boundary (M0: cudaMemcpyPeerAsync beats NCCL 2.8x at PP activation sizes),
+//! per-context PDL module caches, default-mempool peer grants. All five r3 gates PASS
+//! bit-identical (receipts ~/receipts/m1-pp2/ on darklanes-bench).
 //!
-//! Increment 2 (this file): REAL TRANSPORT.
-//!   - Per-stage CUDA streams: stage 0 and stage 1 each launch on their own created
-//!     stream (`Pp2Rt::enter` pushes the thread-ambient stream override — see
-//!     memra_runtime::Gpu::stream). The boundary TX records a CudaEvent on stage-0's
-//!     stream; stage-1's RX waits on it before copying out. Single-device this is a
-//!     correctness no-op with real synchronization semantics — pp2-gate stays
-//!     BIT-IDENTICAL with streams on.
-//!   - Device placement: `MEMRA_PP_DEVICES=<d0>,<d1>` maps stage s to device ds (default:
-//!     both on the primary engine's device = increment-1 behavior). A remote stage gets
-//!     its OWN Engine (modules/functions are per-context) in that device's primary
-//!     context; model weights stay on the primary device and are read through enabled
-//!     peer access (bring-up placement: correctness first — weight sharding is a later
-//!     increment). Stage-owned KV allocation: `new_cache` allocates each layer range's
-//!     cache on the owning stage's device (`Cache::new_pp2`).
-//!   - Transport-selected boundary copy: same-device -> dtod on stage-0's stream
-//!     (today's bytes, unchanged); cross-device -> cudaMemcpyPeerAsync issued on
-//!     stage-0's (owning/publishing) stream — the M0 choreography
-//!     (research/m0-nccl-20260801: peer copy beats NCCL 2.8x at PP activation sizes).
-//!     Guarded by cuDeviceCanAccessPeer BOTH directions: peer-inaccessible pairs FAIL
-//!     LOUDLY (stage kernels also dereference cross-device weight/pos pointers, which
-//!     requires peer access — a silently host-staged copy would fake a gate PASS).
-//!   - Overlap scaffolding (M2 seed, `MEMRA_PP_OVERLAP=1`, default OFF): the boundary
-//!     becomes DOUBLE-BUFFERED (two slots, alternating per step) and TX's
-//!     write-after-read guard waits only on the PREVIOUS use of the same slot — so a
-//!     future pipelined loop can issue token t+1's stage 0 while token t's stage 1 runs.
-//!     Each token's math is fully ordered by the slot events either way; the eager
-//!     decode_step API still syncs on its own logits D2H, so on one device overlap=1
-//!     changes scheduling structure, not math — pp2-gate must stay bit-identical.
-//!   - Rollback seam: `MEMRA_PP_STREAMS=0` = the increment-1 same-stream two-dtod seam.
+//! M2 increment 1 (this file): N-STAGE GENERALIZATION — `Pp2Rt` becomes `PpNRt`:
+//!   - `stages`: Vec of per-stage execution homes (device, context, stream, remote Engine);
+//!   - `boundaries`: N-1 boundary runtimes, each with TWO persistent double-buffered slots
+//!     (ev_tx/ev_rx per slot) and its own overlap step counter; transport is selected PER
+//!     BOUNDARY (dtod same-device / cudaMemcpyPeerAsync cross-device);
+//!   - peer + default-mempool access is granted between EVERY distinct pair of devices in
+//!     use (stage devices + the primary): stage kernels may dereference the primary's
+//!     weights (bring-up placement) and stage-0's pos_d, and each boundary peer-copies.
 //!
-//! Ownership across the seam (unchanged from increment 1):
-//!   - hidden state [n_embd] f32 is the ONLY tensor that crosses the boundary;
+//! M2 increment 2 (weight sharding): the loader uploads each stage's layer range THROUGH
+//! that stage's engine (`layer_engine`), so weights land on the device that runs them —
+//! the bring-up peer-read placement dies. `output_norm` + lm head load through the LAST
+//! stage's engine; the embed table stays host-side with stage 0. Split-plane/f16 decode
+//! mirrors are built per layer through the owning stage's engine too (the rp4 mirrors ARE
+//! the decode weights on the q8 path — leaving them on dev0 would fake the kill).
+//! Rollback seam: `MEMRA_PP_SHARD=0` = M1 bring-up placement (all weights on primary,
+//! remote stages peer-read).
+//!
+//! M2 increment 3 (deferred readback — the pipelining seed): `PendingLogits` — the eager
+//! decode arm can END a step without the logits D2H (`decode_step_h_ppn_deferred`): the
+//! logits stay device-resident with a completion event; `wait()` drains them through a
+//! DEDICATED readback stream (waits the event, copies, syncs) so tokens t+1.. keep
+//! enqueuing on the stage streams while token t drains. Per-token math is fully
+//! event-ordered (same slots, same ev_tx/ev_rx chain) — scheduling changes, math does
+//! not; the pipelined replay arm of `ppn-gate` proves bit-identity per step.
+//!
+//! Ownership across a boundary (unchanged from M1):
+//!   - hidden state [n_embd] f32 is the ONLY tensor that crosses;
 //!   - KV/linear-attn cache entries are per-layer: stage s exclusively owns cache state
 //!     for its layer range (and, under MEMRA_PP_DEVICES, allocates it on its device);
-//!   - position/rope state is the scalar `cache.pos` snapshot taken once per step
-//!     (each stage reads the same value; a per-stage counter replicates it later);
+//!   - position/rope state is the scalar `cache.pos` snapshot taken once per step, uploaded
+//!     on stage-0's stream BEFORE the first TX event — every later stage's wait chain
+//!     transitively orders it (stage s waits boundary s-1's ev_tx, which was recorded after
+//!     stage s-1's work, which waited boundary s-2's ev_tx, ... back to stage 0);
 //!   - the embed table lives with stage 0, output_norm + lm head with the last stage.
 //!
 //! THE MULTI-STREAM LAW (why this is safe with cudarc event tracking disabled): all
@@ -56,12 +54,11 @@
 //! per-stage scratch is allocated AND freed on that stage's stream (stream-ordered); the
 //! async mem pool runs with opportunistic reuse OFF + internal dependencies ON
 //! (memra-runtime), so a block freed on stream A and reused on stream B carries a
-//! driver-inserted dependency. pos_d is uploaded on stage-0's stream BEFORE the TX event
-//! that stage 1 waits on, weights are load-time state no stage stream can precede, and
-//! the step's terminal logits D2H drains stage 1 (whose TX-wait transitively drains
-//! stage 0) before any step-scoped buffer drops.
+//! driver-inserted dependency. Weights are load-time state no stage stream can precede,
+//! and the step's terminal logits readback (sync D2H, or PendingLogits' event-ordered
+//! readback stream) drains the last stage, whose TX-wait chain transitively drains all.
 //!
-//! Increment-2 scope: plain eager decode only (generic + gemma4 arms). NOT wired:
+//! Scope: plain eager decode only (generic arm N-stage; gemma4 arm 2-stage). NOT wired:
 //! batch/dc/graph/spec loops and the gemma4-E4B eager arm (`warn_unwired_once` fires).
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -71,54 +68,115 @@ use cudarc::driver::{CudaContext, CudaEvent, CudaSlice, CudaStream};
 
 use crate::Engine;
 
-/// Returns `Some(split)` iff the pp2 door is open: `MEMRA_PP_STAGES=2` with a valid
-/// split in [1, n_layers-1]. Reads the environment on every call (gates toggle the
-/// door in-process); the cost is two getenv per decode step, eager-loop noise.
-pub fn pp2_split(n_layers: usize) -> Option<usize> {
-    match std::env::var("MEMRA_PP_STAGES") {
-        Ok(v) if v == "2" => {}
+/// Returns the stage fence iff the ppN door is open: `MEMRA_PP_STAGES=N` (N >= 2) with a
+/// valid cut list. The fence has N+1 entries: `[0, c1, .., cN-1, n_layers]`; stage s runs
+/// layers `[fence[s], fence[s+1])`. Reads the environment on every call (gates toggle the
+/// door in-process); the cost is a few getenv per decode step, eager-loop noise.
+pub fn pp_cuts(n_layers: usize) -> Option<Vec<usize>> {
+    let n_st: usize = match std::env::var("MEMRA_PP_STAGES") {
         Ok(v) if v.is_empty() || v == "0" || v == "1" => return None,
-        Ok(v) => {
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => {
+                warn_bad_once(&format!("MEMRA_PP_STAGES={v} unparseable; door stays OFF"));
+                return None;
+            }
+        },
+        Err(_) => return None,
+    };
+    if n_st < 2 || n_st > n_layers {
+        warn_bad_once(&format!(
+            "MEMRA_PP_STAGES={n_st} outside [2, n_layers={n_layers}]; door stays OFF"
+        ));
+        return None;
+    }
+    let mut fence = Vec::with_capacity(n_st + 1);
+    fence.push(0usize);
+    if let Ok(s) = std::env::var("MEMRA_PP_SPLITS") {
+        let parts: Result<Vec<usize>, _> =
+            s.split(',').map(|p| p.trim().parse::<usize>()).collect();
+        match parts {
+            Ok(cuts) if cuts.len() == n_st - 1 => fence.extend(cuts),
+            _ => {
+                warn_bad_once(&format!(
+                    "MEMRA_PP_SPLITS={s} invalid (want {} comma-separated cuts); door stays OFF",
+                    n_st - 1
+                ));
+                return None;
+            }
+        }
+    } else if let Ok(v) = std::env::var("MEMRA_PP_SPLIT") {
+        // N=2 back-compat spelling. With N>2 a single split is ambiguous — fail the door
+        // loudly rather than guess (a silent even-split would fake a gate config).
+        if n_st != 2 {
             warn_bad_once(&format!(
-                "MEMRA_PP_STAGES={v} unsupported (increment 2 is 2-stage only); door stays OFF"
+                "MEMRA_PP_SPLIT={v} set with MEMRA_PP_STAGES={n_st}; use MEMRA_PP_SPLITS \
+                 for N>2 — door stays OFF"
             ));
             return None;
         }
-        Err(_) => return None,
-    }
-    let split = match std::env::var("MEMRA_PP_SPLIT") {
-        Ok(v) => match v.parse::<usize>() {
-            Ok(s) => s,
+        match v.parse::<usize>() {
+            Ok(c) => fence.push(c),
             Err(_) => {
                 warn_bad_once(&format!("MEMRA_PP_SPLIT={v} unparseable; door stays OFF"));
                 return None;
             }
-        },
-        Err(_) => n_layers / 2,
-    };
-    if split == 0 || split >= n_layers {
-        warn_bad_once(&format!(
-            "MEMRA_PP_SPLIT={split} outside [1, {}]; door stays OFF",
-            n_layers - 1
-        ));
-        return None;
+        }
+    } else {
+        for s in 1..n_st {
+            fence.push(s * n_layers / n_st);
+        }
     }
-    Some(split)
+    fence.push(n_layers);
+    for w in fence.windows(2) {
+        if w[0] >= w[1] {
+            warn_bad_once(&format!(
+                "pp stage fence {fence:?} not strictly increasing over [0, {n_layers}]; \
+                 door stays OFF"
+            ));
+            return None;
+        }
+    }
+    Some(fence)
 }
 
-/// MEMRA_PP_STREAMS=0: rollback to the increment-1 same-stream seam (two dtod copies on
-/// the ambient compute stream, no per-stage streams/events). Anything else = increment 2.
+/// N=2 back-compat view of the door (the gemma4 arm and `pp2-gate` are 2-stage): `Some(cut)`
+/// iff the door is open with EXACTLY two stages.
+pub fn pp2_split(n_layers: usize) -> Option<usize> {
+    pp_cuts(n_layers).filter(|f| f.len() == 3).map(|f| f[1])
+}
+
+/// The stage that owns layer `il` under `fence` (see `pp_cuts`).
+pub fn stage_of(fence: &[usize], il: usize) -> usize {
+    debug_assert!(fence.len() >= 2);
+    match fence[1..fence.len() - 1].binary_search(&il) {
+        // fence[1..][k] == il means il is the FIRST layer of stage k+1
+        Ok(k) => k + 1,
+        Err(k) => k,
+    }
+}
+
+/// MEMRA_PP_STREAMS=0: rollback to the increment-1 same-stream seam (boundary = two plain
+/// dtod copies on the ambient compute stream, no per-stage streams/events/devices).
 pub fn pp2_streams_off() -> bool {
     matches!(std::env::var("MEMRA_PP_STREAMS").as_deref(), Ok("0"))
 }
 
-/// MEMRA_PP_OVERLAP=1: double-buffered boundary slots (the M2 seed). Default OFF —
-/// scheduling structure only, never math. Read per step so the gate can A/B in-process.
+/// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
+/// pipelining seed). Default OFF — scheduling structure only, never math. Read per step
+/// so gates can A/B in-process.
 pub fn pp2_overlap() -> bool {
     matches!(std::env::var("MEMRA_PP_OVERLAP").as_deref(), Ok("1"))
 }
 
-/// Raw `MEMRA_PP_DEVICES` (parsed/validated at Pp2Rt build — a bad string must fail the
+/// M2 increment 2 rollback seam: MEMRA_PP_SHARD=0 = the M1 bring-up placement (all
+/// weights upload through the primary engine; remote stages peer-read). Default ON —
+/// under MEMRA_PP_DEVICES each stage's layer range uploads through its own engine.
+pub fn pp_shard_off() -> bool {
+    matches!(std::env::var("MEMRA_PP_SHARD").as_deref(), Ok("0"))
+}
+
+/// Raw `MEMRA_PP_DEVICES` (parsed/validated at PpNRt build — a bad string must fail the
 /// decode step loudly, never silently fall back to same-device and fake a gate PASS).
 fn pp2_devices_env() -> Option<String> {
     std::env::var("MEMRA_PP_DEVICES").ok().filter(|v| !v.is_empty())
@@ -127,122 +185,171 @@ fn pp2_devices_env() -> Option<String> {
 static WARNED_BAD: AtomicBool = AtomicBool::new(false);
 fn warn_bad_once(msg: &str) {
     if !WARNED_BAD.swap(true, Ordering::Relaxed) {
-        eprintln!("[pp2] {msg}");
+        eprintln!("[pp] {msg}");
     }
 }
 
 static WARNED_UNWIRED: AtomicBool = AtomicBool::new(false);
-/// One-time notice when the door is set but the executing path has no pp2 arm
-/// (increments 1-2 wire only the plain eager decode loops).
+/// One-time notice when the door is set but the executing path has no pp arm
+/// (M2 wires the generic eager decode at any N and the gemma4 eager arm at N=2).
 pub fn warn_unwired_once(path: &str) {
-    if std::env::var("MEMRA_PP_STAGES").map(|v| v == "2").unwrap_or(false)
-        && !WARNED_UNWIRED.swap(true, Ordering::Relaxed)
-    {
-        eprintln!("[pp2] MEMRA_PP_STAGES=2 set but `{path}` has no pp2 arm (increment 2); running unsplit");
+    let open = std::env::var("MEMRA_PP_STAGES")
+        .map(|v| !v.is_empty() && v != "0" && v != "1")
+        .unwrap_or(false);
+    if open && !WARNED_UNWIRED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "[pp] MEMRA_PP_STAGES set but `{path}` has no pp arm at this N; running unsplit"
+        );
     }
 }
 
 // ======================================================================================
-//  Pp2Rt: the increment-2 transport runtime (per-stage streams, events, boundary slots)
+//  PpNRt: the M2 transport runtime (per-stage streams, per-boundary events + slots)
 // ======================================================================================
 
 /// One pipeline stage's execution home: device, context, launch stream, and (for a stage
-/// remote to the primary engine's device) a dedicated Engine in that device's context.
+/// remote to the primary engine's device) a dedicated Engine in that device's primary
+/// context (CUmodules are per-context).
 pub struct StageRt {
     pub dev: usize,
     pub ctx: Arc<CudaContext>,
     pub stream: Arc<CudaStream>,
-    /// `Some` only when `dev` differs from the primary engine's device: CUmodules are
-    /// per-context, so a remote stage needs its own Engine. Weights stay on the primary
-    /// device (read via peer access); KV moves with `Cache::new_pp2`.
+    /// `Some` only when `dev` differs from the primary engine's device.
     engine: Option<Engine>,
 }
 
 /// One boundary slot: a persistent RX-side buffer + its TX/RX completion events.
-/// PERSISTENT because the buffer is written by stage-0's stream and read by stage-1's:
-/// a per-step alloc/free would enqueue the free on ONE stream while the other might
-/// still be reading (the cross-stream free hazard) — a never-freed slot cannot race.
+/// PERSISTENT because the buffer is written by the TX stage's stream and read by the RX
+/// stage's: a per-step alloc/free would enqueue the free on ONE stream while the other
+/// might still be reading (the cross-stream free hazard) — a never-freed slot cannot race.
 struct BoundarySlot {
     buf: Mutex<Option<CudaSlice<f32>>>,
-    /// Recorded on stage-0's stream after the TX copy; RX waits on it. Created in
-    /// stage-0's context (cuEventRecord requires event ctx == stream ctx).
+    /// Recorded on the TX stage's stream after the TX copy; RX waits on it. Created in
+    /// the TX stage's context (cuEventRecord requires event ctx == stream ctx).
     ev_tx: CudaEvent,
-    /// Recorded on stage-1's stream after the RX copy; the NEXT TX into this slot waits
-    /// on it (write-after-read guard). Created in stage-1's context. Waiting on a
-    /// never-recorded event is a defined no-op, so step 0 needs no special case.
+    /// Recorded on the RX stage's stream after the RX copy; the NEXT TX into this slot
+    /// waits on it (write-after-read guard). Created in the RX stage's context. Waiting
+    /// on a never-recorded event is a defined no-op, so step 0 needs no special case.
     ev_rx: CudaEvent,
 }
 
-pub struct Pp2Rt {
-    stages: [StageRt; 2],
-    /// true iff the two stages live on different devices (peer transport selected).
-    cross: bool,
+/// Boundary b sits between stage b (TX) and stage b+1 (RX). Two slots, alternating per
+/// step under MEMRA_PP_OVERLAP=1 (each boundary counts its own steps — a decode step
+/// crosses every boundary exactly once, so the counters stay in lockstep).
+struct BoundaryRt {
     slots: [BoundarySlot; 2],
     step: AtomicUsize,
+    /// true iff stage b and stage b+1 live on different devices (peer transport).
+    cross: bool,
 }
 
-static RT2: OnceLock<Result<Pp2Rt, String>> = OnceLock::new();
+pub struct PpNRt {
+    stages: Vec<StageRt>,
+    boundaries: Vec<BoundaryRt>,
+    /// true iff ANY boundary crosses devices.
+    cross_any: bool,
+    /// Dedicated readback stream in the LAST stage's context (deferred logits D2H —
+    /// waiting there instead of on the compute stream keeps later tokens enqueuable).
+    readback: Arc<CudaStream>,
+}
 
-impl Pp2Rt {
+/// M1 name kept alive for external callers (`pp-transport-smoke`, receipts, docs).
+pub type Pp2Rt = PpNRt;
+
+static RTN: OnceLock<Result<PpNRt, String>> = OnceLock::new();
+
+impl PpNRt {
     /// The process-wide transport runtime, built on first use against the primary engine.
-    /// The device map freezes at first build (one MEMRA_PP_DEVICES config per process —
-    /// the gate runs one placement per invocation). Build errors are sticky and loud.
-    pub fn get(e: &Engine) -> Result<&'static Pp2Rt, Box<dyn std::error::Error>> {
-        RT2.get_or_init(|| Self::build(e).map_err(|err| err.to_string()))
+    /// The stage count + device map freeze at first build (one config per process — gates
+    /// run one placement per invocation). Build errors are sticky and loud.
+    pub fn get(e: &Engine) -> Result<&'static PpNRt, Box<dyn std::error::Error>> {
+        RTN.get_or_init(|| Self::build(e).map_err(|err| err.to_string()))
             .as_ref()
             .map_err(|s| -> Box<dyn std::error::Error> { s.clone().into() })
     }
 
-    fn build(e: &Engine) -> Result<Pp2Rt, Box<dyn std::error::Error>> {
+    fn build(e: &Engine) -> Result<PpNRt, Box<dyn std::error::Error>> {
         let primary_dev = e.ctx().ordinal();
-        let devices: [usize; 2] = match pp2_devices_env() {
-            None => [primary_dev, primary_dev],
+        // Stage count: MEMRA_PP_DEVICES length wins when set (it IS the placement);
+        // else MEMRA_PP_STAGES; else 2 (the M1 default — pp-transport-smoke runs doorless).
+        let devices: Vec<usize> = match pp2_devices_env() {
             Some(s) => {
-                let parts: Vec<_> = s.split(',').map(|p| p.trim().parse::<usize>()).collect();
-                match (parts.len(), parts.first(), parts.get(1)) {
-                    (2, Some(Ok(a)), Some(Ok(b))) => [*a, *b],
+                let parts: Result<Vec<usize>, _> =
+                    s.split(',').map(|p| p.trim().parse::<usize>()).collect();
+                match parts {
+                    Ok(v) if v.len() >= 2 => v,
                     _ => {
                         return Err(format!(
-                            "MEMRA_PP_DEVICES={s} unparseable (want <d0>,<d1> e.g. 0,1)"
+                            "MEMRA_PP_DEVICES={s} unparseable (want <d0>,..,<dN-1> e.g. 0,1,2,3)"
                         )
                         .into())
                     }
                 }
             }
-        };
-        let cross = devices[0] != devices[1];
-        if cross {
-            // cuDeviceCanAccessPeer guard, BOTH directions: the boundary peer copy needs
-            // one, stage kernels dereferencing the other device's weights need the other.
-            let n = cudarc::driver::result::device::get_count()? as usize;
-            for &d in &devices {
-                if d >= n {
-                    return Err(format!(
-                        "MEMRA_PP_DEVICES={},{} but only {n} CUDA device(s) present",
-                        devices[0], devices[1]
-                    )
-                    .into());
-                }
+            None => {
+                let n_st = std::env::var("MEMRA_PP_STAGES")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|&n| n >= 2)
+                    .unwrap_or(2);
+                vec![primary_dev; n_st]
             }
-            for (a, b) in [(devices[0], devices[1]), (devices[1], devices[0])] {
-                let da = cudarc::driver::result::device::get(a as i32)?;
-                let db = cudarc::driver::result::device::get(b as i32)?;
-                let mut can: i32 = 0;
-                unsafe {
-                    cudarc::driver::sys::cuDeviceCanAccessPeer(&mut can, da, db).result()?;
-                }
-                if can == 0 {
+        };
+        if let Ok(v) = std::env::var("MEMRA_PP_STAGES") {
+            if let Ok(n) = v.parse::<usize>() {
+                if n >= 2 && n != devices.len() {
                     return Err(format!(
-                        "device {a} cannot peer-access device {b} (cuDeviceCanAccessPeer=0); \
-                         pp2 cross-device needs P2P — refusing a silently-staged path"
+                        "MEMRA_PP_DEVICES lists {} devices but MEMRA_PP_STAGES={n} — \
+                         refusing an ambiguous placement",
+                        devices.len()
                     )
                     .into());
                 }
             }
         }
+        let n_st = devices.len();
+        let cross_any = devices.iter().any(|&d| d != devices[0]);
 
-        let mk_stage = |s: usize| -> Result<StageRt, Box<dyn std::error::Error>> {
-            let dev = devices[s];
+        // Every distinct device pair in use must peer-access BOTH ways: boundaries copy
+        // between consecutive stages, stage kernels may dereference primary-device weights
+        // (bring-up placement / MEMRA_PP_SHARD=0) and stage-0's pos_d upload.
+        let mut used: Vec<usize> = devices.clone();
+        used.push(primary_dev);
+        used.sort_unstable();
+        used.dedup();
+        if used.len() > 1 {
+            let n = cudarc::driver::result::device::get_count()? as usize;
+            for &d in &used {
+                if d >= n {
+                    return Err(format!(
+                        "MEMRA_PP_DEVICES={devices:?} but only {n} CUDA device(s) present"
+                    )
+                    .into());
+                }
+            }
+            for &a in &used {
+                for &b in &used {
+                    if a == b {
+                        continue;
+                    }
+                    let da = cudarc::driver::result::device::get(a as i32)?;
+                    let db = cudarc::driver::result::device::get(b as i32)?;
+                    let mut can: i32 = 0;
+                    unsafe {
+                        cudarc::driver::sys::cuDeviceCanAccessPeer(&mut can, da, db).result()?;
+                    }
+                    if can == 0 {
+                        return Err(format!(
+                            "device {a} cannot peer-access device {b} (cuDeviceCanAccessPeer=0); \
+                             ppN cross-device needs P2P — refusing a silently-staged path"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+
+        let mk_stage = |dev: usize| -> Result<StageRt, Box<dyn std::error::Error>> {
             if dev == primary_dev {
                 let ctx = e.ctx().clone();
                 let stream = ctx.new_stream()?;
@@ -254,76 +361,122 @@ impl Pp2Rt {
                 Ok(StageRt { dev, ctx, stream, engine: Some(eng) })
             }
         };
-        let stages = [mk_stage(0)?, mk_stage(1)?];
+        let mut stages = Vec::with_capacity(n_st);
+        for &d in &devices {
+            stages.push(mk_stage(d)?);
+        }
 
-        if cross {
-            // Enable peer access BOTH ways (idempotent; ALREADY_ENABLED is success).
-            for (me, peer) in [(0usize, 1usize), (1, 0)] {
-                stages[me].ctx.bind_to_thread()?;
-                let rc = unsafe {
-                    cudarc::driver::sys::cuCtxEnablePeerAccess(stages[peer].ctx.cu_ctx(), 0)
-                };
-                use cudarc::driver::sys::cudaError_enum as E;
-                if rc != E::CUDA_SUCCESS && rc != E::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED {
-                    return Err(format!(
-                        "cuCtxEnablePeerAccess(dev{} -> dev{}) failed: {rc:?}",
-                        stages[me].dev, stages[peer].dev
-                    )
-                    .into());
+        if used.len() > 1 {
+            // A context per distinct device (first stage that lives there; the primary's
+            // context for the primary device).
+            let ctx_of = |d: usize| -> &Arc<CudaContext> {
+                if d == primary_dev {
+                    e.ctx()
+                } else {
+                    &stages.iter().find(|s| s.dev == d).unwrap().ctx
+                }
+            };
+            // Enable peer access BOTH ways for every distinct pair (idempotent;
+            // ALREADY_ENABLED is success).
+            for &a in &used {
+                for &b in &used {
+                    if a == b {
+                        continue;
+                    }
+                    ctx_of(a).bind_to_thread()?;
+                    let rc = unsafe {
+                        cudarc::driver::sys::cuCtxEnablePeerAccess(ctx_of(b).cu_ctx(), 0)
+                    };
+                    use cudarc::driver::sys::cudaError_enum as E;
+                    if rc != E::CUDA_SUCCESS && rc != E::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED {
+                        return Err(format!(
+                            "cuCtxEnablePeerAccess(dev{a} -> dev{b}) failed: {rc:?}"
+                        )
+                        .into());
+                    }
                 }
             }
-            // MEM-POOL access grant (8x box 2026-08-02, cross-device fix #2):
+            // MEM-POOL access grant (8x box 2026-08-02, M1 cross-device fix #2):
             // cuCtxEnablePeerAccess does NOT map STREAM-ORDERED POOL allocations, and every
             // engine buffer/weight goes through the device default pool (cuMemAllocAsync via
-            // cudarc; memra-runtime configures that pool). A stage-1 kernel dereferencing
-            // dev0 weights — or the stage-0 peer TX writing dev1's RX slot — needs
+            // cudarc; memra-runtime configures that pool). A stage kernel dereferencing
+            // another device's weights — or a boundary peer TX writing the RX slot — needs
             // cuMemPoolSetAccess on the OWNING device's default pool for the ACCESSING
             // device; without it the first remote dereference is CUDA_ERROR_ILLEGAL_ADDRESS
-            // (reported at the next API call in the poisoned context). Grant both ways.
-            for (owner, accessor) in [(stages[0].dev, stages[1].dev), (stages[1].dev, stages[0].dev)] {
-                let dev = cudarc::driver::result::device::get(owner as i32)?;
-                let mut pool: cudarc::driver::sys::CUmemoryPool = std::ptr::null_mut();
-                unsafe {
-                    cudarc::driver::sys::cuDeviceGetDefaultMemPool(&mut pool, dev).result()?;
-                }
-                let desc = cudarc::driver::sys::CUmemAccessDesc {
-                    location: cudarc::driver::sys::CUmemLocation {
-                        type_: cudarc::driver::sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
-                        id: accessor as i32,
-                    },
-                    flags: cudarc::driver::sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
-                };
-                let rc = unsafe { cudarc::driver::sys::cuMemPoolSetAccess(pool, &desc, 1) };
-                if rc != cudarc::driver::sys::cudaError_enum::CUDA_SUCCESS {
-                    return Err(format!(
-                        "cuMemPoolSetAccess(dev{owner} pool -> dev{accessor}) failed: {rc:?}"
-                    )
-                    .into());
+            // (reported at the next API call in the poisoned context). Grant all pairs.
+            for &owner in &used {
+                for &accessor in &used {
+                    if owner == accessor {
+                        continue;
+                    }
+                    let dev = cudarc::driver::result::device::get(owner as i32)?;
+                    let mut pool: cudarc::driver::sys::CUmemoryPool = std::ptr::null_mut();
+                    unsafe {
+                        cudarc::driver::sys::cuDeviceGetDefaultMemPool(&mut pool, dev).result()?;
+                    }
+                    let desc = cudarc::driver::sys::CUmemAccessDesc {
+                        location: cudarc::driver::sys::CUmemLocation {
+                            type_: cudarc::driver::sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
+                            id: accessor as i32,
+                        },
+                        flags: cudarc::driver::sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+                    };
+                    let rc = unsafe { cudarc::driver::sys::cuMemPoolSetAccess(pool, &desc, 1) };
+                    if rc != cudarc::driver::sys::cudaError_enum::CUDA_SUCCESS {
+                        return Err(format!(
+                            "cuMemPoolSetAccess(dev{owner} pool -> dev{accessor}) failed: {rc:?}"
+                        )
+                        .into());
+                    }
                 }
             }
             // restore the primary context for the caller's subsequent work
             e.ctx().bind_to_thread()?;
             eprintln!(
-                "[pp2] cross-device transport: stage0=dev{} stage1=dev{} (cudaMemcpyPeerAsync; \
-                 peer access enabled both ways + default-pool access both ways; weights remain \
-                 on dev{primary_dev})",
-                stages[0].dev, stages[1].dev
+                "[pp] cross-device transport: {} (cudaMemcpyPeerAsync per cross boundary; \
+                 peer + default-pool access granted all pairs over {used:?}; weight home: {})",
+                devices
+                    .iter()
+                    .enumerate()
+                    .map(|(s, d)| format!("stage{s}=dev{d}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                if pp_shard_off() {
+                    format!("dev{primary_dev} (MEMRA_PP_SHARD=0 bring-up placement)")
+                } else {
+                    "per-stage (sharded loader)".to_string()
+                }
             );
         }
 
-        let mk_slot = |st: &[StageRt; 2]| -> Result<BoundarySlot, Box<dyn std::error::Error>> {
+        let mk_slot = |tx: &StageRt, rx: &StageRt| -> Result<BoundarySlot, Box<dyn std::error::Error>> {
             Ok(BoundarySlot {
                 buf: Mutex::new(None),
-                ev_tx: st[0].ctx.new_event(None)?,
-                ev_rx: st[1].ctx.new_event(None)?,
+                ev_tx: tx.ctx.new_event(None)?,
+                ev_rx: rx.ctx.new_event(None)?,
             })
         };
-        let slots = [mk_slot(&stages)?, mk_slot(&stages)?];
-        Ok(Pp2Rt { stages, cross, slots, step: AtomicUsize::new(0) })
+        let mut boundaries = Vec::with_capacity(n_st - 1);
+        for b in 0..n_st - 1 {
+            let (tx, rx) = (&stages[b], &stages[b + 1]);
+            boundaries.push(BoundaryRt {
+                slots: [mk_slot(tx, rx)?, mk_slot(tx, rx)?],
+                step: AtomicUsize::new(0),
+                cross: tx.dev != rx.dev,
+            });
+        }
+        let readback = stages[n_st - 1].ctx.new_stream()?;
+        Ok(PpNRt { stages, boundaries, cross_any, readback })
     }
 
-    /// True iff the boundary crosses devices (transport = cudaMemcpyPeerAsync).
-    pub fn cross_device(&self) -> bool { self.cross }
+    pub fn n_stages(&self) -> usize {
+        self.stages.len()
+    }
+
+    /// True iff any boundary crosses devices (transport = cudaMemcpyPeerAsync there).
+    pub fn cross_device(&self) -> bool {
+        self.cross_any
+    }
 
     /// The engine a stage's subgraph must run through: the primary engine when the stage
     /// lives on the primary device, else the stage's own (remote-context) engine.
@@ -337,84 +490,152 @@ impl Pp2Rt {
         memra_runtime::push_stream_override(self.stages[s].stream.clone())
     }
 
-    /// Boundary TX (call within the stage-0 scope; `x` = the materialized [n] residual):
-    /// wait for the slot's previous RX (write-after-read guard), copy `x` into the slot's
-    /// persistent buffer via the selected transport on stage-0's stream (the owning-
-    /// stream/publication law), record ev_tx. Returns the slot index for the paired rx().
-    pub fn tx(&self, x: &CudaSlice<f32>, n: usize) -> Result<usize, Box<dyn std::error::Error>> {
-        assert_eq!(x.len(), n, "pp2 tx: residual length mismatch");
+    /// Boundary TX at boundary `b` (call within the stage-`b` scope; `x` = the
+    /// materialized [n] residual): wait for the slot's previous RX (write-after-read
+    /// guard), copy `x` into the slot's persistent buffer via the boundary's transport on
+    /// stage-b's stream (the owning-stream/publication law), record ev_tx. Returns the
+    /// slot index for the paired rx().
+    pub fn tx(&self, b: usize, x: &CudaSlice<f32>, n: usize)
+              -> Result<usize, Box<dyn std::error::Error>> {
+        assert_eq!(x.len(), n, "pp tx: residual length mismatch");
+        let bd = &self.boundaries[b];
         let slot_idx = if pp2_overlap() {
-            self.step.fetch_add(1, Ordering::Relaxed) % 2
+            bd.step.fetch_add(1, Ordering::Relaxed) % 2
         } else {
             0
         };
-        let sl = &self.slots[slot_idx];
-        let s0 = &self.stages[0].stream;
-        s0.wait(&sl.ev_rx)?;
+        let sl = &bd.slots[slot_idx];
+        let s_tx = &self.stages[b].stream;
+        s_tx.wait(&sl.ev_rx)?;
         let mut guard = sl.buf.lock().unwrap();
-        if guard.as_ref().map(|b| b.len() != n).unwrap_or(true) {
+        if guard.as_ref().map(|bf| bf.len() != n).unwrap_or(true) {
             // allocated on the RX stage's stream: the buffer lives on the RX device.
-            *guard = Some(self.stages[1].stream.alloc_zeros::<f32>(n)?);
+            *guard = Some(self.stages[b + 1].stream.alloc_zeros::<f32>(n)?);
         }
         let buf = guard.as_mut().unwrap();
-        if !self.cross {
-            s0.memcpy_dtod(x, buf)?;
+        if !bd.cross {
+            s_tx.memcpy_dtod(x, buf)?;
         } else {
             // cudaMemcpyPeerAsync (M0: 2.8x NCCL at PP activation sizes), issued on the
-            // publishing stage-0 stream with explicit src/dst contexts.
+            // publishing TX stream with explicit src/dst contexts.
             use cudarc::driver::{DevicePtr, DevicePtrMut};
-            let (sp, _g0) = x.device_ptr(s0);
-            let (dp, _g1) = buf.device_ptr_mut(s0);
-            self.stages[0].ctx.bind_to_thread()?;
+            let (sp, _g0) = x.device_ptr(s_tx);
+            let (dp, _g1) = buf.device_ptr_mut(s_tx);
+            self.stages[b].ctx.bind_to_thread()?;
             unsafe {
                 cudarc::driver::result::memcpy_peer_async(
-                    self.stages[1].ctx.cu_ctx(),
+                    self.stages[b + 1].ctx.cu_ctx(),
                     dp,
-                    self.stages[0].ctx.cu_ctx(),
+                    self.stages[b].ctx.cu_ctx(),
                     sp,
                     n * std::mem::size_of::<f32>(),
-                    s0.cu_stream(),
+                    s_tx.cu_stream(),
                 )?;
             }
         }
-        sl.ev_tx.record(s0)?;
+        sl.ev_tx.record(s_tx)?;
         Ok(slot_idx)
     }
 
-    /// Boundary RX (call within the stage-1 scope): wait on the slot's ev_tx, copy the
-    /// boundary buffer into a fresh stage-1 working buffer (dtod on stage-1's stream —
+    /// Boundary RX at boundary `b` (call within the stage-`b+1` scope): wait on the slot's
+    /// ev_tx, copy the boundary buffer into a fresh working buffer (dtod on the RX stream —
     /// local on the RX device in both transports), record ev_rx. The returned buffer is
-    /// stage-1-owned: allocated, consumed, and eventually freed on stage-1's stream.
-    pub fn rx(&self, slot_idx: usize, n: usize)
+    /// RX-stage-owned: allocated, consumed, and eventually freed on that stage's stream.
+    pub fn rx(&self, b: usize, slot_idx: usize, n: usize)
               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let sl = &self.slots[slot_idx];
-        let s1 = &self.stages[1].stream;
-        s1.wait(&sl.ev_tx)?;
+        let sl = &self.boundaries[b].slots[slot_idx];
+        let s_rx = &self.stages[b + 1].stream;
+        s_rx.wait(&sl.ev_tx)?;
         let guard = sl.buf.lock().unwrap();
-        let buf = guard.as_ref().expect("pp2 rx before tx");
+        let buf = guard.as_ref().expect("pp rx before tx");
         // uninit working buffer (fully overwritten by the copy), allocated explicitly on
-        // the stage stream so rx() is correct even outside an enter(1) scope.
-        let mut work = unsafe { s1.alloc::<f32>(n)? };
-        s1.memcpy_dtod(buf, &mut work)?;
-        sl.ev_rx.record(s1)?;
+        // the stage stream so rx() is correct even outside an enter() scope.
+        let mut work = unsafe { s_rx.alloc::<f32>(n)? };
+        s_rx.memcpy_dtod(buf, &mut work)?;
+        sl.ev_rx.record(s_rx)?;
         Ok(work)
+    }
+
+    /// Deferred readback: record a fresh completion event on the LAST stage's stream
+    /// (call after the step's logits matmul has been enqueued there).
+    pub fn record_done(&self) -> Result<CudaEvent, Box<dyn std::error::Error>> {
+        let last = &self.stages[self.stages.len() - 1];
+        let ev = last.ctx.new_event(None)?;
+        ev.record(&last.stream)?;
+        Ok(ev)
+    }
+
+    /// The dedicated readback stream (last stage's context).
+    pub fn readback_stream(&self) -> &Arc<CudaStream> {
+        &self.readback
     }
 }
 
-/// Stage-owned cache allocation door: when the pp2 door is open AND `MEMRA_PP_DEVICES`
-/// is set (increment-2 placement plumbing), each layer's cache is allocated by its
-/// OWNING stage's engine — on one device (`0,0`) this is byte-for-byte today's
-/// allocation (gate it); cross-device it puts each stage's KV on that stage's HBM.
-/// Door shut or devices unset: plain `Cache::new` (zero behavior change).
+/// M2 increment 3: a step's logits, still device-resident on the LAST stage. `wait()`
+/// orders the readback stream behind the step's completion event, copies, and syncs —
+/// tokens enqueued after this step keep running on the stage streams while the caller
+/// drains token t. Dropping without waiting is safe (buffers free stream-ordered).
+pub struct PendingLogits {
+    logits: CudaSlice<f32>,
+    ev: CudaEvent,
+    rb: Arc<CudaStream>,
+}
+
+impl PendingLogits {
+    pub fn new(logits: CudaSlice<f32>, ev: CudaEvent, rb: Arc<CudaStream>) -> Self {
+        PendingLogits { logits, ev, rb }
+    }
+
+    /// Blocks until this step's logits are computed, returns them host-side. Only this
+    /// step's work is waited on (event-ordered) — NOT later tokens already enqueued on
+    /// the stage streams.
+    pub fn wait(self) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        self.rb.wait(&self.ev)?;
+        let host = self.rb.clone_dtoh(&self.logits)?;
+        self.rb.synchronize()?;
+        // logits drop AFTER the sync: the D2H has fully completed, so the stream-ordered
+        // free on the compute stream cannot race the copy.
+        Ok(host)
+    }
+}
+
+/// Stage-owned cache allocation door: when the ppN door is open AND `MEMRA_PP_DEVICES`
+/// is set (placement plumbing), each layer's cache is allocated by its OWNING stage's
+/// engine — on one device this is byte-for-byte today's allocation (gated); cross-device
+/// it puts each stage's KV on that stage's HBM. Door shut or devices unset: plain
+/// `Cache::new` (zero behavior change). Trailing MTP/NextN layers (beyond the trunk)
+/// map to the LAST stage.
 pub fn new_cache(e: &Engine, cfg: &memra_gguf::config::ModelConfig, max_ctx: usize)
                  -> Result<crate::cache::Cache, Box<dyn std::error::Error>> {
-    if let Some(split) = pp2_split(cfg.n_layer as usize) {
+    let n_trunk = (cfg.n_layer - cfg.nextn_predict_layers) as usize;
+    if let Some(fence) = pp_cuts(n_trunk) {
         if pp2_devices_env().is_some() && !pp2_streams_off() {
-            let rt = Pp2Rt::get(e)?;
-            let d0 = rt.engine(0, e);
-            let d1 = rt.engine(1, e);
-            return crate::cache::Cache::new_pp2(d0, d1, split, cfg, max_ctx);
+            let rt = PpNRt::get(e)?;
+            let n_st = fence.len() - 1;
+            assert_eq!(
+                rt.n_stages(), n_st,
+                "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
+            );
+            let devs: Vec<&dyn memra_kv::KvDev> =
+                (0..n_st).map(|s| rt.engine(s, e) as &dyn memra_kv::KvDev).collect();
+            return crate::cache::Cache::new_ppn(&devs, &fence, cfg, max_ctx);
         }
     }
     crate::cache::Cache::new(e, cfg, max_ctx)
+}
+
+/// M2 increment 2 (weight sharding): the engine that should UPLOAD layer `il`'s weights
+/// (and build its decode mirrors) — the owning stage's engine when the door is open with
+/// device placement and sharding not rolled back; else the primary. `il >= n_trunk`
+/// (MTP/NextN blocks) maps to the last stage. The head (output_norm + lm head) belongs
+/// to the last trunk layer's stage — call with `il = n_trunk - 1`.
+pub fn layer_engine<'a>(e: &'a Engine, n_trunk: usize, il: usize)
+                        -> Result<&'a Engine, Box<dyn std::error::Error>> {
+    if pp_shard_off() || pp2_devices_env().is_none() || pp2_streams_off() {
+        return Ok(e);
+    }
+    let Some(fence) = pp_cuts(n_trunk) else { return Ok(e) };
+    let rt = PpNRt::get(e)?;
+    let s = stage_of(&fence, il.min(n_trunk - 1));
+    Ok(rt.engine(s, e))
 }

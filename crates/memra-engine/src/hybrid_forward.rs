@@ -6380,9 +6380,14 @@ impl HybridModel {
     pub(crate) fn gemma4_decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
                                        -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         // M1-PP2 door (crate::pp): 2-stage split with an explicit activation handoff.
-        // Default OFF — unset env means this branch is never taken.
+        // Default OFF — unset env means this branch is never taken. The gemma4 arm stays
+        // 2-stage in M2 (the N-stage gate model is the generic-arm 9B); N>2 warns + runs
+        // unsplit rather than guessing a fence.
         if let Some(split) = crate::pp::pp2_split(self.layers.len()) {
             return self.gemma4_decode_step_h_pp2(e, token, cache, split);
+        }
+        if crate::pp::pp_cuts(self.layers.len()).is_some() {
+            crate::pp::warn_unwired_once("gemma4 eager decode (N>2)");
         }
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -6479,13 +6484,13 @@ impl HybridModel {
             let mut x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
             e0.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
             let x = self.gemma4_decode_layers(e0, x, 0, split, &pos_d, cache)?;
-            let slot = rt.tx(&x, n_embd)?;
+            let slot = rt.tx(0, &x, n_embd)?;
             (pos_d, slot)
         };
 
         // ---- STAGE 1 (its own stream): RX + layers [split, n) + softcapped head ----
         let _st1 = rt.enter(1);
-        let x = rt.rx(slot, n_embd)?;
+        let x = rt.rx(0, slot, n_embd)?;
         let x = self.gemma4_decode_layers(e1, x, split, self.layers.len(), &pos_d, cache)?;
 
         let mut hn = e1.uninit(n_embd)?;

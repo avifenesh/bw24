@@ -597,10 +597,10 @@ impl HybridModel {
             // pp2 door for the gemma4 arm lives inside gemma4_decode_step_h.
             return self.gemma4_decode_step_h(e, token, cache);
         }
-        // M1-PP2 door (crate::pp): 2-stage split of this walk with an explicit activation
-        // handoff at the boundary. Default OFF — unset env means this branch never taken.
-        if let Some(split) = crate::pp::pp2_split(self.layers.len()) {
-            return self.decode_step_h_pp2(e, token, cache, split);
+        // M2 ppN door (crate::pp): N-stage split of this walk with an explicit activation
+        // handoff at each boundary. Default OFF — unset env means this branch never taken.
+        if let Some(fence) = crate::pp::pp_cuts(self.layers.len()) {
+            return self.decode_step_h_ppn(e, token, cache, &fence);
         }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -776,50 +776,63 @@ impl HybridModel {
         Ok(x)
     }
 
-    /// M1-PP2 (increment 2): `decode_step_h` as TWO stage subgraphs, each on ITS OWN
-    /// CUDA stream (and, under MEMRA_PP_DEVICES, its own device/engine), with the
-    /// transport-selected boundary handoff at the layer-`split` cut. Stage 0 = embed +
-    /// layers [0, split) on stream 0; the TX publishes the residual into a persistent
-    /// boundary slot (dtod same-device / cudaMemcpyPeerAsync cross-device) and records
-    /// an event; stage 1 waits that event, RX-copies into its own working buffer, and
-    /// runs layers [split, n) + output_norm + lm head on stream 1. Per-layer KV/linear
-    /// state stays owned by the stage that runs the layer; `cache.pos` is snapshotted
-    /// once and advanced once. MEMRA_PP_STREAMS=0 = the increment-1 same-stream seam.
-    /// Gate: `pp2-gate` (bit-identical logits vs unsplit, every knob combination).
-    fn decode_step_h_pp2(
+    /// M2: `decode_step_h` as N stage subgraphs, each on ITS OWN CUDA stream (and, under
+    /// MEMRA_PP_DEVICES, its own device/engine), with the transport-selected boundary
+    /// handoff at each fence cut. Stage 0 = embed + its layer range; each middle stage
+    /// RXes boundary s-1 (waits its ev_tx), runs its range, TXes boundary s; the last
+    /// stage adds output_norm + lm head. Per-layer KV/linear state stays owned by the
+    /// stage that runs the layer; `cache.pos` is snapshotted once and advanced once.
+    /// MEMRA_PP_STREAMS=0 = the increment-1 same-stream seam.
+    /// Gate: `ppn-gate` (bit-identical logits vs unsplit at every N/knob combination).
+    fn decode_step_h_ppn(
         &self,
         e: &Engine,
         token: u32,
         cache: &mut Cache,
-        split: usize,
+        fence: &[usize],
     ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         if crate::pp::pp2_streams_off() {
-            return self.decode_step_h_pp2_samestream(e, token, cache, split);
+            return self.decode_step_h_ppn_samestream(e, token, cache, fence);
         }
-        let rt = crate::pp::Pp2Rt::get(e)?;
-        let e0 = rt.engine(0, e);
-        let e1 = rt.engine(1, e);
+        let rt = crate::pp::PpNRt::get(e)?;
+        let n_st = fence.len() - 1;
+        assert_eq!(
+            rt.n_stages(), n_st,
+            "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
+        );
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
         let pos = cache.pos;
 
-        // ---- STAGE 0 (its own stream): embed + layers [0, split) + boundary TX ----
-        let (pos_d, slot) = {
+        // ---- STAGE 0 (its own stream): embed + layers [0, fence[1]) + boundary-0 TX ----
+        let (pos_d, mut slot) = {
             let _st0 = rt.enter(0);
+            let e0 = rt.engine(0, e);
             let pos_d = e0.htod_i32(&[pos as i32])?;
             let x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
-            let x = self.decode_layers_eager(e0, x, 0, split, &pos_d, pos, cache)?;
-            let slot = rt.tx(&x, n_embd)?;
+            let x = self.decode_layers_eager(e0, x, fence[0], fence[1], &pos_d, pos, cache)?;
+            let slot = rt.tx(0, &x, n_embd)?;
             (pos_d, slot)
             // x drops here: freed stream-ordered on stage-0's stream AFTER the TX copy.
         };
 
-        // ---- STAGE 1 (its own stream): RX (waits the TX event) + layers [split, n) ----
-        let _st1 = rt.enter(1);
-        let x = rt.rx(slot, n_embd)?;
-        let x = self.decode_layers_eager(e1, x, split, self.layers.len(), &pos_d, pos, cache)?;
-        let e = e1; // head runs through the stage-1 engine on the stage-1 stream
+        // ---- MIDDLE STAGES s in [1, n_st-1): RX boundary s-1 -> range -> TX boundary s ----
+        for s in 1..n_st - 1 {
+            let _st = rt.enter(s);
+            let es = rt.engine(s, e);
+            let x = rt.rx(s - 1, slot, n_embd)?;
+            let x = self.decode_layers_eager(es, x, fence[s], fence[s + 1], &pos_d, pos, cache)?;
+            slot = rt.tx(s, &x, n_embd)?;
+        }
+
+        // ---- LAST STAGE: RX + layers [fence[n_st-1], n) + output_norm + lm head ----
+        let _stl = rt.enter(n_st - 1);
+        let el = rt.engine(n_st - 1, e);
+        let x = rt.rx(n_st - 2, slot, n_embd)?;
+        let x =
+            self.decode_layers_eager(el, x, fence[n_st - 1], fence[n_st], &pos_d, pos, cache)?;
+        let e = el; // head runs through the last stage's engine on its stream
 
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
@@ -847,14 +860,14 @@ impl HybridModel {
         Ok((host, h_seed))
     }
 
-    /// MEMRA_PP_STREAMS=0 rollback seam: the increment-1 pp2 body verbatim — both stage
-    /// subgraphs on the ambient compute stream, boundary = two plain dtod copies.
-    fn decode_step_h_pp2_samestream(
+    /// MEMRA_PP_STREAMS=0 rollback seam: the increment-1 body generalized to N — every
+    /// stage subgraph on the ambient compute stream, each boundary = two plain dtod copies.
+    fn decode_step_h_ppn_samestream(
         &self,
         e: &Engine,
         token: u32,
         cache: &mut Cache,
-        split: usize,
+        fence: &[usize],
     ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -862,16 +875,16 @@ impl HybridModel {
         let pos = cache.pos;
         let pos_d = e.htod_i32(&[pos as i32])?;
 
-        // ---- STAGE 0: embed (the table lives with stage 0) + layers [0, split) ----
+        // ---- STAGE 0: embed (the table lives with stage 0) + layers [0, fence[1]) ----
         let x = e.htod(&self.embd.gather(n_embd, &[token]))?;
-        let x = self.decode_layers_eager(e, x, 0, split, &pos_d, pos, cache)?;
+        let mut x = self.decode_layers_eager(e, x, fence[0], fence[1], &pos_d, pos, cache)?;
 
-        // ---- STAGE BOUNDARY: explicit [n_embd] activation handoff (TX copy, RX copy) ----
-        let boundary_tx = e.clone_dtod(&x)?;
-        let boundary_rx = e.clone_dtod(&boundary_tx)?;
-
-        // ---- STAGE 1: layers [split, n) + output_norm + head ----
-        let x = self.decode_layers_eager(e, boundary_rx, split, self.layers.len(), &pos_d, pos, cache)?;
+        // ---- each later stage: explicit [n_embd] handoff (TX copy, RX copy) + range ----
+        for s in 1..fence.len() - 1 {
+            let boundary_tx = e.clone_dtod(&x)?;
+            let boundary_rx = e.clone_dtod(&boundary_tx)?;
+            x = self.decode_layers_eager(e, boundary_rx, fence[s], fence[s + 1], &pos_d, pos, cache)?;
+        }
 
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
@@ -895,6 +908,80 @@ impl HybridModel {
         let host = e.dtoh(&logits)?;
         cache.pos += 1;
         Ok((host, h_seed))
+    }
+
+    /// M2 increment 3 (DEFERRED READBACK — the pipelining seed): the ppN step WITHOUT the
+    /// terminal logits D2H. Returns `PendingLogits` (device logits + completion event +
+    /// the runtime's dedicated readback stream); the caller keeps 2+ tokens in flight by
+    /// enqueueing step t+1 BEFORE waiting step t (with MEMRA_PP_OVERLAP=1 the
+    /// double-buffered boundary slots actually alternate, so stage 0 of t+1 runs under
+    /// stage 1..N-1 of t; the slot ev_tx/ev_rx chain keeps each token's math fully
+    /// event-ordered either way — enqueueing deeper than 2 is CORRECT, the slots simply
+    /// serialize device-side).
+    ///
+    /// EXACTNESS CONTRACT: per-token logits are BIT-IDENTICAL to the serial arm — same
+    /// kernels, same per-token event order; only the host-side wait moves (scheduling
+    /// change, never math). The pipelined replay arm of `ppn-gate` proves it per step.
+    ///
+    /// NOT produced here (both are trunk COPIES — no math feeding the logits changes):
+    /// h_seed and the MEMRA_DUMP_HN diagnostic tap. The serving loop decides their
+    /// deferred form when it adopts this API.
+    ///
+    /// The caller advances the token stream, so `cache.pos` advances at ENQUEUE (host
+    /// state; device work is event-ordered regardless).
+    pub fn decode_step_h_ppn_deferred(
+        &self,
+        e: &Engine,
+        token: u32,
+        cache: &mut Cache,
+    ) -> Result<crate::pp::PendingLogits, Box<dyn std::error::Error>> {
+        let fence = crate::pp::pp_cuts(self.layers.len())
+            .ok_or("ppn deferred: pp door closed (MEMRA_PP_STAGES unset)")?;
+        if crate::pp::pp2_streams_off() {
+            return Err("ppn deferred needs per-stage streams (MEMRA_PP_STREAMS=0 set)".into());
+        }
+        if self.cfg.gemma4.is_some() {
+            return Err("ppn deferred: generic eager arm only (gemma4 is 2-stage serial)".into());
+        }
+        let rt = crate::pp::PpNRt::get(e)?;
+        let n_st = fence.len() - 1;
+        assert_eq!(
+            rt.n_stages(), n_st,
+            "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
+        );
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let pos = cache.pos;
+
+        let (pos_d, mut slot) = {
+            let _st0 = rt.enter(0);
+            let e0 = rt.engine(0, e);
+            let pos_d = e0.htod_i32(&[pos as i32])?;
+            let x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
+            let x = self.decode_layers_eager(e0, x, fence[0], fence[1], &pos_d, pos, cache)?;
+            let slot = rt.tx(0, &x, n_embd)?;
+            (pos_d, slot)
+        };
+        for s in 1..n_st - 1 {
+            let _st = rt.enter(s);
+            let es = rt.engine(s, e);
+            let x = rt.rx(s - 1, slot, n_embd)?;
+            let x = self.decode_layers_eager(es, x, fence[s], fence[s + 1], &pos_d, pos, cache)?;
+            slot = rt.tx(s, &x, n_embd)?;
+        }
+        let _stl = rt.enter(n_st - 1);
+        let el = rt.engine(n_st - 1, e);
+        let x = rt.rx(n_st - 2, slot, n_embd)?;
+        let x =
+            self.decode_layers_eager(el, x, fence[n_st - 1], fence[n_st], &pos_d, pos, cache)?;
+
+        let mut hn = el.uninit(n_embd)?;
+        el.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = el.matmul(&self.output, &hn, 1)?;
+        let ev = rt.record_done()?;
+        cache.pos += 1;
+        Ok(crate::pp::PendingLogits::new(logits, ev, rt.readback_stream().clone()))
     }
 
     /// LOCKSTEP MULTI-STREAM decode (lane-3 M1): m independent streams advance one token each
