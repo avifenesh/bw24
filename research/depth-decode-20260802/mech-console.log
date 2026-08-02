@@ -1,0 +1,8 @@
+fa_split=naked d6144 tg=173.67 match_lines=2 temp=72
+fa_split=8 d6144 tg=155.26 match_lines=2 temp=76
+fa_split=16 d6144 tg=165.14 match_lines=2 temp=76
+fa_split=32 d6144 tg=163.61 match_lines=2 temp=77
+fa_split=96 d6144 tg=168.64 match_lines=2 temp=77
+fa_split=128 d6144 tg=157.49 match_lines=2 temp=78
+fa_v4max=naked d6144 tg=166.22 match_lines=2 temp=77
+fa_v4max=3072 d6144 tg=164.71 match_lines=2 temp=77

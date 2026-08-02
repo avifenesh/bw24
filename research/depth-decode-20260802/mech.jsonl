@@ -1,0 +1,8 @@
+{"cell":"mech-split","depth":6144,"arm":"naked","metric":"tg128_toks","value":173.67,"ts":"2026-08-02T09:25:16Z"}
+{"cell":"mech-split","depth":6144,"arm":"8","metric":"tg128_toks","value":155.26,"ts":"2026-08-02T09:26:11Z"}
+{"cell":"mech-split","depth":6144,"arm":"16","metric":"tg128_toks","value":165.14,"ts":"2026-08-02T09:27:03Z"}
+{"cell":"mech-split","depth":6144,"arm":"32","metric":"tg128_toks","value":163.61,"ts":"2026-08-02T09:29:03Z"}
+{"cell":"mech-split","depth":6144,"arm":"96","metric":"tg128_toks","value":168.64,"ts":"2026-08-02T09:29:57Z"}
+{"cell":"mech-split","depth":6144,"arm":"128","metric":"tg128_toks","value":157.49,"ts":"2026-08-02T09:31:44Z"}
+{"cell":"mech-v4","depth":6144,"arm":"naked","metric":"tg128_toks","value":166.22,"ts":"2026-08-02T09:35:12Z"}
+{"cell":"mech-v4","depth":6144,"arm":"3072","metric":"tg128_toks","value":164.71,"ts":"2026-08-02T09:36:08Z"}
