@@ -1,0 +1,1898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Step 3.7 Flash — A high-efficiency Flash model for Real-World</title>
+    <link rel="icon" type="image/svg+xml" href="assets/logos/StepFun_Logo_单独图形_黑.svg">
+    <link rel="stylesheet" href="styles.css">
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            }
+        };
+        async function checkRedirect() {
+            try {
+              const response = await fetch(`assets/logos/stepfun-color-logo.svg`);
+              if (!response.ok) throw new Error("Failed to load");
+            } catch (error) {
+              console.log("err", error);
+              window.location.replace(
+                "https://static.stepfun.com/blog/step-3.7-flash/",
+              );
+            }
+          }
+        checkRedirect();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+</head>
+<body class="theme-a">
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo-group">
+                <img src="./assets/logos/StepFun_Logo_英文_黑.svg" alt="StepFun" class="logo">
+            </div>
+            <nav class="nav">
+                <a href="#demo-gallery">Gallery</a>
+                <a href="#agentic-coding">Agentic Coding</a>
+                <a href="#enterprise-grade">Enterprise</a>
+                <a href="#search-wider-deeper">Search</a>
+                <a href="#code-meets-vision">Agents That Can See</a>
+                <a href="#benchmark-table">Benchmarks</a>
+                <a href="#availability">Availability</a>
+            </nav>
+            <div class="header-actions">
+                <a href="https://app.mokahr.com/social-recruitment/step/" class="header-link-text" target="_blank" rel="noopener">Join us</a>
+                <a href="https://www.stepfun.com/" class="header-btn" target="_blank" rel="noopener">Try Step 3.7 Flash</a>
+                <a href="https://github.com/stepfun-ai/Step-3.7-Flash" class="header-link" target="_blank" rel="noopener">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+
+        <section id="hero" class="hero">
+            <div class="container">
+                
+                <div class="hero-top-band">
+                    <div class="up-sub-title">2026-05-29</div>
+                    <h1 class="hugh-title">Step 3.7 Flash</h1>
+                    <div class="down-sub-title tagline-anim" id="taglineAnim"></div>
+                </div>
+
+                <div class="hero-zone">
+                    <div class="hero-zone-text">
+                        <p class="hero-zone-sub-title">The new frontier is agent efficiency.</p>
+                        <p class="hero-zone-highlight">A high-efficiency Flash model for real-world agents.</p>
+                        <p class="hero-zone-sub-title hero-zone-sub-title-tags">Multimodal Understanding & Action｜Web & Visual Search Enhancement｜Reliable Tool Use & Orchestration｜Agent Ecosystem Compatibility</p>
+                        <div class="hero-links hero-links-inline">
+                            <a href="https://github.com/stepfun-ai/Step-3.7-Flash" class="link-item" target="_blank" rel="noopener">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+                                GitHub
+                            </a>
+                            <a href="https://huggingface.co/stepfun-ai/Step-3.7-Flash" class="link-item" target="_blank" rel="noopener">
+                                <svg fill="currentColor" fill-rule="evenodd" width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16.781 3.277c2.997 1.704 4.844 4.851 4.844 8.258 0 .995-.155 1.955-.443 2.857a1.332 1.332 0 011.125.4 1.41 1.41 0 01.2 1.723c.204.165.352.385.428.632l.017.062c.06.222.12.69-.2 1.166.244.37.279.836.093 1.236-.255.57-.893 1.018-2.128 1.5l-.202.078-.131.048c-.478.173-.89.295-1.061.345l-.086.024c-.89.243-1.808.375-2.732.394-1.32 0-2.3-.36-2.923-1.067a9.852 9.852 0 01-3.18.018C9.778 21.647 8.802 22 7.494 22a11.249 11.249 0 01-2.541-.343l-.221-.06-.273-.08a16.574 16.574 0 01-1.175-.405c-1.237-.483-1.875-.93-2.13-1.501-.186-.4-.151-.867.093-1.236a1.42 1.42 0 01-.2-1.166c.069-.273.226-.516.447-.694a1.41 1.41 0 01.2-1.722c.233-.248.557-.391.917-.407l.078-.001a9.385 9.385 0 01-.44-2.85c0-3.407 1.847-6.554 4.844-8.258a9.822 9.822 0 019.687 0zM4.188 14.758c.125.687 2.357 2.35 2.14 2.707-.19.315-.796-.239-.948-.386l-.041-.04-.168-.147c-.561-.479-2.304-1.9-2.74-1.432-.43.46.119.859 1.055 1.42l.784.467.136.083c1.045.643 1.12.84.95 1.113-.188.295-3.07-2.1-3.34-1.083-.27 1.011 2.942 1.304 2.744 2.006-.2.7-2.265-1.324-2.685-.537-.425.79 2.913 1.718 2.94 1.725l.16.04.175.042c1.227.284 3.565.65 4.435-.604.673-.973.64-1.709-.248-2.61l-.057-.057c-.945-.928-1.495-2.288-1.495-2.288l-.017-.058-.025-.072c-.082-.22-.284-.639-.63-.584-.46.073-.798 1.21.12 1.933l.05.038c.977.721-.195 1.21-.573.534l-.058-.104-.143-.25c-.463-.799-1.282-2.111-1.739-2.397-.532-.332-.907-.148-.782.541zm14.842-.541c-.533.335-1.563 2.074-1.94 2.751a.613.613 0 01-.687.302.436.436 0 01-.176-.098.303.303 0 01-.049-.06l-.014-.028-.008-.02-.007-.019-.003-.013-.003-.017a.289.289 0 01-.004-.048c0-.12.071-.266.25-.427.026-.024.054-.047.084-.07l.047-.036c.022-.016.043-.032.063-.049.883-.71.573-1.81.131-1.917l-.031-.006-.056-.004a.368.368 0 00-.062.006l-.028.005-.042.014-.039.017-.028.015-.028.019-.036.027-.023.02c-.173.158-.273.428-.31.542l-.016.054s-.53 1.309-1.439 2.234l-.054.054c-.365.358-.596.69-.702 1.018-.143.437-.066.868.21 1.353.055.097.117.195.187.296.882 1.275 3.282.876 4.494.59l.286-.07.25-.074c.276-.084.736-.233 1.2-.42l.188-.077.065-.028.064-.028.124-.056.081-.038c.529-.252.964-.543.994-.827l.001-.036a.299.299 0 00-.037-.139c-.094-.176-.271-.212-.491-.168l-.045.01c-.044.01-.09.024-.136.04l-.097.035-.054.022c-.559.23-1.238.705-1.607.745h.006a.452.452 0 01-.05.003h-.024l-.024-.003-.023-.005c-.068-.016-.116-.06-.14-.142a.22.22 0 01-.005-.1c.062-.345.958-.595 1.713-.91l.066-.028c.528-.224.97-.483.985-.832v-.04a.47.47 0 00-.016-.098c-.048-.18-.175-.251-.36-.251-.785 0-2.55 1.36-2.92 1.36-.025 0-.048-.007-.058-.024a.6.6 0 01-.046-.088c-.1-.238.068-.462 1.06-1.066l.209-.126c.538-.32 1.01-.588 1.341-.831.29-.212.475-.406.503-.6l.003-.028c.008-.113-.038-.227-.147-.344a.266.266 0 00-.07-.054l-.034-.015-.013-.005a.403.403 0 00-.13-.02c-.162 0-.369.07-.595.18-.637.313-1.431.952-1.826 1.285l-.249.215-.033.033c-.08.078-.288.27-.493.386l-.071.037-.041.019a.535.535 0 01-.122.036h.005a.346.346 0 01-.031.003l.01-.001-.013.001c-.079.005-.145-.021-.19-.095a.113.113 0 01-.014-.065c.027-.465 2.034-1.991 2.152-2.642l.009-.048c.1-.65-.271-.817-.791-.493zM11.938 2.984c-4.798 0-8.688 3.829-8.688 8.55 0 .692.083 1.364.24 2.008l.008-.009c.252-.298.612-.46 1.017-.46.355.008.699.117.993.312.22.14.465.384.715.694.261-.372.69-.598 1.15-.605.852 0 1.367.728 1.562 1.383l.047.105.06.127c.192.396.595 1.139 1.143 1.68 1.06 1.04 1.324 2.115.8 3.266a8.865 8.865 0 002.024-.014c-.505-1.12-.26-2.17.74-3.186l.066-.066c.695-.684 1.157-1.69 1.252-1.912.195-.655.708-1.383 1.56-1.383.46.007.889.233 1.15.605.25-.31.495-.553.718-.694a1.87 1.87 0 01.99-.312c.357 0 .682.126.925.36.14-.61.215-1.245.215-1.898 0-4.722-3.89-8.55-8.687-8.55zm1.857 8.926l.439-.212c.553-.264.89-.383.89.152 0 1.093-.771 3.208-3.155 3.262h-.184c-2.325-.052-3.116-2.06-3.156-3.175l-.001-.087c0-1.107 1.452.586 3.25.586.716 0 1.379-.272 1.917-.526zm4.017-3.143c.45 0 .813.358.813.8 0 .441-.364.8-.813.8a.806.806 0 01-.812-.8c0-.442.364-.8.812-.8zm-11.624 0c.448 0 .812.358.812.8 0 .441-.364.8-.812.8a.806.806 0 01-.813-.8c0-.442.364-.8.813-.8zm7.79-.841c.32-.384.846-.54 1.33-.394.483.146.83.564.878 1.06.048.495-.212.97-.659 1.203-.322.168-.447-.477-.767-.585l.002-.003c-.287-.098-.772.362-.925.079a1.215 1.215 0 01.14-1.36zm-4.323 0c.322.384.377.92.14 1.36-.152.283-.64-.177-.925-.079l.003.003c-.108.036-.194.134-.273.24l-.118.165c-.11.15-.22.262-.377.18a1.226 1.226 0 01-.658-1.204c.048-.495.395-.913.878-1.059a1.262 1.262 0 011.33.394z"></path></svg>
+                                HuggingFace
+                            </a>
+                            <a href="https://modelscope.cn/models/stepfun-ai/Step-3.7-Flash" class="link-item" target="_blank" rel="noopener">
+                                <svg fill="currentColor" fill-rule="evenodd" width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M2.667 5.3H8v2.667H5.333v2.666H2.667V8.467H.5v2.166h2.167V13.3H0V7.967h2.667V5.3zM2.667 13.3h2.666v2.667H8v2.666H2.667V13.3zM8 10.633h2.667V13.3H8v-2.667zM13.333 13.3v2.667h-2.666V13.3h2.666zM13.333 13.3v-2.667H16V13.3h-2.667z"></path><path clip-rule="evenodd" d="M21.333 13.3v-2.667h-2.666V7.967H16V5.3h5.333v2.667H24V13.3h-2.667zm0-2.667H23.5V8.467h-2.167v2.166z"></path><path d="M21.333 13.3v5.333H16v-2.666h2.667V13.3h2.666z"></path></svg>
+                                ModelScope
+                            </a>
+                        </div>
+                    </div>
+                    <div class="hero-zone-media" aria-hidden="true">
+                        <video
+                            class="hero-zone-video"
+                            src="assets/hero_video.mp4"
+                            autoplay
+                            muted
+                            loop
+                            playsinline
+                            preload="auto"
+                            disablepictureinpicture
+                            disableremoteplayback
+                        ></video>
+                    </div>
+                </div>
+
+                <div class="hero-key-features">
+                    <h3 class="hero-key-features-title">Key Features</h3>
+                    <ul class="hero-key-features-list">
+                        <li class="hero-key-feature-item">
+                            <h4 class="hero-key-feature-title">Native Multimodal Understanding &amp; Acting</h4>
+                            <p class="hero-key-feature-desc">Understands images across the full range — product UIs, documents, charts, and natural scenes — then writes code or calls tools to act on what it sees.</p>
+                        </li>
+                        <li class="hero-key-feature-item">
+                            <h4 class="hero-key-feature-title">Web &amp; Visual Search Enhancement</h4>
+                            <p class="hero-key-feature-desc">Web search reaches further — more sources, deeper follow-up. Visual search recognizes what other systems don't — long-tail entities, freshly emerged concepts.</p>
+                        </li>
+                        <li class="hero-key-feature-item">
+                            <h4 class="hero-key-feature-title">Reliable Tool Use &amp; Orchestration</h4>
+                            <p class="hero-key-feature-desc">Drives terminals, browsers, Office tools, search, and beyond — staying coherent however long the run gets. Less drift, fewer broken toolcalls, fewer failed runs.</p>
+                        </li>
+                        <li class="hero-key-feature-item">
+                            <h4 class="hero-key-feature-title">Agent Ecosystem Compatibility</h4>
+                            <p class="hero-key-feature-desc">Works with mainstream harnesses (Claude Code, KiloCode, Hermes Agent, OpenClaw) and Skills — lower integration cost, less workflow rewiring.</p>
+                        </li>
+                    </ul>
+                </div>
+
+                <div id="benchmark" class="hero-benchmark-wrapper">
+                    <div class="bar-charts-container">
+
+                        <div class="bar-category-dual-row">
+                            <div class="bar-category-row bar-category-half bar-half-3" id="agenticCodingCategory">
+                                <h4 class="bar-category-title">Agentic Coding</h4>
+                                <div class="bar-benchmarks-grid bar-benchmarks-2">
+                                    <div class="bar-benchmark-panel" data-benchmark="swepro" style="--bar-cols: 6;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">SWE-Bench Pro</span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">65</div>
+            <div class="bar-y-tick">35</div>
+            <div class="bar-y-tick">5</div>
+        </div>
+        <div class="bar-plot-container">
+            <div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 85.50%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">56.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>56.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 77.17%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">51.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>51.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 84.33%;">
+                        <img class="bar-logo" src="./assets/logos/deepseek-color-logo.svg" alt="DeepSeek V4 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>D</span>';">
+                        <div class="bar-score">55.6</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">DeepSeek V4 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>55.6</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>284B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+            <div class="bar-plot-divider"></div>
+            <div class="bar-plot-section bar-plot-closed">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 83.50%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">55.1</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>55.1</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 89.33%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.5" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">58.6</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.5</div>
+                            <div class="bar-tooltip-detail">Score: <span>58.6</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 98.83%;">
+                        <img class="bar-logo" src="./assets/logos/claude-color-logo.svg" alt="Claude Opus 4.7" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>O</span>';">
+                        <div class="bar-score">64.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Claude Opus 4.7</div>
+                            <div class="bar-tooltip-detail">Score: <span>64.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                    <div class="bar-benchmark-panel" data-benchmark="terminalBenchV21" style="--bar-cols: 6;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">Terminal-Bench 2.1</span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">85</div>
+            <div class="bar-y-tick">43</div>
+            <div class="bar-y-tick">0</div>
+        </div>
+        <div class="bar-plot-container">
+            <div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 70.06%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">59.5</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>59.5</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 62.79%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">53.4</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>53.4</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 72.94%;">
+                        <img class="bar-logo" src="./assets/logos/deepseek-color-logo.svg" alt="DeepSeek V4 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>D</span>';">
+                        <div class="bar-score">62.0</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">DeepSeek V4 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>62.0</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>284B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+            <div class="bar-plot-divider"></div>
+            <div class="bar-plot-section bar-plot-closed">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 89.65%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">76.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>76.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 97.29%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.5" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">82.7</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.5</div>
+                            <div class="bar-tooltip-detail">Score: <span>82.7</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 81.65%;">
+                        <img class="bar-logo" src="./assets/logos/claude-color-logo.svg" alt="Claude Opus 4.7" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>O</span>';">
+                        <div class="bar-score">69.4</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Claude Opus 4.7</div>
+                            <div class="bar-tooltip-detail">Score: <span>69.4</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                </div>
+                            </div>
+
+                            <div class="bar-category-row bar-category-half bar-half-2" id="multimodalCategory">
+                                <h4 class="bar-category-title">Multimodal</h4>
+                                <div class="bar-benchmarks-grid bar-benchmarks-2">
+                                    <div class="bar-benchmark-panel" data-benchmark="simpleVqaSearch" style="--bar-cols: 4;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">SimpleVQA <span class="bar-benchmark-date">(with Tool)</span></span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">80</div>
+            <div class="bar-y-tick">78</div>
+            <div class="bar-y-tick">75</div>
+        </div>
+        <div class="bar-plot-container"><div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 84.00%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">79.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>79.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 64.00%;">
+                        <img class="bar-logo" src="./assets/logos/glm-logo.svg" alt="GLM 5V Turbo" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">78.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GLM 5V Turbo</div>
+                            <div class="bar-tooltip-detail">Score: <span>78.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 64.00%;">
+                        <img class="bar-logo" src="./assets/logos/kimi-color-logo.svg" alt="Kimi K2.6" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>K</span>';">
+                        <div class="bar-score">78.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Kimi K2.6</div>
+                            <div class="bar-tooltip-detail">Score: <span>78.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>1T</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 82.00%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.5" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">79.1</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.5</div>
+                            <div class="bar-tooltip-detail">Score: <span>79.1</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                    <div class="bar-benchmark-panel" data-benchmark="vStarPython" style="--bar-cols: 4;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">V* <span class="bar-benchmark-date">(with Python)</span></span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">97</div>
+            <div class="bar-y-tick">91</div>
+            <div class="bar-y-tick">85</div>
+        </div>
+        <div class="bar-plot-container"><div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 85.83%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">95.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>95.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 33.33%;">
+                        <img class="bar-logo" src="./assets/logos/glm-logo.svg" alt="GLM 5V Turbo" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">89.0</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GLM 5V Turbo</div>
+                            <div class="bar-tooltip-detail">Score: <span>89.0</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 99.17%;">
+                        <img class="bar-logo" src="./assets/logos/kimi-color-logo.svg" alt="Kimi K2.6" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>K</span>';">
+                        <div class="bar-score">96.9</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Kimi K2.6</div>
+                            <div class="bar-tooltip-detail">Score: <span>96.9</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>1T</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 94.17%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">96.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>96.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bar-category-row" id="generalAgentCategory">
+                            <h4 class="bar-category-title">General Agent</h4>
+                            <div class="bar-benchmarks-grid bar-benchmarks-4">
+                                <div class="bar-benchmark-panel" data-benchmark="gdpval" style="--bar-cols: 6;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">GDPval</span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">66</div>
+            <div class="bar-y-tick">33</div>
+            <div class="bar-y-tick">0</div>
+        </div>
+        <div class="bar-plot-container">
+            <div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 69.39%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">45.8</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>45.8</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 42.42%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">28.0</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>28.0</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 66.67%;">
+                        <img class="bar-logo" src="./assets/logos/deepseek-color-logo.svg" alt="DeepSeek V4 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>D</span>';">
+                        <div class="bar-score">44.0</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">DeepSeek V4 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>44.0</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>284B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+            <div class="bar-plot-divider"></div>
+            <div class="bar-plot-section bar-plot-closed">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 87.58%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">57.8</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>57.8</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 95.45%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.5" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">63.0</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.5</div>
+                            <div class="bar-tooltip-detail">Score: <span>63.0</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 95.45%;">
+                        <img class="bar-logo" src="./assets/logos/claude-color-logo.svg" alt="Claude Opus 4.7" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>O</span>';">
+                        <div class="bar-score">63.0</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Claude Opus 4.7</div>
+                            <div class="bar-tooltip-detail">Score: <span>63.0</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                <div class="bar-benchmark-panel" data-benchmark="toolathlon" style="--bar-cols: 6;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">Toolathlon</span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">66</div>
+            <div class="bar-y-tick">33</div>
+            <div class="bar-y-tick">0</div>
+        </div>
+        <div class="bar-plot-container">
+            <div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 75.00%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">49.5</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>49.5</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 50.45%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">33.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>33.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 80.00%;">
+                        <img class="bar-logo" src="./assets/logos/deepseek-color-logo.svg" alt="DeepSeek V4 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>D</span>';">
+                        <div class="bar-score">52.8</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">DeepSeek V4 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>52.8</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>284B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+            <div class="bar-plot-divider"></div>
+            <div class="bar-plot-section bar-plot-closed">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 85.61%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">56.5</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>56.5</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 91.21%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.5" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">60.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.5</div>
+                            <div class="bar-tooltip-detail">Score: <span>60.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 99.09%;">
+                        <img class="bar-logo" src="./assets/logos/claude-color-logo.svg" alt="Claude Opus 4.7" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>O</span>';">
+                        <div class="bar-score">65.4</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Claude Opus 4.7</div>
+                            <div class="bar-tooltip-detail">Score: <span>65.4</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                <div class="bar-benchmark-panel" data-benchmark="clawEval" style="--bar-cols: 6;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">ClawEval-1.1 <span class="bar-benchmark-date">(2026-05-09)</span></span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">75</div>
+            <div class="bar-y-tick">38</div>
+            <div class="bar-y-tick">0</div>
+        </div>
+        <div class="bar-plot-container">
+            <div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 89.43%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">67.1</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>67.1</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 58.13%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">43.6</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>43.6</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 77.07%;">
+                        <img class="bar-logo" src="./assets/logos/deepseek-color-logo.svg" alt="DeepSeek V4 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>D</span>';">
+                        <div class="bar-score">57.8</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">DeepSeek V4 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>57.8</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>284B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+            <div class="bar-plot-divider"></div>
+            <div class="bar-plot-section bar-plot-closed">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 77.07%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3.1 Pro" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">57.8</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3.1 Pro</div>
+                            <div class="bar-tooltip-detail">Score: <span>57.8</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 80.40%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.4" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">60.3</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.4</div>
+                            <div class="bar-tooltip-detail">Score: <span>60.3</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 94.40%;">
+                        <img class="bar-logo" src="./assets/logos/claude-color-logo.svg" alt="Claude Opus 4.6" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>O</span>';">
+                        <div class="bar-score">70.8</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Claude Opus 4.6</div>
+                            <div class="bar-tooltip-detail">Score: <span>70.8</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                                <div class="bar-benchmark-panel" data-benchmark="hleWithTool" style="--bar-cols: 6;">
+    <div class="bar-benchmark-header">
+        <span class="bar-benchmark-name">HLE <span class="bar-benchmark-date">(with Tool)</span></span>
+    </div>
+    <div class="bar-benchmark-chart">
+        <div class="bar-y-axis">
+            <div class="bar-y-tick">56</div>
+            <div class="bar-y-tick">33</div>
+            <div class="bar-y-tick">10</div>
+        </div>
+        <div class="bar-plot-container">
+            <div class="bar-plot-section bar-plot-open">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-highlight" style="height: 80.87%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.7 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">47.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.7 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>47.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 55.87%;">
+                        <img class="bar-logo" src="./assets/logos/StepFun_Logo_单独图形_黑.svg" alt="Step 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>S</span>';">
+                        <div class="bar-score">35.7</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Step 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>35.7</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>196B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-open" style="height: 76.30%;">
+                        <img class="bar-logo" src="./assets/logos/deepseek-color-logo.svg" alt="DeepSeek V4 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>D</span>';">
+                        <div class="bar-score">45.1</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">DeepSeek V4 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>45.1</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>284B</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+            <div class="bar-plot-divider"></div>
+            <div class="bar-plot-section bar-plot-closed">
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 65.65%;">
+                        <img class="bar-logo" src="./assets/logos/gemini-color-logo.svg" alt="Gemini 3.5 Flash" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">40.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Gemini 3.5 Flash</div>
+                            <div class="bar-tooltip-detail">Score: <span>40.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 91.74%;">
+                        <img class="bar-logo" src="./assets/logos/openai-logo.svg" alt="GPT 5.5" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>G</span>';">
+                        <div class="bar-score">52.2</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">GPT 5.5</div>
+                            <div class="bar-tooltip-detail">Score: <span>52.2</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="bar-group">
+                <div class="bar-wrapper">
+                    <div class="bar bar-closed" style="height: 97.17%;">
+                        <img class="bar-logo" src="./assets/logos/claude-color-logo.svg" alt="Claude Opus 4.7" onerror="this.style.display='none';this.parentElement.innerHTML+='<span class=\'bar-initial\'>O</span>';">
+                        <div class="bar-score">54.7</div>
+                        <div class="bar-tooltip">
+                            <div class="bar-tooltip-title">Claude Opus 4.7</div>
+                            <div class="bar-tooltip-detail">Score: <span>54.7</span></div>
+                            <div class="bar-tooltip-detail">Params: <span>Unknown</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+                        </div>
+                            </div>
+                        </div>
+
+                    </div>
+                    <p class="bmk-footnote bar-charts-footnote">Note: On non-multimodal tasks, we organize comparisons in two groups: the left panel compares Step 3.7 Flash with DeepSeek V4 Flash, an open-source model of comparable Flash-size scale, while the right panel places Step 3.7 Flash alongside frontier closed-source models. In particular, Step 3.7 Flash, Gemini 3.5 Flash, DeepSeek V4 Flash, DeepSeek V4 Pro and GLM 5.1 are benchmarked on Terminal-Bench 2.1; DeepSeek V4 Flash’s metrics come from our internal testing. Kimi-K2.6, GPT 5.5 and Claude Opus 4.7 rely on official reported results on Terminal-Bench 2.0. On GDPval, Step 3.7 Flash score is obtained through internal pairwise evaluation, while comparison models are sourced from the official Artificial Analysis Leaderboard. On Toolathlon, Step 3.7 Flash score is evaluated on a internal fixed version, and for other models we report the best score from internal tests and official tests.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="demo-gallery" class="section">
+            <div class="container-wide">
+                <h2 class="section-title">Gallery</h2>
+                <div class="gallery-carousel" id="galleryCarousel">
+                    <div class="gallery-carousel-viewport">
+                        <div class="gallery-carousel-track">
+                            <div class="gallery-card" data-title="Landing Page">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">01 / 08</span>
+                                        <span class="gallery-card-title">Landing Page</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" src="raw_case/gallery_case/Gallery3-landing-page-吴鑫.mp4" muted loop playsinline autoplay preload="auto" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Heritage Building">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">02 / 08</span>
+                                        <span class="gallery-card-title">Heritage Building</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" src="raw_case/gallery_case/Gallery2-南洋大楼-final-1.mp4" muted loop playsinline preload="metadata" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Compositional Tool-use">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">03 / 08</span>
+                                        <span class="gallery-card-title">Compositional Tool-use</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" data-src="raw_case/gallery_case/mm-section-3-Compositional-Tool-use-case-2-3d地铁站.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Travel Guide">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">04 / 08</span>
+                                        <span class="gallery-card-title">Travel Guide</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" data-src="raw_case/gallery_case/Gallery4-图片生成旅游指南静音-马老师.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Deep Search">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">05 / 08</span>
+                                        <span class="gallery-card-title">Deep Search</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" data-src="raw_case/gallery_case/Gallery8-Deep-Search-cut-马老师.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Draft to Code">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">06 / 08</span>
+                                        <span class="gallery-card-title">Draft to Code</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" data-src="raw_case/gallery_case/Gallery6-draft2code-吴鑫.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Video to Summary">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">07 / 08</span>
+                                        <span class="gallery-card-title">Video to Summary</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" data-src="raw_case/gallery_case/Gallery7-Video-to-Summary-clip-马老师.mp4" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gallery-card" data-title="Sketch to Web Page">
+                                <div class="gallery-card-frame">
+                                    <div class="gallery-card-header">
+                                        <span class="gallery-card-index">08 / 08</span>
+                                        <span class="gallery-card-title">Sketch to Web Page</span>
+                                    </div>
+                                    <div class="gallery-card-media">
+                                        <video class="gallery-card-video" src="raw_case/gallery_case/Gallery5-Images-sketch-to-Web-Page-马老师.mp4" muted loop playsinline preload="metadata" disablepictureinpicture disableremoteplayback></video>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="gallery-nav gallery-nav-prev" aria-label="Previous">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                    </button>
+                    <button class="gallery-nav gallery-nav-next" aria-label="Next">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"></polyline></svg>
+                    </button>
+                    <div class="gallery-dots" id="galleryDots"></div>
+                </div>
+            </div>
+        </section>
+
+        
+        <section id="agentic-coding" class="section">
+            <div class="container-wide">
+                <h2 class="section-title">Agentic Coding</h2>
+                <p class="section-intro">Foundation models are shifting from answering questions to taking action, and in the digital world that action takes the form of code. Coding is the substrate of digital agency, the purest form of the plan–execute–observe–iterate loop, and the leading indicator of where a model's broader agentic capability is heading. We invested heavily in this surface for <strong class="highlight-brand">Step 3.7 Flash</strong>. Compared to Step 3.5 Flash, it gains <strong>+5% on SWE-Bench Pro</strong> and <strong>6.1% on Terminal-Bench 2.1</strong>.</p>
+
+                <div class="radar-card">
+                    <div class="radar-plot">
+                        <h5 class="radar-plot-title">Step-SWE-Bench</h5>
+                        <svg viewBox="0 0 460 420" role="img" aria-label="Multi-scaffold benchmark radar chart">
+                            
+                            <g class="radar-grid">
+                                <polygon points="230,90 351.24,160 351.24,300 230,370 108.76,300 108.76,160" />
+                                <polygon points="230,128.18 318.18,179.09 318.18,280.91 230,331.82 141.82,280.91 141.82,179.09" />
+                                <polygon points="230,166.36 285.11,198.18 285.11,261.82 230,293.64 174.89,261.82 174.89,198.18" />
+                                <polygon points="230,204.55 252.04,217.27 252.04,242.73 230,255.45 207.96,242.73 207.96,217.27" />
+                            </g>
+                            
+                            <g class="radar-axes">
+                                <line x1="230" y1="230" x2="230" y2="90" />
+                                <line x1="230" y1="230" x2="351.24" y2="160" />
+                                <line x1="230" y1="230" x2="351.24" y2="300" />
+                                <line x1="230" y1="230" x2="230" y2="370" />
+                                <line x1="230" y1="230" x2="108.76" y2="300" />
+                                <line x1="230" y1="230" x2="108.76" y2="160" />
+                            </g>
+                            
+                            <polygon class="radar-series radar-series-prev"
+                                points="230,128.18 289.52,195.64 346.83,297.45 230,329.27 148.44,277.09 179.29,200.73" />
+                            <g class="radar-points radar-points-prev">
+                                <circle cx="230"    cy="128.18" r="5"><title>Step 3.5 Flash · Hermes Agent: 60.00%</title></circle>
+                                <circle cx="289.52" cy="195.64" r="5"><title>Step 3.5 Flash · OpenClaw: 47.00%</title></circle>
+                                <circle cx="346.83" cy="297.45" r="5"><title>Step 3.5 Flash · Claude Code: 73.00%</title></circle>
+                                <circle cx="230"    cy="329.27" r="5"><title>Step 3.5 Flash · KiloCode: 59.00%</title></circle>
+                                <circle cx="148.44" cy="277.09" r="5"><title>Step 3.5 Flash · OpenCode: 57.00%</title></circle>
+                                <circle cx="179.29" cy="200.73" r="5"><title>Step 3.5 Flash · RooCode: 43.00%</title></circle>
+                            </g>
+                            
+                            <polygon class="radar-series radar-series-curr"
+                                points="230,109.09 333.61,170.18 343.52,295.55 230,350.91 131.91,286.64 131.91,173.36" />
+                            <g class="radar-points radar-points-curr">
+                                <circle cx="230"    cy="109.09" r="5.5"><title>Step 3.7 Flash · Hermes Agent: 67.50%</title></circle>
+                                <circle cx="333.61" cy="170.18" r="5.5"><title>Step 3.7 Flash · OpenClaw: 67.00%</title></circle>
+                                <circle cx="343.52" cy="295.55" r="5.5"><title>Step 3.7 Flash · Claude Code: 71.50%</title></circle>
+                                <circle cx="230"    cy="350.91" r="5.5"><title>Step 3.7 Flash · KiloCode: 67.50%</title></circle>
+                                <circle cx="131.91" cy="286.64" r="5.5"><title>Step 3.7 Flash · OpenCode: 64.50%</title></circle>
+                                <circle cx="131.91" cy="173.36" r="5.5"><title>Step 3.7 Flash · RooCode: 64.50%</title></circle>
+                            </g>
+                            
+                            <g class="radar-scale">
+                                <text x="234" y="93">75</text>
+                                <text x="234" y="131">60</text>
+                                <text x="234" y="169">45</text>
+                                <text x="234" y="208">30</text>
+                            </g>
+                            
+                            <g class="radar-labels">
+                                <text x="230"    y="78"  text-anchor="middle">Hermes Agent</text>
+                                <text x="361.24" y="158" text-anchor="start">OpenClaw</text>
+                                <text x="361.24" y="306" text-anchor="start">Claude Code</text>
+                                <text x="230"    y="390" text-anchor="middle">KiloCode</text>
+                                <text x="98.76"  y="306" text-anchor="end">OpenCode</text>
+                                <text x="98.76"  y="158" text-anchor="end">RooCode</text>
+                            </g>
+                        </svg>
+                    </div>
+                    <div class="radar-side">
+                        <div class="radar-legend">
+                            <div class="radar-legend-row radar-legend-curr">
+                                <span class="radar-legend-swatch"></span>
+                                <span class="radar-legend-name">Step 3.7 Flash</span>
+                                <span class="radar-legend-avg">avg <strong>67.08%</strong></span>
+                            </div>
+                            <div class="radar-legend-row radar-legend-prev">
+                                <span class="radar-legend-swatch"></span>
+                                <span class="radar-legend-name">Step 3.5 Flash</span>
+                                <span class="radar-legend-avg">avg <strong>56.50%</strong></span>
+                            </div>
+                        </div>
+                        <table class="radar-table">
+                            <thead>
+                                <tr><th></th><th class="radar-th-curr">Step 3.7 Flash</th><th>Step 3.5 Flash</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>Hermes Agent</td><td class="radar-curr">67.50%</td><td>60.00%</td></tr>
+                                <tr><td>OpenClaw</td><td class="radar-curr">67.00%</td><td>47.00%</td></tr>
+                                <tr><td>Claude Code</td><td class="radar-curr">71.50%</td><td>73.00%</td></tr>
+                                <tr><td>KiloCode</td><td class="radar-curr">67.50%</td><td>59.00%</td></tr>
+                                <tr><td>OpenCode</td><td class="radar-curr">64.50%</td><td>57.00%</td></tr>
+                                <tr><td>RooCode</td><td class="radar-curr">64.50%</td><td>43.00%</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <p class="section-intro section-intro-spaced">In production, coding agents rarely run on a single scaffold. They live inside a heterogeneous stack of harnesses, each with its own prompting conventions, tool schemas, and orchestration patterns — and a model has to perform reliably across all of them to be genuinely useful. <strong class="highlight-brand">Step 3.7 Flash</strong> is markedly more balanced across this stack than Step 3.5 Flash, with the per-harness gap narrowing substantially on our in-house Step-SWE-Bench.</p>
+                <p class="section-intro section-intro-spaced">To push quality further without giving up Flash-tier efficiency, <strong class="highlight-brand">Step 3.7 Flash</strong> supports Advisor Mode. <strong class="highlight-brand">Step 3.7 Flash</strong> drives the trajectory end-to-end — calling tools, reading results, and iterating — and consults a larger advisor model only at the few inflection points where its own judgment falls short, such as planning or recovering from repeated failures. This is Step's implementation of the <a href="https://claude.com/blog/the-advisor-strategy" target="_blank" rel="noopener">advisor strategy</a> described by Anthropic, where a small executor stays in control and escalates to a frontier advisor only when needed, keeping most of the run at executor cost. With Advisor Mode enabled, <strong class="highlight-brand">Step 3.7 Flash</strong> reaches <strong>97% of Claude Opus 4.6's coding performance at roughly one-ninth the per-task cost</strong> (<code>$0.19</code> v.s. <code>$1.76</code> per task).</p>
+
+                <div class="scatter-card">
+                    <div class="scatter-title">Score vs. Cost on SWE-Bench Verified</div>
+                    <div class="scatter-subtitle">(Claude Opus 4.6 internal reproduce)</div>
+                    <svg class="scatter-svg" viewBox="0 0 1200 620" role="img" aria-label="Score vs cost scatter chart">
+                        
+                        <line x1="120" y1="540" x2="120" y2="60" class="scatter-axis"/>
+                        <polygon points="120,40 113,60 127,60" class="scatter-axis-arrow"/>
+                        
+                        <line x1="120" y1="540" x2="1140" y2="540" class="scatter-axis"/>
+                        <polygon points="100,540 120,533 120,547" class="scatter-axis-arrow"/>
+
+                        <g class="scatter-grid">
+                            <line x1="120" y1="540" x2="1140" y2="540"/>
+                            <line x1="120" y1="460" x2="1140" y2="460"/>
+                            <line x1="120" y1="380" x2="1140" y2="380"/>
+                            <line x1="120" y1="300" x2="1140" y2="300"/>
+                            <line x1="120" y1="220" x2="1140" y2="220"/>
+                            <line x1="120" y1="140" x2="1140" y2="140"/>
+                            <line x1="120" y1="60"  x2="1140" y2="60"/>
+                        </g>
+                        <g class="scatter-tick-y">
+                            <text x="108" y="546">73</text>
+                            <text x="108" y="466">74</text>
+                            <text x="108" y="386">75</text>
+                            <text x="108" y="306">76</text>
+                            <text x="108" y="226">77</text>
+                            <text x="108" y="146">78</text>
+                            <text x="108" y="66">79</text>
+                        </g>
+                        <g class="scatter-tick-x">
+                            <text x="120" y="568">0.00</text>
+                            <text x="247" y="568">0.25</text>
+                            <text x="375" y="568">0.50</text>
+                            <text x="502" y="568">0.75</text>
+                            <text x="630" y="568">1.00</text>
+                            <text x="757" y="568">1.25</text>
+                            <text x="885" y="568">1.50</text>
+                            <text x="1012" y="568">1.75</text>
+                            <text x="1140" y="568">2.00</text>
+                        </g>
+
+                        <text x="60" y="300" class="scatter-axis-title scatter-axis-title-y" transform="rotate(-90 60 300)">Score (%)</text>
+                        <text x="630" y="608" class="scatter-axis-title">Cost per agentic task ($)</text>
+
+                        <g class="scatter-point scatter-point-flash">
+                            <circle cx="181" cy="484" r="14"/>
+                            <text x="181" y="446" class="scatter-pt-score">73.7%</text>
+                            <text x="181" y="464" class="scatter-pt-cost">$0.12</text>
+                            <text x="181" y="521" class="scatter-pt-label">Step 3.7 Flash</text>
+                        </g>
+
+                        <defs>
+                            <marker id="scatter-advisor-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" class="scatter-advisor-arrow-head"/>
+                            </marker>
+                        </defs>
+                        <line class="scatter-advisor-arrow"
+                              x1="185" y1="469" x2="213" y2="295"
+                              marker-end="url(#scatter-advisor-arrowhead)"/>
+                        <text x="240" y="380" class="scatter-advisor-arrow-label">+ Advisor</text>
+
+                        <g class="scatter-point scatter-point-advisor">
+                            <circle cx="217" cy="276" r="14"/>
+                            <text x="217" y="238" class="scatter-pt-score">76.3%</text>
+                            <text x="217" y="256" class="scatter-pt-cost">$0.19</text>
+                            <text x="217" y="316" class="scatter-pt-label">Step 3.7 Flash + Advisor</text>
+                        </g>
+                        
+                        <g class="scatter-point scatter-point-opus">
+                            <circle cx="1018" cy="84" r="14"/>
+                            <text x="1018" y="46" class="scatter-pt-score">78.7%</text>
+                            <text x="1018" y="64" class="scatter-pt-cost">$1.76</text>
+                            <text x="1018" y="121" class="scatter-pt-label">Claude Opus 4.6</text>
+                        </g>
+                    </svg>
+                </div>
+            </div>
+        </section>
+
+        <section id="enterprise-grade" class="section">
+            <div class="container-wide">
+                <h2 class="section-title">Sharpened for Enterprise Tasks</h2>
+                <p class="section-intro">Enterprise work inherently depends on two critical pillars: autonomous task execution in dynamic environments and deep, domain-specific vertical knowledge. <strong class="highlight-brand">Step 3.7 Flash</strong> is purpose-built and rigorously optimized across both frontiers to independently drive assignments and ship production-grade deliverables.</p>
+                <p class="section-intro">The model combines strong agentic execution with precise intent understanding and rich multimodal perception, allowing it to seamlessly bridge the gap between comprehension and action. Users can hand Step 3.7 Flash a complete piece of knowledge work and trust it to independently map out the plan, search across live sources, extract key information, and fluidly orchestrate tools to deliver a ready-to-ship result without intervention. It reads and directly acts on mixed inputs—such as screenshots, complex documents, and dense spreadsheets—parsing visual context and digital assets simultaneously. This long-horizon task execution is validated across diverse environments, where Step 3.7 Flash achieves <strong>49.5% on Toolathlon</strong> for multi-tool coordination and <strong>67.1% on ClawEval-1.1</strong> for daily autonomous task execution in realistic environments.</p>
+                <p class="section-intro">The path from general intelligence to true professional expertise starts with real expert practices. By partnering deeply with domain specialists, we have embedded native industry know-how into the model, validating its capabilities through our own benchmarks in finance, accounting, and data analysis. This expertise extends well beyond specialized domains: Step 3.7 Flash reaches <strong>45.8% on GDPval</strong> across 44 occupations, and passes at over <strong>98% across different reasoning difficulty tiers on Tau2-bench Telecom</strong>.</p>
+
+                <div class="showcase-sub-section enterprise-case-group" data-active-case="case1">
+                    <div class="enterprise-case-switcher">
+                        <button class="enterprise-case-btn active" data-case-target="case1">Manufacturing · Production Scheduling</button>
+                        <button class="enterprise-case-btn" data-case-target="case2">Engineering · Heat Treatment Analysis</button>
+                    </div>
+
+                    <div class="enterprise-case-panel" data-case-id="case1">
+                        <div class="inline-agentic-viewer" data-case-file="raw_case/enterprise_case/case1.json" id="enterpriseCase1Viewer">
+                            <div class="safari-title-bar">
+                                <div class="safari-traffic-lights">
+                                    <span class="safari-btn safari-btn-close"></span>
+                                    <span class="safari-btn safari-btn-minimize"></span>
+                                    <span class="safari-btn safari-btn-expand"></span>
+                                </div>
+                                <span class="safari-title">Manufacturing · Production Scheduling</span>
+                                <div class="viewer-toggle">
+                                    <button class="viewer-toggle-btn active" data-view="result">Result</button>
+                                    <button class="viewer-toggle-btn" data-view="conversation">Trace</button>
+                                </div>
+                            </div>
+                            <div class="message-container" data-view-content="conversation" style="display: none;">
+                                <div class="message-loading">
+                                    <span class="loading-spinner"></span>
+                                    <span>Loading case...</span>
+                                </div>
+                            </div>
+                            <iframe class="result-iframe" data-view-content="result" src="raw_case/enterprise_case/case1_result.html"></iframe>
+                        </div>
+                    </div>
+
+                    <div class="enterprise-case-panel" data-case-id="case2" style="display: none;">
+                        <div class="inline-agentic-viewer" data-case-file="raw_case/enterprise_case/case2.json" id="enterpriseCase2Viewer">
+                            <div class="safari-title-bar">
+                                <div class="safari-traffic-lights">
+                                    <span class="safari-btn safari-btn-close"></span>
+                                    <span class="safari-btn safari-btn-minimize"></span>
+                                    <span class="safari-btn safari-btn-expand"></span>
+                                </div>
+                                <span class="safari-title">Engineering · Heat Treatment Analysis</span>
+                                <div class="viewer-toggle">
+                                    <button class="viewer-toggle-btn active" data-view="result">Result</button>
+                                    <button class="viewer-toggle-btn" data-view="conversation">Trace</button>
+                                </div>
+                            </div>
+                            <div class="message-container" data-view-content="conversation" style="display: none;">
+                                <div class="message-loading">
+                                    <span class="loading-spinner"></span>
+                                    <span>Loading case...</span>
+                                </div>
+                            </div>
+                            <iframe class="result-iframe" data-view-content="result" data-src="raw_case/enterprise_case/Heat_Treatment_Report.pdf"></iframe>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="search-wider-deeper" class="section">
+            <div class="container-wide">
+                <h2 class="section-title">Search Wider and Deeper</h2>
+                <p class="section-intro">For a model at the scale of Step 3.7 Flash, the goal is not to pack every piece of world knowledge into its weights, but to make the model better at calling upon that knowledge when needed. We therefore focus its capabilities on search planning, evidence filtering, and information synthesis, turning search from an external add-on into a native part of the reasoning process.</p>
+                <p class="section-intro">Step 3.7 Flash delivers strong results across search-heavy benchmarks. It scores <strong>47.20% on HLE with Tools</strong>, up from 35.68% (text-only) for Step 3.5 Flash, and outperforms Flash models from DeepSeek V4 and Gemini 3.5. It reaches <strong>75.82% on BrowseComp</strong>, approaching larger models such as Claude Opus 4.7 and GLM 5.1. <strong>On DeepSearchQA, it achieves 92.82% F1 score</strong>, comparable to Kimi K2.6, a 1T / 32B-active model. <strong>On ResearchRubrics, it scores 71.68%</strong>, ahead of GPT 5.5 at 61.50% and close to Claude Opus 4.7 at 73.92%. These results show that Step 3.7 Flash combines Flash-level efficiency with strong deep-retrieval and research capabilities.</p>
+
+                <div class="search-case-featured" id="searchDemos">
+                    <div class="search-case-card search-case-card-lg search-case-card-staged" data-search-case="law_1" data-thumb="assets/search_thumbs/law_1.svg" data-case-id="law_1" data-stages="10">
+                        <img class="sc-stage-thumb" src="assets/search_thumbs/law_1_s9.png" alt="Search topology" />
+                        <span class="sc-cta">play ▶</span>
+                        <div class="sc-meta">
+                            <span class="sc-title">Law · conflict-of-interest</span>
+                            <span class="sc-q">Two partners at NC LLP — can the firm act against a former client under the LSO rules?</span>
+                        </div>
+                        <div class="sc-stage-scrubber">
+                            <div class="sc-stage-scrubber-track">
+                                <input type="range" class="sc-stage-slider" min="0" max="9" value="9" step="1" aria-label="Search topology stage" />
+                                <div class="sc-stage-progress"></div>
+                            </div>
+                            <div class="sc-stage-labels">
+                                <span>Start</span>
+                                <span class="sc-stage-stagelabel">Stage 10 / 10</span>
+                                <span>Final</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="section-intro">The trajectories further highlight both the breadth and depth of its search behavior. In the Ontario lawyer conflict-of-interest case, it similarly expanded its search around domain-specific concepts, combined evidence from papers, course materials, official rules, and case analyses, and caught the key traps in the questions.</p>
+            </div>
+        </section>
+
+        <section id="code-meets-vision" class="section bmk-section">
+            <div class="container-wide">
+                <h2 class="section-title">Agents That Can <span class="section-title-accent-word">SEE</span></h2>
+                <p class="section-intro">We establish <strong class="highlight-brand">Step 3.7 Flash</strong> as an agentic foundation model with vision input support, shifting perception and recognition from parametric capacity to test-time scaling with visual tools. As the first of these, we strengthen its ability to invoke the Visual Search tool, thereby compensating for the parametric knowledge deficiencies caused by <strong class="highlight-brand">Step 3.7 Flash</strong>'s limited model size. As shown in the table below, on visual recognition tasks, <strong class="highlight-brand">Step 3.7 Flash</strong> with Visual Search achieves performance on par with models five times its size.</p>
+
+                <h3 class="section-subtitle bmk-subgroup-title">Visual Recognition with Visual Search</h3>
+                <div class="bmk-table-wrap">
+                    <table class="bmk-table">
+                        <colgroup>
+                            <col class="bmk-col-label" />
+                            <col class="bmk-col bmk-col-hl" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                        </colgroup>
+                        <thead>
+                            <tr class="bmk-head-group-row">
+                                <th class="bmk-head-group bmk-head-group-spacer" aria-hidden="true"></th>
+                                <th class="bmk-head-group bmk-head-group-flash" colspan="1"><span class="bmk-head-group-label">Flash Level</span></th>
+                                <th class="bmk-head-group bmk-head-group-pro" colspan="3"><span class="bmk-head-group-label">Pro Level</span></th>
+                            </tr>
+                            <tr>
+                                <th class="bmk-head bmk-head-label">Benchmarks</th>
+                                <th class="bmk-head bmk-head-hl">Step 3.7 Flash</th>
+                                <th class="bmk-head">Kimi K2.6</th>
+                                <th class="bmk-head">GLM 5V Turbo</th>
+                                <th class="bmk-head">GPT 5.5</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">SimpleVQA</td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top1">79.16%</td>
+                                <td class="bmk-cell">78.24%*</td>
+                                <td class="bmk-cell">78.20%</td>
+                                <td class="bmk-cell bmk-top2">79.11%*</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">WorldVQA</td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top1">58.10%</td>
+                                <td class="bmk-cell bmk-top2">55.98%*</td>
+                                <td class="bmk-cell">47.81%*</td>
+                                <td class="bmk-cell">54.58%*</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">BC-VL</td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top2">58.96%</td>
+                                <td class="bmk-cell">57.12%*</td>
+                                <td class="bmk-cell">51.90%*</td>
+                                <td class="bmk-cell bmk-top1">65.68%*</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <ol class="bmk-footnote bmk-footnote-list">
+                    <li>* denotes a self-tested score.</li>
+                </ol>
+
+                <p class="section-intro section-intro-spaced">For a broader set of challenging vision tasks that demand fine-grained perception over high-resolution images or visual reasoning capabilities—such as V*, HR-Bench, and VisualProbe—we grant the model an enriched action space to interact with images, including cropping, zooming in and out, and drawing pixels or bounding boxes. These tools are implemented as a unified code interface, commonly referred to in the field as the <em>Python tool</em>. With Python, <strong class="highlight-brand">Step 3.7 Flash</strong> achieves exceptionally strong performance on these benchmarks.</p>
+
+                <h3 class="section-subtitle bmk-subgroup-title">Visual Perception with Python Tool</h3>
+                <div class="bmk-table-wrap">
+                    <table class="bmk-table">
+                        <colgroup>
+                            <col class="bmk-col-label" />
+                            <col class="bmk-col bmk-col-hl" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                        </colgroup>
+                        <thead>
+                            <tr class="bmk-head-group-row">
+                                <th class="bmk-head-group bmk-head-group-spacer" aria-hidden="true"></th>
+                                <th class="bmk-head-group bmk-head-group-flash" colspan="1"><span class="bmk-head-group-label">Flash Level</span></th>
+                                <th class="bmk-head-group bmk-head-group-pro" colspan="3"><span class="bmk-head-group-label">Pro Level</span></th>
+                            </tr>
+                            <tr>
+                                <th class="bmk-head bmk-head-label">Benchmarks</th>
+                                <th class="bmk-head bmk-head-hl">Step 3.7 Flash</th>
+                                <th class="bmk-head">Kimi K2.6</th>
+                                <th class="bmk-head">GLM 5V Turbo</th>
+                                <th class="bmk-head">Gemini 3 Flash</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">V*</td>
+                                <td class="bmk-cell bmk-cell-hl">95.29%</td>
+                                <td class="bmk-cell bmk-top1">96.90%</td>
+                                <td class="bmk-cell">89.00%</td>
+                                <td class="bmk-cell bmk-top2">96.30%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">HR-Bench 4K</td>
+                                <td class="bmk-cell bmk-cell-hl">89.13%</td>
+                                <td class="bmk-cell bmk-top2">91.25%*</td>
+                                <td class="bmk-cell">84.62%</td>
+                                <td class="bmk-cell bmk-top1">94.50%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">HR-Bench 8K</td>
+                                <td class="bmk-cell bmk-cell-hl">86.34%</td>
+                                <td class="bmk-cell bmk-top2">90.13%*</td>
+                                <td class="bmk-cell">83.12%</td>
+                                <td class="bmk-cell bmk-top1">94.80%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">VisualProbe</td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top2">65.05%</td>
+                                <td class="bmk-cell">64.47%*</td>
+                                <td class="bmk-cell">53.01%</td>
+                                <td class="bmk-cell bmk-top1">69.90%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <ol class="bmk-footnote bmk-footnote-list">
+                    <li>* denotes a self-tested score.</li>
+                    <li>The GLM results were aligned with official GLM personnel, using crop + search and other tools.</li>
+                </ol>
+
+                <p class="section-intro section-intro-spaced">One particularly interesting finding is the emergent ability of compositional generalization across visual and other tools. During testing, <strong class="highlight-brand">Step 3.7 Flash</strong> seamlessly combined visual tools with non-visual ones to accomplish complex tasks, despite never having been explicitly guided toward such compositional tool use during training.</p>
+
+                <h4 class="section-h4"><strong>Visual Reasoning with Python Tool</strong></h4>
+                <div class="showcase-video-row">
+                    <div class="showcase-video-block">
+                        <video controls muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback>
+                            <source src="raw_case/gallery_case/mm-section-1-Python-Tool-case1-迷宫.mp4" type="video/mp4">
+                        </video>
+                    </div>
+                    <div class="showcase-video-block">
+                        <video controls muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback>
+                            <source src="raw_case/gallery_case/mm-section-2-Python-Tool-case2-大小圆.mp4" type="video/mp4">
+                        </video>
+                    </div>
+                </div>
+
+                <h4 class="section-h4"><strong>Compositional Usage across Visual and Non-visual Tools</strong></h4>
+                <div class="showcase-video-row showcase-video-row-centered">
+                    <div class="showcase-video-block showcase-video-block-wide">
+                        <video controls muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback>
+                            <source src="raw_case/gallery_case/Gallery1-菜单-final-1.mp4" type="video/mp4">
+                        </video>
+                    </div>
+                </div>
+
+                <p class="section-intro section-intro-spaced">Operating graphical user interfaces (GUI) is another foundational visual capability for an agentic model — many real-world tasks live beyond the chatbox and the CLI, and require the agent to see, click, and verify. We extend <strong class="highlight-brand">Step 3.7 Flash</strong> with GUI operation, in particular for the Phone-use stack, so that it can complete long-horizon tasks across multiple apps. On the Android Daily benchmark, <strong class="highlight-brand">Step 3.7 Flash</strong> achieves a substantial improvement over last year's <strong>Step-GUI</strong> in stability, robustness, and long-horizon completion, and ahead of other models of larger scale.</p>
+
+                <h3 class="section-subtitle bmk-subgroup-title">Score of Android Daily Benchmark</h3>
+                <div class="hbar-card">
+                    <div class="hbar-chart">
+                        <div class="hbar-row">
+                            <span class="hbar-label">Gemini 3 Flash</span>
+                            <div class="hbar-track"><div class="hbar-fill" style="width: 91.05%"></div></div>
+                            <span class="hbar-value">63.21%<span class="hbar-star">*</span></span>
+                        </div>
+                        <div class="hbar-row hbar-row-hl">
+                            <span class="hbar-label">Step 3.7 Flash</span>
+                            <div class="hbar-track"><div class="hbar-fill hbar-fill-hl" style="width: 84.35%"></div></div>
+                            <span class="hbar-value">61.87%</span>
+                        </div>
+                        <div class="hbar-row">
+                            <span class="hbar-label">Kimi K2.6</span>
+                            <div class="hbar-track"><div class="hbar-fill" style="width: 41.80%"></div></div>
+                            <span class="hbar-value">53.36%<span class="hbar-star">*</span></span>
+                        </div>
+                        <div class="hbar-row">
+                            <span class="hbar-label">GLM 5V Turbo</span>
+                            <div class="hbar-track"><div class="hbar-fill" style="width: 33.40%"></div></div>
+                            <span class="hbar-value">51.68%<span class="hbar-star">*</span></span>
+                        </div>
+                    </div>
+                </div>
+                <ol class="bmk-footnote bmk-footnote-list" style="margin-left: 15%;">
+                    <li>* denotes a self-tested score.</li>
+                    <li>Android Daily: <a href="https://arxiv.org/abs/2605.27761" target="_blank" rel="noopener">https://arxiv.org/abs/2605.27761</a></li>
+                </ol>
+
+                <p class="section-intro section-intro-spaced">The same compositional pattern we observed across visual tools also surfaces here: in the following case, after writing a piece of frontend code, the model autonomously turned to the GUI to test the page it had just produced — inspecting the rendered output, exercising interactive elements, and iterating on its own code based on what it saw. Again, this code-and-GUI compositional behavior was never explicitly demonstrated or rewarded during training, yet emerges robustly in test-time use.</p>
+
+                <h4 class="section-h4"><strong>GUI Operation</strong></h4>
+                <div class="showcase-video-row showcase-video-row-centered">
+                    <div class="showcase-video-block showcase-video-block-wide">
+                        <video controls muted playsinline preload="metadata" disablepictureinpicture disableremoteplayback>
+                            <source src="raw_case/gallery_case/mm-section-4-gui-1-tkj.mp4" type="video/mp4">
+                        </video>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="benchmark-table" class="section bmk-section">
+            <div class="container-wide">
+                <h2 class="section-title">Benchmarks</h2>
+                <p class="bmk-intro">In our benchmark table, we provide a detailed, side-by-side comparison of today's top-performing open-source models. Across a wide range of metrics, Step 3.7 Flash stands out with consistently strong results. Our evaluation focuses on three core dimensions—Reasoning, Coding and Agentic Capability.</p>
+
+                <div class="bmk-table-wrap">
+                    <table class="bmk-table">
+                        <colgroup>
+                            <col class="bmk-col-label" />
+                            <col class="bmk-col bmk-col-hl" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                            <col class="bmk-col" />
+                        </colgroup>
+                        <thead>
+                            <tr class="bmk-head-group-row">
+                                <th class="bmk-head-group bmk-head-group-spacer" aria-hidden="true"></th>
+                                <th class="bmk-head-group bmk-head-group-flash" colspan="4"><span class="bmk-head-group-label">Flash Level</span></th>
+                                <th class="bmk-head-group bmk-head-group-pro" colspan="5"><span class="bmk-head-group-label">Pro Level</span></th>
+                            </tr>
+                            <tr>
+                                <th class="bmk-head bmk-head-label">Benchmarks</th>
+                                <th class="bmk-head bmk-head-hl">Step 3.7 Flash</th>
+                                <th class="bmk-head">Step 3.5 Flash</th>
+                                <th class="bmk-head">DeepSeek V4 Flash</th>
+                                <th class="bmk-head">Gemini 3.5 Flash</th>
+                                <th class="bmk-head">DeepSeek V4 Pro</th>
+                                <th class="bmk-head">GPT 5.5</th>
+                                <th class="bmk-head">Claude Opus 4.7</th>
+                                <th class="bmk-head">Kimi K2.6</th>
+                                <th class="bmk-head">GLM 5.1</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">Total Params</td>
+                                <td class="bmk-cell bmk-cell-hl">196B + 1.8B&nbsp;(ViT)</td>
+                                <td class="bmk-cell">196B</td>
+                                <td class="bmk-cell">284B</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">1.6T</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">1T</td>
+                                <td class="bmk-cell">754B</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">Active Params</td>
+                                <td class="bmk-cell bmk-cell-hl">11B</td>
+                                <td class="bmk-cell">11B</td>
+                                <td class="bmk-cell">13B</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">49B</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">32B</td>
+                                <td class="bmk-cell">40B</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">Multi-modal</td>
+                                <td class="bmk-cell bmk-cell-hl"><span class="bmk-icon bmk-icon-yes" aria-label="yes">✓</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-no" aria-label="no">✕</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-no" aria-label="no">✕</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-yes" aria-label="yes">✓</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-no" aria-label="no">✕</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-yes" aria-label="yes">✓</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-yes" aria-label="yes">✓</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-yes" aria-label="yes">✓</span></td>
+                                <td class="bmk-cell"><span class="bmk-icon bmk-icon-no" aria-label="no">✕</span></td>
+                            </tr>
+
+                            <tr class="bmk-group-row">
+                                <td colspan="10" class="bmk-group-label">General Agent</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">HLE w. tool <span class="bmk-sub">(acc)</span></td>
+                                <td class="bmk-cell bmk-cell-hl">47.2% <span class="bmk-sub">(text-only 49.7%)</span></td>
+                                <td class="bmk-cell">35.7%</td>
+                                <td class="bmk-cell">45.1%</td>
+                                <td class="bmk-cell">40.2%</td>
+                                <td class="bmk-cell">48.2%</td>
+                                <td class="bmk-cell">52.2%</td>
+                                <td class="bmk-cell bmk-top1">54.7%</td>
+                                <td class="bmk-cell bmk-top2">54.0%</td>
+                                <td class="bmk-cell">52.3%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">BrowseComp <span class="bmk-sub">(acc)</span></td>
+                                <td class="bmk-cell bmk-cell-hl">75.8%</td>
+                                <td class="bmk-cell">69.0%</td>
+                                <td class="bmk-cell">73.2%</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top2">83.4%</td>
+                                <td class="bmk-cell bmk-top1">90.1%</td>
+                                <td class="bmk-cell">79.3%</td>
+                                <td class="bmk-cell">83.2%</td>
+                                <td class="bmk-cell">79.3%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">deepsearchQA <span class="bmk-sub">(F1)</span></td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top2">92.8%</td>
+                                <td class="bmk-cell">85.5%*</td>
+                                <td class="bmk-cell">90.6%*</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top1">94.0%*</td>
+                                <td class="bmk-cell">91.7%*</td>
+                                <td class="bmk-cell">92.5%</td>
+                                <td class="bmk-cell">91.2%*</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">deepsearchQA <span class="bmk-sub">(acc)</span></td>
+                                <td class="bmk-cell bmk-cell-hl">81.7%</td>
+                                <td class="bmk-cell">73.4%</td>
+                                <td class="bmk-cell">79.8%*</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top1">85.3%*</td>
+                                <td class="bmk-cell">82.3%*</td>
+                                <td class="bmk-cell bmk-top2">83.0%</td>
+                                <td class="bmk-cell">81.3%*</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">ResearchRubrics <span class="bmk-sub">(score)</span></td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top2">71.7%</td>
+                                <td class="bmk-cell">65.3%</td>
+                                <td class="bmk-cell">66.2%*</td>
+                                <td class="bmk-cell">63.6%*</td>
+                                <td class="bmk-cell">68.3%*</td>
+                                <td class="bmk-cell">61.5%*</td>
+                                <td class="bmk-cell bmk-top1">73.9%*</td>
+                                <td class="bmk-cell">63.0%*</td>
+                                <td class="bmk-cell">67.9%*</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">Toolathlon</td>
+                                <td class="bmk-cell bmk-cell-hl">49.5%</td>
+                                <td class="bmk-cell">33.3%</td>
+                                <td class="bmk-cell">52.8%*</td>
+                                <td class="bmk-cell">56.5%</td>
+                                <td class="bmk-cell">56.6%*</td>
+                                <td class="bmk-cell bmk-top2">60.2%*</td>
+                                <td class="bmk-cell bmk-top1">65.4%*</td>
+                                <td class="bmk-cell">54.6%*</td>
+                                <td class="bmk-cell">48.1%*</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">Claweval-v1.1 <span class="bmk-sub">(pass^3)</span></td>
+                                <td class="bmk-cell bmk-cell-hl bmk-top1">67.1%</td>
+                                <td class="bmk-cell">43.6%</td>
+                                <td class="bmk-cell">57.8%</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">59.8%</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top2">62.3%</td>
+                                <td class="bmk-cell bmk-top2">62.3%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">GDPval-Stirrup</td>
+                                <td class="bmk-cell bmk-cell-hl">1415.8 <span class="bmk-sub">(ii 45.8%)</span></td>
+                                <td class="bmk-cell">1055.0 <span class="bmk-sub">(ii 27.8%)</span></td>
+                                <td class="bmk-cell">1414.0 <span class="bmk-sub">(ii 44.0%)</span></td>
+                                <td class="bmk-cell">1656.0 <span class="bmk-sub">(ii 57.8%)</span></td>
+                                <td class="bmk-cell">1554.0 <span class="bmk-sub">(ii 53.0%)</span></td>
+                                <td class="bmk-cell bmk-top1">1769.0 <span class="bmk-sub">(ii 63.0%)</span></td>
+                                <td class="bmk-cell bmk-top2">1753.0 <span class="bmk-sub">(ii 63.0%)</span></td>
+                                <td class="bmk-cell">1481.0 <span class="bmk-sub">(ii 49.0%)</span></td>
+                                <td class="bmk-cell">1535.0 <span class="bmk-sub">(ii 52.0%)</span></td>
+                            </tr>
+
+                            <tr class="bmk-group-row">
+                                <td colspan="10" class="bmk-group-label">Coding</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">SWE-MTLG</td>
+                                <td class="bmk-cell bmk-cell-hl">72.4%</td>
+                                <td class="bmk-cell">67.4%</td>
+                                <td class="bmk-cell">73.3%</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell">76.2%</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top1">80.5%</td>
+                                <td class="bmk-cell bmk-top2">76.7%</td>
+                                <td class="bmk-cell">—</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">SWE-Bench Pro</td>
+                                <td class="bmk-cell bmk-cell-hl">56.3%</td>
+                                <td class="bmk-cell">51.3%</td>
+                                <td class="bmk-cell">55.6%*</td>
+                                <td class="bmk-cell">55.1%</td>
+                                <td class="bmk-cell">55.4%</td>
+                                <td class="bmk-cell bmk-top2">58.6%</td>
+                                <td class="bmk-cell bmk-top1">64.3%</td>
+                                <td class="bmk-cell bmk-top2">58.6%</td>
+                                <td class="bmk-cell">58.4%</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">SWE-Bench Verified</td>
+                                <td class="bmk-cell bmk-cell-hl">76.5%</td>
+                                <td class="bmk-cell">74.4%</td>
+                                <td class="bmk-cell">79.0%*</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top2">80.6%</td>
+                                <td class="bmk-cell">—</td>
+                                <td class="bmk-cell bmk-top1">87.6%</td>
+                                <td class="bmk-cell">80.2%</td>
+                                <td class="bmk-cell">—</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">Terminal-Bench 2.1</td>
+                                <td class="bmk-cell bmk-cell-hl">59.6%</td>
+                                <td class="bmk-cell">53.4%</td>
+                                <td class="bmk-cell">62.0%*</td>
+                                <td class="bmk-cell bmk-top2">76.2%</td>
+                                <td class="bmk-cell">72.0%</td>
+                                <td class="bmk-cell bmk-top1">82.7%</td>
+                                <td class="bmk-cell">69.4%</td>
+                                <td class="bmk-cell">66.7%</td>
+                                <td class="bmk-cell">69.0%</td>
+                            </tr>
+
+                            <tr class="bmk-group-row">
+                                <td colspan="10" class="bmk-group-label">Long Context</td>
+                            </tr>
+                            <tr class="bmk-row">
+                                <td class="bmk-label">AA-LCR <span class="bmk-sub">(avg@16/acc)</span></td>
+                                <td class="bmk-cell bmk-cell-hl">63.9%</td>
+                                <td class="bmk-cell">45.5%</td>
+                                <td class="bmk-cell">63.7%</td>
+                                <td class="bmk-cell bmk-top2">71.0%</td>
+                                <td class="bmk-cell">66.3%</td>
+                                <td class="bmk-cell bmk-top1">74.3%</td>
+                                <td class="bmk-cell">70.3%</td>
+                                <td class="bmk-cell">69.1%</td>
+                                <td class="bmk-cell">64.9%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <ol class="bmk-footnote bmk-footnote-list">
+                    <li>"—" indicates the score is not publicly available or not tested. * denotes a self-tested score.</li>
+                    <li>Step 3.7 Flash, Gemini 3.5 Flash, DeepSeek V4 Flash, DeepSeek V4 Pro and GLM 5.1 are benchmarked on Terminal-Bench 2.1; DeepSeek V4 Flash’s metrics come from our internal testing. Kimi-K2.6, GPT 5.5 and Claude Opus 4.7 rely on official reported results on Terminal-Bench 2.0.</li>
+                    <li>Android Daily: <a href="https://arxiv.org/abs/2605.27761" target="_blank" rel="noopener">https://arxiv.org/abs/2605.27761</a></li>
+                </ol>
+            </div>
+        </section>
+
+        <section id="meet-stepfun" class="section">
+            <div class="container-wide">
+                <h2 class="section-title">Meet StepFun</h2>
+                <ul class="meet-stepfun-list">
+                    <li>
+                        <strong class="highlight-brand">Step 3.7 Flash</strong> is available via our
+                        <strong>API platform
+                            (<a href="https://platform.stepfun.com/" class="link-switcher-option" target="_blank" rel="noopener">中文</a><span class="link-switcher-divider">/</span><a href="https://platform.stepfun.ai/" class="link-switcher-option" target="_blank" rel="noopener">EN</a>)</strong>,
+                        and you can chat with it on the
+                        <strong>Web
+                            (<a href="https://www.stepfun.com/" class="link-switcher-option" target="_blank" rel="noopener">中文</a><span class="link-switcher-divider">/</span><a href="https://stepfun.ai/" class="link-switcher-option" target="_blank" rel="noopener">EN</a>)</strong>
+                        or in our
+                        <strong>App
+                            (<a href="https://apps.apple.com/cn/app/%E9%98%B6%E8%B7%83ai-%E9%98%B6%E8%B7%83%E6%98%9F%E8%BE%B0ai%E5%8A%A9%E6%89%8B/id6502382318" class="link-switcher-option" target="_blank" rel="noopener">iOS</a><span class="link-switcher-divider">/</span><a href="https://play.google.com/store/apps/details?id=cn.yuewen.ywapp&hl=zh" class="link-switcher-option" target="_blank" rel="noopener">Android</a>)</strong>.
+                    </li>
+                    <li>Join our <strong><a href="https://discord.gg/RcMJhNVAQc" class="link-switcher-option" target="_blank" rel="noopener">Discord community</a></strong> for updates, support, and early access.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section id="availability" class="section">
+            <div class="container-wide">
+                <h2 class="section-title">Availability, Deployment, and Ecosystem</h2>
+                <div class="availability-grid">
+                    <div class="availability-card">
+                        <h3 class="availability-card-title">Availability</h3>
+                        <p class="availability-card-text">Step 3.7 Flash is available on the StepFun Open Platform — <a href="https://platform.stepfun.ai/" target="_blank" rel="noopener">platform.stepfun.ai</a> (global) and <a href="https://platform.stepfun.com/" target="_blank" rel="noopener">platform.stepfun.com</a> (China), OpenRouter, and NVIDIA NIM. StepFun is also partnering with DeepInfra, Fireworks AI, and Modal to expand availability soon.</p>
+                    </div>
+                    <div class="availability-card">
+                        <h3 class="availability-card-title">Deployment</h3>
+                        <p class="availability-card-text">Step 3.7 Flash supports flexible deployment across cloud, data center, and local environments. For large-scale production and enterprise use cases, Step 3.7 Flash can be deployed on modern data center infrastructure. For local and workstation scenarios, it can also run on high-memory devices such as NVIDIA DGX Station, AMD Ryzen AI Max+ 395-based systems, and Mac Studio / Macbook Pro devices with at least 128GB unified memory.</p>
+                    </div>
+                    <div class="availability-card">
+                        <h3 class="availability-card-title">Ecosystem</h3>
+                        <p class="availability-card-text">Step 3.7 Flash is supported across popular open-source infrastructure for both inference and model development. For inference and serving, developers can use vLLM, SGLang, Hugging Face Transformers, and llama.cpp. For model development &amp; customization workflows, StepFun model support has landed in the NVIDIA Nemo ecosystem, including AutoModel, Megatron Core and Megatron Bridge. Step 3.7 Flash is also available as an NVIDIA NIM inference microservice for on-prem, cloud, or hybrid deployment.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <div class="footer-bottom">
+                <p class="copyright">© 2026 StepFun. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+    <script src="search_demo.js" defer></script>
+    <script>
+    // Scroll-spy: highlight active nav link
+    (function() {
+        const navLinks = document.querySelectorAll('.nav a');
+        const sections = Array.from(navLinks).map(function(a) {
+            var id = a.getAttribute('href').slice(1);
+            return document.getElementById(id);
+        }).filter(Boolean);
+
+        function updateActive() {
+            var scrollY = window.scrollY + 80;
+            var currentId = '';
+            sections.forEach(function(section) {
+                if (section.offsetTop <= scrollY) {
+                    currentId = section.id;
+                }
+            });
+            navLinks.forEach(function(link) {
+                link.classList.toggle('active', link.getAttribute('href') === '#' + currentId);
+            });
+        }
+        window.addEventListener('scroll', updateActive, { passive: true });
+        updateActive();
+    })();
+
+    // Tagline animation: "See. Think. Act. ⚡ 400 TPS"
+    (function() {
+        var LEFT  = 'See. Think. Act.';
+        var RIGHT = 'Up to 400 TPS';
+        var STAGGER    = 20;   // ms between characters
+        var HOLD_OPEN  = 2000; // ms pause when fully expanded
+        var HOLD_SHUT  = 500;  // ms pause when collapsed
+        var TRANS_MS   = 0;    // instant snap (typewriter style)
+
+        var box = document.getElementById('taglineAnim');
+        if (!box) return;
+        box.innerHTML = '';
+
+        function makeChars(text, parent) {
+            var spans = [];
+            for (var i = 0; i < text.length; i++) {
+                var s = document.createElement('span');
+                s.className = 'tagline-char';
+                s.textContent = text[i];
+                parent.appendChild(s);
+                spans.push(s);
+            }
+            return spans;
+        }
+
+        var leftWrap  = document.createElement('span');
+        leftWrap.className = 'tagline-half tagline-left';
+        var leftChars = makeChars(LEFT, leftWrap);
+        var leftOrder = leftChars.slice().reverse();   // center-out
+
+        var bolt = document.createElement('span');
+        bolt.className = 'tagline-bolt';
+        bolt.textContent = '⚡';
+
+        var rightWrap = document.createElement('span');
+        rightWrap.className = 'tagline-half tagline-right';
+        var rightChars = makeChars(RIGHT, rightWrap);
+        var rightOrder = rightChars.slice();            // center-out
+
+        box.appendChild(leftWrap);
+        box.appendChild(bolt);
+        box.appendChild(rightWrap);
+
+        var maxLen = Math.max(leftOrder.length, rightOrder.length);
+
+        function expand(cb) {
+            for (var i = 0; i < maxLen; i++) {
+                (function(idx) {
+                    setTimeout(function() {
+                        if (idx < leftOrder.length)  leftOrder[idx].classList.add('visible');
+                        if (idx < rightOrder.length) rightOrder[idx].classList.add('visible');
+                    }, idx * STAGGER);
+                })(i);
+            }
+            setTimeout(cb, maxLen * STAGGER + TRANS_MS);
+        }
+
+        function collapse(cb) {
+            for (var i = 0; i < maxLen; i++) {
+                (function(idx) {
+                    setTimeout(function() {
+                        var li = leftOrder.length  - 1 - idx;
+                        var ri = rightOrder.length - 1 - idx;
+                        if (li >= 0) leftOrder[li].classList.remove('visible');
+                        if (ri >= 0) rightOrder[ri].classList.remove('visible');
+                    }, idx * STAGGER);
+                })(i);
+            }
+            setTimeout(cb, maxLen * STAGGER + TRANS_MS);
+        }
+
+        function cycle() {
+            expand(function() {
+                setTimeout(function() {
+                    collapse(function() {
+                        setTimeout(cycle, HOLD_SHUT);
+                    });
+                }, HOLD_OPEN);
+            });
+        }
+        cycle();
+    })();
+
+    // Enterprise case group — switch between merged cases via top-left buttons
+    (function() {
+        document.querySelectorAll('.enterprise-case-group').forEach(function(group) {
+            var btns = group.querySelectorAll('.enterprise-case-btn');
+            var panels = group.querySelectorAll('.enterprise-case-panel');
+            btns.forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var target = btn.getAttribute('data-case-target');
+                    btns.forEach(function(b) { b.classList.toggle('active', b === btn); });
+                    panels.forEach(function(p) {
+                        var show = p.getAttribute('data-case-id') === target;
+                        p.style.display = show ? '' : 'none';
+                        if (show) {
+                            p.querySelectorAll('iframe[data-src]').forEach(function(f) {
+                                f.src = f.getAttribute('data-src');
+                                f.removeAttribute('data-src');
+                            });
+                        }
+                    });
+                    group.setAttribute('data-active-case', target);
+                });
+            });
+        });
+    })();
+
+    // Search demo cover — draggable stage scrubber drives a static topology SVG
+    (function() {
+        document.querySelectorAll('.search-case-card-staged').forEach(function(card) {
+            var caseId = card.getAttribute('data-case-id');
+            var stages = parseInt(card.getAttribute('data-stages'), 10) || 10;
+            var slider = card.querySelector('.sc-stage-slider');
+            var img    = card.querySelector('.sc-stage-thumb');
+            var label  = card.querySelector('.sc-stage-stagelabel');
+            var scrubber = card.querySelector('.sc-stage-scrubber');
+            if (!slider || !img || !caseId) return;
+
+            // Stop slider clicks/drags from opening the modal
+            ['click','mousedown','mouseup','touchstart','touchend','pointerdown','pointerup','keydown']
+                .forEach(function(evt) {
+                    scrubber.addEventListener(evt, function(e) { e.stopPropagation(); });
+                });
+
+            slider.addEventListener('input', function() {
+                var idx = Math.max(0, Math.min(stages - 1, parseInt(slider.value, 10) || 0));
+                img.src = 'assets/search_thumbs/' + caseId + '_s' + idx + '.png';
+                if (label) label.textContent = 'Stage ' + (idx + 1) + ' / ' + stages;
+            });
+        });
+    })();
+    </script>
+</body>
+</html>
