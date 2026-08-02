@@ -1,0 +1,53 @@
+=== Q35 SPEC ROW RE-PAIR (mode-2 naked) x3 2026-08-02T06:45:31Z git=d703e8f4 profile=performance llama=[version: 9837 (c73069749)] ===
+--- rep 1: llama arm (per-class n-max 3/2/4) ---
+  [llama/p1-code-short rep1] spec_toks = 225.75
+  [llama/p2-code-medium rep1] spec_toks = 196.46
+  [llama/p3-agentic-long rep1] spec_toks = 228.72
+--- rep 1: memra arm (naked mode-2 default) ---
+  [memra/p1-code-short rep1] prompt_ntok = 28
+  [memra/p1-code-short rep1] spec_k2_toks = 300.10
+  [memra/p1-code-short rep1] acceptance_pct = 83.9
+  [memra/p1-code-short rep1] self_consistency_pass = 1
+  [memra/p2-code-medium rep1] prompt_ntok = 1845
+  [memra/p2-code-medium rep1] spec_k2_toks = 252.41
+  [memra/p2-code-medium rep1] acceptance_pct = 67.9
+  [memra/p2-code-medium rep1] self_consistency_pass = 1
+  [memra/p3-agentic-long rep1] prompt_ntok = 5420
+  [memra/p3-agentic-long rep1] spec_k2_toks = 270.29
+  [memra/p3-agentic-long rep1] acceptance_pct = 84.7
+  [memra/p3-agentic-long rep1] self_consistency_pass = 1
+--- rep 2: llama arm (per-class n-max 3/2/4) ---
+  [llama/p1-code-short rep2] spec_toks = 239.20
+  [llama/p2-code-medium rep2] spec_toks = 207.22
+  [llama/p3-agentic-long rep2] spec_toks = 235.77
+--- rep 2: memra arm (naked mode-2 default) ---
+  [memra/p1-code-short rep2] prompt_ntok = 28
+  [memra/p1-code-short rep2] spec_k2_toks = 303.99
+  [memra/p1-code-short rep2] acceptance_pct = 83.9
+  [memra/p1-code-short rep2] self_consistency_pass = 1
+  [memra/p2-code-medium rep2] prompt_ntok = 1845
+  [memra/p2-code-medium rep2] spec_k2_toks = 253.03
+  [memra/p2-code-medium rep2] acceptance_pct = 67.9
+  [memra/p2-code-medium rep2] self_consistency_pass = 1
+  [memra/p3-agentic-long rep2] prompt_ntok = 5420
+  [memra/p3-agentic-long rep2] spec_k2_toks = 270.72
+  [memra/p3-agentic-long rep2] acceptance_pct = 84.7
+  [memra/p3-agentic-long rep2] self_consistency_pass = 1
+--- rep 3: llama arm (per-class n-max 3/2/4) ---
+  [llama/p1-code-short rep3] spec_toks = 234.66
+  [llama/p2-code-medium rep3] spec_toks = 208.76
+  [llama/p3-agentic-long rep3] spec_toks = 237.28
+--- rep 3: memra arm (naked mode-2 default) ---
+  [memra/p1-code-short rep3] prompt_ntok = 28
+  [memra/p1-code-short rep3] spec_k2_toks = 302.44
+  [memra/p1-code-short rep3] acceptance_pct = 83.9
+  [memra/p1-code-short rep3] self_consistency_pass = 1
+  [memra/p2-code-medium rep3] prompt_ntok = 1845
+  [memra/p2-code-medium rep3] spec_k2_toks = 254.29
+  [memra/p2-code-medium rep3] acceptance_pct = 67.9
+  [memra/p2-code-medium rep3] self_consistency_pass = 1
+  [memra/p3-agentic-long rep3] prompt_ntok = 5420
+  [memra/p3-agentic-long rep3] spec_k2_toks = 271.91
+  [memra/p3-agentic-long rep3] acceptance_pct = 84.7
+  [memra/p3-agentic-long rep3] self_consistency_pass = 1
+ROW-REPAIR-DONE 2026-08-02T06:50:15Z

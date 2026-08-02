@@ -48,22 +48,31 @@ pub use memra_sampling as sampler;
 /// GEMM win) — but that verdict is for expert banks the int8-MMA MMQ arm can take
 /// (IQ3_S/IQ4_XS/Q4_0). MEMRA_MOE_F16G=0 kills anywhere.
 ///
-/// AUTO-KQUANT (mode 3, 2026-08-02, lane/q4k-expert-prefill): sm_120a's default when unset.
-/// The mode-2 sk form is admitted ONLY for layers the MMA MMQ arm rejects (k-quant expert
-/// projections — Q3_K/Q4_K/Q6_K), i.e. exactly where the baseline is the per-pair
-/// moe_pairs_matvec_q8_em fallback with zero token reuse. On Ornith-35B Q4_K_M (resident)
-/// that fallback was the prefill wall: board-2048 1098.2 -> 3453.7 (3.14x), pp512 1081 ->
-/// 1662 (+54%), decode flat, argmax + batched-prime MATCH, x3 interleaved
-/// (research/q4k-expert-prefill-20260802/). IQ4_XS-bank models (q35, KAT) keep their
-/// measured-faster MMQ tiles on their MMA-capable layers. Explicit =1/=2 still forces
-/// all-layer admission (the A/B door); the gemma (gelu) site stays env-explicit-only.
+/// MODE-2 DEFAULT (sm_120a naked, 2026-08-02, lane/f16g-default-rearb): with the direct
+/// tile loaders covering Q4_K/Q6_K/IQ4_XS/IQ3_S, the sk visitor beats the int8-MMA MMQ
+/// tiles on the IQ-bank models too (q35 board-2048 +33.9%, KAT pp512 +46.7% / pp2048
+/// +30.6% — research/iq-direct-loaders-20260802 §3-5, confirmed + full battery in
+/// research/f16g-default-rearb-20260802/), so every f16g-admitted expert layer rides
+/// mode 2 naked. Decode/verify stay on dp4a (t >= 16 floor). f16-mirror numeric class
+/// for naked q35/KAT prefill+prime — new token-sha anchors stamped in the rearb lane.
+///
+/// AUTO-KQUANT (mode 3, 2026-08-02, lane/q4k-expert-prefill): the previous sm_120a
+/// default, kept reachable via MEMRA_MOE_F16G=3. The mode-2 sk form is admitted ONLY for
+/// layers the MMA MMQ arm rejects (k-quant expert projections — Q3_K/Q4_K/Q6_K), i.e.
+/// exactly where the baseline is the per-pair moe_pairs_matvec_q8_em fallback with zero
+/// token reuse (Ornith-35B Q4_K_M board-2048 1098.2 -> 3453.7, 3.14x,
+/// research/q4k-expert-prefill-20260802/). Its "IQ banks keep their measured-faster MMQ
+/// tiles" ruling was priced BEFORE the IQ direct loaders and is refuted on the 5090 —
+/// the k-quant-only admission survives as the rollback seam, not the default.
+/// The gemma (gelu) site stays env-explicit-only (moe_f16g_gemma_on).
 pub fn moe_f16g_mode() -> u8 {
     static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *M.get_or_init(|| match std::env::var("MEMRA_MOE_F16G").as_deref() {
         Ok("0") => 0,
         Ok("2") => 2,
+        Ok("3") => 3,
         Ok(_) => 1,
-        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 3 },
+        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 2 },
     })
 }
 /// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs

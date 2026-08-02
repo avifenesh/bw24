@@ -3212,12 +3212,16 @@ impl HybridModel {
         // layer) fail q8_expert_dec_supported but dequant fine to f16, so f16g must be able to
         // take a layer the MMQ arm would reject. Same t >= mma_t floor as MMA: decode and
         // spec-verify batches must ride the dp4a path whose FP order matches the T=1 chain.
-        // AUTO-KQUANT (mode 3, sm_120a naked default, lane/q4k-expert-prefill 2026-08-02):
-        // admit f16g ONLY where the MMA arm can't take the layer's QTYPES — the k-quant expert
-        // class whose baseline is the per-pair _em fallback (Ornith-35B Q4_K: board-2048 3.14x).
-        // MMA-capable layers (IQ3_S/IQ4_XS/Q4_0 banks: q35, KAT) keep their measured-faster
-        // MMQ tiles; explicit =1/=2 keeps forcing all-layer admission (the A/B door). Keyed on
-        // qtype capability, NOT use_mma, so MEMRA_MOE_MMA=0 stays a pure dp4a rollback seam.
+        // MODE 2 (sm_120a naked default, lane/f16g-default-rearb 2026-08-02): every layer
+        // whose three projections pass f16g_proj_ok rides the sk visitor with direct tile
+        // loaders — with IQ4_XS/IQ3_S direct coverage the sk arm beats the int8-MMA MMQ
+        // tiles on the IQ-bank models too (q35 board-2048 +33.9%, KAT pp512 +46.7%).
+        // AUTO-KQUANT (mode 3, MEMRA_MOE_F16G=3, lane/q4k-expert-prefill): admit f16g ONLY
+        // where the MMA arm can't take the layer's QTYPES — the k-quant expert class whose
+        // baseline is the per-pair _em fallback (Ornith-35B Q4_K: board-2048 3.14x). Its
+        // MMA-capable carve-out (IQ3_S/IQ4_XS/Q4_0 banks on MMQ) was priced pre-IQ-direct;
+        // it survives as the rollback seam. Keyed on qtype capability, NOT use_mma, so
+        // MEMRA_MOE_MMA=0 stays a pure dp4a rollback seam.
         let mma_capable = q8_expert_dec_supported(m.gate_exps.qtype)
             && q8_expert_dec_supported(m.up_exps.qtype)
             && q8_expert_dec_supported(m.down_exps.qtype)

@@ -1,0 +1,3 @@
+[moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+buckets crossed (ceil(t_kv/64)): [2, 3, 4, 5]
+Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=4 (n_vocab=248320)

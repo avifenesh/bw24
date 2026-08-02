@@ -1,7 +1,7 @@
 {
  "updated": "2026-08-02",
  "rig": "RTX 5090 Laptop",
- "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the AUTO-KQUANT naked default, N=3 medians, research/q35-spec-repair-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
+ "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the mode-2 grouped-f16 naked default \u2014 sk visitor + direct expert tiles \u2014 N=3 medians, research/f16g-default-rearb-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
  "plain_decode": {
   "context": "tg128 at 512-token context, 2026-07-09 cold-start rebaseline (both engines same session)",
   "rows": [
@@ -23,7 +23,7 @@
   ]
  },
  "speculative": {
-  "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18; 35B row re-paired 2026-08-02 under the AUTO-KQUANT (f16g mode 3) naked default \u2014 N=3 medians, llama b9837 self-MTP at its per-class --spec-draft-n-max optimum (3/2/4, re-swept same-session), receipts research/q35-spec-repair-20260802/. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature). Gemma chat-cell spec rows (12B/31B, 2026-07-25) are BEST-vs-BEST: memra at its K optimum (12B K=4, 31B K=5, per-model adaptive-K floor=4 default) against llama at its own --spec-draft-n-max optimum (12B 2, 31B 4), both swept, re-paired same-session 2026-07-26; N=3 medians, watercycle chat prompt, n_predict 128, temp 0.",
+  "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18; 35B row re-paired 2026-08-02 under the mode-2 grouped-f16 (sk + direct expert tiles) naked default \u2014 N=3 medians, llama b9837 self-MTP at its per-class --spec-draft-n-max optimum (3/2/4, swept same-day same-build by research/q35-spec-repair-20260802/), receipts research/f16g-default-rearb-20260802/. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature). Gemma chat-cell spec rows (12B/31B, 2026-07-25) are BEST-vs-BEST: memra at its K optimum (12B K=4, 31B K=5, per-model adaptive-K floor=4 default) against llama at its own --spec-draft-n-max optimum (12B 2, 31B 4), both swept, re-paired same-session 2026-07-26; N=3 medians, watercycle chat prompt, n_predict 128, temp 0.",
   "rows": [
    {
     "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
@@ -54,14 +54,14 @@
    {
     "model": "Qwen3.6-35B-A3B (K=2 + own-gen trimmed draft)",
     "memra": [
-     305.4,
-     241.9,
-     275.6
+     302.4,
+     253.0,
+     270.7
     ],
     "llama": [
-     251.4,
-     217.5,
-     246.5
+     234.7,
+     207.2,
+     235.8
     ]
    }
   ]

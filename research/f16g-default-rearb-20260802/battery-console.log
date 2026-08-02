@@ -1,0 +1,83 @@
+=== F16G-REARB BATTERY phase=all 2026-08-02T06:20:44Z git=d703e8f4 profile=performance ===
+kernel-check rc=0 FAIL-lines=0 OK-lines=382
+  [kernel-check rep1] rc = 0
+  [kernel-check rep1] fail_lines = 0
+  [gen-q35 rep1] match_lines = 2
+  [gen-q35 rep1] rc = 0
+  [gen-q35 rep1] tokens_sha=e94b6553fde7b9a0
+  [gen-q35 rep2] match_lines = 2
+  [gen-q35 rep2] rc = 0
+  [gen-q35 rep2] tokens_sha=e94b6553fde7b9a0
+  [gen-q35 rep3] match_lines = 2
+  [gen-q35 rep3] rc = 0
+  [gen-q35 rep3] tokens_sha=e94b6553fde7b9a0
+  [gen-o35b rep1] match_lines = 2
+  [gen-o35b rep1] rc = 0
+  [gen-o35b rep1] tokens_sha=c0c12c3b350dc7f5
+  [gen-o35b rep2] match_lines = 2
+  [gen-o35b rep2] rc = 0
+  [gen-o35b rep2] tokens_sha=c0c12c3b350dc7f5
+  [gen-kat rep1] match_lines = 2
+  [gen-kat rep1] rc = 0
+  [gen-kat rep1] tokens_sha=9102ffd0b8241a65
+  [gen-kat rep2] match_lines = 2
+  [gen-kat rep2] rc = 0
+  [gen-kat rep2] tokens_sha=9102ffd0b8241a65
+  [gen-g26 rep1] match_lines = 1
+  [gen-g26 rep1] rc = 101
+  [gen-g26 rep1] tokens_sha=e3b0c44298fc1c14
+anchors: q35 mode-2-class e94b6553fde7b9a0 | o35b c0c12c3b350dc7f5 (unchanged) |
+         kat mode-2-class 9102ffd0b8241a65 | g26 == headline mode3-arm sha
+  [decode-batch-q35 rep1] rc = 0
+  gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+  ALL GREEN: decode_step_batch exactness battery
+  [decode-batch-q35-strict rep1] rc = 1
+  gate2 seq 2: token DIVERGED from isolated at step 9 FAIL
+  gate2 (B=4 vs isolated decode_step_h, 32 steps): FAIL
+  Error: "decode-batch-gate FAILED"
+  [decode-batch-q9j rep1] rc = 0
+  gate1 early draws (step < 3): 1/6 (FAIL threshold >= 4; plumbing class = every draw)
+  ALL GREEN: decode_step_batch exactness battery
+  [decode-batch-q9j-strict rep1] rc = 1
+  gate2 seq 0: token DIVERGED from isolated at step 7 FAIL
+  gate2 (B=4 vs isolated decode_step_h, 32 steps): FAIL
+  Error: "decode-batch-gate FAILED"
+  [prime-batch-q35 rep1] rc = 0
+  ALL GREEN: prime-batch gate (batch=3, uneven lengths)
+  [prime-batch-q9j rep1] rc = 0
+  ALL GREEN: prime-batch gate (batch=3, uneven lengths)
+  [prime-batch-o35b rep1] rc = 0
+  ALL GREEN: prime-batch gate (batch=3, uneven lengths)
+  [prime-batch-kat rep1] rc = 0
+  ALL GREEN: prime-batch gate (batch=3, uneven lengths)
+[ref] collected 16 isolated references
+{"ts": "2026-08-02T09:29:24+0300", "label": "q35-naked-mode2", "base": "http://127.0.0.1:8123", "n": 16, "max_tokens": 96, "wall_s": 6.783248922001803, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": [], "errors": []}
+  [serve-c1c16-q35 rep1] rc = 0
+[ref] collected 16 isolated references
+{"ts": "2026-08-02T09:29:55+0300", "label": "o35b-naked-mode2", "base": "http://127.0.0.1:8123", "n": 16, "max_tokens": 96, "wall_s": 5.2513466049858835, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": [], "errors": []}
+  [serve-c1c16-o35b rep1] rc = 0
+q35 run-spec rc=0 PASS=8 FAIL=0
+  [spec-q35 rep1] rc = 0
+  [spec-q35 rep1] pass_lines = 8
+o35b run-spec rc=0 PASS=8 FAIL=0
+  [spec-o35b rep1] rc = 0
+  [spec-o35b rep1] pass_lines = 8
+  [decode-dc-gate-q35 rep1] rc = 0
+  buckets crossed (ceil(t_kv/64)): [2, 3, 4, 5]
+  Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=4 (n_vocab=248320)
+  [graph-decode-gate-q35 rep1] rc = 0
+  graph (re)captures: 2
+  Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=30 captures=2
+  [graph-session-gate-q35 rep1] rc = 0
+  perf: session 173.3 tok/s vs eager 170.8 tok/s (+1.4%)
+  ALL GREEN: graph-session gate
+  [decode-dc-gate-o35b rep1] rc = 0
+  buckets crossed (ceil(t_kv/64)): [2, 3, 4, 5]
+  Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=4 (n_vocab=248320)
+  [graph-decode-gate-o35b rep1] rc = 0
+  graph (re)captures: 2
+  Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=30 captures=2
+  [graph-session-gate-o35b rep1] rc = 0
+  perf: session 185.0 tok/s vs eager 184.5 tok/s (+0.3%)
+  ALL GREEN: graph-session gate
+BATTERY-DONE phase=all 2026-08-02T06:31:57Z

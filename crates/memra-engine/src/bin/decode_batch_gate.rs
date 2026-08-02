@@ -53,7 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("MEMRA_L2_V2", "0"); }
     unsafe { std::env::set_var("MEMRA_FA3", "0"); }
     unsafe { std::env::set_var("MEMRA_GDN_WGMMA", "0"); }
-    // Round 49: the grouped f16 expert-prefill door (Hopper default) is another PRIME
+    // Round 49: the grouped f16 expert-prefill door (Hopper default mode 1; sm_120a naked
+    // default mode 2 since lane/f16g-default-rearb 2026-08-02 — "0" fully closes the door
+    // under every mode semantics, so this pin is default-flip-invariant) is another PRIME
     // nuisance — same signature as the K4/K5-MMA precedent (gate1 seed flip at step 0,
     // gate2+gate3 bit-strength PASS, and pinning it off restores 6/6 seeds). The door's
     // own correctness is covered by kernel-check + run-gen argmax + run-spec gates.
