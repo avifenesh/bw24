@@ -6584,6 +6584,14 @@ extern "C" __global__ void fa_decode_combine_f32(
     O[((size_t)0 * n_head + head) * head_dim + tid] = o * linv;
 }
 
+// (FA-DEEP lane note, 2026-08-02: a combine "deep twin" was built and REFUTED — the
+// 1-block-per-head shape already carries 128 warps of independent per-dim chains; a
+// (n_head x hd/32)-block re-tile measured FLAT (7.66 vs 7.46us d6144 / 18.6 vs 19.0us
+// d2048) and a float4 4-dim-per-thread form measured WORSE (11.2 / 26.1us — 32 warps
+// lose more latency cover than wide loads buy). The split-order chain is the pinned
+// numeric config; the remaining combine cost scales with n_splits and belongs to the
+// split-ladder policy, not this kernel. Receipts research/fa-decode-deep-20260802/.)
+
 // combine twin with a FUSED q8_1 emit (E4B glue wave 5b): the ONLY consumer of the t=1
 // decode attention output is the wo matmul_pre, so the combine emits (int8, per-32 scales)
 // directly and the standalone quantize_q8_1 launch + the f32 O round-trip disappear.
@@ -7535,8 +7543,10 @@ static __device__ __forceinline__ void fa_v4_deep_stage_k(
         }
     }
 #else
-    // q8_0 K: fa_v4_stage_k verbatim — same task map (coalesced 272B/key-group loads), same
-    // funnelshift ints, same slot (j, c*8+w); only the padded row stride moves the bytes.
+    // q8_0 K: fa_v4_stage_k's task map + funnelshift ints verbatim, but the 8 ints collect
+    // in registers and land as TWO 16B stores (row byte offset j*272 + c*32 is 16B-aligned)
+    // — the byte-wise store stream was 477K store-bank-conflict cycles/launch at d6144
+    // (ncu receipt); same slot values, packed write.
     for (int task = bt; task < nt * 8; task += bsz) {
         int j = task >> 3, c = task & 7;
         const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
@@ -7545,12 +7555,17 @@ static __device__ __forceinline__ void fa_v4_deep_stage_k(
         const unsigned sh8 = ((unsigned)(size_t)qs & 3u) * 8u;
         const uint32_t* ap = (const uint32_t*)((size_t)qs & ~(size_t)3);
         uint32_t w0 = ap[0];
+        int pk[8];
         #pragma unroll
         for (int w = 0; w < 8; w++) {
             uint32_t w1 = ap[w + 1];
-            sm->k_ints[j][c * 8 + w] = (int)__funnelshift_r(w0, w1, sh8);
+            pk[w] = (int)__funnelshift_r(w0, w1, sh8);
             w0 = w1;
         }
+        uint4 u0, u1;
+        memcpy(&u0, &pk[0], 16); memcpy(&u1, &pk[4], 16);
+        *(uint4*)&sm->k_ints[j][c * 8]     = u0;
+        *(uint4*)&sm->k_ints[j][c * 8 + 4] = u1;
     }
 #endif
 }
@@ -7603,6 +7618,10 @@ static __device__ __forceinline__ void fa_v4_deep_walk(
                 out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
             }
             #else
+            // q5_1 dequant: v4 recipe verbatim per element, but the 8 bf16 collect in
+            // registers and land as ONE 16B store (element offset j*256 + blk_i*32 + sub*8
+            // -> byte offset 16B-aligned) — the 2B store stream was the other half of the
+            // 477K store-conflict cycles (ncu receipt). Same values, same slots.
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -7611,6 +7630,7 @@ static __device__ __forceinline__ void fa_v4_deep_walk(
             uint32_t qh; memcpy(&qh, blk + 4, 4);
             uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
             __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            __nv_bfloat16 pk[8];
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2   = sub * 8 + e0;
@@ -7618,8 +7638,10 @@ static __device__ __forceinline__ void fa_v4_deep_walk(
                 const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
                 const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
-                out[e2] = __float2bfloat16(d * (float)q5 + m);
+                pk[e0] = __float2bfloat16(d * (float)q5 + m);
             }
+            uint4 u; memcpy(&u, pk, 16);
+            *(uint4*)&out[sub * 8] = u;
             #endif
         }
         fa_v4_deep_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);

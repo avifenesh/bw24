@@ -8519,6 +8519,10 @@ impl Engine {
         // (the same scalar-floor physics as hd256's old 96 floor; short-ctx plain regressed
         // 178.4 -> 173.7 when 512 rode vec unconditionally).
         let fa512_min = fa512_min_tkv();
+        // FA-DEEP pick (bit-identical twins, see fa_deep_at): default module only — the
+        // g-module keeps the v4 pick (its class is not the depth-decay class).
+        let deep = fa_vec && head_dim == 256 && fa_v4_at(t_kv) && !g
+            && fa_deep_at(t_kv) && !matches!(fa_v4_mode(), "noB3" | "stage");
         let (f, cfg) = if fa_vec && head_dim == 512 && t_kv >= fa512_min {
             // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
             // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
@@ -8547,10 +8551,6 @@ impl Engine {
                 // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
                 // NEW NUMERIC CONFIG (chunk-serial per-key dot) — battery-arbitrated.
                 // g (fp8-windowed): the v4 staging is format-aware (2026-07-12) — kf8vf8 module.
-                // FA-DEEP pick (bit-identical twin, see fa_deep_at): default module only —
-                // the g-module keeps the v4 pick (its class is not the depth-decay class).
-                let deep = !g && fa_deep_at(t_kv)
-                    && !matches!(fa_v4_mode(), "noB3" | "stage");
                 let v4name = match fa_v4_mode() {
                     "noB3" => "fa_decode_vec_q_v4_noB3",     // phase probe (WRONG OUTPUT)
                     "stage" => "fa_decode_vec_q_v4_stage",   // phase probe (WRONG OUTPUT)
@@ -8618,6 +8618,8 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
+        // (combine re-tile refuted in the fa-deep lane — flat/worse both shapes; the v4
+        // combine stays for all arms. Receipts research/fa-decode-deep-20260802/.)
         let (fc, cfg2) = (if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) },
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let __s_b2 = self.gpu.stream();
@@ -9377,6 +9379,10 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
+        // FA-DEEP pick keyed on bucket_max (the fa_v4_at precedent) — bit-identical twins,
+        // so a threshold falling between t_kv and bucket_max cannot diverge eager-vs-graph.
+        let deep = fa_vec && head_dim == 256 && fa_v4_at(bucket_max) && !g
+            && fa_deep_at(bucket_max) && !matches!(fa_v4_mode(), "noB3" | "stage");
         let (f, cfg) = if fa_vec && head_dim == 512 && bucket_max >= {
             static FA512_MIN_DC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             *FA512_MIN_DC.get_or_init(|| std::env::var("MEMRA_FA512_MIN").ok()
@@ -9396,12 +9402,8 @@ impl Engine {
                                                  &mut *part_o, &mut *part_m, &mut *part_l, q8_out);
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
-            // incl the g-module route + raw-e4m3 sV sizing. FA-DEEP pick keyed on bucket_max
-            // (the fa_v4_at precedent) — bit-identical twin, so a threshold falling between
-            // t_kv and bucket_max cannot diverge eager-vs-graph.
+            // incl the g-module route + raw-e4m3 sV sizing.
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let deep = !g && fa_deep_at(bucket_max)
-                && !matches!(fa_v4_mode(), "noB3" | "stage");
             let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") }
                      else if deep { self.func("fa_decode_vec_q_v4_deep_dc") }
                      else { self.func("fa_decode_vec_q_v4_dc") };

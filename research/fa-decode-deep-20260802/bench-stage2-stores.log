@@ -1,0 +1,42 @@
+deep-vs-v4 eager t_kv=512: bitdiff=0 OK
+deep-vs-v4 dc t_kv=512 bucket=512: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=512 bucket=576: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=513: bitdiff=0 OK
+deep-vs-v4 dc t_kv=513 bucket=513: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=513 bucket=1088: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=2048: bitdiff=0 OK
+deep-vs-v4 dc t_kv=2048 bucket=2048: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=2048 bucket=2112: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=3071: bitdiff=0 OK
+deep-vs-v4 dc t_kv=3071 bucket=3071: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=3071 bucket=3136: bitdiff=0 (dc-vs-eager 3773, straddle-matched true) OK
+deep-vs-v4 eager t_kv=3072: bitdiff=0 OK
+deep-vs-v4 dc t_kv=3072 bucket=3072: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=3072 bucket=3136: bitdiff=0 (dc-vs-eager 3750, straddle-matched true) OK
+deep-vs-v4 eager t_kv=3073: bitdiff=0 OK
+deep-vs-v4 dc t_kv=3073 bucket=3073: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=3073 bucket=3648: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=4096: bitdiff=0 OK
+deep-vs-v4 dc t_kv=4096 bucket=4096: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=4096 bucket=4160: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=4097: bitdiff=0 OK
+deep-vs-v4 dc t_kv=4097 bucket=4097: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=4097 bucket=4672: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=6143: bitdiff=0 OK
+deep-vs-v4 dc t_kv=6143 bucket=6143: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=6143 bucket=6208: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=6144: bitdiff=0 OK
+deep-vs-v4 dc t_kv=6144 bucket=6144: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=6144 bucket=6208: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 eager t_kv=6200: bitdiff=0 OK
+deep-vs-v4 dc t_kv=6200 bucket=6200: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+deep-vs-v4 dc t_kv=6200 bucket=6720: bitdiff=0 (dc-vs-eager 0, straddle-matched true) OK
+
+timing (us/call, dc form incl. memsets+combine; iters=200, 3 interleaved rounds, median):
+t_kv=512: v4 14.78 us | deep 14.35 us | ratio 1.030x
+t_kv=2048: v4 37.44 us | deep 35.84 us | ratio 1.045x
+t_kv=3072: v4 52.37 us | deep 50.08 us | ratio 1.046x
+t_kv=4096: v4 31.62 us | deep 25.65 us | ratio 1.233x
+t_kv=6144: v4 41.66 us | deep 33.26 us | ratio 1.253x
+
+ALL BIT GATES GREEN
