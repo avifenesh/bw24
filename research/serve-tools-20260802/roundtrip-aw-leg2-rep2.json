@@ -1,0 +1,83 @@
+{
+  "request": {
+    "model": "aw",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the current weather in Paris right now? Use the tools available to you."
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_0acaa39fa4e08df2",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_0acaa39fa4e08df2",
+        "content": "{\"temp_c\": 21, \"condition\": \"sunny\", \"humidity\": 40}"
+      }
+    ],
+    "max_tokens": 1024,
+    "temperature": 0,
+    "seed": 0,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City name, e.g. Paris"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ],
+                "description": "Temperature unit (default celsius)"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "response": {
+    "object": "chat.completion",
+    "model": "aw",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for the current weather in Paris and explicitly asked to use the available tools.\n2.  **Analyze the Tool Output:** The `get_weather` tool was called with `city=\"Paris\"`. The response is: `{\"temp_c\": 21, \"condition\": \"sunny\", \"humidity\": 40}`.\n3.  **Formulate the Response:** Convert the tool output into a natural language response.\n    - Temperature: 21 degrees Celsius\n    - Condition: Sunny\n    - Humidity: 40%\n4.  **Draft the response:** \"The current weather in Paris is sunny with a temperature of 21°C and a humidity of 40%.\" (or similar). Keep it clear and concise.\n</think>\n\nThe current weather in Paris is sunny with a temperature of 21°C and a humidity of 40%."
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 391,
+      "completion_tokens": 203,
+      "total_tokens": 594,
+      "elapsed_s": 1.315964787
+    }
+  }
+}

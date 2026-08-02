@@ -1,0 +1,75 @@
+{
+  "request": {
+    "model": "q35",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the current weather in Paris right now? Use the tools available to you."
+      }
+    ],
+    "max_tokens": 1024,
+    "temperature": 0,
+    "seed": 0,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City name, e.g. Paris"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ],
+                "description": "Temperature unit (default celsius)"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      }
+    ],
+    "reasoning_effort": "low"
+  },
+  "response": {
+    "object": "chat.completion",
+    "model": "q35",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "<|im_end|>",
+          "tool_calls": [
+            {
+              "id": "call_0acaa39fa4e08df2",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Paris\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 332,
+      "completion_tokens": 26,
+      "total_tokens": 358,
+      "elapsed_s": 0.23849451
+    }
+  }
+}

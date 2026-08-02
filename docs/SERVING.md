@@ -80,6 +80,37 @@ pre-admission-wait receipts; ~27 sessions fit — since the VRAM-aware admission
 overflow queues instead of erroring). Set `MEMRA_CTX` to the workload — 2048 clears the
 same cell (machine-specific config per the flags doctrine).
 
+## OpenAI tools surface (serve-tools lane, 2026-08-02)
+
+`/v1/chat/completions` accepts `tools`, `tool_choice` (`"auto"`|`"none"`; `"required"` and
+named-function forms 400 — no constrained decoding yet), assistant-history `tool_calls`,
+`role:"tool"` result turns, and `reasoning_effort`/`reasoning`. The path is **template +
+parsing only — zero engine changes**:
+
+- Tool schemas render into the model chat template's own `<tools>` branch (the qwen3.5/3.6
+  ChatML convention: schemas JSON in the system region, `<tool_call>`/`<function=…>` call
+  format, `<tool_response>` result turns), byte-per-byte per the committed template dumps
+  (`research/onboard-ornith-20260801/templates/`). Models whose template has no tools
+  branch (hy3 dialect, gemma4, bare ChatML) reject `tools` with a 400 at admission.
+- Emitted `<tool_call>` blocks are parsed from the generated stream into OpenAI-shape
+  `tool_calls` (streaming deltas + non-stream `message.tool_calls`, deterministic ids,
+  `finish_reason:"tool_calls"`); argument values coerce per the declared JSON-schema types.
+  **Malformed policy:** a block that does not parse is surfaced verbatim as content — never
+  an error, never dropped bytes; unterminated blocks flush raw at end of generation.
+- `reasoning_effort` `none|minimal|low` → the template's `enable_thinking=false` no-think
+  switch; `medium|high`/absent → the template default (open `<think>`). Models without the
+  switch ignore the parameter. `reasoning: {enabled, effort}` (OpenRouter form) maps the
+  same way.
+- **Isolation:** non-tools traffic bypasses the tools renderer AND the emission parser
+  entirely (legacy render path, byte-identical streams); tools traffic is generation-
+  identical for the identical rendered prompt (raw-completions bijection gate). `usage`
+  now carries worker-truth `prompt_tokens` (rendered tools block included) +
+  `completion_tokens` + `total_tokens` on stream and non-stream shapes.
+
+Receipts: `research/serve-tools-20260802/` (round-trip transcripts N=3 greedy on
+Qwen3.6-35B + AgentWorld, streaming schema checker, malformed-policy transcript,
+tok-check usage crosscheck, cross-binary c1 refs + c1-vs-c16).
+
 ## Knobs
 
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are

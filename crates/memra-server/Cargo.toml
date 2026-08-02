@@ -15,7 +15,10 @@ memra-tokenizer = { path = "../memra-tokenizer" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: tool schemas render into the chat template's <tools> block via
+# `tool | tojson` — key order must be the CLIENT's order (the training-time convention),
+# not BTreeMap-alphabetical. memra-server is the workspace's only serde_json consumer.
+serde_json = { version = "1", features = ["preserve_order"] }
 async-stream = "0.3"
 futures-core = "0.3"
 
