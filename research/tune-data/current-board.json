@@ -67,6 +67,95 @@
   ]
  },
  "bold_ratio_threshold": 1.05,
+ "samples": [
+  {
+   "source": "plain_decode",
+   "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+   "label": "Qwen3.6-35B-A3B MoE — plain decode (the flagship serving model, tg128 at 512-token context)"
+  },
+  {
+   "source": "speculative",
+   "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
+   "label": "Qwen3.5-9B — MTP speculative, short / medium / long-agentic prompt classes (both engines at their measured best)"
+  },
+  {
+   "source": "plain_decode_depth",
+   "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+   "label": "Qwen3.6-35B-A3B MoE — plain decode at 6.3k-token context (the short-context lead holds at depth)"
+  }
+ ],
+ "supported_models": [
+  {
+   "model": "Qwen3.5-9B",
+   "class": "dense",
+   "quants": "NVFP4 (5090), Q8_0 (H100)",
+   "drafter": "MTP + own-gen trimmed draft",
+   "since": "v0.1.0"
+  },
+  {
+   "model": "Qwen3.6-27B",
+   "class": "dense",
+   "quants": "NVFP4, Q4_K_M MTP-baked",
+   "drafter": "MTP + own-gen trimmed draft",
+   "since": "v0.1.0"
+  },
+  {
+   "model": "Qwen3.6-35B-A3B",
+   "class": "MoE",
+   "quants": "IQ4_XS",
+   "drafter": "MTP + own-gen trimmed draft",
+   "since": "v0.1.0"
+  },
+  {
+   "model": "Gemma-4 26B-A4B",
+   "class": "MoE",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.23.0"
+  },
+  {
+   "model": "Gemma-4 31B",
+   "class": "dense",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.35.0"
+  },
+  {
+   "model": "Gemma-4 E4B",
+   "class": "dense",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.35.0"
+  },
+  {
+   "model": "Gemma-4 12B",
+   "class": "dense",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.40.0"
+  },
+  {
+   "model": "Ornith-1.0-9B",
+   "class": "dense",
+   "quants": "Q8_0",
+   "drafter": "own-gen donor-block draft",
+   "since": "v0.63.0"
+  },
+  {
+   "model": "Ornith-1.0-35B",
+   "class": "MoE",
+   "quants": "Q4_K_M",
+   "drafter": "own-gen donor-block draft",
+   "since": "v0.64.0"
+  },
+  {
+   "model": "Qwen-AgentWorld-35B-A3B",
+   "class": "MoE",
+   "quants": "UD-IQ4_XS (avoid UD-Q4_K_M — its Q5_K expert mix sits outside fast-path coverage)",
+   "drafter": "own-gen drafter",
+   "since": "v0.66.0"
+  }
+ ],
  "h100_board": {
   "updated": "2026-08-01",
   "rig": "1× H100 80GB",
