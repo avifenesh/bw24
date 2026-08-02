@@ -1,0 +1,183 @@
+=== FA-DEEP DEPTH A/B x3 2026-08-02T12:54:11Z git=3cd817da profile=performance ===
+  [kat/old d512 rep1] tg128_toks = 189.80
+  [kat/old d512 rep1] argmax_match_lines = 2
+  [kat/new d512 rep1] tg128_toks = 191.07
+  [kat/new d512 rep1] argmax_match_lines = 2
+  [kat/old d2048 rep1] tg128_toks = 180.95
+  [kat/old d2048 rep1] argmax_match_lines = 2
+  [kat/new d2048 rep1] tg128_toks = 179.99
+  [kat/new d2048 rep1] argmax_match_lines = 2
+  [kat/old d4096 rep1] tg128_toks = 182.69
+  [kat/old d4096 rep1] argmax_match_lines = 1
+  [kat/new d4096 rep1] tg128_toks = 183.95
+  [kat/new d4096 rep1] argmax_match_lines = 1
+  [kat/old d6144 rep1] tg128_toks = 178.12
+  [kat/old d6144 rep1] argmax_match_lines = 2
+  [kat/new d6144 rep1] tg128_toks = 179.45
+  [kat/new d6144 rep1] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:01:15Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 187.083801, "rep": 1, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T13:01:15Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 187.443891, "rep": 1, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T13:01:15Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 181.204589, "rep": 1, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T13:01:15Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 178.429951, "rep": 1, "temp_c": 80}
+  [q35/old d512 rep1] tg128_toks = 184.65
+  [q35/old d512 rep1] argmax_match_lines = 2
+  [q35/new d512 rep1] tg128_toks = 186.97
+  [q35/new d512 rep1] argmax_match_lines = 2
+  [q35/old d2048 rep1] tg128_toks = 174.97
+  [q35/old d2048 rep1] argmax_match_lines = 2
+  [q35/new d2048 rep1] tg128_toks = 177.63
+  [q35/new d2048 rep1] argmax_match_lines = 2
+  [q35/old d4096 rep1] tg128_toks = 178.66
+  [q35/old d4096 rep1] argmax_match_lines = 2
+  [q35/new d4096 rep1] tg128_toks = 180.39
+  [q35/new d4096 rep1] argmax_match_lines = 2
+  [q35/old d6144 rep1] tg128_toks = 174.37
+  [q35/old d6144 rep1] argmax_match_lines = 2
+  [q35/new d6144 rep1] tg128_toks = 176.85
+  [q35/new d6144 rep1] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:05:14Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 164.009072, "rep": 1, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:05:14Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 163.222271, "rep": 1, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:05:14Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 157.82532, "rep": 1, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:05:14Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 155.431563, "rep": 1, "temp_c": 83}
+  [o35b/old d512 rep1] tg128_toks = 200.54
+  [o35b/old d512 rep1] argmax_match_lines = 2
+  [o35b/new d512 rep1] tg128_toks = 205.83
+  [o35b/new d512 rep1] argmax_match_lines = 2
+  [o35b/old d2048 rep1] tg128_toks = 193.54
+  [o35b/old d2048 rep1] argmax_match_lines = 2
+  [o35b/new d2048 rep1] tg128_toks = 193.73
+  [o35b/new d2048 rep1] argmax_match_lines = 2
+  [o35b/old d4096 rep1] tg128_toks = 195.98
+  [o35b/old d4096 rep1] argmax_match_lines = 2
+  [o35b/new d4096 rep1] tg128_toks = 197.97
+  [o35b/new d4096 rep1] argmax_match_lines = 2
+  [o35b/old d6144 rep1] tg128_toks = 190.09
+  [o35b/old d6144 rep1] argmax_match_lines = 2
+  [o35b/new d6144 rep1] tg128_toks = 193.18
+  [o35b/new d6144 rep1] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:09:15Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 184.453181, "rep": 1, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:09:15Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 182.560255, "rep": 1, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:09:15Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 175.098729, "rep": 1, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:09:15Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 173.566966, "rep": 1, "temp_c": 83}
+  [kat/old d512 rep2] tg128_toks = 184.52
+  [kat/old d512 rep2] argmax_match_lines = 2
+  [kat/new d512 rep2] tg128_toks = 189.27
+  [kat/new d512 rep2] argmax_match_lines = 2
+  [kat/old d2048 rep2] tg128_toks = 177.70
+  [kat/old d2048 rep2] argmax_match_lines = 2
+  [kat/new d2048 rep2] tg128_toks = 180.01
+  [kat/new d2048 rep2] argmax_match_lines = 2
+  [kat/old d4096 rep2] tg128_toks = 180.96
+  [kat/old d4096 rep2] argmax_match_lines = 1
+  [kat/new d4096 rep2] tg128_toks = 182.89
+  [kat/new d4096 rep2] argmax_match_lines = 1
+  [kat/old d6144 rep2] tg128_toks = 173.43
+  [kat/old d6144 rep2] argmax_match_lines = 2
+  [kat/new d6144 rep2] tg128_toks = 178.64
+  [kat/new d6144 rep2] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:13:38Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 185.799321, "rep": 2, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:13:38Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 186.399161, "rep": 2, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:13:38Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 179.690199, "rep": 2, "temp_c": 83}
+  [llama] {"ts": "2026-08-02T13:13:38Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 177.446773, "rep": 2, "temp_c": 83}
+  [q35/old d512 rep2] tg128_toks = 187.01
+  [q35/old d512 rep2] argmax_match_lines = 2
+  [q35/new d512 rep2] tg128_toks = 187.66
+  [q35/new d512 rep2] argmax_match_lines = 2
+  [q35/old d2048 rep2] tg128_toks = 176.88
+  [q35/old d2048 rep2] argmax_match_lines = 2
+  [q35/new d2048 rep2] tg128_toks = 175.51
+  [q35/new d2048 rep2] argmax_match_lines = 2
+  [q35/old d4096 rep2] tg128_toks = 179.94
+  [q35/old d4096 rep2] argmax_match_lines = 2
+  [q35/new d4096 rep2] tg128_toks = 180.73
+  [q35/new d4096 rep2] argmax_match_lines = 2
+  [q35/old d6144 rep2] tg128_toks = 174.76
+  [q35/old d6144 rep2] argmax_match_lines = 2
+  [q35/new d6144 rep2] tg128_toks = 177.78
+  [q35/new d6144 rep2] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:17:38Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 163.766695, "rep": 2, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T13:17:38Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 165.107175, "rep": 2, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T13:17:38Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 159.701487, "rep": 2, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T13:17:38Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 156.72838, "rep": 2, "temp_c": 80}
+  [o35b/old d512 rep2] tg128_toks = 203.40
+  [o35b/old d512 rep2] argmax_match_lines = 2
+  [o35b/new d512 rep2] tg128_toks = 204.59
+  [o35b/new d512 rep2] argmax_match_lines = 2
+  [o35b/old d2048 rep2] tg128_toks = 192.78
+  [o35b/old d2048 rep2] argmax_match_lines = 2
+  [o35b/new d2048 rep2] tg128_toks = 193.72
+  [o35b/new d2048 rep2] argmax_match_lines = 2
+  [o35b/old d4096 rep2] tg128_toks = 195.92
+  [o35b/old d4096 rep2] argmax_match_lines = 2
+  [o35b/new d4096 rep2] tg128_toks = 199.72
+  [o35b/new d4096 rep2] argmax_match_lines = 2
+  [o35b/old d6144 rep2] tg128_toks = 188.70
+  [o35b/old d6144 rep2] argmax_match_lines = 2
+  [o35b/new d6144 rep2] tg128_toks = 191.57
+  [o35b/new d6144 rep2] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:28:58Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 182.104207, "rep": 2, "temp_c": 67}
+  [llama] {"ts": "2026-08-02T13:28:58Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 180.101437, "rep": 2, "temp_c": 67}
+  [llama] {"ts": "2026-08-02T13:28:58Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.714537, "rep": 2, "temp_c": 67}
+  [llama] {"ts": "2026-08-02T13:28:58Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 171.791397, "rep": 2, "temp_c": 67}
+  [kat/old d512 rep3] tg128_toks = 189.29
+  [kat/old d512 rep3] argmax_match_lines = 2
+  [kat/new d512 rep3] tg128_toks = 191.63
+  [kat/new d512 rep3] argmax_match_lines = 2
+  [kat/old d2048 rep3] tg128_toks = 177.06
+  [kat/old d2048 rep3] argmax_match_lines = 2
+  [kat/new d2048 rep3] tg128_toks = 176.59
+  [kat/new d2048 rep3] argmax_match_lines = 2
+=== FA-DEEP DEPTH A/B RESUME rep3 2026-08-02T13:33:33Z git=4e36ffc0 ===
+  [kat/old d4096 rep3] tg128_toks = 180.53
+  [kat/old d4096 rep3] argmax_match_lines = 1
+  [kat/new d4096 rep3] tg128_toks = 184.94
+  [kat/new d4096 rep3] argmax_match_lines = 1
+  [kat/old d6144 rep3] tg128_toks = 178.44
+  [kat/old d6144 rep3] argmax_match_lines = 2
+  [kat/new d6144 rep3] tg128_toks = 178.91
+  [kat/new d6144 rep3] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:44:13Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 188.256023, "rep": 3, "temp_c": 70}
+  [llama] {"ts": "2026-08-02T13:44:13Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 189.24834, "rep": 3, "temp_c": 70}
+  [llama] {"ts": "2026-08-02T13:44:13Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 182.562242, "rep": 3, "temp_c": 70}
+  [llama] {"ts": "2026-08-02T13:44:13Z", "cell": "fa-deep-depth-ab", "model": "kat", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 180.211239, "rep": 3, "temp_c": 70}
+  [q35/old d512 rep3] tg128_toks = 188.02
+  [q35/old d512 rep3] argmax_match_lines = 2
+  [q35/new d512 rep3] tg128_toks = 187.98
+  [q35/new d512 rep3] argmax_match_lines = 2
+  [q35/old d2048 rep3] tg128_toks = 177.88
+  [q35/old d2048 rep3] argmax_match_lines = 2
+  [q35/new d2048 rep3] tg128_toks = 178.32
+  [q35/new d2048 rep3] argmax_match_lines = 2
+  [q35/old d4096 rep3] tg128_toks = 180.39
+  [q35/old d4096 rep3] argmax_match_lines = 2
+  [q35/new d4096 rep3] tg128_toks = 181.53
+  [q35/new d4096 rep3] argmax_match_lines = 2
+  [q35/old d6144 rep3] tg128_toks = 174.25
+  [q35/old d6144 rep3] argmax_match_lines = 2
+  [q35/new d6144 rep3] tg128_toks = 176.58
+  [q35/new d6144 rep3] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:48:16Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 163.784475, "rep": 3, "temp_c": 82}
+  [llama] {"ts": "2026-08-02T13:48:16Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 163.363359, "rep": 3, "temp_c": 82}
+  [llama] {"ts": "2026-08-02T13:48:16Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 158.065877, "rep": 3, "temp_c": 82}
+  [llama] {"ts": "2026-08-02T13:48:16Z", "cell": "fa-deep-depth-ab", "model": "q35", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 155.726983, "rep": 3, "temp_c": 82}
+  [o35b/old d512 rep3] tg128_toks = 198.57
+  [o35b/old d512 rep3] argmax_match_lines = 2
+  [o35b/new d512 rep3] tg128_toks = 202.16
+  [o35b/new d512 rep3] argmax_match_lines = 2
+  [o35b/old d2048 rep3] tg128_toks = 192.80
+  [o35b/old d2048 rep3] argmax_match_lines = 2
+  [o35b/new d2048 rep3] tg128_toks = 192.90
+  [o35b/new d2048 rep3] argmax_match_lines = 2
+  [o35b/old d4096 rep3] tg128_toks = 195.12
+  [o35b/old d4096 rep3] argmax_match_lines = 2
+  [o35b/new d4096 rep3] tg128_toks = 196.67
+  [o35b/new d4096 rep3] argmax_match_lines = 2
+  [o35b/old d6144 rep3] tg128_toks = 190.44
+  [o35b/old d6144 rep3] argmax_match_lines = 2
+  [o35b/new d6144 rep3] tg128_toks = 191.08
+  [o35b/new d6144 rep3] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T13:52:32Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 512, "metric": "tg128_toks", "value": 183.705487, "rep": 3, "temp_c": 78}
+  [llama] {"ts": "2026-08-02T13:52:32Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 2048, "metric": "tg128_toks", "value": 183.217268, "rep": 3, "temp_c": 78}
+  [llama] {"ts": "2026-08-02T13:52:32Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 4096, "metric": "tg128_toks", "value": 177.043881, "rep": 3, "temp_c": 78}
+  [llama] {"ts": "2026-08-02T13:52:32Z", "cell": "fa-deep-depth-ab", "model": "o35b", "arm": "llama", "depth": 6144, "metric": "tg128_toks", "value": 173.060122, "rep": 3, "temp_c": 78}
+DEPTH-AB-DONE 2026-08-02T13:52:32Z

@@ -180,7 +180,8 @@ pub fn fa_plan(graph: &cudarc::driver::CudaGraph)
                                    usize)>> = Vec::new();
     for (i, n) in nodes.iter().enumerate() {
         match n.name.as_str() {
-            "fa_decode_vec_q_v4_dc" | "fa_decode_vec_q_v3_dc" | "fa_decode_vec_q_v2_dc"
+            "fa_decode_vec_q_v4_dc" | "fa_decode_vec_q_v4_deep_dc"
+            | "fa_decode_vec_q_v3_dc" | "fa_decode_vec_q_v2_dc"
             | "fa_decode_vec_q_dc" | "fa_decode_vec_q_dpl16_dc" => {
                 mains.push((i, FaMain {
                     nkv: n.params.gridDimX, bucket_splits: n.params.gridDimY,

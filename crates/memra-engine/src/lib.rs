@@ -671,6 +671,29 @@ fn fa_v4_at(t_kv: usize) -> bool {
         .unwrap_or_else(|| FA_V4_MAX_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)));
     fa_v4_on() && t_kv < mx
 }
+/// FA-DEEP gate (2026-08-02, lane fa-decode-deep): deep-ctx v4 twins
+/// (fa_decode_vec_q_v4_deep / _deep_dc) — the depth-decode lane's priced fix. Unlike
+/// v2/v3/v4 this is NOT a numeric config: the deep twins run the v4 program VERBATIM
+/// (same split partition, same softmax/accumulation order, same partials/combine) and only
+/// move the smem physical layout (bank de-conflict row pads) + the load schedule (next-tile
+/// L2 prefetch) — kernel-check pins bitdiff==0 vs the v4 twins across depths, so eager /
+/// rows-verify / graph / seqs stay mutually bit-identical wherever the threshold falls.
+/// Engages at t_kv >= MEMRA_FA_DEEP_MIN. The swept floor is 0 = ALWAYS ON where v4 ran
+/// (fa-deep-bench fine grid 96..6144, 2026-08-02: deep flat-or-better at EVERY depth,
+/// 1.01-1.26x, no losing cell — so there is no engagement boundary and no new
+/// capture-recapture edge; the env stays as a sweep/diagnostic seam only).
+/// MEMRA_FA_DEEP=0 is the rollback seam. Read per call so the battery + bench can A/B
+/// within one process (the v2/v3 pattern).
+pub const FA_DEEP_MIN_DEFAULT: usize = 0;
+fn fa_deep_at(t_kv: usize) -> bool {
+    if std::env::var("MEMRA_FA_DEEP").as_deref() == Ok("0") { return false; }
+    let min = std::env::var("MEMRA_FA_DEEP_MIN").ok().and_then(|v| v.parse().ok())
+        .unwrap_or(FA_DEEP_MIN_DEFAULT);
+    t_kv >= min
+}
+/// Public twin (kernel-check builds the deep-vs-v4 bit pin; bench sweeps the floor).
+pub fn fa_deep_at_pub(t_kv: usize) -> bool { fa_deep_at(t_kv) }
+
 fn fa_v3_active(head_dim: usize) -> bool {
     // v3's dp4a-K walk reads raw q8_0 K bytes — no e4m3 arm; the fp8-KV arm (MEMRA_KV_FP8)
     // must fall back like any non-default KV format (the rows_dc stream path asserts on it).
@@ -8637,6 +8660,10 @@ impl Engine {
         // (the same scalar-floor physics as hd256's old 96 floor; short-ctx plain regressed
         // 178.4 -> 173.7 when 512 rode vec unconditionally).
         let fa512_min = fa512_min_tkv();
+        // FA-DEEP pick (bit-identical twins, see fa_deep_at): default module only — the
+        // g-module keeps the v4 pick (its class is not the depth-decay class).
+        let deep = fa_vec && head_dim == 256 && fa_v4_at(t_kv) && !g
+            && fa_deep_at(t_kv) && !matches!(fa_v4_mode(), "noB3" | "stage");
         let (f, cfg) = if fa_vec && head_dim == 512 && t_kv >= fa512_min {
             // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
             // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
@@ -8668,11 +8695,14 @@ impl Engine {
                 let v4name = match fa_v4_mode() {
                     "noB3" => "fa_decode_vec_q_v4_noB3",     // phase probe (WRONG OUTPUT)
                     "stage" => "fa_decode_vec_q_v4_stage",   // phase probe (WRONG OUTPUT)
+                    _ if deep => "fa_decode_vec_q_v4_deep",
                     _ => "fa_decode_vec_q_v4",
                 };
                 let fv = if g { self.func_g(v4name) } else { self.func(v4name) };
-                // fa_v4_smem + sV (g: raw e4m3 sV tile = 1B/elem — half the smem, 3->5 blocks/SM)
-                let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
+                // fa_v4_smem (deep: fa_v4_deep_smem, +640B row pads) + sV (g: raw e4m3 sV
+                // tile = 1B/elem — half the smem, 3->5 blocks/SM)
+                let shmem = (if deep { 12160 } else { 11520 }
+                             + 32 * head_dim * if g { 1 } else { 2 }) as u32;
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
                 (fv,
@@ -8729,6 +8759,8 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
+        // (combine re-tile refuted in the fa-deep lane — flat/worse both shapes; the v4
+        // combine stays for all arms. Receipts research/fa-decode-deep-20260802/.)
         let (fc, cfg2) = (if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) },
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let __s_b2 = self.gpu.stream();
@@ -9488,6 +9520,10 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
+        // FA-DEEP pick keyed on bucket_max (the fa_v4_at precedent) — bit-identical twins,
+        // so a threshold falling between t_kv and bucket_max cannot diverge eager-vs-graph.
+        let deep = fa_vec && head_dim == 256 && fa_v4_at(bucket_max) && !g
+            && fa_deep_at(bucket_max) && !matches!(fa_v4_mode(), "noB3" | "stage");
         let (f, cfg) = if fa_vec && head_dim == 512 && bucket_max >= {
             static FA512_MIN_DC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             *FA512_MIN_DC.get_or_init(|| std::env::var("MEMRA_FA512_MIN").ok()
@@ -9509,8 +9545,11 @@ impl Engine {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
             // incl the g-module route + raw-e4m3 sV sizing.
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") } else { self.func("fa_decode_vec_q_v4_dc") };
-            let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
+            let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") }
+                     else if deep { self.func("fa_decode_vec_q_v4_deep_dc") }
+                     else { self.func("fa_decode_vec_q_v4_dc") };
+            let shmem = (if deep { 12160 } else { 11520 }
+                         + 32 * head_dim * if g { 1 } else { 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),

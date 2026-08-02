@@ -1,0 +1,14 @@
+=== fa-deep battery 2026-08-02T12:36:32Z git=da00b2bd ===
+argmax kat: MATCH (1 gate lines) OK
+argmax q35: MATCH (2 gate lines) OK
+argmax o35b: MATCH (2 gate lines) OK
+run-spec kat: K-battery PASS (8 pass lines) OK
+run-spec q35: K-battery PASS (8 pass lines) OK
+run-spec o35b: K-battery PASS (8 pass lines) OK
+decode-batch config: GREEN OK
+decode-batch strict: GREEN OK
+graph-decode q35 P=6000 N=160: PASS OK
+graph-decode kat P=3000 N=160: PASS OK
+graph-decode q35 P=500 N=96: PASS OK
+graph-session q35: PASS OK
+=== battery done: FAILS=0 ===

@@ -2653,6 +2653,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // --- FA-DEEP lane (2026-08-02): deep twins vs v4 twins, BYTE identity. The deep
+        // kernels (fa_decode_vec_q_v4_deep / _deep_dc) are order-preserving rewrites of the
+        // v4 program (padded smem, packed stores, L2 prefetch — research/fa-decode-deep-
+        // 20260802/): any nonzero bit here means the rewrite stopped being a scheduling-only
+        // change. Class geometry nkv=2/gqa=8 (q35/KAT/o35b), depths cross the sp8->sp64
+        // ladder rung + tail tiles + a bucketed dc replay. MEMRA_FA_DEEP flips per pair.
+        // Two geometries: the hybrid depth class (nkv=2/gqa=8: q35/KAT/o35b) and the
+        // qwen35 dense/MoE class (nkv=8/gqa=4: 9B/27B) — both ride the v4->deep dispatch.
+        for (hdd, nhd, nhkvd) in [(256usize, 16usize, 2usize), (256, 32, 8)] {
+            let kvd = hdd * nhkvd;
+            let ktb = (kvd / 32) * kbb;
+            let vtb = (kvd / 32) * vbb;
+            let t_max = 6272usize;
+            let kf: Vec<f32> = (0..kvd * t_max).map(|i| pr(i + 7) * 0.2).collect();
+            let vf: Vec<f32> = (0..kvd * t_max).map(|i| pr(i + 11) * 0.2).collect();
+            let kfd = e.htod(&kf)?; let vfd = e.htod(&vf)?;
+            let mut kc = e.alloc_u8(t_max * ktb)?;
+            let mut vc = e.alloc_u8(t_max * vtb)?;
+            for tok in 0..t_max {
+                let k_row = kfd.slice(tok * kvd..(tok + 1) * kvd);
+                let v_row = vfd.slice(tok * kvd..(tok + 1) * kvd);
+                e.append_kv_quantized_view(&k_row, &v_row, &mut kc, &mut vc, tok,
+                                           kvd, kvd, ktb, vtb, false)?;
+            }
+            let q: Vec<f32> = (0..hdd * nhd).map(|i| pr(i + 1) * 0.2).collect();
+            let qd = e.htod(&q)?;
+            unsafe { std::env::set_var("MEMRA_FA_DEEP_MIN", "0"); }
+            for d in [512usize, 3071, 3073, 4096, 6144, 6200] {
+                let kview = e.view_u8(&kc, d * ktb);
+                let vview = e.view_u8(&vc, d * vtb);
+                unsafe { std::env::set_var("MEMRA_FA_DEEP", "0"); }
+                let mut o_v4 = e.zeros(hdd * nhd)?;
+                e.fa_decode(&qd, &kview, &vview, &mut o_v4, hdd, nhd, nhkvd, d, scale, ktb, vtb)?;
+                unsafe { std::env::set_var("MEMRA_FA_DEEP", "1"); }
+                let mut o_dp = e.zeros(hdd * nhd)?;
+                e.fa_decode(&qd, &kview, &vview, &mut o_dp, hdd, nhd, nhkvd, d, scale, ktb, vtb)?;
+                let (a, b) = (e.dtoh(&o_v4)?, e.dtoh(&o_dp)?);
+                let bd = a.iter().zip(&b).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                println!("fa_decode_v4_deep vs v4 (eager) t_kv={d}: bitdiff={bd} {}",
+                         if bd == 0 { "OK" } else { fails += 1; "FAIL" });
+                // dc twins: exact bucket + a bucketed replay (empty-split ONE-PARTITION case)
+                let tdev = e.htod_i32(&[d as i32])?;
+                for bucket in [d, d + 128] {
+                    unsafe { std::env::set_var("MEMRA_FA_DEEP", "0"); }
+                    let mut o4dc = e.zeros(hdd * nhd)?;
+                    e.fa_decode_dc(&qd, &kview, &vview, &mut o4dc, hdd, nhd, nhkvd, &tdev,
+                                   bucket, scale, ktb, vtb, false)?;
+                    unsafe { std::env::set_var("MEMRA_FA_DEEP", "1"); }
+                    let mut odpdc = e.zeros(hdd * nhd)?;
+                    e.fa_decode_dc(&qd, &kview, &vview, &mut odpdc, hdd, nhd, nhkvd, &tdev,
+                                   bucket, scale, ktb, vtb, false)?;
+                    let (adc, bdc) = (e.dtoh(&o4dc)?, e.dtoh(&odpdc)?);
+                    let bd2 = adc.iter().zip(&bdc).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                    println!("fa_decode_v4_deep vs v4 (dc) t_kv={d} bucket={bucket}: bitdiff={bd2} {}",
+                             if bd2 == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+            unsafe { std::env::remove_var("MEMRA_FA_DEEP"); }
+            unsafe { std::env::remove_var("MEMRA_FA_DEEP_MIN"); }
+        }
+
         // --- ARC B: fa_prefill_view_ws (dequant-once bf16 workspace) vs fa_prefill_view: BYTE
         // identity. The workspace stores __float2bfloat16(dq_*_elem(...)) — the identical value
         // fa_prefill_q stages to smem — and fa_prefill_qw's MMA/softmax/PV code is byte-identical,
