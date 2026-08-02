@@ -1,0 +1,26 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:53:27Z] 58, 50.18 W, 1642 MHz, 727 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+[apps] 2972719, target/release/gemma-gate, 290 MiB
+==PROF== Connected to process 2980026 (/home/avifenesh/projects/wt-verify-tier/target/release/spec-econ)
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=6 t_max=4
+[econ] primed pos=2048, continuation=[332, 83, 6649, 71570, 684]
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq_b4": 0%....50%....100% - 16 passes
+[econ] verify_t4  N=6  med= 55.826ms  mean=1179.374ms  min= 55.168ms  p90=6798.304ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":6,"arms":{"verify_t4":{"med_ms":55.8257,"mean_ms":1179.3737,"min_ms":55.1682,"p90_ms":6798.3044}}}
+==PROF== Disconnected from process 2980026
+==PROF== Report: /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/ncu/ncu-q9-t4-q5k.ncu-rep
+[gpu 2026-08-02T20:53:45Z] 63, 60.15 W, 1860 MHz, 430 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NCU q9 t4-q5k rc=0

@@ -1,0 +1,31 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:29:05Z] 51, 8.99 W, 180 MHz, 326 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+==PROF== Connected to process 1491530 (/home/avifenesh/projects/wt-verify-tier/target/release/spec-econ)
+[econ] model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf prompt_tokens=2048 N=6 t_max=4
+[econ] primed pos=2048, continuation=[332, 735, 271, 248068, 198]
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%
+==WARNING== Backing up device memory in system memory. Kernel replay might be slow. Consider using "--replay-mode application" to avoid memory save-and-restore.
+....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+[econ] verify_t4  N=6  med=114.099ms  mean=111.152ms  min=100.142ms  p90=114.939ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":6,"arms":{"verify_t4":{"med_ms":114.0988,"mean_ms":111.1520,"min_ms":100.1422,"p90_ms":114.9386}}}
+==PROF== Disconnected from process 1491530
+==PROF== Report: /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/ncu/ncu-q27-t4-dual.ncu-rep
+[gpu 2026-08-02T20:30:59Z] 56, 80.20 W, 2580 MHz, 452 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NCU q27 t4-dual rc=0
