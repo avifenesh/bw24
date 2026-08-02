@@ -1,0 +1,21 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+[worker]   loaded "m": 41 layers, eos=248046
+[worker] m: decode chunk cap 8
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8127
+[worker] observed session VRAM cost for "m": 235MB (admission gate = 2x)
+[spec-acc] ctx=1593 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=1625 burst=22/36 cum=44/63=0.698
+[spec-acc] ctx=1659 burst=23/24 cum=67/87=0.770
+[spec-acc] ctx=1593 burst=24/30 cum=24/30=0.800
+[spec-acc] ctx=1628 burst=23/36 cum=47/66=0.712
+[spec-acc] ctx=1663 burst=17/33 cum=64/99=0.646
+[spec-acc] ctx=1593 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=1625 burst=22/36 cum=45/60=0.750
+[spec-acc] ctx=1659 burst=23/24 cum=68/84=0.810
+[spec-acc] ctx=1708 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=1741 burst=23/36 cum=47/60=0.783
+[spec-acc] ctx=1776 burst=23/24 cum=70/84=0.833

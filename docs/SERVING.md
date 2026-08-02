@@ -105,11 +105,54 @@ parsing only — zero engine changes**:
   entirely (legacy render path, byte-identical streams); tools traffic is generation-
   identical for the identical rendered prompt (raw-completions bijection gate). `usage`
   now carries worker-truth `prompt_tokens` (rendered tools block included) +
-  `completion_tokens` + `total_tokens` on stream and non-stream shapes.
+  `completion_tokens` + `total_tokens` on stream and non-stream shapes, with the
+  prompt-caching split (`prompt_tokens_details.cached_tokens`) — see "Prompt caching"
+  below. Tools requests cache like any other: the prefix cache keys on the rendered
+  prompt's token ids, so a repeated tools block is a cacheable prefix (no special-casing).
 
 Receipts: `research/serve-tools-20260802/` (round-trip transcripts N=3 greedy on
 Qwen3.6-35B + AgentWorld, streaming schema checker, malformed-policy transcript,
-tok-check usage crosscheck, cross-binary c1 refs + c1-vs-c16).
+tok-check usage crosscheck, cross-binary c1 refs + c1-vs-c16) and
+`research/integrate-cache-20260802/` (tools x cache intersection gate).
+
+## Prompt caching (cross-request prefix cache) — 2026-08-02
+
+Two caching tiers serve prompt tokens without recomputing them:
+
+1. **Continuation pool** (pre-existing, `MEMRA_KV_REUSE`): a retired session parks its whole
+   (prompt + generation) state; a new prompt that EXACTLY EXTENDS it resumes. Single-use,
+   exact-extension only — a new session that merely shares a system prompt always missed.
+2. **Cross-request prefix cache** (`MEMRA_PREFIX_CACHE_MB`, default 256MB, 0 = off): compact
+   device snapshots of primed state at token boundaries, keyed by the exact token-id prefix,
+   per model, LRU under the byte budget. Entries are REUSABLE — a hit deep-copies the entry
+   into the new session's cache, so one marketplace system prompt serves any number of
+   sessions. Learning sequence for a shared-prefix pattern: request 1 seeds its full prompt,
+   request 2 split-primes at the longest-common-prefix and inserts the boundary entry,
+   request 3+ hit. Hybrid models are safe by construction: GDN conv/ssm state cannot be
+   truncated to a shorter prefix, so the state is snapshotted AT the boundary while a fresh
+   session primes — never rolled back.
+
+**Exactness contract:** an entry stores the KV/recurrent bytes from WHATEVER prime config ran
+(single, chunked, or concat batch-prime); decode from those bytes is deterministic, so a
+cached hit is bit-identical to the run that computed the prefix — gated 16/16 partial-prefix
++ 16/16 full-prefix cached-vs-fresh greedy identity across depths
+(`research/prompt-cache-20260802/gate-exact.jsonl`). Comparing a cached-hit stream against a
+DIFFERENT prime config's fresh stream inherits the batched-prime near-tie first-token law
+above — same documented class, reported not gated.
+
+**Policy:** spec sessions bypass the prefix cache entirely (SpecSession owns trunk + draft
+caches; a trunk-only prefix restore would leave draft state unprimed — the spec tier keeps
+its own continuation pool). Legacy round-robin mode (`MEMRA_SERVE_BATCH=0`) also bypasses.
+Sessions always win over the cache: a failed session-cache allocation evicts every entry and
+retries before erroring.
+
+**Accounting:** every response shape carries OpenAI-schema usage with the worker-truth split —
+`usage.prompt_tokens`, `completion_tokens`, `total_tokens`, and
+`prompt_tokens_details.cached_tokens` (tokens resumed from ANY cache tier: continuation pool,
+spec resume, or prefix cache). `/metrics` exposes the cumulative split
+(`prompt_tokens_in`/`cached_tokens_in`) plus `prefix_cache_hits`/`entries`/`bytes`. Cached
+prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
+margin lever (`research/or-provider-20260802/REPORT.md`).
 
 ## Knobs
 

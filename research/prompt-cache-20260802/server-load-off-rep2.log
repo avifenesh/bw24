@@ -1,0 +1,9 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+[worker]   loaded "m": 41 layers, eos=248046
+[server] worker ready; serving models: ["m"]
+[worker] m: decode chunk cap 8
+[server] listening on http://127.0.0.1:8127
+[worker] observed session VRAM cost for "m": 235MB (admission gate = 2x)

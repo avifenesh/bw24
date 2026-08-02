@@ -375,6 +375,7 @@ version = "0.0.0"
 dependencies = [
  "async-stream",
  "axum",
+ "cudarc",
  "futures-core",
  "memra-engine",
  "memra-gguf",
