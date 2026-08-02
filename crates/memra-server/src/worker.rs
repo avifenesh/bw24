@@ -49,8 +49,9 @@ struct LoadedModel {
 pub enum Event {
     /// One decoded token: the raw id + the incremental text delta (detokenized tail minus prefix).
     Token { id: u32, text: String },
-    /// Terminal event: why we stopped + final token count + timing.
-    Done { stop_reason: String, n_tokens: usize, elapsed_s: f64 },
+    /// Terminal event: why we stopped + worker-truth token counts + timing. `prompt_tokens`
+    /// is the tokenized RENDERED prompt length (tools block included when one was rendered).
+    Done { stop_reason: String, n_tokens: usize, prompt_tokens: usize, elapsed_s: f64 },
     /// The request could not start (bad model name, ctx full at admit, etc).
     Error(String),
 }
@@ -61,13 +62,29 @@ pub struct Request {
     pub prompt_ids: Vec<u32>,   // already tokenized? no — worker tokenizes (it owns the Tokenizer)
     pub prompt_text: String,
     pub chat: bool,
-    pub chat_messages: Vec<(String, String)>,
+    pub chat_turns: Vec<memra_tokenizer::chat::Turn>,
+    /// Tool schemas pre-serialized (client key order preserved) for the template's <tools> block.
+    pub tools_json: Vec<String>,
+    pub think: memra_tokenizer::chat::ThinkMode,
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
     pub trace_id: Option<String>,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
+}
+
+/// Chat-template capabilities probed from a loaded model's template at spawn time — the
+/// HTTP layer rejects `tools` on models whose template has no tools branch BEFORE the
+/// request reaches the worker, and arms the tool-call parser's think gate.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModelCaps {
+    /// template carries the qwen-class `<tools>` branch (tools + tool_response rendering).
+    pub tools_branch: bool,
+    /// template appends a `<think>` tail on the generation prompt (qwen think class).
+    pub qwen_think: bool,
+    /// template has the `enable_thinking` switch (ThinkMode::NoThink is honored).
+    pub think_switch: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -215,6 +232,8 @@ struct Session {
     prefill_queue: std::collections::VecDeque<u32>,
     prefill_done: bool,
     generated: Vec<u32>,
+    /// tokenized rendered-prompt length (worker-truth usage.prompt_tokens).
+    prompt_tokens: usize,
     params: GenParams,
     stop_strings: Vec<String>,
     trace_id: Option<String>,
@@ -231,7 +250,7 @@ struct Session {
 pub fn run(
     models: Vec<(String, String, Option<String>)>,
     rx: Receiver<Cmd>,
-    ready_tx: Sender<Result<Vec<String>, String>>,
+    ready_tx: Sender<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>,
     metrics: SharedMetrics,
 ) {
     // ---- one-time init on the worker thread: Engine + all models resident ----
@@ -319,7 +338,20 @@ pub fn run(
         loaded.insert(name.clone(), LoadedModel { model, tok, eos_id });
         order.push(name.clone());
     }
-    let _ = ready_tx.send(Ok(order.clone()));
+    // Template capability probe (serve-tools lane): same substring laws the renderer uses.
+    let caps: HashMap<String, ModelCaps> = loaded.iter().map(|(n, lm)| {
+        let t = lm.tok.chat_template();
+        let caps = ModelCaps {
+            tools_branch: t.is_some_and(|t| t.contains("<tools>")
+                && !t.contains("hy_User") && !t.contains("<|turn>")),
+            qwen_think: t.is_some_and(|t| t.contains("<think>") && t.contains("add_generation_prompt")),
+            think_switch: t.is_some_and(|t| t.contains("enable_thinking")),
+        };
+        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={}",
+                  caps.tools_branch, caps.qwen_think, caps.think_switch);
+        (n.clone(), caps)
+    }).collect();
+    let _ = ready_tx.send(Ok((order.clone(), caps)));
 
     // Per-model decode chunk width (inc3 3a): computed once — model tensors and mirrors
     // are fixed after load.
@@ -879,11 +911,25 @@ fn admit(
     // tokenize the text, optionally wrapping in the chat template.
     let prompt: Vec<u32> = if !req.prompt_ids.is_empty() {
         req.prompt_ids.clone()
-    } else if !req.chat_messages.is_empty() {
-        let messages: Vec<_> = req.chat_messages.iter()
-            .map(|(role, content)| (role.as_str(), content.as_str()))
-            .collect();
-        let rendered = lm.tok.apply_chat_template(&messages, true);
+    } else if !req.chat_turns.is_empty() {
+        // ISOLATION CONTRACT (serve-tools lane): a request with no tools features renders
+        // through the EXACT legacy path — the tools renderer is entered only when the
+        // request carries tools / tool turns / a non-default think switch.
+        let plain = req.tools_json.is_empty()
+            && req.think == memra_tokenizer::chat::ThinkMode::Default
+            && req.chat_turns.iter().all(|t| t.role != "tool" && t.tool_calls.is_empty());
+        let rendered = if plain {
+            let messages: Vec<_> = req.chat_turns.iter()
+                .map(|t| (t.role.as_str(), t.content.as_str()))
+                .collect();
+            lm.tok.apply_chat_template(&messages, true)
+        } else {
+            match lm.tok.apply_chat_template_tools(&req.chat_turns, true,
+                                                   &req.tools_json, req.think) {
+                Ok(rendered) => rendered,
+                Err(err) => return Err((req.tx, format!("chat template: {err}"))),
+            }
+        };
         lm.tok.encode(&rendered, true)
     } else if req.chat {
         let rendered = lm.tok.apply_chat_template(&[("user", req.prompt_text.as_str())], true);
@@ -1050,6 +1096,7 @@ fn admit(
                        else { suffix.into_iter().collect() },
         prefill_done: prefill_done_at_admit,
         generated: Vec::new(),
+        prompt_tokens: prompt.len(),
         params,
         stop_strings: req.stop_strings,
         trace_id: req.trace_id,
@@ -1493,16 +1540,19 @@ fn finish(s: &Session, reason: StopReason) {
     let _ = s.tx.send(Event::Done {
         stop_reason: reason,
         n_tokens: s.generated.len(),
+        prompt_tokens: s.prompt_tokens,
         elapsed_s: elapsed,
     });
 }
 
 /// Convenience: spawn the worker thread and block until it reports ready (or fails). Returns the
-/// command Sender (clone into the axum state) + the list of loaded model names.
+/// command Sender (clone into the axum state) + the loaded model names + template caps.
+#[allow(clippy::type_complexity)]
 pub fn spawn(models: Vec<(String, String, Option<String>)>)
-    -> Result<(Sender<Cmd>, Arc<Vec<String>>, SharedMetrics), String> {
+    -> Result<(Sender<Cmd>, Arc<Vec<String>>, Arc<HashMap<String, ModelCaps>>, SharedMetrics), String> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<Vec<String>, String>>();
+    let (ready_tx, ready_rx) =
+        std::sync::mpsc::channel::<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>();
     let metrics: SharedMetrics = Default::default();
     let m2 = metrics.clone();
     std::thread::Builder::new()
@@ -1510,7 +1560,7 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>)
         .spawn(move || run(models, cmd_rx, ready_tx, m2))
         .map_err(|e| format!("spawn worker thread: {e}"))?;
     match ready_rx.recv() {
-        Ok(Ok(names)) => Ok((cmd_tx, Arc::new(names), metrics)),
+        Ok(Ok((names, caps))) => Ok((cmd_tx, Arc::new(names), Arc::new(caps), metrics)),
         Ok(Err(err)) => Err(err),
         Err(_) => Err("worker died during init".into()),
     }
