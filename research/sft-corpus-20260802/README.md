@@ -1,10 +1,17 @@
 # SFT trace corpus — sft-corpus-20260802
 
-Agentic/coding trace corpus generated with the paid Kimi K3 subscription (window: 18 days
-from 2026-08-02), for distillation into Qwen3.6-35B-A3B. Tooling lives in
-`tools/sft-pipeline/`. **This lane covers trace creation only.** TRAINING spend is gated
-on the distribution verdict from `lane/finetune-sku` (running separately) **plus the
-owner's explicit spend approval** — no training run starts from this lane.
+Agentic/coding trace corpus for distillation into Qwen3.6-35B-A3B. Teacher (owner-locked
+2026-08-02): **DeepSeek V4-Flash-0731 via opencode → OpenRouter**, provider pin
+`only=["novita","deepseek","deepinfra","fireworks"], allow_fallbacks=false` — the four
+ToS-verified hosts (receipts: `research/finetune-sku-20260802/`; DeepSeek first-party ToS
+§4.2 explicitly permits distillation). Both owner subscriptions (Kimi Code, Qwen coding
+plan) and NVIDIA's free API are contractually BARRED from corpus generation — quoted
+verdicts in the same study dir. Tooling lives in `tools/sft-pipeline/`. **This lane
+covers trace creation only.** Pilot = 1-2k verified traces (~$85-150 at V4-Flash prices).
+TRAINING spend is gated on the GO-later trigger from the distribution verdict
+(`research/finetune-sku-20260802/REPORT.md`: approved OR provider + box #1 past coverage
++ ≥30 days own routed agentic traffic) **plus the owner's explicit spend approval** — no
+training run starts from this lane.
 
 ## Directory layout
 
