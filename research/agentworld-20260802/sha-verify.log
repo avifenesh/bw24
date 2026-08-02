@@ -1,0 +1,5 @@
+revision=3a305abf5cfd119ee999dfe929c433746edd8d63
+expected_sha256=e7a8eafdd8013443b6bcc4b6fb47b2d2025f772d359650b9ceb7d75971e22cad (HF LFS pointer)
+expected_size=22134529280
+size=22134529280
+e7a8eafdd8013443b6bcc4b6fb47b2d2025f772d359650b9ceb7d75971e22cad  /data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-Q4_K_M.gguf
