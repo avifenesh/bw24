@@ -134,7 +134,7 @@ ledger: [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md); one-command battery:
 | Ornith-1.0-35B | MoE | Q4_K_M + own-gen drafter | Over the deployment bar |
 | Hy3 Layer103.5 overlay | MoE, spill | GGUF overlay | Under tuning |
 | KAT-Coder-V2.5 | MoE | IQ4_XS | In bring-up — decode at llama parity, prefill gap open |
-| Qwen-AgentWorld-35B-A3B | MoE | IQ4_XS | In bring-up — same-stack verified, unbenched |
+| Qwen-AgentWorld-35B-A3B | MoE | UD-IQ4_XS + own-gen drafter | Over the deployment bar (1.68-1.76x; avoid UD-Q4_K_M — its Q5_K expert mix sits outside fast-path coverage) |
 | MiniMax-M3 REAP50 | MoE, spill | safetensors | In progress — loads + generates, router tuning open |
 
 Per-model receipts and bring-up notes:

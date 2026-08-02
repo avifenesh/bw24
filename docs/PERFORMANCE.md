@@ -16,7 +16,7 @@ competitor denominator).
 
 ## Standing (2026-08-02)
 
-Nine supported models on the 5090, all fully gated; MTP-spec cells run 1.06–2.3x llama.cpp
+Ten supported models on the 5090, all fully gated; MTP-spec cells run 1.06–2.3x llama.cpp
 (one Gemma near-parity cell, 0.98x, still open), plain cells sit at the DRAM wall or above.
 Newest in: **Ornith-1.0-35B** — AUTO-KQUANT (k-quant expert banks join the grouped-f16
 prefill lane by default: board-2048 prefill 3.14x) stacked on resident-if-fits residency,
