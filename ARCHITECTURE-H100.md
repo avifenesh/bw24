@@ -2587,3 +2587,37 @@ conclusion rests on it. Battery: validate-h100.sh --quick (q35) post-probe, ALL 
 GREEN rc=0 — the b9bd9d4c tree (kquant-tile-loaders merged) is battery-clean on this
 box. No board cell ran (no default change); board files untouched. Receipts
 `research/h100-sk-direct-20260802/`.
+
+## Round 55 — full direct coverage + deep tail: mode 2 FLIPS past cublas +52.6%, Hopper default moves; q35 row 217 -> 226 (2026-08-02, lane/h100-flip-full)
+
+Round 54's NO-FLIP was coverage-priced: direct loaders covered 5.2% of q35's bank.
+The tree since gained IQ4_XS/IQ3_S direct tiles (lane/iq-direct-loaders — ~100% bank
+coverage, 5090 mode-2 arm +50.5%) and the 32x64x64 3-stage deep tail
+(lane/sk-tail-form, sm_80-portable). Re-asked on the e42cc8e1 tree. Gates first:
+kernel-check sm_90a ALL GREEN rc=0 240 OK 0 FAIL — `f16g-kq-direct` byte-identical
+maxdiff=0.00e0 on iq4_xs/iq3_s synthetic AND **real q35 weights** (blk.0 IQ3_S gate +
+IQ4_XS down via ~/models), every visitor form incl both tail arms; same absent-model
+KC-SKIP set as round 54. VERDICT (q35 board-2048 prime, three arms interleaved x5
+round-robin under one lock hold, argmax + batched-prime MATCH 30/30): **cublas mode-1
+8626.5 / mode-2 full form 13163.6 / mode-2 round-51 form 8073.4 tok/s — FLIP, mode 2 =
+152.6% of cublas, zero overlap** (min 13132.8 >> max 8643.7). The round-51 reference
+arm reproduces round 54's sk-ws cell to 0.01% (8073.4 vs 8074.2) — the whole +63% over
+it is direct + tail: the workspace pass was the entire gap and then some, HBM3
+notwithstanding. `MEMRA_F16G_SK_CROSS` re-swept on the full form {16,32,64}:
+12868.3 / 13192.4 / **13224.7** — 64 wins, the cross=32 verdict (swept round 51,
+re-confirmed round 54) went STALE when B tiles stopped riding the workspace (LAW 2,
+third instance on this flag); the unset default 64 is now the swept winner on both
+rigs, no per-arch value. FLIP SHIPPED: `moe_f16g_mode()` Err arm `cfg!(memra_hopper_mma)`
+1 -> 2 (lib.rs); the gemma (gelu) door is untouched by construction —
+`moe_f16g_gemma_on()` reads the env directly (Err => closed) and never consults the
+mode's Err arm; sm_120a keeps AUTO-KQUANT mode 3. Battery on the flipped tree:
+validate-h100.sh --quick (q35) **ALL GATES GREEN** (decode-batch gates pin F16G=0
+in-binary — immune by design). Board cell (tools/h100-vllm-board.sh, N=5 medians both
+arms, same-session pair, naked = flipped default): memra decode 242.60 / prefill
+13257.9 -> **e2e 226.1** vs vLLM FP8 decode 225.35 / prefill 18221.3 -> e2e 214.7 —
+**q35 ROW MOVES 217 vs 215 = 1.01x -> 226 vs 215 = 1.05x**; decode flat (242.92 ->
+242.60), the whole move is prefill 8136.2 -> 13257.9 (+63%). vLLM still primes faster
+(18.2k vs 13.3k) — the residual prefill gap is the next rung, but it no longer decides
+the row. Board jsonl `research/tune-data/h100board-vllm-20260731-realtext.jsonl`
+ts=2026-08-02T07:08:30Z; README H100 table updated in the same commit. Receipts
+`research/h100-flip-full-20260802/`.

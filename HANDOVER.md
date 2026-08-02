@@ -12,8 +12,9 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
   layers the int8-MMA MMQ arm rejects (Q3_K/Q4_K/Q6_K — the `_em`-fallback class with
   zero token reuse): o35b board-2048 prefill 1098 -> **3454 (3.14x)**, pp512
   +54%, decode flat; IQ banks keep MMQ (the round-49 5090 FLAT verdict holds for that
-  class and stays honored by the admission); Hopper keeps mode 1; gemma stays
-  env-explicit. Side-move: q35's k-quant straggler layers rode `_em` too — naked
+  class and stays honored by the admission); Hopper's naked default is mode 2 since
+  round 55 (lane/h100-flip-full — full direct coverage + deep tail beat cublas +52.6%,
+  q35 row 217 -> 226 = 1.05x); gemma stays env-explicit. Side-move: q35's k-quant straggler layers rode `_em` too — naked
   board-2048 prefill **+18.0%**, and the q35 spec row was re-paired same-session under
   the new default: every column MOVED (memra p1 +8.8% / p3 +6.8%; llama's b9837 +6-42%
   with a per-class n-max re-sweep), ratios 1.19/1.49/1.49 -> **1.21/1.11/1.12**, board

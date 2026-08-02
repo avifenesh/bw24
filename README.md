@@ -40,11 +40,13 @@ recovered 70% of the prefill it cost — the serving contract above is now expli
 gated, not assumed (receipts: [`research/concat-prime-exact-20260802/`](research/concat-prime-exact-20260802/),
 [`research/fast-router-20260802/`](research/fast-router-20260802/)). On the H100, a
 full per-model board against vLLM 0.26: **no end-to-end losses** — seven wins of
-seven (1.01-1.81x); decode wins 7 of 7. The last losses fell
+seven (1.05-1.81x); decode wins 7 of 7. The last losses fell
 in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
-got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
-f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
-arbitration narrowed that f16g default per dispatch class. Multi-user serving measured
+got full dequant coverage (then +63% more when direct-from-quant tile loaders covered
+the whole bank and the in-house grouped kernel flipped past cublas), the 27B gained a
++54% prefill and +16% decode from K-quant f16 mirrors and split-plane layout v2, and
+the 26B flipped to a win when a cross-box arbitration narrowed that f16g default per
+dispatch class. Multi-user serving measured
 on 3xH100: 1,477 tok/s managed fleet (chaos-tested: kill a replica mid-load, the
 breaker + supervisor recover in seconds with only in-flight requests lost). Every number is a same-session
 interleaved measurement on a real-text prompt with the argmax exactness gate green;
@@ -83,7 +85,7 @@ row). Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-d
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
 | Gemma-4 26B MoE | **196** | 191 (FP8-dyn) | **1.02x** |
-| Qwen3.6-35B MoE | **217** | 215 (FP8) | **1.01x** |
+| Qwen3.6-35B MoE | **226** | 215 (FP8) | **1.05x** |
 
 Zero losses: seven wins of seven, on exact math (the bf16-row wins carry a
 quant-advantage caveat — those vLLM arms move 4x the weight bytes). Decode
@@ -94,11 +96,15 @@ concat-prime fix landed (m-invariant prefill router + shexp gates,
 `MEMRA_ROUTER_PREFILL_EXACT` default ON, −13% Hopper expert prefill) so a session's
 routing no longer depends on its co-arrivals — then a bit-identical batched twin of
 the exact kernel recovered 82% of that cost (8136 pp2048, kernel-check-pinned mism=0;
-`MEMRA_ROUTER_BATCH=0` is its perf-only rollback seam) and the row finished at
-217/1.01x, ahead again with the contract held. Decode never moved; the dense 27B row
-was never on the path (re-cell bit-stable). Receipts
+`MEMRA_ROUTER_BATCH=0` is its perf-only rollback seam) and the row reached
+217/1.01x, ahead again with the contract held — then jumped to 226/1.05x when
+direct-from-quant tile loaders reached ~100% of the expert bank (IQ4_XS/IQ3_S added
+to Q4_K/Q6_K) and the single-kernel grouped GEMM flipped past cublas as the Hopper
+default (round 55: mode-2 prime 13164 vs cublas 8627 tok/s, +52.6% interleaved x5,
+bit-identical tiles by construction; expert prefill 8136 → 13258 on the row). Decode
+never moved; the dense 27B row was never on the path (re-cell bit-stable). Receipts
 `research/router-fix-recells-20260802/`, `research/fast-router-20260802/`,
-`research/q35-recell-final-20260802/`. The last two e2e losses — both MoE
+`research/q35-recell-final-20260802/`, `research/h100-flip-full-20260802/`. The last two e2e losses — both MoE
 expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
 reached full dequant coverage and became the Hopper default (expert prefill +53%), the
 27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors
@@ -115,9 +121,11 @@ Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4
 mma kernel), fused wgmma GDN chunk kernels with varlen twins, f16 prefill mirrors on
 the cuBLASLt lane for the Q8_0/Q4_0/Q4_K/Q5_K/Q6_K classes, K-quant split-plane decode
 mirrors (bit-identical layout v2, 27B decode +15-16%), the grouped f16 expert lane (one
-grouped GEMM over the routed experts — Hopper default for the qwen/silu MoE class, 35B
-expert prefill +53%; per-model off for the gemma class after the round-50 regression
-arbitration), a
+single-kernel grouped GEMM over the routed experts with direct-from-quant
+Q4_K/Q6_K/IQ4_XS/IQ3_S tile loaders and a 3-stage deep tail — Hopper default for the
+qwen/silu MoE class, 35B expert prefill +53% at round 49 and +63% again at round 55
+when it flipped past cublas; per-model off for the gemma class after the round-50
+regression arbitration), a
 batched serving decode tick (z-batched attention + KV append, device-side sampling,
 lean logits: 654-659 tok/s/replica, +25-36%), an MTP speculative serving fast lane
 (1.82x plain serving at c=1 on the 27B), cross-request prefill batching, per-session
