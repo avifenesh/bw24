@@ -148,6 +148,26 @@ run_probe() {
     kind=$(probe_field "$id" 2); model=$(probe_field "$id" 3)
     prompt=$(probe_field "$id" 4); ngen=$(probe_field "$id" 5); extra=$(probe_field "$id" 6)
     [ -z "$kind" ] && { echo "  $id: UNKNOWN probe id"; return 1; }
+    # kind=cmd: a self-gating check command (host unit tests / GPU oracle gates like
+    # sample-check). Gate = exit 0. No golden (the command IS its own reference); refresh
+    # skips these. col3 = command, col4 = args (or -), col6 = extra env.
+    if [ "$kind" = "cmd" ]; then
+        local log="$LOGDIR/probe-$id.log"
+        local envs=()
+        [ "$extra" != "-" ] && [ -n "$extra" ] && { local kv; for kv in $extra; do envs+=("$kv"); done; }
+        # shellcheck disable=SC2206
+        local cmdline=($model); [ "$prompt" != "-" ] && cmdline+=($prompt)
+        local t0 t1; t0=$(date +%s)
+        lockrun env "${envs[@]}" timeout 900 "${cmdline[@]}" > "$log" 2>&1
+        local rc=$?; t1=$(date +%s)
+        if [ $rc -ne 0 ]; then
+            echo "  $id: FAIL (exit $rc, $((t1-t0))s) — tail:"; tail -4 "$log" | sed 's/^/      /'
+            return 1
+        fi
+        echo "  $id: PASS (self-gating check green, $((t1-t0))s)"
+        PROBE_VERDICT="PASS"; PROBE_LAST_LOG="$log"
+        return 0
+    fi
     [ -f "$model" ] || { echo "  $id: SKIP (no model at $model)"; PROBE_VERDICT="SKIP"; return 0; }
     local log="$LOGDIR/probe-$id.log"
     local envs=("MEMRA_NGEN=$ngen" "MEMRA_NMEASURE=0")
@@ -252,8 +272,8 @@ if [ "$REFRESH" = 1 ]; then
     for id in ${ids//,/ }; do
         run_probe "$id" refresh || { FAILS=$((FAILS+1)); continue; }
         [ "$PROBE_VERDICT" = "SKIP" ] && continue
-        # gspec probes self-compare in-run (stream agreement) — no golden to pin.
-        [ "$(probe_field "$id" 2)" = "gspec" ] && continue
+        # gspec (in-run stream agreement) and cmd (self-gating check) probes pin no golden.
+        case "$(probe_field "$id" 2)" in gspec|cmd) continue ;; esac
         { echo "# golden @ $SHA $TS ngen=$(probe_field "$id" 5) model=$(probe_field "$id" 3)";
           echo "$PROBE_TOKS"; } > "$GOLDENS/$id.tokens"
         toks=$(grep -oE "= [0-9.]+ tok/s" "$PROBE_LAST_LOG" | tail -1 | grep -oE "[0-9.]+")

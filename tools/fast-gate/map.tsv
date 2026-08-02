@@ -35,16 +35,26 @@
 ^crates/memra-engine/cu/moe_router\.cu$	fast-router-batch,d2-cache-bit-identity	q35,g26	-
 ^crates/memra-engine/cu/hybrid\.cu$	synthetic	q9,q35	-
 ^crates/memra-engine/cu/kernels\.cu$	synthetic	g12,q9,q35	-
-^crates/memra-engine/cu/spec_sample\.cu$	synthetic	-	q35spec,g31spec
+# spec_sample.cu: the golden probes are all GREEDY (temp 0) — they route around the sampled-spec
+# kernels entirely, so a broken gumbel/softmax_gather/residual sampler is INVISIBLE to token
+# goldens. sample-check (samp) is the on-GPU oracle for exactly these kernels.
+^crates/memra-engine/cu/spec_sample\.cu$	synthetic	samp	q35spec,g31spec
 ^crates/memra-engine/cu/[a-z0-9_]*\.(cuh|inc)$	all	g12,q9,q35	-
-# --- engine Rust: spec/draft pipeline ---
-^crates/memra-engine/src/(spec|gemma_spec|dflash|eagle|round_stream)\.rs$	synthetic	-	q35spec,g31spec
-# --- engine Rust: MoE residency/spill ---
-^crates/memra-engine/src/(moe_cache|spill|spill_pread|cpu_experts)\.rs$	d2-cache-bit-identity,fast-router-batch	q35,g26	-
+# --- engine Rust: spec/draft pipeline (spec.rs also hosts the sampled-spec host Philox mirror —
+# samp oracles the device twins the greedy spec probes never run) ---
+^crates/memra-engine/src/(spec|gemma_spec|dflash|eagle|round_stream)\.rs$	synthetic	samp	q35spec,g31spec
+# --- engine Rust: MoE residency/spill. THE PROBE-REGIME LESSON (2026-08-03): on a 24GB rig
+# every MoE probe model loads RESIDENT (whole bank in device slabs), so the SLRU cache, the
+# staged moe_cached_gemm* loop, and the spill paths are NEVER exercised by a naked probe — a
+# break there was demonstrably invisible to q35 (research/fast-gate-20260802/break-moe-staged-*).
+# q35slru (MEMRA_MOE_RESIDENT=0 + capped slots) forces that dispatch class. ---
+^crates/memra-engine/src/(moe_cache|spill|spill_pread|cpu_experts)\.rs$	d2-cache-bit-identity,fast-router-batch	q35slru,q35	-
 # --- engine Rust: forward passes / graphs. kernel-check exercises Engine FFI wrappers, not
 # the forward passes — synthetic arms are a cheap link-sanity check; the REAL gate for these
 # files is the golden probes (three kernel classes + one spec probe). ---
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35	q35spec
+# hybrid_forward.rs also hosts the staged/SLRU MoE dispatch (moe_cached_gemm*) that resident-
+# fitting models never run — q35slru covers it (the probe-regime lesson, see the MoE row above).
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru	q35spec
 # --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
 ^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
 # --- gate/bench binaries: build-only (they ARE the gates) ---
@@ -54,7 +64,9 @@
 ^crates/memra-kv/	synthetic	q35,g31	-
 ^crates/memra-gguf/	synthetic	g12,q35	-
 ^crates/memra-tokenizer/	none	g12,q35	-
-^crates/memra-sampling/	synthetic	g12	q35spec
+# memra-sampling: greedy goldens collapse to argmax and never run the sampler transforms —
+# sampt (the crate's own unit tests) + samp (device sampler oracle) are the real gates here.
+^crates/memra-sampling/	synthetic	g12,sampt,samp	q35spec
 ^crates/memra-runtime/	all	g12,q9,q35	-
 ^crates/memra-validate/	synthetic	-	-
 # memra-server: fast-gate prints a pointer to tools/serve-smoke.sh (the serving battery);
