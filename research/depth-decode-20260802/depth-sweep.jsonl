@@ -1,0 +1,184 @@
+{"ts":"2026-08-02T07:24:00Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T07:24:00Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T07:24:00Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"tg128_toks","value":192.78,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T07:24:00Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"tg128_toks","value":181.93,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":1,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"tg128_toks","value":176.57,"rep":1,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":1,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"tg128_toks","value":167.97,"rep":1,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":1,"rep":1,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":1,"profile":"performance","temp_c":75}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":75}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"tg128_toks","value":171.37,"rep":1,"profile":"performance","temp_c":75}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":75}
+{"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 180.767789, "rep": 1, "temp_c": 63}
+{"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 182.553493, "rep": 1, "temp_c": 63}
+{"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.341715, "rep": 1, "temp_c": 63}
+{"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 175.333878, "rep": 1, "temp_c": 63}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"tg128_toks","value":177.13,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"tg128_toks","value":171.08,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"tg128_toks","value":163.48,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":1,"profile":"performance","temp_c":78}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":78}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"tg128_toks","value":159.07,"rep":1,"profile":"performance","temp_c":78}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":78}
+{"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 154.374629, "rep": 1, "temp_c": 85}
+{"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 153.708583, "rep": 1, "temp_c": 85}
+{"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 149.382695, "rep": 1, "temp_c": 85}
+{"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 147.871528, "rep": 1, "temp_c": 85}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"tg128_toks","value":193.92,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"tg128_toks","value":185.22,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":1,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"tg128_toks","value":186.94,"rep":1,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"tg128_toks","value":180.94,"rep":1,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":77}
+{"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 179.898397, "rep": 1, "temp_c": 84}
+{"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 178.180946, "rep": 1, "temp_c": 84}
+{"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 173.480243, "rep": 1, "temp_c": 84}
+{"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 169.26291, "rep": 1, "temp_c": 84}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"tg128_toks","value":184.86,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"tg128_toks","value":176.85,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"tg128_toks","value":173.18,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":1,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":2,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"tg128_toks","value":170.85,"rep":2,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":77}
+{"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 180.660492, "rep": 2, "temp_c": 80}
+{"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 180.096265, "rep": 2, "temp_c": 80}
+{"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.422459, "rep": 2, "temp_c": 80}
+{"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 173.54122, "rep": 2, "temp_c": 80}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":2,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"tg128_toks","value":177.37,"rep":2,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"tg128_toks","value":170.47,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"tg128_toks","value":172.02,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":2,"profile":"performance","temp_c":78}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":78}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"tg128_toks","value":164.11,"rep":2,"profile":"performance","temp_c":78}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":78}
+{"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 160.553578, "rep": 2, "temp_c": 77}
+{"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 149.204053, "rep": 2, "temp_c": 77}
+{"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 144.898646, "rep": 2, "temp_c": 77}
+{"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 138.367344, "rep": 2, "temp_c": 77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"tg128_toks","value":196.20,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"tg128_toks","value":187.95,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":72}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":2,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"tg128_toks","value":181.83,"rep":2,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":2,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"tg128_toks","value":184.00,"rep":2,"profile":"performance","temp_c":75}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":2,"profile":"performance","temp_c":75}
+{"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 181.248102, "rep": 2, "temp_c": 70}
+{"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 179.569621, "rep": 2, "temp_c": 70}
+{"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.477757, "rep": 2, "temp_c": 70}
+{"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 174.696212, "rep": 2, "temp_c": 70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"tg128_toks","value":186.73,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":3,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"tg128_toks","value":161.10,"rep":3,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":70}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":3,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"tg128_toks","value":173.82,"rep":3,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":1,"rep":3,"profile":"performance","temp_c":74}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"tg128_toks","value":167.35,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"kat","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":76}
+{"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 176.519114, "rep": 3, "temp_c": 68}
+{"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 185.969513, "rep": 3, "temp_c": 68}
+{"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 172.699512, "rep": 3, "temp_c": 68}
+{"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 169.797685, "rep": 3, "temp_c": 68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"tg128_toks","value":170.76,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":3,"profile":"performance","temp_c":69}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":69}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"tg128_toks","value":163.73,"rep":3,"profile":"performance","temp_c":69}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":69}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"tg128_toks","value":164.46,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"tg128_toks","value":159.84,"rep":3,"profile":"performance","temp_c":76}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"q35","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":76}
+{"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 156.305819, "rep": 3, "temp_c": 73}
+{"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 156.373828, "rep": 3, "temp_c": 73}
+{"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 157.102951, "rep": 3, "temp_c": 73}
+{"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 154.997246, "rep": 3, "temp_c": 73}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"prompt_ntok","value":512,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"tg128_toks","value":196.35,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"prompt_ntok","value":2048,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"tg128_toks","value":187.84,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":2048,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":68}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"prompt_ntok","value":4096,"rep":3,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"tg128_toks","value":190.33,"rep":3,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":4096,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":71}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"prompt_ntok","value":6144,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"gen_ntok","value":128,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"tg128_toks","value":176.18,"rep":3,"profile":"performance","temp_c":77}
+{"ts":"2026-08-02T07:30:26Z","git":"0983c4ba","cell":"depth-sweep","model":"o35b","engine":"memra","depth":6144,"metric":"argmax_match_lines","value":2,"rep":3,"profile":"performance","temp_c":77}
+{"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 175.425116, "rep": 3, "temp_c": 68}
+{"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 175.633505, "rep": 3, "temp_c": 68}
+{"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 171.542094, "rep": 3, "temp_c": 68}
+{"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 170.263267, "rep": 3, "temp_c": 68}

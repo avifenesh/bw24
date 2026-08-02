@@ -1,0 +1,224 @@
+=== DEPTH SWEEP x3 2026-08-02T07:24:00Z git=0983c4ba profile=performance ===
+  [kat/memra d512 rep1] prompt_ntok = 512
+  [kat/memra d512 rep1] gen_ntok = 128
+  [kat/memra d512 rep1] tg128_toks = 192.78
+  [kat/memra d512 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+=== DEPTH SWEEP x3 2026-08-02T07:30:26Z git=0983c4ba profile=performance ===
+  [kat/memra d512 rep1] prompt_ntok = 512
+  [kat/memra d512 rep1] gen_ntok = 128
+  [kat/memra d512 rep1] tg128_toks = 181.93
+  [kat/memra d512 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d2048 rep1] prompt_ntok = 2048
+  [kat/memra d2048 rep1] gen_ntok = 128
+  [kat/memra d2048 rep1] tg128_toks = 176.57
+  [kat/memra d2048 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d4096 rep1] prompt_ntok = 4096
+  [kat/memra d4096 rep1] gen_ntok = 128
+  [kat/memra d4096 rep1] tg128_toks = 167.97
+  [kat/memra d4096 rep1] argmax_match_lines = 1
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d6144 rep1] prompt_ntok = 6144
+  [kat/memra d6144 rep1] gen_ntok = 128
+  [kat/memra d6144 rep1] tg128_toks = 171.37
+  [kat/memra d6144 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 180.767789, "rep": 1, "temp_c": 63}
+  [llama] {"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 182.553493, "rep": 1, "temp_c": 63}
+  [llama] {"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.341715, "rep": 1, "temp_c": 63}
+  [llama] {"ts": "2026-08-02T07:54:15Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 175.333878, "rep": 1, "temp_c": 63}
+  [q35/memra d512 rep1] prompt_ntok = 512
+  [q35/memra d512 rep1] gen_ntok = 128
+  [q35/memra d512 rep1] tg128_toks = 177.13
+  [q35/memra d512 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d2048 rep1] prompt_ntok = 2048
+  [q35/memra d2048 rep1] gen_ntok = 128
+  [q35/memra d2048 rep1] tg128_toks = 171.08
+  [q35/memra d2048 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d4096 rep1] prompt_ntok = 4096
+  [q35/memra d4096 rep1] gen_ntok = 128
+  [q35/memra d4096 rep1] tg128_toks = 163.48
+  [q35/memra d4096 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d6144 rep1] prompt_ntok = 6144
+  [q35/memra d6144 rep1] gen_ntok = 128
+  [q35/memra d6144 rep1] tg128_toks = 159.07
+  [q35/memra d6144 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 154.374629, "rep": 1, "temp_c": 85}
+  [llama] {"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 153.708583, "rep": 1, "temp_c": 85}
+  [llama] {"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 149.382695, "rep": 1, "temp_c": 85}
+  [llama] {"ts": "2026-08-02T08:09:56Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 147.871528, "rep": 1, "temp_c": 85}
+  [o35b/memra d512 rep1] prompt_ntok = 512
+  [o35b/memra d512 rep1] gen_ntok = 128
+  [o35b/memra d512 rep1] tg128_toks = 193.92
+  [o35b/memra d512 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d2048 rep1] prompt_ntok = 2048
+  [o35b/memra d2048 rep1] gen_ntok = 128
+  [o35b/memra d2048 rep1] tg128_toks = 185.22
+  [o35b/memra d2048 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d4096 rep1] prompt_ntok = 4096
+  [o35b/memra d4096 rep1] gen_ntok = 128
+  [o35b/memra d4096 rep1] tg128_toks = 186.94
+  [o35b/memra d4096 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d6144 rep1] prompt_ntok = 6144
+  [o35b/memra d6144 rep1] gen_ntok = 128
+  [o35b/memra d6144 rep1] tg128_toks = 180.94
+  [o35b/memra d6144 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 179.898397, "rep": 1, "temp_c": 84}
+  [llama] {"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 178.180946, "rep": 1, "temp_c": 84}
+  [llama] {"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 173.480243, "rep": 1, "temp_c": 84}
+  [llama] {"ts": "2026-08-02T08:23:43Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 169.26291, "rep": 1, "temp_c": 84}
+  [kat/memra d512 rep2] prompt_ntok = 512
+  [kat/memra d512 rep2] gen_ntok = 128
+  [kat/memra d512 rep2] tg128_toks = 184.86
+  [kat/memra d512 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d2048 rep2] prompt_ntok = 2048
+  [kat/memra d2048 rep2] gen_ntok = 128
+  [kat/memra d2048 rep2] tg128_toks = 176.85
+  [kat/memra d2048 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d4096 rep2] prompt_ntok = 4096
+  [kat/memra d4096 rep2] gen_ntok = 128
+  [kat/memra d4096 rep2] tg128_toks = 173.18
+  [kat/memra d4096 rep2] argmax_match_lines = 1
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d6144 rep2] prompt_ntok = 6144
+  [kat/memra d6144 rep2] gen_ntok = 128
+  [kat/memra d6144 rep2] tg128_toks = 170.85
+  [kat/memra d6144 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 180.660492, "rep": 2, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 180.096265, "rep": 2, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.422459, "rep": 2, "temp_c": 80}
+  [llama] {"ts": "2026-08-02T08:26:08Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 173.54122, "rep": 2, "temp_c": 80}
+  [q35/memra d512 rep2] prompt_ntok = 512
+  [q35/memra d512 rep2] gen_ntok = 128
+  [q35/memra d512 rep2] tg128_toks = 177.37
+  [q35/memra d512 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d2048 rep2] prompt_ntok = 2048
+  [q35/memra d2048 rep2] gen_ntok = 128
+  [q35/memra d2048 rep2] tg128_toks = 170.47
+  [q35/memra d2048 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d4096 rep2] prompt_ntok = 4096
+  [q35/memra d4096 rep2] gen_ntok = 128
+  [q35/memra d4096 rep2] tg128_toks = 172.02
+  [q35/memra d4096 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d6144 rep2] prompt_ntok = 6144
+  [q35/memra d6144 rep2] gen_ntok = 128
+  [q35/memra d6144 rep2] tg128_toks = 164.11
+  [q35/memra d6144 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.92GB (expert budget 19.33GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 160.553578, "rep": 2, "temp_c": 77}
+  [llama] {"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 149.204053, "rep": 2, "temp_c": 77}
+  [llama] {"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 144.898646, "rep": 2, "temp_c": 77}
+  [llama] {"ts": "2026-08-02T08:39:19Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 138.367344, "rep": 2, "temp_c": 77}
+  [o35b/memra d512 rep2] prompt_ntok = 512
+  [o35b/memra d512 rep2] gen_ntok = 128
+  [o35b/memra d512 rep2] tg128_toks = 196.20
+  [o35b/memra d512 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d2048 rep2] prompt_ntok = 2048
+  [o35b/memra d2048 rep2] gen_ntok = 128
+  [o35b/memra d2048 rep2] tg128_toks = 187.95
+  [o35b/memra d2048 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d4096 rep2] prompt_ntok = 4096
+  [o35b/memra d4096 rep2] gen_ntok = 128
+  [o35b/memra d4096 rep2] tg128_toks = 181.83
+  [o35b/memra d4096 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d6144 rep2] prompt_ntok = 6144
+  [o35b/memra d6144 rep2] gen_ntok = 128
+  [o35b/memra d6144 rep2] tg128_toks = 184.00
+  [o35b/memra d6144 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.92GB (expert budget 20.27GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 181.248102, "rep": 2, "temp_c": 70}
+  [llama] {"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 179.569621, "rep": 2, "temp_c": 70}
+  [llama] {"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 176.477757, "rep": 2, "temp_c": 70}
+  [llama] {"ts": "2026-08-02T08:55:05Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 174.696212, "rep": 2, "temp_c": 70}
+  [kat/memra d512 rep3] prompt_ntok = 512
+  [kat/memra d512 rep3] gen_ntok = 128
+  [kat/memra d512 rep3] tg128_toks = 186.73
+  [kat/memra d512 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d2048 rep3] prompt_ntok = 2048
+  [kat/memra d2048 rep3] gen_ntok = 128
+  [kat/memra d2048 rep3] tg128_toks = 161.10
+  [kat/memra d2048 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d4096 rep3] prompt_ntok = 4096
+  [kat/memra d4096 rep3] gen_ntok = 128
+  [kat/memra d4096 rep3] tg128_toks = 173.82
+  [kat/memra d4096 rep3] argmax_match_lines = 1
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [kat/memra d6144 rep3] prompt_ntok = 6144
+  [kat/memra d6144 rep3] gen_ntok = 128
+  [kat/memra d6144 rep3] tg128_toks = 167.35
+  [kat/memra d6144 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 176.519114, "rep": 3, "temp_c": 68}
+  [llama] {"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 185.969513, "rep": 3, "temp_c": 68}
+  [llama] {"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 172.699512, "rep": 3, "temp_c": 68}
+  [llama] {"ts": "2026-08-02T08:58:13Z", "cell": "depth-sweep", "model": "kat", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 169.797685, "rep": 3, "temp_c": 68}
+  [q35/memra d512 rep3] prompt_ntok = 512
+  [q35/memra d512 rep3] gen_ntok = 128
+  [q35/memra d512 rep3] tg128_toks = 170.76
+  [q35/memra d512 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d2048 rep3] prompt_ntok = 2048
+  [q35/memra d2048 rep3] gen_ntok = 128
+  [q35/memra d2048 rep3] tg128_toks = 163.73
+  [q35/memra d2048 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d4096 rep3] prompt_ntok = 4096
+  [q35/memra d4096 rep3] gen_ntok = 128
+  [q35/memra d4096 rep3] tg128_toks = 164.46
+  [q35/memra d4096 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [q35/memra d6144 rep3] prompt_ntok = 6144
+  [q35/memra d6144 rep3] gen_ntok = 128
+  [q35/memra d6144 rep3] tg128_toks = 159.84
+  [q35/memra d6144 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 156.305819, "rep": 3, "temp_c": 73}
+  [llama] {"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 156.373828, "rep": 3, "temp_c": 73}
+  [llama] {"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 157.102951, "rep": 3, "temp_c": 73}
+  [llama] {"ts": "2026-08-02T09:06:21Z", "cell": "depth-sweep", "model": "q35", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 154.997246, "rep": 3, "temp_c": 73}
+  [o35b/memra d512 rep3] prompt_ntok = 512
+  [o35b/memra d512 rep3] gen_ntok = 128
+  [o35b/memra d512 rep3] tg128_toks = 196.35
+  [o35b/memra d512 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.93GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d2048 rep3] prompt_ntok = 2048
+  [o35b/memra d2048 rep3] gen_ntok = 128
+  [o35b/memra d2048 rep3] tg128_toks = 187.84
+  [o35b/memra d2048 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.93GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d4096 rep3] prompt_ntok = 4096
+  [o35b/memra d4096 rep3] gen_ntok = 128
+  [o35b/memra d4096 rep3] tg128_toks = 190.33
+  [o35b/memra d4096 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.93GB (expert budget 20.27GB) -> RESIDENT
+  [o35b/memra d6144 rep3] prompt_ntok = 6144
+  [o35b/memra d6144 rep3] gen_ntok = 128
+  [o35b/memra d6144 rep3] tg128_toks = 176.18
+  [o35b/memra d6144 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 19.50GB + trunk 1.65GB vs free 23.93GB (expert budget 20.27GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 175.425116, "rep": 3, "temp_c": 68}
+  [llama] {"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 2048, "metric": "tg128_toks", "value": 175.633505, "rep": 3, "temp_c": 68}
+  [llama] {"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 4096, "metric": "tg128_toks", "value": 171.542094, "rep": 3, "temp_c": 68}
+  [llama] {"ts": "2026-08-02T09:11:50Z", "cell": "depth-sweep", "model": "o35b", "engine": "llama", "depth": 6144, "metric": "tg128_toks", "value": 170.263267, "rep": 3, "temp_c": 68}
+DEPTH-SWEEP-DONE 2026-08-02T09:11:50Z

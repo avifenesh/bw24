@@ -1,0 +1,12 @@
+{"model": "kat", "target": 512, "chars": 1605, "llama_tok_count": 512, "file": "depth-512-kat.txt"}
+{"model": "kat", "target": 2048, "chars": 7025, "llama_tok_count": 2048, "file": "depth-2048-kat.txt"}
+{"model": "kat", "target": 4096, "chars": 13793, "llama_tok_count": 4096, "file": "depth-4096-kat.txt"}
+{"model": "kat", "target": 6144, "chars": 19952, "llama_tok_count": 6144, "file": "depth-6144-kat.txt"}
+{"model": "q35", "target": 512, "chars": 1605, "llama_tok_count": 512, "file": "depth-512-q35.txt"}
+{"model": "q35", "target": 2048, "chars": 7025, "llama_tok_count": 2048, "file": "depth-2048-q35.txt"}
+{"model": "q35", "target": 4096, "chars": 13793, "llama_tok_count": 4096, "file": "depth-4096-q35.txt"}
+{"model": "q35", "target": 6144, "chars": 19952, "llama_tok_count": 6144, "file": "depth-6144-q35.txt"}
+{"model": "o35b", "target": 512, "chars": 1605, "llama_tok_count": 512, "file": "depth-512-o35b.txt"}
+{"model": "o35b", "target": 2048, "chars": 7025, "llama_tok_count": 2048, "file": "depth-2048-o35b.txt"}
+{"model": "o35b", "target": 4096, "chars": 13793, "llama_tok_count": 4096, "file": "depth-4096-o35b.txt"}
+{"model": "o35b", "target": 6144, "chars": 19952, "llama_tok_count": 6144, "file": "depth-6144-o35b.txt"}
