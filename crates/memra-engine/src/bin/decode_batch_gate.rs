@@ -13,8 +13,9 @@
 //!     gate1: B=1 logits bit-identical to decode_step_h, every step.
 //!     gate2: B=N per-seq streams == isolated decode_step_h streams (argmax).
 //!   config — the default-env battery (fused tier active in the reference):
-//!     gate1: B=1 argmax stream vs decode_step_h — divergence before step 16 FAILs,
-//!            later divergence is the accepted cross-config drift class (WARN).
+//!     gate1: B=1 argmax stream vs decode_step_h, 6 prompt draws — FAILs iff >= 4 of the
+//!            6 draws diverge before step 3 (the plumbing class shows on EVERY draw);
+//!            fewer/later divergence is the accepted cross-config drift class (WARN).
 //!     gate2: B=N per-seq LOGITS bit-identical to isolated decode_step_batch B=1 runs —
 //!            the serving isolation contract (batchmates must not change your stream),
 //!            enforced at full bit strength WITHIN the config.
@@ -77,14 +78,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Gate 1: B=1 vs decode_step_h ----
     // strict: bit-identity on the seed prompt (run under the EQUALIZED env).
-    // config: MULTI-SEED calibration (re-swept 2026-07-31, the shexp-dot dig): the two
-    // decode configs carry an ACCEPTED FP-composition gap, and on any single synthetic
-    // prompt the first argmax divergence is a near-tie roulette — a 6-seed sweep of the
-    // PRE-change tree failed the old single-prompt step-16 rule on 3/6 draws (steps
-    // 7/8/15), so that rule detected the dice, not the plumbing. Plumbing bugs (wrong
-    // token fed, KV misindexed) diverge at step 0-2 on EVERY draw; observed numeric-tie
-    // flips start at step 6+. FAIL iff any seed diverges before step 3.
+    // config: MULTI-SEED calibration. The two decode configs carry an ACCEPTED
+    // FP-composition gap, and on any single synthetic prompt the first argmax divergence
+    // is a near-tie roulette — the H100 re-sweep (2026-07-31, the shexp-dot dig) failed
+    // the old single-prompt step-16 rule on 3/6 draws (steps 7/8/15), and its
+    // replacement ("FAIL iff ANY seed diverges before step 3") assumed tie flips start
+    // at step 6+ — an H100-only observation. The 5090 re-sweep (2026-08-02,
+    // research/gate1-recal-20260802/: 18 draws x {q9j Q8_0, q35 IQ4_XS}) saw legal dice
+    // at steps 0/1/3/4 (q35 seeds 16/17 flip at step 0; q9j seed 0 at step 1), each
+    // PROVEN dice by bit-identity under the equalized strict env on the very same draws.
+    // The per-draw step threshold carries no rig-invariant signal; the FRACTION does:
+    // plumbing (wrong token fed, KV misindexed) diverges at step 0-2 on EVERY draw,
+    // observed dice reach at most 2 early draws per 6-window. FAIL iff >= G1_EARLY_K of
+    // the 6 draws diverge before step G1_EARLY_STEP — margin 2 above the observed dice
+    // maximum, margin 2 below the plumbing floor (6/6). Teeth verified by the
+    // MEMRA_GATE_CANARY=1 wrong-token canary (must FAIL 6/6). Strict gate1 + gate2 +
+    // gate3 keep full bit strength — they remain the hard exactness floor.
+    const G1_EARLY_STEP: usize = 3; // plumbing window: wrong token/KV shows at step 0-2
+    const G1_EARLY_K: usize = 4; // FAIL iff this many draws diverge inside the window
+    let canary = std::env::var("MEMRA_GATE_CANARY").map(|v| v == "1").unwrap_or(false);
     let mut g1_fail = 0usize;
+    let mut g1_early = 0usize;
     let g1_seeds: u32 = if strict { 1 } else { 6 };
     for gs in 0..g1_seeds {
         let p0: Vec<u32> = (0..20).map(|j| 55 + (seed + gs) * 13 + j * 31).collect();
@@ -96,6 +110,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut t_bat = t_ref;
         let mut diverged: Option<usize> = None;
         for s in 0..steps {
+            // TEST-ONLY plumbing canary (MEMRA_GATE_CANARY=1): feed the batched lane one
+            // wrong token — the class the fraction rule must keep catching (FAIL 6/6).
+            if canary && s == 1 {
+                t_bat = if t_bat == 0 { 1 } else { t_bat - 1 };
+            }
             let (l_ref, _) = model.decode_step_h(&e, t_ref, &mut c_ref)?;
             let l_bat = {
                 let mut caches = [&mut c_bat];
@@ -117,13 +136,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if t_ref != t_bat { diverged = Some(s); break; }
         }
         match diverged {
-            Some(s) if strict || s < 3 => {
+            Some(s) if strict => {
                 println!("gate1 seed {gs} step {s}: token diverged FAIL");
                 g1_fail += 1;
+            }
+            Some(s) if s < G1_EARLY_STEP => {
+                g1_early += 1;
+                println!("gate1 seed {gs} step {s}: token diverged EARLY \
+                          (step < {G1_EARLY_STEP}; plumbing iff every draw)");
             }
             Some(s) => println!("gate1 seed {gs} step {s}: token diverged — accepted \
                                  cross-config drift (WARN)"),
             None => println!("gate1 seed {gs}: agreement all {steps} steps"),
+        }
+    }
+    if !strict {
+        println!("gate1 early draws (step < {G1_EARLY_STEP}): {g1_early}/{g1_seeds} \
+                  (FAIL threshold >= {G1_EARLY_K}; plumbing class = every draw)");
+        if g1_early >= G1_EARLY_K {
+            g1_fail += 1;
         }
     }
     println!("gate1 (B=1 {} vs decode_step_h, {steps} steps, {g1_seeds} seed(s)): {}",

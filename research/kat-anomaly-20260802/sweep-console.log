@@ -1,0 +1,122 @@
+=== KAT-ANOMALY SWEEP x5 2026-08-01T21:41:39Z git=5f15f838 profile=performance ===
+  [kat-naked rep1] prefill_toks = 228.7
+  [kat-naked rep1] decode_toks = 106.69
+  [kat-naked rep1] argmax_match = 1
+  [kat-naked rep1] peak_vram_mib = 19118
+  [kat-naked rep1] [stop: MaxNew] tokens_sha=5246b77accbdf82a
+  [kat-naked rep1] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [kat-iqfast rep1] prefill_toks = 696.9
+  [kat-iqfast rep1] decode_toks = 193.93
+  [kat-iqfast rep1] argmax_match = 1
+  [kat-iqfast rep1] peak_vram_mib = 19118
+  [kat-iqfast rep1] [stop: MaxNew] tokens_sha=9102ffd0b8241a65
+  [kat-iqfast rep1] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [ctrl-q35 rep1] prefill_toks = 2312.8
+  [ctrl-q35 rep1] decode_toks = 189.24
+  [ctrl-q35 rep1] argmax_match = 1
+  [ctrl-q35 rep1] peak_vram_mib = 17994
+  [ctrl-q35 rep1] [stop: MaxNew] tokens_sha=106567788698cf2f
+  [ctrl-q35 rep1] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [llama-kat rep1] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 672702497 ],
+    "samples_ts": [ 190.277 ]
+  }
+]
+  [kat-naked rep2] prefill_toks = 228.1
+  [kat-naked rep2] decode_toks = 106.51
+  [kat-naked rep2] argmax_match = 1
+  [kat-naked rep2] peak_vram_mib = 19118
+  [kat-naked rep2] [stop: MaxNew] tokens_sha=5246b77accbdf82a
+  [kat-naked rep2] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [kat-iqfast rep2] prefill_toks = 695.8
+  [kat-iqfast rep2] decode_toks = 193.50
+  [kat-iqfast rep2] argmax_match = 1
+  [kat-iqfast rep2] peak_vram_mib = 19118
+  [kat-iqfast rep2] [stop: MaxNew] tokens_sha=9102ffd0b8241a65
+  [kat-iqfast rep2] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [ctrl-q35 rep2] prefill_toks = 2315.0
+  [ctrl-q35 rep2] decode_toks = 186.68
+  [ctrl-q35 rep2] argmax_match = 1
+  [ctrl-q35 rep2] peak_vram_mib = 17994
+  [ctrl-q35 rep2] [stop: MaxNew] tokens_sha=106567788698cf2f
+  [ctrl-q35 rep2] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [llama-kat rep2] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 671512916 ],
+    "samples_ts": [ 190.614 ]
+  }
+]
+  [kat-naked rep3] prefill_toks = 228.4
+  [kat-naked rep3] decode_toks = 106.57
+  [kat-naked rep3] argmax_match = 1
+  [kat-naked rep3] peak_vram_mib = 19118
+  [kat-naked rep3] [stop: MaxNew] tokens_sha=5246b77accbdf82a
+  [kat-naked rep3] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [kat-iqfast rep3] prefill_toks = 698.7
+  [kat-iqfast rep3] decode_toks = 193.40
+  [kat-iqfast rep3] argmax_match = 1
+  [kat-iqfast rep3] peak_vram_mib = 19118
+  [kat-iqfast rep3] [stop: MaxNew] tokens_sha=9102ffd0b8241a65
+  [kat-iqfast rep3] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [ctrl-q35 rep3] prefill_toks = 2316.4
+  [ctrl-q35 rep3] decode_toks = 191.28
+  [ctrl-q35 rep3] argmax_match = 1
+  [ctrl-q35 rep3] peak_vram_mib = 17994
+  [ctrl-q35 rep3] [stop: MaxNew] tokens_sha=106567788698cf2f
+  [ctrl-q35 rep3] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [llama-kat rep3] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 674346629 ],
+    "samples_ts": [ 189.813 ]
+  }
+]
+  [kat-naked rep4] prefill_toks = 227.5
+  [kat-naked rep4] decode_toks = 106.75
+  [kat-naked rep4] argmax_match = 1
+  [kat-naked rep4] peak_vram_mib = 19118
+  [kat-naked rep4] [stop: MaxNew] tokens_sha=5246b77accbdf82a
+  [kat-naked rep4] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [kat-iqfast rep4] prefill_toks = 697.0
+  [kat-iqfast rep4] decode_toks = 193.41
+  [kat-iqfast rep4] argmax_match = 1
+  [kat-iqfast rep4] peak_vram_mib = 19118
+  [kat-iqfast rep4] [stop: MaxNew] tokens_sha=9102ffd0b8241a65
+  [kat-iqfast rep4] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [ctrl-q35 rep4] prefill_toks = 2315.1
+  [ctrl-q35 rep4] decode_toks = 188.96
+  [ctrl-q35 rep4] argmax_match = 1
+  [ctrl-q35 rep4] peak_vram_mib = 17994
+  [ctrl-q35 rep4] [stop: MaxNew] tokens_sha=106567788698cf2f
+  [ctrl-q35 rep4] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [llama-kat rep4] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 656897417 ],
+    "samples_ts": [ 194.855 ]
+  }
+]
+  [kat-naked rep5] prefill_toks = 228.0
+  [kat-naked rep5] decode_toks = 106.94
+  [kat-naked rep5] argmax_match = 1
+  [kat-naked rep5] peak_vram_mib = 19118
+  [kat-naked rep5] [stop: MaxNew] tokens_sha=5246b77accbdf82a
+  [kat-naked rep5] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [kat-iqfast rep5] prefill_toks = 699.8
+  [kat-iqfast rep5] decode_toks = 189.72
+  [kat-iqfast rep5] argmax_match = 1
+  [kat-iqfast rep5] peak_vram_mib = 19118
+  [kat-iqfast rep5] [stop: MaxNew] tokens_sha=9102ffd0b8241a65
+  [kat-iqfast rep5] resident-experts decision: experts 17.11GB + trunk 1.68GB vs free 23.93GB (expert budget 20.24GB) -> RESIDENT
+  [ctrl-q35 rep5] prefill_toks = 2328.8
+  [ctrl-q35 rep5] decode_toks = 189.07
+  [ctrl-q35 rep5] argmax_match = 1
+  [ctrl-q35 rep5] peak_vram_mib = 17994
+  [ctrl-q35 rep5] [stop: MaxNew] tokens_sha=106567788698cf2f
+  [ctrl-q35 rep5] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+  [llama-kat rep5] ERROR = 0
+    "stddev_ts": 0.000000,
+    "samples_ns": [ 677417274 ],
+    "samples_ts": [ 188.953 ]
+  }
+]
+KAT-SWEEP-DONE 2026-08-01T21:48:12Z

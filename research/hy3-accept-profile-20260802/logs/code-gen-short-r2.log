@@ -1,0 +1,22 @@
+=== code-gen-short-r2 start 2026-08-01T21:13:44Z ===
+prompt file: /opt/dlami/nvme/hy3-accept-profile/prompts/code-gen-short.txt (146 chars)
+tree commit: 2b9a6aa64fc1032ed24c272d2dab58c25fabc946 restructure/public-split tip == lane/hy3-spec-sweep base
+gpu-pre: 37, 135.88 W, 1830 MHz, 0 MiB
+concurrent compute apps pre:
+pid, process_name, used_gpu_memory [MiB]
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded memra-repack (81 layers, nextn=1)
+text prompt (146 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 359, 120007, 120029, 120030]
+
+[generate]   127 tok in 34.138s = 3.72 tok/s (gen-only; this run's prime 7.084s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 503, 289, 1970, 24621, 35510, 40297, 15189, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63, 6590, 13, 286, 1438, 6515, 185, 4140, 4277, 58035, 667, 1661, 39839, 286, 4140, 25274, 1661, 24708, 2243, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 5454, 408, 15881, 244, 4814, 13, 286, 408, 1532, 3648, 1364, 25, 424, 1364, 7512, 280, 252, 4814, 13, 185, 408, 5454, 408, 1622, 11669, 25, 1733, 324, 1364, 185, 408, 1622, 79100, 25, 24708, 58, 5661, 60]
+
+[generate_spec K=1] 128 tok in 38.071s = 3.34 tok/s (0.90x vs generate; this run's prime 6.924s)
+  acceptance: 55/73 = 75.3%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== code-gen-short-r2 exit=0 2026-08-01T21:18:34Z ===
+gpu-post: 37, 133.55 W, 1830 MHz, 0 MiB
+concurrent compute apps post:
+pid, process_name, used_gpu_memory [MiB]

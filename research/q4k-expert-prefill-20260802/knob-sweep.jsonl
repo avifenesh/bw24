@@ -1,0 +1,7 @@
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"sk0","metric":"pp2048_toks_med5","value":3289.5,"n_inproc":5,"profile":"performance","temp_c":61}
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"sk32","metric":"pp2048_toks_med5","value":3306.8,"n_inproc":5,"profile":"performance","temp_c":61}
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"sk128","metric":"pp2048_toks_med5","value":3323.7,"n_inproc":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"cross32","metric":"pp2048_toks_med5","value":3452.3,"n_inproc":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"cross64","metric":"pp2048_toks_med5","value":3459.9,"n_inproc":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"cross128","metric":"pp2048_toks_med5","value":3425.6,"n_inproc":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-01T23:10:43Z","git":"5cfad376","cell":"o35b-f16g2-knobs","arm":"cross256","metric":"pp2048_toks_med5","value":3393.3,"n_inproc":5,"profile":"performance","temp_c":62}

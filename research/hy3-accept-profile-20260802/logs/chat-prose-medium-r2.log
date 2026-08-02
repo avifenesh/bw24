@@ -1,0 +1,22 @@
+=== chat-prose-medium-r2 start 2026-08-01T21:08:42Z ===
+prompt file: /opt/dlami/nvme/hy3-accept-profile/prompts/chat-prose-medium.txt (111 chars)
+tree commit: 2b9a6aa64fc1032ed24c272d2dab58c25fabc946 restructure/public-split tip == lane/hy3-spec-sweep base
+gpu-pre: 37, 135.68 W, 1830 MHz, 0 MiB
+concurrent compute apps pre:
+pid, process_name, used_gpu_memory [MiB]
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded memra-repack (81 layers, nextn=1)
+text prompt (111 chars, chat-templated) -> 38 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 32120, 4178, 287, 244, 29419, 206, 16, 17, 8369, 13792, 11, 18402, 1385, 5864, 2289, 280, 289, 1385, 890, 5512, 359, 120007, 120029, 120030]
+
+[generate]   127 tok in 44.929s = 2.83 tok/s (gen-only; this run's prime 6.819s)
+  tokens: [43285, 244, 4803, 316, 1447, 244, 15443, 2860, 15865, 0, 28959, 220, 109, 286, 91896, 8819, 280, 1230, 3517, 562, 252, 2385, 2799, 1214, 25, 286, 16, 13, 1970, 27420, 503, 2088, 2454, 36429, 549, 1017, 562, 252, 35159, 1594, 859, 9942, 11, 1447, 244, 26792, 280, 244, 8819, 13, 185, 17, 13, 1970, 33707, 341, 1032, 1609, 423, 6300, 14310, 35776, 2088, 2454, 31728, 549, 280, 562, 252, 3605, 11, 1758, 1447, 444, 31728, 280, 8197, 13, 286, 5057, 5864, 1021, 1085, 244, 8552, 26248, 25, 1970, 62695, 4801, 503, 0, 424, 5868, 91827, 377, 859, 9074, 11, 289, 369, 625, 82, 1447, 16860, 377, 252, 15865, 19274, 13, 286, 3299, 11, 4835, 252, 9074, 11, 244, 21972, 17192, 8517, 25, 185, 12, 424, 4803, 71443, 252]
+
+[generate_spec K=1] 128 tok in 41.914s = 3.03 tok/s (1.07x vs generate; this run's prime 6.814s)
+  acceptance: 39/89 = 43.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== chat-prose-medium-r2 exit=0 2026-08-01T21:13:44Z ===
+gpu-post: 37, 133.78 W, 1830 MHz, 0 MiB
+concurrent compute apps post:
+pid, process_name, used_gpu_memory [MiB]

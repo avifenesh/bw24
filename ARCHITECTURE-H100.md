@@ -2499,3 +2499,64 @@ per-session VRAM cost, further admissions need free >= 2x that cost or the reque
 in the never-rejected FIFO; first session always admits, empty-active OOM still errors).
 The H100 q35 row's post-twin re-cell is IN FLIGHT on a parallel lane as of this entry;
 the published row stands at the post-fix 215 / 1.00x.
+
+**Round-52 closure (same day, `lane/q35-recell-final`,
+`research/q35-recell-final-20260802/`):** the in-flight re-cell landed. On Hopper the
+batch router recovers **82.3%** of the exactness cost (naked 8186.7 vs batch0 7299.1 vs
+exact0 8377.6, interleaved x3 same session — -2.3% net vs the pre-fix reference), and
+the full same-session N=5 board pair reads **q35 217.0 vs vLLM 214.8 = 1.01x** — the
+row is back ahead with the contract held. kernel-check's fast-router weight-oracle
+section (real q35 router weights, 32 m-points, bit-compare + m-invariance) ran GREEN on
+sm_90a before any measurement: the batch twin is bit-identical and m-invariant on
+Hopper exactly as on the 5090.
+
+## Round 53 — battery semantics: gate1 goes fraction-ruled (#47); IQ4_XS trunk dp4a arch-global (2026-08-02, lanes gate1-recal / kat-anomaly / prime-gate-coverage — docs-lane ledger entry)
+
+Three arch-global merges this round touch surfaces validate-h100.sh or H100 operators
+see; none of them re-measured Hopper perf, and the board is untouched.
+
+**gate1-config is now the fraction rule (#47).** decode-batch-gate's config-mode gate1 —
+the leg validate-h100.sh runs at B=8 — verdicts FAIL iff **>= 4 of the 6
+`MEMRA_GATE_SEED` draws diverge before step 3**, replacing round 45's "any draw < step
+3" floor. The round-45 rule was calibrated on this box's dice (first divergences at
+steps 7/8/15, zero early in 6 draws) and did not transfer: 5090 dice land at steps 0
+and 1, and they are proven DICE, not plumbing — the exact worst draws are bit-identical
+for all 32 steps under the strict-equalized composition (LAW 2, stale-verdict, again).
+The fraction rule separates at margin 2 on both sides: observed legal dice reach at
+most 2 early draws per 6-window; the plumbing class (wrong token fed, KV misindexed)
+diverges at step 0-2 on EVERY draw. Teeth proven, not assumed: `MEMRA_GATE_CANARY=1`
+(test-only door — feed the batched lane one wrong token at step 1) fails 6/6 draws
+early with exit 1 on both gate models. For this box the change is a pure widening — the
+observed H100 dice sit far inside the rule — and gate2 (bit strength), gate3, and
+strict mode are untouched as the hard exactness floor. Receipts
+`research/gate1-recal-20260802/`.
+
+**IQ4_XS trunk dp4a admission is default ON — arch-global (#42).** `iq_fast_enabled()`
+(lib.rs): non-expert IQ4_XS matmuls ride `qmatvec_iq4_XS_dp4a` instead of the Stage-A
+f32 oracle path at every m; `MEMRA_IQ_FAST=0` is the rollback seam (FLAGS §3). The 5090
+lane proved the flip (KAT-Coder decode 106.7 -> 193.4, +81.3%, x5 interleaved) and the
+supported-set no-op guard (no board artifact carries IQ4_XS NON-expert 2-D matmuls —
+the q35 UD-IQ4_XS trunk is Q8_0 throughout, per the tensor-mix dumps; ctrl bit-identity
+guard sha-exact pre/post flip). The same static tensor-mix argument covers the H100
+board set (Q8_0 / Q4_K_M / IQ4_XS-UD / QAT Q4_0 — none with IQ4_XS trunks), and the
+on-box verification CONFIRMED it: q35 token streams bit-identical naked vs
+`MEMRA_IQ_FAST=0` on every paired run (board-2048 7v7, p2 3v3), perf flat <2% with
+overlapping ranges (the box's bimodal decode visited by both arms — order-flipped reps
+killed the arm hypothesis), `validate-h100.sh --quick` exit 0 under the new gate1
+fraction rule, AUTO-KQUANT proven mode-1 on Hopper by cfg gate. One pre-existing
+find: q35+pp512 trips run-gen's hard argmax assert (the documented 365/198 near-tie,
+margins 0.115/0.077; v0.63.0 control fails identically to the digit — the cell had
+never been run on H100; owner call = near-tie tolerance in the assert or ledger-only).
+Receipts `research/kat-anomaly-20260802/` + `research/h100-v064-verify-20260802/`.
+
+**run-gen grew a second gate line — arch-global (#46).** Board argmax-sanity runs on
+this box now also print `batched-prime argmax=... {MATCH|FLIP-NEARTIE|
+MISMATCH-STRUCTURED}`: `prime_cache` (the config that seeds real generation and
+serving) vs the tokenwise reference, verdicts by bounds calibrated on the 2026-08-02
+six-model 5090 sweep (`MEMRA_PRIME_GATE_MAXDIFF=8.0` / `_MARGIN=1.0`; 10/144 first
+tokens legally flip at margins <= 0.70, dense Q8_0 — the fleet class — 0/48).
+FLIP-NEARTIE is reported non-fatal; STRUCTURED fails the run. The bounds obey LAW 2:
+recalibrate when the kernels under them move. Dedicated battery: `prime-gate <model>
+--prompts-file <f>`; a leg lives inside tools/local-ci.sh (LAW 3 — validate-h100.sh has
+no run-gen leg, so H100 exposure is via the board scripts' argmax-sanity runs).
+Receipts `research/prime-gate-coverage-20260802/`.

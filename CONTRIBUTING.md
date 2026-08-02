@@ -24,9 +24,16 @@ or individually:
 
 ```bash
 ./target/release/kernel-check          # every quant kernel vs a CPU reference
-./target/release/run-gen  ...          # prefill argmax MUST match decode argmax
+./target/release/run-gen  ...          # prefill argmax MUST match decode argmax; the
+                                       # batched-prime line (#46) must not be MISMATCH-STRUCTURED
 ./target/release/run-spec ...          # K=1..8 self-consistency: every K token-identical to plain decode
 ```
+
+run-gen prints a second gate line on text prompts >= 16 tokens: `batched-prime argmax=...`
+compares `prime_cache` (the config that seeds real generation and serving) against the
+tokenwise reference. `FLIP-NEARTIE` there is the documented cross-config drift class
+(reported, non-fatal); `MISMATCH-STRUCTURED` fails the run. Multi-prompt battery:
+`./target/release/prime-gate <model.gguf> --prompts-file <f> [--chat]`.
 
 Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel that reduces in different floating-point order can flip an argmax at tight logit margins — has silently broken "faster" kernels before (`research/tune-data/`) — so a green run *right now, on your branch* is required, not an assumption.
 
@@ -34,7 +41,10 @@ Changes touching the Hopper (sm_90a) lane additionally run its one-command batte
 H100: `tools/validate-h100.sh <model.gguf> [--quick]` — kernel-check config pins (incl. the
 KQRP, f16-mirror, f16g-sk, and batched-seqs pins), decode-batch (config + strict, gates 1–3 incl.
 gate3c lean-logits), decode-dc, graph-decode, and graph-session. `ALL GATES GREEN` output
-pasted, same rule as above.
+pasted, same rule as above. Gate1's config-mode verdict is the multi-seed fraction rule
+(#47): FAIL iff >= 4 of 6 `MEMRA_GATE_SEED` draws diverge before step 3 — near-tie seeds
+are legal FP dice, plumbing fails every draw; `MEMRA_GATE_CANARY=1` is the teeth check
+when recalibrating.
 
 ### 1b. Perf regression battery (local CI)
 

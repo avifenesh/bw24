@@ -173,3 +173,91 @@ pub fn argmax(logits: &[f32]) -> usize {
     }
     best
 }
+
+/// top-1/top-2 (id, value) pairs — the greedy near-tie margin is v1 - v2.
+pub fn top2(logits: &[f32]) -> (usize, f32, usize, f32) {
+    let (mut i1, mut v1, mut i2, mut v2) = (0usize, f32::NEG_INFINITY, 0usize, f32::NEG_INFINITY);
+    for (i, &v) in logits.iter().enumerate() {
+        if v > v1 {
+            i2 = i1;
+            v2 = v1;
+            i1 = i;
+            v1 = v;
+        } else if v > v2 {
+            i2 = i;
+            v2 = v;
+        }
+    }
+    (i1, v1, i2, v2)
+}
+
+/// Gate #46 verdict: BATCHED-PRIME last-position logits vs the TOKENWISE-PRIME reference.
+///
+/// The two primes are different numeric configs by design (prefill GEMM m=T vs decode
+/// GEMV m=1 — cross-config drift class, like forward_last vs decode). An argmax flip on a
+/// near-tie under small logit drift is within that law; a flip on a WIDE margin, or drift
+/// beyond the calibrated ceiling, cannot come from the FP-composition class and fails hard.
+///
+/// Bounds (env-overridable; calibrated on the 2026-08-02 supported-set sweep,
+/// research/prime-gate-coverage-20260802 — recalibrate when the kernels under them move,
+/// the H100 stale-verdict law):
+///   MEMRA_PRIME_GATE_MAXDIFF — full-vocab logit maxdiff ceiling (default 8.0). Measured
+///     legal cross-config drift across the 144-prompt supported-set sweep: dense Q8_0 up
+///     to ~1.0, MoE IQ4_XS/Q4_K_M up to 3.1, gemma QAT Q4_0 up to 5.5 (its logit scale is
+///     larger); run-gen's own accepted forward-vs-decode drift is 1.39 on the q35 probe.
+///     A real defect (indexing/wrong-weights) lands decades above this.
+///   MEMRA_PRIME_GATE_MARGIN — tokenwise top1-top2 margin above which an argmax flip is
+///     treated as structured (default 1.0). All 10 measured legal first-token flips sat
+///     at margins <= 0.70 (per-position flips <= 0.92).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PrimeGateClass {
+    Match,
+    NearTieFlip,
+    Structured,
+}
+
+pub struct PrimeGateVerdict {
+    pub tw_argmax: usize,
+    pub bp_argmax: usize,
+    pub tw_margin: f32,
+    pub bp_margin: f32,
+    pub maxdiff: f32,
+    pub class: PrimeGateClass,
+}
+
+fn env_f32(key: &str, default: f32) -> f32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+pub fn prime_gate_verdict(tokenwise: &[f32], batched: &[f32]) -> PrimeGateVerdict {
+    let (t1, tv1, _, tv2) = top2(tokenwise);
+    let (b1, bv1, _, bv2) = top2(batched);
+    let maxdiff = tokenwise
+        .iter()
+        .zip(batched)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let maxdiff_bound = env_f32("MEMRA_PRIME_GATE_MAXDIFF", 8.0);
+    let margin_bound = env_f32("MEMRA_PRIME_GATE_MARGIN", 1.0);
+    let tw_margin = tv1 - tv2;
+    let class = if !maxdiff.is_finite() || maxdiff > maxdiff_bound {
+        PrimeGateClass::Structured
+    } else if t1 == b1 {
+        PrimeGateClass::Match
+    } else if tw_margin <= margin_bound {
+        PrimeGateClass::NearTieFlip
+    } else {
+        PrimeGateClass::Structured
+    };
+    PrimeGateVerdict {
+        tw_argmax: t1,
+        bp_argmax: b1,
+        tw_margin,
+        bp_margin: bv1 - bv2,
+        maxdiff,
+        class,
+    }
+}

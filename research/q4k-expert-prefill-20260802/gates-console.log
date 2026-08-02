@@ -1,0 +1,56 @@
+=== GATES phase=all 2026-08-01T23:21:47Z git=93e2bfbc profile=performance ===
+kernel-check rc=0 FAIL-lines=0 tail:
+moe async-prefetch ordering + protected victim: OK
+
+ALL GREEN: kernels match CPU reference.
+  [o35b-post/naked rep1] pp2048_toks = 3466.1
+  [o35b-post/naked rep1] gen512_prefill_toks = 1664.1
+  [o35b-post/naked rep1] gen512_decode_toks = 209.16
+  [o35b-post/naked rep1] gen512_match_lines = 2
+  [o35b-post/naked rep1] prime-gate=MATCH tokens_sha=c0c12c3b350dc7f5
+  [o35b-post/naked rep2] pp2048_toks = 3461.7
+  [o35b-post/naked rep2] gen512_prefill_toks = 1666.1
+  [o35b-post/naked rep2] gen512_decode_toks = 209.10
+  [o35b-post/naked rep2] gen512_match_lines = 2
+  [o35b-post/naked rep2] prime-gate=MATCH tokens_sha=c0c12c3b350dc7f5
+  [q35-guard/pre rep1] pp2048_toks = 3463.8
+  [q35-guard/post rep1] pp2048_toks = 4073.9
+  [q35-guard/pre rep1] gen512_prefill_toks = 2333.9
+  [q35-guard/pre rep1] gen512_decode_toks = 104.87
+  [q35-guard/pre rep1] gen512_match_lines = 1
+  [q35-guard/pre rep1] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/post rep1] gen512_prefill_toks = 2467.3
+  [q35-guard/post rep1] gen512_decode_toks = 117.03
+  [q35-guard/post rep1] gen512_match_lines = 1
+  [q35-guard/post rep1] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/pre rep2] pp2048_toks = 3455.4
+  [q35-guard/post rep2] pp2048_toks = 4067.9
+  [q35-guard/pre rep2] gen512_prefill_toks = 2330.5
+  [q35-guard/pre rep2] gen512_decode_toks = 257.58
+  [q35-guard/pre rep2] gen512_match_lines = 1
+  [q35-guard/pre rep2] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/post rep2] gen512_prefill_toks = 2450.2
+  [q35-guard/post rep2] gen512_decode_toks = 218.53
+  [q35-guard/post rep2] gen512_match_lines = 1
+  [q35-guard/post rep2] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/pre rep3] pp2048_toks = 3449.6
+  [q35-guard/post rep3] pp2048_toks = 4073.3
+  [q35-guard/pre rep3] gen512_prefill_toks = 2329.0
+  [q35-guard/pre rep3] gen512_decode_toks = 251.44
+  [q35-guard/pre rep3] gen512_match_lines = 1
+  [q35-guard/pre rep3] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/post rep3] gen512_prefill_toks = 2450.1
+  [q35-guard/post rep3] gen512_decode_toks = 248.95
+  [q35-guard/post rep3] gen512_match_lines = 1
+  [q35-guard/post rep3] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 128 tok in 0.532s = 238.77 tok/s (1.20x vs generate; this run's prime 0.578s)
+[generate_spec K=2] 128 tok in 0.492s = 257.92 tok/s (1.30x vs generate; this run's prime 0.575s)
+[generate_spec K=3] 128 tok in 0.482s = 263.47 tok/s (1.33x vs generate; this run's prime 0.572s)
+[generate_spec K=4] 128 tok in 0.511s = 248.61 tok/s (1.25x vs generate; this run's prime 0.569s)
+[generate_spec K=5] 128 tok in 0.578s = 219.66 tok/s (1.11x vs generate; this run's prime 0.569s)
+[generate_spec K=6] 128 tok in 0.627s = 202.56 tok/s (1.02x vs generate; this run's prime 0.571s)
+[generate_spec K=7] 128 tok in 0.690s = 184.11 tok/s (0.93x vs generate; this run's prime 0.573s)
+[generate_spec K=8] 128 tok in 0.811s = 156.65 tok/s (0.79x vs generate; this run's prime 0.573s)
+=== SELF-CONSISTENCY PASS ===
+GATES-DONE phase=all 2026-08-01T23:29:55Z

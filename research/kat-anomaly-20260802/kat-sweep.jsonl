@@ -1,0 +1,75 @@
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"prefill_toks","value":228.7,"rep":1,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"decode_toks","value":106.69,"rep":1,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"argmax_match","value":1,"rep":1,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"peak_vram_mib","value":19118,"rep":1,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"prefill_toks","value":696.9,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"decode_toks","value":193.93,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"argmax_match","value":1,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"peak_vram_mib","value":19118,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"prefill_toks","value":2312.8,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"decode_toks","value":189.24,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"argmax_match","value":1,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"peak_vram_mib","value":17994,"rep":1,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"llama-kat","metric":"ERROR","value":0,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"prefill_toks","value":228.1,"rep":2,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"decode_toks","value":106.51,"rep":2,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"argmax_match","value":1,"rep":2,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"peak_vram_mib","value":19118,"rep":2,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"prefill_toks","value":695.8,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"decode_toks","value":193.50,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"argmax_match","value":1,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"peak_vram_mib","value":19118,"rep":2,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"prefill_toks","value":2315.0,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"decode_toks","value":186.68,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"argmax_match","value":1,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"peak_vram_mib","value":17994,"rep":2,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"llama-kat","metric":"ERROR","value":0,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"prefill_toks","value":228.4,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"decode_toks","value":106.57,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"argmax_match","value":1,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"peak_vram_mib","value":19118,"rep":3,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"prefill_toks","value":698.7,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"decode_toks","value":193.40,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"argmax_match","value":1,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"peak_vram_mib","value":19118,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"prefill_toks","value":2316.4,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"decode_toks","value":191.28,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"argmax_match","value":1,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"peak_vram_mib","value":17994,"rep":3,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"llama-kat","metric":"ERROR","value":0,"rep":3,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"prefill_toks","value":227.5,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"decode_toks","value":106.75,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"argmax_match","value":1,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"peak_vram_mib","value":19118,"rep":4,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"prefill_toks","value":697.0,"rep":4,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"decode_toks","value":193.41,"rep":4,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"argmax_match","value":1,"rep":4,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"peak_vram_mib","value":19118,"rep":4,"profile":"performance","temp_c":66}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"prefill_toks","value":2315.1,"rep":4,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"decode_toks","value":188.96,"rep":4,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"argmax_match","value":1,"rep":4,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"peak_vram_mib","value":17994,"rep":4,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"llama-kat","metric":"ERROR","value":0,"rep":4,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"prefill_toks","value":228.0,"rep":5,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"decode_toks","value":106.94,"rep":5,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"argmax_match","value":1,"rep":5,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-naked","metric":"peak_vram_mib","value":19118,"rep":5,"profile":"performance","temp_c":67}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"prefill_toks","value":699.8,"rep":5,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"decode_toks","value":189.72,"rep":5,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"argmax_match","value":1,"rep":5,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"kat-iqfast","metric":"peak_vram_mib","value":19118,"rep":5,"profile":"performance","temp_c":65}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"prefill_toks","value":2328.8,"rep":5,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"decode_toks","value":189.07,"rep":5,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"argmax_match","value":1,"rep":5,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"ctrl-q35","metric":"peak_vram_mib","value":17994,"rep":5,"profile":"performance","temp_c":64}
+{"ts":"2026-08-01T21:41:39Z","git":"5f15f838","cell":"kat-anomaly","arm":"llama-kat","metric":"ERROR","value":0,"rep":5,"profile":"performance","temp_c":61}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "prefill_toks", "value": 3476.177855, "rep": 1, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "decode_toks", "value": 190.277278, "rep": 1, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "prefill_toks", "value": 3866.685534, "rep": 2, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "decode_toks", "value": 190.614353, "rep": 2, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "prefill_toks", "value": 4113.864671, "rep": 3, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "decode_toks", "value": 189.813361, "rep": 3, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "prefill_toks", "value": 4222.178556, "rep": 4, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "decode_toks", "value": 194.855386, "rep": 4, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "prefill_toks", "value": 4142.907021, "rep": 5, "note": "reparsed-from-raw-log"}
+{"cell": "kat-anomaly", "arm": "llama-kat", "metric": "decode_toks", "value": 188.952961, "rep": 5, "note": "reparsed-from-raw-log"}

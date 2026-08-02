@@ -1,0 +1,12 @@
+loaded qwen35 (32 layers); steps=32 batch=4
+gate1 seed 0 step 1: token diverged EARLY (step < 3; plumbing iff every draw)
+gate1 seed 1 step 1: token diverged EARLY (step < 3; plumbing iff every draw)
+gate1 seed 2 step 1: token diverged EARLY (step < 3; plumbing iff every draw)
+gate1 seed 3 step 1: token diverged EARLY (step < 3; plumbing iff every draw)
+gate1 seed 4 step 1: token diverged EARLY (step < 3; plumbing iff every draw)
+gate1 seed 5 step 1: token diverged EARLY (step < 3; plumbing iff every draw)
+gate1 early draws (step < 3): 6/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): FAIL
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+Error: "decode-batch-gate FAILED"

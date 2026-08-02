@@ -1,0 +1,6 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+loaded qwen35moe (40 layers)
+causal: T_p=512 T_s=79 chat=false
+c1 chunk@|P|  prime(P) vs prime(P+S) rows[0,|P|): BIT-IDENTICAL  hid_maxdiff=0.0000e0 lastP_logit_maxdiff=0.0000e0 argmax 198 vs 198
+c2 monolithic prime(P) vs prime(P+S) rows[0,|P|): BIT-IDENTICAL  hid_maxdiff=0.0000e0 lastP_logit_maxdiff=0.0000e0 argmax 198 vs 198
+causal verdict: NO DEFECT — later content invisible across chunk boundary; only the GEMM m moves rows

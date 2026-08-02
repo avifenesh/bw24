@@ -1,0 +1,14 @@
+[moe] resident-experts decision: experts 15.16GB + trunk 2.56GB vs free 83.96GB (expert budget 79.40GB) -> RESIDENT
+[q8rp] split-plane decode mirrors built: 191 tensors
+loaded qwen35moe (40 layers); steps=16 batch=8
+gate1 seed 0 step 6: token diverged — accepted cross-config drift (WARN)
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2 step 15: token diverged — accepted cross-config drift (WARN)
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5 step 8: token diverged — accepted cross-config drift (WARN)
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2 (B=8 vs isolated batched-B=1, bit-checked, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=8 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery

@@ -1,0 +1,17 @@
+  [mmq rep1] decision=RESIDENT prime-gate=none tokens_sha=9c6a3255c4e0ab32
+  [f16g1 rep1] decision=RESIDENT prime-gate=none tokens_sha=cccd0b16ae77175e
+  [f16g2 rep1] decision=RESIDENT prime-gate=none tokens_sha=c0c12c3b350dc7f5
+  [mmq rep2] decision=RESIDENT prime-gate=none tokens_sha=9c6a3255c4e0ab32
+  [f16g1 rep2] decision=RESIDENT prime-gate=none tokens_sha=cccd0b16ae77175e
+  [f16g2 rep2] decision=RESIDENT prime-gate=none tokens_sha=c0c12c3b350dc7f5
+  [mmq rep3] decision=RESIDENT prime-gate=none tokens_sha=9c6a3255c4e0ab32
+  [f16g1 rep3] decision=RESIDENT prime-gate=none tokens_sha=cccd0b16ae77175e
+  [f16g2 rep3] decision=RESIDENT prime-gate=none tokens_sha=c0c12c3b350dc7f5
+  [o35b-post/naked rep1] prime-gate=MATCH tokens_sha=c0c12c3b350dc7f5
+  [o35b-post/naked rep2] prime-gate=MATCH tokens_sha=c0c12c3b350dc7f5
+  [q35-guard/pre rep1] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/post rep1] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/pre rep2] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/post rep2] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/pre rep3] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b
+  [q35-guard/post rep3] prime-gate=FLIP-NEARTIE tokens_sha=86dc5f7105a3716b

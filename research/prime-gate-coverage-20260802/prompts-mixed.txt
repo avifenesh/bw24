@@ -1,0 +1,8 @@
+@research/e2e/prompts/pp512.txt
+The industrial revolution transformed European society in ways that are still visible today: railways compressed distance, factory towns redrew the map of labor, and the telegraph made news instantaneous for the first time in human history. Historians still argue about which of these changes mattered most.
+Write a step-by-step explanation of how a binary search algorithm finds a target value in a sorted array, including what happens when the value is not present in the array at all.
+La revolución industrial transformó la sociedad europea; les chemins de fer ont comprimé les distances; die Telegraphie machte Nachrichten zum ersten Mal augenblicklich; la rivoluzione industriale cambiò tutto.
+Compute the running total of the following numbers and report each partial sum: 17, 42, 8, 93, 156, 4, 71, 28, 305, 66, 12, 89, 240, 7, 53, 118.
+the cat sat on the mat the cat sat on the mat the cat sat on the mat the cat sat on the mat the cat sat on the mat the cat sat on the mat
+One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty.
+def quicksort(arr): return arr if len(arr) <= 1 else quicksort([x for x in arr if x < arr[0]]) + [y for y in arr if y == arr[0]] + quicksort([z for z in arr if z > arr[0]])
