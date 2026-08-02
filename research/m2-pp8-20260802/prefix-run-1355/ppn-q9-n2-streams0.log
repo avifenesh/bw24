@@ -1,0 +1,4 @@
+ppn-gate M2 config: stages=2 streams=OFF(inc1 seam) overlap=0 devices=default(primary) splits=default(even) shard=per-stage
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 16, 32] over 32 layers
+Error: "ppn deferred needs per-stage streams (MEMRA_PP_STREAMS=0 set)"

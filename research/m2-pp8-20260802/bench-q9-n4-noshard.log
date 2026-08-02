@@ -1,0 +1,45 @@
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2993.435,"us_per_tok":23386.21,"tok_s":42.76}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.180,"us_per_tok":19243.60,"tok_s":51.97}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23386.21 us/tok (42.76 tok/s)  all=[23386.21]
+pipelined-pp: median 19243.60 us/tok (51.97 tok/s)  all=[19243.6]
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2989.608,"us_per_tok":23356.32,"tok_s":42.81}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.693,"us_per_tok":19247.60,"tok_s":51.95}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23356.32 us/tok (42.81 tok/s)  all=[23356.32]
+pipelined-pp: median 19247.60 us/tok (51.95 tok/s)  all=[19247.6]
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2988.475,"us_per_tok":23347.46,"tok_s":42.83}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2462.354,"us_per_tok":19237.14,"tok_s":51.98}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23347.46 us/tok (42.83 tok/s)  all=[23347.46]
+pipelined-pp: median 19237.14 us/tok (51.98 tok/s)  all=[19237.14]
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2993.403,"us_per_tok":23385.96,"tok_s":42.76}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.774,"us_per_tok":19248.24,"tok_s":51.95}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23385.96 us/tok (42.76 tok/s)  all=[23385.96]
+pipelined-pp: median 19248.24 us/tok (51.95 tok/s)  all=[19248.24]
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2994.046,"us_per_tok":23390.99,"tok_s":42.75}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2464.309,"us_per_tok":19252.42,"tok_s":51.94}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23390.99 us/tok (42.75 tok/s)  all=[23390.99]
+pipelined-pp: median 19252.42 us/tok (51.94 tok/s)  all=[19252.42]

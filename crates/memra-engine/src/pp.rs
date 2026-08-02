@@ -349,8 +349,20 @@ impl PpNRt {
             }
         }
 
-        let mk_stage = |dev: usize| -> Result<StageRt, Box<dyn std::error::Error>> {
-            if dev == primary_dev {
+        // PER-STAGE ENGINE ISOLATION (2026-08-02 singledev pipelined find): Engine owns
+        // lazily-grown SHARED scratch pools (fa_part_pool, fa_vf16_scratch, argmax
+        // partials, ...) that are stable-pointer by design — safe on one stream, a data
+        // race the moment two stage streams run concurrently through the SAME Engine
+        // (deferred readback, >=2 tokens in flight: token t+1's stage-0 fa memsets the
+        // partials while token t's stage-s fa still reads them — the nondeterministic
+        // all-logits divergence; cross-device arms were immune because remote stages
+        // already got their own Engine). Every stage s>0 gets its OWN Engine even on the
+        // primary device: same CUcontext (primary retain), so the per-context CUmodule
+        // cache makes it cheap; scratch pools are per-Engine, so stages never share.
+        // Stage 0 keeps the primary engine (single-threaded host issue: the only
+        // concurrent user of `e` during a pp walk is stage 0 itself).
+        let mk_stage = |dev: usize, s: usize| -> Result<StageRt, Box<dyn std::error::Error>> {
+            if dev == primary_dev && s == 0 {
                 let ctx = e.ctx().clone();
                 let stream = ctx.new_stream()?;
                 Ok(StageRt { dev, ctx, stream, engine: None })
@@ -362,8 +374,8 @@ impl PpNRt {
             }
         };
         let mut stages = Vec::with_capacity(n_st);
-        for &d in &devices {
-            stages.push(mk_stage(d)?);
+        for (s, &d) in devices.iter().enumerate() {
+            stages.push(mk_stage(d, s)?);
         }
 
         if used.len() > 1 {
@@ -510,7 +522,18 @@ impl PpNRt {
         let mut guard = sl.buf.lock().unwrap();
         if guard.as_ref().map(|bf| bf.len() != n).unwrap_or(true) {
             // allocated on the RX stage's stream: the buffer lives on the RX device.
-            *guard = Some(self.stages[b + 1].stream.alloc_zeros::<f32>(n)?);
+            let s_rx = &self.stages[b + 1].stream;
+            *guard = Some(s_rx.alloc_zeros::<f32>(n)?);
+            // SLOT FIRST-USE ORDERING (2026-08-02 pipelined-gate find): the lazy alloc's
+            // pool-alloc + memset enqueue on the RX stream; the TX copy below issues on
+            // the TX stream, and on a slot's FIRST use ev_rx has never been recorded —
+            // nothing orders them. With >=2 tokens in flight the RX stream is still busy
+            // with the previous token, the memset lands AFTER the TX copy, and the
+            // boundary residual is zeroed (window=1 passed, window>=2 failed at the
+            // slot-1 first-use step; -overlap arms passed because the synchronous serial
+            // arm pre-warmed both slots). Host-sync the RX stream once per slot
+            // allocation — at most 2*(N-1) one-time syncs per process, all during prime.
+            s_rx.synchronize()?;
         }
         let buf = guard.as_mut().unwrap();
         if !bd.cross {
@@ -618,10 +641,51 @@ pub fn new_cache(e: &Engine, cfg: &memra_gguf::config::ModelConfig, max_ctx: usi
             );
             let devs: Vec<&dyn memra_kv::KvDev> =
                 (0..n_st).map(|s| rt.engine(s, e) as &dyn memra_kv::KvDev).collect();
-            return crate::cache::Cache::new_ppn(&devs, &fence, cfg, max_ctx);
+            let cache = crate::cache::Cache::new_ppn(&devs, &fence, cfg, max_ctx)?;
+            sync_stages_after_load(e, n_trunk)?;
+            return Ok(cache);
+        }
+        if !pp2_streams_off() {
+            // CACHE BIRTH BARRIER (2026-08-02 pipelined-arm residual race): with the door
+            // open but no device placement, Cache::new's alloc_zeros memsets enqueue on
+            // the PRIMARY worker stream while the first KV appends / recurrent-state
+            // reads run on the per-stage streams — no event orders them, and under
+            // deferred readback the stage streams are hot immediately (a memset tail
+            // can zero an already-appended KV row; intermittent, ~1-in-3 gate FAIL).
+            // One context-sync per cache creation kills the class.
+            let cache = crate::cache::Cache::new(e, cfg, max_ctx)?;
+            sync_stages_after_load(e, n_trunk)?;
+            return Ok(cache);
         }
     }
     crate::cache::Cache::new(e, cfg, max_ctx)
+}
+
+/// M2 increment 2 LOAD BARRIER: weight uploads and decode-mirror builds enqueue on the
+/// loading engines' WORKER streams; the first consumer launches on a DIFFERENT stream
+/// with no load->decode event — the door-off reference walk on the primary worker
+/// stream (sharded load: remote builds still in flight), or a fresh per-stage stream.
+/// The 2026-08-02 gate finds (n2-dev01 step-0 168k-logit graze; split5 ref=0.0 head —
+/// a half-built rp4 mirror — poisoning step-0 KV and every later step): one
+/// context-wide synchronize per stage at load end kills the class. No-op when the door
+/// is shut at load (single-stream load+decode is ordered by the stream itself).
+pub fn sync_stages_after_load(e: &Engine, n_trunk: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+    if pp2_streams_off() || pp_cuts(n_trunk).is_none() {
+        return Ok(());
+    }
+    let rt = PpNRt::get(e)?;
+    for s in 0..rt.n_stages() {
+        rt.stages[s].ctx.bind_to_thread()?;
+        unsafe {
+            cudarc::driver::sys::cuCtxSynchronize().result()?;
+        }
+    }
+    e.ctx().bind_to_thread()?;
+    unsafe {
+        cudarc::driver::sys::cuCtxSynchronize().result()?;
+    }
+    Ok(())
 }
 
 /// M2 increment 2 (weight sharding): the engine that should UPLOAD layer `il`'s weights

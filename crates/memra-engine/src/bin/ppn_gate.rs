@@ -142,18 +142,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---- arm 2 (PIPELINED, generic arm only): deferred readback, window 3, overlap on ----
-    let mut pipelined = if m.cfg.gemma4.is_none() {
+    // MEMRA_PP_STREAMS=0 is the increment-1 same-stream rollback seam and is documented
+    // serial-only: the deferred API needs per-stage streams and (correctly) errors. Skip
+    // the arm instead of aborting — otherwise the serial verdict never prints (the
+    // 2026-08-02 streams0 no-verdict runs).
+    let mut pipelined = if memra_engine::pp::pp2_streams_off() {
+        println!("ppn gate NOTE: pipelined arm skipped (MEMRA_PP_STREAMS=0 is serial-only)");
+        None
+    } else if m.cfg.gemma4.is_none() {
         let overlap_prev = std::env::var("MEMRA_PP_OVERLAP").ok();
         unsafe {
             std::env::set_var("MEMRA_PP_OVERLAP", "1");
         }
+        // Debug knob (bisect seam, not a config): MEMRA_PPN_GATE_WINDOW caps the
+        // tokens-in-flight window of the pipelined arm (default 3; 1 = drain every step).
+        let window: usize = std::env::var("MEMRA_PPN_GATE_WINDOW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&w| w >= 1)
+            .unwrap_or(3);
         let mut arm = ArmCheck::new("pipelined");
         {
             let mut cache_pl = memra_engine::pp::new_cache(&e, &m.cfg, p + n + 8)?;
             let mut pend: VecDeque<(usize, memra_engine::pp::PendingLogits)> = VecDeque::new();
             for (step, &tok) in inputs.iter().enumerate() {
                 pend.push_back((step, m.decode_step_h_ppn_deferred(&e, tok, &mut cache_pl)?));
-                if pend.len() >= 3 {
+                if pend.len() >= window {
                     let (s0, pl) = pend.pop_front().unwrap();
                     arm.check(s0, p, &pl.wait()?, &ref_logits[s0]);
                 }

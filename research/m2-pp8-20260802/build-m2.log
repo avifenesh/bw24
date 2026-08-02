@@ -1,0 +1,14 @@
+    Updating crates.io index
+     Locking 3 packages to latest compatible versions
+      Adding equivalent v1.0.2
+      Adding hashbrown v0.17.1
+      Adding indexmap v2.14.0
+   Compiling memra-gguf v0.0.0 (/home/ubuntu/memra/crates/memra-gguf)
+   Compiling memra-engine v0.0.0 (/home/ubuntu/memra/crates/memra-engine)
+   Compiling memra-sampling v0.0.0 (/home/ubuntu/memra/crates/memra-sampling)
+   Compiling memra-validate v0.0.0 (/home/ubuntu/memra/crates/memra-validate)
+   Compiling memra-tokenizer v0.0.0 (/home/ubuntu/memra/crates/memra-tokenizer)
+   Compiling memra-runtime v0.0.0 (/home/ubuntu/memra/crates/memra-runtime)
+   Compiling memra-kv v0.0.0 (/home/ubuntu/memra/crates/memra-kv)
+warning: memra-engine@0.0.0: MEMRA_CUDA_ARCH auto-detected 90a (compute_cap 9.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 4m 08s

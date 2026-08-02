@@ -805,22 +805,28 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let pos = cache.pos;
 
+        // PER-STAGE pos_d (M2 pipelining law): every stage uploads its OWN copy of the
+        // step's pos scalar on ITS stream, so the buffer is allocated, consumed, and
+        // freed on one stream (a shared stage-0 pos_d freed at fn return breaks under
+        // deferred readback: the free enqueues on stream 0 while stages 1..N-1 still
+        // dereference it — the 2026-08-02 pipelined-gate all-logits divergence).
+
         // ---- STAGE 0 (its own stream): embed + layers [0, fence[1]) + boundary-0 TX ----
-        let (pos_d, mut slot) = {
+        let mut slot = {
             let _st0 = rt.enter(0);
             let e0 = rt.engine(0, e);
             let pos_d = e0.htod_i32(&[pos as i32])?;
             let x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
             let x = self.decode_layers_eager(e0, x, fence[0], fence[1], &pos_d, pos, cache)?;
-            let slot = rt.tx(0, &x, n_embd)?;
-            (pos_d, slot)
-            // x drops here: freed stream-ordered on stage-0's stream AFTER the TX copy.
+            rt.tx(0, &x, n_embd)?
+            // x + pos_d drop here: freed stream-ordered on stage-0's stream after use.
         };
 
         // ---- MIDDLE STAGES s in [1, n_st-1): RX boundary s-1 -> range -> TX boundary s ----
         for s in 1..n_st - 1 {
             let _st = rt.enter(s);
             let es = rt.engine(s, e);
+            let pos_d = es.htod_i32(&[pos as i32])?;
             let x = rt.rx(s - 1, slot, n_embd)?;
             let x = self.decode_layers_eager(es, x, fence[s], fence[s + 1], &pos_d, pos, cache)?;
             slot = rt.tx(s, &x, n_embd)?;
@@ -829,6 +835,7 @@ impl HybridModel {
         // ---- LAST STAGE: RX + layers [fence[n_st-1], n) + output_norm + lm head ----
         let _stl = rt.enter(n_st - 1);
         let el = rt.engine(n_st - 1, e);
+        let pos_d = el.htod_i32(&[pos as i32])?;
         let x = rt.rx(n_st - 2, slot, n_embd)?;
         let x =
             self.decode_layers_eager(el, x, fence[n_st - 1], fence[n_st], &pos_d, pos, cache)?;
@@ -954,24 +961,28 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let pos = cache.pos;
 
-        let (pos_d, mut slot) = {
+        // Per-stage pos_d — see decode_step_h_ppn: under deferred readback a shared
+        // pos_d's fn-end free races stages 1..N-1 (the free enqueues on stream 0 at
+        // ENQUEUE time here, no terminal D2H to drain first). Each stage owns its copy.
+        let mut slot = {
             let _st0 = rt.enter(0);
             let e0 = rt.engine(0, e);
             let pos_d = e0.htod_i32(&[pos as i32])?;
             let x = e0.htod(&self.embd.gather(n_embd, &[token]))?;
             let x = self.decode_layers_eager(e0, x, fence[0], fence[1], &pos_d, pos, cache)?;
-            let slot = rt.tx(0, &x, n_embd)?;
-            (pos_d, slot)
+            rt.tx(0, &x, n_embd)?
         };
         for s in 1..n_st - 1 {
             let _st = rt.enter(s);
             let es = rt.engine(s, e);
+            let pos_d = es.htod_i32(&[pos as i32])?;
             let x = rt.rx(s - 1, slot, n_embd)?;
             let x = self.decode_layers_eager(es, x, fence[s], fence[s + 1], &pos_d, pos, cache)?;
             slot = rt.tx(s, &x, n_embd)?;
         }
         let _stl = rt.enter(n_st - 1);
         let el = rt.engine(n_st - 1, e);
+        let pos_d = el.htod_i32(&[pos as i32])?;
         let x = rt.rx(n_st - 2, slot, n_embd)?;
         let x =
             self.decode_layers_eager(el, x, fence[n_st - 1], fence[n_st], &pos_d, pos, cache)?;

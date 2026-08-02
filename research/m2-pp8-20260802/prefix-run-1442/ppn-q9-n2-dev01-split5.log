@@ -1,0 +1,11 @@
+ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=0,1 splits=5 shard=per-stage
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 5, 32] over 32 layers
+[pipelined] MISMATCH step 0 (prime): 248320/248320 logits differ, first @[0] ref=4.382308 pp=1.3953881
+[pipelined] MISMATCH step 1 (prime): 248320/248320 logits differ, first @[0] ref=4.997882 pp=7.8651605
+[pipelined] MISMATCH step 2 (prime): 248320/248320 logits differ, first @[0] ref=4.5650706 pp=4.7517114
+[pipelined] MISMATCH step 3 (prime): 248320/248320 logits differ, first @[0] ref=5.313717 pp=5.230762
+[pipelined] MISMATCH step 4 (prime): 248320/248320 logits differ, first @[0] ref=-2.52043 pp=-2.5525863
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 5, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=5 shard=per-stage)
+ppn gate FAIL [pipelined]: 48/48 steps mismatched (first @ step 0 idx 0: ref=4.382308 pp=1.3953881; fence=[0, 5, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=5 shard=per-stage)

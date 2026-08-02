@@ -1530,6 +1530,12 @@ impl HybridModel {
                 .embd_gpu
                 .get_or_init(|| e.upload_u8(&model.embd.raw).expect("embed table upload"));
         }
+        // M2 LOAD BARRIER (pp door open at load): uploads + mirror builds above ran on
+        // the loading engines' worker streams; the first decode consumer runs on OTHER
+        // streams with no event between them. Synchronize every stage context once so
+        // no consumer can ever read a half-built tensor (the 2026-08-02 split5 ref=0.0
+        // head-mirror find). No-op with the door shut.
+        crate::pp::sync_stages_after_load(e, n_trunk)?;
         Ok(model)
     }
 

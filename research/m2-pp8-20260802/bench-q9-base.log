@@ -1,0 +1,25 @@
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":689.262,"us_per_tok":5384.86,"tok_s":185.71}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5384.86 us/tok (185.71 tok/s)  all=[5384.86]
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":688.795,"us_per_tok":5381.21,"tok_s":185.83}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5381.21 us/tok (185.83 tok/s)  all=[5381.21]
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":693.816,"us_per_tok":5420.43,"tok_s":184.49}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5420.43 us/tok (184.49 tok/s)  all=[5420.43]
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":685.154,"us_per_tok":5352.76,"tok_s":186.82}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5352.76 us/tok (186.82 tok/s)  all=[5352.76]
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":679.980,"us_per_tok":5312.34,"tok_s":188.24}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5312.34 us/tok (188.24 tok/s)  all=[5312.34]
