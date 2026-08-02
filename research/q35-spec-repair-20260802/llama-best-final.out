@@ -1,0 +1,8 @@
+--- FINAL llama best-config N=3: p1@nmax3 ---
+p1 244.98 pred_n=256 accept=0.868 temp_c=57
+p1 251.37 pred_n=256 accept=0.872 temp_c=65
+p1 251.37 pred_n=256 accept=0.872 temp_c=66
+--- FINAL llama best-config N=3: p3@nmax4 ---
+p3 242.94 pred_n=256 accept=0.845 temp_c=58
+p3 246.45 pred_n=256 accept=0.845 temp_c=67
+p3 246.85 pred_n=256 accept=0.845 temp_c=68
