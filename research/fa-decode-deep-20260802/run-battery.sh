@@ -47,16 +47,18 @@ done
 
 # 3. decode-batch gates on q35 (the batched tick shares the fa class; seqs twin unchanged
 #    but its per-seq oracle loop rides the deep default) — config mode + strict equalized.
+# (verdict = the binary's own "ALL GREEN" summary line; per-gate diagnostics legitimately
+#  contain the word FAIL in threshold descriptions, so no free-text FAIL grep here)
 log=$R/gate-decode-batch-config.log
 flock /tmp/gpu5090.lock timeout 3600 $W/target/release/decode-batch-gate "${GGUF[q35]}" \
   --steps 32 --batch 8 --mode config > "$log" 2>&1
-grep -qiE "ALL GREEN|PASS" "$log" && ! grep -qi "FAIL" "$log" \
+grep -q "ALL GREEN" "$log" \
   && echo "decode-batch config: GREEN OK" \
   || { echo "decode-batch config: FAIL (see $log)"; FAILS=$((FAILS+1)); }
 log=$R/gate-decode-batch-strict.log
 MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1 flock /tmp/gpu5090.lock timeout 3600 \
   $W/target/release/decode-batch-gate "${GGUF[q35]}" --steps 16 --batch 4 --mode strict > "$log" 2>&1
-grep -qiE "ALL GREEN|PASS" "$log" && ! grep -qi "FAIL" "$log" \
+grep -q "ALL GREEN" "$log" \
   && echo "decode-batch strict: GREEN OK" \
   || { echo "decode-batch strict: FAIL (see $log)"; FAILS=$((FAILS+1)); }
 
