@@ -1,0 +1,1 @@
+[fleet] supervisor up (interval 5s, grace 300s)

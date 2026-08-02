@@ -1,0 +1,48 @@
+[server] starting; models config = [("qwen", "/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] qwen: template caps tools=true think=true think_switch=true
+[worker] qwen: decode chunk cap 16 (exact-16 tier)
+[server] worker ready; serving models: ["qwen"]
+[server] listening on http://127.0.0.1:9087
+[worker] observed session VRAM cost for "qwen": 235MB (admission gate = 2x)
+[prime-batch] B=6 tokens=1356 in 329.2ms
+[prime-batch] B=2 tokens=452 in 120.8ms
+[prime-batch] B=6 tokens=1356 in 327.8ms
+[prime-batch] B=2 tokens=452 in 103.1ms
+[prime-batch] B=6 tokens=1356 in 317.8ms
+[prime-batch] B=2 tokens=452 in 100.0ms
+[prime-batch] B=6 tokens=1356 in 324.2ms
+[prime-batch] B=2 tokens=452 in 114.6ms
+[prime-batch] B=6 tokens=1356 in 318.5ms
+[prime-batch] B=2 tokens=452 in 115.8ms
+[prime-batch] B=6 tokens=1356 in 320.9ms
+[prime-batch] B=2 tokens=452 in 107.2ms
+[prime-batch] B=6 tokens=1356 in 312.2ms
+[prime-batch] B=2 tokens=452 in 108.6ms
+[prime-batch] B=6 tokens=1356 in 301.9ms
+[prime-batch] B=2 tokens=452 in 110.8ms
+[prime-batch] B=3 tokens=678 in 181.4ms
+[prime-batch] B=6 tokens=1356 in 344.6ms
+[prime-batch] B=6 tokens=1356 in 346.6ms
+[prime-batch] B=3 tokens=678 in 191.9ms
+[prime-batch] B=6 tokens=1356 in 335.1ms
+[prime-batch] B=6 tokens=1356 in 294.8ms
+[prime-batch] B=3 tokens=678 in 185.7ms
+[prime-batch] B=6 tokens=1356 in 315.7ms
+[prime-batch] B=6 tokens=1356 in 329.3ms
+[prime-batch] B=3 tokens=678 in 188.4ms
+[prime-batch] B=6 tokens=1356 in 344.7ms
+[prime-batch] B=6 tokens=1356 in 333.5ms
+[prime-batch] B=2 tokens=452 in 121.9ms
+[prime-batch] B=6 tokens=1356 in 342.3ms
+[prime-batch] B=2 tokens=452 in 121.1ms
+[prime-batch] B=6 tokens=1356 in 324.4ms
+[prime-batch] B=2 tokens=452 in 116.1ms
+[prime-batch] B=6 tokens=1356 in 313.4ms
+[prime-batch] B=2 tokens=452 in 124.0ms
+[prime-batch] B=5 tokens=1130 in 267.0ms
+[prime-batch] B=2 tokens=452 in 131.3ms
+[prime-batch] B=5 tokens=1130 in 277.3ms
