@@ -1,0 +1,64 @@
+=== v0.67.0 FINAL release battery — 5090 rig, git=b078eed1 (train HEAD, restructure/public-split), 2026-08-02 ===
+Why a second battery: two engine merges landed after the 5e4b79b9 battery —
+lane/ladder-3072 (216419d6: fa dispatch boundary sp8->sp64 3072->512 + graph fa_class_of
+fingerprint fix) and lane/m2-pp8 (b078eed1: pp.rs N-stage, multi-GPU-only paths). The tag
+commit gets its own battery. pp.rs paths are multi-GPU-only (single-GPU untouched by
+construction); this 5090 battery covers the shared engine — H100-side evidence already
+banked (fadeep-h100 bitdiff=0 all cells + M2 28/28 on-box).
+Build: target/release from b078eed1 (cargo build --release = no-op, 0.05s).
+Co-resident GPU app: llama-server --embedding bge-small (260MiB) — allowlisted per
+local-ci window rules. Every GPU run took a SHORT flock /tmp/gpu5090.lock (per-run,
+released between; three other lanes interleave). CPU-quota'd (CPUQuota=1600% of 24 cores).
+
+[1] kernel-check FULL, q35 gguf oracle (kernel-check-final.log):
+ALL GREEN: kernels match CPU reference.   (436 OK, 0 FAIL)
+FA-DEEP pin present at the ladder lane's re-anchored 511/512/513 rung straddle
+(48 fa_decode_v4_deep lines, all bitdiff=0):
+    fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+    (plus 3071/3073/4096/6144/6200 depths x eager/dc, both geometry passes — all bitdiff=0 OK)
+
+[2] run-gen argmax (NGEN=128):
+  KAT (Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS, depth-4096 prompt — deep+new-rung region):
+    prefill argmax=20  decode argmax=20  logit maxdiff=1.882e0  MATCH
+    batched-prime argmax=19  tokenwise argmax=20  logit maxdiff=1.715e0  FLIP-NEARTIE (tokenwise margin 0.3230 — cross-config drift class; the first generated token may differ from the tokenwise stream)
+    ^ batched-prime FLIP-NEARTIE is the documented NON-FATAL cross-config drift class
+      (CONTRIBUTING.md #46; margin 0.3230 <= 0.70 calibrated bound) and is line-identical
+      to the merged ladder-lane receipt for this exact prompt/model
+      (research/ladder-3072-20260802/gate-argmax-kat-d4096.log) — pre-existing prompt
+      property, not introduced by this train. Primary argmax gate: MATCH.
+  q35 (Qwen3.6-35B-A3B-UD-IQ4_XS, depth-4096 prompt — deep+new-rung region):
+    prefill argmax=20  decode argmax=20  logit maxdiff=2.535e0  MATCH
+    batched-prime argmax=20  tokenwise argmax=20  logit maxdiff=2.571e0  MATCH
+  q9 (Qwen3.5-9B-NVFP4-MTP, depth-512 prompt — pp512 class):
+    prefill argmax=365  decode argmax=365  logit maxdiff=8.366e-1  MATCH
+    batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=7.100e-1  MATCH
+    prefill 512 tok in 0.1027s = 4987.1 tok/s (pp512)
+
+[3] run-spec K=1..8 self-consistency (q35 + owntrim drafter, depth-2048 prompt, NGEN=64):
+  acceptance: 27/37 = 73.0%   self-consistency: PASS (identical to generate)
+  acceptance: 33/60 = 55.0%   self-consistency: PASS (identical to generate)
+  acceptance: 38/84 = 45.2%   self-consistency: PASS (identical to generate)
+  acceptance: 38/108 = 35.2%   self-consistency: PASS (identical to generate)
+  acceptance: 38/135 = 28.1%   self-consistency: PASS (identical to generate)
+  acceptance: 38/162 = 23.5%   self-consistency: PASS (identical to generate)
+  acceptance: 38/189 = 20.1%   self-consistency: PASS (identical to generate)
+  acceptance: 38/216 = 17.6%   self-consistency: PASS (identical to generate)
+  === SELF-CONSISTENCY PASS ===
+
+[4] graph-decode gate, KAT P=400 N=160 (the rung-crossing case the ladder lane fixed):
+  buckets crossed (fa_vec, n_splits): [(true, 51), (true, 52), (true, 53), (true, 54), (true, 55), (true, 56), (true, 57), (true, 58), (true, 59), (true, 60), (true, 61), (true, 62), (true, 63), (true, 64), (true, 9)]
+  graph (re)captures: 2
+  Phase-3 gate PASS: 160 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=15 captures=2
+
+VERDICT: ALL GREEN — kernel-check 436 OK / 0 FAIL incl. the 511/512/513 FA-DEEP straddle
+pins; 3/3 primary argmax MATCH (KAT batched-prime near-tie flip = the documented non-fatal
+class, unchanged from the merged ladder receipt); 8/8 K self-consistency PASS; graph-decode
+KAT P=400 160/160 BIT-IDENTICAL. b078eed1 is battery-clean for the v0.67.0 tag.
