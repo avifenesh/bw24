@@ -62,31 +62,36 @@ Why: a projection-wide dtype silently decodes some experts with the wrong block 
 pruned id dereferences nonexistent weights; and a G7e-only performance win may not transfer to the
 5090's smaller HBM and different storage/PCIe balance.
 
-## Perf board: README must stay current, every push
+## Perf board: generated surfaces must stay current, every push
 
 The tuning campaign lands new numbers several times a day (`research/tune-data/rig5090.jsonl` is
-the append-only research log). The README's Performance sections (both the 5090 tables and the H100 board),
-`docs/perf-card.svg`, and `docs/perf-card-h100.svg` are **generated**, not hand-written —
-they come from `research/tune-data/current-board.json` (incl. its `h100_board` section) via
-`tools/update-perf-board.py`.
+the append-only research log). The generated perf surfaces — README.md's PERF-SAMPLES /
+PERF-MODELS blocks, docs/PERFORMANCE.md's full boards (PERF-PLAIN / PERF-SPEC / PERF-DATE /
+PERF-H100 blocks), `docs/perf-card.svg`, and `docs/perf-card-h100.svg` — are **generated**,
+not hand-written: they come from `research/tune-data/current-board.json` (incl. its
+`h100_board`, `samples`, and `supported_models` sections) via `tools/update-perf-board.py`.
+Posture (owner call, 2026-08-02): the README carries only sample comparisons and a
+numbers-free supported-models table; the full boards live in docs/PERFORMANCE.md. Numbers
+are tracked for regression testing, not as a competitive scoreboard — do not reintroduce
+full comparison tables to the README.
 
 Rule: any commit that changes the *published* numbers (a board-moving merge — i.e. the numbers
-that belong in the README table, not every raw jsonl row) MUST:
+that belong in the tracked boards, not every raw jsonl row) MUST:
 
 1. Update `research/tune-data/current-board.json` with the new values.
-2. Run `python3 tools/update-perf-board.py` to regenerate README.md's perf tables and
-   `docs/perf-card.svg`.
-3. Commit the JSON + the regenerated README.md + SVG together, in the same commit as the
-   number-moving change.
+2. Run `python3 tools/update-perf-board.py` to regenerate README.md, docs/PERFORMANCE.md,
+   and the SVG cards.
+3. Commit the JSON + the regenerated README.md + docs/PERFORMANCE.md + SVGs together, in
+   the same commit as the number-moving change.
 
-Never hand-edit the table rows or the date line inside the `<!-- PERF-*:START -->` /
-`<!-- PERF-*:END -->` marker blocks in README.md — edit `current-board.json` and regenerate.
+Never hand-edit anything inside the `<!-- PERF-*:START -->` / `<!-- PERF-*:END -->` marker
+blocks in README.md or docs/PERFORMANCE.md — edit `current-board.json` and regenerate.
 Prose around the tables (depth-behavior notes, mechanism writeups, "why it moved") stays
-hand-written; only the tables + date sentence are mechanical.
+hand-written; only the marker-block contents are mechanical.
 
 A `pre-push` hook (`tools/hooks/pre-push`, wired via `git config core.hooksPath tools/hooks`)
-runs `tools/update-perf-board.py --check` and refuses the push if the board and README have
-drifted — treat a failure there as "regenerate and re-commit." **Never** bypass with `--no-verify`.
+runs `tools/update-perf-board.py --check` and refuses the push if the board and the generated
+surfaces have drifted — treat a failure there as "regenerate and re-commit." **Never** bypass with `--no-verify`.
 
 This does not cover the GitHub repo social-preview image (the OG thumbnail used for link
 shares) — GitHub has no API for that field, it's a manual upload in Settings → Social preview,
