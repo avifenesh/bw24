@@ -5600,6 +5600,94 @@ impl Engine {
         self.matmul_pre(w, &aq, &ad, x, m)
     }
 
+    /// DUAL gate+up BATCHED matvec at verify t=2..8 (lane/verify-economics, 2026-08-02): ONE
+    /// launch computes both FFN projections of a verify batch — same activation, same shape,
+    /// blockIdx.y selects the tensor. Per (tensor, token, row) the kernel body is the single
+    /// batched program on the SAME layout (split-plane rp: b2 rp / b4 rpr2 / b8 rpr2; GGUF:
+    /// b2 base / b4 r2 / b8 r2) -> BIT-IDENTICAL to the two single `matmul_decode_exact`
+    /// launches (kernel-check gates bitwise on both layouts; run-spec K=1..8 arbitrates e2e).
+    /// The one activation quantize replaces two IDENTICAL quantizes of the same `x` (same
+    /// kernel, same input -> same q8_1 bytes), and the two independent weight streams in one
+    /// grid restore the memory-level parallelism the two-launch form loses to tail drain +
+    /// launch gap (m=1 dual_mr2 precedent: DRAM 40% -> 47-50% on the 27B pair).
+    /// `Some((y0, y1))` only when both tensors are NVFP4, the SAME layout (both rp or both
+    /// GGUF, no rp4 mirror), identical (in_f, out_f, row_bytes), q8_1-fast, and m in 2..=4
+    /// (the b2/b4 tiers = verify T for K=1..3, the profitable-K window — the b8 dual measured
+    /// FLAT vs the rpsc singles x3 interleaved, research/verify-economics-20260802, and was
+    /// killed per doctrine). None -> caller runs the two singles. MEMRA_SPEC_DUAL_T=0 rollback.
+    pub fn matmul_decode_exact_dual(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                                    x: &CudaSlice<f32>, m: usize)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let on = *ON.get_or_init(|| {
+            std::env::var("MEMRA_SPEC_DUAL_T").map(|v| v != "0").unwrap_or(true)
+        });
+        if !on || !(2..=4).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok()
+            || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) {
+            return Ok(None);
+        }
+        let (in_f, out_f) = (w0.in_features(), w0.out_features());
+        if w1.in_features() != in_f || w1.out_features() != out_f {
+            return Ok(None);
+        }
+        let (b0, b1, row_bytes, s0, s1, rp) = match (w0, w1) {
+            (GpuTensor::Quant { bytes: b0, qtype: q0, row_bytes: rb0, scale: s0, rp: rp0, rp4: None, .. },
+             GpuTensor::Quant { bytes: b1, qtype: q1, row_bytes: rb1, scale: s1, rp: rp1, rp4: None, .. })
+                if *q0 == QT_NVFP4 && *q1 == QT_NVFP4 && rb0 == rb1 && rp0 == rp1 =>
+                (b0, b1, *rb0, *s0, *s1, *rp0),
+            _ => return Ok(None),
+        };
+        // Engagement receipt (MEMRA_DEBUG=1): the first dead-arm A/B lesson — a `rp: false`
+        // gate silently no-op'd the whole experiment; prove the arm is live in the log.
+        if std::env::var("MEMRA_DEBUG").is_ok() {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| eprintln!("[memra] dual gate+up batched ENGAGED (m={m} rp={rp})"));
+        }
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let (y0, y1) = self.qmatvec_batched_dual_raw(b0, b1, &aq, &ad, m, in_f, out_f, row_bytes, rp)?;
+        let mut y0 = y0;
+        let mut y1 = y1;
+        if s0 != 1.0 { self.scale_inplace(&mut y0, s0, m * out_f)?; }
+        if s1 != 1.0 { self.scale_inplace(&mut y1, s1, m * out_f)?; }
+        Ok(Some((y0, y1)))
+    }
+
+    /// Launch body of the dual batched twins from raw NVFP4 weight bytes + a pre-quantized q8_1
+    /// activation (kernel-check's bit-equivalence entry; matmul_decode_exact_dual's core).
+    /// mcols tier = batched_mcols(m); macro-scale NOT applied. `rp` selects the split-plane
+    /// twins (both buffers must be the repacked layout).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_batched_dual_raw(&self, b0: &CudaSlice<u8>, b1: &CudaSlice<u8>,
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                    m: usize, in_f: usize, out_f: usize, row_bytes: usize, rp: bool)
+        -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;
+        let mcols = Self::batched_mcols(m);
+        let (name, rows_per_block) = match (mcols, rp) {
+            (2, false) => ("qmatvec_nvfp4_mmvq_dual_b2", ROWS_PER_BLOCK),
+            (4, false) => ("qmatvec_nvfp4_mmvq_dual_b4_r2", ROWS_PER_BLOCK * 2),
+            (2, true) => ("qmatvec_nvfp4_mmvq_dual_b2_rp", ROWS_PER_BLOCK),
+            (4, true) => ("qmatvec_nvfp4_mmvq_dual_b4_rpr2", ROWS_PER_BLOCK * 2),
+            _ => return Err(format!("qmatvec_batched_dual_raw: no dual kernel for m {m}").into()),
+        };
+        let f = self.func(name);
+        let mut y0 = self.alloc_uninit::<f32>(m * out_f)?;
+        let mut y1 = self.alloc_uninit::<f32>(m * out_f)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 2, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
+            .arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok((y0, y1))
+    }
+
     /// Like `matmul_pre` but RETURNS THE RAW (un-macro-scaled) matmul output together with the
     /// per-tensor NVFP4 scale, instead of applying `scale_inplace` internally. Used by the fused
     /// SwiGLU epilogue (RANK3 LEVER 2) so the gate/up scales fold into one `silu_mul_scaled` launch.

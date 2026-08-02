@@ -1,0 +1,19 @@
+tree 5e37780e699b807290ed63375491be9b1d41fe72
+[gpu 2026-08-02T09:56:58Z] 67, 172.13 W, 1612 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+weight blk.1.ffn_gate.weight [NVFP4] in_f=5120 out_f=17408 row_bytes=2880 copies=8 variant=auto
+--- grid.y=m (current, no weight reuse) ---
+  m=1: 67.77 us/call  (67.77 us/token)
+  m=2: 130.98 us/call  (65.49 us/token)
+  m=4: 224.78 us/call  (56.20 us/token)
+  m=8: 440.16 us/call  (55.02 us/token)
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=2 (b2): 72.70 us/call  (36.35 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 89.60 us/call  (29.87 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 97.11 us/call  (24.28 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 105.05 us/call  (21.01 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 105.82 us/call  (17.64 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 118.43 us/call  (14.80 us/token)  bit-bad=0 bit-exact-bad=0
+[gpu 2026-08-02T09:57:00Z] 67, 173.82 W, 1867 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+MSWEEP q27 blk.1.ffn_gate.weight rc=0

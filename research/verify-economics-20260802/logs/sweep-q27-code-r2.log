@@ -1,0 +1,56 @@
+tree 5e37780e699b807290ed63375491be9b1d41fe72
+[gpu 2026-08-02T09:52:02Z] 78, 125.73 W, 1710 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+[mtp-draft] loading external MTP draft: /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (65 layers, nextn=1)
+text prompt (146 chars) -> 28 tokens
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13, 198]
+
+[generate]   255 tok in 5.497s = 46.39 tok/s (gen-only; this run's prime 0.098s)
+  tokens: [760, 709, 1220, 460, 264, 523, 421, 628, 381, 52754, 321, 1429, 310, 2649, 279, 7289, 13, 271, 248068, 271, 248069, 271, 71093, 12305, 198, 1445, 18904, 1120, 11906, 11, 3856, 3829, 11, 20627, 11, 22306, 271, 51, 283, 3856, 3829, 482, 51, 837, 1358, 1005, 696, 1888, 6489, 3358, 19723, 23556, 198, 262, 4071, 32, 2357, 303, 264, 90651, 52589, 1103, 71483, 198, 1031, 262, 687, 1259, 2251, 3676, 701, 11, 869, 25, 345, 8, 1411, 2168, 25, 198, 285, 638, 2733, 25, 345, 283, 869, 198, 285, 638, 28044, 25, 11906, 26326, 1888, 19723, 60, 642, 283, 2168, 198, 285, 638, 4381, 25, 11906, 26326, 1888, 19723, 60, 642, 283, 2168, 1358, 1005, 53019, 391, 32794, 6489, 3358, 19723, 23556, 198, 262, 4071, 198, 262, 357, 90651, 52589, 1103, 7873, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 198, 1031, 262, 1061, 523, 5529, 264, 90651, 52589, 1103, 795, 5759, 421, 11222, 25, 198, 262, 471, 16598, 289, 506, 279, 6941, 11, 809, 11, 466, 506, 264, 3050, 2234, 198, 262, 471, 1526, 50853, 539, 869, 466, 506, 264, 3050, 2234, 198, 262, 471, 997, 2909, 278, 314, 279, 1103, 6987, 262, 32998, 25, 198, 285, 1901, 25, 561, 1118, 2357, 303, 279, 1103, 13, 198, 285, 9495, 25, 561, 1483, 2357, 303, 279, 1103, 13, 198, 285, 696, 2073, 25, 561, 1324, 314, 5255, 303, 279, 1103, 13, 198, 262, 4071, 198, 1031, 262, 687, 1259, 2251, 3676, 701, 8, 1411, 2168, 25, 198, 285, 4071, 9634, 449, 4147, 90651, 52589, 1103]
+[spec-stats] rounds=133 full_accept=123 len_hist=[0, 133] per_slot=[123/133=0.925] total=123/133=0.925 tok_per_round=1.925
+[spec-phase] draft=116.1ms (3.4%) verify-issue=1629.1ms (47.7%) verify-wait=1621.7ms (47.4%) commit-host=51.6ms (1.5%) rounds=133
+
+[generate_spec K=1] 256 tok in 3.445s = 74.02 tok/s (1.60x vs generate; this run's prime 0.102s)
+  acceptance: 123/133 = 92.5%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=98 full_accept=70 len_hist=[0, 0, 98] per_slot=[89/98=0.908 70/98=0.714] total=159/196=0.811 tok_per_round=2.622
+[spec-phase] draft=158.3ms (5.7%) verify-issue=1260.3ms (45.5%) verify-wait=1305.5ms (47.2%) commit-host=43.6ms (1.6%) rounds=98
+
+[generate_spec K=2] 256 tok in 2.792s = 91.33 tok/s (1.97x vs generate; this run's prime 0.104s)
+  acceptance: 159/196 = 81.1%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=82 full_accept=42 len_hist=[0, 0, 0, 82] per_slot=[72/82=0.878 62/82=0.756 42/82=0.512] total=176/246=0.715 tok_per_round=3.146
+[spec-phase] draft=187.5ms (7.5%) verify-issue=1130.5ms (45.4%) verify-wait=1134.7ms (45.6%) commit-host=38.0ms (1.5%) rounds=82
+
+[generate_spec K=3] 256 tok in 2.515s = 101.40 tok/s (2.19x vs generate; this run's prime 0.103s)
+  acceptance: 176/246 = 71.5%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=70 full_accept=28 len_hist=[0, 0, 0, 0, 70] per_slot=[65/70=0.929 57/70=0.814 39/70=0.557 28/70=0.400] total=189/280=0.675 tok_per_round=3.700
+[spec-phase] draft=210.2ms (8.2%) verify-issue=1157.9ms (45.0%) verify-wait=1169.1ms (45.5%) commit-host=34.7ms (1.3%) rounds=70
+
+[generate_spec K=4] 256 tok in 2.596s = 98.22 tok/s (2.12x vs generate; this run's prime 0.103s)
+  acceptance: 189/280 = 67.5%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=68 full_accept=17 len_hist=[0, 0, 0, 0, 0, 68] per_slot=[62/68=0.912 50/68=0.735 36/68=0.529 27/68=0.397 17/68=0.250] total=192/340=0.565 tok_per_round=3.824
+[spec-phase] draft=248.6ms (9.1%) verify-issue=1233.8ms (45.0%) verify-wait=1221.2ms (44.6%) commit-host=35.6ms (1.3%) rounds=68
+
+[generate_spec K=5] 256 tok in 2.763s = 92.28 tok/s (1.99x vs generate; this run's prime 0.102s)
+  acceptance: 192/340 = 56.5%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=66 full_accept=12 len_hist=[0, 0, 0, 0, 0, 0, 66] per_slot=[60/66=0.909 48/66=0.727 32/66=0.485 26/66=0.394 16/66=0.242 12/66=0.182] total=194/396=0.490 tok_per_round=3.939
+[spec-phase] draft=283.0ms (9.8%) verify-issue=1327.7ms (45.8%) verify-wait=1250.8ms (43.2%) commit-host=35.9ms (1.2%) rounds=66
+
+[generate_spec K=6] 256 tok in 2.922s = 87.27 tok/s (1.88x vs generate; this run's prime 0.102s)
+  acceptance: 194/396 = 49.0%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=63 full_accept=5 len_hist=[0, 0, 0, 0, 0, 0, 0, 63] per_slot=[58/63=0.921 46/63=0.730 33/63=0.524 26/63=0.413 17/63=0.270 12/63=0.190 5/63=0.079] total=197/441=0.447 tok_per_round=4.127
+[spec-phase] draft=313.8ms (10.5%) verify-issue=1394.6ms (46.5%) verify-wait=1253.5ms (41.8%) commit-host=35.8ms (1.2%) rounds=63
+
+[generate_spec K=7] 256 tok in 3.023s = 84.35 tok/s (1.82x vs generate; this run's prime 0.102s)
+  acceptance: 197/441 = 44.7%   self-consistency: PASS (identical to generate)
+[spec-stats] rounds=63 full_accept=3 len_hist=[0, 0, 0, 0, 0, 0, 0, 0, 63] per_slot=[58/63=0.921 46/63=0.730 32/63=0.508 26/63=0.413 17/63=0.270 11/63=0.175 4/63=0.063 3/63=0.048] total=197/504=0.391 tok_per_round=4.127
+[spec-phase] draft=385.7ms (5.6%) verify-issue=3255.2ms (47.2%) verify-wait=3222.2ms (46.7%) commit-host=37.0ms (0.5%) rounds=63
+
+[generate_spec K=8] 256 tok in 6.925s = 36.82 tok/s (0.79x vs generate; this run's prime 0.102s)
+  acceptance: 197/504 = 39.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[gpu 2026-08-02T09:52:46Z] 80, 154.77 W, 1755 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+SWEEP27CODE rep=2 rc=0

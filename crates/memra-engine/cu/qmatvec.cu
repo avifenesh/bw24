@@ -2163,6 +2163,52 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_rpr2(
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_rp<8, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+
+// ---- DUAL gate+up BATCHED twins (lane/verify-economics, 2026-08-02). The verify-tier FFN pair
+// (gate, up) shares ONE activation and one shape; as two sequential batched launches the two
+// independent weight streams serialize (no PDL arm on the batched launcher) and each launch
+// pays its own straggler tail. ONE grid computes both: blockIdx.y selects the tensor
+// (0 -> W0/y0=gate, 1 -> W1/y1=up); per (tensor, token, row) the body is the SAME template the
+// single launch runs -> BIT-IDENTICAL per output element to the two single launches
+// (kernel-check pins bitwise on both layouts). Schedules mirror the single-launch auto picks
+// for the 27B 5120x17408 pair: split-plane rp layout (the sm_120 default trunk) = b2 rp(r1) /
+// b4 rpr2; GGUF layout = b2 base / b4 r2. b2/b4 ONLY (verify T=2..4, the K=1..3 profitable
+// window): the b8 dual measured FLAT vs the rpsc singles (x3 interleaved probe,
+// research/verify-economics-20260802) and was killed per doctrine. Measured on the live q27
+// verify: -0.2..-0.3ms/pass at T=2..4 (9/9 interleaved pairs), +0.8% spec e2e at K=3.
+// Mechanism precedent: the m=1 dual (dual_mr2) measured 47-50% DRAM active vs ~40% singles.
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched<2>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                          in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b4_r2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_r2<4>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                             in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<2, 1>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                                in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b4_rpr2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<4, 2>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                                in_f, out_f, m, row_bytes);
+}
 extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b8_rpr2w8(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

@@ -95,6 +95,10 @@ name = "run-spec"
 path = "src/bin/run_spec.rs"
 
 [[bin]]
+name = "spec-econ"
+path = "src/bin/spec_econ.rs"
+
+[[bin]]
 name = "replay-acceptance"
 path = "src/bin/replay_acceptance.rs"
 

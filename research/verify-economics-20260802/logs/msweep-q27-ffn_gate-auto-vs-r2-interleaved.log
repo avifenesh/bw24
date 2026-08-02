@@ -1,0 +1,36 @@
+=== BV=auto ===
+  m=3 (b4): 70.05 us/call  (23.35 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 73.60 us/call  (18.40 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 89.67 us/call  (17.93 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 96.69 us/call  (16.12 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 116.91 us/call  (14.61 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=r2 ===
+  m=3 (b4): 68.53 us/call  (22.84 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 73.12 us/call  (18.28 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 93.19 us/call  (18.64 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 95.87 us/call  (15.98 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 107.35 us/call  (13.42 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=auto ===
+  m=3 (b4): 68.44 us/call  (22.81 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 73.77 us/call  (18.44 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 89.28 us/call  (17.86 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 96.16 us/call  (16.03 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 116.83 us/call  (14.60 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=r2 ===
+  m=3 (b4): 68.55 us/call  (22.85 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 74.24 us/call  (18.56 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 87.19 us/call  (17.44 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 92.95 us/call  (15.49 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 107.11 us/call  (13.39 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=auto ===
+  m=3 (b4): 70.22 us/call  (23.41 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 74.46 us/call  (18.61 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 90.57 us/call  (18.11 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 95.14 us/call  (15.86 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 117.15 us/call  (14.64 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=r2 ===
+  m=3 (b4): 70.15 us/call  (23.38 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 75.67 us/call  (18.92 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 90.62 us/call  (18.12 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 92.71 us/call  (15.45 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 108.80 us/call  (13.60 us/token)  bit-bad=0 bit-exact-bad=0

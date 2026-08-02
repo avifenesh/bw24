@@ -1,0 +1,11 @@
+[gpu 2026-08-02T09:39:29Z] 73, 169.18 W, 2295 MHz, 23252 MiB
+[econ] model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf prompt_tokens=2048 N=3 t_max=6
+[econ] primed pos=2048, continuation=[332, 735, 271, 248068, 198, 8160, 579]
+[econ] decode_h   N=3  med= 22.039ms  mean= 21.856ms  min= 21.469ms  p90= 22.059ms  x1.000 vs decode_h
+[econ] verify_t1  N=3  med= 23.171ms  mean= 23.189ms  min= 22.675ms  p90= 23.721ms  x1.051 vs decode_h
+[econ] verify_t2  N=3  med= 24.263ms  mean= 24.252ms  min= 24.168ms  p90= 24.325ms  x1.101 vs decode_h
+[econ] verify_t3  N=3  med= 26.923ms  mean= 27.076ms  min= 26.555ms  p90= 27.748ms  x1.222 vs decode_h
+[econ] verify_t4  N=3  med= 28.521ms  mean= 28.875ms  min= 28.289ms  p90= 29.815ms  x1.294 vs decode_h
+[econ] verify_t5  N=3  med= 35.028ms  mean= 35.238ms  min= 34.351ms  p90= 36.336ms  x1.589 vs decode_h
+[econ] verify_t6  N=3  med= 38.559ms  mean= 38.259ms  min= 37.409ms  p90= 38.809ms  x1.750 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":3,"arms":{"decode_h":{"med_ms":22.0390,"mean_ms":21.8556,"min_ms":21.4692,"p90_ms":22.0585},"verify_t1":{"med_ms":23.1705,"mean_ms":23.1890,"min_ms":22.6755,"p90_ms":23.7209},"verify_t2":{"med_ms":24.2632,"mean_ms":24.2519,"min_ms":24.1678,"p90_ms":24.3247},"verify_t3":{"med_ms":26.9232,"mean_ms":27.0755,"min_ms":26.5555,"p90_ms":27.7478},"verify_t4":{"med_ms":28.5208,"mean_ms":28.8751,"min_ms":28.2892,"p90_ms":29.8153},"verify_t5":{"med_ms":35.0277,"mean_ms":35.2382,"min_ms":34.3507,"p90_ms":36.3361},"verify_t6":{"med_ms":38.5588,"mean_ms":38.2586,"min_ms":37.4085,"p90_ms":38.8086}}}
