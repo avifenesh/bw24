@@ -1,0 +1,74 @@
+{
+  "request": {
+    "model": "aw",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the current weather in Paris right now? Use the tools available to you."
+      }
+    ],
+    "max_tokens": 1024,
+    "temperature": 0,
+    "seed": 0,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City name, e.g. Paris"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ],
+                "description": "Temperature unit (default celsius)"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "response": {
+    "object": "chat.completion",
+    "model": "aw",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Thinking Process:\n\n1.  **Identify the user's request:** The user is asking for the current weather in Paris.\n2.  **Identify the available tools:** The available tool is `get_weather`, which takes parameters `city` (required, string) and `unit` (optional, string, enum: \"celsius\", \"fahrenheit\", default celsius).\n3.  **Extract the necessary parameters:**\n    *   `city`: \"Paris\"\n    *   `unit`: Not specified, so default to \"celsius\" (or omit it since it's optional and has a default).\n4.  **Formulate the tool call:**\n    *   Tool: `get_weather`\n    *   Parameters: `{\"city\": \"Paris\"}`\n5.  **Execute the tool call and format the response:** (Wait for the tool output).\n\nLet's call the `get_weather` tool with `city=\"Paris\"`.\n</think>\n\n",
+          "tool_calls": [
+            {
+              "id": "call_0acaa39fa4e08df2",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Paris\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 330,
+      "completion_tokens": 231,
+      "total_tokens": 561,
+      "elapsed_s": 1.447546564
+    }
+  }
+}

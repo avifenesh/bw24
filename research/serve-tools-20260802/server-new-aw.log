@@ -1,0 +1,10 @@
+[server] starting; models config = [("aw", "/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "aw" <- /data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: experts 15.22GB + trunk 2.56GB vs free 24.00GB (expert budget 19.45GB) -> RESIDENT
+[worker]   loaded "aw": 40 layers, eos=248046
+[worker] aw: template caps tools=true think=true think_switch=true
+[worker] aw: decode chunk cap 8
+[server] worker ready; serving models: ["aw"]
+[server] listening on http://127.0.0.1:8127
+[worker] observed session VRAM cost for "aw": 201MB (admission gate = 2x)
