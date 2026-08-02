@@ -43,7 +43,7 @@ days) — cross-session ratios have been measured to drift up to ~10% from clock
 
 - [ ] This targets sm_120a (RTX 5090 Laptop or equivalent consumer Blackwell) — the only tuned
       target. Portability PRs (sm_89, sm_90, datacenter Blackwell) must first address
-      [Limitations](../README.md#limitations) in the PR description.
+      [Requirements and limits](../README.md#requirements-and-limits) in the PR description.
 - [ ] I checked [`research/tune-data/`](../research/tune-data/) for prior attempts at this exact
       change and either found none, or am including new evidence that overturns a prior result
       (link the record and explain what's different).

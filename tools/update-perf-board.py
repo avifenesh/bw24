@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""Regenerate README.md's perf tables and docs/perf-card.svg from research/tune-data/current-board.json.
+"""Regenerate README.md's perf tables and the perf-card SVGs from research/tune-data/current-board.json.
+
+Generated surfaces:
+    - README.md PERF-DATE / PERF-PLAIN / PERF-SPEC blocks   (RTX 5090 vs llama.cpp)
+    - README.md PERF-H100 block                             (H100 vs vLLM, from "h100_board")
+    - docs/perf-card.svg                                    (5090 card)
+    - docs/perf-card-h100.svg                               (H100 card, same visual style)
 
 Usage:
-    tools/update-perf-board.py          # regenerate README.md + docs/perf-card.svg in place
-    tools/update-perf-board.py --check  # exit 1 if either file would change (for a pre-push hook / CI)
+    tools/update-perf-board.py          # regenerate all surfaces in place
+    tools/update-perf-board.py --check  # exit 1 if any surface would change (for a pre-push hook / CI)
 
 The board JSON is the single source of truth for published numbers. Never hand-edit the
-generated regions in README.md (marked with PERF-*:START/END comments) or docs/perf-card.svg;
+generated regions in README.md (marked with PERF-*:START/END comments) or the SVG cards;
 edit research/tune-data/current-board.json and rerun this script instead.
 
-Note: ratios are computed from the display-rounded tok/s values stored in the board JSON, not
-from raw unrounded measurements. This can shift a borderline ratio by ~0.01x versus a value
+Note: 5090 ratios are computed from the display-rounded tok/s values stored in the board JSON,
+not from raw unrounded measurements. This can shift a borderline ratio by ~0.01x versus a value
 computed from full-precision logs (e.g. 162/155 rounds to 1.05x here even where the underlying
 raw measurement was 1.04x) — store more decimal places in current-board.json if a row is close
-to the bold_ratio_threshold and this matters.
+to the bold_ratio_threshold and this matters. H100 rows instead carry an explicit receipted
+"ratio" field (the board publishes the ratio measured from full-precision logs, which can
+differ by 0.01x from the rounded-e2e quotient); rows render sorted by that ratio, descending.
 """
 import json
 import re
@@ -24,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BOARD_PATH = ROOT / "research" / "tune-data" / "current-board.json"
 README_PATH = ROOT / "README.md"
 SVG_PATH = ROOT / "docs" / "perf-card.svg"
+H100_SVG_PATH = ROOT / "docs" / "perf-card-h100.svg"
 
 
 def load_board():
@@ -68,6 +77,31 @@ def render_spec_table(board):
     return "\n".join(lines)
 
 
+def h100_rows_sorted(board):
+    return sorted(board["h100_board"]["rows"], key=lambda r: r["ratio"], reverse=True)
+
+
+def render_h100_block(board):
+    h = board["h100_board"]
+    lines = [
+        f"Measured {h['updated']} on {h['rig']} against {h['competitor']} — {h['protocol']}",
+        "",
+        f"| Model | memra e2e | {h['competitor']} e2e (artifact) | Ratio |",
+        "|---|---:|---:|---:|",
+    ]
+    for row in h100_rows_sorted(board):
+        ratio = row["ratio"]
+        memra = f"**{row['memra_e2e']}**" if ratio > 1.0 else str(row["memra_e2e"])
+        vllm = f"**{row['vllm_e2e']}**" if ratio < 1.0 else str(row["vllm_e2e"])
+        ratio_txt = f"{ratio:.2f}x"
+        if ratio > 1.0:
+            ratio_txt = f"**{ratio_txt}**"
+        lines.append(
+            f"| {row['model']} | {memra} | {vllm} ({row['vllm_artifact']}) | {ratio_txt} |"
+        )
+    return "\n".join(lines)
+
+
 def replace_block(text, tag, body):
     pattern = re.compile(
         rf"(<!-- {tag}:START[^>]*-->\n).*?(\n<!-- {tag}:END -->)", re.DOTALL
@@ -82,34 +116,21 @@ def render_readme(board, original):
     text = replace_block(text, "PERF-DATE", render_date_block(board))
     text = replace_block(text, "PERF-PLAIN", render_plain_table(board))
     text = replace_block(text, "PERF-SPEC", render_spec_table(board))
+    text = replace_block(text, "PERF-H100", render_h100_block(board))
     return text
 
 
-def render_svg(board):
-    threshold = board["bold_ratio_threshold"]
-    plain_rows = board["plain_decode"]["rows"]
-    spec_rows = board["speculative"]["rows"]
-
-    def ratio_of(row):
-        return row["memra"][0] / row["llama"][0] if isinstance(row["memra"], list) else row["memra"] / row["llama"]
-
+def render_card(rig_label, right_label, rows, is_win):
+    """Shared perf-card renderer: rows = [(label, ratio)], is_win(ratio) -> bold/teal."""
     row_height = 34
     top = 168
-    all_rows = [(r["model"], ratio_of(r)) for r in plain_rows] + [
-        (r["model"] + " (spec)", ratio_of(r)) for r in spec_rows
-    ]
-    # card-only rows (families whose table lives outside the generated blocks, e.g. Gemma):
-    # {model, memra, llama, spec?: true} — appended in order, "(spec)" suffix when spec.
-    for r in board.get("extra_card_rows", []):
-        label = r["model"] + (" (spec)" if r.get("spec") else "")
-        all_rows.append((label, ratio_of(r)))
-    height = top + row_height * len(all_rows) + 40
+    height = top + row_height * len(rows) + 40
 
     row_svg = []
-    for i, (name, ratio) in enumerate(all_rows):
+    for i, (name, ratio) in enumerate(rows):
         y = top + i * row_height
-        color = "#3fa79c" if ratio >= threshold else "#978f80"
-        weight = "700" if ratio >= threshold else "500"
+        color = "#3fa79c" if is_win(ratio) else "#978f80"
+        weight = "700" if is_win(ratio) else "500"
         row_svg.append(
             f'<line x1="64" y1="{y - 12}" x2="1216" y2="{y - 12}" stroke="#3a352c" stroke-width="1"/>'
             f'<text x="64" y="{y}" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" '
@@ -121,11 +142,50 @@ def render_svg(board):
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="{height}" viewBox="0 0 1280 {height}">
   <rect width="1280" height="{height}" fill="#171613"/>
   <text x="64" y="72" font-family="ui-sans-serif,Arial,sans-serif" font-weight="800" font-size="52" fill="#eee7da">memra</text>
-  <text x="64" y="104" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" letter-spacing="0.06em" fill="#978f80">{board["rig"]}</text>
-  <text x="1216" y="104" text-anchor="end" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" fill="#978f80">vs llama.cpp · updated {board["updated"]}</text>
+  <text x="64" y="104" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" letter-spacing="0.06em" fill="#978f80">{rig_label}</text>
+  <text x="1216" y="104" text-anchor="end" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" fill="#978f80">{right_label}</text>
   {"".join(row_svg)}
 </svg>
 '''
+
+
+def render_svg(board):
+    threshold = board["bold_ratio_threshold"]
+    plain_rows = board["plain_decode"]["rows"]
+    spec_rows = board["speculative"]["rows"]
+
+    def ratio_of(row):
+        return row["memra"][0] / row["llama"][0] if isinstance(row["memra"], list) else row["memra"] / row["llama"]
+
+    all_rows = [(r["model"], ratio_of(r)) for r in plain_rows] + [
+        (r["model"] + " (spec)", ratio_of(r)) for r in spec_rows
+    ]
+    # card-only rows (families whose table lives outside the generated blocks, e.g. Gemma):
+    # {model, memra, llama, spec?: true} — appended in order, "(spec)" suffix when spec.
+    for r in board.get("extra_card_rows", []):
+        label = r["model"] + (" (spec)" if r.get("spec") else "")
+        all_rows.append((label, ratio_of(r)))
+
+    return render_card(
+        board["rig"],
+        f'vs llama.cpp · updated {board["updated"]}',
+        all_rows,
+        lambda ratio: ratio >= threshold,
+    )
+
+
+def render_svg_h100(board):
+    h = board["h100_board"]
+    rows = [
+        (f'{r["model"]} (vs {r["vllm_artifact"]})', r["ratio"])
+        for r in h100_rows_sorted(board)
+    ]
+    return render_card(
+        h["rig"],
+        f'vs {h["competitor"]} · updated {h["updated"]}',
+        rows,
+        lambda ratio: ratio > 1.0,
+    )
 
 
 def main():
@@ -135,10 +195,16 @@ def main():
     original_readme = README_PATH.read_text()
     new_readme = render_readme(board, original_readme)
     new_svg = render_svg(board)
+    new_h100_svg = render_svg_h100(board)
 
     old_svg = SVG_PATH.read_text() if SVG_PATH.exists() else ""
+    old_h100_svg = H100_SVG_PATH.read_text() if H100_SVG_PATH.exists() else ""
 
-    changed = new_readme != original_readme or new_svg != old_svg
+    changed = (
+        new_readme != original_readme
+        or new_svg != old_svg
+        or new_h100_svg != old_h100_svg
+    )
 
     if check_only:
         if changed:
@@ -150,8 +216,9 @@ def main():
     README_PATH.write_text(new_readme)
     SVG_PATH.parent.mkdir(parents=True, exist_ok=True)
     SVG_PATH.write_text(new_svg)
+    H100_SVG_PATH.write_text(new_h100_svg)
     if changed:
-        print("regenerated README.md perf tables + docs/perf-card.svg")
+        print("regenerated README.md perf tables + docs/perf-card.svg + docs/perf-card-h100.svg")
     else:
         print("no changes (already up to date)")
 

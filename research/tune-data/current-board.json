@@ -67,6 +67,63 @@
   ]
  },
  "bold_ratio_threshold": 1.05,
+ "h100_board": {
+  "updated": "2026-08-01",
+  "rig": "1× H100 80GB",
+  "competitor": "vLLM 0.26",
+  "protocol": "same box, every cell a same-session interleaved pair. One number per arm: end-to-end tok/s — 512 tokens generated on a ~2100-token real-text prompt, single request, total wall time; N=5 medians, argmax exactness gate green on every published row. Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it rejects these GGUFs); memra serves its GGUF artifacts.",
+  "rows": [
+   {
+    "model": "Gemma-4 12B",
+    "memra_e2e": 146,
+    "vllm_e2e": 81,
+    "vllm_artifact": "bf16",
+    "ratio": 1.81
+   },
+   {
+    "model": "Qwen3.6-27B",
+    "memra_e2e": 96,
+    "vllm_e2e": 73,
+    "vllm_artifact": "FP8",
+    "ratio": 1.31
+   },
+   {
+    "model": "Gemma-4 31B",
+    "memra_e2e": 75,
+    "vllm_e2e": 64,
+    "vllm_artifact": "FP8-dyn",
+    "ratio": 1.18
+   },
+   {
+    "model": "Qwen3.5-9B",
+    "memra_e2e": 204,
+    "vllm_e2e": 176,
+    "vllm_artifact": "w8a8",
+    "ratio": 1.16
+   },
+   {
+    "model": "Gemma-4 E4B",
+    "memra_e2e": 193,
+    "vllm_e2e": 168,
+    "vllm_artifact": "bf16",
+    "ratio": 1.14
+   },
+   {
+    "model": "Qwen3.6-35B MoE",
+    "memra_e2e": 226,
+    "vllm_e2e": 215,
+    "vllm_artifact": "FP8",
+    "ratio": 1.05
+   },
+   {
+    "model": "Gemma-4 26B MoE",
+    "memra_e2e": 196,
+    "vllm_e2e": 191,
+    "vllm_artifact": "FP8-dyn",
+    "ratio": 1.02
+   }
+  ]
+ },
  "plain_decode_depth": {
   "context": "tg128 at 6257-token context (same session/hour-regime)",
   "rows": [
