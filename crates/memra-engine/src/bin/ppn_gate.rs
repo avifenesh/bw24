@@ -146,8 +146,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // serial-only: the deferred API needs per-stage streams and (correctly) errors. Skip
     // the arm instead of aborting — otherwise the serial verdict never prints (the
     // 2026-08-02 streams0 no-verdict runs).
+    let same_dev_quarantined = memra_engine::pp::pp_multi_stream_same_device()
+        && std::env::var("MEMRA_PP_FORCE_SAME_DEV_PIPELINED").as_deref() != Ok("1");
+    if memra_engine::pp::pp_multi_stream_same_device() && !same_dev_quarantined {
+        println!(
+            "ppn gate NOTE: pipelined arm FORCED on a same-device multi-stream placement \
+             (quarantined regime — soak/bisect measurement only)"
+        );
+    }
     let mut pipelined = if memra_engine::pp::pp2_streams_off() {
         println!("ppn gate NOTE: pipelined arm skipped (MEMRA_PP_STREAMS=0 is serial-only)");
+        None
+    } else if same_dev_quarantined {
+        println!(
+            "ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is \
+             quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; \
+             MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)"
+        );
         None
     } else if m.cfg.gemma4.is_none() {
         let overlap_prev = std::env::var("MEMRA_PP_OVERLAP").ok();

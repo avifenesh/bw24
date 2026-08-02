@@ -162,6 +162,36 @@ pub fn pp2_streams_off() -> bool {
     matches!(std::env::var("MEMRA_PP_STREAMS").as_deref(), Ok("0"))
 }
 
+/// True iff the ppN door would put TWO OR MORE stage streams on ONE device (devices
+/// unset = all stages on the primary; or an explicit placement with a repeated device).
+/// The deferred-readback (pipelined) arm is REFUSED in this regime: the 2026-08-02 x20
+/// soak record — singledev pipelined 13/20 PASS default, 7 failures each diverging at a
+/// different step (timing-race signature); MEMRA_PDL=0 went 20/20 on one soak but a
+/// second same-config soak on the auto-gated build failed 2/20 (n2) and battery-4 failed
+/// n4 — so PDL narrows the window without closing it, and the true root cause (same
+/// Engine kernels concurrent on two streams of one device) is NOT fixed by any flag yet.
+/// Cross-device pipelined (one stage stream per device) is 23/23 clean post-fix. Refuse
+/// loudly rather than return silently-wrong logits. Env-only read (callable pre-runtime).
+pub fn pp_multi_stream_same_device() -> bool {
+    let stages_open = std::env::var("MEMRA_PP_STAGES")
+        .map(|v| v.parse::<usize>().map(|n| n >= 2).unwrap_or(false))
+        .unwrap_or(false);
+    let devices = std::env::var("MEMRA_PP_DEVICES").ok().filter(|v| !v.is_empty());
+    if (!stages_open && devices.is_none()) || pp2_streams_off() {
+        return false;
+    }
+    match devices {
+        None => true, // door open, no placement: every stage stream lands on the primary
+        Some(s) => {
+            let mut v: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+            let n = v.len();
+            v.sort_unstable();
+            v.dedup();
+            v.len() < n // repeated device = shared-device streams
+        }
+    }
+}
+
 /// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
 /// pipelining seed). Default OFF — scheduling structure only, never math. Read per step
 /// so gates can A/B in-process.

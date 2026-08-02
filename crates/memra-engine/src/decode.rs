@@ -950,6 +950,18 @@ impl HybridModel {
         if self.cfg.gemma4.is_some() {
             return Err("ppn deferred: generic eager arm only (gemma4 is 2-stage serial)".into());
         }
+        if crate::pp::pp_multi_stream_same_device()
+            && std::env::var("MEMRA_PP_FORCE_SAME_DEV_PIPELINED").as_deref() != Ok("1")
+        {
+            return Err(
+                "ppn deferred: refused with 2+ stage streams on one device — repro'd \
+                 nondeterministic logits (35% flake, 2026-08-02 x20 soak, root cause open: \
+                 shared-Engine kernels concurrent on co-located streams). Use one device \
+                 per stage (MEMRA_PP_DEVICES) or the serial arm. \
+                 MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 overrides for soak/bisect measurement."
+                    .into(),
+            );
+        }
         let rt = crate::pp::PpNRt::get(e)?;
         let n_st = fence.len() - 1;
         assert_eq!(

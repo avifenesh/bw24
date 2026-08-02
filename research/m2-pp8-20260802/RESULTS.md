@@ -18,7 +18,7 @@ is no arm to gate; it is the explicit next increment,** not a silent omission.
 | gate | configs | verdict |
 |---|---|---|
 | ppn-gate q9 serial | N=2/4/8 × {singledev, dev0..N-1} × {shard, noshard} + asym splits 5,16,27 + split5 + overlap + streams0 | **PASS — BIT-IDENTICAL, 48 steps, all 13 arms** |
-| ppn-gate q9 pipelined (deferred, window 3, overlap forced) | same minus streams0 (serial-only by design, note printed) | **PASS — BIT-IDENTICAL, all 11 arms** (see standing flake below) |
+| ppn-gate q9 pipelined (deferred, window 3, overlap forced) | same minus streams0 (serial-only by design, note printed) | **PASS — BIT-IDENTICAL, all 11 arms in battery 3** (but see the standing-race section: a battery-5 dev01 flake makes the honest cross-device record ~69/70) |
 | ppn-gate g12 serial (gemma4 arm, N=2) | singledev + dev01 | **PASS — BIT-IDENTICAL** |
 | pp2-gate legacy (M1 binary semantics) | singledev + dev01 | **PASS — BIT-IDENTICAL** |
 | pp-transport-smoke | 8 devices, all 56 peer pairs `cuDeviceCanAccessPeer=1` | **PASS** |
@@ -78,22 +78,44 @@ ALL GREEN: kernels match CPU reference.
    streams — unordered. `pp::new_cache` now syncs every stage context after creation
    (same class as the load barrier).
 
-## Standing NEGATIVE (open): single-device pipelined intermittent
+## Standing NEGATIVE (closed by quarantine): single-device pipelined
 
 After all four fixes, a **x20 same-build soak** of the singledev N=2 pipelined arm
-(`soak-singledev/`) lands at **13/20 PASS, 7/20 FAIL (35% flake)** — every failure a
-different first-divergence step (6, 11, 13, 14, 16, 25, 28), the classic signature of a
-timing-dependent cross-stream race, not a logic bug. Combined with battery 3 + the x5
-probe: singledev pipelined = 21/34 clean, cause not yet isolated (lead suspects: device
-default-mempool cross-stream reuse, or a remaining Engine-shared surface reachable when
-both stage streams live on one device).
+(`soak-singledev/`) landed **13/20 PASS, 7/20 FAIL (35% flake)** — every failure a
+different first-divergence step (6, 11, 13, 14, 16, 25, 28): a timing-dependent
+cross-stream race, not a logic bug. The controlled twin, a **x10 dev01 soak**
+(`soak-dev01/`), was **10/10 PASS** on the same build/window/model, and an N=8
+cross-device soak (`soak-n8/`) 5/5 — cross-device pipelined has **0 failures in 23/23
+post-fix runs**.
 
-The controlled twin: a **x10 dev01 soak** (`soak-dev01/`) on the same build, same window,
-same model is **10/10 PASS.** Cross-device pipelined — the configuration multi-GPU PP
-exists for — has **0 failures across all post-fix runs** (battery 3 all placements +
-dev01 x5 probe + this soak: 18/18). Verdict discipline: the pipelined arm is validated
-**cross-device only**; single-device multi-stage keeps a repro'd 35% intermittent and
-must not be claimed clean or benched.
+Bisect trail (receipts in `soak-singledev-pdl0/`, `soak-singledev-pdlwb0/`,
+`soak-singledev-fixed/`): `MEMRA_PDL=0` went 20/20 clean; the narrower `MEMRA_PDL_WB=0`
+8/10; but a follow-up naked soak on a build that auto-disabled PDL for this regime still
+failed 2/20 (n2, first-divergence steps 13 and 44) and battery-4 reproduced an n4
+singledev pipelined FAIL — so **PDL's programmatic early-launch widens the race window
+but is not the root cause**; the underlying unsound surface is the shared-Engine kernels
+running concurrently on two streams of one device.
+
+Resolution shipped: `decode_step_h_ppn_deferred` now **refuses** placements that put 2+
+stage streams on one device (loud error; `MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1` overrides
+for soak/bisect measurement only), and ppn-gate skips that arm with a printed NOTE.
+Wrong-logits-fast is not a mode memra ships. Single-device multi-stage remains fully
+supported on the serial arm (bit-identical everywhere, incl. streams0).
+
+**Battery 5** (quarantine build, 19:10Z): quarantine NOTEs printed on all three singledev
+pipelined arms as designed, all serial arms PASS — and it caught **one cross-device
+pipelined FAIL** (`ppn-q9-n2-dev01`: 37/48 from step 11; serial arm of the same
+invocation PASS). That is the FIRST cross-device occurrence: the post-fix cross-device
+pipelined record is **~1 failure in ~70 runs** (battery 3+4+5 arms, dev01 x5 probe,
+soak-dev01 x10, soak-n8 x5, soak-dev01-x20 20/20, soak-dev01-pdl0 x20 20/20). So the
+race is **same-device-dominant (35%) but not same-device-exclusive (~1.4%)** — the
+shared surface reachable cross-device is smaller but real (stage-0's primary Engine
+runs token t+1 while the readback/last-stage machinery drains token t). Root cause stays
+OPEN; the pipelined arm as a whole remains an experimental door (default OFF), correct
+serving stays on the serial arm, and the deferred path must not be defaulted anywhere
+until a x100+ soak is clean. PDL narrows the window on both placements (singledev
+20/20@x20, dev01 20/20@x20 with `MEMRA_PDL=0`) but the naked auto-gated singledev soak
+still failed 2/20, so PDL-off is mitigation, not fix.
 
 ## Throughput (final build only; interleaved ×5 at the invocation level)
 
