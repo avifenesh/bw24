@@ -76,6 +76,11 @@ pub struct Request {
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
     pub trace_id: Option<String>,
+    /// PC-ISO cache namespace (lane/pc-iso, 2026-08-02): the tenant isolation salt for
+    /// EVERY cross-request KV reuse tier (prefix cache, continuation pool, spec pool) —
+    /// the vLLM `cache_salt` design. Derived by the HTTP layer (request `cache_salt`
+    /// field; "" = the default single-tenant namespace, byte-identical to pre-PC-ISO).
+    pub cache_ns: String,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -206,6 +211,22 @@ fn reuse_pool_per_model() -> usize {
 /// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
 const REUSE_MIN_PREFIX: usize = 16;
 
+/// PC-ISO pool key (lane/pc-iso, 2026-08-02): every cross-request reuse pool — the prefix
+/// cache, the continuation pool, and the spec pool — keys on (model, cache namespace), not
+/// model alone. The namespace is the request's `cache_salt` (vLLM cache_salt design, PR
+/// #17045): a lookup only ever scans its own (model, ns) pool, so no token-prefix match can
+/// cross a trust boundary, and the `cached_tokens` billing field can only reveal the
+/// caller's own namespace's history (the CacheProbe/PROMPTPEEK mitigation —
+/// research/cache-tools-20260802/REPORT.md §1.4/§4). "" is the default single-tenant
+/// namespace: no salt supplied = today's behavior, byte-for-byte.
+type PoolKey = (String, String);
+
+/// Log suffix for a pool key's namespace: silent for the default "" namespace (default-path
+/// log lines stay byte-identical to pre-PC-ISO), quoted otherwise.
+fn ns_suffix(ns: &str) -> String {
+    if ns.is_empty() { String::new() } else { format!(", ns {ns:?}") }
+}
+
 // ---------------- CROSS-REQUEST PREFIX CACHE (lane/prompt-cache, 2026-08-02) ----------------
 //
 // The continuation pool above only serves a prompt that EXACTLY EXTENDS a retired session's
@@ -238,6 +259,10 @@ const REUSE_MIN_PREFIX: usize = 16;
 // caches; restoring a trunk-only prefix would leave draft state unprimed). The spec tier keeps
 // its own continuation pool; the prefix cache serves the batched bulk tier. Legacy round-robin
 // mode (MEMRA_SERVE_BATCH=0) also bypasses.
+//
+// ISOLATION (PC-ISO, lane/pc-iso 2026-08-02): pools key on (model, cache namespace) — see
+// PoolKey. Same-namespace traffic shares entries exactly as before; requests carrying
+// different `cache_salt` values never see each other's prefixes, in either direction.
 
 /// Prefixes shorter than this are not worth VRAM + copy bookkeeping (also keeps the bare
 /// chat-template header — common to every request of a model — out of the cache).
@@ -282,8 +307,10 @@ struct PrefixEntry {
 
 #[derive(Default)]
 struct PrefixCache {
-    /// per-model entry pools (KV geometry/format is per model).
-    entries: HashMap<String, Vec<PrefixEntry>>,
+    /// per-(model, namespace) entry pools (KV geometry/format is per model; the namespace
+    /// is the PC-ISO trust boundary — the equality check is part of the map key, so the
+    /// default path pays nothing beyond hashing "" alongside the model id).
+    entries: HashMap<PoolKey, Vec<PrefixEntry>>,
     total_bytes: usize,
     hits: u64,
     misses: u64,
@@ -302,8 +329,10 @@ impl PrefixCache {
     }
 
     /// Longest entry whose token key exactly prefixes `prompt` (floor PREFIX_CACHE_MIN_TOKENS).
-    fn lookup(&self, model: &str, prompt: &[u32]) -> Option<usize> {
-        let pool = self.entries.get(model)?;
+    /// Only the caller's own (model, namespace) pool is scanned — cross-namespace entries
+    /// are structurally unreachable (PC-ISO).
+    fn lookup(&self, key: &PoolKey, prompt: &[u32]) -> Option<usize> {
+        let pool = self.entries.get(key)?;
         let mut best: Option<(usize, usize)> = None;
         for (i, e) in pool.iter().enumerate() {
             let n = e.toks.len();
@@ -317,57 +346,60 @@ impl PrefixCache {
     }
 
     /// Longest common prefix of `prompt` with ANY entry (the LCP-split learning signal).
-    fn best_lcp(&self, model: &str, prompt: &[u32]) -> usize {
-        self.entries.get(model)
+    fn best_lcp(&self, key: &PoolKey, prompt: &[u32]) -> usize {
+        self.entries.get(key)
             .map(|pool| pool.iter().map(|e| Self::lcp(&e.toks, prompt)).max().unwrap_or(0))
             .unwrap_or(0)
     }
 
     /// Is any entry (>= min tokens) already a full prefix of `prompt`? (seed dedupe)
-    fn has_covering(&self, model: &str, prompt: &[u32]) -> bool {
-        self.entries.get(model).is_some_and(|pool| pool.iter().any(|e| {
+    fn has_covering(&self, key: &PoolKey, prompt: &[u32]) -> bool {
+        self.entries.get(key).is_some_and(|pool| pool.iter().any(|e| {
             let n = e.toks.len();
             n >= PREFIX_CACHE_MIN_TOKENS && n <= prompt.len() && prompt[..n] == e.toks[..]
         }))
     }
 
-    fn has_key(&self, model: &str, key: &[u32]) -> bool {
-        self.entries.get(model).is_some_and(|pool| pool.iter().any(|e| e.toks[..] == *key))
+    fn has_key(&self, key: &PoolKey, toks: &[u32]) -> bool {
+        self.entries.get(key).is_some_and(|pool| pool.iter().any(|e| e.toks[..] == *toks))
     }
 
-    /// Insert (exact-key deduped) + LRU-evict back under MEMRA_PREFIX_CACHE_MB.
-    fn insert(&mut self, model: &str, e: PrefixEntry, why: &str) {
+    /// Insert (exact-key deduped per namespace) + LRU-evict back under MEMRA_PREFIX_CACHE_MB.
+    /// The LRU budget stays GLOBAL across namespaces (VRAM is one resource); only visibility
+    /// is namespaced.
+    fn insert(&mut self, key: &PoolKey, e: PrefixEntry, why: &str) {
         let budget = prefix_cache_budget_bytes();
         if e.bytes > budget {
             eprintln!("[prefix-cache] skip {why} insert: entry {:.1}MB > budget {:.0}MB",
                       e.bytes as f64 / 1e6, budget as f64 / 1e6);
             return;
         }
-        if self.has_key(model, &e.toks) {
+        if self.has_key(key, &e.toks) {
             return; // identical key raced in (concurrent learners) — first one wins
         }
         self.total_bytes += e.bytes;
         self.inserts += 1;
-        eprintln!("[prefix-cache] insert ({why}): {} tokens, {:.1}MB (resident {:.1}MB / {:.0}MB, model {model})",
+        eprintln!("[prefix-cache] insert ({why}): {} tokens, {:.1}MB (resident {:.1}MB / {:.0}MB, model {}{})",
                   e.toks.len(), e.bytes as f64 / 1e6,
-                  self.total_bytes as f64 / 1e6, budget as f64 / 1e6);
-        self.entries.entry(model.to_string()).or_default().push(e);
+                  self.total_bytes as f64 / 1e6, budget as f64 / 1e6,
+                  key.0, ns_suffix(&key.1));
+        self.entries.entry(key.clone()).or_default().push(e);
         while self.total_bytes > budget {
-            let mut victim: Option<(String, usize, Instant)> = None;
-            for (m, pool) in &self.entries {
+            let mut victim: Option<(PoolKey, usize, Instant)> = None;
+            for (k, pool) in &self.entries {
                 for (i, e) in pool.iter().enumerate() {
                     if victim.as_ref().is_none_or(|&(_, _, t)| e.last_use < t) {
-                        victim = Some((m.clone(), i, e.last_use));
+                        victim = Some((k.clone(), i, e.last_use));
                     }
                 }
             }
-            let Some((m, i, _)) = victim else { break };
-            let dead = self.entries.get_mut(&m).map(|p| p.remove(i));
+            let Some((k, i, _)) = victim else { break };
+            let dead = self.entries.get_mut(&k).map(|p| p.remove(i));
             if let Some(dead) = dead {
                 self.total_bytes = self.total_bytes.saturating_sub(dead.bytes);
                 self.evictions += 1;
-                eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {m})",
-                          dead.toks.len(), dead.bytes as f64 / 1e6);
+                eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {}{})",
+                          dead.toks.len(), dead.bytes as f64 / 1e6, k.0, ns_suffix(&k.1));
             }
         }
     }
@@ -479,7 +511,7 @@ fn prefix_insert_from_session(engine: &Engine, px: &mut PrefixCache, s: &Session
         return;
     }
     match prefix_snapshot(engine, cache, &s.fed, &s.last_logits) {
-        Ok(e) => px.insert(&s.model, e, why),
+        Ok(e) => px.insert(&s.pool_key(), e, why),
         Err(err) => eprintln!("[prefix-cache] snapshot failed ({err}); prefix not cached"),
     }
 }
@@ -495,7 +527,7 @@ fn maybe_prefix_seed(engine: &Engine, px: &mut PrefixCache, s: &mut Session) {
     if s.n_cached > 0 || s.cache.is_none() || s.fed.len() < PREFIX_CACHE_MIN_TOKENS {
         return;
     }
-    if px.has_covering(&s.model, &s.fed) {
+    if px.has_covering(&s.pool_key(), &s.fed) {
         return; // an entry already serves this prefix class
     }
     prefix_insert_from_session(engine, px, s, "seed");
@@ -503,6 +535,8 @@ fn maybe_prefix_seed(engine: &Engine, px: &mut PrefixCache, s: &mut Session) {
 
 struct Session {
     model: String,
+    /// PC-ISO cache namespace this session admits, hits, and parks under (see PoolKey).
+    cache_ns: String,
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
     /// double-alloc cost 2GB/128k-session and OOM'd the 27B serve — fixed 2026-07-05).
     cache: Option<Cache>,
@@ -558,6 +592,13 @@ struct Session {
     seed_prefix: bool,
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     t0: Instant,
+}
+
+impl Session {
+    /// The (model, namespace) reuse-pool key this session hits and parks under (PC-ISO).
+    fn pool_key(&self) -> PoolKey {
+        (self.model.clone(), self.cache_ns.clone())
+    }
 }
 
 /// The worker entry point. Runs on its OWN std::thread. Builds the Engine + loads every model on
@@ -681,9 +722,10 @@ pub fn run(
     // ---- scheduler loop ----
     let mut active: Vec<Session> = Vec::new();
     let mut queue: std::collections::VecDeque<Box<Request>> = std::collections::VecDeque::new();
-    // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc).
-    let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
-    let mut spec_reuse: HashMap<String, Vec<SpecReuseEntry>> = HashMap::new();
+    // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc). Keyed by
+    // (model, namespace) — cross-request continuation state is tenant-scoped too (PC-ISO).
+    let mut reuse: HashMap<PoolKey, Vec<ReuseEntry>> = HashMap::new();
+    let mut spec_reuse: HashMap<PoolKey, Vec<SpecReuseEntry>> = HashMap::new();
     // Cross-request prefix cache (token-prefix keyed, budget-bound; see the module doc above).
     let mut px = PrefixCache::default();
     if prefix_cache_budget_bytes() > 0 && serve_batching() {
@@ -1127,6 +1169,7 @@ pub fn run(
         finished.dedup();
         for &i in finished.iter().rev() {
             let s = active.remove(i);
+            let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
             if let Some(mut sess) = s.spec {
                 // PENDING-CARRY flush before parking: a parked session must be fully committed
@@ -1145,7 +1188,7 @@ pub fn run(
                     let skip = loaded[&s.model].tok.bos_id()
                         .map(|b| toks.first() == Some(&b)).unwrap_or(false) as usize;
                     let committed_text = loaded[&s.model].tok.decode_special(&toks[skip..], true);
-                    let pool = spec_reuse.entry(s.model.clone()).or_default();
+                    let pool = spec_reuse.entry(pool_key).or_default();
                     if pool.len() >= reuse_pool_per_model() { pool.remove(0); }
                     pool.push(SpecReuseEntry { sess, committed_text });
                 }
@@ -1164,7 +1207,7 @@ pub fn run(
                         s.last_logits
                     };
                     if !last_logits.is_empty() {
-                        let pool = reuse.entry(s.model.clone()).or_default();
+                        let pool = reuse.entry(pool_key).or_default();
                         if pool.len() >= reuse_pool_per_model() { pool.remove(0); } // LRU: oldest first
                         let cap = cache.max_ctx;
                         pool.push(ReuseEntry {
@@ -1235,12 +1278,14 @@ fn handle_cmd(
 fn admit(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
-    reuse: &mut HashMap<String, Vec<ReuseEntry>>,
-    spec_reuse: &mut HashMap<String, Vec<SpecReuseEntry>>,
+    reuse: &mut HashMap<PoolKey, Vec<ReuseEntry>>,
+    spec_reuse: &mut HashMap<PoolKey, Vec<SpecReuseEntry>>,
     px: &mut PrefixCache,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
     let lm = &loaded[&req.model];
+    // PC-ISO: every reuse-pool probe below scans ONLY this (model, namespace) pool.
+    let pool_key: PoolKey = (req.model.clone(), req.cache_ns.clone());
 
     // Tokenize: prefer explicit prompt_ids (raw-id path, for the exact-token validation gate); else
     // tokenize the text, optionally wrapping in the chat template.
@@ -1300,7 +1345,7 @@ fn admit(
     // exactly what it validates. MEMRA_KV_REUSE=0 disables.
     let reuse_on = !confidence_trace_enabled()
         && std::env::var("MEMRA_KV_REUSE").map(|v| v != "0").unwrap_or(true);
-    if let (true, Some(pool)) = (reuse_on, reuse.get_mut(&req.model)) {
+    if let (true, Some(pool)) = (reuse_on, reuse.get_mut(&pool_key)) {
         if let Some(idx) = pool.iter().rposition(|e|
             e.fed.len() >= REUSE_MIN_PREFIX && e.cap >= ctx_cap
                 && prompt.len() >= e.fed.len() && prompt.starts_with(&e.fed)) {
@@ -1329,9 +1374,9 @@ fn admit(
     let mut snapshot_at: Option<usize> = None;
     let mut seed_prefix = false;
     if prefix_on && reused.is_none() && !spec_eligible {
-        if let Some(i) = px.lookup(&req.model, &prompt) {
+        if let Some(i) = px.lookup(&pool_key, &prompt) {
             let restored = {
-                let e = &px.entries[&req.model][i];
+                let e = &px.entries[&pool_key][i];
                 match Cache::new(engine, &lm.model.cfg, ctx_cap) {
                     Ok(mut c) => match prefix_restore(engine, &mut c, e) {
                         Ok(()) => Ok(ReuseEntry {
@@ -1347,7 +1392,7 @@ fn admit(
             };
             match restored {
                 Ok(entry) => {
-                    let pool = px.entries.get_mut(&req.model).unwrap();
+                    let pool = px.entries.get_mut(&pool_key).unwrap();
                     pool[i].last_use = Instant::now();
                     px.hits += 1;
                     px.hit_tokens += entry.fed.len() as u64;
@@ -1370,9 +1415,9 @@ fn admit(
         }
         if reused.is_none() {
             px.misses += 1;
-            let l = px.best_lcp(&req.model, &prompt);
+            let l = px.best_lcp(&pool_key, &prompt);
             if l >= PREFIX_CACHE_MIN_TOKENS && l < prompt.len()
-                && !px.has_key(&req.model, &prompt[..l])
+                && !px.has_key(&pool_key, &prompt[..l])
             {
                 snapshot_at = Some(l);
             }
@@ -1416,7 +1461,7 @@ fn admit(
         // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
         // Match order: exact token prefix (bit-clean), else TEXT prefix (survives BPE boundary
         // divergence — the ~50% chat-turn miss class). Text hits re-tokenize only the remainder.
-        let resumed = spec_reuse.get_mut(&req.model).and_then(|pool| {
+        let resumed = spec_reuse.get_mut(&pool_key).and_then(|pool| {
             if let Some(idx) = pool.iter().rposition(|e|
                 e.sess.cache_max_ctx() >= ctx_cap
                     && prompt.len() >= e.sess.committed.len()
@@ -1454,7 +1499,7 @@ fn admit(
                 match lm.model.new_session(engine, ctx_cap) {
                     Ok(sess) => Some(sess),
                     Err(first_err) => {
-                        let evicted = spec_reuse.get_mut(&req.model).map(|p| { let n = p.len(); p.clear(); n }).unwrap_or(0);
+                        let evicted = spec_reuse.get_mut(&pool_key).map(|p| { let n = p.len(); p.clear(); n }).unwrap_or(0);
                         if evicted > 0 {
                             eprintln!("[worker] spec pool evicted ({evicted}) after alloc failure; retrying");
                             match lm.model.new_session(engine, ctx_cap) {
@@ -1511,6 +1556,7 @@ fn admit(
     };
     Ok(Session {
         model: req.model,
+        cache_ns: req.cache_ns,
         cache,
         sampler,
         spec,
@@ -2028,6 +2074,80 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>)
 #[cfg(test)]
 mod tests {
     use super::{summarize_confidence, utf8_delta};
+    use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
+
+    /// Device-free PrefixEntry (empty kv/conv/ssm planes) — the namespace-visibility laws
+    /// under test live entirely in the host-side key/toks matching.
+    fn entry(toks: Vec<u32>) -> PrefixEntry {
+        PrefixEntry {
+            toks,
+            kv: Vec::new(),
+            conv: Vec::new(),
+            ssm: Vec::new(),
+            pos: 0,
+            last_logits: vec![0.0],
+            bytes: 1,
+            last_use: std::time::Instant::now(),
+        }
+    }
+
+    fn key(ns: &str) -> PoolKey {
+        ("m".to_string(), ns.to_string())
+    }
+
+    fn toks(n: usize) -> Vec<u32> {
+        (0..n as u32).collect()
+    }
+
+    #[test]
+    fn prefix_cache_same_namespace_same_prefix_hits() {
+        let mut px = PrefixCache::default();
+        let prefix = toks(PREFIX_CACHE_MIN_TOKENS);
+        px.insert(&key("tenant-a"), entry(prefix.clone()), "test");
+        // same namespace + same prefix (prompt extends the entry) -> hit.
+        assert!(px.lookup(&key("tenant-a"), &toks(PREFIX_CACHE_MIN_TOKENS + 32)).is_some());
+        assert!(px.has_covering(&key("tenant-a"), &prefix));
+        assert_eq!(px.best_lcp(&key("tenant-a"), &prefix), prefix.len());
+    }
+
+    #[test]
+    fn prefix_cache_namespaces_isolate_both_directions() {
+        let mut px = PrefixCache::default();
+        let prompt = toks(PREFIX_CACHE_MIN_TOKENS + 32);
+        // tenant-a seeds; the identical prefix is INVISIBLE to tenant-b and to the
+        // default namespace (a -> b direction).
+        px.insert(&key("tenant-a"), entry(toks(PREFIX_CACHE_MIN_TOKENS)), "test");
+        assert!(px.lookup(&key("tenant-b"), &prompt).is_none());
+        assert!(px.lookup(&key(""), &prompt).is_none());
+        // ... and the learning/seed signals stay scoped too (no cross-ns LCP split).
+        assert_eq!(px.best_lcp(&key("tenant-b"), &prompt), 0);
+        assert!(!px.has_covering(&key("tenant-b"), &prompt));
+        // tenant-b seeds its OWN copy (no cross-ns dedupe: has_key is per key) and hits
+        // it, while tenant-a still hits only its own (b -> a direction).
+        px.insert(&key("tenant-b"), entry(toks(PREFIX_CACHE_MIN_TOKENS)), "test");
+        assert_eq!(px.n_entries(), 2);
+        assert!(px.lookup(&key("tenant-a"), &prompt).is_some());
+        assert!(px.lookup(&key("tenant-b"), &prompt).is_some());
+        assert!(px.lookup(&key("tenant-c"), &prompt).is_none());
+    }
+
+    #[test]
+    fn prefix_cache_default_namespace_preserves_single_tenant_behavior() {
+        // No salt = the "" namespace on every request: inserts, covering dedupe, LCP
+        // learning, and longest-match lookup all behave exactly as the pre-PC-ISO
+        // model-keyed cache.
+        let mut px = PrefixCache::default();
+        let short = toks(PREFIX_CACHE_MIN_TOKENS);
+        let long = toks(PREFIX_CACHE_MIN_TOKENS + 16);
+        px.insert(&key(""), entry(short.clone()), "test");
+        px.insert(&key(""), entry(long.clone()), "test");
+        px.insert(&key(""), entry(long.clone()), "test"); // exact-key dedupe still holds
+        assert_eq!(px.n_entries(), 2);
+        // longest entry prefixing the prompt wins, floor PREFIX_CACHE_MIN_TOKENS.
+        let hit = px.lookup(&key(""), &toks(PREFIX_CACHE_MIN_TOKENS + 64)).unwrap();
+        assert_eq!(px.entries[&key("")][hit].toks.len(), long.len());
+        assert!(px.lookup(&key(""), &toks(PREFIX_CACHE_MIN_TOKENS - 1)).is_none());
+    }
 
     #[test]
     fn streaming_utf8_waits_for_a_complete_multibyte_sequence() {

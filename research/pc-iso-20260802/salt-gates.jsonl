@@ -1,0 +1,20 @@
+{"ts": "2026-08-02T17:06:46+0300", "gate": "A1-P-cold", "verdict": "PASS", "salt": "tenant-a", "want": "cold", "prompt_tokens": 94, "cached_tokens": 0}
+{"ts": "2026-08-02T17:06:46+0300", "gate": "A2-P-same-salt-hit", "verdict": "PASS", "salt": "tenant-a", "want": "full-hit", "prompt_tokens": 94, "cached_tokens": 94}
+{"ts": "2026-08-02T17:06:46+0300", "gate": "B1-P-cross-salt-miss", "verdict": "PASS", "salt": "tenant-b", "want": "cold", "prompt_tokens": 94, "cached_tokens": 0}
+{"ts": "2026-08-02T17:06:46+0300", "gate": "B2-P-own-salt-hit", "verdict": "PASS", "salt": "tenant-b", "want": "full-hit", "prompt_tokens": 94, "cached_tokens": 94}
+{"ts": "2026-08-02T17:06:47+0300", "gate": "B3-Q-cold", "verdict": "PASS", "salt": "tenant-b", "want": "cold", "prompt_tokens": 101, "cached_tokens": 0}
+{"ts": "2026-08-02T17:06:47+0300", "gate": "A3-Q-cross-salt-miss", "verdict": "PASS", "salt": "tenant-a", "want": "cold", "prompt_tokens": 101, "cached_tokens": 0}
+{"ts": "2026-08-02T17:06:47+0300", "gate": "A4-Q-own-salt-hit", "verdict": "PASS", "salt": "tenant-a", "want": "full-hit", "prompt_tokens": 101, "cached_tokens": 101}
+{"ts": "2026-08-02T17:06:47+0300", "gate": "N1-P-nosalt-miss", "verdict": "PASS", "salt": null, "want": "cold", "prompt_tokens": 94, "cached_tokens": 0}
+{"ts": "2026-08-02T17:06:47+0300", "gate": "N2-P-nosalt-hit", "verdict": "PASS", "salt": null, "want": "full-hit", "prompt_tokens": 94, "cached_tokens": 94}
+{"ts": "2026-08-02T17:06:47+0300", "gate": "P-prompt-count-stable", "verdict": "PASS", "a1": 94, "a2": 94, "b1": 94}
+{"ts": "2026-08-02T17:15:34+0300", "gate": "A1-P-cold", "verdict": "PASS", "salt": "tenant-a", "want": "cold", "prompt_tokens": 94, "cached_tokens": 0}
+{"ts": "2026-08-02T17:15:35+0300", "gate": "A2-P-same-salt-hit", "verdict": "PASS", "salt": "tenant-a", "want": "full-hit", "prompt_tokens": 94, "cached_tokens": 94}
+{"ts": "2026-08-02T17:15:35+0300", "gate": "B1-P-cross-salt-miss", "verdict": "PASS", "salt": "tenant-b", "want": "cold", "prompt_tokens": 94, "cached_tokens": 0}
+{"ts": "2026-08-02T17:15:35+0300", "gate": "B2-P-own-salt-hit", "verdict": "PASS", "salt": "tenant-b", "want": "full-hit", "prompt_tokens": 94, "cached_tokens": 94}
+{"ts": "2026-08-02T17:15:35+0300", "gate": "B3-Q-cold", "verdict": "PASS", "salt": "tenant-b", "want": "cold", "prompt_tokens": 101, "cached_tokens": 0}
+{"ts": "2026-08-02T17:15:35+0300", "gate": "A3-Q-cross-salt-miss", "verdict": "PASS", "salt": "tenant-a", "want": "cold", "prompt_tokens": 101, "cached_tokens": 0}
+{"ts": "2026-08-02T17:15:35+0300", "gate": "A4-Q-own-salt-hit", "verdict": "PASS", "salt": "tenant-a", "want": "full-hit", "prompt_tokens": 101, "cached_tokens": 101}
+{"ts": "2026-08-02T17:15:36+0300", "gate": "N1-P-nosalt-miss", "verdict": "PASS", "salt": null, "want": "cold", "prompt_tokens": 94, "cached_tokens": 0}
+{"ts": "2026-08-02T17:15:36+0300", "gate": "N2-P-nosalt-hit", "verdict": "PASS", "salt": null, "want": "full-hit", "prompt_tokens": 94, "cached_tokens": 94}
+{"ts": "2026-08-02T17:15:36+0300", "gate": "P-prompt-count-stable", "verdict": "PASS", "a1": 94, "a2": 94, "b1": 94}

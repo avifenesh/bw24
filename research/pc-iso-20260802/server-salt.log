@@ -1,0 +1,20 @@
+[server] starting; models config = [("q35", "/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q35" <- /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+[worker]   loaded "q35": 41 layers, eos=248046
+[worker] q35: template caps tools=true think=true think_switch=true
+[worker] q35: decode chunk cap 8
+[prefix-cache] on: budget 1074MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q35"]
+[server] listening on http://127.0.0.1:8129
+[worker] observed session VRAM cost for "q35": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 94 tokens, 68.9MB (resident 68.9MB / 1074MB, model q35, ns "tenant-a")
+[prefix-cache] hit: 94 of 94 prompt tokens from cache (model q35)
+[prefix-cache] insert (seed): 94 tokens, 68.9MB (resident 137.9MB / 1074MB, model q35, ns "tenant-b")
+[prefix-cache] hit: 94 of 94 prompt tokens from cache (model q35)
+[prefix-cache] insert (seed): 101 tokens, 69.0MB (resident 206.9MB / 1074MB, model q35, ns "tenant-b")
+[prefix-cache] insert (seed): 101 tokens, 69.0MB (resident 275.9MB / 1074MB, model q35, ns "tenant-a")
+[prefix-cache] hit: 101 of 101 prompt tokens from cache (model q35)
+[prefix-cache] insert (seed): 94 tokens, 68.9MB (resident 344.8MB / 1074MB, model q35)
+[prefix-cache] hit: 94 of 94 prompt tokens from cache (model q35)
