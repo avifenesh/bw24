@@ -67,15 +67,21 @@ pp-transport-smoke PASS
 ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage
 [q8rp] split-plane decode mirrors built: 249 tensors
 stage fence: [0, 16, 32] over 32 layers
+ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)
 ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
-ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 === /home/ubuntu/receipts/m2-pp8/ppn-q9-n2-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/ppn-gate /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 2 16 32
 ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage
 [pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
 [q8rp] split-plane decode mirrors built: 249 tensors
 stage fence: [0, 16, 32] over 32 layers
+[pipelined] MISMATCH step 11 (prime): 248319/248320 logits differ, first @[0] ref=5.9486113 pp=5.8556895
+[pipelined] MISMATCH step 12 (prime): 248320/248320 logits differ, first @[0] ref=6.946829 pp=6.983369
+[pipelined] MISMATCH step 13 (prime): 248320/248320 logits differ, first @[0] ref=7.252248 pp=7.267039
+[pipelined] MISMATCH step 14 (prime): 248320/248320 logits differ, first @[0] ref=7.277233 pp=7.2232904
+[pipelined] MISMATCH step 15 (prime): 248316/248320 logits differ, first @[0] ref=7.3449206 pp=7.309915
 ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
-ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+ppn gate FAIL [pipelined]: 37/48 steps mismatched (first @ step 11 idx 0: ref=5.9486113 pp=5.8556895; fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+FAIL: /home/ubuntu/receipts/m2-pp8/ppn-q9-n2-dev01.log
 === /home/ubuntu/receipts/m2-pp8/ppn-q9-n2-dev01-noshard.log: env[MEMRA_PP_DEVICES=0,1 MEMRA_PP_SHARD=0] target/release/ppn-gate /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 2 16 32
 ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=OFF(bring-up placement)
 [q8rp] split-plane decode mirrors built: 249 tensors
@@ -107,8 +113,8 @@ ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_
 ppn-gate M2 config: stages=4 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage
 [q8rp] split-plane decode mirrors built: 249 tensors
 stage fence: [0, 8, 16, 24, 32] over 32 layers
+ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)
 ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
-ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 === /home/ubuntu/receipts/m2-pp8/ppn-q9-n4-dev0123.log: env[MEMRA_PP_DEVICES=0,1,2,3] target/release/ppn-gate /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 4 16 32
 ppn-gate M2 config: stages=4 streams=per-stage overlap=0 devices=0,1,2,3 splits=default(even) shard=per-stage
 [pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3]; weight home: per-stage (sharded loader))
@@ -140,8 +146,8 @@ ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_voc
 ppn-gate M2 config: stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage
 [q8rp] split-plane decode mirrors built: 249 tensors
 stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)
 ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
-ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 === /home/ubuntu/receipts/m2-pp8/ppn-q9-n8-dev0to7.log: env[MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7] target/release/ppn-gate /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 8 16 32
 ppn-gate M2 config: stages=8 streams=per-stage overlap=0 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage
 [pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: per-stage (sharded loader))
@@ -163,7 +169,7 @@ ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=default(primary
 [q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
 [q4f16] prefill fp16 mirrors built: 336 dense trunk tensors
 stage fence: [0, 24, 48] over 48 layers
-ppn gate NOTE: gemma4 arm is serial-only (pipelined arm skipped)
+ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)
 ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=262144, fence=[0, 24, 48]; stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 === /home/ubuntu/receipts/m2-pp8/ppn-g12-n2-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/ppn-gate /opt/dlami/nvme/models/gemma-4-12b-it-qat-q4_0.gguf 2 16 32
 ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage
@@ -447,7 +453,7 @@ ALL GREEN: kernels match CPU reference.
 loaded qwen35 (32 trunk layers; optional MTP skipped)
 prompt tokens: [55]
 prefill argmax=268  decode argmax=268  logit maxdiff=5.586e-1  MATCH
-generated 8 tokens in 0.043s = 186.72 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+generated 8 tokens in 0.043s = 186.28 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
 tokens: [268, 43159, 220, 95726, 98858, 110560, 96147, 96809]
 === /home/ubuntu/receipts/m2-pp8/run-gen-g12-naked.log: env[MEMRA_NGEN=8] target/release/run-gen /opt/dlami/nvme/models/gemma-4-12b-it-qat-q4_0.gguf 55
 [gemma4] suppress_tokens: 2 ids masked at sampling
@@ -457,7 +463,7 @@ tokens: [268, 43159, 220, 95726, 98858, 110560, 96147, 96809]
 loaded gemma4 (48 trunk layers; optional MTP skipped)
 prompt tokens: [55]
 prefill argmax=236770  decode argmax=236770  logit maxdiff=4.696e0  MATCH
-generated 8 tokens in 0.043s = 184.92 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+generated 8 tokens in 0.044s = 183.58 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
 tokens: [236770, 236770, 236770, 236770, 236770, 236770, 236770, 236770]
 
 ==== verdicts ====
@@ -470,9 +476,8 @@ ppn-q9-n2-dev01-overlap.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 g
 ppn-q9-n2-dev01-split5.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 5, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=5 shard=per-stage)
 ppn-q9-n2-dev01-split5.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 5, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=5 shard=per-stage)
 ppn-q9-n2-dev01.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
-ppn-q9-n2-dev01.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+ppn-q9-n2-dev01.log:ppn gate FAIL [pipelined]: 37/48 steps mismatched (first @ step 11 idx 0: ref=5.9486113 pp=5.8556895; fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
 ppn-q9-n2-singledev.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
-ppn-q9-n2-singledev.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 ppn-q9-n2-streams0.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=OFF(inc1 seam) overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 ppn-q9-n4-dev0123-asym.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 5, 16, 27, 32]; stages=4 streams=per-stage overlap=0 devices=0,1,2,3 splits=5,16,27 shard=per-stage)
 ppn-q9-n4-dev0123-asym.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 5, 16, 27, 32]; stages=4 streams=per-stage overlap=0 devices=0,1,2,3 splits=5,16,27 shard=per-stage)
@@ -481,18 +486,16 @@ ppn-q9-n4-dev0123-noshard.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32
 ppn-q9-n4-dev0123.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=0,1,2,3 splits=default(even) shard=per-stage)
 ppn-q9-n4-dev0123.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=0,1,2,3 splits=default(even) shard=per-stage)
 ppn-q9-n4-singledev.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
-ppn-q9-n4-singledev.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 ppn-q9-n4-streams0.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=OFF(inc1 seam) overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 ppn-q9-n8-dev0to7-noshard.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF(bring-up placement))
 ppn-q9-n8-dev0to7-noshard.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF(bring-up placement))
 ppn-q9-n8-dev0to7.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage)
 ppn-q9-n8-dev0to7.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage)
 ppn-q9-n8-singledev.log:ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
-ppn-q9-n8-singledev.log:ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
 pp2-q9-legacy-dev01.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=0,1)
 pp2-q9-legacy-singledev.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=default(primary))
 pp-transport-smoke.log:pp-transport-smoke PASS
 kernel-check.log:0 (FAIL-line count; 0 = green)
 run-gen-q9-naked.log:prefill argmax=268  decode argmax=268  logit maxdiff=5.586e-1  MATCH
 run-gen-g12-naked.log:prefill argmax=236770  decode argmax=236770  logit maxdiff=4.696e0  MATCH
-script-detected failures: 0
+script-detected failures: 1

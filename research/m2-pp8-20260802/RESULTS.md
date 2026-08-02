@@ -168,11 +168,18 @@ prefill argmax=268  decode argmax=268 ... MATCH (run-gen q9 naked)
 ## Files
 
 - `run-m2-gates.sh` / `run-m2-bench.sh` — the drivers (params baked as literals).
-- `ppn-*.log`, `pp2-*.log`, `pp-transport-smoke.log`, `kernel-check.log`,
-  `run-gen-*.log`, `gates-driver.log` — battery 3 (the shipped verdicts).
-- `bench-q9-*.log`, `bench-driver.log` — the ×5 interleaved bench (raw JSONL rows).
+- `ppn-*.log` etc. at top level + `gates-driver.log` — **battery 5** (quarantine build:
+  serial PASS everywhere, quarantine NOTEs on singledev pipelined, and the one dev01
+  pipelined flake recorded above).
 - `prefix-run-1355/`, `prefix-run-1442/` — batteries 1–2 (the failure record).
+- `prefix-run-1630/` — **battery 3** (the 28/28 all-green shipped verdicts).
+- `prefix-run-1906-pdlgated/` — battery 4 (auto-PDL-gated build; its n4 singledev
+  pipelined FAIL is what killed the auto-gating idea).
+- `bench-q9-*.log`, `bench-driver.log` — the ×5 interleaved bench (raw JSONL rows;
+  battery-3 build — the build whose gate verdicts cover it).
 - `bench-prefix-broken-pipelined/` — the excluded pre-fix bench pass.
+- `soak-*` dirs — the flake-bounding and bisect soaks (counts quoted above);
+  `soak-dev01-x100/` is the quarantine-lift soak (in flight at window close if absent).
 - `fadeep-h100/` — fa-deep sm_90a gate receipts.
 - `build-m2.log`, `build-m2-fix.log` — release builds (sm_90a auto-detect).
 
