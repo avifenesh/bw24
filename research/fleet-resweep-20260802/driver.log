@@ -1,0 +1,342 @@
+[20:21:45Z] campaign start — binary /home/ubuntu/memra/target/release/memra-server, model /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf, devices 4-7, ports 9080/9085+
+ad8604b34cf188fa0e29a33ee8dbd680b0b522df5c037d2efaea3bb0cbc7f631  /home/ubuntu/memra/target/release/memra-server
+[20:21:45Z] === pass 1 fleet f1 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 168302)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] launched proxy :9080 cap=8 -> 1 backends
+[fleet] up: 1 replicas on GPUs [4], proxy :9080 (cap 8)
+GREEDY_HASH f1-p1 9085 56b8502cfb8de57a
+[20:21:59Z] cell f1 c8 p1
+[20:22:05Z] cell f1 c16 p1
+[20:22:16Z] cell f1 c32 p1
+[20:22:37Z] === pass 1 fleet f1 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:22:45Z] === pass 1 fleet f4 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 168964)
+[fleet] launched replica :9086 on GPU 5 (pid 168967)
+[fleet] launched replica :9087 on GPU 6 (pid 168970)
+[fleet] launched replica :9088 on GPU 7 (pid 168973)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] launched proxy :9080 cap=8 -> 4 backends
+[fleet] up: 4 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f4-p1 9085 56b8502cfb8de57a
+GREEDY_HASH f4-p1 9086 56b8502cfb8de57a
+GREEDY_HASH f4-p1 9087 56b8502cfb8de57a
+GREEDY_HASH f4-p1 9088 56b8502cfb8de57a
+[20:23:01Z] cell f4 c8pr p1 (direct, 64 req/replica)
+[20:23:14Z] cell f4 c16pr p1 (direct, 64 req/replica)
+[20:23:24Z] === pass 1 fleet f4 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:23:33Z] === pass 1 fleet f8 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 170197)
+[fleet] launched replica :9086 on GPU 4 (pid 170200)
+[fleet] launched replica :9087 on GPU 5 (pid 170203)
+[fleet] launched replica :9088 on GPU 5 (pid 170206)
+[fleet] launched replica :9089 on GPU 6 (pid 170209)
+[fleet] launched replica :9090 on GPU 6 (pid 170212)
+[fleet] launched replica :9091 on GPU 7 (pid 170215)
+[fleet] launched replica :9092 on GPU 7 (pid 170218)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f8-p1 9085 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9086 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9087 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9088 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9089 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9090 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9091 56b8502cfb8de57a
+GREEDY_HASH f8-p1 9092 56b8502cfb8de57a
+[20:23:55Z] cell f8 c8pr p1 (direct, 64 req/replica)
+[20:24:29Z] cell f8 c16pr p1 (direct, 64 req/replica)
+[20:24:57Z] QoS f8 p1: interactive alone
+[20:25:08Z] QoS f8 p1: bulk c96 + interactive c4 contended
+[20:25:34Z] === pass 1 fleet f8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:25:43Z] === pass 1 fleet f12 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 173493)
+[fleet] launched replica :9086 on GPU 4 (pid 173496)
+[fleet] launched replica :9087 on GPU 4 (pid 173499)
+[fleet] launched replica :9088 on GPU 5 (pid 173502)
+[fleet] launched replica :9089 on GPU 5 (pid 173505)
+[fleet] launched replica :9090 on GPU 5 (pid 173508)
+[fleet] launched replica :9091 on GPU 6 (pid 173511)
+[fleet] launched replica :9092 on GPU 6 (pid 173514)
+[fleet] launched replica :9093 on GPU 6 (pid 173517)
+[fleet] launched replica :9094 on GPU 7 (pid 173520)
+[fleet] launched replica :9095 on GPU 7 (pid 173523)
+[fleet] launched replica :9096 on GPU 7 (pid 173526)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] replica :9093 healthy
+[fleet] replica :9094 healthy
+[fleet] replica :9095 healthy
+[fleet] replica :9096 healthy
+[fleet] launched proxy :9080 cap=8 -> 12 backends
+[fleet] up: 12 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f12-p1 9085 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9086 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9087 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9088 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9089 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9090 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9091 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9092 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9093 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9094 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9095 56b8502cfb8de57a
+GREEDY_HASH f12-p1 9096 56b8502cfb8de57a
+[20:26:14Z] cell f12 c8pr p1 (direct, 64 req/replica)
+[20:27:05Z] === pass 1 fleet f12 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:27:14Z] === pass 2 fleet f1 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 176759)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] launched proxy :9080 cap=8 -> 1 backends
+[fleet] up: 1 replicas on GPUs [4], proxy :9080 (cap 8)
+GREEDY_HASH f1-p2 9085 56b8502cfb8de57a
+[20:27:28Z] cell f1 c8 p2
+[20:27:34Z] cell f1 c16 p2
+[20:27:45Z] cell f1 c32 p2
+[20:28:06Z] === pass 2 fleet f1 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:28:14Z] === pass 2 fleet f4 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 177423)
+[fleet] launched replica :9086 on GPU 5 (pid 177426)
+[fleet] launched replica :9087 on GPU 6 (pid 177429)
+[fleet] launched replica :9088 on GPU 7 (pid 177432)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] launched proxy :9080 cap=8 -> 4 backends
+[fleet] up: 4 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f4-p2 9085 56b8502cfb8de57a
+GREEDY_HASH f4-p2 9086 56b8502cfb8de57a
+GREEDY_HASH f4-p2 9087 56b8502cfb8de57a
+GREEDY_HASH f4-p2 9088 56b8502cfb8de57a
+[20:28:30Z] cell f4 c8pr p2 (direct, 64 req/replica)
+[20:28:43Z] cell f4 c16pr p2 (direct, 64 req/replica)
+[20:28:53Z] === pass 2 fleet f4 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:29:02Z] === pass 2 fleet f8 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 178653)
+[fleet] launched replica :9086 on GPU 4 (pid 178656)
+[fleet] launched replica :9087 on GPU 5 (pid 178659)
+[fleet] launched replica :9088 on GPU 5 (pid 178662)
+[fleet] launched replica :9089 on GPU 6 (pid 178665)
+[fleet] launched replica :9090 on GPU 6 (pid 178668)
+[fleet] launched replica :9091 on GPU 7 (pid 178671)
+[fleet] launched replica :9092 on GPU 7 (pid 178674)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f8-p2 9085 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9086 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9087 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9088 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9089 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9090 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9091 56b8502cfb8de57a
+GREEDY_HASH f8-p2 9092 56b8502cfb8de57a
+[20:29:23Z] cell f8 c8pr p2 (direct, 64 req/replica)
+[20:29:58Z] cell f8 c16pr p2 (direct, 64 req/replica)
+[20:30:28Z] QoS f8 p2: interactive alone
+[20:30:38Z] QoS f8 p2: bulk c96 + interactive c4 contended
+[20:31:04Z] === pass 2 fleet f8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:31:13Z] === pass 2 fleet f12 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 182231)
+[fleet] launched replica :9086 on GPU 4 (pid 182234)
+[fleet] launched replica :9087 on GPU 4 (pid 182237)
+[fleet] launched replica :9088 on GPU 5 (pid 182240)
+[fleet] launched replica :9089 on GPU 5 (pid 182243)
+[fleet] launched replica :9090 on GPU 5 (pid 182246)
+[fleet] launched replica :9091 on GPU 6 (pid 182249)
+[fleet] launched replica :9092 on GPU 6 (pid 182252)
+[fleet] launched replica :9093 on GPU 6 (pid 182255)
+[fleet] launched replica :9094 on GPU 7 (pid 182258)
+[fleet] launched replica :9095 on GPU 7 (pid 182261)
+[fleet] launched replica :9096 on GPU 7 (pid 182264)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] replica :9093 healthy
+[fleet] replica :9094 healthy
+[fleet] replica :9095 healthy
+[fleet] replica :9096 healthy
+[fleet] launched proxy :9080 cap=8 -> 12 backends
+[fleet] up: 12 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f12-p2 9085 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9086 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9087 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9088 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9089 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9090 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9091 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9092 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9093 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9094 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9095 56b8502cfb8de57a
+GREEDY_HASH f12-p2 9096 56b8502cfb8de57a
+[20:31:42Z] cell f12 c8pr p2 (direct, 64 req/replica)
+[20:32:29Z] === pass 2 fleet f12 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:32:39Z] === pass 3 fleet f1 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 185461)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] launched proxy :9080 cap=8 -> 1 backends
+[fleet] up: 1 replicas on GPUs [4], proxy :9080 (cap 8)
+GREEDY_HASH f1-p3 9085 56b8502cfb8de57a
+[20:32:53Z] cell f1 c8 p3
+[20:32:59Z] cell f1 c16 p3
+[20:33:09Z] cell f1 c32 p3
+[20:33:30Z] === pass 3 fleet f1 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:33:38Z] === pass 3 fleet f4 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 185979)
+[fleet] launched replica :9086 on GPU 5 (pid 185982)
+[fleet] launched replica :9087 on GPU 6 (pid 185985)
+[fleet] launched replica :9088 on GPU 7 (pid 185988)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] launched proxy :9080 cap=8 -> 4 backends
+[fleet] up: 4 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f4-p3 9085 56b8502cfb8de57a
+GREEDY_HASH f4-p3 9086 56b8502cfb8de57a
+GREEDY_HASH f4-p3 9087 56b8502cfb8de57a
+GREEDY_HASH f4-p3 9088 56b8502cfb8de57a
+[20:33:54Z] cell f4 c8pr p3 (direct, 64 req/replica)
+[20:34:07Z] cell f4 c16pr p3 (direct, 64 req/replica)
+[20:34:17Z] === pass 3 fleet f4 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:34:26Z] === pass 3 fleet f8 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 187208)
+[fleet] launched replica :9086 on GPU 4 (pid 187211)
+[fleet] launched replica :9087 on GPU 5 (pid 187214)
+[fleet] launched replica :9088 on GPU 5 (pid 187217)
+[fleet] launched replica :9089 on GPU 6 (pid 187220)
+[fleet] launched replica :9090 on GPU 6 (pid 187223)
+[fleet] launched replica :9091 on GPU 7 (pid 187226)
+[fleet] launched replica :9092 on GPU 7 (pid 187229)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f8-p3 9085 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9086 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9087 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9088 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9089 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9090 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9091 56b8502cfb8de57a
+GREEDY_HASH f8-p3 9092 56b8502cfb8de57a
+[20:34:49Z] cell f8 c8pr p3 (direct, 64 req/replica)
+[20:35:22Z] cell f8 c16pr p3 (direct, 64 req/replica)
+[20:35:51Z] QoS f8 p3: interactive alone
+[20:36:01Z] QoS f8 p3: bulk c96 + interactive c4 contended
+[20:36:25Z] === pass 3 fleet f8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:36:34Z] === pass 3 fleet f12 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 190621)
+[fleet] launched replica :9086 on GPU 4 (pid 190624)
+[fleet] launched replica :9087 on GPU 4 (pid 190627)
+[fleet] launched replica :9088 on GPU 5 (pid 190630)
+[fleet] launched replica :9089 on GPU 5 (pid 190633)
+[fleet] launched replica :9090 on GPU 5 (pid 190636)
+[fleet] launched replica :9091 on GPU 6 (pid 190639)
+[fleet] launched replica :9092 on GPU 6 (pid 190642)
+[fleet] launched replica :9093 on GPU 6 (pid 190645)
+[fleet] launched replica :9094 on GPU 7 (pid 190648)
+[fleet] launched replica :9095 on GPU 7 (pid 190651)
+[fleet] launched replica :9096 on GPU 7 (pid 190654)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] replica :9093 healthy
+[fleet] replica :9094 healthy
+[fleet] replica :9095 healthy
+[fleet] replica :9096 healthy
+[fleet] launched proxy :9080 cap=8 -> 12 backends
+[fleet] up: 12 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+GREEDY_HASH f12-p3 9085 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9086 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9087 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9088 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9089 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9090 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9091 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9092 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9093 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9094 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9095 56b8502cfb8de57a
+GREEDY_HASH f12-p3 9096 56b8502cfb8de57a
+[20:37:02Z] cell f12 c8pr p3 (direct, 64 req/replica)
+[20:37:53Z] === pass 3 fleet f12 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[20:38:02Z] campaign COMPLETE
