@@ -1,0 +1,48 @@
+Compiling entry function '_Z20moe_kq_sk128v_kernelILi6EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sk128v_kernelILi6EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 124 registers, used 1 barriers, 4112 bytes smem
+Compiling entry function '_Z20moe_kq_sktail_kernelILi6EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sktail_kernelILi6EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 104 registers, used 1 barriers, 27152 bytes smem
+Compiling entry function '_Z19moe_kq_sk32v_kernelILi6EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z19moe_kq_sk32v_kernelILi6EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 78 registers, used 1 barriers, 14352 bytes smem
+Compiling entry function '_Z20moe_kq_sk128v_kernelILi5EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sk128v_kernelILi5EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 112 registers, used 1 barriers, 2128 bytes smem
+Compiling entry function '_Z20moe_kq_sktail_kernelILi5EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sktail_kernelILi5EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 92 registers, used 1 barriers, 25168 bytes smem
+Compiling entry function '_Z19moe_kq_sk32v_kernelILi5EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z19moe_kq_sk32v_kernelILi5EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 72 registers, used 1 barriers, 12368 bytes smem
+Compiling entry function '_Z20moe_kq_sk128v_kernelILi2EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sk128v_kernelILi2EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 120 registers, used 1 barriers, 2064 bytes smem
+Compiling entry function '_Z20moe_kq_sktail_kernelILi2EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sktail_kernelILi2EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 129 registers, used 1 barriers, 25104 bytes smem
+Compiling entry function '_Z19moe_kq_sk32v_kernelILi2EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z19moe_kq_sk32v_kernelILi2EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 72 registers, used 1 barriers, 12304 bytes smem
+Compiling entry function '_Z20moe_kq_sk128v_kernelILi1EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sk128v_kernelILi1EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 114 registers, used 1 barriers, 2064 bytes smem
+Compiling entry function '_Z20moe_kq_sktail_kernelILi1EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z20moe_kq_sktail_kernelILi1EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 101 registers, used 1 barriers, 25104 bytes smem
+Compiling entry function '_Z19moe_kq_sk32v_kernelILi1EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii' for 'sm_120a'
+Function properties for _Z19moe_kq_sk32v_kernelILi1EEvPKyiiPKilPK6__halfPfPKfS3_iiiiii
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+Used 72 registers, used 1 barriers, 12304 bytes smem

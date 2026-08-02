@@ -8,7 +8,10 @@
 #   kat : pp2048 (board-2048 pp-only) + gen512 (pp512 prefill, NGEN=128) x3 rounds, arms:
 #         naked (auto-kquant default — experts on int8 MMQ) vs f16g2 (MEMRA_MOE_F16G=2,
 #         experts on sk + IQ direct). The "does mode-2+direct beat the MMQ arm" probe.
-# usage: run-ab.sh <q35|kat|all> [nreps]
+#   q35flip : q35 naked vs MEMRA_MOE_F16G=2 board-2048 pp-only, interleaved — the
+#         auto-kquant stale-verdict re-sweep ("IQ banks keep their measured-faster MMQ
+#         tiles" was priced pre-IQ-direct).
+# usage: run-ab.sh <q35|kat|q35flip|all> [nreps]
 set -u
 PHASE=${1:-all}
 W=/home/avifenesh/projects/bw24-iq-direct
@@ -100,6 +103,23 @@ if [ "$PHASE" = kat ] || [ "$PHASE" = all ]; then
   N=${2:-3}
   for rep in $(seq 1 "$N"); do
     for arm in naked f16g2; do katarm "$arm" "$rep"; done
+  done
+fi
+
+if [ "$PHASE" = q35flip ]; then
+  N=${2:-3}
+  for rep in $(seq 1 "$N"); do
+    for arm in naked f16g2; do
+      log="$R/q35-flip-r$rep-$arm.log"
+      declare -a env_extra=()
+      [ "$arm" = f16g2 ] && env_extra=(MEMRA_MOE_F16G=2)
+      wait_idle
+      env "${env_extra[@]+"${env_extra[@]}"}" MEMRA_PP_ONLY=1 MEMRA_PP_REPS=5 MEMRA_PP_WARMUP=1 \
+        MEMRA_PROMPT_FILE="$PF2048" \
+        flock /tmp/gpu5090.lock timeout 1800 "$W/target/release/run-gen" "$Q35" > "$log" 2>&1
+      med=$(grep -oE "pp-only MEDIAN: [0-9]+ tok in [0-9.]+s = [0-9.]+ tok/s" "$log" | grep -oE "= [0-9.]+" | grep -oE "[0-9.]+")
+      row q35-flip-board2048 "$arm" pp2048_toks "${med:-null}" "$rep"
+    done
   done
 fi
 

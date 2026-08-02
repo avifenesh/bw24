@@ -8,3 +8,9 @@
   [kat-naked/new rep1] tokens_sha=e5d59ecedc57aa7d
   [kat-f16g2/old rep1] tokens_sha=9102ffd0b8241a65
   [kat-f16g2/new rep1] tokens_sha=9102ffd0b8241a65
+  [kat-gen512/naked rep1] tokens_sha=e5d59ecedc57aa7d
+  [kat-gen512/f16g2 rep1] tokens_sha=9102ffd0b8241a65
+  [kat-gen512/naked rep2] tokens_sha=e5d59ecedc57aa7d
+  [kat-gen512/f16g2 rep2] tokens_sha=9102ffd0b8241a65
+  [kat-gen512/naked rep3] tokens_sha=e5d59ecedc57aa7d
+  [kat-gen512/f16g2 rep3] tokens_sha=9102ffd0b8241a65
