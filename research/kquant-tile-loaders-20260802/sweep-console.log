@@ -42,3 +42,47 @@
   [direct rep3] gen512_peak_vram_mib = 21426
   [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
 STAGE1-SWEEP-DONE 2026-08-02T01:00:48Z
+=== O35B KQ-DIRECT STAGE1 SWEEP x3 2026-08-02T01:22:38Z git=2ac63454 profile=performance ===
+  [ws rep1] pp2048_toks = 3463.5
+  [ws rep1] pp2048_peak_vram_mib = 22226
+  [ws rep1] gen512_prefill_toks = 1674.2
+  [ws rep1] gen512_decode_toks = 209.20
+  [ws rep1] gen512_argmax_match = 2
+  [ws rep1] gen512_peak_vram_mib = 22386
+  [ws rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep1] pp2048_toks = 4795.2
+  [direct rep1] pp2048_peak_vram_mib = 21714
+  [direct rep1] gen512_prefill_toks = 3157.0
+  [direct rep1] gen512_decode_toks = 209.95
+  [direct rep1] gen512_argmax_match = 2
+  [direct rep1] gen512_peak_vram_mib = 21426
+  [direct rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep2] pp2048_toks = 3464.0
+  [ws rep2] pp2048_peak_vram_mib = 22226
+  [ws rep2] gen512_prefill_toks = 1667.2
+  [ws rep2] gen512_decode_toks = 208.93
+  [ws rep2] gen512_argmax_match = 2
+  [ws rep2] gen512_peak_vram_mib = 22386
+  [ws rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep2] pp2048_toks = 4779.9
+  [direct rep2] pp2048_peak_vram_mib = 21714
+  [direct rep2] gen512_prefill_toks = 3154.8
+  [direct rep2] gen512_decode_toks = 209.79
+  [direct rep2] gen512_argmax_match = 2
+  [direct rep2] gen512_peak_vram_mib = 21426
+  [direct rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep3] pp2048_toks = 3464.0
+  [ws rep3] pp2048_peak_vram_mib = 22226
+  [ws rep3] gen512_prefill_toks = 1664.1
+  [ws rep3] gen512_decode_toks = 208.98
+  [ws rep3] gen512_argmax_match = 2
+  [ws rep3] gen512_peak_vram_mib = 22386
+  [ws rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep3] pp2048_toks = 4777.5
+  [direct rep3] pp2048_peak_vram_mib = 21714
+  [direct rep3] gen512_prefill_toks = 3155.6
+  [direct rep3] gen512_decode_toks = 209.71
+  [direct rep3] gen512_argmax_match = 2
+  [direct rep3] gen512_peak_vram_mib = 21426
+  [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+STAGE1-SWEEP-DONE 2026-08-02T01:24:56Z
