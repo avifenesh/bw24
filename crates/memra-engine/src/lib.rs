@@ -478,7 +478,18 @@ pub(crate) fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
         // says sp64 = 153.0 (sp16/32 147, sp96 147.6, sp128 141). Few-kv-head models need the
         // taper EARLIER than kv=8 (per-split grid 4x thinner, same per-split combine cost).
         // Crossover hunt: sp8 vs sp64 = 156.7/155.9 at d3072, 151.7/155.6 at d4096 -> boundary 3072.
-        if t_kv <= 3072 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
+        // RUNG RE-SWEPT UNDER THE DEEP KERNEL (2026-08-02, lane/ladder-3072 — the stale-verdict
+        // law: the 3072 boundary was calibrated on the conflicted v4 core; the deep rewrite cut
+        // vec cost ~1.2-1.4x while combine scales with n_splits, so sp8's combine bill
+        // dominates far earlier). Kernel receipts (quiet-rig nsys, deep vec + combine us):
+        // d1024 sp8 17.1 vs sp64 10.6; d2048 31.0 vs 12.2; d3072 44.0 vs 18.3. e2e run-gen
+        // tg128 N=3 interleaved (KAT + q35, research/ladder-3072-20260802/): sp8 loses at
+        // EVERY depth >= 1024 (KAT d2048 182.6 vs 188.0 = -2.9%, d3072 175.9 vs 186.4 =
+        // -5.6%; q35 d4096 169.2 vs 182.6 = -7.4%); d512 flat (+-0.2%, inside noise). sp32
+        // ties sp64 within noise in the mid band and loses at d4096 -> no extra rung.
+        // Boundary 3072 -> 512: sp8 keeps only the short-ctx band it was validated on
+        // (ctx128-512); sp64 takes over where the deep kernel made combine the bill.
+        if t_kv <= 512 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
     } else {
         if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
     }

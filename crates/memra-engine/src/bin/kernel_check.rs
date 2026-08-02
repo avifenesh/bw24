@@ -2680,7 +2680,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let q: Vec<f32> = (0..hdd * nhd).map(|i| pr(i + 1) * 0.2).collect();
             let qd = e.htod(&q)?;
             unsafe { std::env::set_var("MEMRA_FA_DEEP_MIN", "0"); }
-            for d in [512usize, 3071, 3073, 4096, 6144, 6200] {
+            // 511/513 straddle the ladder-3072 lane's re-swept sp8->sp64 rung at 512
+            // (2026-08-02); 3071/3073 straddled the old 3072 boundary and stay as
+            // deep-region coverage.
+            for d in [511usize, 512, 513, 3071, 3073, 4096, 6144, 6200] {
                 let kview = e.view_u8(&kc, d * ktb);
                 let vview = e.view_u8(&vc, d * vtb);
                 unsafe { std::env::set_var("MEMRA_FA_DEEP", "0"); }

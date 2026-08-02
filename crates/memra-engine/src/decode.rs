@@ -1455,16 +1455,26 @@ impl HybridModel {
     }
 
     /// Eager fa kernel-class fingerprint at a given t_kv: the fa_vec pick plus the
-    /// intra-vec variant switches (v4 max, fa512 floor). fa_apply handles split-count
-    /// changes WITHIN a class; anything that changes this tuple needs a fresh capture
-    /// (bucket_max drives the capture-time kernel pick). Round 45.
-    pub(crate) fn fa_class_of(&self, e: &Engine, t_kv: usize) -> (bool, bool, bool) {
+    /// intra-vec variant switches (v4 max, fa512 floor) plus the split-ladder rung.
+    /// fa_apply handles split-count changes WITHIN a rung; anything that changes this
+    /// tuple needs a fresh capture (bucket_max drives the capture-time kernel pick).
+    /// Round 45; LADDER RUNG ADDED 2026-08-02 (lane/ladder-3072): the dc kernels derive
+    /// their in-kernel partition from the CAPTURED split_keys arg (ns_eff =
+    /// ceil(T_kv/split_keys) — the ONE-PARTITION law), and fa_apply retunes only
+    /// n_splits/grid. A capture whose segment straddled a ladder rung therefore replayed
+    /// the far side's partition against eager's near side — same math, different FP fold
+    /// order, and the first near-tie flips the stream (latent at the old 3072 rung: kat
+    /// P=3000 passed on logit margins; exposed by the 512 rung: kat P=400 flipped 97/160).
+    /// With the rung in the fingerprint a capture never straddles it, so the captured
+    /// split_keys equals the live ladder on every replay — bit-exact at every t_kv.
+    pub(crate) fn fa_class_of(&self, e: &Engine, t_kv: usize) -> (bool, bool, bool, usize) {
         let head_dim = self.cfg.head_dim_k as usize;
         let nkv = self.cfg.n_head_kv as usize;
         let g_fp8 = Engine::kv_fp8_on();
         (e.fa_geom_eager(t_kv, head_dim, nkv, g_fp8).0,
          crate::fa_v4_at_pub(t_kv),
-         head_dim == 512 && t_kv >= crate::fa512_min_tkv())
+         head_dim == 512 && t_kv >= crate::fa512_min_tkv(),
+         crate::fa_split_keys_pub(t_kv, nkv))
     }
 
     /// Last t_kv (clamped to `final_max`) sharing `start`'s eager kernel class.
