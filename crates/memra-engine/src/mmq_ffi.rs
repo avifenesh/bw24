@@ -266,28 +266,30 @@ unsafe extern "C" {
     ) -> i32;
     // Single-kernel grouped GEMM (MEMRA_MOE_F16G=2, rounds 49+51): on OUR stream, f32 C with
     // the act row-scale folded in — no cublas internal-stream race, no sync. Round 51 runs it
-    // as a persistent problem-visitor over the real tiles with two tile forms (32x64x32
-    // 2-stage / 128x64x64 3-stage): shape_sel < 0 = the round-49 grid-scan kernel (rollback
+    // as a persistent problem-visitor over the real tiles with two tile forms (32x64 tail
+    // / 128x64x64 3-stage): shape_sel < 0 = the round-49 grid-scan kernel (rollback
     // arm); else groups with m_e >= cross ride the 128 form. ex_off_host sizes the visitor
     // grids host-side (the offsets are already there at the call site — no extra transfer).
+    // tail != 0 (lane/sk-tail-form): sub-cross groups ride the DEEP tail (32x64x64 3-stage);
+    // 0 = the round-51 2-stage 32x64x32 (MEMRA_F16G_TAIL=0 rollback). Byte-identical arms.
     pub fn memra_moe_f16g_gemm_sk(
         w_f16: *const core::ffi::c_void, act_f16: *const core::ffi::c_void,
         y_f32: *mut f32, row_scale: *const f32, ex_off_dev: *const i32,
         ex_off_host: *const i32,
         n_active: i32, max_m: i32, in_f: i32, out_f: i32, shape_sel: i32, cross: i32,
-        stream: *mut core::ffi::c_void,
+        tail: i32, stream: *mut core::ffi::c_void,
     ) -> i32;
     // DIRECT-FROM-QUANT sk visitor grouped GEMM (lane/kquant-tile-loaders): the visitor forms
     // with the B (weight) tiles dequanted in-register from the Q4_K/Q6_K expert superblocks —
     // no f16 dequant workspace pass. Bit-identical to the workspace path by construction
     // (kernel-check "f16g-kq-direct"). qtype: QT_Q4_K | QT_Q6_K; rc=2 = not admitted here
-    // (caller keeps the dequant-workspace path).
+    // (caller keeps the dequant-workspace path). tail: as memra_moe_f16g_gemm_sk.
     pub fn memra_moe_kq_gemm_sk(
         table: *const u64, proj: i32, n_expert: i32, ex_ids: *const i32,
         act_f16: *const core::ffi::c_void, y_f32: *mut f32,
         row_scale: *const f32, ex_off_dev: *const i32, ex_off_host: *const i32,
         n_active: i32, max_m: i32, in_f: i32, out_f: i32, qtype: i32, cross: i32,
-        row_bytes: i64, stream: *mut core::ffi::c_void,
+        tail: i32, row_bytes: i64, stream: *mut core::ffi::c_void,
     ) -> i32;
 }
 
@@ -1154,7 +1156,7 @@ impl Engine {
                         ei_p as *const i32, a_p as *const core::ffi::c_void, y_p as *mut f32,
                         s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
                         n_active as i32, max_m, in_f as i32, out_f as i32, qtype, cross,
-                        row_bytes as i64,
+                        crate::moe_f16g_tail_on() as i32, row_bytes as i64,
                         stream.cu_stream() as *mut core::ffi::c_void)
                 };
                 if rc != 0 { return Err(format!("memra_moe_kq_gemm_sk rc={rc}").into()); }
@@ -1218,6 +1220,7 @@ impl Engine {
                         a_p as *const core::ffi::c_void, y_p as *mut f32,
                         s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
                         n_active as i32, max_m, in_f as i32, out_f as i32, shape_sel, cross,
+                        crate::moe_f16g_tail_on() as i32,
                         stream.cu_stream() as *mut core::ffi::c_void)
                 };
                 if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
@@ -1282,11 +1285,13 @@ impl Engine {
     /// Raw sk grouped-GEMM entry for kernel-check ("f16g-sk" section): explicit shape/cross
     /// instead of the env policy. shape_sel < 0 = the round-49 grid-scan rollback arm; else
     /// the round-51 problem-visitor split at `cross` (1 forces all-128, i32::MAX all-32).
+    /// tail: 1 = the deep tail (32x64x64 3-stage, lane/sk-tail-form) on sub-cross groups,
+    /// 0 = the round-51 2-stage 32x64x32 tail.
     /// w_f16 = [n_active][out_f][in_f] f16 bytes, act_f16 = [n_pairs][in_f] f16 bytes.
     #[allow(clippy::too_many_arguments)]
     pub fn moe_f16g_gemm_sk_raw(&self, w_f16: &CudaSlice<u8>, act_f16: &CudaSlice<u8>,
         row_scale: &CudaSlice<f32>, ex_off_host: &[i32], ex_off_dev: &CudaSlice<i32>,
-        in_f: usize, out_f: usize, n_pairs: usize, shape_sel: i32, cross: i32)
+        in_f: usize, out_f: usize, n_pairs: usize, shape_sel: i32, cross: i32, tail: i32)
         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_active = ex_off_host.len() - 1;
         let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
@@ -1303,7 +1308,7 @@ impl Engine {
                     a_p as *const core::ffi::c_void, y_p as *mut f32,
                     s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
                     n_active as i32, max_m, in_f as i32, out_f as i32, shape_sel, cross,
-                    stream.cu_stream() as *mut core::ffi::c_void)
+                    tail, stream.cu_stream() as *mut core::ffi::c_void)
             };
             if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
         }
@@ -1311,14 +1316,15 @@ impl Engine {
     }
 
     /// Raw direct-from-quant sk grouped-GEMM entry for kernel-check ("f16g-kq-direct"):
-    /// explicit cross instead of the env policy. `table` = device u64 pointer table
+    /// explicit cross/tail instead of the env policy. `table` = device u64 pointer table
     /// (proj-major, [n_proj][n_expert] — same contract as moe_f16_grouped), `ex_ids` =
     /// active-expert ids (device). Visitor forms only (the C side rejects anything else).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_kq_gemm_sk_raw(&self, table: &CudaSlice<u64>, proj: i32, n_expert: usize,
         ex_ids: &CudaSlice<i32>, act_f16: &CudaSlice<u8>, row_scale: &CudaSlice<f32>,
         ex_off_host: &[i32], ex_off_dev: &CudaSlice<i32>,
-        in_f: usize, out_f: usize, n_pairs: usize, qtype: i32, row_bytes: usize, cross: i32)
+        in_f: usize, out_f: usize, n_pairs: usize, qtype: i32, row_bytes: usize, cross: i32,
+        tail: i32)
         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_active = ex_off_host.len() - 1;
         let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
@@ -1336,7 +1342,7 @@ impl Engine {
                     ei_p as *const i32, a_p as *const core::ffi::c_void, y_p as *mut f32,
                     s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
                     n_active as i32, max_m, in_f as i32, out_f as i32, qtype, cross,
-                    row_bytes as i64,
+                    tail, row_bytes as i64,
                     stream.cu_stream() as *mut core::ffi::c_void)
             };
             if rc != 0 { return Err(format!("memra_moe_kq_gemm_sk rc={rc}").into()); }

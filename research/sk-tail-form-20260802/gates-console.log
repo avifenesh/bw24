@@ -1,0 +1,106 @@
+=== SK-TAIL GATES phase=q35-ab 2026-08-02T02:52:59Z git=b9bd9d4c profile=performance ===
+  [q35-f16g2/old rep1] gen512_prefill_toks = 1670.5
+  [q35-f16g2/old rep1] gen512_decode_toks = 184.63
+  [q35-f16g2/old rep1] gen512_match_lines = 2
+  [q35-f16g2/old rep1] tokens_sha=e94b6553fde7b9a0
+  [q35-f16g2/new rep1] gen512_prefill_toks = 1820.0
+  [q35-f16g2/new rep1] gen512_decode_toks = 186.73
+  [q35-f16g2/new rep1] gen512_match_lines = 2
+  [q35-f16g2/new rep1] tokens_sha=e94b6553fde7b9a0
+q35-f16g2: shas above MUST be identical across arms (byte-identity)
+GATES-DONE phase=q35-ab 2026-08-02T02:53:36Z
+=== SK-TAIL GATES phase=o35b-ab 2026-08-02T02:53:54Z git=b9bd9d4c profile=performance ===
+  [o35b/old rep1] gen512_prefill_toks = 3162.6
+  [o35b/old rep1] gen512_decode_toks = 204.46
+  [o35b/old rep1] gen512_match_lines = 2
+  [o35b/old rep1] tokens_sha=c0c12c3b350dc7f5
+  [o35b/new rep1] gen512_prefill_toks = 3497.0
+  [o35b/new rep1] gen512_decode_toks = 207.31
+  [o35b/new rep1] gen512_match_lines = 2
+  [o35b/new rep1] tokens_sha=c0c12c3b350dc7f5
+o35b sha anchor: c0c12c3b350dc7f5 (both arms)
+GATES-DONE phase=o35b-ab 2026-08-02T02:54:27Z
+=== SK-TAIL GATES phase=q35-ab 2026-08-02T02:55:16Z git=d55584bb profile=performance ===
+  [q35-f16g2/old rep1] gen512_prefill_toks = 1688.8
+  [q35-f16g2/old rep1] gen512_decode_toks = 187.71
+  [q35-f16g2/old rep1] gen512_match_lines = 2
+  [q35-f16g2/old rep1] tokens_sha=e94b6553fde7b9a0
+  [q35-f16g2/new rep1] gen512_prefill_toks = 1840.5
+  [q35-f16g2/new rep1] gen512_decode_toks = 185.53
+  [q35-f16g2/new rep1] gen512_match_lines = 2
+  [q35-f16g2/new rep1] tokens_sha=e94b6553fde7b9a0
+q35-f16g2: shas above MUST be identical across arms (byte-identity)
+GATES-DONE phase=q35-ab 2026-08-02T02:55:46Z
+=== SK-TAIL GATES phase=o35b-ab 2026-08-02T02:55:46Z git=d55584bb profile=performance ===
+  [o35b/old rep1] gen512_prefill_toks = 3151.8
+  [o35b/old rep1] gen512_decode_toks = 206.94
+  [o35b/old rep1] gen512_match_lines = 2
+  [o35b/old rep1] tokens_sha=c0c12c3b350dc7f5
+  [o35b/new rep1] gen512_prefill_toks = 3490.7
+  [o35b/new rep1] gen512_decode_toks = 204.16
+  [o35b/new rep1] gen512_match_lines = 2
+  [o35b/new rep1] tokens_sha=c0c12c3b350dc7f5
+o35b sha anchor: c0c12c3b350dc7f5 (both arms)
+GATES-DONE phase=o35b-ab 2026-08-02T02:56:19Z
+=== SK-TAIL GATES phase=q35-guard 2026-08-02T03:00:23Z git=d55584bb profile=performance ===
+  [q35-guard/new rep1] pp2048_toks = 4118.8
+  [q35-guard/new rep1] gen512_prefill_toks = 2521.7
+  [q35-guard/new rep1] gen512_decode_toks = 255.34
+  [q35-guard/new rep1] gen512_match_lines = 1
+  [q35-guard/new rep1] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep2] pp2048_toks = 4108.6
+  [q35-guard/new rep2] gen512_prefill_toks = 2512.7
+  [q35-guard/new rep2] gen512_decode_toks = 52.16
+  [q35-guard/new rep2] gen512_match_lines = 1
+  [q35-guard/new rep2] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep3] pp2048_toks = 4102.3
+  [q35-guard/new rep3] gen512_prefill_toks = 2512.0
+  [q35-guard/new rep3] gen512_decode_toks = 257.45
+  [q35-guard/new rep3] gen512_match_lines = 1
+  [q35-guard/new rep3] tokens_sha=86dc5f7105a3716b
+q35 guard sha anchor: 86dc5f7105a3716b (must match every rep above)
+GATES-DONE phase=q35-guard 2026-08-02T03:01:38Z
+=== SK-TAIL GATES phase=spec 2026-08-02T03:01:38Z git=d55584bb profile=performance ===
+q35 run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 64 tok in 0.280s = 225.36 tok/s (1.26x vs generate; this run's prime 0.511s)
+[generate_spec K=2] 64 tok in 0.256s = 246.35 tok/s (1.38x vs generate; this run's prime 0.504s)
+[generate_spec K=3] 64 tok in 0.224s = 281.44 tok/s (1.58x vs generate; this run's prime 0.519s)
+[generate_spec K=4] 64 tok in 0.253s = 248.95 tok/s (1.40x vs generate; this run's prime 0.524s)
+[generate_spec K=5] 64 tok in 0.288s = 218.93 tok/s (1.23x vs generate; this run's prime 0.515s)
+[generate_spec K=6] 64 tok in 0.305s = 206.33 tok/s (1.16x vs generate; this run's prime 0.512s)
+[generate_spec K=7] 64 tok in 0.333s = 189.06 tok/s (1.06x vs generate; this run's prime 0.512s)
+[generate_spec K=8] 64 tok in 0.432s = 145.87 tok/s (0.82x vs generate; this run's prime 0.513s)
+=== SELF-CONSISTENCY PASS ===
+o35b run-spec rc=1 PASS-lines=0 FAIL-lines=0
+GATES-DONE phase=spec 2026-08-02T03:02:06Z
+=== SK-TAIL GATES phase=spec 2026-08-02T03:07:39Z git=d55584bb profile=performance ===
+=== SK-TAIL GATES phase=spec 2026-08-02T03:36:07Z git=49ae3cfd profile=performance ===
+o35b run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 128 tok in 0.541s = 234.90 tok/s (1.19x vs generate; this run's prime 0.375s)
+[generate_spec K=2] 128 tok in 0.495s = 256.64 tok/s (1.30x vs generate; this run's prime 0.373s)
+[generate_spec K=3] 128 tok in 0.479s = 265.16 tok/s (1.35x vs generate; this run's prime 0.372s)
+[generate_spec K=4] 128 tok in 0.502s = 252.79 tok/s (1.28x vs generate; this run's prime 0.375s)
+[generate_spec K=5] 128 tok in 0.568s = 223.74 tok/s (1.14x vs generate; this run's prime 0.377s)
+[generate_spec K=6] 128 tok in 0.620s = 204.82 tok/s (1.04x vs generate; this run's prime 0.377s)
+[generate_spec K=7] 128 tok in 0.681s = 186.52 tok/s (0.95x vs generate; this run's prime 0.376s)
+[generate_spec K=8] 128 tok in 0.801s = 158.60 tok/s (0.81x vs generate; this run's prime 0.377s)
+=== SELF-CONSISTENCY PASS ===
+GATES-DONE phase=spec 2026-08-02T03:36:31Z
+=== SK-TAIL GATES phase=q35-guard 2026-08-02T03:36:31Z git=49ae3cfd profile=performance ===
+  [q35-guard/new rep4] pp2048_toks = 4101.1
+  [q35-guard/new rep4] gen512_prefill_toks = 2527.7
+  [q35-guard/new rep4] gen512_decode_toks = 255.46
+  [q35-guard/new rep4] gen512_match_lines = 1
+  [q35-guard/new rep4] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep5] pp2048_toks = 4099.8
+  [q35-guard/new rep5] gen512_prefill_toks = 2510.9
+  [q35-guard/new rep5] gen512_decode_toks = 262.26
+  [q35-guard/new rep5] gen512_match_lines = 1
+  [q35-guard/new rep5] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep6] pp2048_toks = 4100.5
+  [q35-guard/new rep6] gen512_prefill_toks = 2527.7
+  [q35-guard/new rep6] gen512_decode_toks = 242.34
+  [q35-guard/new rep6] gen512_match_lines = 1
+  [q35-guard/new rep6] tokens_sha=86dc5f7105a3716b
+q35 guard sha anchor: 86dc5f7105a3716b (must match every rep above)
+GATES-DONE phase=q35-guard 2026-08-02T03:37:36Z

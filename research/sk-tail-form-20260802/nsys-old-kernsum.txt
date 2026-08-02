@@ -1,0 +1,46 @@
+Generating SQLite file /home/avifenesh/projects/wt-sk-tail-form/research/sk-tail-form-20260802/nsys-old.sqlite from /home/avifenesh/projects/wt-sk-tail-form/research/sk-tail-form-20260802/nsys-old.nsys-rep
+Processing [/home/avifenesh/projects/wt-sk-tail-form/research/sk-tail-form-20260802/nsys-old.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  -----------  -----------  ---------  ---------  -----------  ----------------------------------------------------------------------------------------------------
+     17.6      195,795,866        156  1,255,101.7  1,224,276.5  1,073,558  1,534,226    106,235.4  dequant_iq3s_f16_kernel(const unsigned long long *, int, int, const int *, __half *, int, int, long)
+     16.5      183,601,173        234    784,620.4    752,473.0    539,771  1,240,724    119,632.5  moe_f16g_sk128v_kernel(const __half *, const __half *, float *, const float *, const int *, int, in…
+     13.8      152,792,334        234    652,958.7    645,434.0    504,156    868,120     70,063.3  moe_f16g_sk32v_kernel(const __half *, const __half *, float *, const float *, const int *, int, int…
+     12.3      136,429,445         78  1,749,095.4  1,701,968.0  1,249,012  2,361,290    221,872.3  dequant_iq4xs_f16_kernel(const unsigned long long *, int, int, const int *, __half *, int, int, lon…
+      9.7      107,336,048        500    214,672.1     58,943.0     40,255    730,169    203,830.6  void mul_mat_q_q8_0<(int)128, (bool)0>(const char *, const int *, float *, int, int, int, int, int,…
+      3.6       39,827,888         60    663,798.1    637,578.0    585,050    821,080     58,481.9  gdn_chunk_state_f32                                                                                 
+      3.3       36,992,297         80    462,403.7    443,532.0    399,069    577,883     41,964.4  router_gemv_f32_w8_batch                                                                            
+      2.6       28,812,723         20  1,440,636.1  1,348,739.5  1,273,396  1,861,263    181,301.2  fa_prefill_bf16kv_pp                                                                                
+      2.3       25,239,963         80    315,499.5    314,045.5    306,686    332,669      6,236.4  rows_permute_f32                                                                                    
+      2.0       21,953,871         60    365,897.8    360,924.5    335,005    410,748     15,086.8  gdn_chunk_output_f32                                                                                
+      1.7       18,870,959        120    157,258.0    151,359.0    138,975    192,254     12,803.2  l2_norm_f32                                                                                         
+      1.7       18,330,419        160    114,565.1    108,191.5     61,472    187,422     44,146.9  gather_act_f16_kernel(const float *, const int *, __half *, float *, int, int)                      
+      1.6       17,625,946         60    293,765.8    285,773.0    265,054    348,765     19,101.2  ssm_conv1d_gdn_f32                                                                                  
+      1.3       14,509,239         80    181,365.5    176,190.5    163,614    220,670     13,361.2  moe_pairs_scatter                                                                                   
+      1.2       13,455,363         60    224,256.0    216,814.0    194,430    275,422     19,442.8  gdn_chunk_attn_f32                                                                                  
+      1.2       13,031,208        120    108,593.4    103,647.0     91,231    139,743     11,244.5  qmatvec_q8_0_dp4a                                                                                   
+      1.0       11,359,928         80    141,999.1    137,487.0    133,503    166,718      8,959.3  moe_pairs_silu_mul                                                                                  
+      0.9       10,323,936         60    172,065.6    171,182.5    163,998    185,726      4,810.7  gdn_chunk_solve32_f32                                                                               
+      0.7        7,862,976        500     15,726.0     11,904.0      2,528     32,224      8,625.7  quantize_mmq_q8_1_d4_q8_0(const float *, void *, long, long, long, int)                             
+      0.7        7,485,113         60    124,751.9    121,999.0    114,847    143,775      6,894.1  gated_rmsnorm_f32                                                                                   
+      0.6        6,988,096          6  1,164,682.7  1,163,429.5  1,078,422  1,318,260     87,336.3  void moe_kq_sk128v_kernel<(int)2>(const unsigned long long *, int, int, const int *, long, const __…
+      0.6        6,211,077        202     30,747.9     24,832.0     12,384    111,135     21,604.2  rms_norm_f32                                                                                        
+      0.6        6,125,031        122     50,205.2     48,127.5      2,464     68,159      8,602.8  quantize_q8_1                                                                                       
+      0.4        4,921,846         80     61,523.1     59,663.5     53,087     73,056      4,152.5  add_scaled_rows_f32                                                                                 
+      0.4        4,443,670          6    740,611.7    729,737.0    703,865    791,704     31,092.0  void moe_kq_sk32v_kernel<(int)2>(const unsigned long long *, int, int, const int *, long, const __h…
+      0.4        4,141,806        160     25,886.3     26,255.5     22,240     31,775      2,195.2  add_f32                                                                                             
+      0.3        3,639,710         20    181,985.5    177,342.0    175,935    205,406      9,285.4  q_gate_split_f32                                                                                    
+      0.3        3,053,471         80     38,168.4     36,000.0     32,224     49,759      4,442.5  moe_router_topk_f32                                                                                 
+      0.2        2,615,625         20    130,781.3    128,847.0    127,519    140,543      4,048.8  mul_f32                                                                                             
+      0.2        2,412,137         80     30,151.7      2,112.0      1,600    130,527     49,112.8  sigmoid_f32                                                                                         
+      0.1        1,029,207          2    514,603.5    514,603.5    512,155    517,052      3,462.7  qmatvec_q6_K_mmvq                                                                                   
+      0.1          676,059         40     16,901.5     16,656.0      4,416     35,296     12,147.7  rope_neox_f32                                                                                       
+      0.1          606,172         80      7,577.1      7,328.0      6,400      9,504        684.1  sigmoid_dot_rows_f32                                                                                
+      0.0          485,532         80      6,069.1      5,744.0      4,800      8,000        727.2  silu_mul_f32                                                                                        
+      0.0          233,726         40      5,843.1      6,128.0      3,552      9,055      1,798.7  f32_to_bf16_bulk                                                                                    
+      0.0          227,262         60      3,787.7      3,616.0      3,072      4,864        437.9  gdn_chunk_cumgate_f32                                                                               
+      0.0          131,643         60      2,194.1      2,144.0      1,696      2,720        234.2  gdn_glog_f32                                                                                        
+      0.0           70,624          2     35,312.0     35,312.0     30,752     39,872      6,448.8  embed_gather_u32_t                                                                                  
+

@@ -101,6 +101,18 @@ pub fn moe_f16g_direct_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MEMRA_F16G_DIRECT").as_deref() != Ok("0"))
 }
+/// DEEP-TAIL sk form (lane/sk-tail-form, 2026-08-02): groups below the visitor crossover ride
+/// a 32x64x64 3-STAGE cp.async tile instead of the round-51 32x64x32 2-stage — the same 32-row
+/// tile (zero extra padding), 2 k-blocks in flight instead of 1 and half the syncs per k. The
+/// H100 ncu pricing (research/sk-bm128-20260801) put the 2-stage tail at 31% of the sk GEMM
+/// stage under q35's routing skew. Bit-identical to every other sk form by construction
+/// (kernel-check "f16g-sk" gates all tail arms maxdiff==0); exists in both the workspace-f16
+/// and direct-from-quant variants. Default ON; MEMRA_F16G_TAIL=0 = rollback to the 2-stage
+/// tail. in_f % 64 != 0 falls back in-launcher.
+pub fn moe_f16g_tail_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_F16G_TAIL").as_deref() != Ok("0"))
+}
 
 /// Per-model door for the gemma-MoE (gelu) grouped path: round 49's Hopper default
 /// REGRESSED g26 board-2048 prefill -8.3% interleaved x5 on-box (def median 10380,
