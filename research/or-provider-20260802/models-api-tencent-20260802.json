@@ -1,0 +1,254 @@
+{
+ "fetched": "2026-08-02",
+ "endpoint": "https://openrouter.ai/api/v1/models",
+ "total_models": 337,
+ "tencent_entries": [
+  {
+   "id": "tencent/hy3",
+   "canonical_slug": "tencent/hy3-20260706",
+   "hugging_face_id": "tencent/Hy3",
+   "name": "Tencent: Hy3",
+   "created": 1783344048,
+   "description": "Hy3 is a 295B-parameter Mixture-of-Experts model from Tencent (21B active, 192 experts with top-8 routing) built for reasoning, agentic workflows, and real-world production use. It supports a configurable reasoning effort:...",
+   "context_length": 262144,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.000000132",
+    "completion": "0.000000528",
+    "input_cache_read": "0.000000033"
+   },
+   "top_provider": {
+    "context_length": 262144,
+    "max_completion_tokens": 128000,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logit_bias",
+    "max_completion_tokens",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_p"
+   ],
+   "default_parameters": {
+    "temperature": 0.9,
+    "top_p": 1,
+    "top_k": null,
+    "frequency_penalty": null,
+    "presence_penalty": null,
+    "repetition_penalty": null
+   },
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/tencent/hy3-20260706/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1233,
+      "win_rate": 43.8,
+      "rank": 37
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1206,
+      "win_rate": 41.2,
+      "rank": 45
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1154,
+      "win_rate": 36.1,
+      "rank": 68
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1190,
+      "win_rate": 38.6,
+      "rank": 55
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1197,
+      "win_rate": 40.2,
+      "rank": 52
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1206,
+      "win_rate": 41.4,
+      "rank": 53
+     }
+    ]
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": true,
+    "supported_efforts": [
+     "high",
+     "low",
+     "none"
+    ],
+    "default_effort": "high"
+   }
+  },
+  {
+   "id": "tencent/hy3-preview",
+   "canonical_slug": "tencent/hy3-preview-20260421",
+   "hugging_face_id": "tencent/Hy3-preview",
+   "name": "Tencent: Hy3 preview",
+   "created": 1776878150,
+   "description": "Hy3 preview is a high-efficiency Mixture-of-Experts model from Tencent designed for agentic workflows and production use. It supports configurable reasoning levels across disabled, low, and high modes, allowing it to...",
+   "context_length": 262144,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.000000063",
+    "completion": "0.00000021",
+    "input_cache_read": "0.000000021"
+   },
+   "top_provider": {
+    "context_length": 262144,
+    "max_completion_tokens": null,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "seed",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "default_parameters": {
+    "temperature": 0.9,
+    "top_p": 1,
+    "top_k": null,
+    "frequency_penalty": null,
+    "presence_penalty": null,
+    "repetition_penalty": null
+   },
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/tencent/hy3-preview-20260421/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [],
+    "artificial_analysis": {
+     "intelligence_index": 41.2,
+     "coding_index": 58.8,
+     "agentic_index": 30.7
+    }
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": true,
+    "supported_efforts": [
+     "high",
+     "low",
+     "none"
+    ],
+    "default_effort": "high"
+   }
+  },
+  {
+   "id": "tencent/hunyuan-a13b-instruct",
+   "canonical_slug": "tencent/hunyuan-a13b-instruct",
+   "hugging_face_id": "tencent/Hunyuan-A13B-Instruct",
+   "name": "Tencent: Hunyuan A13B Instruct",
+   "created": 1751987664,
+   "description": "Hunyuan-A13B is a 13B active parameter Mixture-of-Experts (MoE) language model developed by Tencent, with a total parameter count of 80B and support for reasoning via Chain-of-Thought. It offers competitive benchmark...",
+   "context_length": 131072,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.00000014",
+    "completion": "0.00000057"
+   },
+   "top_provider": {
+    "context_length": 131072,
+    "max_completion_tokens": 131072,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "response_format",
+    "structured_outputs",
+    "temperature",
+    "top_k",
+    "top_p"
+   ],
+   "default_parameters": {},
+   "supported_voices": null,
+   "knowledge_cutoff": "2025-03-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/tencent/hunyuan-a13b-instruct/endpoints"
+   },
+   "reasoning": {
+    "mandatory": false
+   }
+  }
+ ]
+}
