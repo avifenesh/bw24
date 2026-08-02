@@ -108,14 +108,21 @@ pipelined FAIL** (`ppn-q9-n2-dev01`: 37/48 from step 11; serial arm of the same
 invocation PASS). That is the FIRST cross-device occurrence: the post-fix cross-device
 pipelined record is **~1 failure in ~70 runs** (battery 3+4+5 arms, dev01 x5 probe,
 soak-dev01 x10, soak-n8 x5, soak-dev01-x20 20/20, soak-dev01-pdl0 x20 20/20). So the
-race is **same-device-dominant (35%) but not same-device-exclusive (~1.4%)** — the
-shared surface reachable cross-device is smaller but real (stage-0's primary Engine
-runs token t+1 while the readback/last-stage machinery drains token t). Root cause stays
-OPEN; the pipelined arm as a whole remains an experimental door (default OFF), correct
-serving stays on the serial arm, and the deferred path must not be defaulted anywhere
-until a x100+ soak is clean. PDL narrows the window on both placements (singledev
-20/20@x20, dev01 20/20@x20 with `MEMRA_PDL=0`) but the naked auto-gated singledev soak
-still failed 2/20, so PDL-off is mitigation, not fix.
+race is **same-device-dominant (35%) but not same-device-exclusive** — the shared
+surface reachable cross-device is smaller but real (stage-0's primary Engine runs token
+t+1 while the readback/last-stage machinery drains token t).
+
+The x100 quarantine-lift bar was then run and MET: `soak-dev01-x100/` = **100/100 PASS**
+(pipelined AND serial), plus a **long-sequence gate** (`gate-dev23-long/`, P=64 N=192 =
+256 steps, devices 2,3) **5/5 PASS both arms** — the bit-identity contract holds at 5x
+the standard gate depth. Final post-fix cross-device pipelined record: **1 failure in
+~190 runs (~0.5%)**, the single battery-5 flake standing as recorded evidence that the
+mechanism exists cross-device at low probability. Verdict: cross-device pipelined is
+cleared for continued M3 development behind its default-OFF door; it is NOT cleared as
+a serving default (that requires root-causing the ~0.5% event). Same-device stays
+quarantined. PDL narrows the window on both placements (20/20@x20 with `MEMRA_PDL=0`)
+but the naked singledev soak still failed 2/20 on the auto-gated build, so PDL-off is
+mitigation, not fix — auto-gating was reverted.
 
 ## Throughput (final build only; interleaved ×5 at the invocation level)
 

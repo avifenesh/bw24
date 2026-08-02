@@ -1,0 +1,4 @@
+# GPU assignment board — update per claim, check before each run
+devices 0-1: m2-pp8 idle (x100 soak COMPLETE 100/100 PASS)
+devices 2-3: m2-pp8 idle (long-seq gate COMPLETE 5/5 PASS)
+# devices 4-7: free for incoming lanes (fleet-cap re-sweep on 5-7 COMPLETE 18:17Z)
