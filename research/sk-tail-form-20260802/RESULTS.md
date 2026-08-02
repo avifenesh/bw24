@@ -45,14 +45,15 @@ operands, per output element.
 - **argmax MATCH + token-sha identity, both arms** (`gates.jsonl`, `token-hashes.log`):
   q35 MEMRA_MOE_F16G=2 gen512 sha `e94b6553fde7b9a0` old == new; Ornith naked gen512 sha ==
   the cross-lane anchor `c0c12c3b350dc7f5` in EVERY run of BOTH arms (8/8 across gates + AB).
-- **q35 guard** (naked x3 + x3 re-batch, reps 4-6 clean-box): token sha `86dc5f7105a3716b`
-  == the q4k-expert-prefill anchor in every rep; pp2048 4102.3-4108.6 (kquant-lane cell
-  4090.1-4100.5 — flat-or-better, cross-session sha-anchored). Note: rep2 gen512 decode
-  measured 52.16 tok/s (reps 1/3: 255.3/257.4) — single-run co-resident interference blip,
-  sha still anchored; decode is not a claim of this lane. Reps 4-6 = the clean batch.
-- run-spec self-consistency: q35 (F16G=2, owntrim draft, p2, NGEN=64) **PASS x8 (K=1..8)**
-  — covers the K=1..4 gate; Ornith K=1..8 below (§4 first attempt OOM'd under a co-resident
-  process; clean re-run PASS).
+- **q35 guard** (naked x3 + x3 clean re-batch, reps 4-6 after box-clear): token sha
+  `86dc5f7105a3716b` == the q4k-expert-prefill anchor **6/6 reps**; pp2048 4099.8-4108.6
+  (kquant-lane cell 4090.1-4100.5 — flat-or-better, cross-session sha-anchored), gen512
+  prefill 2510.9-2527.7 (prev 2493.9-2501.2). Note: rep2 gen512 decode measured 52.16 tok/s
+  (all other reps 242-262) — single-run blip, cause unknown (pre-colbert window), sha still
+  anchored; decode is not a claim of this lane. Reps 4-6 = the clean batch.
+- run-spec self-consistency: q35 (F16G=2, owntrim draft, p2, NGEN=64) **PASS x8 (K=1..8)**;
+  Ornith (owntrim draft, p2, NGEN=128) **PASS x8** on the clean re-run — both cover the
+  K=1..4 mission gate (§4 for the first attempt's OOM).
 
 ## 3. 5090 perf — interleaved, same session (`ab.jsonl`, git=d55584bb, ranges disjoint)
 
@@ -80,6 +81,16 @@ kquant-tile-loaders same-session llama bar (pp512 3977.4): ~0.879x from 0.792x �
 INDICATIVE ONLY (cross-session denominator, clock-drift-invalid); the owned claim is the
 same-session old-vs-new delta. A same-session llama re-ratio belongs to the next bar check.
 
+**Mechanism (nsys cuda_gpu_kern_sum, SINGLE RUN per arm — N=1, mechanism evidence not a
+perf claim; q35 board-2048 F16G=2, PP_REPS=1, 234 sk launches + 6 kq Q6_K launches):**
+
+| kernel slice | old | new | delta |
+|---|---|---|---|
+| tail (ws): sk32v -> sktail | 152.79 ms (653.0 us avg) | 109.26 ms (466.9 us avg) | **-28.5%** |
+| tail (kq direct, Q6_K x6) | 4.44 ms | 3.47 ms | **-21.9%** |
+| sk128v (same kernel both arms) | 183.60 ms | 183.35 ms | flat |
+| whole sk GEMM stage | 336.4 ms | 292.6 ms | **-13.0%** |
+
 ## 4. Failures kept (evidence discipline)
 
 - First o35b run-spec attempt: `Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of
@@ -102,7 +113,10 @@ The box-prep window owns the H100 run. To run this form directly:
   sm_90a expected occupancy 5 CTA/SM f16g-tail (smem- and reg-wise at 94 regs x128 thr),
   kq-tail 9 smem-wise / ~3 reg-bound (Q6_K 129 regs). The pricing target: the 41.3 ms
   sk32v slice of the 131.9 ms GEMM stage (nsys single-run, sk-bm128 receipts) — parity
-  bar vs cutlass+h2f 112.4 ms; mode-1 keeps the Hopper default until beaten on-box.
+  bar vs cutlass+h2f 112.4 ms; mode-1 keeps the Hopper default until beaten on-box. The
+  5090 mechanism datum to compare against: tail slice -28.5% (§3) — if the H100 tail
+  moves similarly (41.3 -> ~30 ms), the sk stage lands ~121 ms vs cutlass's 112.4 —
+  closer but likely still short; measure, don't assume (wgmma-era form-sensitivity law).
 - kernel-check on-box first (the f16g-sk + f16g-kq-direct sections carry the tail arms),
   then argmax before any timing — the k-chain identity makes any sha drift a hard stop.
 - Every claim interleaved x5 on-box, including the cublas denominator (clock-drift law).

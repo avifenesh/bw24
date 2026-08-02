@@ -74,3 +74,33 @@ q35 run-spec rc=0 PASS-lines=8 FAIL-lines=0
 o35b run-spec rc=1 PASS-lines=0 FAIL-lines=0
 GATES-DONE phase=spec 2026-08-02T03:02:06Z
 === SK-TAIL GATES phase=spec 2026-08-02T03:07:39Z git=d55584bb profile=performance ===
+=== SK-TAIL GATES phase=spec 2026-08-02T03:36:07Z git=49ae3cfd profile=performance ===
+o35b run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 128 tok in 0.541s = 234.90 tok/s (1.19x vs generate; this run's prime 0.375s)
+[generate_spec K=2] 128 tok in 0.495s = 256.64 tok/s (1.30x vs generate; this run's prime 0.373s)
+[generate_spec K=3] 128 tok in 0.479s = 265.16 tok/s (1.35x vs generate; this run's prime 0.372s)
+[generate_spec K=4] 128 tok in 0.502s = 252.79 tok/s (1.28x vs generate; this run's prime 0.375s)
+[generate_spec K=5] 128 tok in 0.568s = 223.74 tok/s (1.14x vs generate; this run's prime 0.377s)
+[generate_spec K=6] 128 tok in 0.620s = 204.82 tok/s (1.04x vs generate; this run's prime 0.377s)
+[generate_spec K=7] 128 tok in 0.681s = 186.52 tok/s (0.95x vs generate; this run's prime 0.376s)
+[generate_spec K=8] 128 tok in 0.801s = 158.60 tok/s (0.81x vs generate; this run's prime 0.377s)
+=== SELF-CONSISTENCY PASS ===
+GATES-DONE phase=spec 2026-08-02T03:36:31Z
+=== SK-TAIL GATES phase=q35-guard 2026-08-02T03:36:31Z git=49ae3cfd profile=performance ===
+  [q35-guard/new rep4] pp2048_toks = 4101.1
+  [q35-guard/new rep4] gen512_prefill_toks = 2527.7
+  [q35-guard/new rep4] gen512_decode_toks = 255.46
+  [q35-guard/new rep4] gen512_match_lines = 1
+  [q35-guard/new rep4] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep5] pp2048_toks = 4099.8
+  [q35-guard/new rep5] gen512_prefill_toks = 2510.9
+  [q35-guard/new rep5] gen512_decode_toks = 262.26
+  [q35-guard/new rep5] gen512_match_lines = 1
+  [q35-guard/new rep5] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep6] pp2048_toks = 4100.5
+  [q35-guard/new rep6] gen512_prefill_toks = 2527.7
+  [q35-guard/new rep6] gen512_decode_toks = 242.34
+  [q35-guard/new rep6] gen512_match_lines = 1
+  [q35-guard/new rep6] tokens_sha=86dc5f7105a3716b
+q35 guard sha anchor: 86dc5f7105a3716b (must match every rep above)
+GATES-DONE phase=q35-guard 2026-08-02T03:37:36Z

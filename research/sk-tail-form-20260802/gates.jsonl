@@ -34,3 +34,15 @@
 {"ts":"2026-08-02T03:00:23Z","git":"d55584bb","cell":"q35-guard","arm":"new","metric":"gen512_prefill_toks","value":2512.0,"rep":3,"profile":"performance","temp_c":63}
 {"ts":"2026-08-02T03:00:23Z","git":"d55584bb","cell":"q35-guard","arm":"new","metric":"gen512_decode_toks","value":257.45,"rep":3,"profile":"performance","temp_c":63}
 {"ts":"2026-08-02T03:00:23Z","git":"d55584bb","cell":"q35-guard","arm":"new","metric":"gen512_match_lines","value":1,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"pp2048_toks","value":4101.1,"rep":4,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_prefill_toks","value":2527.7,"rep":4,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_decode_toks","value":255.46,"rep":4,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_match_lines","value":1,"rep":4,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"pp2048_toks","value":4099.8,"rep":5,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_prefill_toks","value":2510.9,"rep":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_decode_toks","value":262.26,"rep":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_match_lines","value":1,"rep":5,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"pp2048_toks","value":4100.5,"rep":6,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_prefill_toks","value":2527.7,"rep":6,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_decode_toks","value":242.34,"rep":6,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T03:36:31Z","git":"49ae3cfd","cell":"q35-guard","arm":"new","metric":"gen512_match_lines","value":1,"rep":6,"profile":"performance","temp_c":62}
