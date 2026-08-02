@@ -1,0 +1,8 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+[gate] eager prime start
+[gate] eager prime done
+[gate] eager gen done; graph path start
+[gate] graph path done
+buckets crossed (fa_vec, n_splits): [(true, 63), (true, 64), (true, 65), (true, 66), (true, 67), (true, 68), (true, 69), (true, 70), (true, 71), (true, 72), (true, 73), (true, 74), (true, 75)]
+graph (re)captures: 1
+Phase-3 gate PASS: 96 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=13 captures=1

@@ -334,6 +334,24 @@ fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
 fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
 fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
 fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
 fa_prefill_view_ws vs inline-dequant T=64 Tkv=192: bitdiff=0 OK
 fa_prefill_view_ws vs inline-dequant T=100 Tkv=100: bitdiff=0 OK
 fa_prefill_view_ws vs inline-dequant T=37 Tkv=297: bitdiff=0 OK

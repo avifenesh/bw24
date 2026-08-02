@@ -90,9 +90,29 @@ No engagement boundary ⇒ no new capture/recapture edge (the segmented-recaptur
 satisfied trivially); the sp-ladder rung at 3072 remains the only geometry boundary, as
 before.
 
-## 6. Batteries (deep default-on)
+## 6. Batteries (deep default-on) — ALL GREEN, FAILS=0
 
-<!-- filled at battery completion: battery-console.log + gate-*.log -->
+`run-battery.sh` → `battery-console.log` + `gate-*.log` (session 2; a harness restart
+killed session 1 mid-spec — its three argmax MATCH logs were complete and are superseded
+by this full session):
+
+- **kernel-check**: ALL GREEN incl. the FA-DEEP byte pin at BOTH geometries
+  (nkv=2/gqa=8 and nkv=8/gqa=4), 36/36 bitdiff=0 (`kernel-check-full.log`).
+- **run-gen argmax**: MATCH ×3 models (kat/q35/o35b), d4096 document prompt — the deep
+  region (`gate-argmax-*.log`). Additionally every depth-A/B run below carries the gate.
+- **run-spec K=1..8 self-consistency**: PASS ×3 models, own-trim drafters, 8/8 per-K
+  PASS lines each + final `=== SELF-CONSISTENCY PASS ===` (verify rides these logits;
+  `gate-spec-*.log`).
+- **decode-batch gates (q35)**: config mode (steps 32, B=8) ALL GREEN; strict mode under
+  the equalized env (`MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1`, steps 16, B=4) ALL GREEN —
+  the batched tick rides the same fa class (`gate-decode-batch-*.log`).
+- **graph gates** (fa class boundaries are capture-relevant): graph-decode PASS at
+  q35 P=6000 N=160 (deep region, "160 steps generate_graph == decode_step
+  (BIT-IDENTICAL), buckets=4"), kat P=3000 N=160 (crosses the 3072 sp-ladder rung
+  inside a segment), q35 P=500 N=96 (short/vec-floor region); graph-session q35
+  step-lift PASS (`gate-graph-*.log`). These ran on the binary carrying the
+  `fa_plan` deep-name classification fix (3cd817da), so the segmented exec-update
+  path retunes deep nodes exactly as it retunes v4 nodes.
 
 ## 7. The depth table — old vs new + vs-llama (e2e)
 
