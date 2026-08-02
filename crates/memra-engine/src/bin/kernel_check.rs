@@ -953,13 +953,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // --- f16g-kq-direct (lane/kquant-tile-loaders): DIRECT-FROM-QUANT Q4_K/Q6_K sk tile
-    // loaders vs the dequant-workspace path. The direct kernels dequant B tiles in-register
-    // from the quant superblocks (kq_q4k_val/kq_q6k_val — the workspace dequant kernels'
+    // --- f16g-kq-direct (lane/kquant-tile-loaders + lane/iq-direct-loaders): DIRECT-FROM-QUANT
+    // Q4_K/Q6_K/IQ4_XS/IQ3_S sk tile loaders vs the dequant-workspace path. The direct kernels
+    // dequant B tiles in-register from the quant superblocks (the workspace dequant kernels'
     // exact expressions), so every output element's mma k-chain consumes the same f16
     // operands in the same order: maxdiff MUST be exactly 0 (bitwise), per visitor form.
-    // Synthetic blocks first (random nibbles/scales, safe-normal f16 d/dmin fields), then
-    // real Ornith-35B expert weights below (weight-oracle section).
+    // Synthetic blocks first (random nibbles/scales/signs/codebook indices, safe-normal f16
+    // d/dmin fields), then real Ornith-35B (k-quant) + q35 (IQ) expert weights below.
     {
         let m_sizes: [i32; 8] = [1, 3, 17, 33, 64, 129, 200, 300];
         let n_active = m_sizes.len();
@@ -969,12 +969,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (in_f, out_f) = (512usize, 300usize);   // 2 superblocks/row; ragged out tile
         let n_expert = n_active;
         for (qname, qtype, sbb) in [("q4_K", memra_engine::QT_Q4_K, 144usize),
-                                    ("q6_K", memra_engine::QT_Q6_K, 210usize)] {
+                                    ("q6_K", memra_engine::QT_Q6_K, 210usize),
+                                    ("iq4_xs", memra_engine::QT_IQ4_XS, 136usize),
+                                    ("iq3_s", memra_engine::QT_IQ3_S, 110usize)] {
             let row_bytes = in_f / 256 * sbb;
             let ex_bytes = out_f * row_bytes;
             // Synthetic superblocks: random payload bytes; the f16 scale fields (q4k d/dmin
-            // at +0/+2, q6k d at +208) overwritten with small positive normals (0x2C00 band)
-            // so no NaN/Inf enters the mirror.
+            // at +0/+2, q6k d at +208, iq4_xs/iq3_s d at +0) overwritten with small positive
+            // normals (0x2C00 band) so no NaN/Inf enters the mirror. Random payloads are
+            // in-range for every class (iq4_xs codes 0..15; iq3_s grid idx qs|qh-bit < 512).
             let mut slab = vec![0u8; n_expert * ex_bytes];
             for (i, b) in slab.iter_mut().enumerate() {
                 *b = (pr(i + 313) * 256.0) as u8;
@@ -990,8 +993,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if qtype == memra_engine::QT_Q4_K {
                             slab[off..off + 2].copy_from_slice(&h(1));
                             slab[off + 2..off + 4].copy_from_slice(&h(2));
-                        } else {
+                        } else if qtype == memra_engine::QT_Q6_K {
                             slab[off + 208..off + 210].copy_from_slice(&h(1));
+                        } else {
+                            slab[off..off + 2].copy_from_slice(&h(1));
                         }
                     }
                 }
@@ -1105,6 +1110,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                           n_pairs, qtype, row_bytes, cross, tail)?)?;
                     let d = maxdiff(&y_ws, &y_dq);
                     println!("f16g-kq-direct [{tname} in={in_f} out={out_f}] {name} \
+                              vs workspace: maxdiff={d:.2e} {}",
+                             if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+    }
+    // f16g-kq-direct on REAL IQ weights (lane/iq-direct-loaders): q35 IQ3_S gate_exps +
+    // IQ4_XS down_exps slices — the class that is 94.8% of q35's expert-bank bytes.
+    {
+        use memra_gguf::{GgufFile, GgmlType};
+        let q35 = kc_model("f16g-kq-direct", "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
+            &["/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"],
+            &gguf_arg);
+        if let Some(path) = q35.as_deref() {
+            let g = GgufFile::open(path)?;
+            // scan for one IQ3_S gate tensor + one IQ4_XS down tensor (the bank is a mix).
+            let mut cases: Vec<(String, &str, i32, usize)> = Vec::new();
+            for l in 0..48 {
+                let name = format!("blk.{l}.ffn_gate_exps.weight");
+                if g.find(&name).map(|t| t.ggml_type == GgmlType::IQ3_S).unwrap_or(false) {
+                    cases.push((name, "iq3_s", memra_engine::QT_IQ3_S, 110));
+                    break;
+                }
+            }
+            for l in 0..48 {
+                let name = format!("blk.{l}.ffn_down_exps.weight");
+                if g.find(&name).map(|t| t.ggml_type == GgmlType::IQ4_XS).unwrap_or(false) {
+                    cases.push((name, "iq4_xs", memra_engine::QT_IQ4_XS, 136));
+                    break;
+                }
+            }
+            let m_sizes: [i32; 6] = [5, 33, 64, 80, 129, 17];
+            let n_active = m_sizes.len();
+            let mut ex_off_host = vec![0i32; n_active + 1];
+            for (gg, m) in m_sizes.iter().enumerate() { ex_off_host[gg + 1] = ex_off_host[gg] + m; }
+            let n_pairs = *ex_off_host.last().unwrap() as usize;
+            for (tname, qname, qtype, sbb) in cases {
+                let t = g.find(&tname).unwrap();
+                let (in_f, out_f, ne) = (t.ne[0] as usize, t.ne[1] as usize, t.ne[2] as usize);
+                if in_f % 256 != 0 || ne < n_active {
+                    println!("f16g-kq-direct [q35 {tname}] SKIP (in_f={in_f} ne={ne})");
+                    continue;
+                }
+                let row_bytes = in_f / 256 * sbb;
+                let ex_bytes = out_f * row_bytes;
+                let raw = g.tensor_data(t);
+                let slab_d = e.htod_bytes(&raw[..n_active * ex_bytes])?;
+                let base = {
+                    use cudarc::driver::DevicePtr;
+                    let s = e.stream();
+                    let (p, _gg) = slab_d.device_ptr(&s);
+                    p as u64
+                };
+                let tab: Vec<u64> = (0..n_active).map(|ex| base + (ex * ex_bytes) as u64).collect();
+                let tab_d = e.htod_u64(&tab)?;
+                let ex_ids: Vec<i32> = (0..n_active as i32).collect();
+                let exi_d = e.htod_i32(&ex_ids)?;
+                let act: Vec<u8> = (0..n_pairs * in_f).flat_map(|i| {
+                    let h = (0x2C00u16 + ((pr(i + 619) * 4096.0) as u16))
+                        | (((i & 1) as u16) << 15);
+                    h.to_le_bytes()
+                }).collect();
+                let ad = e.htod_bytes(&act)?;
+                let scales: Vec<f32> = (0..n_pairs).map(|p| 0.5 + pr(p + 733)).collect();
+                let sd = e.htod(&scales)?;
+                let offd = e.htod_i32(&ex_off_host)?;
+                let ws = e.moe_f16g_dequant_raw(&tab_d, 0, n_active, &exi_d,
+                                                in_f, out_f, n_active, qtype, row_bytes)?;
+                for (name, cross, tail) in [("hybrid(cross=64,deep-tail)", 64, 1),
+                                            ("all-128", 1, 1),
+                                            ("all-32-deep-tail", i32::MAX, 1),
+                                            ("all-32-legacy-tail", i32::MAX, 0)] {
+                    let y_ws = e.dtoh(&e.moe_f16g_gemm_sk_raw(&ws, &ad, &sd, &ex_off_host,
+                                          &offd, in_f, out_f, n_pairs, 0, cross, tail)?)?;
+                    let y_dq = e.dtoh(&e.moe_kq_gemm_sk_raw(&tab_d, 0, n_active, &exi_d, &ad,
+                                          &sd, &ex_off_host, &offd, in_f, out_f,
+                                          n_pairs, qtype, row_bytes, cross, tail)?)?;
+                    let d = maxdiff(&y_ws, &y_dq);
+                    println!("f16g-kq-direct [q35 {tname} {qname} in={in_f} out={out_f}] {name} \
                               vs workspace: maxdiff={d:.2e} {}",
                              if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
                 }

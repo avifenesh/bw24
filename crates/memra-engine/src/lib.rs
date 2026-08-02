@@ -90,16 +90,28 @@ pub fn moe_f16g_sk_params() -> (i32, i32) {
         }
     })
 }
-/// DIRECT-FROM-QUANT sk tile loaders (lane/kquant-tile-loaders, 2026-08-02): Q4_K/Q6_K expert
-/// projections on the mode-2/3 sk visitor forms dequant their weight tiles in-register from
-/// the quant superblocks instead of running the per-(layer,projection) dequant pass into an
-/// f16 workspace (41.8% of Ornith-35B t=512 kernel time — the pp512 wall,
-/// research/q4k-expert-prefill-20260802 §5). Bit-identical to the workspace path by
-/// construction (kernel-check "f16g-kq-direct" gates it bitwise) — a data-movement change,
-/// not a numeric-class change. Default ON; MEMRA_F16G_DIRECT=0 reverts to the workspace path.
-pub fn moe_f16g_direct_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("MEMRA_F16G_DIRECT").as_deref() != Ok("0"))
+/// DIRECT-FROM-QUANT sk tile loaders (lane/kquant-tile-loaders, 2026-08-02; IQ classes added
+/// by lane/iq-direct-loaders): Q4_K/Q6_K/IQ4_XS/IQ3_S expert projections on the mode-2/3 sk
+/// visitor forms dequant their weight tiles in-register from the quant superblocks instead of
+/// running the per-(layer,projection) dequant pass into an f16 workspace (41.8% of Ornith-35B
+/// t=512 kernel time — the pp512 wall, research/q4k-expert-prefill-20260802 §5; the IQ classes
+/// are 94.8% of q35's bank bytes — the h100-sk-direct coverage pricing). Bit-identical to the
+/// workspace path by construction (kernel-check "f16g-kq-direct" gates it bitwise) — a
+/// data-movement change, not a numeric-class change. Default ON; MEMRA_F16G_DIRECT=0 reverts
+/// to the workspace path everywhere; MEMRA_F16G_DIRECT=kq keeps the k-quant loaders and
+/// reverts only the IQ classes (the iq-direct-loaders A/B seam — the pre-lane shipped config).
+pub fn moe_f16g_direct_on(qtype: i32) -> bool {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let m = *M.get_or_init(|| match std::env::var("MEMRA_F16G_DIRECT").as_deref() {
+        Ok("0") => 0,
+        Ok("kq") => 1,
+        _ => 2,
+    });
+    match m {
+        0 => false,
+        1 => qtype == QT_Q4_K || qtype == QT_Q6_K,
+        _ => true,
+    }
 }
 /// DEEP-TAIL sk form (lane/sk-tail-form, 2026-08-02): groups below the visitor crossover ride
 /// a 32x64x64 3-STAGE cp.async tile instead of the round-51 32x64x32 2-stage — the same 32-row
