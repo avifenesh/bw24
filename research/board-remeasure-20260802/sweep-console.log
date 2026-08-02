@@ -1,0 +1,137 @@
+=== BOARD REMEASURE x5 2026-08-02T14:01:29Z git=d14d7d8d profile=performance ===
+  [q9/memra d512 rep1] gen_ntok = 128
+  [q9/memra d512 rep1] tg128_toks = 137.91
+  [q9/memra d512 rep1] argmax_match_lines = 2
+  [q9/memra d6257 rep1] gen_ntok = 128
+  [q9/memra d6257 rep1] tg128_toks = 131.23
+  [q9/memra d6257 rep1] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:02:39Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 121.246186, "rep": 1, "temp_c": 80, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:02:39Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 117.269754, "rep": 1, "temp_c": 80, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q27/memra d512 rep1] gen_ntok = 128
+  [q27/memra d512 rep1] tg128_toks = 47.41
+  [q27/memra d512 rep1] argmax_match_lines = 2
+  [q27/memra d6257 rep1] gen_ntok = 128
+  [q27/memra d6257 rep1] tg128_toks = 46.23
+  [q27/memra d6257 rep1] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:06:35Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 44.00175, "rep": 1, "temp_c": 77, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:06:35Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 42.333329, "rep": 1, "temp_c": 77, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q35/memra d512 rep1] gen_ntok = 128
+  [q35/memra d512 rep1] tg128_toks = 185.46
+  [q35/memra d512 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.41GB) -> RESIDENT
+=== BOARD REMEASURE RESUME 2026-08-02T14:18:33Z git=d14d7d8d profile=performance (q35 rep1 whole, then reps 2-5 all) ===
+  [q35/memra d512 rep1] gen_ntok = 128
+  [q35/memra d512 rep1] tg128_toks = 190.81
+  [q35/memra d512 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [q35/memra d6257 rep1] gen_ntok = 128
+  [q35/memra d6257 rep1] tg128_toks = 177.08
+  [q35/memra d6257 rep1] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T14:19:37Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 155.842221, "rep": 1, "temp_c": 78, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:19:37Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 149.988257, "rep": 1, "temp_c": 78, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q9/memra d512 rep2] gen_ntok = 128
+  [q9/memra d512 rep2] tg128_toks = 137.13
+  [q9/memra d512 rep2] argmax_match_lines = 2
+  [q9/memra d6257 rep2] gen_ntok = 128
+  [q9/memra d6257 rep2] tg128_toks = 131.85
+  [q9/memra d6257 rep2] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:20:47Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 121.741558, "rep": 2, "temp_c": 81, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:20:47Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 117.709878, "rep": 2, "temp_c": 81, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q27/memra d512 rep2] gen_ntok = 128
+  [q27/memra d512 rep2] tg128_toks = 47.82
+  [q27/memra d512 rep2] argmax_match_lines = 2
+  [q27/memra d6257 rep2] gen_ntok = 128
+  [q27/memra d6257 rep2] tg128_toks = 46.15
+  [q27/memra d6257 rep2] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:24:12Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 43.509967, "rep": 2, "temp_c": 79, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:24:12Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 41.875667, "rep": 2, "temp_c": 79, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q35/memra d512 rep2] gen_ntok = 128
+  [q35/memra d512 rep2] tg128_toks = 186.51
+  [q35/memra d512 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [q35/memra d6257 rep2] gen_ntok = 128
+  [q35/memra d6257 rep2] tg128_toks = 177.23
+  [q35/memra d6257 rep2] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.41GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T14:25:24Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 165.311848, "rep": 2, "temp_c": 81, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:25:24Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 157.50822, "rep": 2, "temp_c": 81, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q9/memra d512 rep3] gen_ntok = 128
+  [q9/memra d512 rep3] tg128_toks = 137.66
+  [q9/memra d512 rep3] argmax_match_lines = 2
+  [q9/memra d6257 rep3] gen_ntok = 128
+  [q9/memra d6257 rep3] tg128_toks = 131.50
+  [q9/memra d6257 rep3] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:26:34Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 121.266662, "rep": 3, "temp_c": 80, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:26:34Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 117.358395, "rep": 3, "temp_c": 80, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q27/memra d512 rep3] gen_ntok = 128
+  [q27/memra d512 rep3] tg128_toks = 47.64
+  [q27/memra d512 rep3] argmax_match_lines = 2
+  [q27/memra d6257 rep3] gen_ntok = 128
+  [q27/memra d6257 rep3] tg128_toks = 46.15
+  [q27/memra d6257 rep3] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:29:56Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 43.667713, "rep": 3, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:29:56Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 41.842594, "rep": 3, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q35/memra d512 rep3] gen_ntok = 128
+  [q35/memra d512 rep3] tg128_toks = 187.04
+  [q35/memra d512 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [q35/memra d6257 rep3] gen_ntok = 128
+  [q35/memra d6257 rep3] tg128_toks = 177.10
+  [q35/memra d6257 rep3] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T14:31:02Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 164.900668, "rep": 3, "temp_c": 78, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:31:02Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 156.449006, "rep": 3, "temp_c": 78, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q9/memra d512 rep4] gen_ntok = 128
+  [q9/memra d512 rep4] tg128_toks = 137.31
+  [q9/memra d512 rep4] argmax_match_lines = 2
+  [q9/memra d6257 rep4] gen_ntok = 128
+  [q9/memra d6257 rep4] tg128_toks = 130.91
+  [q9/memra d6257 rep4] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:32:11Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 121.035825, "rep": 4, "temp_c": 80, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:32:11Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 116.720737, "rep": 4, "temp_c": 80, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q27/memra d512 rep4] gen_ntok = 128
+  [q27/memra d512 rep4] tg128_toks = 47.69
+  [q27/memra d512 rep4] argmax_match_lines = 2
+  [q27/memra d6257 rep4] gen_ntok = 128
+  [q27/memra d6257 rep4] tg128_toks = 46.07
+  [q27/memra d6257 rep4] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:35:35Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 43.672008, "rep": 4, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:35:35Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 41.816957, "rep": 4, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q35/memra d512 rep4] gen_ntok = 128
+  [q35/memra d512 rep4] tg128_toks = 187.01
+  [q35/memra d512 rep4] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [q35/memra d6257 rep4] gen_ntok = 128
+  [q35/memra d6257 rep4] tg128_toks = 176.49
+  [q35/memra d6257 rep4] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T14:36:40Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 164.871331, "rep": 4, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:36:40Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 156.0993, "rep": 4, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q9/memra d512 rep5] gen_ntok = 128
+  [q9/memra d512 rep5] tg128_toks = 136.90
+  [q9/memra d512 rep5] argmax_match_lines = 2
+  [q9/memra d6257 rep5] gen_ntok = 128
+  [q9/memra d6257 rep5] tg128_toks = 129.28
+  [q9/memra d6257 rep5] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:37:49Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 121.027057, "rep": 5, "temp_c": 85, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:37:49Z", "cell": "board-remeasure", "model": "q9", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 116.005501, "rep": 5, "temp_c": 85, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q27/memra d512 rep5] gen_ntok = 128
+  [q27/memra d512 rep5] tg128_toks = 47.62
+  [q27/memra d512 rep5] argmax_match_lines = 2
+  [q27/memra d6257 rep5] gen_ntok = 128
+  [q27/memra d6257 rep5] tg128_toks = 45.86
+  [q27/memra d6257 rep5] argmax_match_lines = 2
+  [llama] {"ts": "2026-08-02T14:41:13Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 43.49014, "rep": 5, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:41:13Z", "cell": "board-remeasure", "model": "q27", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 41.664931, "rep": 5, "temp_c": 84, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [q35/memra d512 rep5] gen_ntok = 128
+  [q35/memra d512 rep5] tg128_toks = 186.64
+  [q35/memra d512 rep5] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.41GB) -> RESIDENT
+  [q35/memra d6257 rep5] gen_ntok = 128
+  [q35/memra d6257 rep5] tg128_toks = 173.90
+  [q35/memra d6257 rep5] argmax_match_lines = 2
+    [moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.41GB) -> RESIDENT
+  [llama] {"ts": "2026-08-02T14:42:20Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 512, "metric": "tg128_toks", "value": 164.228142, "rep": 5, "temp_c": 85, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+  [llama] {"ts": "2026-08-02T14:42:20Z", "cell": "board-remeasure", "model": "q35", "engine": "llama", "depth": 6257, "metric": "tg128_toks", "value": 156.334443, "rep": 5, "temp_c": 85, "build": "c818263f2", "gpu_concurrent": "/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+BOARD-REMEASURE-DONE 2026-08-02T14:42:20Z
