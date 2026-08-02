@@ -77,6 +77,17 @@ tok/s and spec loses — the 1.16x is refuted, and the 1-GPU floor row is plain 
 must run its own K=1 sweep before quoting any spec number
 (`research/hy3-hopper-20260801/`, `research/hy3-spec-20260802/`).
 
+The K=1 acceptance profile across six realistic serving classes (same box, same build;
+`research/hy3-accept-profile-20260802/`) prices the acceptance rate r that a resident
+two-GPU (PP-2) spec decision needs: 44-75% on real content (code-gen 75.3%,
+code-review/agentic 64.9%, chat/summarize 44-46%) versus the synthetic d1736 story's
+8.5% — never calibrate spec decisions on the synthetic. At the spill floor spec is
+roughly break-even at medium/long context (agentic 1.21x, summarize 1.07x — upper
+bounds, cache-prewarmed; the K-sweep's spec-OFF floor default stands), and with the bank
+resident every realistic class clears the honest estimate S_est = 1 + r/2 >= 1.2x, so
+the PP-2 spike wires spec K=1 in and measures the verify-batch overhead phi that the
+floor regime cannot price. K stays 1: the nextn=1 head accepts zero chained drafts.
+
 ## Obtaining the published overlay
 
 The published Hy3 Layer103.5 expert overlay, its receipts, and the relocation tool are documented

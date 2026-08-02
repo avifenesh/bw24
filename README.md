@@ -24,9 +24,14 @@ against vLLM are published per model. **Use something else when** you have anoth
 [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU serving
 (vLLM, SGLang).
 
-**Standing (2026-08-02):** eight supported models on the 5090, all fully gated; MTP-spec
+**Standing (2026-08-02):** nine supported models on the 5090, all fully gated; MTP-spec
 cells run 1.06–2.3x llama.cpp (one Gemma near-parity cell, 0.98x, still open), plain
-cells sit at the DRAM wall or above. This wave's headline is a real serving defect the
+cells sit at the DRAM wall or above. Newest in: **Ornith-1.0-35B** — AUTO-KQUANT (k-quant
+expert banks join the grouped-f16 prefill lane by default: board-2048 prefill
+3.14x) stacked on resident-if-fits residency and its own-gen drafter cleared the
+deployment bar on every prompt class (best-vs-best e2e 1.31/1.14/1.12x,
+[`research/q4k-expert-prefill-20260802/`](research/q4k-expert-prefill-20260802/)).
+The previous wave's headline was a real serving defect the
 exactness discipline caught and fixed: the batched F32 prefill router GEMM was
 m-dependent, so under cross-request prefill batching a MoE request's own expert routing
 could change with its co-arrivals. The fix routes prefill through the decode path's
@@ -128,9 +133,9 @@ core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds
 
 | Tier | Models | State |
 |---|---|---|
-| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS on the 5090; Q8_0 / Q4_K_M MTP-baked / IQ4_XS on the H100 board); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters); Ornith-1.0-9B (Q8_0 + donor-block own-gen drafter — the first community post-train over the deployment bar: best-vs-best e2e 2.21/1.67/1.47x, [receipts](research/ornith-bar-20260802/)) | Board-published, fully gated, exactness-first |
+| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS on the 5090; Q8_0 / Q4_K_M MTP-baked / IQ4_XS on the H100 board); Gemma-4 12B, 26B-A4B MoE, 31B, E4B (QAT Q4_0 + MTP drafters); Ornith-1.0-9B (Q8_0 + donor-block own-gen drafter — the first community post-train over the deployment bar: best-vs-best e2e 2.21/1.67/1.47x, [receipts](research/ornith-bar-20260802/)); Ornith-1.0-35B (Q4_K_M MoE + own-gen drafter K=2 — over the bar via AUTO-KQUANT expert prefill + resident-if-fits: best-vs-best e2e 1.31/1.14/1.12x, [receipts](research/q4k-expert-prefill-20260802/)) | Board-published, fully gated, exactness-first |
 | **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Correctness-gated end-to-end; [docs/HY3-SPILL.md](docs/HY3-SPILL.md) |
-| **In bring-up** | Ornith-1.0-35B, KAT-Coder-V2.5 (with Ornith-9B, the onboarding wave's top-downloaded HF GGUF repos); Qwen-AgentWorld-35B-A3B verified same-stack | Onboarded with zero code change (native `qwen35`/`qwen35moe` arch strings; argmax + chat gates green — [receipts](research/onboard-ornith-20260801/)). 35B: HOLD — the resident-if-fits default inverted its decode leg vs llama.cpp (1.086x, [receipts](research/residency-cap-20260802/)) and its own-gen drafter is adopted (1.38/1.09/1.05x), but the Q4_K expert-prefill gap (0.27x) still fails the e2e bar ([priced](research/ornith-bar-20260802/)). KAT: HOLD — best drafter acceptance of the batch, but a plain-decode anomaly (~104 vs ~170 tok/s on the same arch class) makes drafting net-negative; the anomaly lane is queued. AgentWorld: same-stack by construction (header bytes verified), unbenched |
+| **In bring-up** | KAT-Coder-V2.5 (with the Ornith pair, the onboarding wave's top-downloaded HF GGUF repos); Qwen-AgentWorld-35B-A3B verified same-stack | Onboarded with zero code change (native `qwen35moe` arch strings; argmax + chat gates green — [receipts](research/onboard-ornith-20260801/)). KAT: decode anomaly RESOLVED — its IQ4_XS trunk was riding the f32 oracle path; default dp4a admission moved decode +81% to llama parity (1.016x) and flipped its drafter net-positive on code-short (1.25x e2e @K=2), so the bar-binding gap is now prefill alone (0.169x — the IQ4_XS-trunk MMQ port is priced, [receipts](research/kat-anomaly-20260802/)). AgentWorld: same-stack by construction (header bytes verified), unbenched |
 | **In progress** | MiniMax-M3 REAP50 (safetensors spill) | Loads + generates; router tuning open |
 
 ## Quick start
@@ -238,6 +243,27 @@ Spec-vs-own-plain: 2.16/1.77/1.70x at 47-61% acceptance
 drafter with the standard two commands in [docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md)
 (donor-block variant — donor pairs and receipts documented there).
 
+## Performance — Ornith-1.0-35B (Q4_K_M MoE), RTX 5090
+
+Supported model #9. A three-lane arc took it over the bar: resident-if-fits residency
+(the 19.5 GB expert bank fits 24 GB — +50% decode over the old spill default), the
+adopted own-gen donor-block drafter (K=2, 60-68% acceptance), and AUTO-KQUANT expert
+prefill (the Q4_K/Q6_K bank rides the grouped-f16 lane by default: board-2048 prefill
+3.14x, pp512 +54%, decode flat). Best-vs-best per class (memra = spec K=2;
+llama.cpp = plain, its measured best on this arch); interleaved N=3, same session
+([`research/q4k-expert-prefill-20260802/`](research/q4k-expert-prefill-20260802/)):
+
+| Prompt class | memra e2e, 256 tok (spec K=2) | llama.cpp e2e (plain best) | Ratio |
+|---|---:|---:|---:|
+| code short (27 tok) | 1.033 s | 1.357 s | **1.31x** |
+| code medium (1.8k ctx) | 1.618 s | 1.837 s | **1.14x** |
+| agentic long (6.3k ctx) | 2.738 s | 3.053 s | **1.12x** |
+
+The honest residual: short-prompt prefill (pp512 0.42x llama) — the per-pass k-quant →
+f16 dequant cost amortizes with prompt length (0.91x at 2048, a 1.06x memra win at
+6.3k); the no-dequant kill (Q4_K/Q6_K expert MMQ tile loaders) is priced, not built.
+Plain decode runs 1.086x.
+
 ## Known gaps
 
 - **5090 prefill** trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4
@@ -261,7 +287,10 @@ drafter with the standard two commands in [docs/DRAFT-REGIME.md](docs/DRAFT-REGI
 - **Hopper wgmma/TMA kernels** — FA3-class prefill attention, fused GDN chunk family,
   canonical descriptor pairings for bf16/tf32/s8.
 - **MoE on 24 GB** — resident-if-fits expert residency (exact GGUF bank accounting +
-  measured headroom; +50.4% Ornith-35B decode over the old spill default), expert-major
+  measured headroom; +50.4% Ornith-35B decode over the old spill default), AUTO-KQUANT
+  grouped-f16 expert prefill (k-quant banks the int8-MMA arm rejects dequant once and
+  ride one grouped GEMM — Ornith-35B board-2048 prefill 3.14x; IQ banks keep their
+  measured-faster MMQ tiles), expert-major
   CSR batching, frozen SLRU spill cache, bounded host LRU, mirrored positioned reads
   across VRAM→RAM→NVMe.
 - **Quantized-KV attention** — fused FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3
@@ -284,6 +313,10 @@ drafter with the standard two commands in [docs/DRAFT-REGIME.md](docs/DRAFT-REGI
 
 Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-gen`
 argmax gate, `run-spec` K=1..8 self-consistency — one command: `tools/local-ci.sh`.
+run-gen also prints a second, `batched-prime` gate line: the numeric config that seeds
+real generation and serving is bounded against the tokenwise oracle (structured
+divergence fails the run; near-tie flips are reported — the measured ~7% cross-config
+class, stated honestly in [docs/SERVING.md](docs/SERVING.md)).
 FP summation order is part of the contract. Exactness gates are blind to numeric shifts
 where decode and verify move together, so the perf CI (`tools/local-ci.sh --perf`)
 re-measures every published cell per engine-touching push and tracks speculative

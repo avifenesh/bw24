@@ -2,6 +2,73 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
 
+## CURRENT STATE (2026-08-02, v0.64.0)
+
+- **Ornith-1.0-35B DEPLOYS as supported model #9** — the #44 -> residency -> AUTO-KQUANT
+  arc closes: best-vs-best e2e **1.314/1.136/1.115x** >= 1.1x on every prompt class
+  (memra = adopted own-trim drafter K=2, acceptance 68/63/60%; llama = plain, its best
+  on this arch). The lever: **AUTO-KQUANT — `MEMRA_MOE_F16G` mode 3 is the sm_120a
+  naked default.** Unset now admits the mode-2 sk grouped-f16 form ONLY for expert
+  layers the int8-MMA MMQ arm rejects (Q3_K/Q4_K/Q6_K — the `_em`-fallback class with
+  zero token reuse): o35b board-2048 prefill 1098 -> **3454 (3.14x)**, pp512
+  +54%, decode flat; IQ banks keep MMQ (the round-49 5090 FLAT verdict holds for that
+  class and stays honored by the admission); Hopper keeps mode 1; gemma stays
+  env-explicit. Side-move: q35's k-quant straggler layers rode `_em` too — naked
+  board-2048 prefill **+18.0%**, and the q35 spec row was re-paired same-session under
+  the new default: every column MOVED (memra p1 +8.8% / p3 +6.8%; llama's b9837 +6-42%
+  with a per-class n-max re-sweep), ratios 1.19/1.49/1.49 -> **1.21/1.11/1.12**, board
+  JSON + README regenerated. What remains for o35b, priced not built: pp512-class
+  prefill (0.415x — the k-quant dequant passes are 42% of kernel time at t=512 and
+  amortize by 2048+; the kill is Q4_K/Q6_K expert-MMQ tile loaders, own lane). Receipts
+  `research/q4k-expert-prefill-20260802/`, `research/q35-spec-repair-20260802/`.
+- **KAT decode anomaly RESOLVED (#42): a dispatch hole, not residency.** KAT's IQ4_XS
+  trunk (attn_qkv/gate/ssm_out/shexp, ~0.52GB/tick) rode the Stage-A f32 oracle because
+  `MEMRA_IQ_FAST` was a complete, never-concluded opt-in door (the flags-audit UNCLEAR
+  ghost). `iq_fast_enabled()` default ON: decode 106.7 -> **193.4 (+81.3%)**, llama
+  parity 1.016x, pp512 228 -> 697; supported models dispatch-unchanged by construction
+  AND proven (ctrl bit-identity guard sha-exact). Drafter re-verdict: #42's stated
+  mechanism REFUTED but NO-ADOPT survives on new grounds — code-short flips to a clear
+  win (1.25x e2e @K=2, 84.7% acceptance), p2/p3 stay 0.95-0.96x at 55-58%. KAT stays
+  in bring-up: the bar-binding gap is now prefill alone (0.169x — the IQ4_XS-trunk MMQ
+  port is priced; `mmq_iq_experts.cu` already carries the tile loaders). H100 battery
+  re-run on the new default PENDING (probe in flight; ledger round 53). Receipts
+  `research/kat-anomaly-20260802/`.
+- **Exactness infra grew two teeth.** **(#46 closed)** run-gen prints a second gate
+  line — `batched-prime` (the config that seeds real generation and serving) vs the
+  tokenwise oracle — with calibrated bounds (maxdiff 8.0 / margin 1.0; six-model
+  144-prompt sweep: 10/144 first tokens flip, ALL near-tie margins <= 0.70, dense Q8_0
+  fleet class 0/48, forward_last sides with the BATCHED prime 8/10 — config roulette,
+  NOT a defect; the naked-q35 pp512 early-EOS branch finding is this class, now
+  bounded). `prime-gate` is the dedicated multi-prompt battery; a leg lives inside
+  local-ci.sh; docs/SERVING.md states the ~7% first-token drift honestly; serving
+  defaults UNCHANGED (tokenwise pin costs 23x TTFT at 6k). **(#47)** decode-batch
+  gate1-config verdicts by the fraction rule — FAIL iff >= 4 of 6 seed draws diverge
+  before step 3. The round-45 per-draw step floor was H100-calibrated and did not
+  transfer (5090 dice land at steps 0/1, PROVEN dice by strict-equalized bit-identity);
+  plumbing diverges on every draw; `MEMRA_GATE_CANARY=1` keeps the teeth (6/6 early,
+  exit 1). Gates 2/3 + strict stay the untouched bit floor. Receipts
+  `research/prime-gate-coverage-20260802/`, `research/gate1-recal-20260802/`.
+- **Hy3 K=1 acceptance profile across six serving classes (Mumbai H100)** — acceptance
+  is content-driven and deterministic: 44-75% on realistic classes (code-gen 75.3%,
+  code-review/agentic 64.9%, chat/summarize 44-46%) vs the synthetic d1736's 8.5% (do
+  NOT calibrate on it). At the 1-GPU spill floor spec is ~break-even at medium/long ctx
+  (agentic 1.21x, summarize 1.07x — cache-prewarmed upper bounds; the K-sweep spec-OFF
+  floor default STANDS). Deliverable: the PP-2 spike gains the spec K=1 wire-in —
+  every realistic class clears S_est = 1 + r/2 >= 1.2x; the spike must measure phi
+  (verify-batch overhead), which the floor regime cannot price. K stays 1 (the nextn=1
+  head cannot chain). Receipts `research/hy3-accept-profile-20260802/`;
+  docs/HY3-SPILL.md updated.
+- **Board state:** H100 7/7 with the q35 row FINAL at **217 vs 215 = 1.01x** (the
+  round-52 in-flight re-cell landed inside v0.63.0 — batch router recovers 82.3% of the
+  exactness cost on Hopper; ledger round-52 closure written). 5090 boards regenerated
+  in-lane for the q35 spec re-pair; `tools/update-perf-board.py --check` green.
+- **Releases:** v0.64.0 = this state: Ornith-35B supported (#9), AUTO-KQUANT sm_120a
+  default, iq_fast default, #46/#47 gate teeth, Hy3 acceptance profile. Docs sweep
+  done (README standing/support table/Ornith-35B section/MoE bullet/correctness
+  section; FLAGS: `MEMRA_IQ_FAST` moved to §3 rollback seams, AUTO-KQUANT + §4 gate
+  rows verified in-lane; CONTRIBUTING gate1 fraction note; docs/HY3-SPILL.md profile
+  paragraph; ARCHITECTURE-H100.md round 53 + round-52 closure).
+
 ## CURRENT STATE (2026-08-02, v0.63.0)
 
 - **THE EXACTNESS ARC (the wave's headline): a real serving defect found + fixed.** The
