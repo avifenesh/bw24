@@ -1,0 +1,15 @@
+== naked ==
+built_cuda_arch=90a
+memra_hopper_mma_cfg=true
+MEMRA_MOE_F16G_env=None
+moe_f16g_mode_resolved=1
+== MEMRA_MOE_F16G=0 (env respected check) ==
+built_cuda_arch=90a
+memra_hopper_mma_cfg=true
+MEMRA_MOE_F16G_env=Some("0")
+moe_f16g_mode_resolved=0
+== MEMRA_MOE_F16G=2 (env respected check) ==
+built_cuda_arch=90a
+memra_hopper_mma_cfg=true
+MEMRA_MOE_F16G_env=Some("2")
+moe_f16g_mode_resolved=2

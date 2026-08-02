@@ -1,0 +1,41 @@
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running unittests src/lib.rs (target/release/deps/memra_engine-0d1065cfeb363523)
+
+running 34 tests
+test cpu_experts::tests::accepts_supported_native_qtypes_without_translation ... ok
+test cpu_experts::tests::rejects_missing_symbols_and_wrong_abi ... ok
+test cpu_experts::tests::validates_thread_count ... ok
+test cpu_experts::tests::dropped_ticket_joins_outstanding_worker ... ok
+test hybrid_forward::page_prefetch_tests::grouped_worker_prefetch_primes_first_then_each_known_next_once ... ok
+test hybrid_forward::page_prefetch_tests::page_prefetch_window_keeps_existing_opt_in_default ... ok
+test hybrid_forward::page_prefetch_tests::rolling_page_prefetch_advises_each_future_expert_once ... ok
+test hybrid_forward::page_prefetch_tests::rolling_worker_prefetch_primes_current_and_each_future_expert_once ... ok
+test mla::tests::rope_norm_equals_permuted_neox ... ok
+test mla::tests::naive_equals_absorbed_prefill_causal ... ok
+test model::tests::direct_split_equals_chained ... ok
+test model::tests::mixed_expert_loader_keeps_each_encoding_and_extent ... ok
+test model::tests::legacy_mmap_source_requires_retained_file_extent ... ok
+test model::tests::mixed_expert_loader_omits_masked_expert_bytes ... ok
+test mla::tests::naive_equals_absorbed_decode_t1 ... ok
+test model::tests::mixed_expert_loader_keeps_mmap_backing_zero_copy ... ok
+test moe_cache::vram_fraction_tests::hard_vram_fraction_defaults_and_rejects_unsafe_values ... ok
+test moe_cache::vram_fraction_tests::size_class_plan_does_not_overflow_on_pathological_sizes ... ok
+test spill_pread::tests::direct_io_requires_conservative_block_alignment ... ok
+test spill_pread::tests::buffer_state_rejects_early_reuse ... ok
+test spill_pread::tests::mode_and_depth_defaults_are_conservative ... ok
+test spill_pread::tests::worker_positioned_reads_preserve_exact_bytes_and_reuse_after_short_read ... ignored, requires a CUDA GPU
+test model::tests::tiered_expert_source_does_not_double_apply_layout_offset ... ok
+test moe_cache::vram_fraction_tests::size_class_plan_preserves_classes_and_never_exceeds_budget ... ok
+test spill_pread::tests::exact_and_unaligned_positioned_reads_match_file_bytes ... ok
+test spill_pread::tests::short_positioned_read_is_an_error ... ok
+test model::tests::uniform_expert_loader_coalesces_contiguous_mmap ... ok
+test target_dispatch_tests::legacy_quant_gemm_arch_policy_honors_the_escape_hatch ... ok
+test moe_cache::vram_fraction_tests::size_class_plan_returns_full_inventory_when_it_fits ... ok
+test moe_cache::vram_fraction_tests::lfu_decay_is_opt_in_and_bounded ... ok
+test moe_cache::vram_fraction_tests::lfu_mtp_weight_defaults_and_is_bounded ... ok
+test target_dispatch_tests::hopper_mma_build_re_admits_legacy_quant_gemm ... ok
+test spill::tests::spill_ctx_keeps_parsed_gguf_inode_after_path_replacement ... ok
+test mla::tests::naive_equals_absorbed_glm52_full_dims ... ok
+
+test result: ok. 33 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
