@@ -1,0 +1,9 @@
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q8rp] split-plane decode mirrors built: 1 tensors
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[q4f16] prefill fp16 mirrors built: 336 dense trunk tensors
+loaded gemma4 (48 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+prefill argmax=236770  decode argmax=236770  logit maxdiff=4.696e0  MATCH
+generated 8 tokens in 0.043s = 184.92 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+tokens: [236770, 236770, 236770, 236770, 236770, 236770, 236770, 236770]

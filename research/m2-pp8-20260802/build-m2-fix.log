@@ -1,0 +1,28 @@
+ Downloading crates ...
+  Downloaded equivalent v1.0.2
+  Downloaded indexmap v2.14.0
+  Downloaded hashbrown v0.17.1
+warning: memra-engine@0.0.0: MEMRA_CUDA_ARCH auto-detected 90a (compute_cap 9.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-engine v0.0.0 (/home/ubuntu/memra/crates/memra-engine)
+   Compiling serde_json v1.0.150
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling memra-probe v0.0.0 (/home/ubuntu/memra/crates/memra-probe)
+   Compiling memra-runtime v0.0.0 (/home/ubuntu/memra/crates/memra-runtime)
+   Compiling memra-tokenizer v0.0.0 (/home/ubuntu/memra/crates/memra-tokenizer)
+   Compiling indexmap v2.14.0
+   Compiling memra-gguf v0.0.0 (/home/ubuntu/memra/crates/memra-gguf)
+   Compiling axum v0.7.9
+   Compiling memra-server v0.0.0 (/home/ubuntu/memra/crates/memra-server)
+warning: variable does not need to be mutable
+   --> crates/memra-server/src/main.rs:768:9
+    |
+768 |     let mut consume = |pieces: Vec<Piece>, text: &mut String, calls: &mut Vec<ParsedToolCall>| {
+    |         ----^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `memra-server` (bin "memra-server") generated 1 warning (run `cargo fix --bin "memra-server" -p memra-server` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 32.13s

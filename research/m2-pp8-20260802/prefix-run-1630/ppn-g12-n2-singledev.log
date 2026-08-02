@@ -1,0 +1,8 @@
+ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q8rp] split-plane decode mirrors built: 1 tensors
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[q4f16] prefill fp16 mirrors built: 336 dense trunk tensors
+stage fence: [0, 24, 48] over 48 layers
+ppn gate NOTE: gemma4 arm is serial-only (pipelined arm skipped)
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=262144, fence=[0, 24, 48]; stages=2 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
