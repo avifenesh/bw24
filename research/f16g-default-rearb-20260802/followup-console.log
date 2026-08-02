@@ -1,0 +1,25 @@
+=== F16G-REARB FOLLOWUP phase=all 2026-08-02T06:39:34Z git=d703e8f4 profile=performance ===
+  [decode-batch-q35-strict-equalized rep1] rc = 0
+  gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+  ALL GREEN: decode_step_batch exactness battery
+  [decode-batch-q9j-strict-equalized rep1] rc = 0
+  gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+  ALL GREEN: decode_step_batch exactness battery
+  [g26-b2048gen-mode3 rep1] prefill_toks = 6599.6
+  [g26-b2048gen-mode3 rep1] decode_toks = 191.54
+  [g26-b2048gen-mode3 rep1] match_lines = 2
+  [g26-b2048gen/mode3 rep1] tokens_sha=84a47adb88ece119
+  [g26-b2048gen-mode2 rep1] prefill_toks = 6623.4
+  [g26-b2048gen-mode2 rep1] decode_toks = 191.21
+  [g26-b2048gen-mode2 rep1] match_lines = 2
+  [g26-b2048gen/mode2 rep1] tokens_sha=84a47adb88ece119
+  [g26-b2048gen-mode3 rep2] prefill_toks = 6575.8
+  [g26-b2048gen-mode3 rep2] decode_toks = 191.59
+  [g26-b2048gen-mode3 rep2] match_lines = 2
+  [g26-b2048gen/mode3 rep2] tokens_sha=84a47adb88ece119
+  [g26-b2048gen-mode2 rep2] prefill_toks = 6551.6
+  [g26-b2048gen-mode2 rep2] decode_toks = 190.78
+  [g26-b2048gen-mode2 rep2] match_lines = 2
+  [g26-b2048gen/mode2 rep2] tokens_sha=84a47adb88ece119
+g26 b2048 shas MUST be identical across arms (gemma door env-explicit, naked closed)
+FOLLOWUP-DONE phase=all 2026-08-02T06:41:40Z

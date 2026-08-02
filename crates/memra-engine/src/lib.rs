@@ -48,22 +48,42 @@ pub use memra_sampling as sampler;
 /// GEMM win) — but that verdict is for expert banks the int8-MMA MMQ arm can take
 /// (IQ3_S/IQ4_XS/Q4_0). MEMRA_MOE_F16G=0 kills anywhere.
 ///
-/// AUTO-KQUANT (mode 3, 2026-08-02, lane/q4k-expert-prefill): sm_120a's default when unset.
-/// The mode-2 sk form is admitted ONLY for layers the MMA MMQ arm rejects (k-quant expert
-/// projections — Q3_K/Q4_K/Q6_K), i.e. exactly where the baseline is the per-pair
-/// moe_pairs_matvec_q8_em fallback with zero token reuse. On Ornith-35B Q4_K_M (resident)
-/// that fallback was the prefill wall: board-2048 1098.2 -> 3453.7 (3.14x), pp512 1081 ->
-/// 1662 (+54%), decode flat, argmax + batched-prime MATCH, x3 interleaved
-/// (research/q4k-expert-prefill-20260802/). IQ4_XS-bank models (q35, KAT) keep their
-/// measured-faster MMQ tiles on their MMA-capable layers. Explicit =1/=2 still forces
-/// all-layer admission (the A/B door); the gemma (gelu) site stays env-explicit-only.
+/// HOPPER RE-VERDICT (2026-08-02, lane/h100-flip-full): mode 2 with full direct coverage
+/// (Q4_K/Q6_K/IQ4_XS/IQ3_S tile loaders, lane/iq-direct-loaders) + the deep tail
+/// (lane/sk-tail-form) FLIPS past cublas mode 1 on the H100 — q35 board-2048 prime
+/// 13163.6 (mode 2, cross=32) vs 8626.5 (mode 1) vs 8073.4 (round-51 sk form), +52.6%,
+/// interleaved x5 zero overlap, argmax MATCH 30/30. The round-54 NO-FLIP (8547 vs 8112)
+/// was coverage-priced at 5.2% direct; ~100% coverage kills the workspace pass and the
+/// verdict inverts. Hopper naked default -> mode 2 (this arm); the gemma (gelu) site
+/// stays env-explicit-only via moe_f16g_gemma_on (Err => closed, unaffected by this arm).
+///
+/// MODE-2 DEFAULT (sm_120a naked, 2026-08-02, lane/f16g-default-rearb): with the direct
+/// tile loaders covering Q4_K/Q6_K/IQ4_XS/IQ3_S, the sk visitor beats the int8-MMA MMQ
+/// tiles on the IQ-bank models too (q35 board-2048 +33.9%, KAT pp512 +46.7% / pp2048
+/// +30.6% — research/iq-direct-loaders-20260802 §3-5, confirmed + full battery in
+/// research/f16g-default-rearb-20260802/), so every f16g-admitted expert layer rides
+/// mode 2 naked. Decode/verify stay on dp4a (t >= 16 floor). f16-mirror numeric class
+/// for naked q35/KAT prefill+prime — new token-sha anchors stamped in the rearb lane.
+///
+/// AUTO-KQUANT (mode 3, 2026-08-02, lane/q4k-expert-prefill): the previous sm_120a
+/// default, kept reachable via MEMRA_MOE_F16G=3. The mode-2 sk form is admitted ONLY for
+/// layers the MMA MMQ arm rejects (k-quant expert projections — Q3_K/Q4_K/Q6_K), i.e.
+/// exactly where the baseline is the per-pair moe_pairs_matvec_q8_em fallback with zero
+/// token reuse (Ornith-35B Q4_K_M board-2048 1098.2 -> 3453.7, 3.14x,
+/// research/q4k-expert-prefill-20260802/). Its "IQ banks keep their measured-faster MMQ
+/// tiles" ruling was priced BEFORE the IQ direct loaders and is refuted on the 5090 —
+/// the k-quant-only admission survives as the rollback seam, not the default.
+/// The gemma (gelu) site stays env-explicit-only (moe_f16g_gemma_on).
 pub fn moe_f16g_mode() -> u8 {
     static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *M.get_or_init(|| match std::env::var("MEMRA_MOE_F16G").as_deref() {
         Ok("0") => 0,
         Ok("2") => 2,
+        Ok("3") => 3,
         Ok(_) => 1,
-        Err(_) => if cfg!(memra_hopper_mma) { 1 } else { 3 },
+        // Both arches independently re-arbitrated to mode 2 on 2026-08-02
+        // (5090: lane/f16g-default-rearb; H100: lane/h100-flip-full) — unset = 2 everywhere.
+        Err(_) => 2,
     })
 }
 /// Mode-2 sk kernel form policy (round 51, lane/sk-bm128): the single-kernel grouped GEMM runs
@@ -75,8 +95,10 @@ pub fn moe_f16g_mode() -> u8 {
 ///                         back to 32x64 in-launcher when the device/in_f can't take it).
 ///   unset              -> hybrid split: groups with m_e >= MEMRA_F16G_SK_CROSS ride the 128
 ///                         form. Default cross = 64 (5090 sweep 2026-08-01, receipts
-///                         research/sk-bm128-20260801/ — re-sweep on Hopper before flipping
-///                         mode 2 there).
+///                         research/sk-bm128-20260801/; H100 re-swept on the direct+tail
+///                         form 2026-08-02, lane/h100-flip-full: {16,32,64} ->
+///                         12868/13192/13225 — 64 wins there too, the pre-direct 32
+///                         verdict was stale).
 pub fn moe_f16g_sk_params() -> (i32, i32) {
     static P: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
     *P.get_or_init(|| match std::env::var("MEMRA_F16G_SK").as_deref() {
@@ -90,6 +112,42 @@ pub fn moe_f16g_sk_params() -> (i32, i32) {
         }
     })
 }
+/// DIRECT-FROM-QUANT sk tile loaders (lane/kquant-tile-loaders, 2026-08-02; IQ classes added
+/// by lane/iq-direct-loaders): Q4_K/Q6_K/IQ4_XS/IQ3_S expert projections on the mode-2/3 sk
+/// visitor forms dequant their weight tiles in-register from the quant superblocks instead of
+/// running the per-(layer,projection) dequant pass into an f16 workspace (41.8% of Ornith-35B
+/// t=512 kernel time — the pp512 wall, research/q4k-expert-prefill-20260802 §5; the IQ classes
+/// are 94.8% of q35's bank bytes — the h100-sk-direct coverage pricing). Bit-identical to the
+/// workspace path by construction (kernel-check "f16g-kq-direct" gates it bitwise) — a
+/// data-movement change, not a numeric-class change. Default ON; MEMRA_F16G_DIRECT=0 reverts
+/// to the workspace path everywhere; MEMRA_F16G_DIRECT=kq keeps the k-quant loaders and
+/// reverts only the IQ classes (the iq-direct-loaders A/B seam — the pre-lane shipped config).
+pub fn moe_f16g_direct_on(qtype: i32) -> bool {
+    static M: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let m = *M.get_or_init(|| match std::env::var("MEMRA_F16G_DIRECT").as_deref() {
+        Ok("0") => 0,
+        Ok("kq") => 1,
+        _ => 2,
+    });
+    match m {
+        0 => false,
+        1 => qtype == QT_Q4_K || qtype == QT_Q6_K,
+        _ => true,
+    }
+}
+/// DEEP-TAIL sk form (lane/sk-tail-form, 2026-08-02): groups below the visitor crossover ride
+/// a 32x64x64 3-STAGE cp.async tile instead of the round-51 32x64x32 2-stage — the same 32-row
+/// tile (zero extra padding), 2 k-blocks in flight instead of 1 and half the syncs per k. The
+/// H100 ncu pricing (research/sk-bm128-20260801) put the 2-stage tail at 31% of the sk GEMM
+/// stage under q35's routing skew. Bit-identical to every other sk form by construction
+/// (kernel-check "f16g-sk" gates all tail arms maxdiff==0); exists in both the workspace-f16
+/// and direct-from-quant variants. Default ON; MEMRA_F16G_TAIL=0 = rollback to the 2-stage
+/// tail. in_f % 64 != 0 falls back in-launcher.
+pub fn moe_f16g_tail_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_F16G_TAIL").as_deref() != Ok("0"))
+}
+
 /// Per-model door for the gemma-MoE (gelu) grouped path: round 49's Hopper default
 /// REGRESSED g26 board-2048 prefill -8.3% interleaved x5 on-box (def median 10380,
 /// wild 8.9k-11.7k spread; off 11317, ±0.13%) — the +6-15% probe verdict didn't

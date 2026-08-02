@@ -1,0 +1,75 @@
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"pp2048_toks","value":4799.3,"rep":1,"profile":"performance","temp_c":58}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"pp512_toks","value":3157.3,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"tg128_toks","value":207.01,"rep":1,"profile":"performance","temp_c":60}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 4050.039151, "rep": 1, "temp_c": 64}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 3824.959556, "rep": 1, "temp_c": 64}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 192.704443, "rep": 1, "temp_c": 64}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"prompt_ntok","value":27,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"spec_k2_decode_toks","value":272.66,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"prime_s","value":0.048,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"spec_k2_decode_toks","value":245.98,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"prime_s","value":0.399,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"spec_k2_decode_toks","value":229.11,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"prime_s","value":1.295,"rep":1,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":62}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1256.03782, "rep": 1, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 3682.580881, "rep": 1, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3648.982413, "rep": 1, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 191.948721, "rep": 1, "temp_c": 72}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"pp2048_toks","value":4762.1,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"pp512_toks","value":3144.1,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"tg128_toks","value":210.11,"rep":2,"profile":"performance","temp_c":62}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 3977.389133, "rep": 2, "temp_c": 71}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 3813.156579, "rep": 2, "temp_c": 71}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 192.550245, "rep": 2, "temp_c": 71}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"prompt_ntok","value":27,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"spec_k2_decode_toks","value":273.63,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"prime_s","value":0.048,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"spec_k2_decode_toks","value":245.94,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"prime_s","value":0.399,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"spec_k2_decode_toks","value":229.00,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"prime_s","value":1.294,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":62}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1217.198473, "rep": 2, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 3689.990347, "rep": 2, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3657.239472, "rep": 2, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 192.299754, "rep": 2, "temp_c": 72}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"pp2048_toks","value":4771.7,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"pp512_toks","value":3148.6,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra","metric":"tg128_toks","value":209.82,"rep":3,"profile":"performance","temp_c":62}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 3968.490772, "rep": 3, "temp_c": 71}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 3823.288566, "rep": 3, "temp_c": 71}
+{"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 192.59952, "rep": 3, "temp_c": 71}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"prompt_ntok","value":27,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"spec_k2_decode_toks","value":274.41,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"prime_s","value":0.048,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"spec_k2_decode_toks","value":245.84,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"prime_s","value":0.399,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"spec_k2_decode_toks","value":229.20,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"prime_s","value":1.295,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:47:07Z","git":"7df65e4e","cell":"o35b-barcheck-kq","arm":"memra-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":62}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1217.122369, "rep": 3, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 3689.169384, "rep": 3, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3654.983479, "rep": 3, "temp_c": 72}
+{"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 191.804763, "rep": 3, "temp_c": 72}

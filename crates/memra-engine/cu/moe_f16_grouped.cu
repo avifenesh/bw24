@@ -181,6 +181,41 @@ static __global__ void dequant_iq3s_f16_kernel(
     }
 }
 
+// ---- shared per-value Q4_K/Q6_K dequant (lane/kquant-tile-loaders): the EXACT per-value
+// expressions of the q4k/q6k dequant kernels, factored into __forceinline__ helpers so the
+// DIRECT-FROM-QUANT sk tile loaders (below the sk kernels) compute bit-identical f16 values
+// to the workspace path by construction — gated bitwise in kernel-check ("f16g-kq-direct"),
+// synthetic + real weights.
+
+// q6_K value: b = 210B superblock (ql[128], qh[64], i8 scales[16], f16 d at the END),
+// l255 = value index 0..255 within the superblock.
+__device__ __forceinline__ __half kq_q6k_val(const uint8_t* __restrict__ b, int l255){
+    const uint8_t* ql = b; const uint8_t* qh = b+128;
+    const int8_t* sc = (const int8_t*)(b+192);
+    float dd = g_half_to_float(*(const uint16_t*)(b+208));
+    int n2 = l255>>7, rr = l255&127, q4 = rr>>5, l = rr&31, is = l>>4;
+    int qlb = ql[n2*64 + l + (q4&1)*32];
+    int nib = (q4<2) ? (qlb & 0xF) : (qlb >> 4);
+    int qv = (nib | (((qh[n2*32 + l] >> (2*q4)) & 3) << 4)) - 32;
+    return __float2half(dd * (float)sc[n2*8 + is + 2*q4] * (float)qv);
+}
+
+// q4_K value: b = 144B superblock (f16 d, f16 dmin, scales[12] 6-bit packed, qs[128]),
+// l = value index 0..255 within the superblock.
+__device__ __forceinline__ __half kq_q4k_val(const uint8_t* __restrict__ b, int l){
+    float dd = g_half_to_float(*(const uint16_t*)b);
+    float dmin = g_half_to_float(*(const uint16_t*)(b+2));
+    const uint8_t* scs = b+4; const uint8_t* q = b+16;
+    int g64 = l>>6, w64 = l&63, is = g64*2 + (w64>>5);
+    int sc8, m8;
+    if(is < 4){ sc8 = scs[is] & 63;                       m8 = scs[is+4] & 63; }
+    else      { sc8 = (scs[is+4] & 0xF) | ((scs[is-4] >> 6) << 4);
+                m8  = (scs[is+4] >> 4)  | ((scs[is]   >> 6) << 4); }
+    int qb = q[g64*32 + (w64&31)];
+    int nib = (w64<32) ? (qb & 0xF) : (qb >> 4);
+    return __float2half(dd * (float)sc8 * (float)nib - dmin * (float)m8);
+}
+
 // q6_K: 210B superblock = ql[128], qh[64], i8 scales[16], f16 d (d at the END).
 static __global__ void dequant_q6k_f16_kernel(
         const unsigned long long* __restrict__ table, int proj, int n_expert,
@@ -190,18 +225,8 @@ static __global__ void dequant_q6k_f16_kernel(
     const uint8_t* W = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[seg]];
     const uint8_t* r = W + (size_t)row*row_bytes;
     __half* d = dst + ((size_t)seg*out_f + row)*in_f;
-    for(int v=threadIdx.x; v<in_f; v+=blockDim.x){
-        int sb=v>>8, l255=v&255;
-        const uint8_t* b = r + (size_t)sb*210;
-        const uint8_t* ql = b; const uint8_t* qh = b+128;
-        const int8_t* sc = (const int8_t*)(b+192);
-        float dd = g_half_to_float(*(const uint16_t*)(b+208));
-        int n2 = l255>>7, rr = l255&127, q4 = rr>>5, l = rr&31, is = l>>4;
-        int qlb = ql[n2*64 + l + (q4&1)*32];
-        int nib = (q4<2) ? (qlb & 0xF) : (qlb >> 4);
-        int qv = (nib | (((qh[n2*32 + l] >> (2*q4)) & 3) << 4)) - 32;
-        d[v] = __float2half(dd * (float)sc[n2*8 + is + 2*q4] * (float)qv);
-    }
+    for(int v=threadIdx.x; v<in_f; v+=blockDim.x)
+        d[v] = kq_q6k_val(r + (size_t)(v>>8)*210, v&255);
 }
 
 // q4_K: 144B superblock = f16 d, f16 dmin, scales[12] (6-bit packed), qs[128].
@@ -213,21 +238,8 @@ static __global__ void dequant_q4k_f16_kernel(
     const uint8_t* W = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[seg]];
     const uint8_t* r = W + (size_t)row*row_bytes;
     __half* d = dst + ((size_t)seg*out_f + row)*in_f;
-    for(int v=threadIdx.x; v<in_f; v+=blockDim.x){
-        int sb=v>>8, l=v&255;
-        const uint8_t* b = r + (size_t)sb*144;
-        float dd = g_half_to_float(*(const uint16_t*)b);
-        float dmin = g_half_to_float(*(const uint16_t*)(b+2));
-        const uint8_t* scs = b+4; const uint8_t* q = b+16;
-        int g64 = l>>6, w64 = l&63, is = g64*2 + (w64>>5);
-        int sc8, m8;
-        if(is < 4){ sc8 = scs[is] & 63;                       m8 = scs[is+4] & 63; }
-        else      { sc8 = (scs[is+4] & 0xF) | ((scs[is-4] >> 6) << 4);
-                    m8  = (scs[is+4] >> 4)  | ((scs[is]   >> 6) << 4); }
-        int qb = q[g64*32 + (w64&31)];
-        int nib = (w64<32) ? (qb & 0xF) : (qb >> 4);
-        d[v] = __float2half(dd * (float)sc8 * (float)nib - dmin * (float)m8);
-    }
+    for(int v=threadIdx.x; v<in_f; v+=blockDim.x)
+        d[v] = kq_q4k_val(r + (size_t)(v>>8)*144, v&255);
 }
 
 // q3_K: 110B superblock = hmask[32], qs[64], scales[12] (6-bit aux dance), f16 d.
@@ -708,6 +720,699 @@ moe_f16g_sk128v_kernel(
     }
 }
 
+// ============== lane/sk-tail-form: DEEP-TAIL visitor form (32x64x64, 3-stage) ==============
+//
+// The H100 ncu pricing (research/sk-bm128-20260801): under q35's routing skew the 32x64x32
+// 2-stage tail form above is 41.3 ms = 31% of the sk GEMM stage, and the x8/x16/x24 cross
+// fine-sweep REFUTED pushing tail groups onto the 128 form (padding). This is the priced next
+// rung: the SAME 32-row tile (zero extra padding on the sub-crossover groups this form exists
+// for) with a 64-deep k-block and a 3-stage cp.async pipeline — 2 k-blocks (128 k-values) in
+// flight instead of 1x32, and half the __syncthreads per k.
+//
+// SMEM math (the form pick, computed before building — lane receipts
+// research/sk-tail-form-20260802/):
+//   this form:   A 32x(64+8) 4608 B + B 64x72 9216 B = 13824 B/stage x3 = 41472 B
+//                + 2052 B s_pre = 43524 B STATIC — under the 48 KB static limit (no opt-in);
+//                sm_120a (~100 KB smem/SM) keeps 2 CTA/SM, H100 (228 KB) 5 smem-wise.
+//   BM=64 alt:   18432 B/stage x3 + 2052 = 57348 B -> >48KB opt-in required, 1 CTA/SM on
+//                sm_120a, and up to 2x tile padding on sub-crossover groups — rejected.
+//   reg-double-buffer alt: smem-neutral but keeps the 32-k-deep global pipeline and the
+//                per-32-k sync cadence — strictly weaker latency cover; rejected.
+//
+// NUMERICS: bit-identical to the round-49/51 forms by construction — per output element the
+// k-chain is the same ascending m16n8k16 f32-accumulate sequence on the same f16 operands
+// (each 64-k block runs the same four ascending 16-k mma steps the 32-k form runs in pairs).
+// kernel-check "f16g-sk" gates every tail arm maxdiff==0 vs grid-scan (deep and legacy).
+// MEMRA_F16G_TAIL=0 (parsed Rust-side, moe_f16g_tail_on) is the rollback seam to the
+// 2-stage tail. in_f % 64 != 0 falls back to the 2-stage tail in-launcher.
+
+#define SKT_BK 64
+#define SKT_STRIDE (SKT_BK + 8)   // 72 halves = 144 B rows: 16B-aligned, de-banked
+#define SKT_STAGES 3
+
+static __global__ void __launch_bounds__(128)
+moe_f16g_sktail_kernel(
+        const __half* __restrict__ W, const __half* __restrict__ A,
+        float* __restrict__ Y, const float* __restrict__ row_scale,
+        const int* __restrict__ ex_off, int n_active,
+        int in_f, int out_f, int mlo, int mhi, int total_tiles){
+    __shared__ int s_pre[SK_MAX_G + 1];
+    __shared__ __align__(16) __half As[SKT_STAGES][SK_BM][SKT_STRIDE];
+    __shared__ __align__(16) __half Bs[SKT_STAGES][SK_BN][SKT_STRIDE];
+    const int ntx = (out_f + SK_BN - 1) / SK_BN;
+    sk_tile_prefix(s_pre, ex_off, n_active, ntx, SK_BM, mlo, mhi);
+
+    const int lane = threadIdx.x, warp = threadIdx.y;
+    const int tid  = warp * 32 + lane;                        // 0..127
+    const int nkb  = in_f / SKT_BK;
+    const int wm = (warp & 1) * 16, wn = (warp >> 1) * 32;
+
+    for(int t = blockIdx.x; t < total_tiles; t += gridDim.x){
+        const int g  = sk_tile_group(s_pre, n_active, t);
+        const int lo = ex_off[g], m_e = ex_off[g+1] - lo;
+        const int local = t - s_pre[g];
+        const int m0 = (local / ntx) * SK_BM;
+        const int n0 = (local % ntx) * SK_BN;
+
+        const __half* Ag = A + (size_t)lo * in_f;
+        const __half* Wg = W + (size_t)g * (size_t)out_f * in_f;
+
+        // Stage-load geometry (chunk = 16 B = 8 halves; 8 chunks per 64-half row):
+        // A = 32 rows x 8 = 256 chunks (2/thread), B = 64 x 8 = 512 (4/thread). Rows past
+        // the group's pairs / past out_f clamp to the last valid row — real bytes load,
+        // the store guards discard the results.
+        const __half* agp[2]; int asr[2], asc[2];
+        #pragma unroll
+        for(int i = 0; i < 2; i++){
+            const int c = tid + i * 128;
+            asr[i] = c >> 3; asc[i] = (c & 7) * 8;
+            const int am = min(m0 + asr[i], m_e - 1);
+            agp[i] = Ag + (size_t)am * in_f + asc[i];
+        }
+        const __half* bgp[4]; int bsr[4], bsc[4];
+        #pragma unroll
+        for(int i = 0; i < 4; i++){
+            const int c = tid + i * 128;
+            bsr[i] = c >> 3; bsc[i] = (c & 7) * 8;
+            const int bn = min(n0 + bsr[i], out_f - 1);
+            bgp[i] = Wg + (size_t)bn * in_f + bsc[i];
+        }
+        #define SKT_LOAD(st, k0) do { \
+            _Pragma("unroll") \
+            for(int i = 0; i < 2; i++) sk_cp16(&As[st][asr[i]][asc[i]], agp[i] + (k0)); \
+            _Pragma("unroll") \
+            for(int i = 0; i < 4; i++) sk_cp16(&Bs[st][bsr[i]][bsc[i]], bgp[i] + (k0)); \
+            asm volatile("cp.async.commit_group;"); \
+        } while(0)
+
+        // prologue: stages 0 (+1 when the k extent has a second block)
+        SKT_LOAD(0, 0);
+        if(nkb > 1) SKT_LOAD(1, SKT_BK);
+
+        float acc[4][4] = {};
+        for(int kb = 0; kb < nkb; kb++){
+            const int cur = kb % SKT_STAGES;
+            if(kb + 2 < nkb){
+                SKT_LOAD((kb + 2) % SKT_STAGES, (kb + 2) * SKT_BK);
+                asm volatile("cp.async.wait_group 2;");
+            } else if(kb + 1 < nkb){
+                asm volatile("cp.async.wait_group 1;");
+            } else {
+                asm volatile("cp.async.wait_group 0;");
+            }
+            __syncthreads();
+            #pragma unroll
+            for(int kk = 0; kk < 4; kk++){
+                unsigned a[4], b0[4], b1[4];
+                sk_ldm16x16(a,  &As[cur][wm][kk*16],      SKT_STRIDE);
+                sk_ldm16x16(b0, &Bs[cur][wn][kk*16],      SKT_STRIDE);
+                sk_ldm16x16(b1, &Bs[cur][wn + 16][kk*16], SKT_STRIDE);
+                sk_mma(acc[0], a, b0[0], b0[2]);
+                sk_mma(acc[1], a, b0[1], b0[3]);
+                sk_mma(acc[2], a, b1[0], b1[2]);
+                sk_mma(acc[3], a, b1[1], b1[3]);
+            }
+            __syncthreads();
+        }
+        #undef SKT_LOAD
+
+        const int r0 = m0 + wm + lane / 4;
+        const int cb = n0 + wn + (lane % 4) * 2;
+        const float s0 = (r0     < m_e) ? row_scale[lo + r0]     : 0.0f;
+        const float s1 = (r0 + 8 < m_e) ? row_scale[lo + r0 + 8] : 0.0f;
+        float* y0 = Y + (size_t)(lo + r0) * out_f;
+        #pragma unroll
+        for(int nb = 0; nb < 4; nb++){
+            const int c = cb + nb * 8;
+            if(r0 < m_e){
+                if(c     < out_f) y0[c]     = acc[nb][0] * s0;
+                if(c + 1 < out_f) y0[c + 1] = acc[nb][1] * s0;
+            }
+            if(r0 + 8 < m_e){
+                if(c     < out_f) y0[(size_t)8 * out_f + c]     = acc[nb][2] * s1;
+                if(c + 1 < out_f) y0[(size_t)8 * out_f + c + 1] = acc[nb][3] * s1;
+            }
+        }
+    }
+}
+
+// ============ lane/kquant-tile-loaders: DIRECT-FROM-QUANT sk visitor forms ============
+//
+// The Ornith-35B pp512 finding (research/q4k-expert-prefill-20260802 §5): at t=512 the
+// q4_K/q6_K -> f16 dequant passes are 41.8% of GPU kernel time — a fixed per-(layer,proj)
+// cost over the ~all-active expert bank (~44GB f16 write+read per pass at the 858GB/s wall).
+// The kill is NO dequant pass: these kernels are the round-51 visitor forms with the B-side
+// (weight) cp.async tile loads replaced by dequant-in-register DIRECTLY from the Q4_K/Q6_K
+// superblocks in the expert slab (table/ex_ids/row_bytes — the same pointer-table contract
+// as the dequant kernels above). The A-side (activation) pipeline is untouched.
+// lane/iq-direct-loaders extends the same discipline to IQ4_XS/IQ3_S — the class that is
+// 94.8% of q35's expert-bank bytes (the h100-sk-direct coverage pricing): the mode-2 IQ
+// workspace pass dies the same way.
+//
+// NUMERICS: bit-identical to the workspace path BY CONSTRUCTION — the B smem tile holds the
+// same f16 values (kq_q4k_val/kq_q6k_val for the k-quants; the iq4_xs/iq3_s dequant kernels'
+// exact per-value expressions for the IQ classes) in the same positions, and the mma sequence
+// per output element is unchanged. Gated bitwise in kernel-check ("f16g-kq-direct") on
+// synthetic + real weights; MEMRA_F16G_DIRECT=0 is the rollback seam back to the
+// dequant-workspace path (Rust-side admission).
+//
+// B tile is SINGLE-buffered (the dequant is synchronous; the trailing __syncthreads of each
+// kb iteration already fences the next overwrite) — the A cp.async prefetch stays in flight
+// behind the B global quant reads + ALU. sk128's dynamic smem drops to 3xA + 1xB = 64512B.
+
+// Per-thread 16-value window, SOFTWARE-PIPELINED: the raw quant bytes for kb+1 fetch into
+// REGISTERS before kb's mma runs (global latency hides behind the tensor-core work), and the
+// loop-invariant scale loads/products hoist once per window. A 16-aligned window never
+// crosses a q4k/q6k sub-scale boundary (q4k/q6k sub-scales cover 32/16 values; iq4_xs/iq3_s
+// scales cover 32 — every class holds). VALUE MATH: the workspace dequant kernels' exact
+// DAG — `dd*(float)sc8` / `dd*(float)sc` / `d_sb*(float)(ls-32)` / `dd*(1+2*nib)` are the
+// left-assoc first products of those expressions, hoisted unchanged (bitwise-gated vs the
+// workspace path in kernel-check "f16g-kq-direct").
+//
+// IQ classes (lane/iq-direct-loaders): the per-value codebooks ride SHARED memory, staged
+// once per launch — divergent per-value lookups serialize on the constant cache, shared is
+// banked. IQ4_XS stages the 16 kvalues as f32 bits (the workspace's `(float)kvalues[code]`
+// pre-converted — small ints are f32-exact); IQ3_S stages the 512-word grid and resolves the
+// window's four grid words AT FETCH (behind the previous kb's mma), so the store is pure
+// extract+mul.
+#define KQ_CB_WORDS(QT) ((QT) == QT_IQ3_S ? 512 : ((QT) == QT_IQ4_XS ? 16 : 1))
+template<int QT>
+__device__ __forceinline__ void kq_stage_codebook(uint32_t* s_cb){
+    const int tid = threadIdx.y * 32 + threadIdx.x;
+    if(QT == QT_IQ3_S){
+        const int nthr = blockDim.x * blockDim.y;
+        for(int i = tid; i < 512; i += nthr) s_cb[i] = g_iq3s_grid[i];
+    } else if(QT == QT_IQ4_XS){
+        if(tid < 16) s_cb[tid] = __float_as_uint((float)g_kvalues_iq4nl[tid]);
+    }
+    // no fence here: every caller runs sk_tile_prefix (ends in __syncthreads) next.
+}
+struct KqRaw {
+    uint32_t q[4];      // q4k: 16 nibble bytes (one uint4) | q6k: 16 ql bytes (8x u16)
+                        // iq4_xs: the 32-group's 16 qs bytes | iq3_s: 4 RESOLVED grid words
+    uint32_t qh[4];     // q6k: 16 qh bytes (8x u16) | iq3_s: qh[0] = 2 sign bytes
+    float f1, f2;       // q4k: (dd*sc8, dmin*m8) | q6k: (dd*sc, -) | iq4_xs: (d_sb*(ls-32), -)
+                        // iq3_s: (dd*(1+2*nib), -)
+    int sel;            // q4k/iq4_xs: hi-nibble half | q6k: q4 (2-bit shift selector)
+};
+template<int QT>
+__device__ __forceinline__ KqRaw kq_fetch(const uint8_t* __restrict__ wrow, int k0v,
+                                          const uint32_t* __restrict__ s_cb){
+    // k0v = 16-aligned value offset within the row (absolute k of the window start)
+    constexpr int SBB = (QT == QT_Q4_K) ? 144 : (QT == QT_Q6_K) ? 210
+                      : (QT == QT_IQ4_XS) ? 136 : 110;
+    const uint8_t* b = wrow + (size_t)(k0v >> 8) * SBB;
+    const int l0 = k0v & 255;
+    KqRaw r;
+    if(QT == QT_Q4_K){
+        float dd = g_half_to_float(*(const uint16_t*)b);
+        float dmin = g_half_to_float(*(const uint16_t*)(b+2));
+        const uint8_t* scs = b+4;
+        int g64 = l0>>6, w64 = l0&63, is = g64*2 + (w64>>5);
+        int sc8, m8;
+        if(is < 4){ sc8 = scs[is] & 63;                       m8 = scs[is+4] & 63; }
+        else      { sc8 = (scs[is+4] & 0xF) | ((scs[is-4] >> 6) << 4);
+                    m8  = (scs[is+4] >> 4)  | ((scs[is]   >> 6) << 4); }
+        r.f1 = dd * (float)sc8;
+        r.f2 = dmin * (float)m8;
+        r.sel = (w64 >= 32);
+        uint4 q = *(const uint4*)(b + 16 + g64*32 + (w64 & 31));   // 16B-aligned
+        r.q[0] = q.x; r.q[1] = q.y; r.q[2] = q.z; r.q[3] = q.w;
+    } else if(QT == QT_IQ4_XS){
+        // dequant_iq4xs_f16_kernel's exact DAG: d_sb*(float)(ls-32) is the left-assoc first
+        // product, hoisted. Both 16-value halves of a 32-group read the group's SAME 16 qs
+        // bytes (sel picks the nibble). 136B superblocks keep rows 8-aligned, not 16 — uint2.
+        float d_sb = g_half_to_float(*(const uint16_t*)b);
+        uint16_t sh = *(const uint16_t*)(b+2);
+        const uint8_t* sl = b+4;
+        int g = l0>>5, lg = l0&31;
+        int ls = ((sl[g>>1]>>(4*(g&1)))&0xf) | (((sh>>(2*g))&3)<<4);
+        r.f1 = d_sb * (float)(ls-32);
+        r.f2 = 0.0f;
+        r.sel = (lg >= 16);
+        const uint8_t* gqs = b + 8 + g*16;
+        uint2 q0 = *(const uint2*)gqs;
+        uint2 q1 = *(const uint2*)(gqs + 8);
+        r.q[0] = q0.x; r.q[1] = q0.y; r.q[2] = q1.x; r.q[3] = q1.y;
+    } else if(QT == QT_IQ3_S){
+        // dequant_iq3s_f16_kernel's exact DAG: db = dd*(1+2*nib) hoists; the window's four
+        // grid words (2 per 8-value chunk) resolve HERE through the shared codebook so those
+        // lookups fly behind the previous kb's mma. 110B superblocks: 2-aligned loads only.
+        float dd = g_half_to_float(*(const uint16_t*)b);
+        int ib32 = l0>>5, l4b = (l0&31)>>3;                     // l4b in {0,2}
+        const uint8_t* sc = b+106;
+        r.f1 = dd * (1.0f + 2.0f*(float)((sc[ib32>>1] >> (4*(ib32&1))) & 0xf));
+        r.f2 = 0.0f;
+        r.sel = 0;
+        const int qhb = b[66 + ib32];
+        #pragma unroll
+        for(int c = 0; c < 2; c++){
+            const int l4 = l4b + c;
+            const uint16_t qs2 = *(const uint16_t*)(b + 2 + ib32*8 + 2*l4);   // 2-aligned
+            r.q[2*c]   = s_cb[(qs2 & 0xff) | ((qhb << (8-2*l4)) & 256)];
+            r.q[2*c+1] = s_cb[(qs2 >> 8)   | ((qhb << (7-2*l4)) & 256)];
+        }
+        r.qh[0] = (uint32_t)b[74 + ib32*4 + l4b]
+                | ((uint32_t)b[74 + ib32*4 + l4b + 1] << 8);
+    } else {
+        float dd = g_half_to_float(*(const uint16_t*)(b+208));
+        int n2 = l0>>7, rr = l0&127, q4 = rr>>5, l = rr&31;
+        int is = l>>4;
+        const int8_t* sc = (const int8_t*)(b+192);
+        r.f1 = dd * (float)sc[n2*8 + is + 2*q4];
+        r.f2 = 0.0f;
+        r.sel = q4;
+        const uint8_t* qlp = b + n2*64 + l + (q4&1)*32;   // 2-aligned (offsets even)
+        const uint8_t* qhp = b + 128 + n2*32 + l;
+        #pragma unroll
+        for(int i = 0; i < 4; i++){
+            r.q[i]  = (uint32_t)*(const uint16_t*)(qlp + 4*i)
+                    | ((uint32_t)*(const uint16_t*)(qlp + 4*i + 2) << 16);
+            r.qh[i] = (uint32_t)*(const uint16_t*)(qhp + 4*i)
+                    | ((uint32_t)*(const uint16_t*)(qhp + 4*i + 2) << 16);
+        }
+    }
+    return r;
+}
+template<int QT>
+__device__ __forceinline__ void kq_store(const KqRaw& r, __half* __restrict__ dst,
+                                         const uint32_t* __restrict__ s_cb){
+    #pragma unroll
+    for(int j = 0; j < 16; j++){
+        if(QT == QT_Q4_K){
+            int byte = (r.q[j>>2] >> (8*(j&3))) & 0xff;
+            int nib = r.sel ? (byte >> 4) : (byte & 0xF);
+            dst[j] = __float2half(r.f1 * (float)nib - r.f2);
+        } else if(QT == QT_IQ4_XS){
+            int byte = (r.q[j>>2] >> (8*(j&3))) & 0xff;
+            int code = r.sel ? (byte >> 4) : (byte & 0xF);
+            dst[j] = __float2half(r.f1 * __uint_as_float(s_cb[code]));
+        } else if(QT == QT_IQ3_S){
+            // chunk c = j>>3 (8 values); word = grid1/grid2 of the chunk; byte = j&3.
+            int gb = (r.q[(j>>3)*2 + ((j>>2)&1)] >> (8*(j&3))) & 0xff;
+            float sgn = ((r.qh[0] >> (8*(j>>3))) & (1u << (j&7))) ? -1.0f : 1.0f;
+            dst[j] = __float2half(r.f1 * (float)gb * sgn);
+        } else {
+            int qlb = (r.q[j>>2]  >> (8*(j&3))) & 0xff;
+            int qhb = (r.qh[j>>2] >> (8*(j&3))) & 0xff;
+            int nib = (r.sel < 2) ? (qlb & 0xF) : (qlb >> 4);
+            int qv = (nib | (((qhb >> (2*r.sel)) & 3) << 4)) - 32;
+            dst[j] = __float2half(r.f1 * (float)qv);
+        }
+    }
+}
+
+template<int QT>
+static __global__ void __launch_bounds__(128)
+moe_kq_sk32v_kernel(
+        const unsigned long long* __restrict__ table, int proj, int n_expert,
+        const int* __restrict__ ex_ids, long row_bytes,
+        const __half* __restrict__ A,
+        float* __restrict__ Y, const float* __restrict__ row_scale,
+        const int* __restrict__ ex_off, int n_active,
+        int in_f, int out_f, int mlo, int mhi, int total_tiles){
+    __shared__ int s_pre[SK_MAX_G + 1];
+    __shared__ __align__(16) __half As[2][SK_BM][SK_STRIDE];
+    __shared__ __align__(16) __half Bs[SK_BN][SK_STRIDE];
+    __shared__ uint32_t s_cb[KQ_CB_WORDS(QT)];
+    const int ntx = (out_f + SK_BN - 1) / SK_BN;
+    kq_stage_codebook<QT>(s_cb);
+    sk_tile_prefix(s_pre, ex_off, n_active, ntx, SK_BM, mlo, mhi);
+
+    const int lane = threadIdx.x, warp = threadIdx.y;
+    const int tid  = warp * 32 + lane;
+    const int nkb  = in_f / SK_BK;
+    const int wm = (warp & 1) * 16, wn = (warp >> 1) * 32;
+    const int ar = tid >> 2,  ac  = (tid & 3) * 8;
+    const int brow = tid >> 1, bc0 = (tid & 1) * 16;
+
+    for(int t = blockIdx.x; t < total_tiles; t += gridDim.x){
+        const int g  = sk_tile_group(s_pre, n_active, t);
+        const int lo = ex_off[g], m_e = ex_off[g+1] - lo;
+        const int local = t - s_pre[g];
+        const int m0 = (local / ntx) * SK_BM;
+        const int n0 = (local % ntx) * SK_BN;
+
+        const __half* Ag = A + (size_t)lo * in_f;
+        const uint8_t* Wq = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[g]];
+        const int am = min(m0 + ar, m_e - 1);
+        const __half* aga = Ag + (size_t)am * in_f + ac;
+        const int bn = min(n0 + brow, out_f - 1);
+        const uint8_t* wrow = Wq + (size_t)bn * row_bytes;
+
+        sk_cp16(&As[0][ar][ac], aga);
+        asm volatile("cp.async.commit_group;");
+        KqRaw braw = kq_fetch<QT>(wrow, bc0, s_cb);   // kb=0 window
+
+        float acc[4][4] = {};
+        for(int kb = 0; kb < nkb; kb++){
+            const int cur = kb & 1;
+            if(kb + 1 < nkb){
+                const int nxt = cur ^ 1, k0n = (kb + 1) * SK_BK;
+                sk_cp16(&As[nxt][ar][ac], aga + k0n);
+                asm volatile("cp.async.commit_group;");
+            }
+            // B tile for THIS kb from the pre-fetched registers (previous kb's trailing
+            // __syncthreads fences the Bs overwrite), then issue kb+1's raw fetch so those
+            // global reads fly behind this kb's mma.
+            kq_store<QT>(braw, &Bs[brow][bc0], s_cb);
+            if(kb + 1 < nkb) braw = kq_fetch<QT>(wrow, (kb + 1) * SK_BK + bc0, s_cb);
+            if(kb + 1 < nkb) asm volatile("cp.async.wait_group 1;");
+            else             asm volatile("cp.async.wait_group 0;");
+            __syncthreads();
+            #pragma unroll
+            for(int kk = 0; kk < 2; kk++){
+                unsigned a[4], b0[4], b1[4];
+                sk_ldm16x16(a,  &As[cur][wm][kk*16],  SK_STRIDE);
+                sk_ldm16x16(b0, &Bs[wn][kk*16],       SK_STRIDE);
+                sk_ldm16x16(b1, &Bs[wn + 16][kk*16],  SK_STRIDE);
+                sk_mma(acc[0], a, b0[0], b0[2]);
+                sk_mma(acc[1], a, b0[1], b0[3]);
+                sk_mma(acc[2], a, b1[0], b1[2]);
+                sk_mma(acc[3], a, b1[1], b1[3]);
+            }
+            __syncthreads();
+        }
+
+        const int r0 = m0 + wm + lane / 4;
+        const int cb = n0 + wn + (lane % 4) * 2;
+        const float s0 = (r0     < m_e) ? row_scale[lo + r0]     : 0.0f;
+        const float s1 = (r0 + 8 < m_e) ? row_scale[lo + r0 + 8] : 0.0f;
+        float* y0 = Y + (size_t)(lo + r0) * out_f;
+        #pragma unroll
+        for(int nb = 0; nb < 4; nb++){
+            const int c = cb + nb * 8;
+            if(r0 < m_e){
+                if(c     < out_f) y0[c]     = acc[nb][0] * s0;
+                if(c + 1 < out_f) y0[c + 1] = acc[nb][1] * s0;
+            }
+            if(r0 + 8 < m_e){
+                if(c     < out_f) y0[(size_t)8 * out_f + c]     = acc[nb][2] * s1;
+                if(c + 1 < out_f) y0[(size_t)8 * out_f + c + 1] = acc[nb][3] * s1;
+            }
+        }
+    }
+}
+
+// 128x64x64 direct form: A keeps the 3-stage cp.async pipeline; B is a single 64x72 tile
+// dequanted per kb (256 threads, row = tid>>2, 16-value quarter-row per thread).
+#define KQ128_SMEM_BYTES ((SK128_STAGES * SK128_A_ELEMS + SK128_B_ELEMS) * (int)sizeof(__half))
+
+template<int QT>
+static __global__ void __launch_bounds__(256)
+moe_kq_sk128v_kernel(
+        const unsigned long long* __restrict__ table, int proj, int n_expert,
+        const int* __restrict__ ex_ids, long row_bytes,
+        const __half* __restrict__ A,
+        float* __restrict__ Y, const float* __restrict__ row_scale,
+        const int* __restrict__ ex_off, int n_active,
+        int in_f, int out_f, int mlo, int mhi, int total_tiles){
+    extern __shared__ __align__(16) __half kq128_sm[];
+    __half* Asm = kq128_sm;                                   // [stage][128][72]
+    __half* Bsm = kq128_sm + SK128_STAGES * SK128_A_ELEMS;    // [64][72], single buffer
+    __shared__ int s_pre[SK_MAX_G + 1];
+    __shared__ uint32_t s_cb[KQ_CB_WORDS(QT)];
+    const int ntx = (out_f + SK128_BN - 1) / SK128_BN;
+    kq_stage_codebook<QT>(s_cb);
+    sk_tile_prefix(s_pre, ex_off, n_active, ntx, SK128_BM, mlo, mhi);
+
+    const int lane = threadIdx.x, warp = threadIdx.y;
+    const int tid  = warp * 32 + lane;                        // 0..255
+    const int nkb  = in_f / SK128_BK;
+    const int wm   = (warp & 3) * 32, wn = (warp >> 2) * 32;
+    const int brow = tid >> 2, bc0 = (tid & 3) * 16;
+
+    for(int t = blockIdx.x; t < total_tiles; t += gridDim.x){
+        const int g  = sk_tile_group(s_pre, n_active, t);
+        const int lo = ex_off[g], m_e = ex_off[g+1] - lo;
+        const int local = t - s_pre[g];
+        const int m0 = (local / ntx) * SK128_BM;
+        const int n0 = (local % ntx) * SK128_BN;
+
+        const __half* Ag = A + (size_t)lo * in_f;
+        const uint8_t* Wq = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[g]];
+        const int bn = min(n0 + brow, out_f - 1);
+        const uint8_t* wrow = Wq + (size_t)bn * row_bytes;
+
+        const __half* agp[4]; int asr[4], asc[4];
+        #pragma unroll
+        for(int i = 0; i < 4; i++){
+            const int c = tid + i * 256;
+            asr[i] = c >> 3; asc[i] = (c & 7) * 8;
+            const int am = min(m0 + asr[i], m_e - 1);
+            agp[i] = Ag + (size_t)am * in_f + asc[i];
+        }
+        #define KQ128_LOAD_A(st, k0) do { \
+            __half* a_s = Asm + (st) * SK128_A_ELEMS; \
+            _Pragma("unroll") \
+            for(int i = 0; i < 4; i++) sk_cp16(a_s + asr[i]*SK128_STRIDE + asc[i], agp[i] + (k0)); \
+            asm volatile("cp.async.commit_group;"); \
+        } while(0)
+
+        KQ128_LOAD_A(0, 0);
+        if(nkb > 1) KQ128_LOAD_A(1, SK128_BK);
+        KqRaw braw = kq_fetch<QT>(wrow, bc0, s_cb);   // kb=0 window
+
+        float acc[2][4][4] = {};
+        for(int kb = 0; kb < nkb; kb++){
+            const int cur = kb % SK128_STAGES;
+            if(kb + 2 < nkb) KQ128_LOAD_A((kb + 2) % SK128_STAGES, (kb + 2) * SK128_BK);
+            // B tile for THIS kb from the pre-fetched registers (single buffer; previous
+            // kb's trailing __syncthreads fences), then issue kb+1's raw fetch so those
+            // global reads fly behind this kb's mma.
+            kq_store<QT>(braw, Bsm + brow*SK128_STRIDE + bc0, s_cb);
+            if(kb + 1 < nkb) braw = kq_fetch<QT>(wrow, (kb + 1) * SK128_BK + bc0, s_cb);
+            if(kb + 2 < nkb)      asm volatile("cp.async.wait_group 2;");
+            else if(kb + 1 < nkb) asm volatile("cp.async.wait_group 1;");
+            else                  asm volatile("cp.async.wait_group 0;");
+            __syncthreads();
+            const __half* Ab = Asm + cur * SK128_A_ELEMS;
+            #pragma unroll
+            for(int kk = 0; kk < 4; kk++){
+                unsigned a0[4], a1[4], b0[4], b1[4];
+                sk_ldm16x16(a0, Ab + (wm     ) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_ldm16x16(a1, Ab + (wm + 16) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_ldm16x16(b0, Bsm + (wn     ) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_ldm16x16(b1, Bsm + (wn + 16) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_mma(acc[0][0], a0, b0[0], b0[2]);
+                sk_mma(acc[0][1], a0, b0[1], b0[3]);
+                sk_mma(acc[0][2], a0, b1[0], b1[2]);
+                sk_mma(acc[0][3], a0, b1[1], b1[3]);
+                sk_mma(acc[1][0], a1, b0[0], b0[2]);
+                sk_mma(acc[1][1], a1, b0[1], b0[3]);
+                sk_mma(acc[1][2], a1, b1[0], b1[2]);
+                sk_mma(acc[1][3], a1, b1[1], b1[3]);
+            }
+            __syncthreads();
+        }
+        #undef KQ128_LOAD_A
+
+        #pragma unroll
+        for(int mi = 0; mi < 2; mi++){
+            const int r0 = m0 + wm + mi * 16 + lane / 4;
+            const int cb = n0 + wn + (lane % 4) * 2;
+            const float s0 = (r0     < m_e) ? row_scale[lo + r0]     : 0.0f;
+            const float s1 = (r0 + 8 < m_e) ? row_scale[lo + r0 + 8] : 0.0f;
+            float* y0 = Y + (size_t)(lo + r0) * out_f;
+            #pragma unroll
+            for(int nb = 0; nb < 4; nb++){
+                const int c = cb + nb * 8;
+                if(r0 < m_e){
+                    if(c     < out_f) y0[c]     = acc[mi][nb][0] * s0;
+                    if(c + 1 < out_f) y0[c + 1] = acc[mi][nb][1] * s0;
+                }
+                if(r0 + 8 < m_e){
+                    if(c     < out_f) y0[(size_t)8 * out_f + c]     = acc[mi][nb][2] * s1;
+                    if(c + 1 < out_f) y0[(size_t)8 * out_f + c + 1] = acc[mi][nb][3] * s1;
+                }
+            }
+        }
+    }
+}
+
+// DEEP-TAIL direct form (lane/sk-tail-form): the 32x64x64 3-stage tail with the B side
+// dequanted in-register from the Q4_K/Q6_K superblocks — A keeps the 3-stage cp.async
+// pipeline (32x72 x3 = 13824 B), B is a single 64x72 tile (9216 B; the trailing
+// __syncthreads of each kb fences the overwrite, exactly the kq_sk32v/kq_sk128v contract).
+// 128 threads: B row = tid>>1, each thread owns 32 values = TWO 16-value KqRaw windows,
+// both software-pipelined one kb ahead behind the mma. Total smem 25092 B static.
+// Bit-identical to every other form by construction (same kq_*_val f16 values into the
+// same ascending mma k-chain).
+template<int QT>
+static __global__ void __launch_bounds__(128)
+moe_kq_sktail_kernel(
+        const unsigned long long* __restrict__ table, int proj, int n_expert,
+        const int* __restrict__ ex_ids, long row_bytes,
+        const __half* __restrict__ A,
+        float* __restrict__ Y, const float* __restrict__ row_scale,
+        const int* __restrict__ ex_off, int n_active,
+        int in_f, int out_f, int mlo, int mhi, int total_tiles){
+    __shared__ int s_pre[SK_MAX_G + 1];
+    __shared__ __align__(16) __half As[SKT_STAGES][SK_BM][SKT_STRIDE];
+    __shared__ __align__(16) __half Bs[SK_BN][SKT_STRIDE];   // single buffer
+    __shared__ uint32_t s_cb[KQ_CB_WORDS(QT)];
+    const int ntx = (out_f + SK_BN - 1) / SK_BN;
+    kq_stage_codebook<QT>(s_cb);
+    sk_tile_prefix(s_pre, ex_off, n_active, ntx, SK_BM, mlo, mhi);
+
+    const int lane = threadIdx.x, warp = threadIdx.y;
+    const int tid  = warp * 32 + lane;                        // 0..127
+    const int nkb  = in_f / SKT_BK;
+    const int wm = (warp & 1) * 16, wn = (warp >> 1) * 32;
+    const int brow = tid >> 1, bc0 = (tid & 1) * 32;          // 2 threads/row, 32 values each
+
+    for(int t = blockIdx.x; t < total_tiles; t += gridDim.x){
+        const int g  = sk_tile_group(s_pre, n_active, t);
+        const int lo = ex_off[g], m_e = ex_off[g+1] - lo;
+        const int local = t - s_pre[g];
+        const int m0 = (local / ntx) * SK_BM;
+        const int n0 = (local % ntx) * SK_BN;
+
+        const __half* Ag = A + (size_t)lo * in_f;
+        const uint8_t* Wq = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[g]];
+        const int bn = min(n0 + brow, out_f - 1);
+        const uint8_t* wrow = Wq + (size_t)bn * row_bytes;
+
+        const __half* agp[2]; int asr[2], asc[2];
+        #pragma unroll
+        for(int i = 0; i < 2; i++){
+            const int c = tid + i * 128;
+            asr[i] = c >> 3; asc[i] = (c & 7) * 8;
+            const int am = min(m0 + asr[i], m_e - 1);
+            agp[i] = Ag + (size_t)am * in_f + asc[i];
+        }
+        #define KQT_LOAD_A(st, k0) do { \
+            _Pragma("unroll") \
+            for(int i = 0; i < 2; i++) sk_cp16(&As[st][asr[i]][asc[i]], agp[i] + (k0)); \
+            asm volatile("cp.async.commit_group;"); \
+        } while(0)
+
+        KQT_LOAD_A(0, 0);
+        if(nkb > 1) KQT_LOAD_A(1, SKT_BK);
+        KqRaw braw0 = kq_fetch<QT>(wrow, bc0, s_cb);        // kb=0 windows
+        KqRaw braw1 = kq_fetch<QT>(wrow, bc0 + 16, s_cb);
+
+        float acc[4][4] = {};
+        for(int kb = 0; kb < nkb; kb++){
+            const int cur = kb % SKT_STAGES;
+            if(kb + 2 < nkb) KQT_LOAD_A((kb + 2) % SKT_STAGES, (kb + 2) * SKT_BK);
+            // B tile for THIS kb from the pre-fetched registers (previous kb's trailing
+            // __syncthreads fences the overwrite), then issue kb+1's raw fetches so those
+            // global reads fly behind this kb's mma.
+            kq_store<QT>(braw0, &Bs[brow][bc0], s_cb);
+            kq_store<QT>(braw1, &Bs[brow][bc0 + 16], s_cb);
+            if(kb + 1 < nkb){
+                braw0 = kq_fetch<QT>(wrow, (kb + 1) * SKT_BK + bc0, s_cb);
+                braw1 = kq_fetch<QT>(wrow, (kb + 1) * SKT_BK + bc0 + 16, s_cb);
+            }
+            if(kb + 2 < nkb)      asm volatile("cp.async.wait_group 2;");
+            else if(kb + 1 < nkb) asm volatile("cp.async.wait_group 1;");
+            else                  asm volatile("cp.async.wait_group 0;");
+            __syncthreads();
+            #pragma unroll
+            for(int kk = 0; kk < 4; kk++){
+                unsigned a[4], b0[4], b1[4];
+                sk_ldm16x16(a,  &As[cur][wm][kk*16],  SKT_STRIDE);
+                sk_ldm16x16(b0, &Bs[wn][kk*16],       SKT_STRIDE);
+                sk_ldm16x16(b1, &Bs[wn + 16][kk*16],  SKT_STRIDE);
+                sk_mma(acc[0], a, b0[0], b0[2]);
+                sk_mma(acc[1], a, b0[1], b0[3]);
+                sk_mma(acc[2], a, b1[0], b1[2]);
+                sk_mma(acc[3], a, b1[1], b1[3]);
+            }
+            __syncthreads();
+        }
+        #undef KQT_LOAD_A
+
+        const int r0 = m0 + wm + lane / 4;
+        const int cb = n0 + wn + (lane % 4) * 2;
+        const float s0 = (r0     < m_e) ? row_scale[lo + r0]     : 0.0f;
+        const float s1 = (r0 + 8 < m_e) ? row_scale[lo + r0 + 8] : 0.0f;
+        float* y0 = Y + (size_t)(lo + r0) * out_f;
+        #pragma unroll
+        for(int nb = 0; nb < 4; nb++){
+            const int c = cb + nb * 8;
+            if(r0 < m_e){
+                if(c     < out_f) y0[c]     = acc[nb][0] * s0;
+                if(c + 1 < out_f) y0[c + 1] = acc[nb][1] * s0;
+            }
+            if(r0 + 8 < m_e){
+                if(c     < out_f) y0[(size_t)8 * out_f + c]     = acc[nb][2] * s1;
+                if(c + 1 < out_f) y0[(size_t)8 * out_f + c + 1] = acc[nb][3] * s1;
+            }
+        }
+    }
+}
+
+// Per-QT direct-from-quant launch (lane/iq-direct-loaders: the Q4_K/Q6_K if/else ladder
+// became a template — each instantiation keeps its OWN occupancy/attribute statics, since
+// the bodies register-differ per quant class). Guards live in memra_moe_kq_gemm_sk.
+template<int QT>
+static int moe_kq_gemm_sk_launch(const unsigned long long* table, int proj, int n_expert,
+        const int* ex_ids, const void* act_f16, float* y,
+        const float* row_scale, const int* ex_off_dev, const int* ex_off_host,
+        int n_active, int max_m, int in_f, int out_f, int cross,
+        int tail, long row_bytes, cudaStream_t st){
+    // Per-instantiation device caps: occ128 -2 unprobed, -1 device-unfit -> this qtype's
+    // large groups ride the 32x64 form. occt: the deep-tail direct form; -1 = probe failed.
+    static int sms = 0, occ32 = 0, occ128 = -2, occt = 0;
+    if(sms == 0){
+        int dev = 0; cudaGetDevice(&dev);
+        if(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess || sms <= 0)
+            sms = 1;
+        if(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ32, moe_kq_sk32v_kernel<QT>, 128, 0)
+           != cudaSuccess || occ32 < 1) occ32 = 1;
+        if(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occt, moe_kq_sktail_kernel<QT>, 128, 0)
+           != cudaSuccess || occt < 1) occt = -1;
+    }
+    if(occ128 == -2){
+        int optin = 0, dev = 0; cudaGetDevice(&dev);
+        if(cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess)
+            optin = 48*1024;
+        cudaError_t ae = cudaFuncSetAttribute(moe_kq_sk128v_kernel<QT>,
+                 cudaFuncAttributeMaxDynamicSharedMemorySize, KQ128_SMEM_BYTES);
+        cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ128,
+                 moe_kq_sk128v_kernel<QT>, 256, KQ128_SMEM_BYTES);
+        if((size_t)KQ128_SMEM_BYTES > (size_t)optin || ae != cudaSuccess || oe != cudaSuccess
+           || occ128 < 1)
+            occ128 = -1;
+    }
+    int xcross = cross;
+    if(occ128 < 1 || (in_f % SK128_BK) != 0) xcross = 0x7fffffff;
+    if(xcross < 1) xcross = 1;
+    const int ntx = (out_f + SK_BN - 1) / SK_BN;
+    long t32 = 0, t128 = 0;
+    for(int g = 0; g < n_active; g++){
+        const int m_e = ex_off_host[g+1] - ex_off_host[g];
+        if(m_e <= 0) continue;
+        if(m_e >= xcross) t128 += (long)((m_e + SK128_BM - 1)/SK128_BM) * ntx;
+        else              t32  += (long)((m_e + SK_BM - 1)/SK_BM) * ntx;
+    }
+    if(t128 > 0){
+        const long cap = (long)sms * occ128;
+        const int grid = (int)(t128 < cap ? t128 : cap);
+        moe_kq_sk128v_kernel<QT><<<grid, dim3(32,8,1), KQ128_SMEM_BYTES, st>>>(
+            table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+            ex_off_dev, n_active, in_f, out_f, xcross, 0x7fffffff, (int)t128);
+    }
+    if(t32 > 0){
+        // Deep tail (lane/sk-tail-form) when admitted; in_f % 256 == 0 here so the
+        // in_f % 64 requirement always holds — the guard is kept for form.
+        const int deep = (tail != 0 && occt >= 1 && (in_f % SKT_BK) == 0);
+        const long cap = (long)sms * (deep ? occt : occ32);
+        const int grid = (int)(t32 < cap ? t32 : cap);
+        if(deep)
+            moe_kq_sktail_kernel<QT><<<grid, dim3(32,4,1), 0, st>>>(
+                table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+                ex_off_dev, n_active, in_f, out_f, 1, xcross, (int)t32);
+        else
+            moe_kq_sk32v_kernel<QT><<<grid, dim3(32,4,1), 0, st>>>(
+                table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+                ex_off_dev, n_active, in_f, out_f, 1, xcross, (int)t32);
+    }
+    cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+}
+
 extern "C" {
 
 size_t memra_moe_f16g_w_bytes(int n_active, int out_f, int in_f){
@@ -745,12 +1450,16 @@ int memra_moe_f16g_dequant(const unsigned long long* table, int proj, int n_expe
 // in_f must be a multiple of 32.
 // shape_sel < 0  -> the round-49 grid-scan kernel (rollback arm, MEMRA_F16G_SK=0).
 // shape_sel >= 0 -> problem-visitor: groups with m_e >= cross ride the 128x64x64 3-stage form,
-//                   smaller groups the 32x64 form (cross=1 forces all-128, INT_MAX all-32).
+//                   smaller groups the 32x64 tail (cross=1 forces all-128, INT_MAX all-32).
 //                   Policy/env parsing lives on the Rust side (moe_f16g_sk_params).
+// tail != 0      -> the sub-cross groups ride the DEEP tail (32x64x64 3-stage,
+//                   lane/sk-tail-form) when in_f % 64 == 0 and the device fits it;
+//                   tail == 0 (MEMRA_F16G_TAIL=0) = the round-51 2-stage 32x64x32 tail.
+//                   Every arm is byte-identical (kernel-check "f16g-sk").
 int memra_moe_f16g_gemm_sk(const void* w_f16, const void* act_f16, float* y,
         const float* row_scale, const int* ex_off_dev, const int* ex_off_host,
         int n_active, int max_m, int in_f, int out_f, int shape_sel, int cross,
-        void* stream){
+        int tail, void* stream){
     if(in_f % SK_BK) return 2;
     if(n_active <= 0 || max_m <= 0) return 0;
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
@@ -766,13 +1475,17 @@ int memra_moe_f16g_gemm_sk(const void* w_f16, const void* act_f16, float* y,
     }
     // Device caps + per-form occupancy, once. occ128: -2 unprobed, -1 device-unfit (fallback to
     // the 32x64 form — the round-49 rc=1001 lesson: SetAttribute CHECKED, never assumed).
-    static int sms = 0, occ32 = 0, occ128 = -2;
+    // occt: the deep-tail form (static 43524 B smem — no opt-in needed); -1 = probe failed,
+    // tail groups keep the 2-stage form.
+    static int sms = 0, occ32 = 0, occ128 = -2, occt = 0;
     if(sms == 0){
         int dev = 0; cudaGetDevice(&dev);
         if(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess || sms <= 0)
             sms = 1;
         if(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ32, moe_f16g_sk32v_kernel, 128, 0)
            != cudaSuccess || occ32 < 1) occ32 = 1;
+        if(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occt, moe_f16g_sktail_kernel, 128, 0)
+           != cudaSuccess || occt < 1) occt = -1;
     }
     if(occ128 == -2){
         int optin = 0, dev = 0; cudaGetDevice(&dev);
@@ -805,13 +1518,59 @@ int memra_moe_f16g_gemm_sk(const void* w_f16, const void* act_f16, float* y,
             n_active, in_f, out_f, xcross, 0x7fffffff, (int)t128);
     }
     if(t32 > 0){
-        const long cap = (long)sms * occ32;
+        // Deep tail (lane/sk-tail-form) when admitted; identical tile list either way
+        // (same BM/BN -> same t32), so the arms are drop-in interchangeable.
+        const int deep = (tail != 0 && occt >= 1 && (in_f % SKT_BK) == 0);
+        const long cap = (long)sms * (deep ? occt : occ32);
         const int grid = (int)(t32 < cap ? t32 : cap);
-        moe_f16g_sk32v_kernel<<<grid, dim3(32,4,1), 0, st>>>(
-            (const __half*)w_f16, (const __half*)act_f16, y, row_scale, ex_off_dev,
-            n_active, in_f, out_f, 1, xcross, (int)t32);
+        if(deep)
+            moe_f16g_sktail_kernel<<<grid, dim3(32,4,1), 0, st>>>(
+                (const __half*)w_f16, (const __half*)act_f16, y, row_scale, ex_off_dev,
+                n_active, in_f, out_f, 1, xcross, (int)t32);
+        else
+            moe_f16g_sk32v_kernel<<<grid, dim3(32,4,1), 0, st>>>(
+                (const __half*)w_f16, (const __half*)act_f16, y, row_scale, ex_off_dev,
+                n_active, in_f, out_f, 1, xcross, (int)t32);
     }
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+}
+
+// DIRECT-FROM-QUANT grouped GEMM (lane/kquant-tile-loaders + lane/iq-direct-loaders): the
+// visitor forms above with the B side dequanted in-register from the expert superblocks —
+// no f16 dequant workspace exists. Bit-identical to memra_moe_f16g_gemm_sk on the dequant
+// workspace by construction (kernel-check "f16g-kq-direct" gates it bitwise).
+// qtype: 1=Q4_K, 2=Q6_K, 5=IQ4_XS, 6=IQ3_S.
+// Visitor forms only (rc=2 on anything else — the caller keeps the workspace path):
+// the grid-scan rollback arm (MEMRA_F16G_SK=0) stays on the workspace path unchanged.
+int memra_moe_kq_gemm_sk(const unsigned long long* table, int proj, int n_expert,
+        const int* ex_ids, const void* act_f16, float* y,
+        const float* row_scale, const int* ex_off_dev, const int* ex_off_host,
+        int n_active, int max_m, int in_f, int out_f, int qtype, int cross,
+        int tail, long row_bytes, void* stream){
+    if(in_f % 256) return 2;                       // whole superblocks per k walk
+    if(qtype != QT_Q4_K && qtype != QT_Q6_K && qtype != QT_IQ4_XS && qtype != QT_IQ3_S)
+        return 2;
+    if(n_active > SK_MAX_G || ex_off_host == nullptr) return 2;
+    if(n_active <= 0 || max_m <= 0) return 0;
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+    switch(qtype){
+        case QT_Q4_K:
+            return moe_kq_gemm_sk_launch<QT_Q4_K>(table, proj, n_expert, ex_ids, act_f16, y,
+                row_scale, ex_off_dev, ex_off_host, n_active, max_m, in_f, out_f, cross,
+                tail, row_bytes, st);
+        case QT_Q6_K:
+            return moe_kq_gemm_sk_launch<QT_Q6_K>(table, proj, n_expert, ex_ids, act_f16, y,
+                row_scale, ex_off_dev, ex_off_host, n_active, max_m, in_f, out_f, cross,
+                tail, row_bytes, st);
+        case QT_IQ4_XS:
+            return moe_kq_gemm_sk_launch<QT_IQ4_XS>(table, proj, n_expert, ex_ids, act_f16, y,
+                row_scale, ex_off_dev, ex_off_host, n_active, max_m, in_f, out_f, cross,
+                tail, row_bytes, st);
+        default:
+            return moe_kq_gemm_sk_launch<QT_IQ3_S>(table, proj, n_expert, ex_ids, act_f16, y,
+                row_scale, ex_off_dev, ex_off_host, n_active, max_m, in_f, out_f, cross,
+                tail, row_bytes, st);
+    }
 }
 
 int memra_moe_f16g_gather_act(const float* x, const int* pair_tok_or_null, void* act_f16,

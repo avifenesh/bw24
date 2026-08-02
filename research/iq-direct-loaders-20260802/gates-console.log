@@ -1,0 +1,138 @@
+=== IQ-DIRECT GATES phase=kc 2026-08-02T04:28:45Z git=94155921 profile=performance ===
+kernel-check rc=0 FAIL-lines=0 (log /home/avifenesh/projects/bw24-iq-direct/research/iq-direct-loaders-20260802/kernel-check-r1.log)
+  f16g-kq-direct [q4_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q4_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q4_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q4_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+GATES-DONE phase=kc 2026-08-02T04:33:03Z
+=== IQ-DIRECT GATES phase=kc 2026-08-02T04:34:58Z git=94155921 profile=performance ===
+kernel-check rc=0 FAIL-lines=0 (log /home/avifenesh/projects/bw24-iq-direct/research/iq-direct-loaders-20260802/kernel-check-r1.log)
+  f16g-kq-direct [q4_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q4_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q4_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q4_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q6_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [iq3_s synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+  f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+GATES-DONE phase=kc 2026-08-02T04:39:15Z
+=== IQ-DIRECT GATES phase=q35-ab 2026-08-02T04:39:58Z git=cf14e3ad profile=performance ===
+  [q35-f16g2/old rep1] gen512_prefill_toks = 1844.1
+  [q35-f16g2/old rep1] gen512_decode_toks = 190.88
+  [q35-f16g2/old rep1] gen512_match_lines = 2
+  [q35-f16g2/old rep1] tokens_sha=e94b6553fde7b9a0
+  [q35-f16g2/new rep1] gen512_prefill_toks = 3980.3
+  [q35-f16g2/new rep1] gen512_decode_toks = 192.01
+  [q35-f16g2/new rep1] gen512_match_lines = 2
+  [q35-f16g2/new rep1] tokens_sha=e94b6553fde7b9a0
+q35-f16g2: shas above MUST be identical across arms (anchor e94b6553fde7b9a0)
+GATES-DONE phase=q35-ab 2026-08-02T04:40:19Z
+=== IQ-DIRECT GATES phase=q35-guard 2026-08-02T04:41:01Z git=cf14e3ad profile=performance ===
+  [q35-guard/new rep1] pp2048_toks = 4200.7
+  [q35-guard/new rep1] gen512_prefill_toks = 2635.0
+  [q35-guard/new rep1] gen512_decode_toks = 264.17
+  [q35-guard/new rep1] gen512_match_lines = 1
+  [q35-guard/new rep1] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep2] pp2048_toks = 4191.7
+  [q35-guard/new rep2] gen512_prefill_toks = 2629.3
+  [q35-guard/new rep2] gen512_decode_toks = 257.69
+  [q35-guard/new rep2] gen512_match_lines = 1
+  [q35-guard/new rep2] tokens_sha=86dc5f7105a3716b
+  [q35-guard/new rep3] pp2048_toks = 4182.6
+  [q35-guard/new rep3] gen512_prefill_toks = 2618.5
+  [q35-guard/new rep3] gen512_decode_toks = 255.28
+  [q35-guard/new rep3] gen512_match_lines = 1
+  [q35-guard/new rep3] tokens_sha=86dc5f7105a3716b
+q35 guard sha anchor: 86dc5f7105a3716b (must match every rep above)
+GATES-DONE phase=q35-guard 2026-08-02T04:42:00Z
+=== IQ-DIRECT GATES phase=o35b 2026-08-02T04:42:57Z git=cf14e3ad profile=performance ===
+  [o35b/new rep1] gen512_prefill_toks = 3501.6
+  [o35b/new rep1] gen512_decode_toks = 204.42
+  [o35b/new rep1] gen512_match_lines = 2
+  [o35b/new rep1] tokens_sha=c0c12c3b350dc7f5
+  [o35b/new rep2] gen512_prefill_toks = 3494.2
+  [o35b/new rep2] gen512_decode_toks = 207.08
+  [o35b/new rep2] gen512_match_lines = 2
+  [o35b/new rep2] tokens_sha=c0c12c3b350dc7f5
+o35b sha anchor: c0c12c3b350dc7f5 (Q4_K path through the launcher refactor)
+GATES-DONE phase=o35b 2026-08-02T04:43:36Z
+=== IQ-DIRECT GATES phase=kat-ab 2026-08-02T04:43:36Z git=cf14e3ad profile=performance ===
+  [kat-naked/new rep1] gen512_prefill_toks = 2070.7
+  [kat-naked/new rep1] gen512_decode_toks = 192.98
+  [kat-naked/new rep1] gen512_match_lines = 2
+  [kat-naked/new rep1] tokens_sha=e5d59ecedc57aa7d
+kat naked sha anchor: e5d59ecedc57aa7d (dispatch-unchanged by construction)
+  [kat-f16g2/old rep1] gen512_prefill_toks = 1513.6
+  [kat-f16g2/old rep1] gen512_decode_toks = 194.13
+  [kat-f16g2/old rep1] gen512_match_lines = 2
+  [kat-f16g2/old rep1] tokens_sha=9102ffd0b8241a65
+  [kat-f16g2/new rep1] gen512_prefill_toks = 3025.1
+  [kat-f16g2/new rep1] gen512_decode_toks = 190.78
+  [kat-f16g2/new rep1] gen512_match_lines = 2
+  [kat-f16g2/new rep1] tokens_sha=9102ffd0b8241a65
+kat-f16g2: shas above MUST be identical across arms (byte-identity, pure-IQ4_XS bank)
+GATES-DONE phase=kat-ab 2026-08-02T04:44:23Z
+=== IQ-DIRECT GATES phase=spec 2026-08-02T04:46:27Z git=cf14e3ad profile=performance ===
+q35 run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 64 tok in 0.274s = 229.88 tok/s (1.29x vs generate; this run's prime 0.332s)
+[generate_spec K=2] 64 tok in 0.246s = 255.73 tok/s (1.43x vs generate; this run's prime 0.331s)
+[generate_spec K=3] 64 tok in 0.220s = 286.92 tok/s (1.60x vs generate; this run's prime 0.335s)
+[generate_spec K=4] 64 tok in 0.248s = 254.49 tok/s (1.42x vs generate; this run's prime 0.335s)
+[generate_spec K=5] 64 tok in 0.277s = 227.79 tok/s (1.27x vs generate; this run's prime 0.334s)
+[generate_spec K=6] 64 tok in 0.294s = 214.61 tok/s (1.20x vs generate; this run's prime 0.333s)
+[generate_spec K=7] 64 tok in 0.323s = 194.86 tok/s (1.09x vs generate; this run's prime 0.334s)
+[generate_spec K=8] 64 tok in 0.418s = 150.67 tok/s (0.84x vs generate; this run's prime 0.334s)
+=== SELF-CONSISTENCY PASS ===
+GATES-DONE phase=spec 2026-08-02T04:46:44Z

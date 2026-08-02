@@ -40,11 +40,13 @@ recovered 70% of the prefill it cost — the serving contract above is now expli
 gated, not assumed (receipts: [`research/concat-prime-exact-20260802/`](research/concat-prime-exact-20260802/),
 [`research/fast-router-20260802/`](research/fast-router-20260802/)). On the H100, a
 full per-model board against vLLM 0.26: **no end-to-end losses** — seven wins of
-seven (1.01-1.81x); decode wins 7 of 7. The last losses fell
+seven (1.05-1.81x); decode wins 7 of 7. The last losses fell
 in two days: the 35B MoE's expert prefill jumped +53% when the grouped f16 expert lane
-got full dequant coverage, the 27B gained a +54% prefill and +16% decode from K-quant
-f16 mirrors and split-plane layout v2, and the 26B flipped to a win when a cross-box
-arbitration narrowed that f16g default per dispatch class. Multi-user serving measured
+got full dequant coverage (then +63% more when direct-from-quant tile loaders covered
+the whole bank and the in-house grouped kernel flipped past cublas), the 27B gained a
++54% prefill and +16% decode from K-quant f16 mirrors and split-plane layout v2, and
+the 26B flipped to a win when a cross-box arbitration narrowed that f16g default per
+dispatch class. Multi-user serving measured
 on 3xH100: 1,477 tok/s managed fleet (chaos-tested: kill a replica mid-load, the
 breaker + supervisor recover in seconds with only in-flight requests lost). Every number is a same-session
 interleaved measurement on a real-text prompt with the argmax exactness gate green;
@@ -83,7 +85,7 @@ row). Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-d
 | Qwen3.5-9B | **204** | 176 (w8a8) | **1.16x** |
 | Gemma-4 E4B | **193** | 168 (bf16) | **1.14x** |
 | Gemma-4 26B MoE | **196** | 191 (FP8-dyn) | **1.02x** |
-| Qwen3.6-35B MoE | **217** | 215 (FP8) | **1.01x** |
+| Qwen3.6-35B MoE | **226** | 215 (FP8) | **1.05x** |
 
 Zero losses: seven wins of seven, on exact math (the bf16-row wins carry a
 quant-advantage caveat — those vLLM arms move 4x the weight bytes). Decode
@@ -94,11 +96,15 @@ concat-prime fix landed (m-invariant prefill router + shexp gates,
 `MEMRA_ROUTER_PREFILL_EXACT` default ON, −13% Hopper expert prefill) so a session's
 routing no longer depends on its co-arrivals — then a bit-identical batched twin of
 the exact kernel recovered 82% of that cost (8136 pp2048, kernel-check-pinned mism=0;
-`MEMRA_ROUTER_BATCH=0` is its perf-only rollback seam) and the row finished at
-217/1.01x, ahead again with the contract held. Decode never moved; the dense 27B row
-was never on the path (re-cell bit-stable). Receipts
+`MEMRA_ROUTER_BATCH=0` is its perf-only rollback seam) and the row reached
+217/1.01x, ahead again with the contract held — then jumped to 226/1.05x when
+direct-from-quant tile loaders reached ~100% of the expert bank (IQ4_XS/IQ3_S added
+to Q4_K/Q6_K) and the single-kernel grouped GEMM flipped past cublas as the Hopper
+default (round 55: mode-2 prime 13164 vs cublas 8627 tok/s, +52.6% interleaved x5,
+bit-identical tiles by construction; expert prefill 8136 → 13258 on the row). Decode
+never moved; the dense 27B row was never on the path (re-cell bit-stable). Receipts
 `research/router-fix-recells-20260802/`, `research/fast-router-20260802/`,
-`research/q35-recell-final-20260802/`. The last two e2e losses — both MoE
+`research/q35-recell-final-20260802/`, `research/h100-flip-full-20260802/`. The last two e2e losses — both MoE
 expert-prefill cells — closed in round 49: the 35B when the grouped f16 expert lane
 reached full dequant coverage and became the Hopper default (expert prefill +53%), the
 27B via K-quant f16 prefill mirrors (+54% pp2048) plus split-plane decode mirrors
@@ -115,9 +121,11 @@ Shipped on this build: FA3-class prefill attention (TMA swizzled ring + wgmma, 4
 mma kernel), fused wgmma GDN chunk kernels with varlen twins, f16 prefill mirrors on
 the cuBLASLt lane for the Q8_0/Q4_0/Q4_K/Q5_K/Q6_K classes, K-quant split-plane decode
 mirrors (bit-identical layout v2, 27B decode +15-16%), the grouped f16 expert lane (one
-grouped GEMM over the routed experts — Hopper default for the qwen/silu MoE class, 35B
-expert prefill +53%; per-model off for the gemma class after the round-50 regression
-arbitration), a
+single-kernel grouped GEMM over the routed experts with direct-from-quant
+Q4_K/Q6_K/IQ4_XS/IQ3_S tile loaders and a 3-stage deep tail — Hopper default for the
+qwen/silu MoE class, 35B expert prefill +53% at round 49 and +63% again at round 55
+when it flipped past cublas; per-model off for the gemma class after the round-50
+regression arbitration), a
 batched serving decode tick (z-batched attention + KV append, device-side sampling,
 lean logits: 654-659 tok/s/replica, +25-36%), an MTP speculative serving fast lane
 (1.82x plain serving at c=1 on the 27B), cross-request prefill batching, per-session
@@ -160,7 +168,7 @@ seams ([docs/FLAGS.md](docs/FLAGS.md)).
 ## Performance — Qwen (NVFP4 / IQ4_XS), RTX 5090
 
 <!-- PERF-DATE:START (generated by tools/update-perf-board.py — do not hand-edit; edit research/tune-data/current-board.json instead) -->
-Measured 2026-08-02 on the target rig (RTX 5090 Laptop, N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the AUTO-KQUANT naked default, N=3 medians, research/q35-spec-repair-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)) against llama.cpp built on the same machine, same exact prompts, both engines re-baselined the same day. Boards move with the tuning campaign — `research/tune-data/rig5090.jsonl` is the running record; the README is refreshed with every board-moving merge.
+Measured 2026-08-02 on the target rig (RTX 5090 Laptop, N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the mode-2 grouped-f16 naked default — sk visitor + direct expert tiles — N=3 medians, research/f16g-default-rearb-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)) against llama.cpp built on the same machine, same exact prompts, both engines re-baselined the same day. Boards move with the tuning campaign — `research/tune-data/rig5090.jsonl` is the running record; the README is refreshed with every board-moving merge.
 <!-- PERF-DATE:END -->
 
 **Plain decode** (no speculation, tg128 at 512-token context):
@@ -182,7 +190,7 @@ Depth is part of the contract: at 6.3k-token context every lead holds (1.02–1.
 |---|---|---|---|
 | Qwen3.5-9B (K=3 + own-gen trimmed draft) | 281.0 / 211.7 / 187.1 | 122.2 / 121.5 / 117.7 | **2.30x** / **1.74x** / **1.59x** |
 | Qwen3.6-27B (K=3 + own-gen trimmed draft) | 116.4 / 101.2 / 86.0 | 91.7 / 93.3 / 81.5 | **1.27x** / **1.08x** / **1.06x** |
-| Qwen3.6-35B-A3B (K=2 + own-gen trimmed draft) | 305.4 / 241.9 / 275.6 | 251.4 / 217.5 / 246.5 | **1.21x** / **1.11x** / **1.12x** |
+| Qwen3.6-35B-A3B (K=2 + own-gen trimmed draft) | 302.4 / 253.0 / 270.7 | 234.7 / 207.2 / 235.8 | **1.29x** / **1.22x** / **1.15x** |
 <!-- PERF-SPEC:END -->
 
 The three columns are three prompt classes: short code / medium code (greedy) / long
@@ -247,8 +255,9 @@ drafter with the standard two commands in [docs/DRAFT-REGIME.md](docs/DRAFT-REGI
 
 Supported model #9. A three-lane arc took it over the bar: resident-if-fits residency
 (the 19.5 GB expert bank fits 24 GB — +50% decode over the old spill default), the
-adopted own-gen donor-block drafter (K=2, 60-68% acceptance), and AUTO-KQUANT expert
-prefill (the Q4_K/Q6_K bank rides the grouped-f16 lane by default: board-2048 prefill
+adopted own-gen donor-block drafter (K=2, 60-68% acceptance), and grouped-f16 expert
+prefill (the Q4_K/Q6_K bank rides the grouped-f16 lane by default — AUTO-KQUANT then,
+the mode-2 default now, same dispatch for this bank: board-2048 prefill
 3.14x, pp512 +54%, decode flat). Best-vs-best per class (memra = spec K=2;
 llama.cpp = plain, its measured best on this arch); interleaved N=3, same session
 ([`research/q4k-expert-prefill-20260802/`](research/q4k-expert-prefill-20260802/)):
@@ -287,10 +296,11 @@ Plain decode runs 1.086x.
 - **Hopper wgmma/TMA kernels** — FA3-class prefill attention, fused GDN chunk family,
   canonical descriptor pairings for bf16/tf32/s8.
 - **MoE on 24 GB** — resident-if-fits expert residency (exact GGUF bank accounting +
-  measured headroom; +50.4% Ornith-35B decode over the old spill default), AUTO-KQUANT
-  grouped-f16 expert prefill (k-quant banks the int8-MMA arm rejects dequant once and
-  ride one grouped GEMM — Ornith-35B board-2048 prefill 3.14x; IQ banks keep their
-  measured-faster MMQ tiles), expert-major
+  measured headroom; +50.4% Ornith-35B decode over the old spill default), grouped-f16
+  expert prefill by default (every admitted expert layer rides the single-kernel sk
+  visitor, weight tiles dequanted in-register direct from the Q4_K/Q6_K/IQ4_XS/IQ3_S
+  superblocks — Ornith-35B board-2048 prefill 3.14x, q35 +33% over the previous
+  MMQ-keeps-IQ-banks default, KAT pp512 +47%; decode untouched), expert-major
   CSR batching, frozen SLRU spill cache, bounded host LRU, mirrored positioned reads
   across VRAM→RAM→NVMe.
 - **Quantized-KV attention** — fused FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3

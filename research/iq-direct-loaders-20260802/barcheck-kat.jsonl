@@ -1,0 +1,150 @@
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"pp2048_toks","value":3057.3,"rep":1,"profile":"performance","temp_c":58}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"pp512_toks","value":2072.6,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"tg128_toks","value":195.24,"rep":1,"profile":"performance","temp_c":60}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp512_toks", "value": 4273.430332, "rep": 1, "temp_c": 70}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp2048_toks", "value": 4149.638425, "rep": 1, "temp_c": 70}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "tg128_toks", "value": 194.478379, "rep": 1, "temp_c": 70}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"prompt_ntok","value":27,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"spec_k2_decode_toks","value":235.98,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"prime_s","value":0.071,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"spec_k2_decode_toks","value":203.00,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"prime_s","value":0.609,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"spec_k2_decode_toks","value":161.66,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"prime_s","value":1.967,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp27_toks", "value": 1330.850984, "rep": 1, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp1845_toks", "value": 4013.83655, "rep": 1, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp6257_toks", "value": 3944.265226, "rep": 1, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "tg256_toks", "value": 194.000803, "rep": 1, "temp_c": 68}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"pp2048_toks","value":3035.9,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"pp512_toks","value":2066.3,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"tg128_toks","value":194.94,"rep":2,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp512_toks", "value": 4249.202586, "rep": 2, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp2048_toks", "value": 4138.320627, "rep": 2, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "tg128_toks", "value": 194.710179, "rep": 2, "temp_c": 68}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"prompt_ntok","value":27,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"spec_k2_decode_toks","value":235.63,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"prime_s","value":0.071,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"spec_k2_decode_toks","value":202.41,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"prime_s","value":0.609,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"spec_k2_decode_toks","value":161.43,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"prime_s","value":1.969,"rep":2,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":64}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp27_toks", "value": 1280.428251, "rep": 2, "temp_c": 73}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp1845_toks", "value": 4018.752891, "rep": 2, "temp_c": 73}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp6257_toks", "value": 3944.032033, "rep": 2, "temp_c": 73}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "tg256_toks", "value": 194.163586, "rep": 2, "temp_c": 73}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"pp2048_toks","value":3032.1,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"pp512_toks","value":2064.7,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked","metric":"tg128_toks","value":194.65,"rep":3,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp512_toks", "value": 4235.414181, "rep": 3, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp2048_toks", "value": 4129.111169, "rep": 3, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "tg128_toks", "value": 194.7219, "rep": 3, "temp_c": 72}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"prompt_ntok","value":27,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"spec_k2_decode_toks","value":235.01,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"prime_s","value":0.071,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"spec_k2_decode_toks","value":203.06,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"prime_s","value":0.611,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"spec_k2_decode_toks","value":161.40,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"prime_s","value":1.970,"rep":3,"profile":"performance","temp_c":64}
+{"ts":"2026-08-02T05:10:20Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-naked-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":64}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp27_toks", "value": 1284.116844, "rep": 3, "temp_c": 71}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp1845_toks", "value": 4017.626252, "rep": 3, "temp_c": 71}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp6257_toks", "value": 3950.038008, "rep": 3, "temp_c": 71}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "tg256_toks", "value": 194.049359, "rep": 3, "temp_c": 71}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"pp2048_toks","value":3997.4,"rep":1,"profile":"performance","temp_c":57}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"pp512_toks","value":3035.4,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"tg128_toks","value":196.04,"rep":1,"profile":"performance","temp_c":60}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp512_toks", "value": 4268.420561, "rep": 1, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp2048_toks", "value": 4156.343904, "rep": 1, "temp_c": 68}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "tg128_toks", "value": 194.992314, "rep": 1, "temp_c": 68}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"prompt_ntok","value":27,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"spec_k2_decode_toks","value":235.87,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"prime_s","value":0.044,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":60}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"spec_k2_decode_toks","value":194.87,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"prime_s","value":0.466,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"spec_k2_decode_toks","value":168.06,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"prime_s","value":1.562,"rep":1,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":1,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp27_toks", "value": 1307.46072, "rep": 1, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp1845_toks", "value": 4025.290317, "rep": 1, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp6257_toks", "value": 3949.101244, "rep": 1, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "tg256_toks", "value": 194.183679, "rep": 1, "temp_c": 72}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"pp2048_toks","value":3960.7,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"pp512_toks","value":3020.5,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"tg128_toks","value":194.92,"rep":2,"profile":"performance","temp_c":62}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp512_toks", "value": 4264.380142, "rep": 2, "temp_c": 71}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp2048_toks", "value": 4139.090364, "rep": 2, "temp_c": 71}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "tg128_toks", "value": 194.822798, "rep": 2, "temp_c": 71}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"prompt_ntok","value":27,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"spec_k2_decode_toks","value":235.08,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"prime_s","value":0.044,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"spec_k2_decode_toks","value":194.69,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"prime_s","value":0.466,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"spec_k2_decode_toks","value":167.09,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"prime_s","value":1.563,"rep":2,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":2,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp27_toks", "value": 1264.90195, "rep": 2, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp1845_toks", "value": 4025.027126, "rep": 2, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp6257_toks", "value": 3946.708896, "rep": 2, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "tg256_toks", "value": 193.598615, "rep": 2, "temp_c": 72}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"pp2048_toks","value":3955.2,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"pp512_toks","value":3025.9,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2","metric":"tg128_toks","value":194.87,"rep":3,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp512_toks", "value": 4252.893353, "rep": 3, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "pp2048_toks", "value": 4133.962826, "rep": 3, "temp_c": 72}
+{"cell": "kat-barcheck-iqd", "arm": "llama", "metric": "tg128_toks", "value": 194.336384, "rep": 3, "temp_c": 72}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"prompt_ntok","value":27,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"spec_k2_decode_toks","value":234.79,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"prime_s","value":0.044,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p1-code-short","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"prompt_ntok","value":1845,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"spec_k2_decode_toks","value":194.56,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"prime_s","value":0.467,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p2-code-medium","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"prompt_ntok","value":6257,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"plain_decode_toks","value":null,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"spec_k2_decode_toks","value":168.43,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"prime_s","value":1.563,"rep":3,"profile":"performance","temp_c":63}
+{"ts":"2026-08-02T05:20:11Z","git":"fe05f60a","cell":"kat-barcheck-iqd","arm":"memra-f16g2-p3-agentic-long","metric":"spec_consistency_pass","value":1,"rep":3,"profile":"performance","temp_c":63}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp27_toks", "value": 1285.669042, "rep": 3, "temp_c": 73}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp1845_toks", "value": 4024.644322, "rep": 3, "temp_c": 73}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "pp6257_toks", "value": 3949.792081, "rep": 3, "temp_c": 73}
+{"cell": "kat-barcheck-iqd", "arm": "llama-class", "metric": "tg256_toks", "value": 194.178355, "rep": 3, "temp_c": 73}
