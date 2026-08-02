@@ -1,0 +1,7 @@
+{"merged":true,"merged_at":"2026-06-02T07:54:50Z","n":23845,"state":"closed","title":"Model: Support Step3.7-Flash"}
+{"merged":true,"merged_at":"2026-06-02T15:44:36Z","n":23274,"state":"closed","title":"StepFun 3.5 MTP"}
+{"merged":true,"merged_at":"2026-02-06T20:06:15Z","n":19283,"state":"closed","title":"Support Step3.5-Flash"}
+{"merged":false,"merged_at":null,"n":19271,"state":"closed","title":"Step3.5 support"}
+{"default_branch":"master","fork":true,"full_name":"stepfun-ai/llama.cpp","parent":"ggml-org/llama.cpp","pushed_at":"2026-06-21T08:13:56Z"}
+{"branch":"step3.7","sha":"8f34864def3d351316aaea5ce9b4a06e12198d3c"}
+{"created":"2026-06-07T09:08:51Z","issue":24257,"state":"open","title":"Eval bug: Crash with Step 3.7 flash"}
