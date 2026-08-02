@@ -1,0 +1,19 @@
+== M1 gates ==
+/home/ubuntu/receipts/m1-pp2/q9-singledev.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=default(primary))
+/home/ubuntu/receipts/m1-pp2/transport-smoke.log:pp-transport-smoke PASS
+CanAccessPeer=1 pair count: 56
+== boundary rates (gen-only tok/s) ==
+/home/ubuntu/receipts/m1-pp2/boundary/naked-p1.log:generated 128 tokens in 0.780s = 164.04 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-p2.log:generated 128 tokens in 0.780s = 164.21 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-p3.log:generated 128 tokens in 0.781s = 163.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-p4.log:generated 128 tokens in 0.780s = 164.19 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-p5.log:generated 128 tokens in 0.775s = 165.12 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-p1.log:generated 128 tokens in 0.780s = 164.16 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-p2.log:generated 128 tokens in 0.794s = 161.30 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-p3.log:generated 128 tokens in 0.792s = 161.71 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-p4.log:generated 128 tokens in 0.793s = 161.46 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-p5.log:generated 128 tokens in 0.780s = 164.03 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+== battery ==
+== gate: graph-decode (capture/replay bit-identity) ==
+== gate: graph-session (serving GraphSession vs generate_graph) ==
+VALIDATE-H100: ALL GATES GREEN

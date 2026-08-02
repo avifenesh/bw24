@@ -1,0 +1,5 @@
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+[pp2] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync; peer access enabled both ways; weights remain on dev0)
+Error: "pdl module load /home/ubuntu/memra/target/release/build/memra-engine-ef9b7a79deb59386/out/qmatvec.fatbin: CUDA_ERROR_ILLEGAL_ADDRESS"

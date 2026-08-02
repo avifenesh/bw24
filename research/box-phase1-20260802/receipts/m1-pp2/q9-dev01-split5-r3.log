@@ -1,0 +1,4 @@
+pp2-gate increment-2 config: streams=per-stage overlap=0 devices=0,1
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp2] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync; peer access enabled both ways + default-pool access both ways; weights remain on dev0)
+pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,5), stage1=[5,32); streams=per-stage overlap=0 devices=0,1)
