@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Clarification On Trial API Use - Models - NVIDIA Developer Forums</title>
+    <meta name="description" content="Hello NVIDIA team, 
+I hope you’re well. I’d love to get clarification on two points regarding the use of your trial API services: 
+Are prompts and generated outputs from the  API is logged or retained for model training …">
+    <meta name="generator" content="Discourse 2026.8.0-latest - https://github.com/discourse/discourse version 1a47bbf0af779342d6762eadb6da07f9ecf68717">
+<link rel="icon" type="image/png" href="https://global.discourse-cdn.com/nvidia/optimized/2X/0/0372ccc95874f71d7fbff64bbbff6f8c69dd850b_2_32x32.png">
+<link rel="apple-touch-icon" type="image/png" href="https://global.discourse-cdn.com/nvidia/optimized/2X/8/819b2855e1f1f3249e77dc713405cf77d1eda57c_2_180x180.png">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#000000">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+
+<meta name="color-scheme" content="light dark">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, viewport-fit=cover">
+<link rel="canonical" href="https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275" />
+
+<meta name="discourse-track-view-session-id" content="cI5m0imq6DNmMdm1DzdmuMdyoKJNlY6f"><meta name="discourse-engagement-tracking-enabled" content="true">
+<link rel="search" type="application/opensearchdescription+xml" href="https://forums.developer.nvidia.com/opensearch.xml" title="NVIDIA Developer Forums Search">
+
+    
+    <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/color_definitions_nvidia_4_13_7b864d4ac68abf4133da6c71e234af49e302657e.css?__ws=forums.developer.nvidia.com" media="(prefers-color-scheme: light)" rel="stylesheet" class="light-scheme" data-scheme-id="4"/><link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/color_definitions_dark_1_13_ada5bbbb978f9df5e0bb3caf22f069f384998678.css?__ws=forums.developer.nvidia.com" media="(prefers-color-scheme: dark)" rel="stylesheet" class="dark-scheme" data-scheme-id="1"/>
+
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common"  />
+
+
+
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/automation_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="automation"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/checklist_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="checklist"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-ai_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-ai"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-akismet_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-akismet"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-antivirus_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-antivirus"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-assign_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-assign"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-cakeday_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-cakeday"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-calendar_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-calendar"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-chat-integration_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-chat-integration"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-data-explorer_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-data-explorer"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-details_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-details"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-docs_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-docs"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-github_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-github"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-jira_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-jira"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-lazy-videos_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-lazy-videos"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-local-dates_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-local-dates"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-policy_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-policy"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-presence_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-presence"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-reactions_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-reactions"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-solved_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-solved"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-templates_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-templates"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-topic-voting_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-topic-voting"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-translator_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-translator"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-user-notes_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-user-notes"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-yearly-review_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="discourse-yearly-review"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/footnote_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="footnote"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/hosted-site_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="hosted-site"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/poll_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="poll"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/spoiler-alert_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="spoiler-alert"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-ai_mobile_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width < 40rem)" rel="stylesheet" data-target="discourse-ai_mobile"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-assign_mobile_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width < 40rem)" rel="stylesheet" data-target="discourse-assign_mobile"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-calendar_mobile_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width < 40rem)" rel="stylesheet" data-target="discourse-calendar_mobile"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-reactions_mobile_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width < 40rem)" rel="stylesheet" data-target="discourse-reactions_mobile"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-ai_desktop_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width >= 40rem)" rel="stylesheet" data-target="discourse-ai_desktop"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-calendar_desktop_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width >= 40rem)" rel="stylesheet" data-target="discourse-calendar_desktop"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/discourse-reactions_desktop_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width >= 40rem)" rel="stylesheet" data-target="discourse-reactions_desktop"  />
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/poll_desktop_77ca4e36cd0f55b3979537830cc4f1d558d8b29d.css?__ws=forums.developer.nvidia.com" media="(width >= 40rem)" rel="stylesheet" data-target="poll_desktop"  />
+
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_theme_11_634f47db2cce7c1b1fbd4bf41a7f4fc808afbc3f.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common_theme" data-theme-id="11" data-theme-name="custom header links"/>
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_theme_18_870aa1bf135874ea3bca7d3cb20bdec7c4e4749c.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common_theme" data-theme-id="18" data-theme-name="topic thumbnails"/>
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_theme_19_2f446842dc8198579a805a5c8c2b644e009cc9de.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common_theme" data-theme-id="19" data-theme-name="versatile banner"/>
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_theme_13_a10855475fcd4cde9c65701c6f082aeff8dfa9a4.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common_theme" data-theme-id="13" data-theme-name="discourse-nvidia-theme"/>
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_theme_17_f08aa7db377acc9d6cb85c932db01a77a06724b7.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common_theme" data-theme-id="17" data-theme-name="fix bulk actions button focus"/>
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/common_theme_20_e85171a353b6cc057fce51147a8343df24adbe7f.css?__ws=forums.developer.nvidia.com" media="all" rel="stylesheet" data-target="common_theme" data-theme-id="20" data-theme-name="versatile banner adjustments"/>
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/mobile_theme_18_c9a41ac8f521bd6e7afaa9520dfb85128ac2f219.css?__ws=forums.developer.nvidia.com" media="(width < 40rem)" rel="stylesheet" data-target="mobile_theme" data-theme-id="18" data-theme-name="topic thumbnails"/>
+<link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/mobile_theme_13_47e35bf23c4dcefe2fa2b0647cd7f84e08a78779.css?__ws=forums.developer.nvidia.com" media="(width < 40rem)" rel="stylesheet" data-target="mobile_theme" data-theme-id="13" data-theme-name="discourse-nvidia-theme"/>
+  <link href="https://sea2.discourse-cdn.com/nvidia/stylesheets/desktop_theme_13_112116e29c3616dcdb93dc7f53deb5cbb5d244a8.css?__ws=forums.developer.nvidia.com" media="(width >= 40rem)" rel="stylesheet" data-target="desktop_theme" data-theme-id="13" data-theme-name="discourse-nvidia-theme"/>
+
+    <script src="//assets.adobedtm.com/5d4962a43b79/76a76b0bb8ea/launch-7d434965ec64.min.js" async="" nonce="XPGDsnuQRj1WOj7KNxwCcX5kM"></script>
+
+<script defer="" src="https://sea2.discourse-cdn.com/nvidia/theme-javascripts/a4261e0718adf62c8f00f57c52ade746da0dd5ed.js?__ws=forums.developer.nvidia.com" data-theme-id="13" nonce="XPGDsnuQRj1WOj7KNxwCcX5kM"></script>
+
+<meta name="google-site-verification" content="If3jxgzZoS1XODkXDOo83AD2VzBqttpfA2TfyU7YQlk">
+
+<!-- OneTrust Cookies Consent Notice start for nvidia.com -->
+<script src="https://cdn.cookielaw.org/scripttemplates/otSDKStub.js" data-document-language="true" type="text/javascript" charset="UTF-8" data-domain-script="3e2b62ff-7ae7-4ac5-87c8-d5949ecafff5" nonce="XPGDsnuQRj1WOj7KNxwCcX5kM"></script>
+<script defer="" src="https://sea2.discourse-cdn.com/nvidia/theme-javascripts/044f92471f328855db23d740ae81d3a49baf2699.js?__ws=forums.developer.nvidia.com" data-theme-id="22" nonce="XPGDsnuQRj1WOj7KNxwCcX5kM"></script>
+<!-- OneTrust Cookies Consent Notice end for nvidia.com -->
+ <script type="text/javascript" src="https://images.nvidia.com/aem-dam/Solutions/ot-js/ot-custom.js" nonce="XPGDsnuQRj1WOj7KNxwCcX5kM"></script>
+    
+        <link rel="alternate nofollow" type="application/rss+xml" title="RSS feed of &#39;Clarification On Trial API Use&#39;" href="https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275.rss" />
+    <meta property="og:site_name" content="NVIDIA Developer Forums" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:image" content="https://global.discourse-cdn.com/nvidia/original/3X/e/4/e41d27491ee72562cf68c340597ca95f587879bd.png" />
+<meta property="og:image" content="https://global.discourse-cdn.com/nvidia/original/3X/e/4/e41d27491ee72562cf68c340597ca95f587879bd.png" />
+<meta property="og:url" content="https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275" />
+<meta name="twitter:url" content="https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275" />
+<meta property="og:title" content="Clarification On Trial API Use" />
+<meta name="twitter:title" content="Clarification On Trial API Use" />
+<meta property="og:description" content="Hello NVIDIA team,  I hope you’re well. I’d love to get clarification on two points regarding the use of your trial API services:  Are prompts and generated outputs from the  API is logged or retained for model training or other internal purposes beyond providing the service during a session?  Do users retain full ownership of the outputs generated using your API, especially when using models governed by permissive licenses (e.g., MIT)?  Thank you for your time, and I appreciate any insight you ..." />
+<meta name="twitter:description" content="Hello NVIDIA team,  I hope you’re well. I’d love to get clarification on two points regarding the use of your trial API services:  Are prompts and generated outputs from the  API is logged or retained for model training or other internal purposes beyond providing the service during a session?  Do users retain full ownership of the outputs generated using your API, especially when using models governed by permissive licenses (e.g., MIT)?  Thank you for your time, and I appreciate any insight you ..." />
+<meta property="og:article:section" content="AI &amp; Data Science" />
+<meta property="og:article:section:color" content="76B900" />
+<meta property="og:article:section" content="NVIDIA NIM" />
+<meta property="og:article:section:color" content="76B900" />
+<meta property="og:article:section" content="Models" />
+<meta property="og:article:section:color" content="76B900" />
+<meta property="og:article:tag" content="nim" />
+<meta property="article:published_time" content="2025-05-25T12:25:00+00:00" />
+<meta property="og:ignore_canonical" content="true" />
+
+
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"QAPage","name":"Clarification On Trial API Use","datePublished":"2025-05-25T12:25:00.118Z","mainEntity":{"@type":"Question","answerCount":6,"author":{"@type":"Person","name":"Madison89","url":"https://forums.developer.nvidia.com/u/Madison89"},"dateModified":"2025-05-25T12:41:04.781Z","datePublished":"2025-05-25T12:25:00.118Z","name":"Clarification On Trial API Use","text":"Hello NVIDIA team,\n\nI hope you’re well. I’d love to get clarification on two points regarding the use of your trial API services:\n\nAre prompts and generated outputs from the  API is logged or retained for model training or other internal purposes beyond providing the service during a session?\n\nDo us&hellip;","upvoteCount":0,"acceptedAnswer":[{"@type":"Answer","author":{"@type":"Person","name":"sophwats","url":"https://forums.developer.nvidia.com/u/sophwats"},"dateModified":"2025-06-10T10:49:06.590Z","datePublished":"2025-06-10T10:49:06.577Z","text":"NVIDIA posts its terms regarding use of User Content and Generated Content and data collection practices in the <a href=\"https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf\">NVIDIA API Trial Terms of Service<\/a> (Sections 2 and 3).\n\nNVIDIA’s current terms specify that unless disclosed for a specific API Service, NVIDIA will use User Content and Generated Content s&hellip;","upvoteCount":0,"url":"https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/6"}],"suggestedAnswer":[{"@type":"Answer","author":{"@type":"Person","name":"sophwats","url":"https://forums.developer.nvidia.com/u/sophwats"},"dateModified":"2025-05-27T16:13:12.116Z","datePublished":"2025-05-27T16:13:12.099Z","text":"Hi <a class=\"mention\" href=\"/u/madison89\">@Madison89<\/a>,\n\nWe keep our information about User generated content in our API terms of service. Please take a look and reach out if you have further questions. <a href=\"https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf\">https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf<\/a>.\n\nBest,\n\nSophie","upvoteCount":0,"url":"https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/2"},{"@type":"Answer","author":{"@type":"Person","name":"Madison89","url":"https://forums.developer.nvidia.com/u/Madison89"},"dateModified":"2025-05-28T09:42:24.597Z","datePublished":"2025-05-28T09:42:24.580Z","text":"Hello, and thank you for your previous response.\n\nAfter reviewing the Terms of Service in more detail, I have a few follow-up questions I hope you can help clarify:\n\nWhile the agreement notes that operational data such as session metrics and error logs are collected (Section 3.3), can you confirm wh&hellip;","upvoteCount":0,"url":"https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/3"},{"@type":"Answer","author":{"@type":"Person","name":"MartinMunik","url":"https://forums.developer.nvidia.com/u/MartinMunik"},"dateModified":"2025-06-03T09:25:49.655Z","datePublished":"2025-06-03T09:25:49.642Z","text":"As far as I can tell, Section 2.2 grants the right to process data in general, but Section 2.3 states that no user content is stored. Right?\n\nHowever, as this is a very important and sensitive topic, I would also like to ask again what happens to user data and content after a session/API request end&hellip;","upvoteCount":0,"url":"https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/4"},{"@type":"Answer","author":{"@type":"Person","name":"Santrini","url":"https://forums.developer.nvidia.com/u/Santrini"},"dateModified":"2025-06-03T13:46:57.628Z","datePublished":"2025-06-03T13:46:57.613Z","text":"I would like to add another point from the TOS.\n\n2.7 states that:\n\n“NVIDIA may, but is not obligated to, block, monitor, scan or review communications or User Content or Generated Content transmitted through the API Service…”\n\nWhich hints at potential monitoring or temporary access. I would love to &hellip;","upvoteCount":0,"url":"https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/5"},{"@type":"Answer","author":{"@type":"Person","name":"Madison89","url":"https://forums.developer.nvidia.com/u/Madison89"},"dateModified":"2025-06-10T11:19:35.318Z","datePublished":"2025-06-10T11:19:35.303Z","text":"Hello,\n\nThank you for the clarification regarding User Content and data handling, I appreciate you addressing it. I’ve reviewed the Terms of Service (Sections 2 and 3) and will keep these guidelines in mind while using the API Catalog.\n\nBest regards,\n\nMadison.","upvoteCount":0,"url":"https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/7"}]}}</script>
+  </head>
+  <body class="crawler ">
+    
+    <header>
+  <a href="/">NVIDIA Developer Forums</a>
+</header>
+
+    <div id="main-outlet" class="wrap" role="main">
+        <div id="topic-title">
+    <h1>
+      <a href="/t/clarification-on-trial-api-use/334275">Clarification On Trial API Use</a>
+    </h1>
+
+      <div class="topic-category" itemscope itemtype="http://schema.org/BreadcrumbList">
+          <span itemprop="itemListElement" itemscope itemtype="http://schema.org/ListItem">
+            <a href="/c/ai-data-science/86" class="badge-wrapper bullet" itemprop="item">
+              <span class='badge-category-bg' style='background-color: #76B900'></span>
+              <span class='badge-category clear-badge'>
+                <span class='category-name' itemprop='name'>AI &amp; Data Science</span>
+              </span>
+            </a>
+            <meta itemprop="position" content="1" />
+          </span>
+          <span itemprop="itemListElement" itemscope itemtype="http://schema.org/ListItem">
+            <a href="/c/ai-data-science/nvidia-nim/678" class="badge-wrapper bullet" itemprop="item">
+              <span class='badge-category-bg' style='background-color: #76B900'></span>
+              <span class='badge-category clear-badge'>
+                <span class='category-name' itemprop='name'>NVIDIA NIM</span>
+              </span>
+            </a>
+            <meta itemprop="position" content="2" />
+          </span>
+          <span itemprop="itemListElement" itemscope itemtype="http://schema.org/ListItem">
+            <a href="/c/ai-data-science/nvidia-nim/models/698" class="badge-wrapper bullet" itemprop="item">
+              <span class='badge-category-bg' style='background-color: #76B900'></span>
+              <span class='badge-category clear-badge'>
+                <span class='category-name' itemprop='name'>Models</span>
+              </span>
+            </a>
+            <meta itemprop="position" content="3" />
+          </span>
+      </div>
+
+      <div class="topic-category">
+        <div class='discourse-tags list-tags'>
+            <a href='https://forums.developer.nvidia.com/tag/nim' class='discourse-tag' rel="tag">nim</a>
+        </div>
+      </div>
+  </div>
+
+  
+
+    <div itemscope="itemscope" itemtype="https://schema.org/QAPage">
+      <meta itemprop='name' content='Clarification On Trial API Use'>
+      <link itemprop='url' href='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275'>
+      <meta itemprop='datePublished' content='2025-05-25T12:25:00Z'>
+      <meta itemprop='keywords' content='nim'>
+
+        <div itemprop="mainEntity" itemscope="itemscope" itemtype="https://schema.org/Question">
+          <meta itemprop='answerCount' content='6'><meta itemprop='datePublished' content='2025-05-25T12:25:00Z'><meta itemprop='name' content='Clarification On Trial API Use'><meta itemprop='upvoteCount' content='0'>
+
+
+          <div id='post_1' data-qa-question="true" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/Madison89'><span itemprop="name">Madison89</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/Madison89'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time  datetime='2025-05-25T12:25:00Z' class='post-time'>
+                    May 25, 2025, 12:25pm
+                  </time>
+                  <meta itemprop='dateModified' content='2025-05-25T12:41:04Z'>
+              <span itemprop="position">1</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>Hello NVIDIA team,</p>
+<p>I hope you’re well. I’d love to get clarification on two points regarding the use of your trial API services:</p>
+<p>Are prompts and generated outputs from the  API is logged or retained for model training or other internal purposes beyond providing the service during a session?</p>
+<p>Do users retain full ownership of the outputs generated using your API, especially when using models governed by permissive licenses (e.g., MIT)?</p>
+<p>Thank you for your time, and I appreciate any insight you can provide.</p>
+<p>Best regards,</p>
+<p>Madison.</p>
+            </div>
+
+
+
+            
+
+
+          </div>
+          <div id='post_2' itemprop="suggestedAnswer" itemscope="itemscope" itemtype="https://schema.org/Answer" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/sophwats'><span itemprop="name">sophwats</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/sophwats'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time itemprop="datePublished" datetime='2025-05-27T16:13:12Z' class='post-time'>
+                    May 27, 2025,  4:13pm
+                  </time>
+                  <meta itemprop='dateModified' content='2025-05-27T16:13:12Z'>
+              <span itemprop="position">2</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>Hi <a class="mention" href="/u/madison89">@Madison89</a>,</p>
+<p>We keep our information about User generated content in our API terms of service. Please take a look and reach out if you have further questions. <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf">https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf</a>.</p>
+<p>Best,</p>
+<p>Sophie</p>
+            </div>
+
+
+
+            
+
+<meta itemprop='upvoteCount' content='0'><meta itemprop='url' content='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/2'>
+          </div>
+          <div id='post_3' itemprop="suggestedAnswer" itemscope="itemscope" itemtype="https://schema.org/Answer" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/Madison89'><span itemprop="name">Madison89</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/Madison89'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time itemprop="datePublished" datetime='2025-05-28T09:42:24Z' class='post-time'>
+                    May 28, 2025,  9:42am
+                  </time>
+                  <meta itemprop='dateModified' content='2025-05-28T09:42:24Z'>
+              <span itemprop="position">3</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>Hello, and thank you for your previous response.</p>
+<p>After reviewing the Terms of Service in more detail, I have a few follow-up questions I hope you can help clarify:</p>
+<p>While the agreement notes that operational data such as session metrics and error logs are collected (Section 3.3), can you confirm whether User Content and Generated Content themselves are ever logged, stored, or reviewed, outside of explicitly disclosed services like fine-tuning? I’d like to verify that prompt and output content are excluded from persistent storage or internal model training unless explicitly stated.</p>
+<p>In Section 2.2, it states that NVIDIA may use, store, and modify User Content and Generated Content during the session solely to provide the API Service. However, Section 2.3 then says that NVIDIA will not store or use User or Generated Content at the end of each API session, except in specific cases. This appears to suggest that content is not retained long-term, but 2.2 still grants NVIDIA fairly broad operational rights during the session. Could you please clarify:</p>
+<p>Whether any of those rights (e.g., modifying or creating derivative works) persist after the session ends?</p>
+<p>Whether any session data could be cached, logged, or reused internally beyond immediate response delivery?</p>
+<p>Regarding the NVIDIA Community License, does it apply only to models and derivatives distributed by NVIDIA, or does it also govern outputs or derivative works created by end users (like myself) when using the model through the API?</p>
+<p>Thank you again for your time and continued assistance. I appreciate the clarification.</p>
+<p>Best regards, Madison.</p>
+            </div>
+
+
+
+            
+
+<meta itemprop='upvoteCount' content='0'><meta itemprop='url' content='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/3'>
+          </div>
+          <div id='post_4' itemprop="suggestedAnswer" itemscope="itemscope" itemtype="https://schema.org/Answer" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/MartinMunik'><span itemprop="name">MartinMunik</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/MartinMunik'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time itemprop="datePublished" datetime='2025-06-03T09:25:49Z' class='post-time'>
+                    June 3, 2025,  9:25am
+                  </time>
+                  <meta itemprop='dateModified' content='2025-06-03T09:25:49Z'>
+              <span itemprop="position">4</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>As far as I can tell, Section 2.2 grants the right to process data in general, but Section 2.3 states that no user content is stored. Right?</p>
+<p>However, as this is a very important and sensitive topic, I would also like to ask again what happens to user data and content after a session/API request ends?</p>
+<p>Thanks, Martin</p>
+            </div>
+
+
+
+            
+
+<meta itemprop='upvoteCount' content='0'><meta itemprop='url' content='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/4'>
+          </div>
+          <div id='post_5' itemprop="suggestedAnswer" itemscope="itemscope" itemtype="https://schema.org/Answer" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/Santrini'><span itemprop="name">Santrini</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/Santrini'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time itemprop="datePublished" datetime='2025-06-03T13:46:57Z' class='post-time'>
+                    June 3, 2025,  1:46pm
+                  </time>
+                  <meta itemprop='dateModified' content='2025-06-03T13:46:57Z'>
+              <span itemprop="position">5</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>I would like to add another point from the TOS.</p>
+<p>2.7 states that:</p>
+<p>“NVIDIA may, but is not obligated to, block, monitor, scan or review communications or User Content or Generated Content transmitted through the API Service…”</p>
+<p>Which hints at potential monitoring or temporary access. I would love to know what happens user data and the generated content from using the API after a session ends aswell.</p>
+<p>Thanks, Santrini.</p>
+            </div>
+
+
+
+            
+
+<meta itemprop='upvoteCount' content='0'><meta itemprop='url' content='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/5'>
+          </div>
+          <div id='post_6' itemprop="acceptedAnswer" itemscope="itemscope" itemtype="https://schema.org/Answer" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/sophwats'><span itemprop="name">sophwats</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/sophwats'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time itemprop="datePublished" datetime='2025-06-10T10:49:06Z' class='post-time'>
+                    June 10, 2025, 10:49am
+                  </time>
+                  <meta itemprop='dateModified' content='2025-06-10T10:49:06Z'>
+              <span itemprop="position">6</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>NVIDIA posts its terms regarding use of User Content and Generated Content and data collection practices in the <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf">NVIDIA API Trial Terms of Service</a> (Sections 2 and 3).</p>
+<p>NVIDIA’s current terms specify that unless disclosed for a specific API Service, NVIDIA will use User Content and Generated Content solely to provide users with the API Service (Section 2.2 and 2.3). NVIDIA’s notice of any data collected during your use of the service is disclosed in Section 3.3 of the <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf">NVIDIA API Trial Terms of Service</a>.</p>
+<p>Please review the <a href="https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf">NVIDIA API Trial Terms of Service</a> before your session on the API Catalog. If you do not accept the terms and conditions, do not use the API Service.</p>
+<p>Best,</p>
+<p>Sophie</p>
+            </div>
+
+
+
+            
+
+<meta itemprop='upvoteCount' content='0'><meta itemprop='url' content='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/6'>
+          </div>
+          <div id='post_7' itemprop="suggestedAnswer" itemscope="itemscope" itemtype="https://schema.org/Answer" class='topic-body crawler-post'>
+            <div class='crawler-post-meta'>
+              <span class="creator" itemprop="author" itemscope="itemscope" itemtype="http://schema.org/Person">
+                <a rel='nofollow' href='https://forums.developer.nvidia.com/u/Madison89'><span itemprop="name">Madison89</span></a>
+                  <meta itemprop='url' content='https://forums.developer.nvidia.com/u/Madison89'>
+                
+              </span>
+
+
+
+              <span class="crawler-post-infos">
+                  <time itemprop="datePublished" datetime='2025-06-10T11:19:35Z' class='post-time'>
+                    June 10, 2025, 11:19am
+                  </time>
+                  <meta itemprop='dateModified' content='2025-06-10T11:19:35Z'>
+              <span itemprop="position">7</span>
+              </span>
+            </div>
+            <div class='post' itemprop="text">
+              <p>Hello,</p>
+<p>Thank you for the clarification regarding User Content and data handling, I appreciate you addressing it. I’ve reviewed the Terms of Service (Sections 2 and 3) and will keep these guidelines in mind while using the API Catalog.</p>
+<p>Best regards,</p>
+<p>Madison.</p>
+            </div>
+
+
+
+            
+
+<meta itemprop='upvoteCount' content='0'><meta itemprop='url' content='https://forums.developer.nvidia.com/t/clarification-on-trial-api-use/334275/7'>
+          </div>
+
+        </div>
+    </div>
+
+
+    <div id="related-topics" class="more-topics__list " role="complementary" aria-labelledby="related-topics-title">
+  <h3 id="related-topics-title" class="more-topics__list-title">
+    Related topics
+  </h3>
+  <div class="topic-list-container" itemscope itemtype='http://schema.org/ItemList'>
+    <meta itemprop='itemListOrder' content='http://schema.org/ItemListOrderDescending'>
+    <table class='topic-list'>
+      <thead>
+        <tr>
+          <th>Topic</th>
+          <th></th>
+          <th class="replies">Replies</th>
+          <th class="views">Views</th>
+          <th>Activity</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="topic-list-item" id="topic-list-item-336326">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='1'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/user-generated-content/336326' class='title raw-link raw-topic-link'>User Generated Content</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nim/models/698' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Models</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>2</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>168</span>
+            </td>
+            <td>
+              June 25, 2025
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-367730">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='2'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/usage-tracking-in-nvidia-nim-api/367730' class='title raw-link raw-topic-link'>Usage tracking in nvidia nim api</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nemotron/669' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>NVIDIA Nemotron</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/nim/947' class='discourse-tag'>nim</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>0</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>1023</span>
+            </td>
+            <td>
+              April 24, 2026
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-368680">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='3'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/session-history-in-nvidia-developer-program/368680' class='title raw-link raw-topic-link'>Session History in Nvidia Developer Program</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nim/models/698' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Models</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/nvidia-technologies/1038' class='discourse-tag'>nvidia-technologies</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>0</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>43</span>
+            </td>
+            <td>
+              May 1, 2026
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-314580">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='4'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/privacy-concern-about-nvidia-nim/314580' class='title raw-link raw-topic-link'>Privacy Concern about NVIDIA NIM</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nim/models/698' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Models</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/nim/947' class='discourse-tag'>nim</a>
+                      ,&nbsp;
+                      <a href='https://forums.developer.nvidia.com/tag/llama/1043' class='discourse-tag'>llama</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>2</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>741</span>
+            </td>
+            <td>
+              November 26, 2024
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-358565">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='5'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/some-models-return-no-output-via-nvidia-api-ibm-granite-others-no-api-usage-dashboard-visible/358565' class='title raw-link raw-topic-link'>Some models return no output via NVIDIA API (IBM Granite, others) + no API usage dashboard visible</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nim/access-accounts/699' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Access/Accounts</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/ai/149' class='discourse-tag'>ai</a>
+                      ,&nbsp;
+                      <a href='https://forums.developer.nvidia.com/tag/api/429' class='discourse-tag'>api</a>
+                      ,&nbsp;
+                      <a href='https://forums.developer.nvidia.com/tag/nim/947' class='discourse-tag'>nim</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>0</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>462</span>
+            </td>
+            <td>
+              January 25, 2026
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-368774">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='6'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/request-to-enable-api-access-public-api-endpoints-for-my-personal-organization/368774' class='title raw-link raw-topic-link'>Request to enable API access / public API endpoints for my personal organization</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-ai-workbench/671' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>NVIDIA AI Workbench</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/nim/947' class='discourse-tag'>nim</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>1</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>80</span>
+            </td>
+            <td>
+              May 4, 2026
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-335054">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='7'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/help-with-nvidia-api-key/335054' class='title raw-link raw-topic-link'>Help with NVIDIA API key</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/accelerated-computing/intelligent-video-analytics/visual-ai-agent/680' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Visual AI Agent</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/cuda/31' class='discourse-tag'>cuda</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>2</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>450</span>
+            </td>
+            <td>
+              June 4, 2025
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-263470">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='8'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/nvidia-stylegan2-data-protection/263470' class='title raw-link raw-topic-link'>NVIDIA StyleGan2 - data protection</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/community-information/forum-feedback/85' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Forum Feedback</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>2</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>902</span>
+            </td>
+            <td>
+              August 22, 2023
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-289705">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='9'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/chat-with-rtx-and-data/289705' class='title raw-link raw-topic-link'>Chat with RTX and Data</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nemotron/669' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>NVIDIA Nemotron</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>2</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>1158</span>
+            </td>
+            <td>
+              November 29, 2024
+            </td>
+          </tr>
+          <tr class="topic-list-item" id="topic-list-item-372691">
+            <td class="main-link" itemprop='itemListElement' itemscope itemtype='http://schema.org/ListItem'>
+              <meta itemprop='position' content='10'>
+              <span class="link-top-line">
+                <a itemprop='url' href='https://forums.developer.nvidia.com/t/request-to-enable-public-api-endpoints-for-my-personal-organization/372691' class='title raw-link raw-topic-link'>Request to enable &quot;Public API Endpoints&quot; for my personal organization</a>
+              </span>
+              <div class="link-bottom-line">
+                  <a href='/c/ai-data-science/nvidia-nim/access-accounts/699' class='badge-wrapper bullet'>
+                    <span class='badge-category-bg' style='background-color: #76B900'></span>
+                    <span class='badge-category clear-badge'>
+                      <span class='category-name'>Access/Accounts</span>
+                    </span>
+                  </a>
+                  <div class="discourse-tags">
+                      <a href='https://forums.developer.nvidia.com/tag/nim/947' class='discourse-tag'>nim</a>
+                      
+                  </div>
+              </div>
+            </td>
+            <td class="replies">
+              <span class='posts' title='posts'>0</span>
+            </td>
+            <td class="views">
+              <span class='views' title='views'>43</span>
+            </td>
+            <td>
+              June 9, 2026
+            </td>
+          </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+
+
+
+
+    </div>
+    <footer class="container wrap">
+  <nav class='crawler-nav'>
+    <ul>
+      <li itemscope itemtype='http://schema.org/SiteNavigationElement'>
+        <span itemprop='name'>
+          <a href='/' itemprop="url">Home </a>
+        </span>
+      </li>
+      <li itemscope itemtype='http://schema.org/SiteNavigationElement'>
+        <span itemprop='name'>
+          <a href='/categories' itemprop="url">Categories </a>
+        </span>
+      </li>
+      <li itemscope itemtype='http://schema.org/SiteNavigationElement'>
+        <span itemprop='name'>
+          <a href='/guidelines' itemprop="url">Guidelines </a>
+        </span>
+      </li>
+        <li itemscope itemtype='http://schema.org/SiteNavigationElement'>
+          <span itemprop='name'>
+            <a href='https://www.nvidia.com/en-us/about-nvidia/legal-info/' itemprop="url">Terms of Service </a>
+          </span>
+        </li>
+        <li itemscope itemtype='http://schema.org/SiteNavigationElement'>
+          <span itemprop='name'>
+            <a href='https://www.nvidia.com/en-us/about-nvidia/privacy-policy/' itemprop="url">Privacy Policy </a>
+          </span>
+        </li>
+    </ul>
+  </nav>
+  <p class='powered-by-link'>Powered by <a href="https://www.discourse.org">Discourse</a>, best viewed with JavaScript enabled</p>
+</footer>
+
+    <script defer="" src="https://sea2.discourse-cdn.com/nvidia/theme-javascripts/960d9541065d97ce82be69014404ea7a9a639f27.js?__ws=forums.developer.nvidia.com" data-theme-id="13" nonce="XPGDsnuQRj1WOj7KNxwCcX5kM"></script>
+
+<footer>
+  <div class="footer-links">
+    <div class="container">
+      <div class="row">
+        <div class="col-xs-12 col-sm-12 col-md-3 col-lg-3">
+          <div class="col-xs-12 col-sm-12 col-md-12 col-lg-12">
+            <div class="padding-md-footer">
+              <div class="logo-footer"></div>
+            </div>
+          </div>
+          <div class="col-xs-12 col-sm-12 col-md-9 col-lg-9 padding-section-footer"></div>
+        </div>
+        <div class="col-xs-12 col-sm-12 col-md-9 col-lg-9"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-boilerplate">
+    <div class="container">
+      <div class="boilerplate">
+        <div class="col-xs-12 col-sm-12 col-lg-9 padding-sm-bottom">
+          Copyright © 2026 NVIDIA Corporation
+          <ul class="legal_links">
+            <li class="first leaf">
+              <a href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/" title="">Privacy Policy</a>
+            </li>
+            <li class="leaf">
+              <a href="https://www.nvidia.com/en-us/about-nvidia/privacy-center/" title="">Your Privacy Choices</a>
+            </li>
+            <li class="leaf">
+              <a href="https://developer.nvidia.com/legal/terms" title="">Terms of Use</a>
+            </li>
+            <li class="leaf">
+              <a href="https://www.nvidia.com/en-us/about-nvidia/accessibility/" title="">Accessibility</a>
+            </li>
+            <li class="leaf">
+              <a href="https://www.nvidia.com/en-us/about-nvidia/company-policies/" title="">Corporate Policies</a>
+            </li>
+            <li class="last leaf"><a href="https://developer.nvidia.com/contact" title="">Contact</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+    
+  </body>
+  
+</html>
