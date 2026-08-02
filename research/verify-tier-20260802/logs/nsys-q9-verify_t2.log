@@ -1,0 +1,24 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:24:56Z] 57, 28.25 W, 1590 MHz, 326 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=15 t_max=2
+[econ] primed pos=2048, continuation=[332, 83, 6649]
+[econ] verify_t2  N=15  med=  8.771ms  mean=  8.772ms  min=  8.741ms  p90=  8.798ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":15,"arms":{"verify_t2":{"med_ms":8.7711,"mean_ms":8.7722,"min_ms":8.7413,"p90_ms":8.7982}}}
+Collecting data...
+Generating '/tmp/nsys-report-d000.qdstrm'
+[1/1] [0%                          ] nsys-q9-verify_t2.nsys-rep[1/1] [0%                          ] nsys-q9-verify_t2.nsys-rep[1/1] [6%                          ] nsys-q9-verify_t2.nsys-rep[1/1] [5%                          ] nsys-q9-verify_t2.nsys-rep[1/1] [==18%                       ] nsys-q9-verify_t2.nsys-rep[1/1] [=====32%                    ] nsys-q9-verify_t2.nsys-rep[1/1] [==========47%               ] nsys-q9-verify_t2.nsys-rep[1/1] [==============62%           ] nsys-q9-verify_t2.nsys-rep[1/1] [==================77%       ] nsys-q9-verify_t2.nsys-rep[1/1] [=====================87%    ] nsys-q9-verify_t2.nsys-rep[1/1] [========================100%] nsys-q9-verify_t2.nsys-rep[1/1] [========================100%] nsys-q9-verify_t2.nsys-rep
+Generated:
+	/home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q9-verify_t2.nsys-rep
+[gpu 2026-08-02T20:25:00Z] 57, 29.52 W, 1597 MHz, 326 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NSYS q9 verify_t2 rc=0
+Generating SQLite file /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q9-verify_t2.sqlite from /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q9-verify_t2.nsys-rep
+Processing [/home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q9-verify_t2.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [/home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q9-verify_t2_cuda_gpu_kern_sum.csv]... PROCESSED
+

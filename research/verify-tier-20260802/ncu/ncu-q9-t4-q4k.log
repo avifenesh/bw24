@@ -1,0 +1,26 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:53:05Z] 58, 50.34 W, 1612 MHz, 729 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+[apps] 2950104, target/release/run-spec, 290 MiB
+==PROF== Connected to process 2960658 (/home/avifenesh/projects/wt-verify-tier/target/release/spec-econ)
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=6 t_max=4
+[econ] primed pos=2048, continuation=[332, 83, 6649, 71570, 684]
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b4_r2": 0%....50%....100% - 16 passes
+[econ] verify_t4  N=6  med= 55.231ms  mean=1260.795ms  min= 53.200ms  p90=7291.004ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":6,"arms":{"verify_t4":{"med_ms":55.2306,"mean_ms":1260.7945,"min_ms":53.2000,"p90_ms":7291.0036}}}
+==PROF== Disconnected from process 2960658
+==PROF== Report: /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/ncu/ncu-q9-t4-q4k.ncu-rep
+[gpu 2026-08-02T20:53:27Z] 62, 56.35 W, 2092 MHz, 432 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NCU q9 t4-q4k rc=0

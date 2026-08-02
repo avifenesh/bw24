@@ -1,0 +1,26 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:52:22Z] 58, 29.64 W, 1597 MHz, 11537 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+[apps] 2900215, target/release/run-gen, 11362 MiB
+==PROF== Connected to process 2912915 (/home/avifenesh/projects/wt-verify-tier/target/release/spec-econ)
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=6 t_max=4
+[econ] primed pos=2048, continuation=[332, 83, 6649, 71570, 684]
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_dual_b4_rpr2": 0%....50%....100% - 16 passes
+[econ] verify_t4  N=6  med= 54.229ms  mean=1262.738ms  min= 53.219ms  p90=7306.996ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":6,"arms":{"verify_t4":{"med_ms":54.2294,"mean_ms":1262.7379,"min_ms":53.2189,"p90_ms":7306.9960}}}
+==PROF== Disconnected from process 2912915
+==PROF== Report: /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/ncu/ncu-q9-t4-dual.ncu-rep
+[gpu 2026-08-02T20:52:41Z] 59, 56.99 W, 2415 MHz, 436 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NCU q9 t4-dual rc=0
