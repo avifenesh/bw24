@@ -1,0 +1,2 @@
+[ref] collected 16 isolated references
+{"ts": "2026-08-02T16:24:50+0300", "label": "q35-naked-integrate-cache", "base": "http://127.0.0.1:8127", "n": 16, "max_tokens": 96, "wall_s": 6.763471394000135, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": [], "errors": []}

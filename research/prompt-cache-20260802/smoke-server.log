@@ -1,0 +1,13 @@
+[server] starting; models config = [("m", "/home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+[worker]   loaded "m": 32 layers, eos=248046
+[worker] m: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8127
+[worker] observed session VRAM cost for "m": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 1593 tokens, 76.3MB (resident 76.3MB / 268MB, model m)
+[prefix-cache] insert (lcp-split): 1577 tokens, 76.1MB (resident 152.5MB / 268MB, model m)
+[prefix-cache] hit: 1577 of 1593 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1707 prompt tokens from cache (model m)

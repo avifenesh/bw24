@@ -1,0 +1,93 @@
+=== INTEGRATE-CACHE GATES phase=all 2026-08-02T13:19:03Z git=f66fa478 (merged tree, pre-commit) ===
+--- hold 1: kernel-check q35 ---
+kernel-check rc=0 FAIL=0 OK=388
+--- hold 2: naked q35 (spec tier) — c1-vs-c16 + tools round-trip battery ---
+[ref] collected 16 isolated references
+{"ts": "2026-08-02T16:24:50+0300", "label": "q35-naked-integrate-cache", "base": "http://127.0.0.1:8127", "n": 16, "max_tokens": 96, "wall_s": 6.763471394000135, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": [], "errors": []}
+{"ts": "2026-08-02T16:24:52+0300", "tag": "q35", "gate": "A-leg1", "verdict": "PASS", "n": 3, "finish": "tool_calls", "calls": [{"id": "call_0acaa39fa4e08df2", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}], "usage": {"prompt_tokens": 330, "completion_tokens": 177, "total_tokens": 507, "prompt_tokens_details": {"cached_tokens": 0}, "elapsed_s": 0.830632127}}
+{"ts": "2026-08-02T16:24:54+0300", "tag": "q35", "gate": "A-leg2", "verdict": "PASS", "n": 3, "finish": "stop", "answer_tail": "The current weather in Paris is sunny with a temperature of 21\u00b0C (70\u00b0F) and a humidity level of 40%.<|im_end|>", "usage": {"prompt_tokens": 393, "completion_tokens": 92, "total_tokens": 485, "prompt_tokens_details": {"cached_tokens": 0}, "elapsed_s": 0.472845353}}
+{"ts": "2026-08-02T16:24:54+0300", "tag": "q35", "gate": "A-nothink", "verdict": "PASS", "n": 3, "finish": "tool_calls", "usage": {"prompt_tokens": 332, "completion_tokens": 26, "total_tokens": 358, "prompt_tokens_details": {"cached_tokens": 0}, "elapsed_s": 0.221514383}, "content": "<|im_end|>"}
+{"ts": "2026-08-02T16:24:55+0300", "tag": "q35", "gate": "B-stream", "verdict": "PASS", "schema": {"file": "/home/avifenesh/projects/bw24-integrate-cache/research/integrate-cache-20260802/stream-q35-leg1.sse", "verdict": "PASS", "n_chunks": 9, "n_calls": 1, "finish_reason": "tool_calls", "usage": {"prompt_tokens": 330, "completion_tokens": 177, "total_tokens": 507, "prompt_tokens_details": {"cached_tokens": 0}, "elapsed_s": 0.832954625}, "calls": [{"id": "call_0acaa39fa4e08df2", "name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}], "content_chars": 559, "problems": []}, "stream_equals_nonstream": true}
+{"ts": "2026-08-02T16:25:08+0300", "tag": "q35", "gate": "C-malformed", "verdict": "PASS", "n": 3, "finish": "length", "content_tail": "following four lines...\"\nUsually, this refers to the text immediately following.\nIf the text immediately following is:\n`<tool_call>`\n`{\"name\": \"get_weather\", \"arguments\": {broken!!`\n`</tool_call>`\nThat is 3 lines.\n\nMaybe"}
+{"ts": "2026-08-02T16:25:16+0300", "tag": "q35", "gate": "D-usage", "verdict": "PASS", "prompt_tokens": {"plain": 27, "tools": 330, "tools_nothink": 332}, "tok_check": {"plain": 27, "tools": 330, "tools_nothink": 332}, "tools_block_tokens": 303}
+{"ts": "2026-08-02T16:25:17+0300", "tag": "q35", "gate": "E-bijection", "verdict": "PASS", "stream_order_byte_equal": true, "parse_equal": true, "raw_len": 654, "recon_len": 654}
+[q35] 7/7 gates PASS
+c1c16 rc=0 roundtrip rc=0
+hold2 rc=0
+--- hold 3: bulk cache OFF — exactness refs ---
+[refs] cell 0 depth=96w A=1b8de73d76b2 B=cc5393e52d1a prompt_toks=156
+[refs] cell 1 depth=128w A=1b8de73d76b2 B=23936bd0fc1d prompt_toks=190
+[refs] cell 2 depth=192w A=1b8de73d76b2 B=aaac1e8e682d prompt_toks=259
+[refs] cell 3 depth=256w A=42666bdaf902 B=bad0f121fbbf prompt_toks=328
+[refs] cell 4 depth=384w A=4d1f1473a32a B=014c0444ce3c prompt_toks=466
+[refs] cell 5 depth=512w A=94bc03b7006d B=cf389fff9d6b prompt_toks=604
+[refs] cell 6 depth=768w A=94bc03b7006d B=4203df7d8954 prompt_toks=880
+[refs] cell 7 depth=1024w A=e402b044c02c B=95cbdcab94a2 prompt_toks=1155
+[refs] cell 8 depth=1536w A=94bc03b7006d B=14ddcec5c54c prompt_toks=1707
+[refs] cell 9 depth=2048w A=aa7fe66f2ea0 B=f84218b61f13 prompt_toks=2258
+[refs] cell 10 depth=96w A=1b8de73d76b2 B=98be39a64cf5 prompt_toks=157
+[refs] cell 11 depth=256w A=c246dd9b8288 B=48d42ec64dbb prompt_toks=329
+[refs] cell 12 depth=512w A=1b8de73d76b2 B=746ea598e53f prompt_toks=605
+[refs] cell 13 depth=1024w A=d2d9beba8058 B=a3ece131de0d prompt_toks=1156
+[refs] cell 14 depth=1536w A=94bc03b7006d B=3e2df81bfe5b prompt_toks=1708
+[refs] cell 15 depth=2048w A=99032139365a B=73297ad501f6 prompt_toks=2259
+[refs] wrote 16 cells -> /home/avifenesh/projects/bw24-integrate-cache/research/integrate-cache-20260802/gate-refs.json
+refs rc=0
+--- hold 4: bulk cache ON 1024MB — exactness gate ---
+{"i": 0, "depth_words": 96, "prompt_tokens_A": 156, "prompt_tokens_B": 157, "cached_A1": 0, "cached_B1": 0, "cached_B2": 138, "cached_A2": 156, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "1b8de73d76b2", "sha_A2": "1b8de73d76b2", "sha_B1": "cc5393e52d1a", "sha_B2": "cc5393e52d1a"}
+{"i": 1, "depth_words": 128, "prompt_tokens_A": 190, "prompt_tokens_B": 195, "cached_A1": 0, "cached_B1": 0, "cached_B2": 172, "cached_A2": 190, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "1b8de73d76b2", "sha_A2": "1b8de73d76b2", "sha_B1": "23936bd0fc1d", "sha_B2": "23936bd0fc1d"}
+{"i": 2, "depth_words": 192, "prompt_tokens_A": 259, "prompt_tokens_B": 261, "cached_A1": 0, "cached_B1": 0, "cached_B2": 241, "cached_A2": 259, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "1b8de73d76b2", "sha_A2": "1b8de73d76b2", "sha_B1": "aaac1e8e682d", "sha_B2": "aaac1e8e682d"}
+{"i": 3, "depth_words": 256, "prompt_tokens_A": 328, "prompt_tokens_B": 331, "cached_A1": 0, "cached_B1": 0, "cached_B2": 310, "cached_A2": 328, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "42666bdaf902", "sha_A2": "42666bdaf902", "sha_B1": "a3fe1e1dc6ca", "sha_B2": "a3fe1e1dc6ca"}
+{"i": 4, "depth_words": 384, "prompt_tokens_A": 466, "prompt_tokens_B": 468, "cached_A1": 0, "cached_B1": 0, "cached_B2": 448, "cached_A2": 466, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "4d1f1473a32a", "sha_A2": "4d1f1473a32a", "sha_B1": "014c0444ce3c", "sha_B2": "014c0444ce3c"}
+{"i": 5, "depth_words": 512, "prompt_tokens_A": 604, "prompt_tokens_B": 606, "cached_A1": 0, "cached_B1": 0, "cached_B2": 586, "cached_A2": 604, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "94bc03b7006d", "sha_A2": "94bc03b7006d", "sha_B1": "e592eeba8f61", "sha_B2": "e592eeba8f61"}
+{"i": 6, "depth_words": 768, "prompt_tokens_A": 880, "prompt_tokens_B": 882, "cached_A1": 0, "cached_B1": 0, "cached_B2": 862, "cached_A2": 880, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "94bc03b7006d", "sha_A2": "94bc03b7006d", "sha_B1": "7f9d9efd3ba2", "sha_B2": "7f9d9efd3ba2"}
+{"i": 7, "depth_words": 1024, "prompt_tokens_A": 1155, "prompt_tokens_B": 1159, "cached_A1": 0, "cached_B1": 0, "cached_B2": 1137, "cached_A2": 1155, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "e402b044c02c", "sha_A2": "e402b044c02c", "sha_B1": "95cbdcab94a2", "sha_B2": "95cbdcab94a2"}
+{"i": 8, "depth_words": 1536, "prompt_tokens_A": 1707, "prompt_tokens_B": 1708, "cached_A1": 0, "cached_B1": 0, "cached_B2": 1689, "cached_A2": 1707, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "94bc03b7006d", "sha_A2": "94bc03b7006d", "sha_B1": "eac1cc8ff381", "sha_B2": "eac1cc8ff381"}
+{"i": 9, "depth_words": 2048, "prompt_tokens_A": 2258, "prompt_tokens_B": 2263, "cached_A1": 0, "cached_B1": 0, "cached_B2": 2240, "cached_A2": 2258, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "aa7fe66f2ea0", "sha_A2": "aa7fe66f2ea0", "sha_B1": "f84218b61f13", "sha_B2": "f84218b61f13"}
+{"i": 10, "depth_words": 96, "prompt_tokens_A": 157, "prompt_tokens_B": 160, "cached_A1": 0, "cached_B1": 0, "cached_B2": 139, "cached_A2": 157, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "1b8de73d76b2", "sha_A2": "1b8de73d76b2", "sha_B1": "98be39a64cf5", "sha_B2": "98be39a64cf5"}
+{"i": 11, "depth_words": 256, "prompt_tokens_A": 329, "prompt_tokens_B": 331, "cached_A1": 0, "cached_B1": 0, "cached_B2": 311, "cached_A2": 329, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "c246dd9b8288", "sha_A2": "c246dd9b8288", "sha_B1": "237b30d125f2", "sha_B2": "237b30d125f2"}
+{"i": 12, "depth_words": 512, "prompt_tokens_A": 605, "prompt_tokens_B": 606, "cached_A1": 0, "cached_B1": 0, "cached_B2": 587, "cached_A2": 605, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "1b8de73d76b2", "sha_A2": "1b8de73d76b2", "sha_B1": "746ea598e53f", "sha_B2": "746ea598e53f"}
+{"i": 13, "depth_words": 1024, "prompt_tokens_A": 1156, "prompt_tokens_B": 1160, "cached_A1": 0, "cached_B1": 0, "cached_B2": 1138, "cached_A2": 1156, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "d2d9beba8058", "sha_A2": "d2d9beba8058", "sha_B1": "a3ece131de0d", "sha_B2": "a3ece131de0d"}
+{"i": 14, "depth_words": 1536, "prompt_tokens_A": 1708, "prompt_tokens_B": 1708, "cached_A1": 0, "cached_B1": 0, "cached_B2": 1690, "cached_A2": 1708, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "94bc03b7006d", "sha_A2": "94bc03b7006d", "sha_B1": "124e146c241b", "sha_B2": "124e146c241b"}
+{"i": 15, "depth_words": 2048, "prompt_tokens_A": 2259, "prompt_tokens_B": 2262, "cached_A1": 0, "cached_B1": 0, "cached_B2": 2241, "cached_A2": 2259, "gate_partial": true, "gate_full": true, "gate_usage": true, "gate_cold": true, "control_A1_eq_ref": true, "sha_A1": "99032139365a", "sha_A2": "99032139365a", "sha_B1": "73297ad501f6", "sha_B2": "73297ad501f6"}
+{"ts": "2026-08-02T16:28:13+0300", "n": 16, "gate_partial": "16/16", "gate_full": "16/16", "gate_usage": "16/16", "gate_cold": "16/16", "gate_control_A1": "16/16", "xconfig_B1_vs_whole_fresh_moved": 6, "xconfig_detail": [{"i": 3, "diverge_at_char": 61, "split_sha": "a3fe1e1dc6ca", "whole_sha": "bad0f121fbbf"}, {"i": 5, "diverge_at_char": 250, "split_sha": "e592eeba8f61", "whole_sha": "cf389fff9d6b"}, {"i": 6, "diverge_at_char": 114, "split_sha": "7f9d9efd3ba2", "whole_sha": "4203df7d8954"}, {"i": 8, "diverge_at_char": 193, "split_sha": "eac1cc8ff381", "whole_sha": "14ddcec5c54c"}, {"i": 11, "diverge_at_char": 150, "split_sha": "237b30d125f2", "whole_sha": "48d42ec64dbb"}, {"i": 14, "diverge_at_char": 182, "split_sha": "124e146c241b", "whole_sha": "3e2df81bfe5b"}], "verdict": "PASS"}
+cache-exact rc=0
+--- hold 5: bulk cache ON (default 256MB) — THE INTERSECTION (tools x cache) ---
+{"ts": "2026-08-02T16:29:12+0300", "gate": "R-rep1", "verdict": "FAIL", "prompt_tokens": 27, "tok_check": 330, "completion_tokens": 637, "total_tokens": 664, "cached_tokens": 0, "finish": "stop"}
+{"ts": "2026-08-02T16:29:16+0300", "gate": "R-rep2", "verdict": "FAIL", "prompt_tokens": 27, "tok_check": 330, "completion_tokens": 637, "total_tokens": 664, "cached_tokens": 0, "finish": "stop"}
+{"ts": "2026-08-02T16:29:19+0300", "gate": "R-rep3", "verdict": "FAIL", "prompt_tokens": 27, "tok_check": 330, "completion_tokens": 637, "total_tokens": 664, "cached_tokens": 0, "finish": "stop"}
+{"ts": "2026-08-02T16:29:19+0300", "gate": "R-intersection", "verdict": "FAIL", "rep1_cached": 0, "rep2_cached": 0, "rep3_cached": 0, "prompt_tokens": 27, "cold_ok": true, "third_hits": false, "prompt_count_stable": true, "generation_byte_identical": true}
+{"ts": "2026-08-02T16:29:20+0300", "gate": "M-A-cold", "verdict": "FAIL", "prompt_tokens": 62, "tok_check": 361, "completion_tokens": 103, "total_tokens": 165, "cached_tokens": 0}
+{"ts": "2026-08-02T16:29:21+0300", "gate": "M-B-hit", "verdict": "FAIL", "prompt_tokens": 61, "tok_check": 360, "completion_tokens": 169, "total_tokens": 230, "cached_tokens": 0}
+{"ts": "2026-08-02T16:29:28+0300", "gate": "M-C-hit", "verdict": "FAIL", "prompt_tokens": 62, "tok_check": 361, "completion_tokens": 1024, "total_tokens": 1086, "cached_tokens": 0}
+{"ts": "2026-08-02T16:29:29+0300", "gate": "M-B2-hit-identical", "verdict": "FAIL", "prompt_tokens": 61, "tok_check": 360, "completion_tokens": 169, "total_tokens": 230, "cached_tokens": 0, "generation_matches_B": true}
+[intersection] 0/8 gates PASS
+intersection rc=1
+GATES-DONE phase=all 2026-08-02T13:29:33Z
+=== INTEGRATE-CACHE GATES phase=intersection 2026-08-02T13:29:48Z git=f66fa478 (merged tree, pre-commit) ===
+--- hold 5: bulk cache ON (default 256MB) — THE INTERSECTION (tools x cache) ---
+{"ts": "2026-08-02T16:30:10+0300", "gate": "R-rep1", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 158, "total_tokens": 488, "cached_tokens": 0, "finish": "tool_calls"}
+{"ts": "2026-08-02T16:30:11+0300", "gate": "R-rep2", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 177, "total_tokens": 507, "cached_tokens": 330, "finish": "tool_calls"}
+{"ts": "2026-08-02T16:30:12+0300", "gate": "R-rep3", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 177, "total_tokens": 507, "cached_tokens": 330, "finish": "tool_calls"}
+{"ts": "2026-08-02T16:30:12+0300", "gate": "R-intersection", "verdict": "FAIL", "rep1_cached": 0, "rep2_cached": 330, "rep3_cached": 330, "prompt_tokens": 330, "cold_ok": true, "third_hits": true, "prompt_count_stable": true, "generation_byte_identical": false}
+{"ts": "2026-08-02T16:30:13+0300", "gate": "M-A-cold", "verdict": "PASS", "prompt_tokens": 361, "tok_check": 361, "completion_tokens": 114, "total_tokens": 475, "cached_tokens": 0}
+{"ts": "2026-08-02T16:30:14+0300", "gate": "M-B-hit", "verdict": "PASS", "prompt_tokens": 360, "tok_check": 360, "completion_tokens": 114, "total_tokens": 474, "cached_tokens": 301}
+{"ts": "2026-08-02T16:30:16+0300", "gate": "M-C-hit", "verdict": "PASS", "prompt_tokens": 361, "tok_check": 361, "completion_tokens": 184, "total_tokens": 545, "cached_tokens": 301}
+{"ts": "2026-08-02T16:30:16+0300", "gate": "M-B2-hit-identical", "verdict": "PASS", "prompt_tokens": 360, "tok_check": 360, "completion_tokens": 114, "total_tokens": 474, "cached_tokens": 301, "generation_matches_B": true}
+[intersection] 7/8 gates PASS
+intersection rc=1
+GATES-DONE phase=intersection 2026-08-02T13:30:21Z
+=== INTEGRATE-CACHE GATES phase=intersection 2026-08-02T13:37:22Z git=f66fa478 (merged tree, pre-commit) ===
+--- hold 5: bulk cache ON (default 256MB) — THE INTERSECTION (tools x cache) ---
+{"ts": "2026-08-02T16:37:50+0300", "gate": "R-rep1", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 158, "total_tokens": 488, "cached_tokens": 0, "finish": "tool_calls"}
+{"ts": "2026-08-02T16:37:51+0300", "gate": "R-rep2", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 177, "total_tokens": 507, "cached_tokens": 330, "finish": "tool_calls"}
+{"ts": "2026-08-02T16:37:52+0300", "gate": "R-rep3", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 177, "total_tokens": 507, "cached_tokens": 330, "finish": "tool_calls"}
+{"ts": "2026-08-02T16:37:52+0300", "gate": "R-intersection", "verdict": "PASS", "rep1_cached": 0, "rep2_cached": 330, "rep3_cached": 330, "prompt_tokens": 330, "cold_ok": true, "third_hits": true, "prompt_count_stable": true, "tool_calls_identical": true}
+{"ts": "2026-08-02T16:37:52+0300", "gate": "R-content-identity", "verdict": "REPORT-DIVERGED", "gated": false, "cold_vs_hit_identical": false, "hit_vs_hit_identical": true}
+{"ts": "2026-08-02T16:37:53+0300", "gate": "M-A-cold", "verdict": "PASS", "prompt_tokens": 361, "tok_check": 361, "completion_tokens": 114, "total_tokens": 475, "cached_tokens": 0}
+{"ts": "2026-08-02T16:37:54+0300", "gate": "M-B-hit", "verdict": "PASS", "prompt_tokens": 360, "tok_check": 360, "completion_tokens": 114, "total_tokens": 474, "cached_tokens": 301}
+{"ts": "2026-08-02T16:37:55+0300", "gate": "M-C-hit", "verdict": "PASS", "prompt_tokens": 361, "tok_check": 361, "completion_tokens": 184, "total_tokens": 545, "cached_tokens": 301}
+{"ts": "2026-08-02T16:37:56+0300", "gate": "M-B2-hit-identical", "verdict": "PASS", "prompt_tokens": 360, "tok_check": 360, "completion_tokens": 114, "total_tokens": 474, "cached_tokens": 301, "generation_matches_B": true}
+[intersection] 8/8 gated rows PASS (1 report-only rows)
+intersection rc=0
+GATES-DONE phase=intersection 2026-08-02T13:38:00Z

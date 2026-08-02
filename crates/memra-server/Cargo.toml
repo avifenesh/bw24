@@ -10,6 +10,8 @@ edition = "2024"
 
 [dependencies]
 memra-engine = { path = "../memra-engine" }
+# cross-request prefix cache: entries own compact device copies of primed KV/recurrent state.
+cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
 memra-gguf = { path = "../memra-gguf" }
 memra-tokenizer = { path = "../memra-tokenizer" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }

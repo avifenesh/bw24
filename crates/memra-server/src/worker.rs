@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
+use cudarc::driver::CudaSlice;
 use memra_engine::Engine;
 use memra_engine::cache::Cache;
 use memra_engine::decode::{GenParams, StopReason};
@@ -49,9 +50,14 @@ struct LoadedModel {
 pub enum Event {
     /// One decoded token: the raw id + the incremental text delta (detokenized tail minus prefix).
     Token { id: u32, text: String },
-    /// Terminal event: why we stopped + worker-truth token counts + timing. `prompt_tokens`
-    /// is the tokenized RENDERED prompt length (tools block included when one was rendered).
-    Done { stop_reason: String, n_tokens: usize, prompt_tokens: usize, elapsed_s: f64 },
+    /// Terminal event: why we stopped + final token count + timing. `n_prompt` / `n_cached`
+    /// are WORKER-TRUTH prompt accounting: total prompt tokens this session fed or resumed —
+    /// the tokenized RENDERED prompt (tools block included when one was rendered; the
+    /// text-prefix spec resume counts the actually-fed remainder) — and how many of those
+    /// came from a cache (continuation pool, spec resume, or the cross-request prefix cache)
+    /// instead of being computed — the OpenAI `usage.prompt_tokens_details.cached_tokens`
+    /// source. ONE source of truth: both counts come off the same rendered-prompt token ids.
+    Done { stop_reason: String, n_tokens: usize, n_prompt: usize, n_cached: usize, elapsed_s: f64 },
     /// The request could not start (bad model name, ctx full at admit, etc).
     Error(String),
 }
@@ -101,6 +107,14 @@ pub struct Metrics {
     pub tokens_out: u64,
     pub step_p50_ms: f32,
     pub step_p99_ms: f32,
+    /// worker-truth prompt accounting: total prompt tokens admitted, and how many of
+    /// those were served from a cache (continuation pool / spec resume / prefix cache).
+    pub prompt_tokens_in: u64,
+    pub cached_tokens_in: u64,
+    /// cross-request prefix cache state (hits/entries/resident bytes).
+    pub prefix_hits: u64,
+    pub prefix_entries: u64,
+    pub prefix_bytes: u64,
 }
 pub type SharedMetrics = std::sync::Arc<std::sync::Mutex<Metrics>>;
 
@@ -192,6 +206,301 @@ fn reuse_pool_per_model() -> usize {
 /// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
 const REUSE_MIN_PREFIX: usize = 16;
 
+// ---------------- CROSS-REQUEST PREFIX CACHE (lane/prompt-cache, 2026-08-02) ----------------
+//
+// The continuation pool above only serves a prompt that EXACTLY EXTENDS a retired session's
+// whole fed sequence (prompt + generation) — a NEW session that merely shares a system-prompt
+// prefix with earlier traffic always misses. The prefix cache closes that gap: entries are
+// compact device copies of primed state at a TOKEN boundary, keyed by the exact token-id
+// prefix, and are REUSABLE (a hit deep-copies the entry into the new session's cache — one
+// marketplace system prompt serves any number of sessions, unlike the move-out pool).
+//
+// WHY snapshots, not truncation: hybrid models (qwen35-class GDN) carry recurrent conv/ssm
+// state that cannot roll back to an arbitrary shorter prefix, so a longer cache can never be
+// trimmed to the shared prefix. Instead the state is captured AT the boundary while a fresh
+// session primes:
+//   - SEED: a cold session's full prompt is inserted at prefill-done (before any decode).
+//   - LCP SPLIT (the learning step): a cold miss whose prompt shares >= PREFIX_CACHE_MIN_TOKENS
+//     tokens with an existing entry splits its own prime at the longest-common-prefix point,
+//     snapshots there, then continues — request 3+ of a shared-system-prompt pattern hits.
+//
+// EXACTNESS CONTRACT (docs/SERVING.md "Prompt caching"): an entry stores the KV/recurrent
+// bytes from WHATEVER prime config ran (single, chunked, or concat batch-prime); decode from
+// those bytes is deterministic, so serving a hit is bit-identical to the run that computed the
+// prefix. Cross-config comparisons (a cached-hit stream vs a whole-prompt fresh prime) inherit
+// the documented batched-prime near-tie first-token law — same class, not a new one.
+//
+// VRAM: entries compete with session KV under MEMRA_PREFIX_CACHE_MB (default 256; 0 disables),
+// LRU-evicted, per-model keyed; a failed session-cache alloc evicts the whole cache and
+// retries (headroom discipline — sessions always win over the cache).
+//
+// POLICY: spec sessions bypass the prefix cache entirely (SpecSession owns trunk + draft
+// caches; restoring a trunk-only prefix would leave draft state unprimed). The spec tier keeps
+// its own continuation pool; the prefix cache serves the batched bulk tier. Legacy round-robin
+// mode (MEMRA_SERVE_BATCH=0) also bypasses.
+
+/// Prefixes shorter than this are not worth VRAM + copy bookkeeping (also keeps the bare
+/// chat-template header — common to every request of a model — out of the cache).
+const PREFIX_CACHE_MIN_TOKENS: usize = 64;
+
+/// MEMRA_PREFIX_CACHE_MB (default 256): resident byte budget for the prefix cache. 0 = off.
+fn prefix_cache_budget_bytes() -> usize {
+    static B: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *B.get_or_init(|| {
+        std::env::var("MEMRA_PREFIX_CACHE_MB").ok()
+            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(256)
+            .saturating_mul(1024 * 1024)
+    })
+}
+
+/// Batched scheduling on? (read once — mirrors the run-loop static; the prefix cache only
+/// engages in batched mode, the default.)
+fn serve_batching() -> bool {
+    static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *B.get_or_init(|| std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true))
+}
+
+/// One full-attn layer's cached prefix bytes: exactly `len` tokens of quantized K/V.
+struct PrefixPlane {
+    k: CudaSlice<u8>,
+    v: CudaSlice<u8>,
+    len: usize,
+}
+
+/// A cached token-prefix: per-layer KV byte copies + recurrent conv/ssm copies + the logits
+/// row AT the boundary (empty-suffix resumes sample from it, same as the continuation pool).
+struct PrefixEntry {
+    toks: Vec<u32>,
+    kv: Vec<Option<PrefixPlane>>,
+    conv: Vec<Option<CudaSlice<f32>>>,
+    ssm: Vec<Option<CudaSlice<f32>>>,
+    pos: usize,
+    last_logits: Vec<f32>,
+    bytes: usize,
+    last_use: Instant,
+}
+
+#[derive(Default)]
+struct PrefixCache {
+    /// per-model entry pools (KV geometry/format is per model).
+    entries: HashMap<String, Vec<PrefixEntry>>,
+    total_bytes: usize,
+    hits: u64,
+    misses: u64,
+    inserts: u64,
+    evictions: u64,
+    hit_tokens: u64,
+}
+
+impl PrefixCache {
+    fn lcp(a: &[u32], b: &[u32]) -> usize {
+        a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+    }
+
+    fn n_entries(&self) -> usize {
+        self.entries.values().map(|p| p.len()).sum()
+    }
+
+    /// Longest entry whose token key exactly prefixes `prompt` (floor PREFIX_CACHE_MIN_TOKENS).
+    fn lookup(&self, model: &str, prompt: &[u32]) -> Option<usize> {
+        let pool = self.entries.get(model)?;
+        let mut best: Option<(usize, usize)> = None;
+        for (i, e) in pool.iter().enumerate() {
+            let n = e.toks.len();
+            if n >= PREFIX_CACHE_MIN_TOKENS && n <= prompt.len() && prompt[..n] == e.toks[..]
+                && best.is_none_or(|(_, bn)| n > bn)
+            {
+                best = Some((i, n));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    /// Longest common prefix of `prompt` with ANY entry (the LCP-split learning signal).
+    fn best_lcp(&self, model: &str, prompt: &[u32]) -> usize {
+        self.entries.get(model)
+            .map(|pool| pool.iter().map(|e| Self::lcp(&e.toks, prompt)).max().unwrap_or(0))
+            .unwrap_or(0)
+    }
+
+    /// Is any entry (>= min tokens) already a full prefix of `prompt`? (seed dedupe)
+    fn has_covering(&self, model: &str, prompt: &[u32]) -> bool {
+        self.entries.get(model).is_some_and(|pool| pool.iter().any(|e| {
+            let n = e.toks.len();
+            n >= PREFIX_CACHE_MIN_TOKENS && n <= prompt.len() && prompt[..n] == e.toks[..]
+        }))
+    }
+
+    fn has_key(&self, model: &str, key: &[u32]) -> bool {
+        self.entries.get(model).is_some_and(|pool| pool.iter().any(|e| e.toks[..] == *key))
+    }
+
+    /// Insert (exact-key deduped) + LRU-evict back under MEMRA_PREFIX_CACHE_MB.
+    fn insert(&mut self, model: &str, e: PrefixEntry, why: &str) {
+        let budget = prefix_cache_budget_bytes();
+        if e.bytes > budget {
+            eprintln!("[prefix-cache] skip {why} insert: entry {:.1}MB > budget {:.0}MB",
+                      e.bytes as f64 / 1e6, budget as f64 / 1e6);
+            return;
+        }
+        if self.has_key(model, &e.toks) {
+            return; // identical key raced in (concurrent learners) — first one wins
+        }
+        self.total_bytes += e.bytes;
+        self.inserts += 1;
+        eprintln!("[prefix-cache] insert ({why}): {} tokens, {:.1}MB (resident {:.1}MB / {:.0}MB, model {model})",
+                  e.toks.len(), e.bytes as f64 / 1e6,
+                  self.total_bytes as f64 / 1e6, budget as f64 / 1e6);
+        self.entries.entry(model.to_string()).or_default().push(e);
+        while self.total_bytes > budget {
+            let mut victim: Option<(String, usize, Instant)> = None;
+            for (m, pool) in &self.entries {
+                for (i, e) in pool.iter().enumerate() {
+                    if victim.as_ref().is_none_or(|&(_, _, t)| e.last_use < t) {
+                        victim = Some((m.clone(), i, e.last_use));
+                    }
+                }
+            }
+            let Some((m, i, _)) = victim else { break };
+            let dead = self.entries.get_mut(&m).map(|p| p.remove(i));
+            if let Some(dead) = dead {
+                self.total_bytes = self.total_bytes.saturating_sub(dead.bytes);
+                self.evictions += 1;
+                eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {m})",
+                          dead.toks.len(), dead.bytes as f64 / 1e6);
+            }
+        }
+    }
+
+    /// Drop everything (session cache alloc failed — sessions win over the cache).
+    fn evict_all(&mut self) -> usize {
+        let n = self.n_entries();
+        self.entries.clear();
+        self.total_bytes = 0;
+        self.evictions += n as u64;
+        n
+    }
+}
+
+/// Deep-copy the primed prefix state OUT of a live session cache into a compact entry.
+/// All copies are stream-ordered on the engine worker stream (the CUDA owner thread), so no
+/// sync is needed against the prime that produced the bytes or the decode that follows.
+fn prefix_snapshot(
+    engine: &Engine,
+    cache: &Cache,
+    toks: &[u32],
+    last_logits: &[f32],
+) -> Result<PrefixEntry, Box<dyn std::error::Error>> {
+    let n = cache.kv.len();
+    let mut kv = Vec::with_capacity(n);
+    let mut conv = Vec::with_capacity(n);
+    let mut ssm = Vec::with_capacity(n);
+    let mut bytes = 0usize;
+    for il in 0..n {
+        match &cache.kv[il] {
+            Some(l) => {
+                let kb = l.len * l.k_tok_bytes;
+                let vb = l.len * l.v_tok_bytes;
+                let mut k = engine.alloc_u8(kb.max(1))?;
+                let mut v = engine.alloc_u8(vb.max(1))?;
+                if kb > 0 { engine.copy_u8_into(&mut k, 0, &l.k, kb)?; }
+                if vb > 0 { engine.copy_u8_into(&mut v, 0, &l.v, vb)?; }
+                bytes += kb + vb;
+                kv.push(Some(PrefixPlane { k, v, len: l.len }));
+            }
+            None => kv.push(None),
+        }
+        match &cache.recur[il] {
+            Some(r) => {
+                conv.push(Some(engine.clone_dtod(&r.conv_state)?));
+                ssm.push(Some(engine.clone_dtod(&r.ssm_state)?));
+                bytes += (r.conv_state.len() + r.ssm_state.len()) * 4;
+            }
+            None => {
+                conv.push(None);
+                ssm.push(None);
+            }
+        }
+    }
+    Ok(PrefixEntry {
+        toks: toks.to_vec(),
+        kv,
+        conv,
+        ssm,
+        pos: cache.pos,
+        last_logits: last_logits.to_vec(),
+        bytes,
+        last_use: Instant::now(),
+    })
+}
+
+/// Deep-copy an entry INTO a freshly allocated session cache: KV bytes at [0..len), per-layer
+/// len + device len mirror, recurrent conv/ssm state, pos. The ssm ping-pong spare and
+/// last_logits_dev stay as allocated (scratch — overwritten before any read).
+fn prefix_restore(
+    engine: &Engine,
+    cache: &mut Cache,
+    e: &PrefixEntry,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if cache.kv.len() != e.kv.len() {
+        return Err(format!("prefix entry layer count {} != cache {}", e.kv.len(), cache.kv.len()).into());
+    }
+    for il in 0..cache.kv.len() {
+        match (cache.kv[il].as_mut(), &e.kv[il]) {
+            (Some(dst), Some(src)) => {
+                let kb = src.len * dst.k_tok_bytes;
+                let vb = src.len * dst.v_tok_bytes;
+                if kb > 0 { engine.copy_u8_into(&mut dst.k, 0, &src.k, kb)?; }
+                if vb > 0 { engine.copy_u8_into(&mut dst.v, 0, &src.v, vb)?; }
+                dst.len = src.len;
+                engine.set_i32_one(&mut dst.len_d, src.len as i32)?;
+            }
+            (None, None) => {}
+            _ => return Err(format!("prefix entry layer {il} kind mismatch").into()),
+        }
+        match (cache.recur[il].as_mut(), &e.conv[il], &e.ssm[il]) {
+            (Some(dst), Some(c), Some(s)) => {
+                engine.copy_into(&mut dst.conv_state, 0, c, c.len())?;
+                engine.copy_into(&mut dst.ssm_state, 0, s, s.len())?;
+            }
+            (None, None, None) => {}
+            _ => return Err(format!("prefix entry recur {il} mismatch").into()),
+        }
+    }
+    cache.pos = e.pos;
+    Ok(())
+}
+
+/// Snapshot + insert the session's CURRENT primed state (fed tokens, boundary logits).
+/// No-op when the session cannot serve an empty-suffix resume (no host logits yet).
+fn prefix_insert_from_session(engine: &Engine, px: &mut PrefixCache, s: &Session, why: &str) {
+    let Some(cache) = s.cache.as_ref() else { return };
+    if s.last_logits.is_empty() {
+        return;
+    }
+    match prefix_snapshot(engine, cache, &s.fed, &s.last_logits) {
+        Ok(e) => px.insert(&s.model, e, why),
+        Err(err) => eprintln!("[prefix-cache] snapshot failed ({err}); prefix not cached"),
+    }
+}
+
+/// SEED insert at prefill-done: a cold session (nothing resumed) whose full prompt is long
+/// enough and not already covered by an entry parks its primed prompt state for future
+/// same-prefix traffic. `s.fed` == the prompt exactly at this point (no generation yet).
+fn maybe_prefix_seed(engine: &Engine, px: &mut PrefixCache, s: &mut Session) {
+    if !s.seed_prefix {
+        return;
+    }
+    s.seed_prefix = false;
+    if s.n_cached > 0 || s.cache.is_none() || s.fed.len() < PREFIX_CACHE_MIN_TOKENS {
+        return;
+    }
+    if px.has_covering(&s.model, &s.fed) {
+        return; // an entry already serves this prefix class
+    }
+    prefix_insert_from_session(engine, px, s, "seed");
+}
+
 struct Session {
     model: String,
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
@@ -232,14 +541,21 @@ struct Session {
     prefill_queue: std::collections::VecDeque<u32>,
     prefill_done: bool,
     generated: Vec<u32>,
-    /// tokenized rendered-prompt length (worker-truth usage.prompt_tokens).
-    prompt_tokens: usize,
     params: GenParams,
     stop_strings: Vec<String>,
     trace_id: Option<String>,
     /// detokenized text already emitted (to compute incremental deltas + stop-string matching).
     emitted_bytes: usize,
     budget: usize,        // max tokens we may still generate
+    /// usage accounting (worker-truth): total prompt tokens this session feeds/resumes, and
+    /// how many came from a cache (continuation pool / spec resume / prefix cache).
+    n_prompt: usize,
+    n_cached: usize,
+    /// PREFIX-CACHE LCP SPLIT: prime exactly up to this fed-length, snapshot the cache into
+    /// the prefix cache there, then continue with the rest of the prompt (the learning step).
+    snapshot_at: Option<usize>,
+    /// PREFIX-CACHE SEED: park the full primed prompt at prefill-done (cold sessions only).
+    seed_prefix: bool,
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     t0: Instant,
 }
@@ -368,6 +684,12 @@ pub fn run(
     // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc).
     let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
     let mut spec_reuse: HashMap<String, Vec<SpecReuseEntry>> = HashMap::new();
+    // Cross-request prefix cache (token-prefix keyed, budget-bound; see the module doc above).
+    let mut px = PrefixCache::default();
+    if prefix_cache_budget_bytes() > 0 && serve_batching() {
+        eprintln!("[prefix-cache] on: budget {:.0}MB (MEMRA_PREFIX_CACHE_MB), min prefix {} tokens",
+                  prefix_cache_budget_bytes() as f64 / 1e6, PREFIX_CACHE_MIN_TOKENS);
+    }
     // Observed VRAM cost of one admitted session, per model (free-VRAM delta across the first
     // successful admit) — feeds the VRAM-aware admission wait below.
     let mut session_vram_cost: HashMap<String, usize> = HashMap::new();
@@ -377,6 +699,8 @@ pub fn run(
     let mut n_admitted = 0u64;
     let mut n_completed = 0u64;
     let mut n_tokens_out = 0u64;
+    let mut n_prompt_in = 0u64;
+    let mut n_cached_in = 0u64;
     let mut tick_n: u64 = 0;
 
     loop {
@@ -439,9 +763,11 @@ pub fn run(
             }
             let model_key = req.model.clone();
             let free_before = engine.ctx().mem_get_info().map(|(f, _)| f).ok();
-            match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
+            match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, &mut px, *req) {
                 Ok(s) => {
                     n_admitted += 1;
+                    n_prompt_in += s.n_prompt as u64;
+                    n_cached_in += s.n_cached as u64;
                     active.push(s);
                     if !session_vram_cost.contains_key(&model_key) {
                         if let (Some(fb), Ok((fa, _))) = (free_before, engine.ctx().mem_get_info()) {
@@ -464,10 +790,7 @@ pub fn run(
         //    (b) prefilling sessions prime at the full tick chunk (PREFILL_TICK_T);
         //    (c) decoding sessions advance through BATCHED steps: sample+emit host-side, then
         //        decode_step_batch over survivors in chunks of <= 8.
-        let batching = {
-            static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *B.get_or_init(|| std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true))
-        };
+        let batching = serve_batching();
         let mut finished: Vec<usize> = Vec::new();
         if !batching {
             for i in 0..active.len() {
@@ -609,6 +932,9 @@ pub fn run(
                         if s.spec.is_none() && !s.prefill_done && s.graph.is_none()
                             && s.fed.is_empty()
                             && s.cache.as_ref().is_some_and(|c| c.pos == 0)
+                            // prefix-cache LCP split primes alone (the boundary snapshot
+                            // needs a per-session stop inside the prompt; concat can't stop).
+                            && s.snapshot_at.is_none()
                             && ql >= min_t && ql <= pb_maxt && ql <= PREFILL_TICK_T
                             && cand_model.as_ref().is_none_or(|m| *m == s.model)
                         {
@@ -657,6 +983,9 @@ pub fn run(
                                 s.last_logits = l;
                                 for &tok in prompt { s.fed.push(tok); s.sampler.accept(tok); }
                                 s.prefill_done = true;
+                                // prefix-cache seed: batch-primed bytes are the concat
+                                // config — the entry stores whatever config ran (contract).
+                                maybe_prefix_seed(&engine, &mut px, s);
                             }
                             fired = true;
                         }
@@ -679,7 +1008,7 @@ pub fn run(
                 if held && cand.first() == Some(&i) { continue; }   // batch-formation hold
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
-                match prefill_tick(&engine, &loaded, s, PREFILL_TICK_T) {
+                match prefill_tick(&engine, &loaded, &mut px, s, PREFILL_TICK_T) {
                     Ok(_) => {}
                     Err(err) => {
                         let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
@@ -855,6 +1184,11 @@ pub fn run(
             m.tokens_out = n_tokens_out;
             m.step_p50_ms = step_stats.p(50.0).unwrap_or(0.0);
             m.step_p99_ms = step_stats.p(99.0).unwrap_or(0.0);
+            m.prompt_tokens_in = n_prompt_in;
+            m.cached_tokens_in = n_cached_in;
+            m.prefix_hits = px.hits;
+            m.prefix_entries = px.n_entries() as u64;
+            m.prefix_bytes = px.total_bytes as u64;
         } }
         if !finished.is_empty() && std::env::var("MEMRA_SPILL_STATS").as_deref() == Ok("1") {
             if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
@@ -903,6 +1237,7 @@ fn admit(
     loaded: &HashMap<String, LoadedModel>,
     reuse: &mut HashMap<String, Vec<ReuseEntry>>,
     spec_reuse: &mut HashMap<String, Vec<SpecReuseEntry>>,
+    px: &mut PrefixCache,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
     let lm = &loaded[&req.model];
@@ -972,10 +1307,87 @@ fn admit(
             reused = Some(pool.remove(idx));
         }
     }
+
+    // SPEC ELIGIBILITY decides the prefix-cache policy up front: spec sessions bypass the
+    // cross-request prefix cache entirely (SpecSession owns trunk + draft caches; restoring a
+    // trunk-only prefix would leave draft state unprimed — the spec tier keeps its own
+    // continuation pool below). Mirrors the spec-branch condition exactly.
+    let serve_spec = !confidence_trace_enabled()
+        && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
+    let mut sampler = Sampler::new(req.sampler_cfg);
+    let spec_eligible = serve_spec
+        && (sampler.is_greedy() || sampler.temperature() > 0.0)
+        && lm.model.mtp.is_some();
+
+    // CROSS-REQUEST PREFIX CACHE probe (2026-08-02; module doc at PrefixCache). Only when the
+    // continuation pool missed, the session won't go spec, and batched scheduling is live.
+    // A hit deep-copies the longest matching entry into a fresh session cache (entries are
+    // reusable); a miss with a long-enough LCP against an existing entry arms the split-prime
+    // learning insert; cold long prompts arm the seed insert.
+    let prefix_on = reuse_on && serve_batching() && prefix_cache_budget_bytes() > 0;
+    let mut prefix_hit = false;
+    let mut snapshot_at: Option<usize> = None;
+    let mut seed_prefix = false;
+    if prefix_on && reused.is_none() && !spec_eligible {
+        if let Some(i) = px.lookup(&req.model, &prompt) {
+            let restored = {
+                let e = &px.entries[&req.model][i];
+                match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+                    Ok(mut c) => match prefix_restore(engine, &mut c, e) {
+                        Ok(()) => Ok(ReuseEntry {
+                            fed: e.toks.clone(),
+                            cache: c,
+                            last_logits: e.last_logits.clone(),
+                            cap: ctx_cap,
+                        }),
+                        Err(err) => Err(format!("restore failed: {err}")),
+                    },
+                    Err(err) => Err(format!("session cache alloc failed: {err}")),
+                }
+            };
+            match restored {
+                Ok(entry) => {
+                    let pool = px.entries.get_mut(&req.model).unwrap();
+                    pool[i].last_use = Instant::now();
+                    px.hits += 1;
+                    px.hit_tokens += entry.fed.len() as u64;
+                    prefix_hit = true;
+                    eprintln!("[prefix-cache] hit: {} of {} prompt tokens from cache (model {})",
+                              entry.fed.len(), prompt.len(), req.model);
+                    reused = Some(entry);
+                }
+                Err(msg) => {
+                    // headroom discipline: sessions win over the cache — on alloc pressure
+                    // drop every entry so the cold path (and the retries behind it) can fit.
+                    if msg.starts_with("session cache alloc failed") {
+                        let n = px.evict_all();
+                        eprintln!("[prefix-cache] {msg}; evicted {n} entries, cold path serves");
+                    } else {
+                        eprintln!("[prefix-cache] {msg}; cold path serves");
+                    }
+                }
+            }
+        }
+        if reused.is_none() {
+            px.misses += 1;
+            let l = px.best_lcp(&req.model, &prompt);
+            if l >= PREFIX_CACHE_MIN_TOKENS && l < prompt.len()
+                && !px.has_key(&req.model, &prompt[..l])
+            {
+                snapshot_at = Some(l);
+            }
+            if prompt.len() >= PREFIX_CACHE_MIN_TOKENS {
+                seed_prefix = true; // re-checked against covering entries at prefill-done
+            }
+        }
+    }
+
     let (cache, seed_fed, seed_logits) = match reused {
         Some(e) => {
-            eprintln!("[worker] kv-reuse: {} of {} prompt tokens resumed (model {})",
-                      e.fed.len(), prompt.len(), req.model);
+            if !prefix_hit {
+                eprintln!("[worker] kv-reuse: {} of {} prompt tokens resumed (model {})",
+                          e.fed.len(), prompt.len(), req.model);
+            }
             (Some(e.cache), e.fed, e.last_logits)
         }
         // legacy cache deferred: allocated below ONLY if the spec path doesn't take the session.
@@ -987,7 +1399,6 @@ fn admit(
     if !params.eos.contains(&lm.eos_id) { params.eos.push(lm.eos_id); }
 
     // Suffix-only prefill on a reuse hit; sampler penalty history replayed over the whole prefix.
-    let mut sampler = Sampler::new(req.sampler_cfg);
     for &t in &seed_fed { sampler.accept(t); }
     let suffix: Vec<u32> = prompt[seed_fed.len()..].to_vec();
     let prefill_done_at_admit = suffix.is_empty();
@@ -995,15 +1406,12 @@ fn admit(
     // session owns its own caches; folding the reuse pool into SpecSession is a follow-up) +
     // MEMRA_SERVE_SPEC!=0. The whole prompt goes to the spec session as turn 1's suffix; the
     // legacy prefill/decode path is bypassed entirely in step_session.
-    let serve_spec = !confidence_trace_enabled()
-        && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut spec_resumed = 0usize;
     let mut text_suffix: Option<Vec<u32>> = None;
     // Sampled-spec serve: temperature + filters + penalties ALL ride the rejection-sampling
     // spec path (transforms applied to p and q symmetrically) — the legacy per-token path
     // remains only as the no-MTP/resume fallback.
-    let spec = if serve_spec && (sampler.is_greedy() || sampler.temperature() > 0.0) && lm.model.mtp.is_some()
-        && seed_fed.is_empty() {
+    let spec = if spec_eligible && seed_fed.is_empty() {
         // POOL RESUME: a parked spec session whose committed sequence exactly prefixes this
         // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
         // Match order: exact token prefix (bit-clean), else TEXT prefix (survives BPE boundary
@@ -1076,8 +1484,30 @@ fn admit(
         (None, Some(c)) => Some(c),
         (None, None) => match Cache::new(engine, &lm.model.cfg, ctx_cap) {
             Ok(c) => Some(c),
-            Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+            Err(err) => {
+                // headroom discipline: the prefix cache yields before a session errors.
+                let evicted = px.evict_all();
+                if evicted > 0 {
+                    eprintln!("[prefix-cache] evicted {evicted} entries after cache alloc failure; retrying");
+                    match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+                        Ok(c) => Some(c),
+                        Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+                    }
+                } else {
+                    return Err((req.tx, format!("cache alloc failed: {err}")));
+                }
+            }
         },
+    };
+    // WORKER-TRUTH usage accounting: total prompt tokens (as the worker actually feeds/resumes
+    // them — the text-prefix spec resume re-tokenizes only the remainder) + how many came from
+    // a cache instead of being computed.
+    let (n_prompt, n_cached) = if spec_resumed > 0 {
+        let suffix_len = text_suffix.as_ref().map(|t| t.len())
+            .unwrap_or_else(|| prompt.len() - spec_resumed);
+        (spec_resumed + suffix_len, spec_resumed)
+    } else {
+        (prompt.len(), seed_fed.len())
     };
     Ok(Session {
         model: req.model,
@@ -1096,12 +1526,15 @@ fn admit(
                        else { suffix.into_iter().collect() },
         prefill_done: prefill_done_at_admit,
         generated: Vec::new(),
-        prompt_tokens: prompt.len(),
         params,
         stop_strings: req.stop_strings,
         trace_id: req.trace_id,
         emitted_bytes: 0,
         budget,
+        n_prompt,
+        n_cached,
+        snapshot_at,
+        seed_prefix,
         tx: req.tx,
         t0: Instant::now(),
     })
@@ -1156,6 +1589,7 @@ fn utf8_delta(decoded: &[u8], emitted_bytes: &mut usize) -> String {
 fn prefill_tick(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
+    px: &mut PrefixCache,
     s: &mut Session,
     budget: usize,
 ) -> Result<usize, Box<dyn std::error::Error>> {
@@ -1163,16 +1597,31 @@ fn prefill_tick(
     let q = s.prefill_queue.len();
     if q == 0 {
         s.prefill_done = true;
+        maybe_prefix_seed(engine, px, s);
         return Ok(0);
     }
     let mut consumed = 0usize;
+    // PREFIX-CACHE LCP SPLIT: tokens left until the snapshot boundary. Chunks stop exactly
+    // there; a residual below the prime floor rides the tokenwise path (unreachable at the
+    // current PREFILL_TICK_T, guarded for smaller budgets).
+    let bound_rem = s.snapshot_at.map(|b| b - s.fed.len());
     if !confidence_trace_enabled()
         && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2)
         && budget >= memra_engine::hybrid_forward::PRIME_MIN_T
+        && bound_rem.is_none_or(|r| r >= memra_engine::hybrid_forward::PRIME_MIN_T)
     {
         let mut take = q.min(budget);
         if q - take > 0 && q - take < memra_engine::hybrid_forward::PRIME_MIN_T {
             take = if q <= budget { q } else { take };
+        }
+        if let Some(r) = bound_rem {
+            if take >= r {
+                take = r; // stop exactly at the snapshot boundary
+            } else if r - take < memra_engine::hybrid_forward::PRIME_MIN_T {
+                // keep the boundary chunk itself primeable next tick
+                take = (r - memra_engine::hybrid_forward::PRIME_MIN_T)
+                    .max(memra_engine::hybrid_forward::PRIME_MIN_T);
+            }
         }
         let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
         let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
@@ -1188,7 +1637,16 @@ fn prefill_tick(
         s.sampler.accept(tok);
         consumed = 1;
     }
-    if s.prefill_queue.is_empty() { s.prefill_done = true; }
+    // Boundary reached: snapshot the primed prefix into the cache, then keep priming the rest
+    // of the prompt as a continuation (the LCP-split learning insert).
+    if s.snapshot_at == Some(s.fed.len()) {
+        s.snapshot_at = None;
+        prefix_insert_from_session(engine, px, s, "lcp-split");
+    }
+    if s.prefill_queue.is_empty() {
+        s.prefill_done = true;
+        maybe_prefix_seed(engine, px, s);
+    }
     Ok(consumed)
 }
 
@@ -1540,7 +1998,8 @@ fn finish(s: &Session, reason: StopReason) {
     let _ = s.tx.send(Event::Done {
         stop_reason: reason,
         n_tokens: s.generated.len(),
-        prompt_tokens: s.prompt_tokens,
+        n_prompt: s.n_prompt,
+        n_cached: s.n_cached,
         elapsed_s: elapsed,
     });
 }
