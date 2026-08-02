@@ -1,0 +1,1 @@
+=== 2026-08-02T11:40:32+03:00 MEMRA_SPEC_K=2 MEMRA_NGEN=256 MEMRA_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. MEMRA_MTP_DRAFT=/data/ai-ml/hf-models/agentworld-35b-gguf/draft-agentworld-owntrim-nvfp4head-q4blk.gguf
