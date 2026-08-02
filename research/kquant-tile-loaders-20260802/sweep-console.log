@@ -1,0 +1,44 @@
+=== O35B KQ-DIRECT STAGE1 SWEEP x3 2026-08-02T00:58:01Z git=1576d8b3 profile=performance ===
+  [ws rep1] pp2048_toks = 3466.3
+  [ws rep1] pp2048_peak_vram_mib = 22226
+  [ws rep1] gen512_prefill_toks = 1658.9
+  [ws rep1] gen512_decode_toks = 206.66
+  [ws rep1] gen512_argmax_match = 2
+  [ws rep1] gen512_peak_vram_mib = 22386
+  [ws rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep1] pp2048_toks = 2213.6
+  [direct rep1] pp2048_peak_vram_mib = 21714
+  [direct rep1] gen512_prefill_toks = 887.8
+  [direct rep1] gen512_decode_toks = 209.11
+  [direct rep1] gen512_argmax_match = 2
+  [direct rep1] gen512_peak_vram_mib = 21426
+  [direct rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep2] pp2048_toks = 3460.4
+  [ws rep2] pp2048_peak_vram_mib = 22226
+  [ws rep2] gen512_prefill_toks = 1662.5
+  [ws rep2] gen512_decode_toks = 208.64
+  [ws rep2] gen512_argmax_match = 2
+  [ws rep2] gen512_peak_vram_mib = 22386
+  [ws rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep2] pp2048_toks = 2211.0
+  [direct rep2] pp2048_peak_vram_mib = 21714
+  [direct rep2] gen512_prefill_toks = 886.8
+  [direct rep2] gen512_decode_toks = 208.93
+  [direct rep2] gen512_argmax_match = 2
+  [direct rep2] gen512_peak_vram_mib = 21426
+  [direct rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep3] pp2048_toks = 3457.2
+  [ws rep3] pp2048_peak_vram_mib = 22226
+  [ws rep3] gen512_prefill_toks = 1665.2
+  [ws rep3] gen512_decode_toks = 208.72
+  [ws rep3] gen512_argmax_match = 2
+  [ws rep3] gen512_peak_vram_mib = 22386
+  [ws rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep3] pp2048_toks = 2206.5
+  [direct rep3] pp2048_peak_vram_mib = 21714
+  [direct rep3] gen512_prefill_toks = 886.2
+  [direct rep3] gen512_decode_toks = 208.84
+  [direct rep3] gen512_argmax_match = 2
+  [direct rep3] gen512_peak_vram_mib = 21426
+  [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+STAGE1-SWEEP-DONE 2026-08-02T01:00:48Z

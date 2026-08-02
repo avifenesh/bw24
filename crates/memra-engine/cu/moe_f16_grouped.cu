@@ -181,6 +181,41 @@ static __global__ void dequant_iq3s_f16_kernel(
     }
 }
 
+// ---- shared per-value Q4_K/Q6_K dequant (lane/kquant-tile-loaders): the EXACT per-value
+// expressions of the q4k/q6k dequant kernels, factored into __forceinline__ helpers so the
+// DIRECT-FROM-QUANT sk tile loaders (below the sk kernels) compute bit-identical f16 values
+// to the workspace path by construction — gated bitwise in kernel-check ("f16g-kq-direct"),
+// synthetic + real weights.
+
+// q6_K value: b = 210B superblock (ql[128], qh[64], i8 scales[16], f16 d at the END),
+// l255 = value index 0..255 within the superblock.
+__device__ __forceinline__ __half kq_q6k_val(const uint8_t* __restrict__ b, int l255){
+    const uint8_t* ql = b; const uint8_t* qh = b+128;
+    const int8_t* sc = (const int8_t*)(b+192);
+    float dd = g_half_to_float(*(const uint16_t*)(b+208));
+    int n2 = l255>>7, rr = l255&127, q4 = rr>>5, l = rr&31, is = l>>4;
+    int qlb = ql[n2*64 + l + (q4&1)*32];
+    int nib = (q4<2) ? (qlb & 0xF) : (qlb >> 4);
+    int qv = (nib | (((qh[n2*32 + l] >> (2*q4)) & 3) << 4)) - 32;
+    return __float2half(dd * (float)sc[n2*8 + is + 2*q4] * (float)qv);
+}
+
+// q4_K value: b = 144B superblock (f16 d, f16 dmin, scales[12] 6-bit packed, qs[128]),
+// l = value index 0..255 within the superblock.
+__device__ __forceinline__ __half kq_q4k_val(const uint8_t* __restrict__ b, int l){
+    float dd = g_half_to_float(*(const uint16_t*)b);
+    float dmin = g_half_to_float(*(const uint16_t*)(b+2));
+    const uint8_t* scs = b+4; const uint8_t* q = b+16;
+    int g64 = l>>6, w64 = l&63, is = g64*2 + (w64>>5);
+    int sc8, m8;
+    if(is < 4){ sc8 = scs[is] & 63;                       m8 = scs[is+4] & 63; }
+    else      { sc8 = (scs[is+4] & 0xF) | ((scs[is-4] >> 6) << 4);
+                m8  = (scs[is+4] >> 4)  | ((scs[is]   >> 6) << 4); }
+    int qb = q[g64*32 + (w64&31)];
+    int nib = (w64<32) ? (qb & 0xF) : (qb >> 4);
+    return __float2half(dd * (float)sc8 * (float)nib - dmin * (float)m8);
+}
+
 // q6_K: 210B superblock = ql[128], qh[64], i8 scales[16], f16 d (d at the END).
 static __global__ void dequant_q6k_f16_kernel(
         const unsigned long long* __restrict__ table, int proj, int n_expert,
@@ -190,18 +225,8 @@ static __global__ void dequant_q6k_f16_kernel(
     const uint8_t* W = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[seg]];
     const uint8_t* r = W + (size_t)row*row_bytes;
     __half* d = dst + ((size_t)seg*out_f + row)*in_f;
-    for(int v=threadIdx.x; v<in_f; v+=blockDim.x){
-        int sb=v>>8, l255=v&255;
-        const uint8_t* b = r + (size_t)sb*210;
-        const uint8_t* ql = b; const uint8_t* qh = b+128;
-        const int8_t* sc = (const int8_t*)(b+192);
-        float dd = g_half_to_float(*(const uint16_t*)(b+208));
-        int n2 = l255>>7, rr = l255&127, q4 = rr>>5, l = rr&31, is = l>>4;
-        int qlb = ql[n2*64 + l + (q4&1)*32];
-        int nib = (q4<2) ? (qlb & 0xF) : (qlb >> 4);
-        int qv = (nib | (((qh[n2*32 + l] >> (2*q4)) & 3) << 4)) - 32;
-        d[v] = __float2half(dd * (float)sc[n2*8 + is + 2*q4] * (float)qv);
-    }
+    for(int v=threadIdx.x; v<in_f; v+=blockDim.x)
+        d[v] = kq_q6k_val(r + (size_t)(v>>8)*210, v&255);
 }
 
 // q4_K: 144B superblock = f16 d, f16 dmin, scales[12] (6-bit packed), qs[128].
@@ -213,21 +238,8 @@ static __global__ void dequant_q4k_f16_kernel(
     const uint8_t* W = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[seg]];
     const uint8_t* r = W + (size_t)row*row_bytes;
     __half* d = dst + ((size_t)seg*out_f + row)*in_f;
-    for(int v=threadIdx.x; v<in_f; v+=blockDim.x){
-        int sb=v>>8, l=v&255;
-        const uint8_t* b = r + (size_t)sb*144;
-        float dd = g_half_to_float(*(const uint16_t*)b);
-        float dmin = g_half_to_float(*(const uint16_t*)(b+2));
-        const uint8_t* scs = b+4; const uint8_t* q = b+16;
-        int g64 = l>>6, w64 = l&63, is = g64*2 + (w64>>5);
-        int sc8, m8;
-        if(is < 4){ sc8 = scs[is] & 63;                       m8 = scs[is+4] & 63; }
-        else      { sc8 = (scs[is+4] & 0xF) | ((scs[is-4] >> 6) << 4);
-                    m8  = (scs[is+4] >> 4)  | ((scs[is]   >> 6) << 4); }
-        int qb = q[g64*32 + (w64&31)];
-        int nib = (w64<32) ? (qb & 0xF) : (qb >> 4);
-        d[v] = __float2half(dd * (float)sc8 * (float)nib - dmin * (float)m8);
-    }
+    for(int v=threadIdx.x; v<in_f; v+=blockDim.x)
+        d[v] = kq_q4k_val(r + (size_t)(v>>8)*144, v&255);
 }
 
 // q3_K: 110B superblock = hmask[32], qs[64], scales[12] (6-bit aux dance), f16 d.
@@ -708,6 +720,301 @@ moe_f16g_sk128v_kernel(
     }
 }
 
+// ============ lane/kquant-tile-loaders: DIRECT-FROM-QUANT sk visitor forms ============
+//
+// The Ornith-35B pp512 finding (research/q4k-expert-prefill-20260802 §5): at t=512 the
+// q4_K/q6_K -> f16 dequant passes are 41.8% of GPU kernel time — a fixed per-(layer,proj)
+// cost over the ~all-active expert bank (~44GB f16 write+read per pass at the 858GB/s wall).
+// The kill is NO dequant pass: these kernels are the round-51 visitor forms with the B-side
+// (weight) cp.async tile loads replaced by dequant-in-register DIRECTLY from the Q4_K/Q6_K
+// superblocks in the expert slab (table/ex_ids/row_bytes — the same pointer-table contract
+// as the dequant kernels above). The A-side (activation) pipeline is untouched.
+//
+// NUMERICS: bit-identical to the workspace path BY CONSTRUCTION — the B smem tile holds the
+// same f16 values (kq_q4k_val/kq_q6k_val, the exact expressions the dequant kernels use) in
+// the same positions, and the mma sequence per output element is unchanged. Gated bitwise in
+// kernel-check ("f16g-kq-direct") on synthetic + real weights; MEMRA_F16G_DIRECT=0 is the
+// rollback seam back to the dequant-workspace path (Rust-side admission).
+//
+// B tile is SINGLE-buffered (the dequant is synchronous; the trailing __syncthreads of each
+// kb iteration already fences the next overwrite) — the A cp.async prefetch stays in flight
+// behind the B global quant reads + ALU. sk128's dynamic smem drops to 3xA + 1xB = 64512B.
+
+// Per-thread 16-value window, SOFTWARE-PIPELINED: the raw quant bytes for kb+1 fetch into
+// REGISTERS before kb's mma runs (global latency hides behind the tensor-core work), and the
+// loop-invariant scale loads/products hoist once per window. A 16-aligned window never
+// crosses a q4k/q6k sub-scale boundary. VALUE MATH: kq_q4k_val/kq_q6k_val's exact DAG —
+// `dd*(float)sc8` / `dd*(float)sc` are the left-assoc first products of those expressions,
+// hoisted unchanged (bitwise-gated vs the workspace path in kernel-check "f16g-kq-direct").
+struct KqRaw {
+    uint32_t q[4];      // q4k: 16 nibble bytes (one uint4) | q6k: 16 ql bytes (8x u16)
+    uint32_t qh[4];     // q6k only: 16 qh bytes (8x u16)
+    float f1, f2;       // q4k: (dd*sc8, dmin*m8) | q6k: (dd*sc, unused)
+    int sel;            // q4k: hi-nibble half | q6k: q4 (2-bit shift selector)
+};
+template<int QT>
+__device__ __forceinline__ KqRaw kq_fetch(const uint8_t* __restrict__ wrow, int k0v){
+    // k0v = 16-aligned value offset within the row (absolute k of the window start)
+    constexpr int SBB = (QT == QT_Q4_K) ? 144 : 210;
+    const uint8_t* b = wrow + (size_t)(k0v >> 8) * SBB;
+    const int l0 = k0v & 255;
+    KqRaw r;
+    if(QT == QT_Q4_K){
+        float dd = g_half_to_float(*(const uint16_t*)b);
+        float dmin = g_half_to_float(*(const uint16_t*)(b+2));
+        const uint8_t* scs = b+4;
+        int g64 = l0>>6, w64 = l0&63, is = g64*2 + (w64>>5);
+        int sc8, m8;
+        if(is < 4){ sc8 = scs[is] & 63;                       m8 = scs[is+4] & 63; }
+        else      { sc8 = (scs[is+4] & 0xF) | ((scs[is-4] >> 6) << 4);
+                    m8  = (scs[is+4] >> 4)  | ((scs[is]   >> 6) << 4); }
+        r.f1 = dd * (float)sc8;
+        r.f2 = dmin * (float)m8;
+        r.sel = (w64 >= 32);
+        uint4 q = *(const uint4*)(b + 16 + g64*32 + (w64 & 31));   // 16B-aligned
+        r.q[0] = q.x; r.q[1] = q.y; r.q[2] = q.z; r.q[3] = q.w;
+    } else {
+        float dd = g_half_to_float(*(const uint16_t*)(b+208));
+        int n2 = l0>>7, rr = l0&127, q4 = rr>>5, l = rr&31;
+        int is = l>>4;
+        const int8_t* sc = (const int8_t*)(b+192);
+        r.f1 = dd * (float)sc[n2*8 + is + 2*q4];
+        r.f2 = 0.0f;
+        r.sel = q4;
+        const uint8_t* qlp = b + n2*64 + l + (q4&1)*32;   // 2-aligned (offsets even)
+        const uint8_t* qhp = b + 128 + n2*32 + l;
+        #pragma unroll
+        for(int i = 0; i < 4; i++){
+            r.q[i]  = (uint32_t)*(const uint16_t*)(qlp + 4*i)
+                    | ((uint32_t)*(const uint16_t*)(qlp + 4*i + 2) << 16);
+            r.qh[i] = (uint32_t)*(const uint16_t*)(qhp + 4*i)
+                    | ((uint32_t)*(const uint16_t*)(qhp + 4*i + 2) << 16);
+        }
+    }
+    return r;
+}
+template<int QT>
+__device__ __forceinline__ void kq_store(const KqRaw& r, __half* __restrict__ dst){
+    #pragma unroll
+    for(int j = 0; j < 16; j++){
+        if(QT == QT_Q4_K){
+            int byte = (r.q[j>>2] >> (8*(j&3))) & 0xff;
+            int nib = r.sel ? (byte >> 4) : (byte & 0xF);
+            dst[j] = __float2half(r.f1 * (float)nib - r.f2);
+        } else {
+            int qlb = (r.q[j>>2]  >> (8*(j&3))) & 0xff;
+            int qhb = (r.qh[j>>2] >> (8*(j&3))) & 0xff;
+            int nib = (r.sel < 2) ? (qlb & 0xF) : (qlb >> 4);
+            int qv = (nib | (((qhb >> (2*r.sel)) & 3) << 4)) - 32;
+            dst[j] = __float2half(r.f1 * (float)qv);
+        }
+    }
+}
+
+template<int QT>
+static __global__ void __launch_bounds__(128)
+moe_kq_sk32v_kernel(
+        const unsigned long long* __restrict__ table, int proj, int n_expert,
+        const int* __restrict__ ex_ids, long row_bytes,
+        const __half* __restrict__ A,
+        float* __restrict__ Y, const float* __restrict__ row_scale,
+        const int* __restrict__ ex_off, int n_active,
+        int in_f, int out_f, int mlo, int mhi, int total_tiles){
+    __shared__ int s_pre[SK_MAX_G + 1];
+    __shared__ __align__(16) __half As[2][SK_BM][SK_STRIDE];
+    __shared__ __align__(16) __half Bs[SK_BN][SK_STRIDE];
+    const int ntx = (out_f + SK_BN - 1) / SK_BN;
+    sk_tile_prefix(s_pre, ex_off, n_active, ntx, SK_BM, mlo, mhi);
+
+    const int lane = threadIdx.x, warp = threadIdx.y;
+    const int tid  = warp * 32 + lane;
+    const int nkb  = in_f / SK_BK;
+    const int wm = (warp & 1) * 16, wn = (warp >> 1) * 32;
+    const int ar = tid >> 2,  ac  = (tid & 3) * 8;
+    const int brow = tid >> 1, bc0 = (tid & 1) * 16;
+
+    for(int t = blockIdx.x; t < total_tiles; t += gridDim.x){
+        const int g  = sk_tile_group(s_pre, n_active, t);
+        const int lo = ex_off[g], m_e = ex_off[g+1] - lo;
+        const int local = t - s_pre[g];
+        const int m0 = (local / ntx) * SK_BM;
+        const int n0 = (local % ntx) * SK_BN;
+
+        const __half* Ag = A + (size_t)lo * in_f;
+        const uint8_t* Wq = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[g]];
+        const int am = min(m0 + ar, m_e - 1);
+        const __half* aga = Ag + (size_t)am * in_f + ac;
+        const int bn = min(n0 + brow, out_f - 1);
+        const uint8_t* wrow = Wq + (size_t)bn * row_bytes;
+
+        sk_cp16(&As[0][ar][ac], aga);
+        asm volatile("cp.async.commit_group;");
+        KqRaw braw = kq_fetch<QT>(wrow, bc0);   // kb=0 window
+
+        float acc[4][4] = {};
+        for(int kb = 0; kb < nkb; kb++){
+            const int cur = kb & 1;
+            if(kb + 1 < nkb){
+                const int nxt = cur ^ 1, k0n = (kb + 1) * SK_BK;
+                sk_cp16(&As[nxt][ar][ac], aga + k0n);
+                asm volatile("cp.async.commit_group;");
+            }
+            // B tile for THIS kb from the pre-fetched registers (previous kb's trailing
+            // __syncthreads fences the Bs overwrite), then issue kb+1's raw fetch so those
+            // global reads fly behind this kb's mma.
+            kq_store<QT>(braw, &Bs[brow][bc0]);
+            if(kb + 1 < nkb) braw = kq_fetch<QT>(wrow, (kb + 1) * SK_BK + bc0);
+            if(kb + 1 < nkb) asm volatile("cp.async.wait_group 1;");
+            else             asm volatile("cp.async.wait_group 0;");
+            __syncthreads();
+            #pragma unroll
+            for(int kk = 0; kk < 2; kk++){
+                unsigned a[4], b0[4], b1[4];
+                sk_ldm16x16(a,  &As[cur][wm][kk*16],  SK_STRIDE);
+                sk_ldm16x16(b0, &Bs[wn][kk*16],       SK_STRIDE);
+                sk_ldm16x16(b1, &Bs[wn + 16][kk*16],  SK_STRIDE);
+                sk_mma(acc[0], a, b0[0], b0[2]);
+                sk_mma(acc[1], a, b0[1], b0[3]);
+                sk_mma(acc[2], a, b1[0], b1[2]);
+                sk_mma(acc[3], a, b1[1], b1[3]);
+            }
+            __syncthreads();
+        }
+
+        const int r0 = m0 + wm + lane / 4;
+        const int cb = n0 + wn + (lane % 4) * 2;
+        const float s0 = (r0     < m_e) ? row_scale[lo + r0]     : 0.0f;
+        const float s1 = (r0 + 8 < m_e) ? row_scale[lo + r0 + 8] : 0.0f;
+        float* y0 = Y + (size_t)(lo + r0) * out_f;
+        #pragma unroll
+        for(int nb = 0; nb < 4; nb++){
+            const int c = cb + nb * 8;
+            if(r0 < m_e){
+                if(c     < out_f) y0[c]     = acc[nb][0] * s0;
+                if(c + 1 < out_f) y0[c + 1] = acc[nb][1] * s0;
+            }
+            if(r0 + 8 < m_e){
+                if(c     < out_f) y0[(size_t)8 * out_f + c]     = acc[nb][2] * s1;
+                if(c + 1 < out_f) y0[(size_t)8 * out_f + c + 1] = acc[nb][3] * s1;
+            }
+        }
+    }
+}
+
+// 128x64x64 direct form: A keeps the 3-stage cp.async pipeline; B is a single 64x72 tile
+// dequanted per kb (256 threads, row = tid>>2, 16-value quarter-row per thread).
+#define KQ128_SMEM_BYTES ((SK128_STAGES * SK128_A_ELEMS + SK128_B_ELEMS) * (int)sizeof(__half))
+
+template<int QT>
+static __global__ void __launch_bounds__(256)
+moe_kq_sk128v_kernel(
+        const unsigned long long* __restrict__ table, int proj, int n_expert,
+        const int* __restrict__ ex_ids, long row_bytes,
+        const __half* __restrict__ A,
+        float* __restrict__ Y, const float* __restrict__ row_scale,
+        const int* __restrict__ ex_off, int n_active,
+        int in_f, int out_f, int mlo, int mhi, int total_tiles){
+    extern __shared__ __align__(16) __half kq128_sm[];
+    __half* Asm = kq128_sm;                                   // [stage][128][72]
+    __half* Bsm = kq128_sm + SK128_STAGES * SK128_A_ELEMS;    // [64][72], single buffer
+    __shared__ int s_pre[SK_MAX_G + 1];
+    const int ntx = (out_f + SK128_BN - 1) / SK128_BN;
+    sk_tile_prefix(s_pre, ex_off, n_active, ntx, SK128_BM, mlo, mhi);
+
+    const int lane = threadIdx.x, warp = threadIdx.y;
+    const int tid  = warp * 32 + lane;                        // 0..255
+    const int nkb  = in_f / SK128_BK;
+    const int wm   = (warp & 3) * 32, wn = (warp >> 2) * 32;
+    const int brow = tid >> 2, bc0 = (tid & 3) * 16;
+
+    for(int t = blockIdx.x; t < total_tiles; t += gridDim.x){
+        const int g  = sk_tile_group(s_pre, n_active, t);
+        const int lo = ex_off[g], m_e = ex_off[g+1] - lo;
+        const int local = t - s_pre[g];
+        const int m0 = (local / ntx) * SK128_BM;
+        const int n0 = (local % ntx) * SK128_BN;
+
+        const __half* Ag = A + (size_t)lo * in_f;
+        const uint8_t* Wq = (const uint8_t*)table[(size_t)proj*n_expert + ex_ids[g]];
+        const int bn = min(n0 + brow, out_f - 1);
+        const uint8_t* wrow = Wq + (size_t)bn * row_bytes;
+
+        const __half* agp[4]; int asr[4], asc[4];
+        #pragma unroll
+        for(int i = 0; i < 4; i++){
+            const int c = tid + i * 256;
+            asr[i] = c >> 3; asc[i] = (c & 7) * 8;
+            const int am = min(m0 + asr[i], m_e - 1);
+            agp[i] = Ag + (size_t)am * in_f + asc[i];
+        }
+        #define KQ128_LOAD_A(st, k0) do { \
+            __half* a_s = Asm + (st) * SK128_A_ELEMS; \
+            _Pragma("unroll") \
+            for(int i = 0; i < 4; i++) sk_cp16(a_s + asr[i]*SK128_STRIDE + asc[i], agp[i] + (k0)); \
+            asm volatile("cp.async.commit_group;"); \
+        } while(0)
+
+        KQ128_LOAD_A(0, 0);
+        if(nkb > 1) KQ128_LOAD_A(1, SK128_BK);
+        KqRaw braw = kq_fetch<QT>(wrow, bc0);   // kb=0 window
+
+        float acc[2][4][4] = {};
+        for(int kb = 0; kb < nkb; kb++){
+            const int cur = kb % SK128_STAGES;
+            if(kb + 2 < nkb) KQ128_LOAD_A((kb + 2) % SK128_STAGES, (kb + 2) * SK128_BK);
+            // B tile for THIS kb from the pre-fetched registers (single buffer; previous
+            // kb's trailing __syncthreads fences), then issue kb+1's raw fetch so those
+            // global reads fly behind this kb's mma.
+            kq_store<QT>(braw, Bsm + brow*SK128_STRIDE + bc0);
+            if(kb + 1 < nkb) braw = kq_fetch<QT>(wrow, (kb + 1) * SK128_BK + bc0);
+            if(kb + 2 < nkb)      asm volatile("cp.async.wait_group 2;");
+            else if(kb + 1 < nkb) asm volatile("cp.async.wait_group 1;");
+            else                  asm volatile("cp.async.wait_group 0;");
+            __syncthreads();
+            const __half* Ab = Asm + cur * SK128_A_ELEMS;
+            #pragma unroll
+            for(int kk = 0; kk < 4; kk++){
+                unsigned a0[4], a1[4], b0[4], b1[4];
+                sk_ldm16x16(a0, Ab + (wm     ) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_ldm16x16(a1, Ab + (wm + 16) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_ldm16x16(b0, Bsm + (wn     ) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_ldm16x16(b1, Bsm + (wn + 16) * SK128_STRIDE + kk*16, SK128_STRIDE);
+                sk_mma(acc[0][0], a0, b0[0], b0[2]);
+                sk_mma(acc[0][1], a0, b0[1], b0[3]);
+                sk_mma(acc[0][2], a0, b1[0], b1[2]);
+                sk_mma(acc[0][3], a0, b1[1], b1[3]);
+                sk_mma(acc[1][0], a1, b0[0], b0[2]);
+                sk_mma(acc[1][1], a1, b0[1], b0[3]);
+                sk_mma(acc[1][2], a1, b1[0], b1[2]);
+                sk_mma(acc[1][3], a1, b1[1], b1[3]);
+            }
+            __syncthreads();
+        }
+        #undef KQ128_LOAD_A
+
+        #pragma unroll
+        for(int mi = 0; mi < 2; mi++){
+            const int r0 = m0 + wm + mi * 16 + lane / 4;
+            const int cb = n0 + wn + (lane % 4) * 2;
+            const float s0 = (r0     < m_e) ? row_scale[lo + r0]     : 0.0f;
+            const float s1 = (r0 + 8 < m_e) ? row_scale[lo + r0 + 8] : 0.0f;
+            float* y0 = Y + (size_t)(lo + r0) * out_f;
+            #pragma unroll
+            for(int nb = 0; nb < 4; nb++){
+                const int c = cb + nb * 8;
+                if(r0 < m_e){
+                    if(c     < out_f) y0[c]     = acc[mi][nb][0] * s0;
+                    if(c + 1 < out_f) y0[c + 1] = acc[mi][nb][1] * s0;
+                }
+                if(r0 + 8 < m_e){
+                    if(c     < out_f) y0[(size_t)8 * out_f + c]     = acc[mi][nb][2] * s1;
+                    if(c + 1 < out_f) y0[(size_t)8 * out_f + c + 1] = acc[mi][nb][3] * s1;
+                }
+            }
+        }
+    }
+}
+
 extern "C" {
 
 size_t memra_moe_f16g_w_bytes(int n_active, int out_f, int in_f){
@@ -810,6 +1117,96 @@ int memra_moe_f16g_gemm_sk(const void* w_f16, const void* act_f16, float* y,
         moe_f16g_sk32v_kernel<<<grid, dim3(32,4,1), 0, st>>>(
             (const __half*)w_f16, (const __half*)act_f16, y, row_scale, ex_off_dev,
             n_active, in_f, out_f, 1, xcross, (int)t32);
+    }
+    cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+}
+
+// DIRECT-FROM-QUANT grouped GEMM (lane/kquant-tile-loaders): the visitor forms above with
+// the B side dequanted in-register from the Q4_K/Q6_K expert superblocks — no f16 dequant
+// workspace exists. Bit-identical to memra_moe_f16g_gemm_sk on the dequant workspace by
+// construction (kernel-check "f16g-kq-direct" gates it bitwise). qtype: 1=Q4_K, 2=Q6_K.
+// Visitor forms only (rc=2 on anything else — the caller keeps the workspace path):
+// the grid-scan rollback arm (MEMRA_F16G_SK=0) stays on the workspace path unchanged.
+int memra_moe_kq_gemm_sk(const unsigned long long* table, int proj, int n_expert,
+        const int* ex_ids, const void* act_f16, float* y,
+        const float* row_scale, const int* ex_off_dev, const int* ex_off_host,
+        int n_active, int max_m, int in_f, int out_f, int qtype, int cross,
+        long row_bytes, void* stream){
+    if(in_f % 256) return 2;                       // whole superblocks per k walk
+    if(qtype != QT_Q4_K && qtype != QT_Q6_K) return 2;
+    if(n_active > SK_MAX_G || ex_off_host == nullptr) return 2;
+    if(n_active <= 0 || max_m <= 0) return 0;
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+    const int qi = (qtype == QT_Q4_K) ? 0 : 1;
+    // Per-instantiation device caps (the q4k/q6k bodies register-differ): occ128[qi] -2
+    // unprobed, -1 device-unfit -> that qtype's large groups ride the 32x64 form.
+    static int sms = 0;
+    static int occ32[2] = {0, 0}, occ128[2] = {-2, -2};
+    if(sms == 0){
+        int dev = 0; cudaGetDevice(&dev);
+        if(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess || sms <= 0)
+            sms = 1;
+    }
+    if(occ32[qi] == 0){
+        cudaError_t oe = (qtype == QT_Q4_K)
+            ? cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ32[qi], moe_kq_sk32v_kernel<QT_Q4_K>, 128, 0)
+            : cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ32[qi], moe_kq_sk32v_kernel<QT_Q6_K>, 128, 0);
+        if(oe != cudaSuccess || occ32[qi] < 1) occ32[qi] = 1;
+    }
+    if(occ128[qi] == -2){
+        int optin = 0, dev = 0; cudaGetDevice(&dev);
+        if(cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess)
+            optin = 48*1024;
+        cudaError_t ae = cudaSuccess, oe = cudaSuccess;
+        if(qtype == QT_Q4_K){
+            ae = cudaFuncSetAttribute(moe_kq_sk128v_kernel<QT_Q4_K>,
+                     cudaFuncAttributeMaxDynamicSharedMemorySize, KQ128_SMEM_BYTES);
+            oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ128[qi],
+                     moe_kq_sk128v_kernel<QT_Q4_K>, 256, KQ128_SMEM_BYTES);
+        } else {
+            ae = cudaFuncSetAttribute(moe_kq_sk128v_kernel<QT_Q6_K>,
+                     cudaFuncAttributeMaxDynamicSharedMemorySize, KQ128_SMEM_BYTES);
+            oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ128[qi],
+                     moe_kq_sk128v_kernel<QT_Q6_K>, 256, KQ128_SMEM_BYTES);
+        }
+        if((size_t)KQ128_SMEM_BYTES > (size_t)optin || ae != cudaSuccess || oe != cudaSuccess
+           || occ128[qi] < 1)
+            occ128[qi] = -1;
+    }
+    int xcross = cross;
+    if(occ128[qi] < 1 || (in_f % SK128_BK) != 0) xcross = 0x7fffffff;
+    if(xcross < 1) xcross = 1;
+    const int ntx = (out_f + SK_BN - 1) / SK_BN;
+    long t32 = 0, t128 = 0;
+    for(int g = 0; g < n_active; g++){
+        const int m_e = ex_off_host[g+1] - ex_off_host[g];
+        if(m_e <= 0) continue;
+        if(m_e >= xcross) t128 += (long)((m_e + SK128_BM - 1)/SK128_BM) * ntx;
+        else              t32  += (long)((m_e + SK_BM - 1)/SK_BM) * ntx;
+    }
+    if(t128 > 0){
+        const long cap = (long)sms * occ128[qi];
+        const int grid = (int)(t128 < cap ? t128 : cap);
+        if(qtype == QT_Q4_K)
+            moe_kq_sk128v_kernel<QT_Q4_K><<<grid, dim3(32,8,1), KQ128_SMEM_BYTES, st>>>(
+                table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+                ex_off_dev, n_active, in_f, out_f, xcross, 0x7fffffff, (int)t128);
+        else
+            moe_kq_sk128v_kernel<QT_Q6_K><<<grid, dim3(32,8,1), KQ128_SMEM_BYTES, st>>>(
+                table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+                ex_off_dev, n_active, in_f, out_f, xcross, 0x7fffffff, (int)t128);
+    }
+    if(t32 > 0){
+        const long cap = (long)sms * occ32[qi];
+        const int grid = (int)(t32 < cap ? t32 : cap);
+        if(qtype == QT_Q4_K)
+            moe_kq_sk32v_kernel<QT_Q4_K><<<grid, dim3(32,4,1), 0, st>>>(
+                table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+                ex_off_dev, n_active, in_f, out_f, 1, xcross, (int)t32);
+        else
+            moe_kq_sk32v_kernel<QT_Q6_K><<<grid, dim3(32,4,1), 0, st>>>(
+                table, proj, n_expert, ex_ids, row_bytes, (const __half*)act_f16, y, row_scale,
+                ex_off_dev, n_active, in_f, out_f, 1, xcross, (int)t32);
     }
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
 }

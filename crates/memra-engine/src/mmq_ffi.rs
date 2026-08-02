@@ -206,6 +206,21 @@ unsafe extern "C" {
     /// device slab ptrs, CSR ex_ids/ex_off/ex_pairs group pairs by expert, pair_tok gathers the
     /// activation row. y = [n_pairs, out_f] pair-major. `act_scratch` pre-quantized over n_tokens.
     /// qtype: 5=IQ4_XS, 6=IQ3_S. Returns 0 or 1000+cudaError.
+    /// Dense-trunk IQ4_XS MMQ (lane/kquant-tile-loaders): the dense analog of the expert
+    /// kernel for non-expert IQ4_XS 2-D matmuls (the KAT-Coder trunk class). Quantizes the
+    /// f32 activation to D4 q8_1_mmq internally; `act_scratch` sized by
+    /// `memra_mmq_iq_experts_act_bytes`. Requires in_f % 256 == 0.
+    pub fn memra_mmq_iq4xs_dense(
+        w_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        row_bytes: i64,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     pub fn memra_mmq_iq_experts(
         table: *const u64,
         proj: i32,
@@ -262,6 +277,18 @@ unsafe extern "C" {
         n_active: i32, max_m: i32, in_f: i32, out_f: i32, shape_sel: i32, cross: i32,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+    // DIRECT-FROM-QUANT sk visitor grouped GEMM (lane/kquant-tile-loaders): the visitor forms
+    // with the B (weight) tiles dequanted in-register from the Q4_K/Q6_K expert superblocks —
+    // no f16 dequant workspace pass. Bit-identical to the workspace path by construction
+    // (kernel-check "f16g-kq-direct"). qtype: QT_Q4_K | QT_Q6_K; rc=2 = not admitted here
+    // (caller keeps the dequant-workspace path).
+    pub fn memra_moe_kq_gemm_sk(
+        table: *const u64, proj: i32, n_expert: i32, ex_ids: *const i32,
+        act_f16: *const core::ffi::c_void, y_f32: *mut f32,
+        row_scale: *const f32, ex_off_dev: *const i32, ex_off_host: *const i32,
+        n_active: i32, max_m: i32, in_f: i32, out_f: i32, qtype: i32, cross: i32,
+        row_bytes: i64, stream: *mut core::ffi::c_void,
+    ) -> i32;
 }
 
 /// W4A8-MMQ DEFAULT-FLIP seam (2026-07-05): the vendored MMQ prefill suite is DEFAULT-ON — NVFP4
@@ -293,6 +320,22 @@ pub fn mmq_q8_enabled() -> bool {
     // kernel-check ALL GREEN; run-spec K=1..8 PASS on 9B+35B. 35B pp 2456->3069 free-clock.
     *ON.get_or_init(|| {
         std::env::var("MEMRA_PP_Q8MMQ")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
+}
+
+/// IQ4_XS dense-trunk MMQ prefill seam (lane/kquant-tile-loaders, 2026-08-02): routes
+/// NON-expert IQ4_XS 2-D projections (m>=16) through the vendored-machinery int8-MMA dense
+/// MMQ (cu/mmq_iq_experts.cu `mmq_iq4xs_dense_kernel`) instead of the per-column dp4a grid
+/// — the KAT-Coder prefill wall (0.169x vs llama; zero weight reuse across tokens,
+/// research/kat-anomaly-20260802 §6). Its own numeric config (MMA reduction order) — gated
+/// with the full exactness battery. m=1..15 decode/verify keep dp4a (dispatch parity).
+/// `MEMRA_PP_IQMMQ=0` reverts.
+pub fn mmq_iq4xs_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("MEMRA_PP_IQMMQ")
             .map(|v| v != "0")
             .unwrap_or(true)
     })
@@ -355,6 +398,14 @@ impl Engine {
             // non-multiples fall back to the hand-rolled qmatvec_gemm_q4_0[_rp].
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_0 => {
                 mmq_q4_enabled() && w.in_features() % 256 == 0
+            }
+            // IQ4_XS dense projections (KAT-Coder trunk): m>=16 prefill only — decode and
+            // spec-verify (m<16) keep the qmatvec_iq4_XS_dp4a per-column program (the
+            // kat-anomaly dispatch-parity law). Requires the dp4a fast path itself enabled:
+            // MEMRA_IQ_FAST=0 (the Stage-A oracle rollback) must also kill this arm so the
+            // rollback stays a full-path seam. in_f % 256: MMQ_ITER_K walks whole superblocks.
+            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_IQ4_XS => {
+                mmq_iq4xs_enabled() && Self::iq_fast_enabled() && w.in_features() % 256 == 0
             }
             _ => false,
         }
@@ -432,8 +483,59 @@ impl Engine {
                 }
                 Ok(y)
             }
+            q if q == crate::QT_IQ4_XS => {
+                let GpuTensor::Quant { row_bytes, .. } = w else { unreachable!() };
+                let mut y = self.qmatvec_mmq_iq4xs_raw(bytes, x, m, in_f, out_f, *row_bytes)?;
+                if *scale != 1.0 {
+                    self.scale_inplace(&mut y, *scale, m * out_f)?;
+                }
+                Ok(y)
+            }
             q => Err(format!("qmatvec_mmq: unsupported qtype {q}").into()),
         }
+    }
+
+    /// Bare IQ4_XS dense MMQ launch (no macro-scale) — also the kernel_check gate entry.
+    pub fn qmatvec_mmq_iq4xs_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        row_bytes: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(
+            in_f % 256 == 0,
+            "MMQ IQ4_XS requires in_f % 256 == 0, got {in_f}"
+        );
+        let act_bytes = unsafe { memra_mmq_iq_experts_act_bytes(in_f as i32, m as i32) };
+        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        {
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = bytes.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
+            let rc = unsafe {
+                memra_mmq_iq4xs_dense(
+                    w_p as *const core::ffi::c_void,
+                    x_p as *const f32,
+                    y_p as *mut f32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
+                    row_bytes as i64,
+                    s_p as *mut core::ffi::c_void,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 {
+                return Err(format!("memra_mmq_iq4xs_dense rc={rc}").into());
+            }
+        }
+        Ok(y)
     }
 
     /// Bare Q4_K/Q5_K MMQ launch (no macro-scale) — also the kernel_check accuracy-gate entry.
@@ -1026,6 +1128,39 @@ impl Engine {
         row_bytes: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let sk = crate::moe_f16g_mode() >= 2 && in_f % 32 == 0;
+        // DIRECT-FROM-QUANT lane (lane/kquant-tile-loaders, default ON — MEMRA_F16G_DIRECT=0
+        // is the rollback seam): Q4_K/Q6_K expert projections skip the dequant-workspace pass
+        // entirely; the sk visitor forms dequant B tiles in-register from the superblocks.
+        // Bit-identical to the workspace path by construction (kernel-check "f16g-kq-direct")
+        // — this is a pure data-movement change, not a numeric-class change. Admission mirrors
+        // the C-side guards; the grid-scan rollback arm (MEMRA_F16G_SK=0) keeps the workspace.
+        let (shape_sel, cross) = crate::moe_f16g_sk_params();
+        if sk && shape_sel >= 0 && crate::moe_f16g_direct_on()
+            && (qtype == crate::QT_Q4_K || qtype == crate::QT_Q6_K)
+            && in_f % 256 == 0 && n_active <= 512 && n_active > 0
+        {
+            let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+            let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+            {
+                let stream = self.gpu.stream();
+                let (tab_p, _g0) = table.device_ptr(&stream);
+                let (ei_p, _g1) = ex_ids.device_ptr(&stream);
+                let (a_p, _g2) = act_f16.device_ptr(&stream);
+                let (s_p, _g3) = act_scale.device_ptr(&stream);
+                let (off_p, _g4) = ex_off_dev.device_ptr(&stream);
+                let (y_p, _g5) = y.device_ptr_mut(&stream);
+                let rc = unsafe {
+                    memra_moe_kq_gemm_sk(tab_p as *const u64, proj, n_expert as i32,
+                        ei_p as *const i32, a_p as *const core::ffi::c_void, y_p as *mut f32,
+                        s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
+                        n_active as i32, max_m, in_f as i32, out_f as i32, qtype, cross,
+                        row_bytes as i64,
+                        stream.cu_stream() as *mut core::ffi::c_void)
+                };
+                if rc != 0 { return Err(format!("memra_moe_kq_gemm_sk rc={rc}").into()); }
+            }
+            return Ok(y);
+        }
         // one-time cublas grouped init (algo heuristics + module load cost ~10% of a cold
         // g26 prime when paid inside the first projection): a tiny dummy grouped GEMM at
         // first use, synced, so the real prime runs warm. The =2 path never touches cublas.
@@ -1173,5 +1308,63 @@ impl Engine {
             if rc != 0 { return Err(format!("memra_moe_f16g_gemm_sk rc={rc}").into()); }
         }
         Ok(y)
+    }
+
+    /// Raw direct-from-quant sk grouped-GEMM entry for kernel-check ("f16g-kq-direct"):
+    /// explicit cross instead of the env policy. `table` = device u64 pointer table
+    /// (proj-major, [n_proj][n_expert] — same contract as moe_f16_grouped), `ex_ids` =
+    /// active-expert ids (device). Visitor forms only (the C side rejects anything else).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_kq_gemm_sk_raw(&self, table: &CudaSlice<u64>, proj: i32, n_expert: usize,
+        ex_ids: &CudaSlice<i32>, act_f16: &CudaSlice<u8>, row_scale: &CudaSlice<f32>,
+        ex_off_host: &[i32], ex_off_dev: &CudaSlice<i32>,
+        in_f: usize, out_f: usize, n_pairs: usize, qtype: i32, row_bytes: usize, cross: i32)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_active = ex_off_host.len() - 1;
+        let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        {
+            let stream = self.gpu.stream();
+            let (tab_p, _g0) = table.device_ptr(&stream);
+            let (ei_p, _g1) = ex_ids.device_ptr(&stream);
+            let (a_p, _g2) = act_f16.device_ptr(&stream);
+            let (s_p, _g3) = row_scale.device_ptr(&stream);
+            let (off_p, _g4) = ex_off_dev.device_ptr(&stream);
+            let (y_p, _g5) = y.device_ptr_mut(&stream);
+            let rc = unsafe {
+                memra_moe_kq_gemm_sk(tab_p as *const u64, proj, n_expert as i32,
+                    ei_p as *const i32, a_p as *const core::ffi::c_void, y_p as *mut f32,
+                    s_p as *const f32, off_p as *const i32, ex_off_host.as_ptr(),
+                    n_active as i32, max_m, in_f as i32, out_f as i32, qtype, cross,
+                    row_bytes as i64,
+                    stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("memra_moe_kq_gemm_sk rc={rc}").into()); }
+        }
+        Ok(y)
+    }
+
+    /// Raw dequant-workspace entry for kernel-check: dequant the active experts' rows to a
+    /// fresh f16 workspace via the same kernel `moe_f16_grouped` uses (the direct loaders'
+    /// bitwise reference).
+    pub fn moe_f16g_dequant_raw(&self, table: &CudaSlice<u64>, proj: i32, n_expert: usize,
+        ex_ids: &CudaSlice<i32>, in_f: usize, out_f: usize, n_active: usize, qtype: i32,
+        row_bytes: usize)
+        -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let mut w_f16 = self.alloc_uninit::<u8>(n_active * out_f * in_f * 2)?;
+        {
+            let stream = self.gpu.stream();
+            let (tab_p, _g0) = table.device_ptr(&stream);
+            let (ei_p, _g1) = ex_ids.device_ptr(&stream);
+            let (w_p, _g2) = w_f16.device_ptr_mut(&stream);
+            let rc = unsafe {
+                memra_moe_f16g_dequant(tab_p as *const u64, proj, n_expert as i32,
+                    ei_p as *const i32, w_p as *mut core::ffi::c_void,
+                    in_f as i32, out_f as i32, n_active as i32, qtype, row_bytes as i64,
+                    stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("memra_moe_f16g_dequant rc={rc}").into()); }
+        }
+        Ok(w_f16)
     }
 }

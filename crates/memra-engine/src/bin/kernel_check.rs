@@ -934,6 +934,219 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    // --- f16g-kq-direct (lane/kquant-tile-loaders): DIRECT-FROM-QUANT Q4_K/Q6_K sk tile
+    // loaders vs the dequant-workspace path. The direct kernels dequant B tiles in-register
+    // from the quant superblocks (kq_q4k_val/kq_q6k_val — the workspace dequant kernels'
+    // exact expressions), so every output element's mma k-chain consumes the same f16
+    // operands in the same order: maxdiff MUST be exactly 0 (bitwise), per visitor form.
+    // Synthetic blocks first (random nibbles/scales, safe-normal f16 d/dmin fields), then
+    // real Ornith-35B expert weights below (weight-oracle section).
+    {
+        let m_sizes: [i32; 8] = [1, 3, 17, 33, 64, 129, 200, 300];
+        let n_active = m_sizes.len();
+        let mut ex_off_host = vec![0i32; n_active + 1];
+        for (g, m) in m_sizes.iter().enumerate() { ex_off_host[g + 1] = ex_off_host[g] + m; }
+        let n_pairs = *ex_off_host.last().unwrap() as usize;
+        let (in_f, out_f) = (512usize, 300usize);   // 2 superblocks/row; ragged out tile
+        let n_expert = n_active;
+        for (qname, qtype, sbb) in [("q4_K", memra_engine::QT_Q4_K, 144usize),
+                                    ("q6_K", memra_engine::QT_Q6_K, 210usize)] {
+            let row_bytes = in_f / 256 * sbb;
+            let ex_bytes = out_f * row_bytes;
+            // Synthetic superblocks: random payload bytes; the f16 scale fields (q4k d/dmin
+            // at +0/+2, q6k d at +208) overwritten with small positive normals (0x2C00 band)
+            // so no NaN/Inf enters the mirror.
+            let mut slab = vec![0u8; n_expert * ex_bytes];
+            for (i, b) in slab.iter_mut().enumerate() {
+                *b = (pr(i + 313) * 256.0) as u8;
+            }
+            for ex in 0..n_expert {
+                for r in 0..out_f {
+                    for s in 0..(in_f / 256) {
+                        let off = ex * ex_bytes + r * row_bytes + s * sbb;
+                        let seed = ex * 131 + r * 7 + s;
+                        let h = |k: usize| -> [u8; 2] {
+                            (0x2C00u16 + ((pr(seed + k) * 512.0) as u16)).to_le_bytes()
+                        };
+                        if qtype == memra_engine::QT_Q4_K {
+                            slab[off..off + 2].copy_from_slice(&h(1));
+                            slab[off + 2..off + 4].copy_from_slice(&h(2));
+                        } else {
+                            slab[off + 208..off + 210].copy_from_slice(&h(1));
+                        }
+                    }
+                }
+            }
+            let slab_d = e.htod_bytes(&slab)?;
+            let base = {
+                use cudarc::driver::DevicePtr;
+                let s = e.stream();
+                let (p, _g) = slab_d.device_ptr(&s);
+                p as u64
+            };
+            let tab: Vec<u64> = (0..n_expert).map(|ex| base + (ex * ex_bytes) as u64).collect();
+            let tab_d = e.htod_u64(&tab)?;
+            // active experts in REVERSED id order — exercises the ex_ids indirection.
+            let ex_ids: Vec<i32> = (0..n_active as i32).rev().collect();
+            let exi_d = e.htod_i32(&ex_ids)?;
+            let act: Vec<u8> = (0..n_pairs * in_f).flat_map(|i| {
+                let h = (0x2C00u16 + ((pr(i + 619) * 4096.0) as u16))
+                    | (((i & 1) as u16) << 15);
+                h.to_le_bytes()
+            }).collect();
+            let ad = e.htod_bytes(&act)?;
+            let scales: Vec<f32> = (0..n_pairs).map(|p| 0.5 + pr(p + 733)).collect();
+            let sd = e.htod(&scales)?;
+            let offd = e.htod_i32(&ex_off_host)?;
+            let ws = e.moe_f16g_dequant_raw(&tab_d, 0, n_expert, &exi_d,
+                                            in_f, out_f, n_active, qtype, row_bytes)?;
+            for (name, cross) in [("hybrid(cross=64)", 64),
+                                  ("all-128", 1), ("all-32", i32::MAX)] {
+                let y_ws = e.dtoh(&e.moe_f16g_gemm_sk_raw(&ws, &ad, &sd, &ex_off_host, &offd,
+                                                          in_f, out_f, n_pairs, 0, cross)?)?;
+                let y_dq = e.dtoh(&e.moe_kq_gemm_sk_raw(&tab_d, 0, n_expert, &exi_d, &ad, &sd,
+                                                        &ex_off_host, &offd, in_f, out_f,
+                                                        n_pairs, qtype, row_bytes, cross)?)?;
+                let d = maxdiff(&y_ws, &y_dq);
+                println!("f16g-kq-direct [{qname} synth in={in_f} out={out_f}] {name} \
+                          vs workspace: maxdiff={d:.2e} {}",
+                         if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+    // f16g-kq-direct on REAL weights: Ornith-35B Q4_K gate_exps + Q6_K down_exps slices.
+    {
+        use memra_gguf::{GgufFile, GgmlType};
+        let o35b = kc_model("f16g-kq-direct", "ornith-1.0-35b-Q4_K_M.gguf",
+            &["/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf"],
+            &gguf_arg);
+        if let Some(path) = o35b.as_deref() {
+            let g = GgufFile::open(path)?;
+            // one Q4_K expert tensor + one Q6_K one (down flips qtype per layer; scan for it).
+            let mut cases: Vec<(String, i32, usize)> = Vec::new();
+            if let Some(t) = g.find("blk.0.ffn_gate_exps.weight")
+                .filter(|t| t.ggml_type == GgmlType::Q4_K) {
+                let _ = t; cases.push(("blk.0.ffn_gate_exps.weight".into(),
+                                       memra_engine::QT_Q4_K, 144));
+            }
+            for l in 0..48 {
+                let name = format!("blk.{l}.ffn_down_exps.weight");
+                if g.find(&name).map(|t| t.ggml_type == GgmlType::Q6_K).unwrap_or(false) {
+                    cases.push((name, memra_engine::QT_Q6_K, 210));
+                    break;
+                }
+            }
+            let m_sizes: [i32; 6] = [5, 33, 64, 80, 129, 17];
+            let n_active = m_sizes.len();
+            let mut ex_off_host = vec![0i32; n_active + 1];
+            for (gg, m) in m_sizes.iter().enumerate() { ex_off_host[gg + 1] = ex_off_host[gg] + m; }
+            let n_pairs = *ex_off_host.last().unwrap() as usize;
+            for (tname, qtype, sbb) in cases {
+                let t = g.find(&tname).unwrap();
+                let (in_f, out_f, ne) = (t.ne[0] as usize, t.ne[1] as usize, t.ne[2] as usize);
+                if in_f % 256 != 0 || ne < n_active {
+                    println!("f16g-kq-direct [{tname}] SKIP (in_f={in_f} ne={ne})");
+                    continue;
+                }
+                let row_bytes = in_f / 256 * sbb;
+                let ex_bytes = out_f * row_bytes;
+                let raw = g.tensor_data(t);
+                let slab_d = e.htod_bytes(&raw[..n_active * ex_bytes])?;
+                let base = {
+                    use cudarc::driver::DevicePtr;
+                    let s = e.stream();
+                    let (p, _gg) = slab_d.device_ptr(&s);
+                    p as u64
+                };
+                let tab: Vec<u64> = (0..n_active).map(|ex| base + (ex * ex_bytes) as u64).collect();
+                let tab_d = e.htod_u64(&tab)?;
+                let ex_ids: Vec<i32> = (0..n_active as i32).collect();
+                let exi_d = e.htod_i32(&ex_ids)?;
+                let act: Vec<u8> = (0..n_pairs * in_f).flat_map(|i| {
+                    let h = (0x2C00u16 + ((pr(i + 619) * 4096.0) as u16))
+                        | (((i & 1) as u16) << 15);
+                    h.to_le_bytes()
+                }).collect();
+                let ad = e.htod_bytes(&act)?;
+                let scales: Vec<f32> = (0..n_pairs).map(|p| 0.5 + pr(p + 733)).collect();
+                let sd = e.htod(&scales)?;
+                let offd = e.htod_i32(&ex_off_host)?;
+                let ws = e.moe_f16g_dequant_raw(&tab_d, 0, n_active, &exi_d,
+                                                in_f, out_f, n_active, qtype, row_bytes)?;
+                for (name, cross) in [("hybrid(cross=64)", 64), ("all-128", 1)] {
+                    let y_ws = e.dtoh(&e.moe_f16g_gemm_sk_raw(&ws, &ad, &sd, &ex_off_host,
+                                          &offd, in_f, out_f, n_pairs, 0, cross)?)?;
+                    let y_dq = e.dtoh(&e.moe_kq_gemm_sk_raw(&tab_d, 0, n_active, &exi_d, &ad,
+                                          &sd, &ex_off_host, &offd, in_f, out_f,
+                                          n_pairs, qtype, row_bytes, cross)?)?;
+                    let d = maxdiff(&y_ws, &y_dq);
+                    println!("f16g-kq-direct [{tname} in={in_f} out={out_f}] {name} \
+                              vs workspace: maxdiff={d:.2e} {}",
+                             if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+    }
+
+    // --- IQ4_XS dense-trunk MMQ (lane/kquant-tile-loaders): the m>=16 int8-MMA dense GEMM
+    // vs the dp4a fast path (the m=1..15 decode/verify program). Same q8_1 per-32 activation
+    // grid; MMA f32 fold order differs -> tolerance band (the other MMQ arms' convention),
+    // not bit-identity. Synthetic blocks + a real KAT-Coder trunk tensor.
+    {
+        let iq4xs_gate = |e: &Engine, wd: &_, in_f: usize, out_f: usize, row_bytes: usize,
+                          label: &str, fails: &mut i32|
+            -> Result<(), Box<dyn std::error::Error>> {
+            for tt in [16usize, 64, 128, 512] {
+                let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 47) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let ya = e.dtoh(&e.qmatvec_iq4_XS_fast(wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                let yb = e.dtoh(&e.qmatvec_mmq_iq4xs_raw(wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                let d = maxdiff(&ya, &yb);
+                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                let rel = d / scale;
+                println!("iq4xs-mmq [{label}] T={tt}: rel={rel:.2e} {}",
+                         if rel < 1e-3 { "OK" } else { *fails += 1; "FAIL" });
+            }
+            Ok(())
+        };
+        // synthetic: random payload, safe-normal f16 d field per 136B superblock.
+        {
+            let (in_f, out_f) = (512usize, 300usize);
+            let row_bytes = in_f / 256 * 136;
+            let mut w = vec![0u8; out_f * row_bytes];
+            for (i, b) in w.iter_mut().enumerate() { *b = (pr(i + 409) * 256.0) as u8; }
+            for r in 0..out_f {
+                for s in 0..(in_f / 256) {
+                    let off = r * row_bytes + s * 136;
+                    let h = 0x2C00u16 + ((pr(r * 7 + s + 3) * 512.0) as u16);
+                    w[off..off + 2].copy_from_slice(&h.to_le_bytes());
+                }
+            }
+            let wd = e.htod_bytes(&w)?;
+            iq4xs_gate(&e, &wd, in_f, out_f, row_bytes, "synth", &mut fails)?;
+        }
+        // real KAT trunk tensor (first 2-D IQ4_XS with in_f%256==0, out_f>=128).
+        {
+            use memra_gguf::{GgufFile, GgmlType};
+            let kat = kc_model("iq4xs-mmq", "Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf",
+                &["/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf"],
+                &gguf_arg);
+            if let Some(path) = kat.as_deref() {
+                let g = GgufFile::open(path)?;
+                if let Some(t) = g.tensors.iter().find(|t| {
+                    t.ggml_type == GgmlType::IQ4_XS && t.ne.len() == 2
+                        && t.ne[0] as usize % 256 == 0 && t.ne[1] >= 128
+                }) {
+                    let (in_f, out_f) = (t.ne[0] as usize, t.ne[1] as usize);
+                    let raw = g.tensor_data(t);
+                    let row_bytes = raw.len() / out_f;
+                    let wd = e.htod_bytes(raw)?;
+                    iq4xs_gate(&e, &wd, in_f, out_f, row_bytes, &t.name, &mut fails)?;
+                }
+            }
+        }
+    }
     // NVFP4 GEMM vs dp4a on the 9B model (separate path: per-tensor macro-scale + in_f%64).
     {
         use memra_gguf::{GgufFile, GgmlType};

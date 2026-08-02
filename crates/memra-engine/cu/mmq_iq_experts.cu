@@ -625,6 +625,135 @@ static int mmq_iq_experts_launch(const unsigned long long* table, int proj, int 
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
 }
 
+// ======================= IQ4_XS DENSE-TRUNK MMQ (lane/kquant-tile-loaders) =======================
+// The dense analog of the expert kernel above, for NON-expert IQ4_XS 2-D matmuls (the KAT-Coder
+// trunk class: attn_qkv/attn_gate/ssm_out/attn_q/shexp — kat-anomaly §6). Same load_tiles_iq4xs
+// decode-at-tile-load + vec_dot_mma int8 MMA + W kb-slice cp.async staging ring; conventional
+// xy-tiling (grid = (out tiles, token tiles)), token-major D4 q8_1 activation, y[token][out_f].
+// FP-ORDER: MMA reduction != the dp4a per-column program -> logits SHIFT; gated on kernel-check
+// closeness vs dp4a + run-gen argmax + run-spec (m>=16 only — decode/verify keep dp4a, dispatch
+// parity preserved by the m-threshold at the call site).
+template<int mmq_x, bool nc>
+__global__ void __launch_bounds__(MMQ_WARP_SIZE*MMQ_NWARPS,1)
+mmq_iq4xs_dense_kernel(
+        const uint8_t* __restrict__ W, const int* __restrict__ Yq, float* __restrict__ y,
+        int in_f, int out_f, int n_tokens, long row_bytes){
+    constexpr int mmq_y = MMQ_Y;
+    const int it = blockIdx.x;                 // out-row tile
+    const int jt = blockIdx.y;                 // token tile
+    const uint8_t* Wt = W + (long)it*mmq_y*row_bytes;
+    const int i_max = out_f - it*mmq_y - 1;
+    const int base = jt*mmq_x;
+    const int cnt = min(mmq_x, n_tokens - base);
+    const int j_max = cnt - 1;
+    const int nsblk = in_f/256;
+    constexpr int sz = sizeof(block_q8_1_mmq)/sizeof(int);   // 36
+
+    extern __shared__ int smem[];
+    int* tile_y = smem;                        // 2 half-buffers (ping-pong)
+    int* tile_x = tile_y + 2*GGML_PAD(mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE);
+    uint8_t* w_stage = (uint8_t*)(tile_x + mmq_y*MMQ_MMA_TILE_X_K);   // 2 x mmq_y x 144B ring
+
+    // W kb-slice staging (the expert kernel's 4B path — 136B IQ4_XS slices).
+    auto stage_w = [&](int kb, int buf){
+        uint8_t* dst0 = w_stage + (size_t)buf*mmq_y*W_STAGE_STRIDE;
+        const int npr = 136/4;
+        const int tot = mmq_y*npr;
+        for(int c0=0;c0<tot;c0+=MMQ_NWARPS*MMQ_WARP_SIZE){
+            int c=c0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x; if(c>=tot) break;
+            int r=c/npr, k=c%npr;
+            int rr = nc ? min(r,i_max) : r;
+            cp_async4(dst0+(size_t)r*W_STAGE_STRIDE+k*4,
+                      Wt+(long)rr*row_bytes+(long)kb*136+k*4);
+        }
+        asm volatile("cp.async.commit_group;");
+    };
+
+    float sum[mmq_x*mmq_y/(MMQ_NWARPS*MMQ_WARP_SIZE)] = {0.0f};
+    auto vdot = [&](const int* ty, int k00){
+        if(cnt == mmq_x) vec_dot_mma<mmq_x,mmq_y,false>(tile_x, ty, sum, k00, j_max);
+        else             vec_dot_mma<mmq_x,mmq_y,true >(tile_x, ty, sum, k00, j_max);
+    };
+    stage_w(0, 0);
+    for(int kb=0;kb<nsblk;kb++){
+        asm volatile("cp.async.wait_group 0;");
+        __syncthreads();
+        const uint8_t* Ws = w_stage + (size_t)(kb&1)*mmq_y*W_STAGE_STRIDE;
+        load_tiles_iq4xs<mmq_y,false>(Ws, tile_x, 0, i_max, W_STAGE_STRIDE);
+        if(kb+1<nsblk) stage_w(kb+1, (kb+1)&1);
+        constexpr int CH = 4;                                      // ints per 16B chunk
+        const int ybuf_stride = GGML_PAD(mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE);
+        #pragma unroll
+        for(int half=0;half<2;half++){
+            int blockk = kb*2 + half;
+            int* ty = tile_y + half*ybuf_stride;
+            for(int c0=0;c0<mmq_x*(sz/CH);c0+=MMQ_NWARPS*MMQ_WARP_SIZE){
+                int c=c0+threadIdx.y*MMQ_WARP_SIZE+threadIdx.x;
+                if(c>=mmq_x*(sz/CH)) break;
+                int token_c = c / (sz/CH), ii = (c % (sz/CH))*CH;
+                if(token_c > j_max) continue;      // tail columns discarded at write-back
+                cp_async16(&ty[token_c*sz+ii],
+                           &Yq[((size_t)blockk*n_tokens + base + token_c)*sz + ii]);
+            }
+            asm volatile("cp.async.commit_group;");
+        }
+        asm volatile("cp.async.wait_group 1;");    // W(kb+1)+Y(h0) done; Y(h1) in flight
+        __syncthreads();
+        vdot(tile_y, 0*MMQ_TILE_NE_K);
+        asm volatile("cp.async.wait_group 0;");
+        __syncthreads();
+        vdot(tile_y + ybuf_stride, 1*MMQ_TILE_NE_K);
+        __syncthreads();
+    }
+    // write-back: row = token (base+j), col = it*mmq_y + i.
+    {
+        typedef tile<16,8,int> tC;
+        constexpr int g=mmq_get_granularity_device(mmq_x); constexpr int rpw=2*g; constexpr int ntw=rpw/tC::I;
+        int i0=(threadIdx.y/ntw)*(ntw*tC::I);
+        #pragma unroll
+        for(int j0=0;j0<mmq_x;j0+=ntw*tC::J){
+            #pragma unroll
+            for(int n=0;n<ntw;n++){
+                #pragma unroll
+                for(int l=0;l<tC::ne;l++){
+                    int j=j0+(threadIdx.y%ntw)*tC::J+tC::get_j(l); if(j>j_max) continue;
+                    int i=i0+n*tC::I+tC::get_i(l); if(nc&&i>i_max) continue;
+                    y[(size_t)(base+j)*out_f + (it*mmq_y+i)] = sum[(j0/tC::J+n)*tC::ne+l];
+                }
+            }
+        }
+    }
+}
+
+// Dense dynamic-smem bytes (no pair-id array — tokens are the identity).
+static size_t mmq_iq4xs_dense_smem(int mmq_x){
+    return 2*GGML_PAD((size_t)mmq_x*MMQ_TILE_Y_K, MMQ_NWARPS*MMQ_WARP_SIZE)*sizeof(int)
+        + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int)
+        + 2*(size_t)MMQ_Y*W_STAGE_STRIDE;
+}
+
+template<int MX>
+static int mmq_iq4xs_dense_launch(const uint8_t* W, const int* Yq, float* y,
+        int in_f, int out_f, int n_tokens, long row_bytes, cudaStream_t st){
+    const int nty = (out_f + MMQ_Y - 1)/MMQ_Y;
+    const int ntj = (n_tokens + MX - 1)/MX;
+    dim3 grid((unsigned)nty, (unsigned)ntj, 1);
+    dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
+    size_t smem = mmq_iq4xs_dense_smem(MX);
+    const bool nc = (out_f % MMQ_Y) != 0;
+    cudaError_t ae;
+    if(nc){
+        ae = cudaFuncSetAttribute(mmq_iq4xs_dense_kernel<MX,true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if(ae != cudaSuccess) return 2000+(int)ae;
+        mmq_iq4xs_dense_kernel<MX,true><<<grid,block,smem,st>>>(W,Yq,y,in_f,out_f,n_tokens,row_bytes);
+    } else {
+        ae = cudaFuncSetAttribute(mmq_iq4xs_dense_kernel<MX,false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        if(ae != cudaSuccess) return 2000+(int)ae;
+        mmq_iq4xs_dense_kernel<MX,false><<<grid,block,smem,st>>>(W,Yq,y,in_f,out_f,n_tokens,row_bytes);
+    }
+    cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
+}
+
 extern "C" {
 
 int memra_mmq_iq_experts(const unsigned long long* table, int proj, int n_expert,
@@ -651,6 +780,36 @@ int memra_mmq_iq_experts(const unsigned long long* table, int proj, int n_expert
     }
     return mmq_iq_experts_launch<MMQ_X>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,
                                         Yq,y,in_f,out_f,n_active,n_tokens,qtype,row_bytes,st);
+}
+
+// Dense-trunk IQ4_XS MMQ: y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
+// Quantizes the f32 activation to D4 q8_1_mmq internally (act_scratch sized by
+// memra_mmq_iq_experts_act_bytes — same layout as the expert path). Requires
+// in_f % 256 == 0. Same device-smem guard as the expert launcher (128-tile > sm_120a's
+// ~99KB opt-in -> 64-token tile). Returns 0, 3 (no tile fits), or 1000+cudaError.
+int memra_mmq_iq4xs_dense(const void* W_blocks, const float* act_f32, float* y,
+        int in_f, int out_f, int n_tokens, long row_bytes, void* act_scratch, void* stream){
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+    {
+        int64_t ne10 = in_f, nep = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+        int64_t bny = (nep + 4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1)/(4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
+        dim3 blk(CUDA_QUANTIZE_BLOCK_SIZE_MMQ,1,1), grid((unsigned)n_tokens,(unsigned)bny,1);
+        quantize_mmq_q8_1_d4_kernel<<<grid,blk,0,st>>>(act_f32, act_scratch, ne10, in_f, nep, n_tokens);
+        cudaError_t e=cudaGetLastError(); if(e) return 1000+(int)e;
+    }
+    static int smem_optin = -1;
+    if(smem_optin < 0){
+        int dev = 0; cudaGetDevice(&dev);
+        if(cudaDeviceGetAttribute(&smem_optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess)
+            smem_optin = 48*1024;
+    }
+    const uint8_t* W = (const uint8_t*)W_blocks;
+    const int* Yq = (const int*)act_scratch;
+    if(mmq_iq4xs_dense_smem(MMQ_X) > (size_t)smem_optin){
+        if(mmq_iq4xs_dense_smem(64) > (size_t)smem_optin) return 3;
+        return mmq_iq4xs_dense_launch<64>(W, Yq, y, in_f, out_f, n_tokens, row_bytes, st);
+    }
+    return mmq_iq4xs_dense_launch<MMQ_X>(W, Yq, y, in_f, out_f, n_tokens, row_bytes, st);
 }
 
 } // extern "C"

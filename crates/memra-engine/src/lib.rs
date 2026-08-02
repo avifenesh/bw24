@@ -90,6 +90,18 @@ pub fn moe_f16g_sk_params() -> (i32, i32) {
         }
     })
 }
+/// DIRECT-FROM-QUANT sk tile loaders (lane/kquant-tile-loaders, 2026-08-02): Q4_K/Q6_K expert
+/// projections on the mode-2/3 sk visitor forms dequant their weight tiles in-register from
+/// the quant superblocks instead of running the per-(layer,projection) dequant pass into an
+/// f16 workspace (41.8% of Ornith-35B t=512 kernel time — the pp512 wall,
+/// research/q4k-expert-prefill-20260802 §5). Bit-identical to the workspace path by
+/// construction (kernel-check "f16g-kq-direct" gates it bitwise) — a data-movement change,
+/// not a numeric-class change. Default ON; MEMRA_F16G_DIRECT=0 reverts to the workspace path.
+pub fn moe_f16g_direct_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_F16G_DIRECT").as_deref() != Ok("0"))
+}
+
 /// Per-model door for the gemma-MoE (gelu) grouped path: round 49's Hopper default
 /// REGRESSED g26 board-2048 prefill -8.3% interleaved x5 on-box (def median 10380,
 /// wild 8.9k-11.7k spread; off 11317, ±0.13%) — the +6-15% probe verdict didn't
