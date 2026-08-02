@@ -24,13 +24,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let k_tok_bytes = (kv_dim / 32) * kbb;
     let v_tok_bytes = (kv_dim / 32) * vbb;
 
-    // depths: the sweep points + rung crossings + tail tiles
-    let bit_depths: Vec<usize> = vec![512, 513, 2048, 3071, 3072, 3073, 4096, 4097, 6143, 6144, 6200];
-    // fine grid for the MEMRA_FA_DEEP_MIN floor sweep (`sweep` mode; default = board depths)
+    // depths: the sweep points + rung crossings + tail tiles (511/512/513 cross the
+    // re-swept sp8->sp64 rung at 512, lane/ladder-3072; 3071/3072/3073 crossed the old
+    // 3072 boundary and stay as coverage)
+    let bit_depths: Vec<usize> = vec![511, 512, 513, 2048, 3071, 3072, 3073, 4096, 4097, 6143, 6144, 6200];
+    // fine grid for the MEMRA_FA_DEEP_MIN floor sweep (`sweep` mode; default = board depths).
+    // lane/ladder-3072: +1024/1536 in the default grid (sp-ladder rung sweep needs the region
+    // below d2048; MEMRA_FA_SPLIT forces the arm per process — OnceLock, one split per run).
     let time_depths: Vec<usize> = if std::env::args().nth(1).as_deref() == Some("sweep") {
         vec![96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 5120, 6144]
     } else {
-        vec![512, 2048, 3072, 4096, 6144]
+        vec![512, 1024, 1536, 2048, 3072, 4096, 6144]
     };
     let t_max = 6272usize;
 

@@ -1,0 +1,16 @@
+=== ladder-3072 battery 2026-08-02T19:00:12Z git=b8ca4e2e ===
+kernel-check: ALL GREEN (436 OK) OK
+argmax kat d4096: MATCH (1) OK
+argmax q35 d4096: MATCH (2) OK
+argmax o35b d4096: MATCH (2) OK
+argmax kat d1024: MATCH (2) OK
+argmax q35 d1024: MATCH (2) OK
+run-spec q35: K-battery PASS (8) OK
+decode-batch config: GREEN OK
+decode-batch strict: GREEN OK
+graph-decode q35 P=6000 N=160: PASS OK
+graph-decode kat P=3000 N=160: PASS OK
+graph-decode q35 P=500 N=96: PASS OK
+graph-decode kat P=400 N=160: PASS OK
+graph-session q35: PASS OK
+=== ladder battery done: FAILS=0 ===
