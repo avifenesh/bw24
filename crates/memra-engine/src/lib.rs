@@ -678,10 +678,13 @@ fn fa_v4_at(t_kv: usize) -> bool {
 /// move the smem physical layout (bank de-conflict row pads) + the load schedule (next-tile
 /// L2 prefetch) — kernel-check pins bitdiff==0 vs the v4 twins across depths, so eager /
 /// rows-verify / graph / seqs stay mutually bit-identical wherever the threshold falls.
-/// Engages at t_kv >= MEMRA_FA_DEEP_MIN (default FA_DEEP_MIN_DEFAULT, the swept floor);
+/// Engages at t_kv >= MEMRA_FA_DEEP_MIN. The swept floor is 0 = ALWAYS ON where v4 ran
+/// (fa-deep-bench fine grid 96..6144, 2026-08-02: deep flat-or-better at EVERY depth,
+/// 1.01-1.26x, no losing cell — so there is no engagement boundary and no new
+/// capture-recapture edge; the env stays as a sweep/diagnostic seam only).
 /// MEMRA_FA_DEEP=0 is the rollback seam. Read per call so the battery + bench can A/B
 /// within one process (the v2/v3 pattern).
-pub const FA_DEEP_MIN_DEFAULT: usize = 2048;
+pub const FA_DEEP_MIN_DEFAULT: usize = 0;
 fn fa_deep_at(t_kv: usize) -> bool {
     if std::env::var("MEMRA_FA_DEEP").as_deref() == Ok("0") { return false; }
     let min = std::env::var("MEMRA_FA_DEEP_MIN").ok().and_then(|v| v.parse().ok())

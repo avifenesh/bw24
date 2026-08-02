@@ -26,7 +26,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // depths: the sweep points + rung crossings + tail tiles
     let bit_depths: Vec<usize> = vec![512, 513, 2048, 3071, 3072, 3073, 4096, 4097, 6143, 6144, 6200];
-    let time_depths: Vec<usize> = vec![512, 2048, 3072, 4096, 6144];
+    // fine grid for the MEMRA_FA_DEEP_MIN floor sweep (`sweep` mode; default = board depths)
+    let time_depths: Vec<usize> = if std::env::args().nth(1).as_deref() == Some("sweep") {
+        vec![96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 5120, 6144]
+    } else {
+        vec![512, 2048, 3072, 4096, 6144]
+    };
     let t_max = 6272usize;
 
     // Build the synthetic cache once via the PRODUCTION append kernel (kernel_check recipe).
@@ -146,9 +151,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t4.push(time_arm("0", d, &tdev, &mut o)?);
             }
         }
+        let (r4, rdp) = (t4.clone(), tdp.clone());
         let med = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[v.len() / 2] };
         let (m4, mdp) = (med(&mut t4), med(&mut tdp));
-        println!("t_kv={d}: v4 {m4:.2} us | deep {mdp:.2} us | ratio {:.3}x", m4 / mdp);
+        println!("t_kv={d}: v4 {m4:.2} us | deep {mdp:.2} us | ratio {:.3}x  (v4 reps {r4:.2?} deep reps {rdp:.2?})",
+                 m4 / mdp);
     }
     if fails > 0 { println!("\nFAILS={fails}"); std::process::exit(1); }
     println!("\nALL BIT GATES GREEN");
