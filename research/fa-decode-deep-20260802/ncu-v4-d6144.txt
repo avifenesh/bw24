@@ -1,0 +1,132 @@
+==PROF== Connected to process 1954423 (/home/avifenesh/projects/wt-fa-decode-deep/target/release/fa_deep_bench)
+==PROF== Profiling "fa_decode_vec_q_v4_dc": 0%....50%....100% - 10 passes
+==PROF== Profiling "fa_decode_vec_q_v4_dc": 0%....50%....100% - 10 passes
+==PROF== Profiling "fa_decode_vec_q_v4_dc": 0%....50%....100% - 10 passes
+==PROF== Profiling "fa_decode_vec_q_v4_dc": 0%....50%....100% - 10 passes
+ncu mode done (depth 6144)
+==PROF== Disconnected from process 1954423
+[1954423] fa_deep_bench@127.0.0.1
+  fa_decode_vec_q_v4_dc (2, 96, 1)x(32, 8, 1), Context 1, Stream 13, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    ------------------------------------------------------------- ----------- ------------
+    Metric Name                                                   Metric Unit Metric Value
+    ------------------------------------------------------------- ----------- ------------
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                     1,403,465
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                       477,175
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct            %        22.37
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct               %        25.48
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct           %        16.51
+    ------------------------------------------------------------- ----------- ------------
+
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz        13.97
+    SM Frequency                    Mhz       939.14
+    Elapsed Cycles                cycle       80,855
+    Memory Throughput                 %        55.92
+    DRAM Throughput                   %        13.62
+    Duration                         us        84.67
+    L1/TEX Cache Throughput           %        75.59
+    L2 Cache Throughput               %        13.68
+    SM Active Cycles              cycle    58,862.10
+    Compute (SM) Throughput           %        38.00
+    ----------------------- ----------- ------------
+
+    OPT   This kernel grid is too small to fill the available resources on this device, resulting in only 0.78 full     
+          waves across all SMs. Look at Launch Statistics for more details.                                             
+
+  fa_decode_vec_q_v4_dc (2, 96, 1)x(32, 8, 1), Context 1, Stream 13, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    ------------------------------------------------------------- ----------- ------------
+    Metric Name                                                   Metric Unit Metric Value
+    ------------------------------------------------------------- ----------- ------------
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                     1,403,401
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                       477,013
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct            %        22.42
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct               %        25.17
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct           %        16.60
+    ------------------------------------------------------------- ----------- ------------
+
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz        13.97
+    SM Frequency                    Mhz       929.57
+    Elapsed Cycles                cycle       80,686
+    Memory Throughput                 %        56.57
+    DRAM Throughput                   %        13.59
+    Duration                         us        84.61
+    L1/TEX Cache Throughput           %        75.69
+    L2 Cache Throughput               %        13.73
+    SM Active Cycles              cycle    58,813.05
+    Compute (SM) Throughput           %        38.42
+    ----------------------- ----------- ------------
+
+    OPT   This kernel grid is too small to fill the available resources on this device, resulting in only 0.78 full     
+          waves across all SMs. Look at Launch Statistics for more details.                                             
+
+  fa_decode_vec_q_v4_dc (2, 96, 1)x(32, 8, 1), Context 1, Stream 13, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    ------------------------------------------------------------- ----------- ------------
+    Metric Name                                                   Metric Unit Metric Value
+    ------------------------------------------------------------- ----------- ------------
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                     1,403,215
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                       476,881
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct            %        22.29
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct               %        25.44
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct           %        16.56
+    ------------------------------------------------------------- ----------- ------------
+
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz        13.98
+    SM Frequency                    Mhz       939.54
+    Elapsed Cycles                cycle       81,069
+    Memory Throughput                 %        56.06
+    DRAM Throughput                   %        13.68
+    Duration                         us        84.45
+    L1/TEX Cache Throughput           %        75.39
+    L2 Cache Throughput               %        13.57
+    SM Active Cycles              cycle    59,027.59
+    Compute (SM) Throughput           %        38.08
+    ----------------------- ----------- ------------
+
+    OPT   This kernel grid is too small to fill the available resources on this device, resulting in only 0.78 full     
+          waves across all SMs. Look at Launch Statistics for more details.                                             
+
+  fa_decode_vec_q_v4_dc (2, 96, 1)x(32, 8, 1), Context 1, Stream 13, Device 0, CC 12.0
+    Section: Command line profiler metrics
+    ------------------------------------------------------------- ----------- ------------
+    Metric Name                                                   Metric Unit Metric Value
+    ------------------------------------------------------------- ----------- ------------
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum                     1,403,215
+    l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum                       477,447
+    smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct            %        22.37
+    smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct               %        25.26
+    smsp__warp_issue_stalled_short_scoreboard_per_warp_active.pct           %        16.75
+    ------------------------------------------------------------- ----------- ------------
+
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz        13.98
+    SM Frequency                    Mhz       939.43
+    Elapsed Cycles                cycle       81,537
+    Memory Throughput                 %        55.79
+    DRAM Throughput                   %        13.51
+    Duration                         us        84.86
+    L1/TEX Cache Throughput           %        75.81
+    L2 Cache Throughput               %        13.50
+    SM Active Cycles              cycle    58,713.45
+    Compute (SM) Throughput           %        37.89
+    ----------------------- ----------- ------------
+
+    OPT   This kernel grid is too small to fill the available resources on this device, resulting in only 0.78 full     
+          waves across all SMs. Look at Launch Statistics for more details.                                             
+
