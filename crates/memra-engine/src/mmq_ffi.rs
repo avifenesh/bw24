@@ -279,11 +279,12 @@ unsafe extern "C" {
         n_active: i32, max_m: i32, in_f: i32, out_f: i32, shape_sel: i32, cross: i32,
         tail: i32, stream: *mut core::ffi::c_void,
     ) -> i32;
-    // DIRECT-FROM-QUANT sk visitor grouped GEMM (lane/kquant-tile-loaders): the visitor forms
-    // with the B (weight) tiles dequanted in-register from the Q4_K/Q6_K expert superblocks —
-    // no f16 dequant workspace pass. Bit-identical to the workspace path by construction
-    // (kernel-check "f16g-kq-direct"). qtype: QT_Q4_K | QT_Q6_K; rc=2 = not admitted here
-    // (caller keeps the dequant-workspace path). tail: as memra_moe_f16g_gemm_sk.
+    // DIRECT-FROM-QUANT sk visitor grouped GEMM (lane/kquant-tile-loaders + iq-direct-loaders):
+    // the visitor forms with the B (weight) tiles dequanted in-register from the expert
+    // superblocks — no f16 dequant workspace pass. Bit-identical to the workspace path by
+    // construction (kernel-check "f16g-kq-direct"). qtype: QT_Q4_K | QT_Q6_K | QT_IQ4_XS |
+    // QT_IQ3_S; rc=2 = not admitted here (caller keeps the dequant-workspace path).
+    // tail: as memra_moe_f16g_gemm_sk.
     pub fn memra_moe_kq_gemm_sk(
         table: *const u64, proj: i32, n_expert: i32, ex_ids: *const i32,
         act_f16: *const core::ffi::c_void, y_f32: *mut f32,
@@ -1130,15 +1131,17 @@ impl Engine {
         row_bytes: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let sk = crate::moe_f16g_mode() >= 2 && in_f % 32 == 0;
-        // DIRECT-FROM-QUANT lane (lane/kquant-tile-loaders, default ON — MEMRA_F16G_DIRECT=0
-        // is the rollback seam): Q4_K/Q6_K expert projections skip the dequant-workspace pass
-        // entirely; the sk visitor forms dequant B tiles in-register from the superblocks.
-        // Bit-identical to the workspace path by construction (kernel-check "f16g-kq-direct")
-        // — this is a pure data-movement change, not a numeric-class change. Admission mirrors
-        // the C-side guards; the grid-scan rollback arm (MEMRA_F16G_SK=0) keeps the workspace.
+        // DIRECT-FROM-QUANT lane (lane/kquant-tile-loaders + lane/iq-direct-loaders, default
+        // ON — MEMRA_F16G_DIRECT=0 is the rollback seam): Q4_K/Q6_K/IQ4_XS/IQ3_S expert
+        // projections skip the dequant-workspace pass entirely; the sk visitor forms dequant
+        // B tiles in-register from the superblocks. Bit-identical to the workspace path by
+        // construction (kernel-check "f16g-kq-direct") — this is a pure data-movement change,
+        // not a numeric-class change. Admission mirrors the C-side guards; the grid-scan
+        // rollback arm (MEMRA_F16G_SK=0) keeps the workspace.
         let (shape_sel, cross) = crate::moe_f16g_sk_params();
-        if sk && shape_sel >= 0 && crate::moe_f16g_direct_on()
-            && (qtype == crate::QT_Q4_K || qtype == crate::QT_Q6_K)
+        if sk && shape_sel >= 0 && crate::moe_f16g_direct_on(qtype)
+            && (qtype == crate::QT_Q4_K || qtype == crate::QT_Q6_K
+                || qtype == crate::QT_IQ4_XS || qtype == crate::QT_IQ3_S)
             && in_f % 256 == 0 && n_active <= 512 && n_active > 0
         {
             let max_m = ex_off_host.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
