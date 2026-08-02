@@ -1,0 +1,18 @@
+== build (sm_90a; cu sources touched to defeat rsync-stale fatbins) ==
+   Compiling memra-engine v0.0.0 (/home/ubuntu/memra/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 3m 55s
+   Compiling memra-server v0.0.0 (/home/ubuntu/memra/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 2.78s
+== gate: policy tests ==
+
+== gate: kernel-check ==
+== gate: decode-batch (config B=8) ==
+[moe] resident-experts decision: experts 15.16GB + trunk 2.56GB vs free 83.96GB (expert budget 79.40GB) -> RESIDENT
+[q8rp] split-plane decode mirrors built: 191 tensors
+== gate: decode-batch (strict, equalized composition) ==
+[moe] resident-experts decision: experts 15.16GB + trunk 2.56GB vs free 83.96GB (expert budget 79.40GB) -> RESIDENT
+[q8rp] split-plane decode mirrors built: 191 tensors
+== gate: decode-dc (device counters, bit-identity) ==
+== gate: graph-decode (capture/replay bit-identity) ==
+== gate: graph-session (serving GraphSession vs generate_graph) ==
+VALIDATE-H100: ALL GATES GREEN

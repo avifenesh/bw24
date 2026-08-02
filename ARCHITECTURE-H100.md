@@ -2560,3 +2560,30 @@ recalibrate when the kernels under them move. Dedicated battery: `prime-gate <mo
 --prompts-file <f>`; a leg lives inside tools/local-ci.sh (LAW 3 — validate-h100.sh has
 no run-gen leg, so H100 exposure is via the board scripts' argmax-sanity runs).
 Receipts `research/prime-gate-coverage-20260802/`.
+
+## Round 54 — sk + direct-from-quant loaders re-asked on H100: NO FLIP, mode 1 stays (2026-08-02, lane/h100-sk-direct)
+
+The sm_120a direct-from-quant Q4_K/Q6_K tile loaders (lane/kquant-tile-loaders — the
+dequant-workspace kill, byte-identical by construction, Ornith pp512 +89% on the 5090)
+re-opened the round-51 question: does `MEMRA_MOE_F16G=2` + direct now pass the cublas
+mode-1 Hopper default? Gates first: kernel-check sm_90a ALL GREEN 0 FAIL —
+`f16g-kq-direct` maxdiff=0.00e0 byte-identical 6/6 (synthetic q4_K/q6_K, all three
+visitor forms; real-weight sub-cases KC-SKIP, no ornith/KAT gguf on this box),
+`iq4xs-mmq` synth rel <= 1.70e-4. VERDICT (q35 board-2048 prime, three arms interleaved
+x5 round-robin under one lock hold, argmax MATCH 15/15 incl the batched-prime gate):
+cublas 8547.1 / sk+direct 8112.1 / sk-workspace 8074.2 tok/s — **sk+direct = 94.9% of
+cublas, NO FLIP, zero overlap; mode 1 keeps the Hopper naked default**. The direct
+loaders beat the workspace form +0.47% (zero overlap) — exactly coverage-proportional:
+q35's bank carries only 4/123 Q4_K/Q6_K expert projections (0.81 GB of ~15.6 GB = 5.2%
+of bank bytes); the IQ3_S/IQ4_XS bulk keeps the workspace pass + visitor GEMM, so the
+5.1% residual is round 51's priced residual unchanged (32x64 tail form 31% of stage) —
+no new nsys, no kernel on that class moved. `MEMRA_F16G_SK_CROSS` re-swept on the
+direct arm {16,32,64}: 7999.6 / 8094.9 / 8079.7 — **cross=32 confirmed**, the direct
+form does not move the crossover. The flip rung, if ever: direct-from-quant loaders for
+IQ4_XS/IQ3_S superblocks (the 94.8%) and/or the deeper sk32 tail form. Cross-session
+note (LAW 1): the gap read 3.1% at round 51 (pre router-fix) vs 5.1% today — both
+same-session interleaved; the widening is cross-day + round-52 code motion, and no
+conclusion rests on it. Battery: validate-h100.sh --quick (q35) post-probe, ALL GATES
+GREEN rc=0 — the b9bd9d4c tree (kquant-tile-loaders merged) is battery-clean on this
+box. No board cell ran (no default change); board files untouched. Receipts
+`research/h100-sk-direct-20260802/`.
