@@ -1,0 +1,7 @@
+[moe] resident-experts decision: experts 15.16GB + trunk 2.56GB vs free 83.96GB (expert budget 79.40GB) -> RESIDENT
+[q8rp] split-plane decode mirrors built: 191 tensors
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+prefill argmax=1178  decode argmax=1178  logit maxdiff=5.268e-1  MATCH
+generated 8 tokens in 0.043s = 187.64 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+tokens: [1178, 101696, 198, 55, 1178, 101696, 99151, 111427]

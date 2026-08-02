@@ -1,0 +1,13 @@
+[moe] resident-experts decision: experts 15.16GB + trunk 2.56GB vs free 83.96GB (expert budget 79.40GB) -> RESIDENT
+[q8rp] split-plane decode mirrors built: 191 tensors
+prime-gate: qwen35moe (40 layers) prompts=8 chat=false steps=0
+prompt  0 (T=512): tw=198 (margin 0.0774) bp=365 (margin 0.3088) fl=365 maxdiff=7.6103e-1 det=BIT-IDENTICAL FLIP-NEARTIE
+prompt  1 (T=54): tw=1921 (margin 0.9991) bp=1921 (margin 1.0081) fl=1921 maxdiff=8.8088e-1 det=BIT-IDENTICAL MATCH
+prompt  2 (T=36): tw=271 (margin 4.8483) bp=271 (margin 4.7845) fl=271 maxdiff=7.4667e-1 det=BIT-IDENTICAL MATCH
+prompt  3 (T=40): tw=198 (margin 0.7406) bp=198 (margin 1.0751) fl=198 maxdiff=1.0614e0 det=BIT-IDENTICAL MATCH
+prompt  4 (T=79): tw=271 (margin 4.8089) bp=271 (margin 4.7105) fl=271 maxdiff=5.6738e-1 det=BIT-IDENTICAL MATCH
+prompt  5 (T=36): tw=279 (margin 1.7747) bp=279 (margin 2.1154) fl=279 maxdiff=1.8037e0 det=BIT-IDENTICAL MATCH
+prompt  6 (T=21): tw=271 (margin 1.0807) bp=271 (margin 1.1104) fl=271 maxdiff=6.3330e-1 det=BIT-IDENTICAL MATCH
+prompt  7 (T=60): tw=198 (margin 1.2309) bp=198 (margin 1.3132) fl=198 maxdiff=6.4483e-1 det=BIT-IDENTICAL MATCH
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=7 FLIP-NEARTIE=1 STRUCTURED=0 det_fails=0 | worst maxdiff=1.8037e0 min flip margin=0.0774
+prime-gate: GREEN with reported near-tie flips (cross-config drift class)
