@@ -2538,10 +2538,16 @@ lane proved the flip (KAT-Coder decode 106.7 -> 193.4, +81.3%, x5 interleaved) a
 supported-set no-op guard (no board artifact carries IQ4_XS NON-expert 2-D matmuls —
 the q35 UD-IQ4_XS trunk is Q8_0 throughout, per the tensor-mix dumps; ctrl bit-identity
 guard sha-exact pre/post flip). The same static tensor-mix argument covers the H100
-board set (Q8_0 / Q4_K_M / IQ4_XS-UD / QAT Q4_0 — none with IQ4_XS trunks), but the
-on-box battery re-run on the new default is **PENDING**: a re-verification probe is in
-flight on a parallel lane at this writing; its receipts land in their own round when
-merged. Receipts `research/kat-anomaly-20260802/`.
+board set (Q8_0 / Q4_K_M / IQ4_XS-UD / QAT Q4_0 — none with IQ4_XS trunks), and the
+on-box verification CONFIRMED it: q35 token streams bit-identical naked vs
+`MEMRA_IQ_FAST=0` on every paired run (board-2048 7v7, p2 3v3), perf flat <2% with
+overlapping ranges (the box's bimodal decode visited by both arms — order-flipped reps
+killed the arm hypothesis), `validate-h100.sh --quick` exit 0 under the new gate1
+fraction rule, AUTO-KQUANT proven mode-1 on Hopper by cfg gate. One pre-existing
+find: q35+pp512 trips run-gen's hard argmax assert (the documented 365/198 near-tie,
+margins 0.115/0.077; v0.63.0 control fails identically to the digit — the cell had
+never been run on H100; owner call = near-tie tolerance in the assert or ledger-only).
+Receipts `research/kat-anomaly-20260802/` + `research/h100-v064-verify-20260802/`.
 
 **run-gen grew a second gate line — arch-global (#46).** Board argmax-sanity runs on
 this box now also print `batched-prime argmax=... {MATCH|FLIP-NEARTIE|
