@@ -918,18 +918,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sd = e.htod(&scales)?;
             let offd = e.htod_i32(&ex_off_host)?;
             let y_legacy = e.dtoh(&e.moe_f16g_gemm_sk_raw(&wd, &ad, &sd, &ex_off_host, &offd,
-                                                          in_f, out_f, n_pairs, -1, 0)?)?;
+                                                          in_f, out_f, n_pairs, -1, 0, 0)?)?;
             let scale = cpu.iter().map(|v| v.abs()).fold(0.0f32, f32::max).max(1e-3);
             let rel = maxdiff(&cpu, &y_legacy) / scale;
             println!("f16g-sk (in={in_f} out={out_f} skew 1..300) grid-scan vs oracle: \
                       rel={rel:.2e} {}",
                      if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
-            for (name, cross) in [("visitor-hybrid(cross=64)", 64),
-                                  ("visitor-128", 1), ("visitor-32", i32::MAX)] {
+            // tail=1 = the deep 32x64x64 3-stage tail (lane/sk-tail-form; in_f=480 exercises
+            // its %64 in-launcher fallback), tail=0 = the round-51 2-stage 32x64x32 tail.
+            // Every arm must be byte-identical to grid-scan (same ascending mma k-chain).
+            let mut y_tail_deep: Option<Vec<f32>> = None;
+            let mut y_tail_leg:  Option<Vec<f32>> = None;
+            for (name, cross, tail) in [("visitor-hybrid(cross=64,deep-tail)", 64, 1),
+                                        ("visitor-128", 1, 1),
+                                        ("visitor-32-deep-tail", i32::MAX, 1),
+                                        ("visitor-32-legacy-tail", i32::MAX, 0)] {
                 let yv = e.dtoh(&e.moe_f16g_gemm_sk_raw(&wd, &ad, &sd, &ex_off_host, &offd,
-                                                        in_f, out_f, n_pairs, 0, cross)?)?;
+                                                        in_f, out_f, n_pairs, 0, cross, tail)?)?;
                 let d = maxdiff(&y_legacy, &yv);
                 println!("f16g-sk (in={in_f} out={out_f}) {name} vs grid-scan: maxdiff={d:.2e} {}",
+                         if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
+                if cross == i32::MAX {
+                    if tail == 1 { y_tail_deep = Some(yv); } else { y_tail_leg = Some(yv); }
+                }
+            }
+            // Explicit tail-vs-tail gate (the lane's own claim: the deep form IS the current
+            // tail, bit for bit — all groups on the tail form, both arms):
+            if let (Some(yd), Some(yl)) = (&y_tail_deep, &y_tail_leg) {
+                let d = maxdiff(yd, yl);
+                println!("f16g-sk-tail (in={in_f} out={out_f}) deep(64x3st) vs legacy(32x2st): \
+                          maxdiff={d:.2e} {}",
                          if d == 0.0 { "OK (byte-identical)" } else { fails += 1; "FAIL" });
             }
         }
@@ -1001,13 +1019,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let offd = e.htod_i32(&ex_off_host)?;
             let ws = e.moe_f16g_dequant_raw(&tab_d, 0, n_expert, &exi_d,
                                             in_f, out_f, n_active, qtype, row_bytes)?;
-            for (name, cross) in [("hybrid(cross=64)", 64),
-                                  ("all-128", 1), ("all-32", i32::MAX)] {
+            for (name, cross, tail) in [("hybrid(cross=64,deep-tail)", 64, 1),
+                                        ("all-128", 1, 1),
+                                        ("all-32-deep-tail", i32::MAX, 1),
+                                        ("all-32-legacy-tail", i32::MAX, 0)] {
                 let y_ws = e.dtoh(&e.moe_f16g_gemm_sk_raw(&ws, &ad, &sd, &ex_off_host, &offd,
-                                                          in_f, out_f, n_pairs, 0, cross)?)?;
+                                                          in_f, out_f, n_pairs, 0, cross, tail)?)?;
                 let y_dq = e.dtoh(&e.moe_kq_gemm_sk_raw(&tab_d, 0, n_expert, &exi_d, &ad, &sd,
                                                         &ex_off_host, &offd, in_f, out_f,
-                                                        n_pairs, qtype, row_bytes, cross)?)?;
+                                                        n_pairs, qtype, row_bytes, cross, tail)?)?;
                 let d = maxdiff(&y_ws, &y_dq);
                 println!("f16g-kq-direct [{qname} synth in={in_f} out={out_f}] {name} \
                           vs workspace: maxdiff={d:.2e} {}",
@@ -1074,12 +1094,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let offd = e.htod_i32(&ex_off_host)?;
                 let ws = e.moe_f16g_dequant_raw(&tab_d, 0, n_active, &exi_d,
                                                 in_f, out_f, n_active, qtype, row_bytes)?;
-                for (name, cross) in [("hybrid(cross=64)", 64), ("all-128", 1)] {
+                for (name, cross, tail) in [("hybrid(cross=64,deep-tail)", 64, 1),
+                                            ("all-128", 1, 1),
+                                            ("all-32-deep-tail", i32::MAX, 1),
+                                            ("all-32-legacy-tail", i32::MAX, 0)] {
                     let y_ws = e.dtoh(&e.moe_f16g_gemm_sk_raw(&ws, &ad, &sd, &ex_off_host,
-                                          &offd, in_f, out_f, n_pairs, 0, cross)?)?;
+                                          &offd, in_f, out_f, n_pairs, 0, cross, tail)?)?;
                     let y_dq = e.dtoh(&e.moe_kq_gemm_sk_raw(&tab_d, 0, n_active, &exi_d, &ad,
                                           &sd, &ex_off_host, &offd, in_f, out_f,
-                                          n_pairs, qtype, row_bytes, cross)?)?;
+                                          n_pairs, qtype, row_bytes, cross, tail)?)?;
                     let d = maxdiff(&y_ws, &y_dq);
                     println!("f16g-kq-direct [{tname} in={in_f} out={out_f}] {name} \
                               vs workspace: maxdiff={d:.2e} {}",
