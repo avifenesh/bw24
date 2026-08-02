@@ -1,0 +1,115 @@
+{
+ "ggml-org/gpt-oss-120b-GGUF": {
+  "downloads": 23124,
+  "likes": 75,
+  "files": {
+   "eagle3-gpt-oss-120b-BF16.gguf": 1586786496,
+   "eagle3-gpt-oss-120b-Q8_0.gguf": 849103296,
+   "gpt-oss-120b-MXFP4.gguf": 63387346208
+  }
+ },
+ "unsloth/NVIDIA-Nemotron-3-Super-120B-A12B-GGUF": {
+  "downloads": 21562,
+  "likes": 150,
+  "files": {
+   "BF16/NVIDIA-Nemotron-3-Super-120B-A12B-BF16.gguf": 241518659424,
+   "MXFP4_MOE/NVIDIA-Nemotron-3-Super-120B-A12B-MXFP4_MOE.gguf": 82059741024,
+   "Q8_0/NVIDIA-Nemotron-3-Super-120B-A12B-Q8_0.gguf": 128472991680,
+   "UD-IQ1_M/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ1_M.gguf": 52676904800,
+   "UD-IQ2_M/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ2_M.gguf": 52744013664,
+   "UD-IQ2_XXS/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ2_XXS.gguf": 52676904800,
+   "UD-IQ3_S/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ3_S.gguf": 56631805792,
+   "UD-IQ3_XXS/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ3_XXS.gguf": 56631805792,
+   "UD-IQ4_NL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ4_NL.gguf": 64484689760,
+   "UD-IQ4_XS/NVIDIA-Nemotron-3-Super-120B-A12B-UD-IQ4_XS.gguf": 64484689760,
+   "UD-Q2_K_XL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q2_K_XL.gguf": 54656091968,
+   "UD-Q3_K_M/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q3_K_M.gguf": 61712254816,
+   "UD-Q3_K_S/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q3_K_S.gguf": 61712254816,
+   "UD-Q3_K_XL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q3_K_XL.gguf": 62629103456,
+   "UD-Q4_K_M/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M.gguf": 82541168480,
+   "UD-Q4_K_S/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_S.gguf": 79017953120,
+   "UD-Q4_K_XL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_XL.gguf": 83777308512,
+   "UD-Q5_K_M/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q5_K_M.gguf": 107333699552,
+   "UD-Q5_K_S/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q5_K_S.gguf": 89717622624,
+   "UD-Q5_K_XL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q5_K_XL.gguf": 107570022368,
+   "UD-Q6_K/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q6_K.gguf": 114751457216,
+   "UD-Q6_K_XL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q6_K_XL.gguf": 117853407200,
+   "UD-Q8_K_XL/NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q8_K_XL.gguf": 132485760992
+  }
+ },
+ "unsloth/MiniMax-M2.7-GGUF": {
+  "downloads": 13936,
+  "likes": 217,
+  "files": {
+   "BF16/MiniMax-M2.7-BF16.gguf": 457487024928,
+   "MXFP4_MOE/MiniMax-M2.7-MXFP4_MOE.gguf": 136175829312,
+   "Q8_0/MiniMax-M2.7-Q8_0.gguf": 243136872992,
+   "UD-IQ1_M/MiniMax-M2.7-UD-IQ1_M.gguf": 60700770496,
+   "UD-IQ2_M/MiniMax-M2.7-UD-IQ2_M.gguf": 70139281600,
+   "UD-IQ2_XXS/MiniMax-M2.7-UD-IQ2_XXS.gguf": 65381613760,
+   "UD-IQ3_S/MiniMax-M2.7-UD-IQ3_S.gguf": 83614320800,
+   "UD-IQ3_XXS/MiniMax-M2.7-UD-IQ3_XXS.gguf": 80103688384,
+   "UD-IQ4_NL/MiniMax-M2.7-UD-IQ4_NL.gguf": 110754202912,
+   "UD-IQ4_XS/MiniMax-M2.7-UD-IQ4_XS.gguf": 108413781312,
+   "UD-Q2_K_XL/MiniMax-M2.7-UD-Q2_K_XL.gguf": 75284267200,
+   "UD-Q3_K_M/MiniMax-M2.7-UD-Q3_K_M.gguf": 101243668768,
+   "UD-Q3_K_S/MiniMax-M2.7-UD-Q3_K_S.gguf": 93637298368,
+   "UD-Q3_K_XL/MiniMax-M2.7-UD-Q3_K_XL.gguf": 101939873056,
+   "UD-Q4_K_M/MiniMax-M2.7-UD-Q4_K_M.gguf": 140169905504,
+   "UD-Q4_K_S/MiniMax-M2.7-UD-Q4_K_S.gguf": 130959213888,
+   "UD-Q4_K_XL/MiniMax-M2.7-UD-Q4_K_XL.gguf": 140781175136,
+   "UD-Q5_K_M/MiniMax-M2.7-UD-Q5_K_M.gguf": 168828486080,
+   "UD-Q5_K_S/MiniMax-M2.7-UD-Q5_K_S.gguf": 159042126272,
+   "UD-Q5_K_XL/MiniMax-M2.7-UD-Q5_K_XL.gguf": 169441903040,
+   "UD-Q6_K/MiniMax-M2.7-UD-Q6_K.gguf": 188060778912,
+   "UD-Q6_K_XL/MiniMax-M2.7-UD-Q6_K_XL.gguf": 207445443072,
+   "UD-Q8_K_XL/MiniMax-M2.7-UD-Q8_K_XL.gguf": 246575546912
+  }
+ },
+ "unsloth/MiMo-V2.5-GGUF": {
+  "downloads": 4351,
+  "likes": 39,
+  "files": {
+   "BF16/MiMo-V2.5-BF16.gguf": 619638702336,
+   "MXFP4_MOE/MiMo-V2.5-MXFP4_MOE.gguf": 185431309824,
+   "Q8_0/MiMo-V2.5-Q8_0.gguf": 329279160192,
+   "UD-IQ1_M/MiMo-V2.5-UD-IQ1_M.gguf": 92520742176,
+   "UD-IQ2_M/MiMo-V2.5-UD-IQ2_M.gguf": 96558284064,
+   "UD-IQ2_XXS/MiMo-V2.5-UD-IQ2_XXS.gguf": 96480165152,
+   "UD-IQ3_S/MiMo-V2.5-UD-IQ3_S.gguf": 114864627104,
+   "UD-IQ3_XXS/MiMo-V2.5-UD-IQ3_XXS.gguf": 125920812448,
+   "UD-IQ4_NL/MiMo-V2.5-UD-IQ4_NL.gguf": 152597937696,
+   "UD-IQ4_XS/MiMo-V2.5-UD-IQ4_XS.gguf": 149443820992,
+   "UD-Q2_K_XL/MiMo-V2.5-UD-Q2_K_XL.gguf": 103000735168,
+   "UD-Q3_K_M/MiMo-V2.5-UD-Q3_K_M.gguf": 140031442336,
+   "UD-Q3_K_XL/MiMo-V2.5-UD-Q3_K_XL.gguf": 140182797728,
+   "UD-Q4_K_M/MiMo-V2.5-UD-Q4_K_M.gguf": 190917099040,
+   "UD-Q4_K_S/MiMo-V2.5-UD-Q4_K_S.gguf": 178837503520,
+   "UD-Q4_K_XL/MiMo-V2.5-UD-Q4_K_XL.gguf": 191605325344,
+   "UD-Q5_K_M/MiMo-V2.5-UD-Q5_K_M.gguf": 230176145024,
+   "UD-Q5_K_S/MiMo-V2.5-UD-Q5_K_S.gguf": 216301387424,
+   "UD-Q5_K_XL/MiMo-V2.5-UD-Q5_K_XL.gguf": 230746570368,
+   "UD-Q6_K/MiMo-V2.5-UD-Q6_K.gguf": 256986136352,
+   "UD-Q6_K_XL/MiMo-V2.5-UD-Q6_K_XL.gguf": 281430540032,
+   "UD-Q8_K_XL/MiMo-V2.5-UD-Q8_K_XL.gguf": 337420697472
+  }
+ },
+ "poolside/Laguna-S-2.1-GGUF": {
+  "downloads": 111373,
+  "likes": 164,
+  "files": {
+   "laguna-s-2.1-DFlash-BF16.gguf": 2233764224,
+   "laguna-s-2.1-F16.gguf": 235202258240,
+   "laguna-s-2.1-Q4_K_M.gguf": 96031829760,
+   "laguna-s-2.1-Q8_0.gguf": 128750823168
+  }
+ },
+ "poolside/Laguna-XS-2.1-GGUF": {
+  "downloads": 50870,
+  "likes": 78,
+  "files": {
+   "Laguna-XS-2.1-BF16.gguf": 66930226304,
+   "Laguna-XS-2.1-Q4_K_M.gguf": 20274300032
+  }
+ }
+}
