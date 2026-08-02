@@ -1,0 +1,13 @@
+=== gates 2026-08-02T07:32:43Z git=6e7d4a79 ===
+--- gate: argmax pp22 ---
+[moe] resident-experts decision: experts 19.57GB + trunk 2.56GB vs free 23.92GB (expert budget 19.37GB) -> SLRU cache
+prefill argmax=90700  decode argmax=90700  logit maxdiff=7.274e-1  MATCH
+batched-prime argmax=90700  tokenwise argmax=90700  logit maxdiff=8.706e-1  MATCH
+prefill 22 tok in 0.1481s = 148.6 tok/s (pp22)
+--- gate: argmax pp302-class + chat sanity (NGEN=250) ---
+[moe] resident-experts decision: experts 19.57GB + trunk 2.56GB vs free 23.92GB (expert budget 19.37GB) -> SLRU cache
+prefill argmax=90700  decode argmax=90700  logit maxdiff=1.016e0  MATCH
+batched-prime argmax=90700  tokenwise argmax=90700  logit maxdiff=7.125e-1  MATCH
+prefill 302 tok in 2.3556s = 128.2 tok/s (pp302)
+generated 250 tokens in 3.576s = 69.91 tok/s (Stage-B int8 dp4a decode, gen-only; prime 2.362s) [stop: MaxNew]
+GATES-DONE 2026-08-02T07:35:31Z

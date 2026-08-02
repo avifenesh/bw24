@@ -1,0 +1,2 @@
++(eval):1> hf download unsloth/Qwen-AgentWorld-35B-A3B-GGUF Qwen-AgentWorld-35B-A3B-UD-Q4_K_M.gguf --revision 3a305abf5cfd119ee999dfe929c433746edd8d63 --local-dir /data/ai-ml/hf-models/agentworld-35b-gguf
+path=/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-Q4_K_M.gguf
