@@ -1,0 +1,8 @@
+nmax=3 p2 178.65 pred_n=256 accept=0.529
+nmax=3 p3 241.51 pred_n=256 accept=0.907
+nmax=3 p1 251.05 pred_n=256 accept=0.868
+nmax=4 p2 193.20 pred_n=256 accept=0.582
+nmax=4 p3 243.53 pred_n=256 accept=0.845
+nmax=4 p1 249.71 pred_n=256 accept=0.808
+--- nmax6 p3 probe ---
+p3 227.18 pred_n=256 accept=0.721 temp_c=55
