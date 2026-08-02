@@ -170,6 +170,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `MEMRA_SPEC_LEAN=0` | zeroed verify buffers + rows dispatch at t=1 | default-on 2026-07-08 (+1.5–2.4% 35B) |
 | `MEMRA_SPEC_M2=0` | per-m grid.y=m verify dispatch at t=2 (no small-m batched twin) | default-on 2026-07-09 (flattened the 35B verify K-curve; K=4 within 1–3% of K=3) |
 | `MEMRA_SPEC_FUSED_T=0` | per-tensor decode-exact verify trunk calls (no t=2-4 launch fusion) | default-on 2026-07-09; bit-identical per (tensor,token,row) by construction (kernel-check Q8-FUSED2-B/FUSED3-B gates) |
+| `MEMRA_SPEC_DUAL_T=0` | two single launches for the NVFP4 verify FFN gate+up pair at t=2-4 (no dual twin) | default-on 2026-08-02 (+0.8% q27 spec e2e at K=3, -0.2..-0.3ms/pass at T=2-4 x9 interleaved pairs); bit-identical per (tensor,token,row) by construction (kernel-check DUAL-BATCHED gates, both layouts) |
 | `MEMRA_FA_V3=0` | FA v2 decode twins (v3 = dp4a-K hybrid, own numeric config — int8 Q quantization) | default-on 2026-07-09 after full battery green (kernel-check + run-gen MATCH 35B/9B + run-spec PASS + graph gate bit-identical); requires default q8_0/q5_1 KV + hd%128==0 (host-gated, auto-falls back to v2) |
 | `MEMRA_SPEC_REPLAY=1` | legacy rollback+replay partial accept (also the j==0 fallback) | replay-free default 2026-07-03 (+10–32%) |
 | `MEMRA_SPEC_NOREFRESH=1` | chain-approximate draft-KV entries (no true-hidden refresh) | refresh default 2026-07-03 (+4–6% acc) |

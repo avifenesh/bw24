@@ -1,0 +1,24 @@
+tree b2f2b19560935ef3114d8b3629d99c6902844525
+[gpu 2026-08-02T10:43:49Z] 58, 31.71 W, 1275 MHz, 549 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+[econ] model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf prompt_tokens=2048 N=15 t_max=6
+[econ] primed pos=2048, continuation=[332, 735, 271, 248068, 198, 8160, 579]
+[econ] decode_h   N=15  med= 23.800ms  mean= 23.564ms  min= 22.038ms  p90= 25.067ms  x1.000 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":15,"arms":{"decode_h":{"med_ms":23.8000,"mean_ms":23.5639,"min_ms":22.0382,"p90_ms":25.0667}}}
+Collecting data...
+Generating '/tmp/nsys-report-7a74.qdstrm'
+[1/1] [0%                          ] nsys-q27-decode_h.nsys-rep[1/1] [0%                          ] nsys-q27-decode_h.nsys-rep[1/1] [9%                          ] nsys-q27-decode_h.nsys-rep[1/1] [6%                          ] nsys-q27-decode_h.nsys-rep[1/1] [7%                          ] nsys-q27-decode_h.nsys-rep[1/1] [5%                          ] nsys-q27-decode_h.nsys-rep[1/1] [=16%                        ] nsys-q27-decode_h.nsys-rep[1/1] [14%                         ] nsys-q27-decode_h.nsys-rep[1/1] [12%                         ] nsys-q27-decode_h.nsys-rep[1/1] [===23%                      ] nsys-q27-decode_h.nsys-rep[1/1] [==21%                       ] nsys-q27-decode_h.nsys-rep[1/1] [==20%                       ] nsys-q27-decode_h.nsys-rep[1/1] [=====30%                    ] nsys-q27-decode_h.nsys-rep[1/1] [=======39%                  ] nsys-q27-decode_h.nsys-rep[1/1] [==========49%               ] nsys-q27-decode_h.nsys-rep[1/1] [=============58%            ] nsys-q27-decode_h.nsys-rep[1/1] [================68%         ] nsys-q27-decode_h.nsys-rep[1/1] [==================77%       ] nsys-q27-decode_h.nsys-rep[1/1] [=====================86%    ] nsys-q27-decode_h.nsys-rep[1/1] [=====================89%    ] nsys-q27-decode_h.nsys-rep[1/1] [========================100%] nsys-q27-decode_h.nsys-rep[1/1] [========================100%] nsys-q27-decode_h.nsys-rep
+Generated:
+	/home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q27-decode_h.nsys-rep
+[gpu 2026-08-02T10:44:01Z] 59, 33.75 W, 1732 MHz, 549 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+NSYSARM q27 decode_h rc=0
+Generating SQLite file /home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q27-decode_h.sqlite from /home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q27-decode_h.nsys-rep
+Processing [/home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q27-decode_h.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [/home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q27-decode_h_cuda_gpu_kern_sum.csv]... PROCESSED
+

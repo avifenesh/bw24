@@ -2040,6 +2040,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            // DUAL gate+up batched twins (lane/verify-economics, 2026-08-02): one launch computes
+            // both tensors of the verify FFN pair; per (tensor, token, row) the body is the single
+            // batched program on the SAME layout -> outputs must be BITWISE identical to the two
+            // single launches, on BOTH layouts (GGUF + split-plane rp). bit-bad == 0 required —
+            // any bit diff = a broken chain, fix the kernel not the gate.
+            if let (Some(tg), Some(tu)) = (
+                g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4),
+                g.find("blk.0.ffn_up.weight").filter(|t| t.ggml_type == GgmlType::NVFP4),
+            ) {
+                use memra_engine::model::repack_nvfp4_split;
+                let in_f = tg.ne[0] as usize; let out_f = tg.ne[1] as usize;
+                let raw_g = g.tensor_data(tg); let row_bytes = raw_g.len() / out_f;
+                let raw_u = g.tensor_data(tu);
+                let wg = e.htod_bytes(raw_g)?;
+                let wu = e.htod_bytes(raw_u)?;
+                let wg_rp = e.htod_bytes(&repack_nvfp4_split(raw_g, out_f))?;
+                let wu_rp = e.htod_bytes(&repack_nvfp4_split(raw_u, out_f))?;
+                // b2/b4 tiers only — the dual dispatch stops at m=4 (b8 dual killed, flat).
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
+                    for (rp, w0, w1) in [(false, &wg, &wu), (true, &wg_rp, &wu_rp)] {
+                        let y0ref = e.dtoh(&e.qmatvec_mmvq_batched(w0, &aq, &ad, mm, in_f, out_f,
+                            memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
+                        let y1ref = e.dtoh(&e.qmatvec_mmvq_batched(w1, &aq, &ad, mm, in_f, out_f,
+                            memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
+                        let (y0d, y1d) = e.qmatvec_batched_dual_raw(w0, w1, &aq, &ad, mm, in_f,
+                            out_f, row_bytes, rp)?;
+                        let (y0, y1) = (e.dtoh(&y0d)?, e.dtoh(&y1d)?);
+                        let bad0 = y0ref.iter().zip(&y0).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        let bad1 = y1ref.iter().zip(&y1).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        println!("DUAL-BATCHED gate+up [NVFP4{}] m={mm} mcols={mcols}: bit-bad={}/{} {}",
+                                 if rp { " rp" } else { "" }, bad0, bad1,
+                                 if bad0 == 0 && bad1 == 0 { "OK" } else { fails += 1; "FAIL" });
+                    }
+                }
+            }
         }
     }
 

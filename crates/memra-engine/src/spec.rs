@@ -1157,8 +1157,17 @@ impl HybridModel {
                     ffn_down,
                 } => {
                     let n_ff = ffn_gate.out_features();
-                    let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
-                    let up = e.matmul_decode_exact(ffn_up, &z, t)?;
+                    // DUAL gate+up batched twin (lane/verify-economics, 2026-08-02): one launch
+                    // for the pair at t=2..8 — bit-identical per (tensor,token,row) to the two
+                    // singles (kernel-check pins bitwise; MEMRA_SPEC_DUAL_T=0 reverts). None
+                    // (non-NVFP4 / t outside the tier / seam off) -> the two singles, unchanged.
+                    let (gate, up) = match e.matmul_decode_exact_dual(ffn_gate, ffn_up, &z, t)? {
+                        Some(pair) => pair,
+                        None => (
+                            e.matmul_decode_exact(ffn_gate, &z, t)?,
+                            e.matmul_decode_exact(ffn_up, &z, t)?,
+                        ),
+                    };
                     let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?

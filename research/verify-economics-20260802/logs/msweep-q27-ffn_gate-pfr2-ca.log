@@ -1,0 +1,30 @@
+=== BV=auto ===
+  m=3 (b4): 69.01 us/call  (23.00 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 76.06 us/call  (19.01 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 91.10 us/call  (18.22 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 115.22 us/call  (14.40 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=pfr2 ===
+  m=3 (b4): 71.70 us/call  (23.90 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 78.79 us/call  (19.70 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 88.03 us/call  (17.61 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 110.49 us/call  (13.81 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=ca ===
+  m=3 (b4): 82.45 us/call  (27.48 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 94.04 us/call  (23.51 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 89.96 us/call  (17.99 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 120.29 us/call  (15.04 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=auto ===
+  m=3 (b4): 71.64 us/call  (23.88 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 74.52 us/call  (18.63 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 90.72 us/call  (18.14 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 117.26 us/call  (14.66 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=pfr2 ===
+  m=3 (b4): 72.98 us/call  (24.33 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 79.60 us/call  (19.90 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 87.65 us/call  (17.53 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 109.03 us/call  (13.63 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=ca ===
+  m=3 (b4): 82.77 us/call  (27.59 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 94.45 us/call  (23.61 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 91.31 us/call  (18.26 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 120.45 us/call  (15.06 us/token)  bit-bad=0 bit-exact-bad=0
