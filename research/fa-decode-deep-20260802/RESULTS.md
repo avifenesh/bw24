@@ -116,7 +116,46 @@ by this full session):
 
 ## 7. The depth table — old vs new + vs-llama (e2e)
 
-<!-- filled from depth-ab.jsonl via summarize-ab.py -->
+`run-depth-ab.sh` (+ `run-depth-ab-resume.sh` for rep3 after a harness kill at row 76 —
+reps 1-2 complete before it, no cell lost, no duplicates): the depth-decode lane's exact
+protocol and prompts. memra arms = naked run-gen gen-only rate over 128 greedy tokens,
+OLD = `MEMRA_FA_DEEP=0`, NEW = naked (deep default); arms ADJACENT per (model, depth) in
+the same thermal window. llama = fresh same-session `llama-bench -p 0 -n 128 -d ...`
+denominators (cross-day denominators are clock-drift-invalid). N=3 per cell, medians;
+per-rep values + temps in `depth-ab.jsonl`; argmax gate MATCH in 72/72 memra runs.
+Co-lane regime NOTE: this session's rig ran quieter than the depth lane's — the OLD arm
+itself reads higher than the depth-lane cells (kat d6144 178.1 here vs 170.8 there), so
+cross-lane absolute comparisons are invalid; the in-session pairs are the evidence.
+
+tg128 tok/s (N=3 medians):
+
+| model | arm | d512 | d2048 | d4096 | d6144 |
+|---|---|---|---|---|---|
+| KAT | old | 189.3 | 177.7 | 181.0 | 178.1 |
+| KAT | new | 191.1 | 180.0 | 183.9 | 178.9 |
+| KAT | **new/old** | **1.009x** | **1.013x** | **1.017x** | **1.004x** |
+| KAT | new/llama | 1.021x | 0.960x | 1.015x | 1.003x |
+| q35 | old | 187.0 | 176.9 | 179.9 | 174.4 |
+| q35 | new | 187.7 | 177.6 | 180.7 | 176.8 |
+| q35 | **new/old** | **1.003x** | **1.004x** | **1.004x** | **1.014x** |
+| q35 | new/llama | 1.146x | 1.087x | 1.143x | 1.136x |
+| o35b | old | 200.5 | 192.8 | 195.9 | 190.1 |
+| o35b | new | 204.6 | 193.7 | 198.0 | 191.6 |
+| o35b | **new/old** | **1.020x** | **1.005x** | **1.010x** | **1.008x** |
+| o35b | new/llama | 1.114x | 1.061x | 1.120x | 1.107x |
+
+**Verdict vs the win condition:** flat-or-better in ALL 12 cells (min 1.003x, max
+1.020x); gains at d4096+ = +0.4..+1.7% e2e. Honest sizing vs the priced expectation:
+the lane priced ~+3.7% e2e at d6144 for closing the FULL per-key gap to llama; the
+kernel closed 1.43x of the needed ~2x, and this quiet-rig session's old arm runs
+faster than the production receipts (attention is a smaller share here), so the e2e
+delta lands at ~+1-1.5% at depth with N=3 noise ±1%/cell. The per-rep pairs at d6144
+(kat rep1 175.8→179.0 +1.8%, q35 rep3 174.3→176.6 +1.3%, o35b rep2 189.4→192.4 +1.6%)
+carry the effect; the kat d6144 median pair (178.1→178.9) is compressed by one hot old
+rep. vs llama: q35 1.09-1.15x and o35b 1.06-1.12x at every depth (both arms above
+water, new widens every cell); KAT sits at short-ctx parity and stays 0.96-1.02x —
+its remaining weak cell is d2048 (0.960), the sp8-rung/combine region (§8), not the
+deep-kernel region.
 
 ## 8. Stale-verdict finding for a FOLLOW-UP lane (not built here)
 
