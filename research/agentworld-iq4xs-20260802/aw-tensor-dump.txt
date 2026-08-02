@@ -1,0 +1,16 @@
+== all tensors by type (Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf) ==
+  F32: 361 (0.10 GB)
+  IQ3_S: 78 (9.00 GB)
+  IQ4_XS: 39 (5.56 GB)
+  Q6_K: 4 (1.08 GB, incl output.weight)
+  Q8_0: 251 (2.03 GB)
+== expert tensors (ffn_*_exps) by type ==
+  ffn_down_exps: {'IQ4_XS': 37, 'Q6_K': 3}
+  ffn_gate_exps: {'IQ3_S': 39, 'IQ4_XS': 1}
+  ffn_up_exps: {'IQ3_S': 39, 'IQ4_XS': 1}
+== coverage cross-check (hybrid_forward.rs) ==
+  f16g_proj_ok: Q4_0|IQ4_XS|IQ3_S|Q3_K|Q4_K|Q6_K  -> all 120 exps tensors admitted
+  q8_expert_supported: IQ3_S|IQ4_XS|NVFP4|Q3_K|Q4_K|Q6_K -> all admitted
+  expert_dp4a_supported: Q4_0|IQ3_S|IQ4_XS|Q3_K|Q4_K|Q6_K -> all admitted
+  direct tile loaders (mmq_ffi.rs:1135): Q4_K/Q6_K/IQ4_XS/IQ3_S -> all admitted
+  == the round-49 comment names this EXACT mix as the q35 daily UD shape ==
