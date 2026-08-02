@@ -142,11 +142,15 @@ Per-model receipts and bring-up notes:
 
 ## Serving
 
-OpenAI-compatible server (axum): batched decode, cross-request prefill batching, KV prefix
-reuse, speculative serving, `/metrics`. The contract: greedy serving is isolated-identical
-under concurrent load — a request's tokens never depend on its co-arrivals. Multi-GPU boxes
-serve as a replica fleet: **1,477 tok/s** managed on 3×H100, chaos-tested
-([docs/SERVING.md](docs/SERVING.md)).
+OpenAI-compatible server (axum): batched decode, cross-request prefill batching,
+speculative serving, `/metrics`. OpenAI tool calling (`tools`/`tool_choice`, streaming
+`tool_calls` deltas, `role:"tool"` turns) rides the model's own chat template — zero engine
+changes. Cross-request prompt caching serves repeated prompt prefixes without recomputing
+them, reports the split as `usage.prompt_tokens_details.cached_tokens` on every response,
+and namespaces all reuse per tenant via the request-level `cache_salt` field (vLLM-style).
+The contract: greedy serving is isolated-identical under concurrent load — a request's
+tokens never depend on its co-arrivals. Multi-GPU boxes serve as a replica fleet:
+**1,477 tok/s** managed on 3×H100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
 
 ## What's inside
 
@@ -200,7 +204,8 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
 - [docs/FLAGS.md](docs/FLAGS.md) — the audited flag catalog.
 - [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.
 - [docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md) — the standard drafter pipeline.
-- [docs/SERVING.md](docs/SERVING.md) — replica-fleet serving runbook.
+- [docs/SERVING.md](docs/SERVING.md) — the serve surface: fleet runbook, tools, prompt
+  caching, tenant isolation.
 - [docs/HY3-SPILL.md](docs/HY3-SPILL.md) — Hy3 spill runbook.
 - [HANDOVER.md](HANDOVER.md) — living state-of-work.
 - [research/](research/) — every experiment as JSONL;

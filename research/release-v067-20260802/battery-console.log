@@ -1,0 +1,68 @@
+=== v067 5090 battery 2026-08-02T15:00:13Z git=5e4b79b9 ===
+=== v0.67.0 release battery — 5090 rig, git=5e4b79b9, 2026-08-02T15:07:52Z ===
+Build: target/release binaries from release-train HEAD (cargo build --release = no-op, 0.09s; no source drift since build).
+Co-resident GPU app: llama-server --embedding bge-small -ngl 0 (~260MiB) — allowlisted per local-ci window rules. All runs under flock /tmp/gpu5090.lock.
+
+[1] kernel-check (research/release-v067-20260802/kernel-check.log):
+ALL GREEN: kernels match CPU reference.
+    FA-DEEP byte pins:
+    fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+    fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+
+[2] run-gen argmax:
+  q35 (Qwen3.6-35B-A3B-UD-IQ4_XS, depth-4096 prompt, NGEN=128):
+    prefill argmax=20  decode argmax=20  logit maxdiff=2.170e0  MATCH
+    batched-prime argmax=20  tokenwise argmax=20  logit maxdiff=2.655e0  MATCH
+  q9 (Qwen3.5-9B-NVFP4-MTP, pp512 prompt, NGEN=128):
+    prefill argmax=365  decode argmax=365  logit maxdiff=8.366e-1  MATCH
+    batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=7.100e-1  MATCH
+  o35b (ornith-1.0-35b-Q4_K_M, depth-4096 prompt, NGEN=128):
+    prefill argmax=20  decode argmax=20  logit maxdiff=2.369e0  MATCH
+    batched-prime argmax=20  tokenwise argmax=20  logit maxdiff=2.049e0  MATCH
+
+[3] run-spec K=1..8 self-consistency (q35 + owntrim drafter, depth-2048 prompt, NGEN=64):
+      acceptance: 26/38 = 68.4%   self-consistency: PASS (identical to generate)
+      acceptance: 35/56 = 62.5%   self-consistency: PASS (identical to generate)
+      acceptance: 39/78 = 50.0%   self-consistency: PASS (identical to generate)
+      acceptance: 39/104 = 37.5%   self-consistency: PASS (identical to generate)
+      acceptance: 39/130 = 30.0%   self-consistency: PASS (identical to generate)
+      acceptance: 39/156 = 25.0%   self-consistency: PASS (identical to generate)
+      acceptance: 39/182 = 21.4%   self-consistency: PASS (identical to generate)
+      acceptance: 39/208 = 18.8%   self-consistency: PASS (identical to generate)
+    === SELF-CONSISTENCY PASS ===
+
+VERDICT: ALL GREEN (kernel-check green incl. deep pins; 3/3 argmax MATCH incl. batched-prime lines; 8/8 K self-consistency PASS).

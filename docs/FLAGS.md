@@ -64,6 +64,7 @@ HANDOVER.md sections from that date.
 | `MEMRA_KV_REUSE` | on | `0` disables the KV prefix-reuse pool (session-gate validated; 42.6x turn-start at 40k) |
 | `MEMRA_REUSE_POOL` | 2 | parked-cache pool cap per model (VRAM budget: ~119MB/entry at ctx 8192 on the 9B). At the default, sequential multi-turn workloads of >2 sessions hit the park-evicts-next-entry cascade (0/N resumes; pinned 2026-07-31) — raise to the expected concurrent-session count when VRAM allows |
 | `MEMRA_SERVE_SPEC` | on | `0` disables the spec-decode serve path (greedy + MTP-head requests) |
+| `MEMRA_MAX_SESSIONS` | 64 | max concurrently-active sessions under batched scheduling (admits beyond it queue FIFO, never rejected). Legacy round-robin mode (`MEMRA_SERVE_BATCH=0`) uses the fixed MAX_ACTIVE=4 bound instead |
 | `MEMRA_SPEC_BURST` | 32 | tokens per spec burst — round-robin latency vs per-burst fixed cost (throughput-neutral, 2026-07-06 A/B null) |
 
 ---
@@ -265,7 +266,12 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `MEMRA_GATE_CANARY=1` | decode-batch-gate TEST-ONLY plumbing canary: feeds gate1's batched lane one wrong token at step 1 — every draw diverges early and the fraction rule MUST FAIL (the teeth check for gate recalibrations; also trips strict bit-identity, as a real plumbing bug would) |
 | `MEMRA_PRIME_GATE=0` | skip run-gen's batched-prime gate (#46): the last-position logits of `prime_cache` (the config that seeds real generation and serving) vs the tokenwise reference. A near-tie argmax flip is REPORTED non-fatally (the accepted cross-config drift class — measured 10/144 prompts across the six-model 2026-08-02 sweep, all at tokenwise margins <= 0.70; `research/prime-gate-coverage-20260802/`); a wide-margin flip or out-of-bounds drift FAILs. Dedicated multi-prompt battery: `prime-gate <model> --prompts-file f [--chat] [--strict]` |
 | `MEMRA_PRIME_GATE_MAXDIFF` / `MEMRA_PRIME_GATE_MARGIN` | #46 verdict bounds (defaults 8.0 / 1.0, calibrated on the 2026-08-02 supported-set sweep: legal maxdiff up to 5.5 on gemma Q4_0, legal flip margins <= 0.70). Recalibrate when the kernels under them move — the H100 stale-verdict law |
+| `MEMRA_TICK_TRACE=1` | memra-server: per-tick phase timing of the batched scheduler to stderr (diagnosis only) |
+| `MEMRA_CONFIDENCE_TRACE=<path>` | memra-server: per-token confidence JSONL (`memra-token-confidence-v1`: reference logprob, top1 margin, entropy). Forces single-session serving and disables KV reuse + spec — a measurement harness mode, never a serving config |
 | `MEMRA_SPEC_STATS=1` | per-slot accept histogram + draft-length histogram |
+| `MEMRA_SPEC_PHASE=1` | per-round wall decomposition of the spec loop (draft / verify / accept+commit) — no tracing, no extra syncs (each phase is naturally sync-bounded); printed once at loop end via spec-stats. Built by the verify-economics lane (2026-08-02, `research/verify-economics-20260802/`) |
+| `MEMRA_SPEC_SETUP_TRACE=1` | per-call wall decomposition of the serve spec burst's SETUP + TAIL segments (the round loop's internals are `MEMRA_SPEC_PHASE`'s job) — pins the per-burst fixed cost (`research/spec-serving-20260801/`) |
+| `MEMRA_ECON_N` / `MEMRA_ECON_TMAX` / `MEMRA_ECON_ONLY` | `spec-econ` probe-bin controls (verify-economics receipts): iterations per arm (default 50), max verify T (default 6), single-arm nsys attribution mode (`decode_h`/`verify_tN`) |
 | `MEMRA_DEBUG_SPEC=1` | per-round spec decode trace |
 | `MEMRA_MOE_CSR` | `0` = rollback the CSR expert-dedup gate_up on spec verify (default ON 2026-07-10: owner-scan dedup of the 38-40% duplicated expert weight-stream+decode, +1-2% spec e2e all K); `2` = run BOTH paths + byte-compare (debug) |
 | `MEMRA_MOE_OVERLAP` | `1` = log cross-token expert-activation overlap at spec verify (unique/pairs ratio, diagnostic) |

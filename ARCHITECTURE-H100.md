@@ -2621,3 +2621,17 @@ arms, same-session pair, naked = flipped default): memra decode 242.60 / prefill
 the row. Board jsonl `research/tune-data/h100board-vllm-20260731-realtext.jsonl`
 ts=2026-08-02T07:08:30Z; README H100 table updated in the same commit. Receipts
 `research/h100-flip-full-20260802/`.
+
+## Round 56 — fa-decode-deep twins compile into sm_90a via the shared flash_attn.cu (2026-08-02, lane/fa-decode-deep — docs-lane ledger entry, no H100 numbers)
+
+The deep fa_decode twins (`fa_decode_vec_q_v4_deep` / `_deep_dc`, default-on 2026-08-02)
+live in the shared `crates/memra-engine/cu/flash_attn.cu` with no arch gate, so the sm_90a
+build compiles and dispatches them exactly like sm_120a (hd256 non-gemma decode at
+`t_kv >= 0`, `MEMRA_FA_DEEP=0` reverts). By construction this is NOT a numeric config —
+kernel-check pins deep-vs-v4 BYTE identity (2 geometries x 6 depths x eager/dc/
+bucketed-replay), and the pin now rides every validate-h100.sh run. NO H100 PERFORMANCE
+CLAIM IS MADE HERE: the 1.43x d6144 kernel and flat-or-better depth cells are 5090
+receipts (`research/fa-decode-deep-20260802/`); the deep twins' smem bank-conflict
+premise (padded rows vs the 32-way score-phase conflict) is silicon-sensitive and
+Hopper's smem banking may price it differently. The sm_90a validation — battery +
+depth A/B — rides the next box battery window per the standing LAW 1/LAW 2 rules.

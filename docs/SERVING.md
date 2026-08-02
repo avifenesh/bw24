@@ -1,11 +1,18 @@
-# Multi-user serving — the replica fleet
+# Serving — the OpenAI surface and the replica fleet
+
+This is the serve-surface doc: fleet topology and measured throughput, the isolation
+contract, the OpenAI tools surface, cross-request prompt caching with per-tenant
+`cache_salt` isolation, and the honestly-stated numeric edges of batched serving.
 
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
 processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
 (M0 comms floor measured — ARCHITECTURE-H100.md).
 
-## Tools
+## Fleet tooling
+
+(Not to be confused with the OpenAI `tools` API surface — that is
+"[OpenAI tools surface](#openai-tools-surface-serve-tools-lane-2026-08-02)" below.)
 
 | tool | what it does |
 |---|---|
@@ -138,7 +145,7 @@ cached hit is bit-identical to the run that computed the prefix — gated 16/16 
 + 16/16 full-prefix cached-vs-fresh greedy identity across depths
 (`research/prompt-cache-20260802/gate-exact.jsonl`). Comparing a cached-hit stream against a
 DIFFERENT prime config's fresh stream inherits the batched-prime near-tie first-token law
-above — same documented class, reported not gated.
+("First-token cross-config drift" below) — same documented class, reported not gated.
 
 **Policy:** spec sessions bypass the prefix cache entirely (SpecSession owns trunk + draft
 caches; a trunk-only prefix restore would leave draft state unprimed — the spec tier keeps
