@@ -1,0 +1,21 @@
+  [ws rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [q35-guard/naked rep1] tokens_sha=86dc5f7105a3716b
+  [q35-guard/naked rep2] tokens_sha=86dc5f7105a3716b
+  [q35-guard/naked rep3] tokens_sha=86dc5f7105a3716b
+  [kat dp4a rep1] decision=RESIDENT tokens_sha=9102ffd0b8241a65 (dp4a anchor 9102ffd0b8241a65)
+  [kat mmq rep1] decision=RESIDENT tokens_sha=e5d59ecedc57aa7d (dp4a anchor 9102ffd0b8241a65)
+  [kat dp4a rep2] decision=RESIDENT tokens_sha=9102ffd0b8241a65 (dp4a anchor 9102ffd0b8241a65)
+  [kat mmq rep2] decision=RESIDENT tokens_sha=e5d59ecedc57aa7d (dp4a anchor 9102ffd0b8241a65)
+  [kat dp4a rep3] decision=RESIDENT tokens_sha=9102ffd0b8241a65 (dp4a anchor 9102ffd0b8241a65)
+  [kat mmq rep3] decision=RESIDENT tokens_sha=e5d59ecedc57aa7d (dp4a anchor 9102ffd0b8241a65)

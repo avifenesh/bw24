@@ -1,0 +1,280 @@
+=== O35B KQ-DIRECT STAGE1 SWEEP x3 2026-08-02T00:58:01Z git=1576d8b3 profile=performance ===
+  [ws rep1] pp2048_toks = 3466.3
+  [ws rep1] pp2048_peak_vram_mib = 22226
+  [ws rep1] gen512_prefill_toks = 1658.9
+  [ws rep1] gen512_decode_toks = 206.66
+  [ws rep1] gen512_argmax_match = 2
+  [ws rep1] gen512_peak_vram_mib = 22386
+  [ws rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep1] pp2048_toks = 2213.6
+  [direct rep1] pp2048_peak_vram_mib = 21714
+  [direct rep1] gen512_prefill_toks = 887.8
+  [direct rep1] gen512_decode_toks = 209.11
+  [direct rep1] gen512_argmax_match = 2
+  [direct rep1] gen512_peak_vram_mib = 21426
+  [direct rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep2] pp2048_toks = 3460.4
+  [ws rep2] pp2048_peak_vram_mib = 22226
+  [ws rep2] gen512_prefill_toks = 1662.5
+  [ws rep2] gen512_decode_toks = 208.64
+  [ws rep2] gen512_argmax_match = 2
+  [ws rep2] gen512_peak_vram_mib = 22386
+  [ws rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep2] pp2048_toks = 2211.0
+  [direct rep2] pp2048_peak_vram_mib = 21714
+  [direct rep2] gen512_prefill_toks = 886.8
+  [direct rep2] gen512_decode_toks = 208.93
+  [direct rep2] gen512_argmax_match = 2
+  [direct rep2] gen512_peak_vram_mib = 21426
+  [direct rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep3] pp2048_toks = 3457.2
+  [ws rep3] pp2048_peak_vram_mib = 22226
+  [ws rep3] gen512_prefill_toks = 1665.2
+  [ws rep3] gen512_decode_toks = 208.72
+  [ws rep3] gen512_argmax_match = 2
+  [ws rep3] gen512_peak_vram_mib = 22386
+  [ws rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep3] pp2048_toks = 2206.5
+  [direct rep3] pp2048_peak_vram_mib = 21714
+  [direct rep3] gen512_prefill_toks = 886.2
+  [direct rep3] gen512_decode_toks = 208.84
+  [direct rep3] gen512_argmax_match = 2
+  [direct rep3] gen512_peak_vram_mib = 21426
+  [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+STAGE1-SWEEP-DONE 2026-08-02T01:00:48Z
+=== O35B KQ-DIRECT STAGE1 SWEEP x3 2026-08-02T01:22:38Z git=2ac63454 profile=performance ===
+  [ws rep1] pp2048_toks = 3463.5
+  [ws rep1] pp2048_peak_vram_mib = 22226
+  [ws rep1] gen512_prefill_toks = 1674.2
+  [ws rep1] gen512_decode_toks = 209.20
+  [ws rep1] gen512_argmax_match = 2
+  [ws rep1] gen512_peak_vram_mib = 22386
+  [ws rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep1] pp2048_toks = 4795.2
+  [direct rep1] pp2048_peak_vram_mib = 21714
+  [direct rep1] gen512_prefill_toks = 3157.0
+  [direct rep1] gen512_decode_toks = 209.95
+  [direct rep1] gen512_argmax_match = 2
+  [direct rep1] gen512_peak_vram_mib = 21426
+  [direct rep1] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep2] pp2048_toks = 3464.0
+  [ws rep2] pp2048_peak_vram_mib = 22226
+  [ws rep2] gen512_prefill_toks = 1667.2
+  [ws rep2] gen512_decode_toks = 208.93
+  [ws rep2] gen512_argmax_match = 2
+  [ws rep2] gen512_peak_vram_mib = 22386
+  [ws rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep2] pp2048_toks = 4779.9
+  [direct rep2] pp2048_peak_vram_mib = 21714
+  [direct rep2] gen512_prefill_toks = 3154.8
+  [direct rep2] gen512_decode_toks = 209.79
+  [direct rep2] gen512_argmax_match = 2
+  [direct rep2] gen512_peak_vram_mib = 21426
+  [direct rep2] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [ws rep3] pp2048_toks = 3464.0
+  [ws rep3] pp2048_peak_vram_mib = 22226
+  [ws rep3] gen512_prefill_toks = 1664.1
+  [ws rep3] gen512_decode_toks = 208.98
+  [ws rep3] gen512_argmax_match = 2
+  [ws rep3] gen512_peak_vram_mib = 22386
+  [ws rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+  [direct rep3] pp2048_toks = 4777.5
+  [direct rep3] pp2048_peak_vram_mib = 21714
+  [direct rep3] gen512_prefill_toks = 3155.6
+  [direct rep3] gen512_decode_toks = 209.71
+  [direct rep3] gen512_argmax_match = 2
+  [direct rep3] gen512_peak_vram_mib = 21426
+  [direct rep3] prime-gate=none tokens_sha=c0c12c3b350dc7f5 (anchor c0c12c3b350dc7f5)
+STAGE1-SWEEP-DONE 2026-08-02T01:24:56Z
+=== KAT IQ4XS-MMQ STAGE2 SWEEP x3 2026-08-02T01:34:09Z git=e6cc078b profile=performance ===
+  [dp4a rep1] gen512_prefill_toks = 700.2
+  [dp4a rep1] gen512_decode_toks = 191.63
+  [dp4a rep1] gen512_argmax_match = 2
+  [dp4a rep1] gen512_peak_vram_mib = 19150
+  [kat dp4a rep1] decision=RESIDENT tokens_sha=9102ffd0b8241a65 (dp4a anchor 9102ffd0b8241a65)
+  [dp4a rep1] pp2048_toks = 767.2
+  [mmq rep1] gen512_prefill_toks = 2059.2
+  [mmq rep1] gen512_decode_toks = 194.57
+  [mmq rep1] gen512_argmax_match = 2
+  [mmq rep1] gen512_peak_vram_mib = 19150
+  [kat mmq rep1] decision=RESIDENT tokens_sha=e5d59ecedc57aa7d (dp4a anchor 9102ffd0b8241a65)
+  [mmq rep1] pp2048_toks = 3032.2
+  [dp4a rep2] gen512_prefill_toks = 695.9
+  [dp4a rep2] gen512_decode_toks = 194.94
+  [dp4a rep2] gen512_argmax_match = 2
+  [dp4a rep2] gen512_peak_vram_mib = 19150
+  [kat dp4a rep2] decision=RESIDENT tokens_sha=9102ffd0b8241a65 (dp4a anchor 9102ffd0b8241a65)
+  [dp4a rep2] pp2048_toks = 764.0
+  [mmq rep2] gen512_prefill_toks = 2056.5
+  [mmq rep2] gen512_decode_toks = 194.11
+  [mmq rep2] gen512_argmax_match = 2
+  [mmq rep2] gen512_peak_vram_mib = 19150
+  [kat mmq rep2] decision=RESIDENT tokens_sha=e5d59ecedc57aa7d (dp4a anchor 9102ffd0b8241a65)
+  [mmq rep2] pp2048_toks = 3028.6
+  [dp4a rep3] gen512_prefill_toks = 695.4
+  [dp4a rep3] gen512_decode_toks = 195.07
+  [dp4a rep3] gen512_argmax_match = 2
+  [dp4a rep3] gen512_peak_vram_mib = 19150
+  [kat dp4a rep3] decision=RESIDENT tokens_sha=9102ffd0b8241a65 (dp4a anchor 9102ffd0b8241a65)
+  [dp4a rep3] pp2048_toks = 764.0
+  [mmq rep3] gen512_prefill_toks = 2057.5
+  [mmq rep3] gen512_decode_toks = 194.02
+  [mmq rep3] gen512_argmax_match = 2
+  [mmq rep3] gen512_peak_vram_mib = 19150
+  [kat mmq rep3] decision=RESIDENT tokens_sha=e5d59ecedc57aa7d (dp4a anchor 9102ffd0b8241a65)
+  [mmq rep3] pp2048_toks = 3025.3
+STAGE2-SWEEP-DONE 2026-08-02T01:37:18Z
+=== O35B BAR RE-CHECK (kq-direct) x3 2026-08-02T01:47:07Z git=7df65e4e profile=performance ===
+  [memra rep1] pp2048_toks = 4799.3
+  [memra rep1] pp512_toks = 3157.3
+  [memra rep1] tg128_toks = 207.01
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 4050.039151, "rep": 1, "temp_c": 64}
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 3824.959556, "rep": 1, "temp_c": 64}
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 192.704443, "rep": 1, "temp_c": 64}
+  [memra-p1-code-short rep1] prompt_ntok = 27
+  [memra-p1-code-short rep1] plain_decode_toks = null
+  [memra-p1-code-short rep1] spec_k2_decode_toks = 272.66
+  [memra-p1-code-short rep1] prime_s = 0.048
+  [memra-p1-code-short rep1] spec_consistency_pass = 1
+  [memra-p2-code-medium rep1] prompt_ntok = 1845
+  [memra-p2-code-medium rep1] plain_decode_toks = null
+  [memra-p2-code-medium rep1] spec_k2_decode_toks = 245.98
+  [memra-p2-code-medium rep1] prime_s = 0.399
+  [memra-p2-code-medium rep1] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep1] prompt_ntok = 6257
+  [memra-p3-agentic-long rep1] plain_decode_toks = null
+  [memra-p3-agentic-long rep1] spec_k2_decode_toks = 229.11
+  [memra-p3-agentic-long rep1] prime_s = 1.295
+  [memra-p3-agentic-long rep1] spec_consistency_pass = 1
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1256.03782, "rep": 1, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 3682.580881, "rep": 1, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3648.982413, "rep": 1, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 191.948721, "rep": 1, "temp_c": 72}
+  [memra rep2] pp2048_toks = 4762.1
+  [memra rep2] pp512_toks = 3144.1
+  [memra rep2] tg128_toks = 210.11
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 3977.389133, "rep": 2, "temp_c": 71}
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 3813.156579, "rep": 2, "temp_c": 71}
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 192.550245, "rep": 2, "temp_c": 71}
+  [memra-p1-code-short rep2] prompt_ntok = 27
+  [memra-p1-code-short rep2] plain_decode_toks = null
+  [memra-p1-code-short rep2] spec_k2_decode_toks = 273.63
+  [memra-p1-code-short rep2] prime_s = 0.048
+  [memra-p1-code-short rep2] spec_consistency_pass = 1
+  [memra-p2-code-medium rep2] prompt_ntok = 1845
+  [memra-p2-code-medium rep2] plain_decode_toks = null
+  [memra-p2-code-medium rep2] spec_k2_decode_toks = 245.94
+  [memra-p2-code-medium rep2] prime_s = 0.399
+  [memra-p2-code-medium rep2] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep2] prompt_ntok = 6257
+  [memra-p3-agentic-long rep2] plain_decode_toks = null
+  [memra-p3-agentic-long rep2] spec_k2_decode_toks = 229.00
+  [memra-p3-agentic-long rep2] prime_s = 1.294
+  [memra-p3-agentic-long rep2] spec_consistency_pass = 1
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1217.198473, "rep": 2, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 3689.990347, "rep": 2, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3657.239472, "rep": 2, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 192.299754, "rep": 2, "temp_c": 72}
+  [memra rep3] pp2048_toks = 4771.7
+  [memra rep3] pp512_toks = 3148.6
+  [memra rep3] tg128_toks = 209.82
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 3968.490772, "rep": 3, "temp_c": 71}
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 3823.288566, "rep": 3, "temp_c": 71}
+  [llama] {"cell": "o35b-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 192.59952, "rep": 3, "temp_c": 71}
+  [memra-p1-code-short rep3] prompt_ntok = 27
+  [memra-p1-code-short rep3] plain_decode_toks = null
+  [memra-p1-code-short rep3] spec_k2_decode_toks = 274.41
+  [memra-p1-code-short rep3] prime_s = 0.048
+  [memra-p1-code-short rep3] spec_consistency_pass = 1
+  [memra-p2-code-medium rep3] prompt_ntok = 1845
+  [memra-p2-code-medium rep3] plain_decode_toks = null
+  [memra-p2-code-medium rep3] spec_k2_decode_toks = 245.84
+  [memra-p2-code-medium rep3] prime_s = 0.399
+  [memra-p2-code-medium rep3] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep3] prompt_ntok = 6257
+  [memra-p3-agentic-long rep3] plain_decode_toks = null
+  [memra-p3-agentic-long rep3] spec_k2_decode_toks = 229.20
+  [memra-p3-agentic-long rep3] prime_s = 1.295
+  [memra-p3-agentic-long rep3] spec_consistency_pass = 1
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1217.122369, "rep": 3, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 3689.169384, "rep": 3, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3654.983479, "rep": 3, "temp_c": 72}
+  [llama-class] {"cell": "o35b-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 191.804763, "rep": 3, "temp_c": 72}
+OBAR-DONE 2026-08-02T01:50:56Z
+=== KAT BAR CHECK (iq4xs-mmq) x3 2026-08-02T01:57:11Z git=7df65e4e profile=performance ===
+  [memra rep1] pp2048_toks = 3054.2
+  [memra rep1] pp512_toks = 2073.7
+  [memra rep1] tg128_toks = 189.03
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 3460.667209, "rep": 1, "temp_c": 60}
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 4122.362425, "rep": 1, "temp_c": 60}
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 193.01474, "rep": 1, "temp_c": 60}
+  [memra-p1-code-short rep1] prompt_ntok = 27
+  [memra-p1-code-short rep1] plain_decode_toks = null
+  [memra-p1-code-short rep1] spec_k2_decode_toks = 236.80
+  [memra-p1-code-short rep1] prime_s = 0.071
+  [memra-p1-code-short rep1] spec_consistency_pass = 1
+  [memra-p2-code-medium rep1] prompt_ntok = 1845
+  [memra-p2-code-medium rep1] plain_decode_toks = null
+  [memra-p2-code-medium rep1] spec_k2_decode_toks = 203.59
+  [memra-p2-code-medium rep1] prime_s = 0.609
+  [memra-p2-code-medium rep1] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep1] prompt_ntok = 6257
+  [memra-p3-agentic-long rep1] plain_decode_toks = null
+  [memra-p3-agentic-long rep1] spec_k2_decode_toks = 161.78
+  [memra-p3-agentic-long rep1] prime_s = 1.968
+  [memra-p3-agentic-long rep1] spec_consistency_pass = 1
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1312.420544, "rep": 1, "temp_c": 73}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 4018.792011, "rep": 1, "temp_c": 73}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3949.970027, "rep": 1, "temp_c": 73}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 194.310465, "rep": 1, "temp_c": 73}
+  [memra rep2] pp2048_toks = 3032.6
+  [memra rep2] pp512_toks = 2058.9
+  [memra rep2] tg128_toks = 194.45
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 4259.518945, "rep": 2, "temp_c": 72}
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 4144.326561, "rep": 2, "temp_c": 72}
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 194.874163, "rep": 2, "temp_c": 72}
+  [memra-p1-code-short rep2] prompt_ntok = 27
+  [memra-p1-code-short rep2] plain_decode_toks = null
+  [memra-p1-code-short rep2] spec_k2_decode_toks = 234.73
+  [memra-p1-code-short rep2] prime_s = 0.071
+  [memra-p1-code-short rep2] spec_consistency_pass = 1
+  [memra-p2-code-medium rep2] prompt_ntok = 1845
+  [memra-p2-code-medium rep2] plain_decode_toks = null
+  [memra-p2-code-medium rep2] spec_k2_decode_toks = 202.68
+  [memra-p2-code-medium rep2] prime_s = 0.610
+  [memra-p2-code-medium rep2] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep2] prompt_ntok = 6257
+  [memra-p3-agentic-long rep2] plain_decode_toks = null
+  [memra-p3-agentic-long rep2] spec_k2_decode_toks = 161.95
+  [memra-p3-agentic-long rep2] prime_s = 1.970
+  [memra-p3-agentic-long rep2] spec_consistency_pass = 1
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1311.397379, "rep": 2, "temp_c": 67}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 4012.331196, "rep": 2, "temp_c": 67}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3944.343994, "rep": 2, "temp_c": 67}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 193.49688, "rep": 2, "temp_c": 67}
+  [memra rep3] pp2048_toks = 3030.3
+  [memra rep3] pp512_toks = 2060.2
+  [memra rep3] tg128_toks = 194.74
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "pp512_toks", "value": 4254.458357, "rep": 3, "temp_c": 67}
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "pp2048_toks", "value": 4127.905157, "rep": 3, "temp_c": 67}
+  [llama] {"cell": "kat-barcheck-kq", "arm": "llama", "metric": "tg128_toks", "value": 194.748429, "rep": 3, "temp_c": 67}
+  [memra-p1-code-short rep3] prompt_ntok = 27
+  [memra-p1-code-short rep3] plain_decode_toks = null
+  [memra-p1-code-short rep3] spec_k2_decode_toks = 234.51
+  [memra-p1-code-short rep3] prime_s = 0.071
+  [memra-p1-code-short rep3] spec_consistency_pass = 1
+  [memra-p2-code-medium rep3] prompt_ntok = 1845
+  [memra-p2-code-medium rep3] plain_decode_toks = null
+  [memra-p2-code-medium rep3] spec_k2_decode_toks = 202.84
+  [memra-p2-code-medium rep3] prime_s = 0.611
+  [memra-p2-code-medium rep3] spec_consistency_pass = 1
+  [memra-p3-agentic-long rep3] prompt_ntok = 6257
+  [memra-p3-agentic-long rep3] plain_decode_toks = null
+  [memra-p3-agentic-long rep3] spec_k2_decode_toks = 161.44
+  [memra-p3-agentic-long rep3] prime_s = 1.975
+  [memra-p3-agentic-long rep3] spec_consistency_pass = 1
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp27_toks", "value": 1313.539046, "rep": 3, "temp_c": 75}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp1845_toks", "value": 4011.44499, "rep": 3, "temp_c": 75}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "pp6257_toks", "value": 3939.38157, "rep": 3, "temp_c": 75}
+  [llama-class] {"cell": "kat-barcheck-kq", "arm": "llama-class", "metric": "tg256_toks", "value": 193.691729, "rep": 3, "temp_c": 75}
+KBAR-DONE 2026-08-02T02:01:13Z

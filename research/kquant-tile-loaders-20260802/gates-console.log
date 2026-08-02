@@ -1,0 +1,42 @@
+=== GATES phase=o35b-spec 2026-08-02T01:31:51Z git=2ac63454 profile=performance ===
+o35b run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 128 tok in 0.540s = 235.18 tok/s (1.20x vs generate; this run's prime 0.391s)
+[generate_spec K=2] 128 tok in 0.495s = 256.54 tok/s (1.31x vs generate; this run's prime 0.391s)
+[generate_spec K=3] 128 tok in 0.481s = 264.22 tok/s (1.35x vs generate; this run's prime 0.388s)
+[generate_spec K=4] 128 tok in 0.503s = 252.48 tok/s (1.29x vs generate; this run's prime 0.391s)
+[generate_spec K=5] 128 tok in 0.568s = 223.64 tok/s (1.14x vs generate; this run's prime 0.393s)
+[generate_spec K=6] 128 tok in 0.621s = 204.38 tok/s (1.04x vs generate; this run's prime 0.393s)
+[generate_spec K=7] 128 tok in 0.683s = 185.90 tok/s (0.95x vs generate; this run's prime 0.392s)
+[generate_spec K=8] 128 tok in 0.803s = 158.24 tok/s (0.81x vs generate; this run's prime 0.393s)
+=== SELF-CONSISTENCY PASS ===
+GATES-DONE phase=o35b-spec 2026-08-02T01:32:09Z
+=== GATES phase=q35 2026-08-02T01:32:09Z git=2ac63454 profile=performance ===
+  [q35-guard/naked rep1] pp2048_toks = 4098.1
+  [q35-guard/naked rep1] gen512_prefill_toks = 2493.9
+  [q35-guard/naked rep1] gen512_decode_toks = 244.74
+  [q35-guard/naked rep1] gen512_match_lines = 1
+  [q35-guard/naked rep1] tokens_sha=86dc5f7105a3716b
+  [q35-guard/naked rep2] pp2048_toks = 4100.5
+  [q35-guard/naked rep2] gen512_prefill_toks = 2500.9
+  [q35-guard/naked rep2] gen512_decode_toks = 252.94
+  [q35-guard/naked rep2] gen512_match_lines = 1
+  [q35-guard/naked rep2] tokens_sha=86dc5f7105a3716b
+  [q35-guard/naked rep3] pp2048_toks = 4090.1
+  [q35-guard/naked rep3] gen512_prefill_toks = 2501.2
+  [q35-guard/naked rep3] gen512_decode_toks = 251.00
+  [q35-guard/naked rep3] gen512_match_lines = 1
+  [q35-guard/naked rep3] tokens_sha=86dc5f7105a3716b
+q35 sha anchor: 86dc5f7105a3716b (must match every rep above)
+GATES-DONE phase=q35 2026-08-02T01:33:19Z
+=== GATES phase=kat-spec 2026-08-02T01:39:43Z git=e6cc078b profile=performance ===
+kat run-spec rc=0 PASS-lines=8 FAIL-lines=0
+[generate_spec K=1] 128 tok in 0.678s = 187.38 tok/s (1.00x vs generate; this run's prime 0.606s)
+[generate_spec K=2] 128 tok in 0.661s = 192.27 tok/s (1.03x vs generate; this run's prime 0.605s)
+[generate_spec K=3] 128 tok in 0.753s = 168.73 tok/s (0.90x vs generate; this run's prime 0.606s)
+[generate_spec K=4] 128 tok in 0.875s = 145.11 tok/s (0.77x vs generate; this run's prime 0.606s)
+[generate_spec K=5] 128 tok in 0.970s = 130.92 tok/s (0.70x vs generate; this run's prime 0.608s)
+[generate_spec K=6] 128 tok in 1.099s = 115.51 tok/s (0.62x vs generate; this run's prime 0.609s)
+[generate_spec K=7] 128 tok in 1.226s = 103.56 tok/s (0.55x vs generate; this run's prime 0.609s)
+[generate_spec K=8] 128 tok in 1.394s = 91.13 tok/s (0.49x vs generate; this run's prime 0.610s)
+=== SELF-CONSISTENCY PASS ===
+GATES-DONE phase=kat-spec 2026-08-02T01:40:05Z

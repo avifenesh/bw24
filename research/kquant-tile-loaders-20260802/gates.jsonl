@@ -1,0 +1,12 @@
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"pp2048_toks","value":4098.1,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_prefill_toks","value":2493.9,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_decode_toks","value":244.74,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_match_lines","value":1,"rep":1,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"pp2048_toks","value":4100.5,"rep":2,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_prefill_toks","value":2500.9,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_decode_toks","value":252.94,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_match_lines","value":1,"rep":2,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"pp2048_toks","value":4090.1,"rep":3,"profile":"performance","temp_c":62}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_prefill_toks","value":2501.2,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_decode_toks","value":251.00,"rep":3,"profile":"performance","temp_c":61}
+{"ts":"2026-08-02T01:32:09Z","git":"2ac63454","cell":"q35-guard","arm":"naked","metric":"gen512_match_lines","value":1,"rep":3,"profile":"performance","temp_c":61}
