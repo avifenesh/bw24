@@ -1,0 +1,16 @@
+=== 2026-08-02T11:40:32+03:00 MEMRA_SPEC_K=2 MEMRA_NGEN=256 MEMRA_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. MEMRA_MTP_DRAFT=/data/ai-ml/hf-models/agentworld-35b-gguf/draft-agentworld-owntrim-nvfp4head-q4blk.gguf
+[moe] resident-experts decision: experts 19.57GB + trunk 2.56GB vs free 23.92GB (expert budget 19.37GB) -> SLRU cache
+[mtp-draft] loading external MTP draft: /data/ai-ml/hf-models/agentworld-35b-gguf/draft-agentworld-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.40, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35moe (40 layers, nextn=0)
+text prompt (145 chars) -> 27 tokens
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13]
+
+[generate]   255 tok in 3.444s = 74.05 tok/s (gen-only; this run's prime 0.217s)
+  tokens: [271, 248068, 198, 90700, 8340, 25, 271, 16, 13, 220, 2972, 15771, 2598, 279, 38622, 64700, 561, 1156, 6587, 264, 12654, 709, 318, 269, 4598, 11, 264, 523, 14, 13957, 8, 421, 5004, 264, 90651, 52589, 1103, 440, 1510, 4069, 7561, 1510, 4394, 7561, 321, 1510, 25075, 63, 7289, 13, 1049, 1902, 2830, 2400, 913, 29642, 321, 4479, 18034, 13, 271, 17, 13, 220, 2972, 27382, 1386, 5141, 32956, 314, 264, 53019, 391, 12, 21390, 1697, 64700, 198, 262, 348, 256, 2972, 1888, 523, 64700, 37606, 449, 2315, 303, 279, 1103, 13, 41717, 1510, 927, 7561, 1510, 9590, 63, 318, 19100, 2357, 681, 321, 1510, 3480, 63, 318, 3480, 2357, 8, 7944, 13, 198, 262, 348, 256, 2972, 35, 5309, 391, 32794, 523, 64700, 2286, 1098, 279, 1103, 13, 41717, 1510, 1916, 63, 321, 1510, 14166, 63, 26564, 318, 429, 44007, 1510, 2073, 63, 364, 14588, 553, 198, 262, 348, 256, 2972, 33957, 64700, 198, 285, 348, 256, 1510, 4069, 3553, 11, 2234, 5675, 8, 43143, 16598, 264, 2357, 440, 1510, 927, 27653, 1368, 1510, 3374, 63, 369, 3766, 11, 5479, 506, 421, 1857, 13, 1368, 524, 11, 6970, 8472, 310, 279, 809, 466, 5479, 506, 279, 1901, 30, 6558, 579, 6762, 1510, 4069, 3553, 11, 1857, 5675, 44646, 466, 1510, 4069, 3625, 12756, 3553, 8, 7561, 1510, 4069, 3625, 34298, 3553, 8, 7561, 1510, 4069, 3625, 3442, 3553, 11, 1857, 8, 27653, 6558, 579, 3300, 264, 2708, 1510, 4069, 3553, 11, 1857, 5675, 44646, 466, 1510, 4928, 3553, 8, 7561, 1510, 54032, 3553, 8, 7561]
+
+[generate_spec K=2] 256 tok in 3.123s = 81.65 tok/s (1.10x vs generate; this run's prime 0.215s)
+  acceptance: 152/206 = 73.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== rc=0

@@ -97,7 +97,7 @@ output end to end — show them running.
 - Correctness gates claimed "passing" with no pasted output.
 - AI-generated kernel/algorithm changes with no evidence they were run on real sm_120a hardware.
 - Portability changes (targeting sm_89, sm_90, datacenter Blackwell, etc.) without first reading
-  [Limitations](README.md#limitations) and [Scope](#scope) below — this is a single-target engine,
+  [Requirements and limits](README.md#requirements-and-limits) and [Scope](#scope) below — this is a single-target engine,
   not a general runtime.
 - Drive-by style-only diffs bundled with unrelated functional changes — split them.
 
@@ -105,7 +105,7 @@ output end to end — show them running.
 
 This is a from-scratch engine tuned for two exact memory/compute ratios: the RTX 5090 Laptop
 (sm_120a, the primary target) and the H100 SXM (sm_90a, compile-gated Hopper lane). See
-[Limitations](README.md#limitations) before proposing portability work — other GPUs compile
+[Requirements and limits](README.md#requirements-and-limits) before proposing portability work — other GPUs compile
 via the portable arch (`MEMRA_CUDA_ARCH=89` builds the Ada correctness-first eval lane) but
 are untuned, and tuning choices throughout the codebase assume the two target ratios.
 
@@ -125,6 +125,18 @@ genuinely useful even if you never touch the code:
   correctness output alone advances the story.
 
 ## Where to look first
+
+| Crate | What it does |
+|---|---|
+| `memra-engine` | CUDA kernels (`cu/`), forward passes, speculative decoding, MoE cache, graph decode |
+| `memra-gguf` | GGUF parser + tensor loading (memory-mapped) |
+| `memra-tokenizer` | BPE tokenizer + chat templates from GGUF metadata |
+| `memra-runtime` | CUDA device/stream/memory primitives over cudarc |
+| `memra-kv` | KV cache + format policy behind the KvDev device seam |
+| `memra-sampling` | Host sampler + device Philox sampling behind one trait |
+| `memra-validate` | Gate harness: tolerance policy, deterministic vectors, N-median runner |
+| `memra-server` | OpenAI-compatible HTTP server (axum): batched decode, prefill batching, KV reuse |
+| `memra-probe` | Standalone hardware microbenches |
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — hard hardware constraints and the sm_120a feasibility ledger.
 - [`docs/DRAFT-REGIME.md`](docs/DRAFT-REGIME.md) — the standard drafter pipeline (own-gen ranks → byte-verbatim extraction → trim/quantize, adopt on e2e only). Any PR touching drafts, trims, or acceptance follows it — its three laws were each violated at measured cost before being written down.

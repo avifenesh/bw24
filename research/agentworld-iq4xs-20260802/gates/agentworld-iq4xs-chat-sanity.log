@@ -1,0 +1,49 @@
+[moe] resident-experts decision: experts 15.22GB + trunk 2.56GB vs free 23.93GB (expert budget 19.37GB) -> RESIDENT
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+You are reviewing a small Rust utility. Here is the code:
+
+fn parse_config(path: &str) -> Result<Config, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+    let mut cfg = Config::default();
+    for (lineno, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(ConfigError::Malformed { line: lineno + 1 });
+        };
+        match key.trim() {
+            "threads" => cfg.threads = value.trim().parse().map_err(|_| ConfigError::BadValue { line: lineno + 1 })?,
+            "verbose" => cfg.verbose = value.trim() == "true",
+            "log_path" => cfg.log_path = Some(value.trim().to_string()),
+            unknown => return Err(ConfigError::UnknownKey { key: unknown.to_string(), line: lineno + 1 }),
+        }
+    }
+    Ok(cfg)
+}
+
+Identify one concrete bug or design weakness in this function, explain why it matters in production, and propose a minimal fix as a diff. Keep the answer under 250 words.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "You are reviewing a small Rust utility. Here is the code:\n\nfn parse_config(path: &str) -> Result<Config, ConfigError> {\n    let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;\n    let mut cfg = Config::default();\n    for (lineno, line) in raw.lines().enumerate() {\n        let line = line.trim();\n        if line.is_empty() || line.starts_with('#') { continue; }\n        let Some((key, value)) = line.split_once('=') else {\n            return Err(ConfigError::Malformed { line: lineno + 1 });\n        };\n        match key.trim() {\n            \"threads\" => cfg.threads = value.trim().parse().map_err(|_| ConfigError::BadValue { line: lineno + 1 })?,\n            \"verbose\" => cfg.verbose = value.trim() == \"true\",\n            \"log_path\" => cfg.log_path = Some(value.trim().to_string()),\n            unknown => return Err(ConfigError::UnknownKey { key: unknown.to_string(), line: lineno + 1 }),\n        }\n    }\n    Ok(cfg)\n}\n\nIdentify one concrete bug or design weakness in this function, explain why it matters in production, and propose a minimal fix as a diff. Keep the answer under 250 words."
+prompt tokens: [248045, 846, 198, 2523, 513, 32767, 264, 2526, 32671, 15092, 13, 5514, 369, 279, 1970, 25, 271, 8556, 4563, 5164, 5406, 25, 594, 485, 8, 1411, 5536, 27, 2561, 11, 5359, 1401, 29, 313, 198, 262, 1042, 6891, 283, 1407, 476, 3720, 476, 851, 2270, 3773, 5406, 553, 2117, 8991, 32571, 1401, 476, 41384, 11504, 26, 198, 262, 1042, 5041, 12901, 283, 5359, 476, 2186, 2061, 198, 262, 364, 318, 77227, 11, 1500, 8, 303, 6891, 42602, 973, 73950, 363, 313, 198, 285, 1042, 1500, 283, 1500, 15937, 2061, 198, 285, 413, 1500, 2011, 14683, 363, 1321, 1500, 4801, 82, 6406, 3400, 837, 313, 2962, 26, 333, 198, 285, 1042, 4188, 1148, 767, 11, 869, 578, 283, 1500, 5121, 7387, 85476, 837, 745, 313, 198, 309, 460, 15040, 32571, 1401, 476, 28633, 9853, 313, 1500, 25, 82160, 478, 220, 16, 17574, 198, 285, 19455, 198, 285, 2353, 1328, 15937, 363, 313, 198, 309, 328, 26404, 1, 574, 12901, 13, 26404, 283, 869, 15937, 973, 6199, 973, 2117, 8991, 21729, 34224, 5359, 1401, 476, 16579, 1094, 313, 1500, 25, 82160, 478, 220, 16, 6212, 12259, 198, 309, 328, 14452, 1, 574, 12901, 43169, 283, 869, 15937, 363, 606, 328, 1802, 487, 198, 309, 328, 813, 2551, 1, 574, 12901, 1607, 2551, 283, 4188, 3553, 15937, 973, 951, 3773, 11519, 198, 309, 9496, 574, 460, 15040, 32571, 1401, 476, 13394, 1536, 313, 1328, 25, 9496, 2312, 3773, 1453, 1500, 25, 82160, 478, 220, 16, 30667, 198, 285, 333, 198, 262, 333, 198, 262, 7379, 27354, 8, 198, 92, 271, 27382, 1386, 799, 13769, 9584, 466, 2790, 22360, 303, 411, 709, 11, 10033, 3069, 424, 12482, 303, 5492, 11, 321, 28647, 264, 16866, 4884, 430, 264, 3515, 13, 13262, 279, 4087, 1172, 220, 17, 20, 15, 4105, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=90700  decode argmax=90700  logit maxdiff=7.842e-1  MATCH
+batched-prime argmax=90700  tokenwise argmax=90700  logit maxdiff=6.545e-1  MATCH
+prefill 302 tok in 0.1086s = 2780.7 tok/s (pp302)
+generated 250 tokens in 1.381s = 180.96 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.106s) [stop: MaxNew]
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 2972, 8758, 64700, 9988, 261, 314, 264, 2526, 32671, 15092, 13, 198, 262, 348, 256, 2972, 2010, 64700, 357, 32671, 709, 1510, 6199, 5164, 5406, 25, 594, 485, 8, 1411, 5536, 27, 2561, 11, 5359, 1401, 42181, 421, 15339, 264, 2124, 999, 11, 68434, 4965, 11, 13081, 5853, 14, 3092, 4965, 11, 39129, 539, 1510, 28, 7561, 321, 7062, 1510, 26404, 7561, 1510, 14452, 7561, 1510, 813, 2551, 7561, 466, 4523, 1510, 13394, 1536, 27653, 198, 262, 348, 256, 2972, 6065, 64700, 62366, 348, 588, 13769, 9584, 466, 2790, 22360, 11961, 10033, 348, 33488, 424, 12482, 303, 5492, 11961, 321, 28647, 264, 348, 89413, 4884, 430, 264, 3515, 19315, 198, 262, 348, 256, 2972, 17355, 64700, 13262, 279, 4087, 1172, 220, 17, 20, 15, 4105, 13, 271, 17, 13, 220, 2972, 2014, 53983, 279, 5927, 364, 83512, 14, 19846, 39805, 2022, 287, 64700, 198, 262, 348, 256, 348, 45209, 14, 47977, 2022, 220, 16, 25, 6863, 75579, 364, 1510, 6744, 7387, 63, 321, 1510, 6199, 63, 5787, 4749, 561, 1500, 1324, 369, 1510, 77227, 478, 220, 16, 27653, 1510, 1006, 42602, 973, 73950, 52434, 8211, 1510, 77227, 63, 506, 220, 15, 364, 279, 1118, 1500, 13, 1987, 1510, 77227, 478, 220, 16, 63, 369, 279, 220, 16, 5792, 1500, 1324, 13, 1061, 4816, 4252, 364, 3611, 80347, 1500, 4947, 13, 198, 262, 348, 256, 348, 45209, 14, 47977, 2022, 220, 17, 25, 1124]
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   **Role:** Reviewer of a small Rust utility.\n    *   **Code:** A Rust function `parse_config(path: &str) -> Result<Config, ConfigError>` that reads a config file, parses lines, handles comments/empty lines, splits by `=`, and sets `threads`, `verbose`, `log_path`, or returns `UnknownKey`.\n    *   **Task:** Identify *one concrete bug or design weakness*, explain *why it matters in production*, and propose a *minimal fix as a diff*.\n    *   **Constraint:** Keep the answer under 250 words.\n\n2.  **Analyze the Code for Bugs/Design Weaknesses:**\n    *   *Bug/Weakness 1: Line numbering for `split_once` and `parse` errors.* The line number is `lineno + 1`. `raw.lines().enumerate()` starts `lineno` at 0 for the first line. So `lineno + 1` is the 1-based line number. This seems correct for human-readable line numbers.\n    *   *Bug/Weakness 2: Tr"
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   **Role:** Reviewer of a small Rust utility.
+    *   **Code:** A Rust function `parse_config(path: &str) -> Result<Config, ConfigError>` that reads a config file, parses lines, handles comments/empty lines, splits by `=`, and sets `threads`, `verbose`, `log_path`, or returns `UnknownKey`.
+    *   **Task:** Identify *one concrete bug or design weakness*, explain *why it matters in production*, and propose a *minimal fix as a diff*.
+    *   **Constraint:** Keep the answer under 250 words.
+
+2.  **Analyze the Code for Bugs/Design Weaknesses:**
+    *   *Bug/Weakness 1: Line numbering for `split_once` and `parse` errors.* The line number is `lineno + 1`. `raw.lines().enumerate()` starts `lineno` at 0 for the first line. So `lineno + 1` is the 1-based line number. This seems correct for human-readable line numbers.
+    *   *Bug/Weakness 2: Tr

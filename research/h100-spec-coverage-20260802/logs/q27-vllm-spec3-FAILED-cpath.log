@@ -1,0 +1,418 @@
+[gpu 2026-08-02T08:50:53Z] 36, 130.25 W, 1830 MHz, 0 MiB
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING 08-02 08:51:03 [speculative.py:901] Enabling num_speculative_tokens > 1 will run multiple times of forward on same MTP layer,which may result in lower acceptance rate
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+WARNING 08-02 08:51:24 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=1021244) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(EngineCore pid=1021244) WARNING 08-02 08:51:35 [__init__.py:204] min_p and logit_bias parameters won't work with speculative decoding.
+(EngineCore pid=1021244) [transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+(EngineCore pid=1021244) WARNING 08-02 08:51:50 [qwen_gdn_linear_attn.py:157] FlashInfer GDN prefill is JIT-compiled; first run may take a while. Set --gdn-prefill-backend triton to skip JIT.
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:   0% Completed | 0/66 [00:00<?, ?it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:   5% Completed | 3/66 [00:00<00:02, 25.33it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:   9% Completed | 6/66 [00:00<00:02, 26.20it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  14% Completed | 9/66 [00:00<00:02, 26.46it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  18% Completed | 12/66 [00:00<00:02, 26.40it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  23% Completed | 15/66 [00:00<00:01, 26.31it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  27% Completed | 18/66 [00:00<00:01, 26.46it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  32% Completed | 21/66 [00:00<00:01, 26.54it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  36% Completed | 24/66 [00:00<00:01, 26.60it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  41% Completed | 27/66 [00:01<00:01, 26.53it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  45% Completed | 30/66 [00:01<00:01, 26.59it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  50% Completed | 33/66 [00:01<00:01, 26.61it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  55% Completed | 36/66 [00:01<00:01, 26.67it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  59% Completed | 39/66 [00:01<00:01, 26.60it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  64% Completed | 42/66 [00:01<00:00, 26.65it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  68% Completed | 45/66 [00:01<00:00, 26.70it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  73% Completed | 48/66 [00:01<00:00, 26.72it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  77% Completed | 51/66 [00:01<00:00, 26.61it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  82% Completed | 54/66 [00:02<00:00, 26.66it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  86% Completed | 57/66 [00:02<00:00, 26.65it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  91% Completed | 60/66 [00:02<00:00, 26.68it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:  95% Completed | 63/66 [00:02<00:00, 26.61it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:02<00:00, 11.71it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:02<00:00, 22.28it/s]
+(EngineCore pid=1021244) 
+(EngineCore pid=1021244) Loading safetensors checkpoint shards:   0% Completed | 0/66 [00:00<?, ?it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:00<00:00, 131.28it/s]
+(EngineCore pid=1021244) Loading safetensors checkpoint shards: 100% Completed | 66/66 [00:00<00:00, 131.22it/s]
+(EngineCore pid=1021244) 
+(EngineCore pid=1021244) WARNING 08-02 08:52:26 [kv_cache_utils.py:1237] Add 3 padding layers, may waste at most 6.25% KV cache memory
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] EngineCore failed to start.
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] Traceback (most recent call last):
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 368, in run_ninja
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     subprocess.run(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/usr/lib/python3.12/subprocess.py", line 571, in run
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     raise CalledProcessError(retcode, process.args,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] subprocess.CalledProcessError: Command '['ninja', '-v', '-C', '/home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90', '-f', '/home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/build.ninja']' returned non-zero exit status 1.
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] 
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] The above exception was the direct cause of the following exception:
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] 
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] Traceback (most recent call last):
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1299, in run_engine_core
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return func(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1065, in __init__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     super().__init__(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 136, in __init__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return func(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 286, in _initialize_kv_caches
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     available_gpu_memory = self.model_executor.determine_available_memory()
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 147, in determine_available_memory
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.collective_rpc("determine_available_memory")
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 92, in collective_rpc
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return func(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return func(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 506, in determine_available_memory
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     cudagraph_memory_estimate = self.model_runner.profile_cudagraph_memory()
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return func(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 6663, in profile_cudagraph_memory
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     self._warmup_and_capture(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 6866, in _warmup_and_capture
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     self._dummy_run(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return func(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 6084, in _dummy_run
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     outputs = self.model(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]               ^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/cuda_graph.py", line 254, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.runnable(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self._call_impl(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return forward_call(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_5.py", line 506, in forward
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     hidden_states = self.language_model.model(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 520, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.aot_compiled_fn(self, *args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_dynamo/aot_compile.py", line 224, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.fn(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_next.py", line 648, in forward
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     def forward(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/caching.py", line 217, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.optimized_call(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "<string>", line 277, in execution_fn
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/cuda_graph.py", line 254, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.runnable(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/piecewise_backend.py", line 380, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return range_entry.runnable(*args)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/compiler_interface.py", line 437, in compiled_graph_wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     graph_output = inductor_compiled_graph(*args)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/standalone_compile.py", line 122, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self._compiled_fn(*args)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/standalone_compile.py", line 236, in <lambda>
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return CacheCompiledArtifact(lambda *args: compiled_fn(list(args)), None)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                                                ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 580, in runtime_wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     all_outs = call_func_at_runtime_with_args(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 138, in call_func_at_runtime_with_args
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     out = normalize_as_list(f(args))
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                             ^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 783, in wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return compiled_fn(runtime_args)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/output_code.py", line 656, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self.current_callable(inputs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/utils.py", line 3401, in run
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     out = model(new_inputs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]           ^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/.cache/vllm/torch_compile_cache/torch_aot_compile/a7895197955f4d37f0c23a1ea6b862589b6eea70dfdd8bc979387bf6ed5d23ea/inductor_cache/5p/c5prqve4qboq4fneczos6pokesumwlbwho7deys2qrv7fp4rcjbl.py", line 478, in call
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     buf2 = torch.ops.vllm.dynamic_flashinfer_deepgemm_blockscale_gemm.default(buf1, arg3_1, arg4_1, 128, True)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_ops.py", line 865, in __call__
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return self._op(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py", line 311, in _dynamic_flashinfer_deepgemm_blockscale_gemm_impl
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return torch.cond(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_higher_order_ops/cond.py", line 186, in cond
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return true_fn(*operands)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py", line 270, in run_flashinfer_deepgemm_swapAB
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return flashinfer_fp8_blockscale_gemm(
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/utils/flashinfer.py", line 107, in wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return impl(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     return _inner(*args, **kwargs)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 8364, in fp8_blockscale_gemm_sm90
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     runner = get_fp8_blockscale_gemm_runner_sm90()
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 8149, in get_fp8_blockscale_gemm_runner_sm90
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/core.py", line 316, in build_and_load
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     self.build(verbose, need_lock=False)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/core.py", line 302, in build
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     run_ninja(self.build_dir, self.ninja_path, verbose)
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 380, in run_ninja
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]     raise RuntimeError(msg) from e
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] RuntimeError: Ninja build failed. Ninja output:
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] ninja: Entering directory `/home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90'
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] [1/3]  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile -MF /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_extensions/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/cub -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/thrust -isystem /usr/include/python3.12 -isystem /usr/local/cuda/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -Xfatbin=-compress-all -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -gencode=arch=compute_90a,code=sm_90a -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -DCOMPILE_HOPPER_TMA_GEMMS -DENABLE_BF16 -DENABLE_FP8 -DENABLE_FP8_BLOCK_SCALE -DCUTLASS_ENABLE_GDC_FOR_SM90=1 -c /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu -o /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o 
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] FAILED: [code=1] /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o 
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile -MF /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_extensions/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/cub -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/thrust -isystem /usr/include/python3.12 -isystem /usr/local/cuda/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -Xfatbin=-compress-all -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -gencode=arch=compute_90a,code=sm_90a -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -DCOMPILE_HOPPER_TMA_GEMMS -DENABLE_BF16 -DENABLE_FP8 -DENABLE_FP8_BLOCK_SCALE -DCUTLASS_ENABLE_GDC_FOR_SM90=1 -c /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu -o /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o 
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] In file included from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/extended_data_types.h:26,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/builtin.h:26,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/dialect.h:25,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/attributes.h:26,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/assert.h:25,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/__cccl_config:15,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__internal/atomic.h:13,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/detail/__config:14,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/utility:14,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/fast_math.h:42,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/layout/matrix.h:44,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/arch/memory_sm75.h:39,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/arch/barrier.h:38,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm_kernel.cuh:18,
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu:19:
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/cuda_toolkit.h:41:8: error: #error "CUDA compiler and CUDA toolkit headers are incompatible, please check your include paths"
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]    41 | #      error "CUDA compiler and CUDA toolkit headers are incompatible, please check your include paths"
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330]       |        ^~~~~
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] [2/3]  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile -MF /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_extensions/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/cub -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/thrust -isystem /usr/include/python3.12 -isystem /usr/local/cuda/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -Xfatbin=-compress-all -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -gencode=arch=compute_90a,code=sm_90a -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -DCOMPILE_HOPPER_TMA_GEMMS -DENABLE_BF16 -DENABLE_FP8 -DENABLE_FP8_BLOCK_SCALE -DCUTLASS_ENABLE_GDC_FOR_SM90=1 -c /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/fused_moe/cutlass_backend/deepgemm_jit_setup.cu -o /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o 
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] ninja: build stopped: subcommand failed.
+(EngineCore pid=1021244) ERROR 08-02 08:52:41 [core.py:1330] 
+(EngineCore pid=1021244) Process EngineCore:
+(EngineCore pid=1021244) Traceback (most recent call last):
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 368, in run_ninja
+(EngineCore pid=1021244)     subprocess.run(
+(EngineCore pid=1021244)   File "/usr/lib/python3.12/subprocess.py", line 571, in run
+(EngineCore pid=1021244)     raise CalledProcessError(retcode, process.args,
+(EngineCore pid=1021244) subprocess.CalledProcessError: Command '['ninja', '-v', '-C', '/home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90', '-f', '/home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/build.ninja']' returned non-zero exit status 1.
+(EngineCore pid=1021244) 
+(EngineCore pid=1021244) The above exception was the direct cause of the following exception:
+(EngineCore pid=1021244) 
+(EngineCore pid=1021244) Traceback (most recent call last):
+(EngineCore pid=1021244)   File "/usr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=1021244)     self.run()
+(EngineCore pid=1021244)   File "/usr/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=1021244)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1334, in run_engine_core
+(EngineCore pid=1021244)     raise e
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1299, in run_engine_core
+(EngineCore pid=1021244)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1021244)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1021244)     return func(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1065, in __init__
+(EngineCore pid=1021244)     super().__init__(
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 136, in __init__
+(EngineCore pid=1021244)     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=1021244)                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1021244)     return func(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 286, in _initialize_kv_caches
+(EngineCore pid=1021244)     available_gpu_memory = self.model_executor.determine_available_memory()
+(EngineCore pid=1021244)                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 147, in determine_available_memory
+(EngineCore pid=1021244)     return self.collective_rpc("determine_available_memory")
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 92, in collective_rpc
+(EngineCore pid=1021244)     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=1021244)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=1021244)     return func(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1021244)     return func(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 506, in determine_available_memory
+(EngineCore pid=1021244)     cudagraph_memory_estimate = self.model_runner.profile_cudagraph_memory()
+(EngineCore pid=1021244)                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1021244)     return func(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 6663, in profile_cudagraph_memory
+(EngineCore pid=1021244)     self._warmup_and_capture(
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 6866, in _warmup_and_capture
+(EngineCore pid=1021244)     self._dummy_run(
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=1021244)     return func(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py", line 6084, in _dummy_run
+(EngineCore pid=1021244)     outputs = self.model(
+(EngineCore pid=1021244)               ^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/cuda_graph.py", line 254, in __call__
+(EngineCore pid=1021244)     return self.runnable(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+(EngineCore pid=1021244)     return self._call_impl(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+(EngineCore pid=1021244)     return forward_call(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_5.py", line 506, in forward
+(EngineCore pid=1021244)     hidden_states = self.language_model.model(
+(EngineCore pid=1021244)                     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/decorators.py", line 520, in __call__
+(EngineCore pid=1021244)     return self.aot_compiled_fn(self, *args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_dynamo/aot_compile.py", line 224, in __call__
+(EngineCore pid=1021244)     return self.fn(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/models/qwen3_next.py", line 648, in forward
+(EngineCore pid=1021244)     def forward(
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/caching.py", line 217, in __call__
+(EngineCore pid=1021244)     return self.optimized_call(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "<string>", line 277, in execution_fn
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/cuda_graph.py", line 254, in __call__
+(EngineCore pid=1021244)     return self.runnable(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/piecewise_backend.py", line 380, in __call__
+(EngineCore pid=1021244)     return range_entry.runnable(*args)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/compilation/compiler_interface.py", line 437, in compiled_graph_wrapper
+(EngineCore pid=1021244)     graph_output = inductor_compiled_graph(*args)
+(EngineCore pid=1021244)                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/standalone_compile.py", line 122, in __call__
+(EngineCore pid=1021244)     return self._compiled_fn(*args)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/standalone_compile.py", line 236, in <lambda>
+(EngineCore pid=1021244)     return CacheCompiledArtifact(lambda *args: compiled_fn(list(args)), None)
+(EngineCore pid=1021244)                                                ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 580, in runtime_wrapper
+(EngineCore pid=1021244)     all_outs = call_func_at_runtime_with_args(
+(EngineCore pid=1021244)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/utils.py", line 138, in call_func_at_runtime_with_args
+(EngineCore pid=1021244)     out = normalize_as_list(f(args))
+(EngineCore pid=1021244)                             ^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py", line 783, in wrapper
+(EngineCore pid=1021244)     return compiled_fn(runtime_args)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/output_code.py", line 656, in __call__
+(EngineCore pid=1021244)     return self.current_callable(inputs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_inductor/utils.py", line 3401, in run
+(EngineCore pid=1021244)     out = model(new_inputs)
+(EngineCore pid=1021244)           ^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/.cache/vllm/torch_compile_cache/torch_aot_compile/a7895197955f4d37f0c23a1ea6b862589b6eea70dfdd8bc979387bf6ed5d23ea/inductor_cache/5p/c5prqve4qboq4fneczos6pokesumwlbwho7deys2qrv7fp4rcjbl.py", line 478, in call
+(EngineCore pid=1021244)     buf2 = torch.ops.vllm.dynamic_flashinfer_deepgemm_blockscale_gemm.default(buf1, arg3_1, arg4_1, 128, True)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_ops.py", line 865, in __call__
+(EngineCore pid=1021244)     return self._op(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py", line 311, in _dynamic_flashinfer_deepgemm_blockscale_gemm_impl
+(EngineCore pid=1021244)     return torch.cond(
+(EngineCore pid=1021244)            ^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/torch/_higher_order_ops/cond.py", line 186, in cond
+(EngineCore pid=1021244)     return true_fn(*operands)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/model_executor/kernels/linear/scaled_mm/flashinfer.py", line 270, in run_flashinfer_deepgemm_swapAB
+(EngineCore pid=1021244)     return flashinfer_fp8_blockscale_gemm(
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/utils/flashinfer.py", line 107, in wrapper
+(EngineCore pid=1021244)     return impl(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=1021244)     return _inner(*args, **kwargs)
+(EngineCore pid=1021244)            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 8364, in fp8_blockscale_gemm_sm90
+(EngineCore pid=1021244)     runner = get_fp8_blockscale_gemm_runner_sm90()
+(EngineCore pid=1021244)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/gemm/gemm_base.py", line 8149, in get_fp8_blockscale_gemm_runner_sm90
+(EngineCore pid=1021244)     module = gen_fp8_blockscale_gemm_sm90_module().build_and_load()
+(EngineCore pid=1021244)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/core.py", line 316, in build_and_load
+(EngineCore pid=1021244)     self.build(verbose, need_lock=False)
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/core.py", line 302, in build
+(EngineCore pid=1021244)     run_ninja(self.build_dir, self.ninja_path, verbose)
+(EngineCore pid=1021244)   File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 380, in run_ninja
+(EngineCore pid=1021244)     raise RuntimeError(msg) from e
+(EngineCore pid=1021244) RuntimeError: Ninja build failed. Ninja output:
+(EngineCore pid=1021244) ninja: Entering directory `/home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90'
+(EngineCore pid=1021244) [1/3]  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile -MF /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_extensions/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/cub -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/thrust -isystem /usr/include/python3.12 -isystem /usr/local/cuda/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -Xfatbin=-compress-all -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -gencode=arch=compute_90a,code=sm_90a -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -DCOMPILE_HOPPER_TMA_GEMMS -DENABLE_BF16 -DENABLE_FP8 -DENABLE_FP8_BLOCK_SCALE -DCUTLASS_ENABLE_GDC_FOR_SM90=1 -c /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu -o /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o 
+(EngineCore pid=1021244) FAILED: [code=1] /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o 
+(EngineCore pid=1021244)  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile -MF /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_extensions/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/cub -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/thrust -isystem /usr/include/python3.12 -isystem /usr/local/cuda/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -Xfatbin=-compress-all -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -gencode=arch=compute_90a,code=sm_90a -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -DCOMPILE_HOPPER_TMA_GEMMS -DENABLE_BF16 -DENABLE_FP8 -DENABLE_FP8_BLOCK_SCALE -DCUTLASS_ENABLE_GDC_FOR_SM90=1 -c /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu -o /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/fp8_blockscale_gemm_fp8_blockscale_gemm.cuda.o 
+(EngineCore pid=1021244) In file included from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/extended_data_types.h:26,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/builtin.h:26,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/dialect.h:25,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/attributes.h:26,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/assert.h:25,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/__cccl_config:15,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__internal/atomic.h:13,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/detail/__config:14,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/utility:14,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/fast_math.h:42,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/layout/matrix.h:44,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/arch/memory_sm75.h:39,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include/cutlass/arch/barrier.h:38,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm_kernel.cuh:18,
+(EngineCore pid=1021244)                  from /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu:19:
+(EngineCore pid=1021244) /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include/cuda/std/__cccl/cuda_toolkit.h:41:8: error: #error "CUDA compiler and CUDA toolkit headers are incompatible, please check your include paths"
+(EngineCore pid=1021244)    41 | #      error "CUDA compiler and CUDA toolkit headers are incompatible, please check your include paths"
+(EngineCore pid=1021244)       |        ^~~~~
+(EngineCore pid=1021244) [2/3]  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile -MF /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o.d -DPy_LIMITED_API=0x03090000 -D_GLIBCXX_USE_CXX11_ABI=1 -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_extensions/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/kernels/cutlass_kernels -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/cub -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/libcudacxx/include -I/home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cccl/thrust -isystem /usr/include/python3.12 -isystem /usr/local/cuda/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/tvm_ffi/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/cutlass/tools/util/include -isystem /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/spdlog/include --compiler-options=-fPIC --expt-relaxed-constexpr -static-global-template-stub=false -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -std=c++17 --threads=1 -use_fast_math -Xfatbin=-compress-all -DFLASHINFER_ENABLE_F16 -DFLASHINFER_ENABLE_BF16 -DFLASHINFER_ENABLE_FP8_E4M3 -DFLASHINFER_ENABLE_FP8_E5M2 -DNDEBUG -O3 -gencode=arch=compute_90a,code=sm_90a -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DFLASHINFER_ENABLE_FP8_E8M0 -DFLASHINFER_ENABLE_FP4_E2M1 -DCOMPILE_HOPPER_TMA_GEMMS -DENABLE_BF16 -DENABLE_FP8 -DENABLE_FP8_BLOCK_SCALE -DCUTLASS_ENABLE_GDC_FOR_SM90=1 -c /home/ubuntu/vllm-env/lib/python3.12/site-packages/flashinfer/data/csrc/fused_moe/cutlass_backend/deepgemm_jit_setup.cu -o /home/ubuntu/.cache/flashinfer/0.6.14/90a/cached_ops/fp8_blockscale_gemm_90/cutlass_backend_deepgemm_jit_setup.cuda.o 
+(EngineCore pid=1021244) ninja: build stopped: subcommand failed.
+(EngineCore pid=1021244) 
+[rank0]:[W802 08:52:42.147483739 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+Traceback (most recent call last):
+  File "/home/ubuntu/memra/bench_vllm.py", line 85, in <module>
+    main()
+  File "/home/ubuntu/memra/bench_vllm.py", line 37, in main
+    llm = LLM(model=args.model, max_model_len=args.prompt_tokens + args.ngen + 64,
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 338, in __init__
+    self.llm_engine = LLMEngine.from_engine_args(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 179, in from_engine_args
+    return cls(
+           ^^^^
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 105, in __init__
+    self.engine_core = EngineCoreClient.make_client(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 103, in make_client
+    return SyncMPClient(vllm_config, executor_class, log_stats)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 786, in __init__
+    super().__init__(
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 573, in __init__
+    with launch_core_engines(
+  File "/usr/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1213, in launch_core_engines
+    wait_for_engine_startup(
+  File "/home/ubuntu/vllm-env/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1272, in wait_for_engine_startup
+    raise RuntimeError(
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+[gpu 2026-08-02T08:52:45Z] 36, 130.85 W, 1830 MHz, 0 MiB
+VLLM rc=1

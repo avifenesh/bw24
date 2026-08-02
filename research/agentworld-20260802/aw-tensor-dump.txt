@@ -1,0 +1,11 @@
+== all tensors by type ==
+  0: 361  (0.10 GB)
+  12: 80  (12.08 GB)
+  13: 37  (6.83 GB)
+  14: 4  (1.08 GB)
+  8: 251  (2.03 GB)
+== expert tensors (ffn_*_exps) by type ==
+  ffn_down_exps: {'13': 37, '14': 3}
+  ffn_gate_exps: {'12': 40}
+  ffn_up_exps: {'12': 40}
+== expert bank total: 18.22 GiB ==

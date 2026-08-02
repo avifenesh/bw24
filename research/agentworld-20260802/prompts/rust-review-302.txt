@@ -1,0 +1,22 @@
+You are reviewing a small Rust utility. Here is the code:
+
+fn parse_config(path: &str) -> Result<Config, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+    let mut cfg = Config::default();
+    for (lineno, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(ConfigError::Malformed { line: lineno + 1 });
+        };
+        match key.trim() {
+            "threads" => cfg.threads = value.trim().parse().map_err(|_| ConfigError::BadValue { line: lineno + 1 })?,
+            "verbose" => cfg.verbose = value.trim() == "true",
+            "log_path" => cfg.log_path = Some(value.trim().to_string()),
+            unknown => return Err(ConfigError::UnknownKey { key: unknown.to_string(), line: lineno + 1 }),
+        }
+    }
+    Ok(cfg)
+}
+
+Identify one concrete bug or design weakness in this function, explain why it matters in production, and propose a minimal fix as a diff. Keep the answer under 250 words.

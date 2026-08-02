@@ -1,0 +1,28 @@
+=== AgentWorld-35B UD-IQ4_XS bar cells (N=3 medians, interleaved same-session; temps 60-74 C) ===
+
+[p1-code-short] (prompt 27 tok)
+  PLAIN  decode : memra 180.96 vs llama 163.30 -> 1.11x
+  PLAIN  prefill: memra 771.4 vs llama 230.5 -> 3.35x
+  PLAIN  e2e    : memra 1.450s vs llama 1.713s -> 1.18x
+  BEST   decode : memra spec K=2 259.25 (acc 65.9%) vs llama plain 163.30 -> 1.59x
+  BEST   prefill: memra 794.1 (27 tok in 0.034s) vs llama 230.5 -> 3.45x
+  BEST   e2e    : memra 1.021s vs llama 1.713s (prime + 256/decode) -> 1.68x  >= 1.1x BAR: PASS
+  memra self-consistency: 3/3 PASS; reps: memra spec=[256.87, 259.25, 261.73] plain=[178.6, 180.96, 181.68] llama=[162.5, 163.3, 167.29]
+
+[p2-code-medium] (prompt 1845 tok)
+  PLAIN  decode : memra 174.02 vs llama 161.61 -> 1.08x
+  PLAIN  prefill: memra 5507.5 vs llama 2877.7 -> 1.91x
+  PLAIN  e2e    : memra 1.806s vs llama 2.244s -> 1.24x
+  BEST   decode : memra spec K=2 273.67 (acc 80.6%) vs llama plain 161.61 -> 1.69x
+  BEST   prefill: memra 5379.0 (1845 tok in 0.343s) vs llama 2877.7 -> 1.87x
+  BEST   e2e    : memra 1.278s vs llama 2.244s (prime + 256/decode) -> 1.76x  >= 1.1x BAR: PASS
+  memra self-consistency: 3/3 PASS; reps: memra spec=[272.55, 273.67, 281.59] plain=[173.27, 174.02, 178.04] llama=[157.98, 161.61, 164.45]
+
+[p3-agentic-long] (prompt 6257 tok)
+  PLAIN  decode : memra 173.18 vs llama 150.64 -> 1.15x
+  PLAIN  prefill: memra 5384.7 vs llama 3238.0 -> 1.66x
+  PLAIN  e2e    : memra 2.640s vs llama 3.652s -> 1.38x
+  BEST   decode : memra spec K=2 275.66 (acc 87.1%) vs llama plain 150.64 -> 1.83x
+  BEST   prefill: memra 5389.3 (6257 tok in 1.161s) vs llama 3238.0 -> 1.66x
+  BEST   e2e    : memra 2.090s vs llama 3.652s (prime + 256/decode) -> 1.75x  >= 1.1x BAR: PASS
+  memra self-consistency: 3/3 PASS; reps: memra spec=[273.0, 275.66, 276.12] plain=[172.23, 173.18, 174.66] llama=[148.65, 150.64, 156.34]

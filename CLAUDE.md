@@ -65,8 +65,9 @@ pruned id dereferences nonexistent weights; and a G7e-only performance win may n
 ## Perf board: README must stay current, every push
 
 The tuning campaign lands new numbers several times a day (`research/tune-data/rig5090.jsonl` is
-the append-only research log). The README's Performance section and `docs/perf-card.svg` are
-**generated**, not hand-written — they come from `research/tune-data/current-board.json` via
+the append-only research log). The README's Performance sections (both the 5090 tables and the H100 board),
+`docs/perf-card.svg`, and `docs/perf-card-h100.svg` are **generated**, not hand-written —
+they come from `research/tune-data/current-board.json` (incl. its `h100_board` section) via
 `tools/update-perf-board.py`.
 
 Rule: any commit that changes the *published* numbers (a board-moving merge — i.e. the numbers
