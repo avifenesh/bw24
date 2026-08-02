@@ -46,10 +46,33 @@ blk.40 (byte-verbatim, law 2), ranks = AgentWorld's OWN generations (law 1, 3276
 protocol, canonical 254-prompt pack, chat template ON, bounded 64-prompt flock chunks),
 quantize AFTER trim (NVFP4 head + Q4_K_M block, law 3).
 
-- corpus: `corpus/agentworld-owngen.log` + ids manifest — PENDING
-- ranks + drafter shas: PENDING
-- run-spec K=1..8 self-consistency: PENDING
-- acceptance table K=2..4 vs the Ornith-35B reference: PENDING
+- corpus: 254/254 prompts, **129,578 generated tokens** (4 bounded 64-prompt flock
+  chunks, greedy ≡ single-run; small-corpus warning at the same level the supported and
+  Ornith builds accepted — Ornith-35B ran 128,617). Log: `corpus/agentworld-owngen.log`,
+  ids manifest `corpus/agentworld-owngen-ids.txt` (kept on /data next to the model).
+- ranks: `owngen-ranks-32768.gguf(.txt)`, ranks.txt sha256 `fd937bf5...`; drafter:
+  `draft-agentworld-owntrim-nvfp4head-q4blk.gguf` (890 MiB), sha256 `e3ee8c8b...`
+  (`build-agentworld-draft.log`).
+- run-spec K=1..8 self-consistency (p1, ngen 128): **PASS 8/8, acceptance>0 every K**
+  (`gates/drafter/gate-k1-8.log`): K1 91.0% K2 74.5% K3 62.9% K4 50.6% K5 43.5%
+  K6 37.6% K7 33.5% K8 29.3%.
+- acceptance table (greedy, ngen 256, board prompts; single runs per cell — greedy
+  acceptance is deterministic per (prompt,K)), vs the Ornith-35B donor-block reference:
+
+| K | p1-code-short | p2-code-medium | p3-agentic-long |
+|---|---|---|---|
+| 2 | **73.8% / 1.10x** | **78.8% / 1.08x** | **88.6% / 1.12x** |
+| 3 | 58.4% / 0.96x | 67.5% / 0.99x | 74.7% / 1.04x |
+| 4 | 48.0% / 0.83x | 57.7% / 0.89x | 60.3% / 0.90x |
+
+Ornith-35B reference (same donor, same recipe, 2026-08-01): K2 65.9%/1.39x,
+63.8%/1.11x, 63.8%/1.00x. AgentWorld ACCEPTANCE is higher on every cell (+7.9 to
++24.8 pts — the AgentWorld post-train sits closer to the Qwen3.6-35B donor's
+distribution), but the spec/plain RATIO is lower on p1 (1.10x vs 1.39x): AgentWorld's
+plain decode base runs the 19.57GB expert bank through the SLRU spill cache (bank
+misses residency by 0.2GB), and each spec verify round widens the per-step expert
+working set — the spill path compresses the speedup that the higher acceptance would
+otherwise buy. Per-class best K = **2** everywhere (the q35-family serving K).
 
 ## Stage 4 — bar cells
 
