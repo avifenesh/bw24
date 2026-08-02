@@ -1,0 +1,10 @@
+=== rep1 dual=off ===
+[econ] decode_h   N=30  med= 22.479ms  mean= 22.378ms  min= 21.177ms  p90= 23.310ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 23.657ms  mean= 23.381ms  min= 22.091ms  p90= 24.194ms  x1.052 vs decode_h
+[econ] verify_t2  N=30  med= 25.202ms  mean= 25.171ms  min= 23.980ms  p90= 26.295ms  x1.121 vs decode_h
+[econ] verify_t3  N=30  med= 26.871ms  mean= 26.586ms  min= 25.373ms  p90= 27.292ms  x1.195 vs decode_h
+[econ] verify_t4  N=30  med= 28.999ms  mean= 28.860ms  min= 27.182ms  p90= 29.851ms  x1.290 vs decode_h
+[econ] verify_t5  N=30  med= 35.617ms  mean= 35.627ms  min= 34.515ms  p90= 36.233ms  x1.584 vs decode_h
+[econ] verify_t6  N=30  med= 38.070ms  mean= 38.400ms  min= 37.180ms  p90= 39.375ms  x1.694 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":22.4792,"mean_ms":22.3780,"min_ms":21.1770,"p90_ms":23.3098},"verify_t1":{"med_ms":23.6570,"mean_ms":23.3805,"min_ms":22.0906,"p90_ms":24.1935},"verify_t2":{"med_ms":25.2024,"mean_ms":25.1712,"min_ms":23.9797,"p90_ms":26.2945},"verify_t3":{"med_ms":26.8714,"mean_ms":26.5856,"min_ms":25.3725,"p90_ms":27.2916},"verify_t4":{"med_ms":28.9995,"mean_ms":28.8603,"min_ms":27.1819,"p90_ms":29.8513},"verify_t5":{"med_ms":35.6169,"mean_ms":35.6272,"min_ms":34.5150,"p90_ms":36.2333},"verify_t6":{"med_ms":38.0705,"mean_ms":38.3997,"min_ms":37.1797,"p90_ms":39.3748}}}
+=== rep1 dual=on ===

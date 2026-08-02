@@ -1,0 +1,32 @@
+=== BV=base ===
+weight blk.1.ffn_gate.weight [NVFP4] in_f=5120 out_f=17408 row_bytes=2880 copies=8 variant=base
+  m=2 (b2): 66.54 us/call  (33.27 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 70.09 us/call  (23.36 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 82.30 us/call  (20.57 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 101.43 us/call  (20.29 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 114.91 us/call  (19.15 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 130.61 us/call  (16.33 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=pf ===
+weight blk.1.ffn_gate.weight [NVFP4] in_f=5120 out_f=17408 row_bytes=2880 copies=8 variant=pf
+  m=2 (b2): 69.47 us/call  (34.73 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 71.04 us/call  (23.68 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 79.85 us/call  (19.96 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 88.10 us/call  (17.62 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 95.50 us/call  (15.92 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 119.56 us/call  (14.94 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=r2 ===
+weight blk.1.ffn_gate.weight [NVFP4] in_f=5120 out_f=17408 row_bytes=2880 copies=8 variant=r2
+  m=2 (b2): 66.76 us/call  (33.38 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 69.17 us/call  (23.06 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 73.25 us/call  (18.31 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 87.94 us/call  (17.59 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 92.71 us/call  (15.45 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 106.45 us/call  (13.31 us/token)  bit-bad=0 bit-exact-bad=0
+=== BV=r2w8 ===
+weight blk.1.ffn_gate.weight [NVFP4] in_f=5120 out_f=17408 row_bytes=2880 copies=8 variant=r2w8
+  m=2 (b2): 66.31 us/call  (33.16 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 75.01 us/call  (25.00 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 79.29 us/call  (19.82 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 94.18 us/call  (18.84 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 99.06 us/call  (16.51 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 118.04 us/call  (14.76 us/token)  bit-bad=0 bit-exact-bad=0

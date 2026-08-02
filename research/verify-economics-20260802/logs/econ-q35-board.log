@@ -1,0 +1,17 @@
+tree 5e37780e699b807290ed63375491be9b1d41fe72
+[gpu 2026-08-02T09:42:41Z] 72, 43.91 W, 1762 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.93GB (expert budget 19.33GB) -> RESIDENT
+[econ] model=/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf prompt_tokens=2048 N=50 t_max=6
+[econ] primed pos=2048, continuation=[485, 818, 8400, 6649, 332, 6452, 506]
+[econ] decode_h   N=50  med=  5.665ms  mean=  6.012ms  min=  5.557ms  p90=  7.206ms  x1.000 vs decode_h
+[econ] verify_t1  N=50  med=  5.678ms  mean=  6.008ms  min=  5.580ms  p90=  7.092ms  x1.002 vs decode_h
+[econ] verify_t2  N=50  med=  7.174ms  mean=  7.580ms  min=  6.993ms  p90=  8.790ms  x1.266 vs decode_h
+[econ] verify_t3  N=50  med=  7.975ms  mean=  8.519ms  min=  7.821ms  p90=  9.955ms  x1.408 vs decode_h
+[econ] verify_t4  N=50  med=  9.391ms  mean=  9.418ms  min=  8.630ms  p90= 10.624ms  x1.658 vs decode_h
+[econ] verify_t5  N=50  med= 11.045ms  mean= 11.149ms  min= 10.234ms  p90= 12.368ms  x1.950 vs decode_h
+[econ] verify_t6  N=50  med= 12.354ms  mean= 12.554ms  min= 11.514ms  p90= 13.745ms  x2.181 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","prompt_tokens":2048,"pos":2048,"n":50,"arms":{"decode_h":{"med_ms":5.6647,"mean_ms":6.0120,"min_ms":5.5570,"p90_ms":7.2063},"verify_t1":{"med_ms":5.6777,"mean_ms":6.0080,"min_ms":5.5799,"p90_ms":7.0923},"verify_t2":{"med_ms":7.1739,"mean_ms":7.5801,"min_ms":6.9933,"p90_ms":8.7905},"verify_t3":{"med_ms":7.9751,"mean_ms":8.5193,"min_ms":7.8213,"p90_ms":9.9554},"verify_t4":{"med_ms":9.3912,"mean_ms":9.4181,"min_ms":8.6295,"p90_ms":10.6238},"verify_t5":{"med_ms":11.0454,"mean_ms":11.1488,"min_ms":10.2342,"p90_ms":12.3677},"verify_t6":{"med_ms":12.3539,"mean_ms":12.5539,"min_ms":11.5137,"p90_ms":13.7445}}}
+[gpu 2026-08-02T09:43:24Z] 66, 34.99 W, 1740 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+ECON35 rc=0
