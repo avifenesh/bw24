@@ -34,6 +34,11 @@ survives with concrete triggers, and the interesting variant is prune-first, not
 | `kimi-com-modeluse-agreement-20260802.html` | Kimi product ToS raw HTML (anti-distillation clause) |
 | `alibaba-product-terms-4.48-modelstudio-20260802.html` | Alibaba Product Terms Art. 4.48 raw HTML |
 | `alibaba-coding-plan-page-20260802.html` | Coding Plan docs page (interactive-only policy, quotas) |
+| `dsv4-flash-endpoints-20260802.json` | All 21 OR endpoints of deepseek-v4-flash w/ pricing |
+| `openrouter-tos-20260802.html` | OpenRouter ToS raw HTML (Last Updated 2026-07-27) |
+| `deepseek-open-platform-tos-20260802.html` | DeepSeek platform ToS (distillation-permissive §4.2) |
+| `deepinfra-tos-20260802.html` / `novita-tos-20260802.html` | Allowlisted host ToS |
+| `baidu-intl-ai-terms-20260802.html` | Baidu AI terms (3A.5 non-compete -> DENY) |
 
 ---
 
@@ -265,6 +270,51 @@ is not honest territory without large-n agentic evals and real SFT budget.
   claims nothing itself; Fireworks (2026-07-10) and Together (2026-05-19) disclaim training on
   or claims over customer outputs. The model license is the binding constraint.
 
+### The recommended pilot path: opencode -> OpenRouter -> pinned DeepSeek V4-Flash (verified 2026-08-02)
+
+Owner's proposed setup, links verified with exact quotes; raw HTML receipts in this dir
+(`openrouter-tos-20260802.html`, `deepseek-open-platform-tos-20260802.html`,
+`deepinfra-tos-20260802.html`, `novita-tos-20260802.html`, `baidu-intl-ai-terms-20260802.html`).
+opencode is local OSS software (no service link); the V4-Flash model license is MIT-class; the
+two service links check out as follows.
+
+**Link 1 — OpenRouter ToS (openrouter.ai/terms, "Last Updated: July 27, 2026"): clean.**
+Section 6.1: "You retain copyright and any other proprietary rights that you may hold in the
+Input. Your ownership rights in the Output are set forth in the Model Terms for each Model you
+use." OR takes only an operational license to User Content "solely in connection with operating
+and providing the Service" (broader logging license is opt-in only, §6.2). No restriction on
+using outputs for training anywhere in the document. Two obligations flow to us: §5.1 — "You
+are solely responsible for reviewing the Model Terms applicable to each Model" — and Model
+Providers are third-party beneficiaries of §§5/6.1 (§20), i.e. the per-endpoint host terms are
+enforceable against us. That makes the provider allowlist below load-bearing, not optional.
+
+**Link 2 — per-provider terms for `deepseek/deepseek-v4-flash` (21 endpoints live, receipt
+`dsv4-flash-endpoints-20260802.json`).** The four cheapest + first-party, checked:
+
+| Provider | $/M in / out / cache-rd | Quant, ctx | Verdict (quote) |
+|---|---|---|---|
+| **DeepSeek first-party** | 0.140 / 0.280 / **0.0028** | unknown, 1M | **ALLOW — explicitly permissive.** Open Platform ToS §4.2 (cdn.deepseek.com, effective 2026-04-29): "We assign any rights, title, and interests—if any—in the Outputs of the Services to you; (3) You may apply the Inputs and Outputs of the Services to a wide range of use cases, including ... derivative product development, **training other models (such as model distillation)**, etc." The only first-party ToS found anywhere in this study that names distillation as a permitted use. Best cache-read price on the list (10x cheaper than anyone) and 99.996% uptime-30m. |
+| **DeepInfra** | 0.090 / 0.180 / 0.018 | fp4, 1M | **ALLOW.** ToS: "inputs you provide to our API and outputs it generates are your private data. We will not store, sell or train using this data"; no output-use restriction. Generic non-compete covers competing *with DeepInfra's service*, not model training. Note quant=fp4 — acceptable for trace gen, worth knowing. |
+| StreamLake (cheapest, 0.0868/0.1736) | fp8, 1M | — | **HOLD — unverifiable.** Kuaishou's cloud; its ToS pages (streamlake.ai/document/...) are JS-rendered and returned no text; no English terms located. Cheapest but unverified = excluded by the allowlist rule. |
+| Baidu (0.0882/0.1764) | fp8, 1M | — | **DENY.** Baidu AI Cloud International agreement 3A.5: "You shall not ... directly or indirectly, use the AI service to develop or improve similar or competing products or services." Same clause family as the blocked subs. |
+| **Fireworks** | 0.140 / 0.280 / 0.028 | unknown, 1M | **ALLOW** (per the licensing-thread verification of Fireworks ToS, 2026-07-10: customer owns outputs, no training restriction). |
+| **Novita** | 0.140 / 0.280 / 0.028 | fp8, 1M | **ALLOW.** ToS (updated 2025-11-04) §9: "You retain copyright and any other proprietary rights that you may hold in the Input... we shall not log, store, or retain any User Content... or any Outputs"; no output-use restriction ("compete with us" clause covers their marketplace, not model training). |
+
+**Pinned allowlist for OR request preferences** (`provider.only`, plus `allow_fallbacks:false`):
+`["deepseek", "deepinfra", "fireworks", "novita"]` — order = preference. GMICloud (0.0938/0.1876,
+fp8) had no reachable ToS text (JS-only site) — HOLD with StreamLake; both can be promoted later
+if their terms verify. Everything else on the endpoint list stays off until read.
+
+**Per-trace pilot cost** (assumptions: 25k-token final trajectory, ~30 turns, cumulative prompt
+re-read ~8x transcript at 90% cache-hit, ~8k output tokens, 3x rejection-sampling overhead —
+own arithmetic from the endpoint receipt): DeepSeek first-party **~$0.017 per kept trace**
+(~$665 per 1B kept tokens — the cache-read price is the dominant term and DeepSeek's $0.0028/M
+beats the field 10x); DeepInfra ~$0.019 (~$780/1B); Fireworks/Novita ~$0.030 (~$1,210/1B).
+A 5K-trajectory SWE-smith-scale pilot ≈ **$85–150 total**; a 50K-trajectory KAT-scale corpus
+≈ $850–1,500. At these prices the pilot is essentially free relative to eval costs — V4-Flash
+prices came down so far that the earlier V4-Pro-based estimate (~$2k/1B) is now the *upper*
+bound of the clean path, not the floor.
+
 ### Licensing — the owner's paid subs (both checked 2026-08-02, raw HTML receipts saved): BLOCKED
 
 - **Kimi Code sub — prohibited.** Kimi Model-Use agreement
@@ -352,10 +402,14 @@ KILL.**
    (avg-of-5), BFCL v4 >= vanilla, <=2pp regression on MMLU-Pro/GPQA/LiveCodeBench v6, and
    loop/non-termination rate at n>=2000 agentic prompts <= vanilla. Cross-harness or it didn't
    happen (the Ornith rule).
-5. **Teacher policy if/when trace-gen happens:** DeepSeek V4-Pro API (MIT, ~$2k/1B kept) or
-   K3 API under its weights license — **never the Kimi Code or Qwen coding-plan subs** (both
-   ToS-blocked, receipts above), and no K3 self-hosting fantasy on our own boxes (it is TP16
-   hardware).
+5. **Teacher policy if/when trace-gen happens:** the verified pilot path is
+   **opencode -> OpenRouter -> DeepSeek V4-Flash pinned to the allowlist
+   `["deepseek","deepinfra","fireworks","novita"]`** (~$0.017-0.03 per kept trace; DeepSeek
+   first-party is both cheapest-effective and the only ToS that *names* distillation as
+   permitted). V4-Pro API for harder traces (~$2k/1B kept) or K3 API under its weights license
+   for ceiling experiments — **never the Kimi Code or Qwen coding-plan subs** (both
+   ToS-blocked, receipts above), never Baidu-hosted endpoints (3A.5 non-compete), and no K3
+   self-hosting fantasy on our own boxes (it is TP16 hardware).
 
 ---
 
@@ -383,6 +437,12 @@ cards; vllm-project/llm-compressor REAP example; RangerX/barozp/atbender/crucibl
 Qwen3.6-REAP cards; arXiv 2603.02217 (Router-KD); 0xSero/GLM-5.2-504B card; arXiv 2605.08738
 (SlimQwen); NVIDIA Minitron blog (2024-10-17); r/LocalLLaMA 1o98f57, 1ok1tkh, 1qn0dtg,
 1oefu29; pipenetwork/Kimi-K3-REAP73 card; unsloth.ai/docs/models/qwen3.6.
+
+**Pilot-path verification (all fetched 2026-08-02, receipts in this dir):** openrouter.ai/terms
+(2026-07-27); cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html
+(effective 2026-04-29); deepinfra.com/terms; novita.ai/legal/terms-of-service (2025-11-04);
+intl.cloud.baidu.com Baidu AI Cloud agreement (3A.5); openrouter.ai/api/v1/models/deepseek/
+deepseek-v4-flash/endpoints; streamlake.ai + gmicloud.ai ToS unreachable (JS-only) -> HOLD.
 
 **Licensing/cost:** moonshotai/Kimi-K3 LICENSE; moonshotai/Kimi-K2-Instruct LICENSE;
 deepseek-ai/DeepSeek-V4-Pro LICENSE; Qwen/Qwen3.6-35B-A3B LICENSE; venturebeat.com K3-license
