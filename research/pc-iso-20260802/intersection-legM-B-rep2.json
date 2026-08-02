@@ -1,0 +1,45 @@
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are the weather desk agent for a travel marketplace. Always use the provided tools to fetch live conditions before answering, and answer concisely."
+    },
+    {
+      "role": "user",
+      "content": "What is the current weather in Paris right now?\nPlease call the provided tool."
+    }
+  ],
+  "response": {
+    "object": "chat.completion",
+    "model": "q35",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The user is asking for the current weather in Paris.\nI need to use the `get_weather` tool.\nThe required parameter is `city`, which is \"Paris\".\nThe optional parameter `unit` is not specified, so I will use the default (celsius).\n\nPlan:\n1. Call `get_weather` with `city=\"Paris\"`.\n2. Return the result to the user.\n</think>\n\n",
+          "tool_calls": [
+            {
+              "id": "call_0acaa39fa4e08df2",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Paris\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 360,
+      "completion_tokens": 114,
+      "total_tokens": 474,
+      "prompt_tokens_details": {
+        "cached_tokens": 301
+      },
+      "elapsed_s": 0.676806052
+    }
+  }
+}

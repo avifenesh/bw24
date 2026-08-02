@@ -10,8 +10,8 @@
 //!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
 //!   GET  /metrics                -> flat serving counters + step latency percentiles.
 //!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
-//!                                     seed?,stop?,chat?,stream?}. stream=true => SSE token-by-token;
-//!                                     else a single JSON {text,tokens,stop_reason}.
+//!                                     seed?,stop?,chat?,stream?,cache_salt?}. stream=true => SSE
+//!                                     token-by-token; else a single JSON {text,tokens,stop_reason}.
 //!   POST /v1/chat/completions    -> OpenAI chat messages rendered by the GGUF chat template;
 //!                                     OpenAI message/chunk response shapes. `tools`/`tool_choice`
 //!                                     (auto|none) + role:"tool" turns render through the
@@ -90,6 +90,11 @@ struct CompletionReq {
     /// Stable calibration-record identity written only when confidence tracing is enabled.
     #[serde(default)]
     trace_id: Option<String>,
+    /// PC-ISO prefix-cache namespace (vLLM `cache_salt` convention, optional): requests
+    /// only share cached prefixes with requests carrying the SAME salt. Absent/"" = the
+    /// default single-tenant namespace (pre-PC-ISO behavior). See `cache_namespace`.
+    #[serde(default)]
+    cache_salt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +188,11 @@ struct ChatCompletionReq {
     /// OpenRouter object form: {"effort": "...", "enabled": bool} (max_tokens etc ignored).
     #[serde(default)]
     reasoning: Option<serde_json::Value>,
+    /// PC-ISO prefix-cache namespace (vLLM `cache_salt` convention, optional): requests
+    /// only share cached prefixes with requests carrying the SAME salt. Absent/"" = the
+    /// default single-tenant namespace (pre-PC-ISO behavior). See `cache_namespace`.
+    #[serde(default)]
+    cache_salt: Option<String>,
 }
 fn default_max_tokens() -> usize { 128 }
 fn one() -> f32 { 1.0 }
@@ -230,6 +240,19 @@ fn openai_compat() -> bool {
             Err(_) => std::env::var("MEMRA_API_KEY").is_ok(),
         }
     })
+}
+
+/// PC-ISO (lane/pc-iso, 2026-08-02): derive the cache namespace for a request — the vLLM
+/// `cache_salt` design (research/cache-tools-20260802/REPORT.md §4). Priority order:
+/// (a) the explicit `cache_salt` body field (OpenAI-compatible extension); (b) a per-API-key
+/// namespace would slot in here IF the auth layer ever distinguished keys — today
+/// MEMRA_API_KEY is one shared bearer, a single trust domain, so there is no per-key
+/// identity to fold in; (c) "" — the default single-tenant namespace, byte-identical to
+/// pre-PC-ISO behavior. Cross-request KV reuse (prefix cache, continuation pool, spec pool)
+/// only ever matches entries with an IDENTICAL namespace, so the `cached_tokens` hit oracle
+/// can only reveal the caller's own namespace's history (CacheProbe/PROMPTPEEK mitigation).
+fn cache_namespace(cache_salt: &Option<String>) -> String {
+    cache_salt.clone().unwrap_or_default()
 }
 
 fn stop_reason_to_finish(r: &str) -> &'static str {
@@ -520,6 +543,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         sampler_cfg,
         stop_strings: req.stop.clone().into_vec(),
         trace_id: req.trace_id.clone(),
+        cache_ns: cache_namespace(&req.cache_salt),
         tx,
     }
 }
@@ -599,6 +623,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             },
             stop_strings: req.stop.into_vec(),
             trace_id: None,
+            cache_ns: cache_namespace(&req.cache_salt),
             tx,
         },
         parser,
@@ -1062,6 +1087,35 @@ mod tests {
         assert_eq!(payload["usage"]["completion_tokens"], 2);
         assert_eq!(payload["usage"]["total_tokens"], 42);
         assert_eq!(payload["usage"]["prompt_tokens_details"]["cached_tokens"], 0);
+    }
+
+    #[test]
+    fn cache_salt_plumbs_to_the_worker_namespace() {
+        // PC-ISO: explicit cache_salt -> the request's cache namespace, on BOTH bodies.
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "task", "cache_salt": "tenant-a"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(build_request(&req, tx).cache_ns, "tenant-a");
+
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "task"}],
+            "cache_salt": "tenant-b"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(build_chat_request(req, None, tx).unwrap().request.cache_ns, "tenant-b");
+
+        // no salt -> "" (the default single-tenant namespace; pre-PC-ISO behavior).
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "task"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(build_request(&req, tx).cache_ns, "");
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "task"}]
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(build_chat_request(req, None, tx).unwrap().request.cache_ns, "");
     }
 
     #[test]

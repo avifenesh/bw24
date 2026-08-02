@@ -1,0 +1,26 @@
+{
+  "salt": null,
+  "response": {
+    "object": "chat.completion",
+    "model": "q35",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - Request: \"How long"
+        },
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 94,
+      "completion_tokens": 24,
+      "total_tokens": 118,
+      "prompt_tokens_details": {
+        "cached_tokens": 94
+      },
+      "elapsed_s": 0.132963547
+    }
+  }
+}

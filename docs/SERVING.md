@@ -146,6 +146,22 @@ its own continuation pool). Legacy round-robin mode (`MEMRA_SERVE_BATCH=0`) also
 Sessions always win over the cache: a failed session-cache allocation evicts every entry and
 retries before erroring.
 
+**Per-tenant isolation (`cache_salt`) — PC-ISO, 2026-08-02:** every cross-request reuse
+tier (prefix cache, continuation pool, spec pool) keys on (model, cache namespace), not
+model alone. The namespace comes from the optional `cache_salt` string field on
+`/v1/completions` and `/v1/chat/completions` (the vLLM `cache_salt` design, OpenAI-
+compatible extension): requests only share cached prefixes with requests carrying the
+SAME salt, in either direction, so `usage.prompt_tokens_details.cached_tokens` can only
+ever reflect the caller's own namespace's history — the CacheProbe/PROMPTPEEK cross-tenant
+hit-oracle mitigation (`research/cache-tools-20260802/REPORT.md` §1.4/§4). No salt = the
+default `""` namespace: single-tenant deployments behave exactly as before (no new env
+knob — the namespace is a request field, not a flag). The LRU byte budget stays GLOBAL
+across namespaces (VRAM is one resource; only visibility is namespaced). A gateway
+multiplexing many end-users through one API key — the marketplace listing shape — MUST set
+a per-end-user/session salt. Gates: `research/pc-iso-20260802/` (same-salt hit, cross-salt
+miss both directions, default-namespace blindness; the integrate-cache intersection gate
+re-run unmodified as the no-salt regression).
+
 **Accounting:** every response shape carries OpenAI-schema usage with the worker-truth split —
 `usage.prompt_tokens`, `completion_tokens`, `total_tokens`, and
 `prompt_tokens_details.cached_tokens` (tokens resumed from ANY cache tier: continuation pool,
