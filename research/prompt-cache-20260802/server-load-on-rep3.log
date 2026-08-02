@@ -1,0 +1,43 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.00GB (expert budget 19.40GB) -> RESIDENT
+[worker]   loaded "m": 41 layers, eos=248046
+[worker] m: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8127
+[worker] observed session VRAM cost for "m": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 1591 tokens, 82.8MB (resident 82.8MB / 268MB, model m)
+[prefix-cache] insert (seed): 1592 tokens, 82.8MB (resident 165.7MB / 268MB, model m)
+[prefix-cache] insert (seed): 1591 tokens, 82.8MB (resident 248.5MB / 268MB, model m)
+[prefix-cache] insert (seed): 1592 tokens, 82.8MB (resident 331.3MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1591 tokens, 82.8MB (model m)
+[prefix-cache] insert (seed): 1593 tokens, 82.8MB (resident 331.3MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1592 tokens, 82.8MB (model m)
+[prefix-cache] insert (seed): 1592 tokens, 82.8MB (resident 331.3MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1591 tokens, 82.8MB (model m)
+[prefix-cache] insert (seed): 1593 tokens, 82.8MB (resident 331.4MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1592 tokens, 82.8MB (model m)
+[prefix-cache] insert (seed): 1593 tokens, 82.8MB (resident 331.4MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1593 tokens, 82.8MB (model m)
+[prefix-cache] insert (lcp-split): 1577 tokens, 82.7MB (resident 331.2MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1592 tokens, 82.8MB (model m)
+[prefix-cache] insert (lcp-split): 1578 tokens, 82.7MB (resident 331.1MB / 268MB, model m)
+[prefix-cache] evict (LRU): 1593 tokens, 82.8MB (model m)
+[prefix-cache] hit: 1577 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1578 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1578 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1578 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1593 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1578 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1590 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1578 of 1592 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1594 prompt tokens from cache (model m)
+[prefix-cache] hit: 1577 of 1591 prompt tokens from cache (model m)
+[prefix-cache] hit: 1578 of 1590 prompt tokens from cache (model m)

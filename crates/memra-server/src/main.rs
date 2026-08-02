@@ -143,7 +143,24 @@ struct CompletionResp {
     tokens: Vec<u32>,
     stop_reason: String,
     n_tokens: usize,
+    /// worker-truth prompt accounting (prompt caching): total prompt tokens, and how many
+    /// were served from cache (continuation pool / spec resume / cross-request prefix cache).
+    prompt_tokens: usize,
+    cached_tokens: usize,
     elapsed_s: f64,
+}
+
+/// OpenAI-schema usage object, shared by every response shape. `prompt_tokens_details.
+/// cached_tokens` is the marketplace prompt-caching field (cache reads bill at a discount;
+/// the value is worker-truth — tokens whose KV was resumed instead of computed).
+fn usage_json(n_prompt: usize, n_tokens: usize, n_cached: usize, elapsed_s: f64) -> serde_json::Value {
+    json!({
+        "prompt_tokens": n_prompt,
+        "completion_tokens": n_tokens,
+        "total_tokens": n_prompt + n_tokens,
+        "prompt_tokens_details": { "cached_tokens": n_cached },
+        "elapsed_s": elapsed_s,
+    })
 }
 
 /// OpenAI-compat mapping (2026-07-05, serve-parity arc): the pi daily client speaks
@@ -246,6 +263,12 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
         "tokens_out": m.tokens_out,
         "step_p50_ms": m.step_p50_ms,
         "step_p99_ms": m.step_p99_ms,
+        // worker-truth prompt caching split (cached = resumed from any KV cache tier).
+        "prompt_tokens_in": m.prompt_tokens_in,
+        "cached_tokens_in": m.cached_tokens_in,
+        "prefix_cache_hits": m.prefix_hits,
+        "prefix_cache_entries": m.prefix_entries,
+        "prefix_cache_bytes": m.prefix_bytes,
     }))
 }
 
@@ -388,28 +411,27 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                     };
                     yield Ok(SseEvent::default().data(payload));
                 }
-                Event::Done { stop_reason, n_tokens, elapsed_s } => {
+                Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s } => {
                     if chat || openai_compat() {
+                        let usage = usage_json(n_prompt, n_tokens, n_cached, elapsed_s);
                         let fin = if chat {
                             json!({ "object": "chat.completion.chunk", "model": model,
                                 "choices": [{ "index": 0, "delta": {},
                                               "finish_reason": stop_reason_to_finish(&stop_reason) }],
-                                "usage": { "completion_tokens": n_tokens,
-                                           "total_tokens": n_tokens,
-                                           "elapsed_s": elapsed_s } })
+                                "usage": usage })
                         } else {
                             json!({ "object": "text_completion", "model": model,
                                 "choices": [{ "index": 0, "text": "",
                                               "finish_reason": stop_reason_to_finish(&stop_reason) }],
-                            "usage": { "completion_tokens": n_tokens,
-                                       "total_tokens": n_tokens,
-                                       "elapsed_s": elapsed_s } })
+                                "usage": usage })
                         }.to_string();
                         yield Ok(SseEvent::default().data(fin));
                         yield Ok(SseEvent::default().data("[DONE]".to_string()));
                     } else {
                         let payload = json!({
-                            "stop_reason": stop_reason, "n_tokens": n_tokens, "elapsed_s": elapsed_s
+                            "stop_reason": stop_reason, "n_tokens": n_tokens,
+                            "prompt_tokens": n_prompt, "cached_tokens": n_cached,
+                            "elapsed_s": elapsed_s
                         }).to_string();
                         yield Ok(SseEvent::default().event("done").data(payload));
                     }
@@ -440,7 +462,7 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
     while let Some(ev) = rx.recv().await {
         match ev {
             Event::Token { id, text: delta } => { tokens.push(id); text.push_str(&delta); }
-            Event::Done { stop_reason, n_tokens, elapsed_s } => {
+            Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s } => {
                 truncate_at_stop(&mut text, &stop_strings);
                 if chat {
                     return Json(json!({
@@ -448,8 +470,7 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                         "choices": [{ "index": 0,
                                       "message": { "role": "assistant", "content": text },
                                       "finish_reason": stop_reason_to_finish(&stop_reason) }],
-                        "usage": { "completion_tokens": n_tokens, "total_tokens": n_tokens,
-                                   "elapsed_s": elapsed_s }
+                        "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s)
                     })).into_response();
                 }
                 if openai_compat() {
@@ -457,12 +478,12 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                         "object": "text_completion", "model": model,
                         "choices": [{ "index": 0, "text": text,
                                       "finish_reason": stop_reason_to_finish(&stop_reason) }],
-                        "usage": { "completion_tokens": n_tokens, "total_tokens": n_tokens,
-                                   "elapsed_s": elapsed_s }
+                        "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s)
                     })).into_response();
                 }
                 return Json(CompletionResp {
-                    model, text, tokens, stop_reason, n_tokens, elapsed_s,
+                    model, text, tokens, stop_reason, n_tokens,
+                    prompt_tokens: n_prompt, cached_tokens: n_cached, elapsed_s,
                 }).into_response();
             }
             Event::Error(msg) => {
@@ -520,7 +541,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Token { id: 1, text: "hello".into() }).unwrap();
         tx.send(Event::Done {
-            stop_reason: "Eos".into(), n_tokens: 1, elapsed_s: 0.5,
+            stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 42, n_cached: 30, elapsed_s: 0.5,
         }).unwrap();
         drop(tx);
         let response = blocking_response(rx, "plain_quant".into(), true, Vec::new()).await;
@@ -531,6 +552,11 @@ mod tests {
         assert_eq!(payload["choices"][0]["message"]["role"], "assistant");
         assert_eq!(payload["choices"][0]["message"]["content"], "hello");
         assert_eq!(payload["choices"][0]["finish_reason"], "stop");
+        // OpenAI prompt-caching usage schema (worker-truth cached vs computed split).
+        assert_eq!(payload["usage"]["prompt_tokens"], 42);
+        assert_eq!(payload["usage"]["completion_tokens"], 1);
+        assert_eq!(payload["usage"]["total_tokens"], 43);
+        assert_eq!(payload["usage"]["prompt_tokens_details"]["cached_tokens"], 30);
     }
 
     #[test]
@@ -553,7 +579,7 @@ mod tests {
         tx.send(Event::Token { id: 1, text: "answer\nPro".into() }).unwrap();
         tx.send(Event::Token { id: 2, text: "blem: leaked prompt".into() }).unwrap();
         tx.send(Event::Done {
-            stop_reason: "Callback".into(), n_tokens: 2, elapsed_s: 0.5,
+            stop_reason: "Callback".into(), n_tokens: 2, n_prompt: 8, n_cached: 0, elapsed_s: 0.5,
         }).unwrap();
         drop(tx);
         let response = blocking_response(
