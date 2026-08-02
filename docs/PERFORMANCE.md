@@ -60,8 +60,10 @@ dense 27B row was never on the path (re-cell bit-stable). Receipts:
 ### Depth behavior
 
 Depth is part of the contract: at 6.3k-token context every plain-decode lead holds
-(1.02–1.07x). The depth rows live in `current-board.json` (`plain_decode_depth`), from the
-same validity-gated cold-start rebaseline as the 512-context rows.
+(1.11–1.13x, 2026-08-02 post-deep-fa re-measure — the depth cells are where the deep
+fa_decode rewrite lands hardest, 35B +8.2% at d6257). The depth rows live in
+`current-board.json` (`plain_decode_depth`), re-measured N=5 same-session interleaved
+with a fresh llama denominator (`research/board-remeasure-20260802/`).
 
 ### Prefill, root-caused
 

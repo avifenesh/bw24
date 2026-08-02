@@ -1,0 +1,5 @@
+# q35 rep1 cell split by session restart mid-sweep (memra d6257 killed mid-gen, llama pair never ran).
+# Interleaving law: pair split across sessions -> whole cell invalid for medians. Re-run whole as rep1 below in board-remeasure.jsonl.
+{"ts":"2026-08-02T14:07:04Z","git":"d14d7d8d","cell":"board-remeasure","model":"q35","engine":"memra","depth":512,"metric":"gen_ntok","value":128,"rep":1,"profile":"performance","temp_c":65,"gpu_concurrent":"/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+{"ts":"2026-08-02T14:07:04Z","git":"d14d7d8d","cell":"board-remeasure","model":"q35","engine":"memra","depth":512,"metric":"tg128_toks","value":185.46,"rep":1,"profile":"performance","temp_c":65,"gpu_concurrent":"/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
+{"ts":"2026-08-02T14:07:04Z","git":"d14d7d8d","cell":"board-remeasure","model":"q35","engine":"memra","depth":512,"metric":"argmax_match_lines","value":2,"rep":1,"profile":"performance","temp_c":65,"gpu_concurrent":"/home/avifenesh/projects/llama.cpp/build/bin/llama-server:260 MiB"}
