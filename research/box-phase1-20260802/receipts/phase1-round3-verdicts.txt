@@ -1,0 +1,24 @@
+/home/ubuntu/receipts/m1-pp2/q9-dev01-overlap-r3.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=1(double-buffered) devices=0,1)
+/home/ubuntu/receipts/m1-pp2/q9-dev01-r3.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=0,1)
+/home/ubuntu/receipts/m1-pp2/q9-dev01-split5-r3.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,5), stage1=[5,32); streams=per-stage overlap=0 devices=0,1)
+/home/ubuntu/receipts/m1-pp2/q9-dev07-r3.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=0,7)
+/home/ubuntu/receipts/m1-pp2/q9-singledev-r3.log:pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=default(primary))
+/home/ubuntu/receipts/m1-pp2/transport-smoke-r3.log:pp-transport-smoke PASS
+-- boundary r3 --
+/home/ubuntu/receipts/m1-pp2/boundary/naked-r3-p1.log:generated 128 tokens in 0.777s = 164.79 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-r3-p2.log:generated 128 tokens in 0.780s = 164.19 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-r3-p3.log:generated 128 tokens in 0.782s = 163.61 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.009s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-r3-p4.log:generated 128 tokens in 0.773s = 165.48 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/naked-r3-p5.log:generated 128 tokens in 0.779s = 164.21 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-dev01-r3-p1.log:generated 128 tokens in 2.435s = 52.57 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.019s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-dev01-r3-p2.log:generated 128 tokens in 2.446s = 52.34 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.019s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-dev01-r3-p3.log:generated 128 tokens in 2.434s = 52.59 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.018s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-dev01-r3-p4.log:generated 128 tokens in 2.440s = 52.46 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.019s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-dev01-r3-p5.log:generated 128 tokens in 2.425s = 52.78 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.018s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-r3-p1.log:generated 128 tokens in 0.793s = 161.32 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-r3-p2.log:generated 128 tokens in 0.791s = 161.85 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-r3-p3.log:generated 128 tokens in 0.783s = 163.39 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-r3-p4.log:generated 128 tokens in 0.795s = 161.09 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+/home/ubuntu/receipts/m1-pp2/boundary/pp2-samedev-r3-p5.log:generated 128 tokens in 0.783s = 163.40 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.006s) [stop: MaxNew]
+-- battery r3 --
+VALIDATE-H100: ALL GATES GREEN

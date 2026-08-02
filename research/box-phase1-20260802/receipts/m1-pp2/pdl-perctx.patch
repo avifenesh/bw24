@@ -1,0 +1,154 @@
+diff --git a/crates/memra-engine/src/lib.rs b/crates/memra-engine/src/lib.rs
+index 29366170..67011095 100644
+--- a/crates/memra-engine/src/lib.rs
++++ b/crates/memra-engine/src/lib.rs
+@@ -1223,63 +1223,113 @@ impl Engine {
+     fn pdl_func_flash(&self, g: bool, name: &'static str)
+         -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
+         use cudarc::driver::sys as cu;
+-        static BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+-        static GMOD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+-        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(bool, &'static str), usize>>> =
++        // PER-CONTEXT caches (M1-PP2 cross-device fix, 8x box 2026-08-02): CUmodule and
++        // CUfunction handles are CONTEXT-scoped, and a remote-stage Engine
++        // (MEMRA_PP_DEVICES=a,b) lives in the other device's primary context. The old
++        // process-wide OnceLock cache handed stage 1 the dev-a handles, so every stage-1
++        // launch_pdl* died CUDA_ERROR_INVALID_HANDLE. Key module + function caches by
++        // this engine's CUcontext; single-context runs behave exactly as before.
++        static MODS: std::sync::Mutex<Option<std::collections::HashMap<(usize, bool), usize>>> =
+             std::sync::Mutex::new(None);
+-        let load = |path: &str| -> usize {
+-            let bytes = std::fs::read(path).expect("flash fatbin (pdl)");
+-            let mut m: cu::CUmodule = std::ptr::null_mut();
+-            let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+-            assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl flash module load: {r:?}");
+-            m as usize
++        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(usize, bool, &'static str), usize>>> =
++            std::sync::Mutex::new(None);
++        let ctx_key = self.ctx().cu_ctx() as usize;
++        if let Some(&f) = FNS.lock().unwrap().get_or_insert_with(Default::default)
++            .get(&(ctx_key, g, name)) { return Ok(f as cu::CUfunction); }
++        let module = {
++            let mut mods = MODS.lock().unwrap();
++            let map = mods.get_or_insert_with(Default::default);
++            match map.get(&(ctx_key, g)) {
++                Some(&m) => m,
++                None => {
++                    let m = self.pdl_load_module_in_ctx(
++                        if g { FLASH_FATBIN_KF8VF8 } else { FLASH_FATBIN_PATH })?;
++                    map.insert((ctx_key, g), m);
++                    m
++                }
++            }
+         };
+-        let module = if g { *GMOD.get_or_init(|| load(FLASH_FATBIN_KF8VF8)) }
+-                     else { *BASE.get_or_init(|| load(FLASH_FATBIN_PATH)) };
+-        let mut fns = FNS.lock().unwrap();
+-        let map = fns.get_or_insert_with(Default::default);
+-        if let Some(&f) = map.get(&(g, name)) { return Ok(f as cu::CUfunction); }
+         let cname = std::ffi::CString::new(name)?;
+         let mut f: cu::CUfunction = std::ptr::null_mut();
+         let r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
+         if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func_flash {name} (g={g}): {r:?}").into()); }
+-        map.insert((g, name), f as usize);
++        FNS.lock().unwrap().get_or_insert_with(Default::default)
++            .insert((ctx_key, g, name), f as usize);
+         Ok(f)
+     }
+ 
++    /// Load a fatbin as a raw CUmodule IN THIS ENGINE'S CONTEXT. `cuModuleLoadData` binds
++    /// the module to the thread's CURRENT context — a remote-stage engine must not
++    /// inherit the primary's (the INVALID_HANDLE class above). Restores the caller's
++    /// current context before returning.
++    fn pdl_load_module_in_ctx(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
++        use cudarc::driver::sys as cu;
++        let bytes = std::fs::read(path)
++            .map_err(|e| format!("pdl fatbin read {path}: {e}"))?;
++        let mut prev: cu::CUcontext = std::ptr::null_mut();
++        unsafe { cu::cuCtxGetCurrent(&mut prev).result()?; }
++        self.ctx().bind_to_thread()?;
++        let mut m: cu::CUmodule = std::ptr::null_mut();
++        let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
++        let restore = if prev.is_null() { cu::CUresult::CUDA_SUCCESS }
++                      else { unsafe { cu::cuCtxSetCurrent(prev) } };
++        if r != cu::CUresult::CUDA_SUCCESS {
++            return Err(format!("pdl module load {path}: {r:?}").into());
++        }
++        if restore != cu::CUresult::CUDA_SUCCESS {
++            return Err(format!("pdl module load {path}: ctx restore {restore:?}").into());
++        }
++        Ok(m as usize)
++    }
++
+     fn pdl_func(&self, name: &'static str) -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
+         use cudarc::driver::sys as cu;
+-        static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+-        static FNS: std::sync::Mutex<Option<std::collections::HashMap<&'static str, usize>>> =
++        // PER-CONTEXT caches — same M1-PP2 cross-device fix as pdl_func_flash (handles
++        // are context-scoped; key everything by this engine's CUcontext).
++        static MODULES: std::sync::Mutex<Option<std::collections::HashMap<usize, usize>>> =
+             std::sync::Mutex::new(None);
+-        let module = *MODULE.get_or_init(|| {
+-            let bytes = std::fs::read(env!("MEMRA_ENGINE_FATBIN")).expect("kernels fatbin");
+-            let mut m: cu::CUmodule = std::ptr::null_mut();
+-            let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+-            assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl module load: {r:?}");
+-            m as usize
+-        });
+         // PDL wave-A: the mmvq kernels live in the qmatvec fatbin, not kernels.cu — second
+         // duplicate module, loaded lazily on the first kernels-module miss.
+-        static QMODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+-        let mut fns = FNS.lock().unwrap();
+-        let map = fns.get_or_insert_with(Default::default);
+-        if let Some(&f) = map.get(name) { return Ok(f as cu::CUfunction); }
++        static QMODULES: std::sync::Mutex<Option<std::collections::HashMap<usize, usize>>> =
++            std::sync::Mutex::new(None);
++        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(usize, &'static str), usize>>> =
++            std::sync::Mutex::new(None);
++        let ctx_key = self.ctx().cu_ctx() as usize;
++        if let Some(&f) = FNS.lock().unwrap().get_or_insert_with(Default::default)
++            .get(&(ctx_key, name)) { return Ok(f as cu::CUfunction); }
++        let module = {
++            let mut mods = MODULES.lock().unwrap();
++            let map = mods.get_or_insert_with(Default::default);
++            match map.get(&ctx_key) {
++                Some(&m) => m,
++                None => {
++                    let m = self.pdl_load_module_in_ctx(env!("MEMRA_ENGINE_FATBIN"))?;
++                    map.insert(ctx_key, m);
++                    m
++                }
++            }
++        };
+         let cname = std::ffi::CString::new(name)?;
+         let mut f: cu::CUfunction = std::ptr::null_mut();
+         let mut r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
+         if r == cu::CUresult::CUDA_ERROR_NOT_FOUND {
+-            let qmodule = *QMODULE.get_or_init(|| {
+-                let bytes = std::fs::read(env!("MEMRA_QMATVEC_FATBIN")).expect("qmatvec fatbin");
+-                let mut m: cu::CUmodule = std::ptr::null_mut();
+-                let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+-                assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl qmatvec module load: {r:?}");
+-                m as usize
+-            });
++            let qmodule = {
++                let mut mods = QMODULES.lock().unwrap();
++                let map = mods.get_or_insert_with(Default::default);
++                match map.get(&ctx_key) {
++                    Some(&m) => m,
++                    None => {
++                        let m = self.pdl_load_module_in_ctx(env!("MEMRA_QMATVEC_FATBIN"))?;
++                        map.insert(ctx_key, m);
++                        m
++                    }
++                }
++            };
+             r = unsafe { cu::cuModuleGetFunction(&mut f, qmodule as cu::CUmodule, cname.as_ptr()) };
+         }
+         if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func {name}: {r:?}").into()); }
+-        map.insert(name, f as usize);
++        FNS.lock().unwrap().get_or_insert_with(Default::default)
++            .insert((ctx_key, name), f as usize);
+         Ok(f)
+     }
+ 

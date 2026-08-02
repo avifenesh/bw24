@@ -272,11 +272,41 @@ impl Pp2Rt {
                     .into());
                 }
             }
+            // MEM-POOL access grant (8x box 2026-08-02, cross-device fix #2):
+            // cuCtxEnablePeerAccess does NOT map STREAM-ORDERED POOL allocations, and every
+            // engine buffer/weight goes through the device default pool (cuMemAllocAsync via
+            // cudarc; memra-runtime configures that pool). A stage-1 kernel dereferencing
+            // dev0 weights — or the stage-0 peer TX writing dev1's RX slot — needs
+            // cuMemPoolSetAccess on the OWNING device's default pool for the ACCESSING
+            // device; without it the first remote dereference is CUDA_ERROR_ILLEGAL_ADDRESS
+            // (reported at the next API call in the poisoned context). Grant both ways.
+            for (owner, accessor) in [(stages[0].dev, stages[1].dev), (stages[1].dev, stages[0].dev)] {
+                let dev = cudarc::driver::result::device::get(owner as i32)?;
+                let mut pool: cudarc::driver::sys::CUmemoryPool = std::ptr::null_mut();
+                unsafe {
+                    cudarc::driver::sys::cuDeviceGetDefaultMemPool(&mut pool, dev).result()?;
+                }
+                let desc = cudarc::driver::sys::CUmemAccessDesc {
+                    location: cudarc::driver::sys::CUmemLocation {
+                        type_: cudarc::driver::sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
+                        id: accessor as i32,
+                    },
+                    flags: cudarc::driver::sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+                };
+                let rc = unsafe { cudarc::driver::sys::cuMemPoolSetAccess(pool, &desc, 1) };
+                if rc != cudarc::driver::sys::cudaError_enum::CUDA_SUCCESS {
+                    return Err(format!(
+                        "cuMemPoolSetAccess(dev{owner} pool -> dev{accessor}) failed: {rc:?}"
+                    )
+                    .into());
+                }
+            }
             // restore the primary context for the caller's subsequent work
             e.ctx().bind_to_thread()?;
             eprintln!(
                 "[pp2] cross-device transport: stage0=dev{} stage1=dev{} (cudaMemcpyPeerAsync; \
-                 peer access enabled both ways; weights remain on dev{primary_dev})",
+                 peer access enabled both ways + default-pool access both ways; weights remain \
+                 on dev{primary_dev})",
                 stages[0].dev, stages[1].dev
             );
         }
