@@ -1,0 +1,6 @@
+[q8rp] split-plane decode mirrors built: 249 tensors
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+prefill argmax=268  decode argmax=268  logit maxdiff=5.586e-1  MATCH
+generated 8 tokens in 0.042s = 189.01 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+tokens: [268, 43159, 220, 95726, 98858, 110560, 96147, 96809]

@@ -1,0 +1,86 @@
+{
+  "request": {
+    "model": "q35",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the current weather in Paris right now? Use the tools available to you."
+      },
+      {
+        "role": "assistant",
+        "content": "<|im_end|>",
+        "tool_calls": [
+          {
+            "id": "call_0acaa39fa4e08df2",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_0acaa39fa4e08df2",
+        "content": "{\"temp_c\": 21, \"condition\": \"sunny\", \"humidity\": 40}"
+      }
+    ],
+    "max_tokens": 1024,
+    "temperature": 0,
+    "seed": 0,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City name, e.g. Paris"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ],
+                "description": "Temperature unit (default celsius)"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "response": {
+    "object": "chat.completion",
+    "model": "q35",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The user asked for the current weather in Paris.\nI called the `get_weather` tool with the city \"Paris\".\nThe tool returned the temperature (21°C), condition (sunny), and humidity (40%).\nI will now formulate the response based on this information.\n</think>\n\nThe current weather in Paris is sunny with a temperature of 21°C (70°F) and a humidity level of 40%.<|im_end|>"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 393,
+      "completion_tokens": 92,
+      "total_tokens": 485,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "elapsed_s": 0.474038639
+    }
+  }
+}

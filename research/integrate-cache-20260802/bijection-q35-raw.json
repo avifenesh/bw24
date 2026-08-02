@@ -1,0 +1,20 @@
+{
+  "prompt": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the current weather for a city.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\", \"description\": \"City name, e.g. Paris\"}, \"unit\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"], \"description\": \"Temperature unit (default celsius)\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWhat is the current weather in Paris right now? Use the tools available to you.<|im_end|>\n<|im_start|>assistant\n<think>\n",
+  "response": {
+    "model": "q35",
+    "text": "Thinking Process:\n1.  **Identify User Intent**: The user wants to know the current weather in Paris.\n2.  **Check Available Tools**: I have a `get_weather` tool that takes `city` (required) and `unit` (optional, default celsius).\n3.  **Map Parameters**:\n   - `city`: \"Paris\"\n   - `unit`: Not specified, so I'll use the default or omit it.\n4.  **Execute Tool Call**: Call `get_weather` with `city=\"Paris\"`.\n5.  **Formulate Response**: Wait for tool output, then present the weather information clearly. (I will generate the tool call now).✅\n</think>\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>",
+    "tokens": [
+      353,
+      13131,
+      13,
+      2945,
+      510,
+      74455
+    ],
+    "stop_reason": "Eos",
+    "n_tokens": 177,
+    "prompt_tokens": 330,
+    "cached_tokens": 0,
+    "elapsed_s": 0.844292812
+  }
+}

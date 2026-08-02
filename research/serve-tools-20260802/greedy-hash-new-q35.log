@@ -1,0 +1,2 @@
+[ref] loaded 16 isolated references from research/serve-tools-20260802/greedy-refs-new-q35.json
+{"ts": "2026-08-02T15:41:27+0300", "label": "new-q35-c16", "base": "http://127.0.0.1:8127", "n": 16, "max_tokens": 96, "wall_s": 7.33280042399997, "n_match": 16, "n_mismatch": 0, "n_err": 0, "verdict": "PASS", "mismatches": [], "errors": []}

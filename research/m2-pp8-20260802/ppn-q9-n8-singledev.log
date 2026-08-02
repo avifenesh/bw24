@@ -1,0 +1,5 @@
+ppn-gate M2 config: stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)

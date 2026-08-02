@@ -7,7 +7,7 @@
 //! Scope: the `gpt2` vocab model with the `qwen35` pre-tokenizer (Qwen3.5). Other
 //! pre-tokenizers are not ported (we only need this model's).
 
-mod chat;
+pub mod chat;
 mod json;
 mod unicode;
 mod unicode_data;
@@ -768,6 +768,20 @@ impl Tokenizer {
         add_generation_prompt: bool,
     ) -> String {
         chat::apply_chat_template_str(self.chat_template.as_deref(), messages, add_generation_prompt)
+    }
+
+    /// Tools-capable chat rendering (OpenAI `tools` / `tool_calls` / role:"tool" surface +
+    /// the think-tail switch). Plain requests render byte-identically to
+    /// `apply_chat_template`; see `chat::apply_chat_template_tools`.
+    pub fn apply_chat_template_tools(
+        &self,
+        turns: &[chat::Turn],
+        add_generation_prompt: bool,
+        tools_json: &[String],
+        think: chat::ThinkMode,
+    ) -> Result<String, String> {
+        chat::apply_chat_template_tools(
+            self.chat_template.as_deref(), turns, add_generation_prompt, tools_json, think)
     }
 }
 

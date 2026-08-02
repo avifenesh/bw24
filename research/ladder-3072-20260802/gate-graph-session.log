@@ -1,0 +1,5 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.04GB (expert budget 19.45GB) -> RESIDENT
+loaded qwen35moe (40 layers); steps=96
+gate (session vs generate_graph, 96 tokens): PASS
+perf: session 174.3 tok/s vs eager 174.3 tok/s (+0.0%)
+ALL GREEN: graph-session gate

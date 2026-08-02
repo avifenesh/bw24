@@ -1,0 +1,409 @@
+######## interleave round 1 ########
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-base.log: env[CUDA_VISIBLE_DEVICES=1] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":689.262,"us_per_tok":5384.86,"tok_s":185.71}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5384.86 us/tok (185.71 tok/s)  all=[5384.86]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-shard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":688.712,"us_per_tok":5380.56,"tok_s":185.85}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.829,"us_per_tok":2858.04,"tok_s":349.89}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5380.56 us/tok (185.85 tok/s)  all=[5380.56]
+pipelined-pp: median 2858.04 us/tok (349.89 tok/s)  all=[2858.04]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-noshard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2305.164,"us_per_tok":18009.09,"tok_s":55.53}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1986.830,"us_per_tok":15522.11,"tok_s":64.42}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 18009.09 us/tok (55.53 tok/s)  all=[18009.09]
+pipelined-pp: median 15522.11 us/tok (64.42 tok/s)  all=[15522.11]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-shard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":765.626,"us_per_tok":5981.45,"tok_s":167.18}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":369.978,"us_per_tok":2890.45,"tok_s":345.97}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5981.45 us/tok (167.18 tok/s)  all=[5981.45]
+pipelined-pp: median 2890.45 us/tok (345.97 tok/s)  all=[2890.45]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-noshard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2993.435,"us_per_tok":23386.21,"tok_s":42.76}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.180,"us_per_tok":19243.60,"tok_s":51.97}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23386.21 us/tok (42.76 tok/s)  all=[23386.21]
+pipelined-pp: median 19243.60 us/tok (51.97 tok/s)  all=[19243.6]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-shard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":776.935,"us_per_tok":6069.81,"tok_s":164.75}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":392.954,"us_per_tok":3069.95,"tok_s":325.74}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 6069.81 us/tok (164.75 tok/s)  all=[6069.81]
+pipelined-pp: median 3069.95 us/tok (325.74 tok/s)  all=[3069.95]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-noshard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":3312.913,"us_per_tok":25882.13,"tok_s":38.64}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2772.805,"us_per_tok":21662.54,"tok_s":46.16}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 25882.13 us/tok (38.64 tok/s)  all=[25882.13]
+pipelined-pp: median 21662.54 us/tok (46.16 tok/s)  all=[21662.54]
+######## interleave round 2 ########
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-base.log: env[CUDA_VISIBLE_DEVICES=1] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":688.795,"us_per_tok":5381.21,"tok_s":185.83}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5381.21 us/tok (185.83 tok/s)  all=[5381.21]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-shard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":689.751,"us_per_tok":5388.68,"tok_s":185.57}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.087,"us_per_tok":2852.24,"tok_s":350.60}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5388.68 us/tok (185.57 tok/s)  all=[5388.68]
+pipelined-pp: median 2852.24 us/tok (350.60 tok/s)  all=[2852.24]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-noshard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2304.231,"us_per_tok":18001.81,"tok_s":55.55}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1991.762,"us_per_tok":15560.64,"tok_s":64.26}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 18001.81 us/tok (55.55 tok/s)  all=[18001.81]
+pipelined-pp: median 15560.64 us/tok (64.26 tok/s)  all=[15560.64]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-shard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":762.367,"us_per_tok":5955.99,"tok_s":167.90}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":374.018,"us_per_tok":2922.02,"tok_s":342.23}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5955.99 us/tok (167.90 tok/s)  all=[5955.99]
+pipelined-pp: median 2922.02 us/tok (342.23 tok/s)  all=[2922.02]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-noshard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2989.608,"us_per_tok":23356.32,"tok_s":42.81}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.693,"us_per_tok":19247.60,"tok_s":51.95}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23356.32 us/tok (42.81 tok/s)  all=[23356.32]
+pipelined-pp: median 19247.60 us/tok (51.95 tok/s)  all=[19247.6]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-shard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":773.147,"us_per_tok":6040.21,"tok_s":165.56}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":388.452,"us_per_tok":3034.78,"tok_s":329.51}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 6040.21 us/tok (165.56 tok/s)  all=[6040.21]
+pipelined-pp: median 3034.78 us/tok (329.51 tok/s)  all=[3034.78]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-noshard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":3311.534,"us_per_tok":25871.36,"tok_s":38.65}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2770.951,"us_per_tok":21648.06,"tok_s":46.19}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 25871.36 us/tok (38.65 tok/s)  all=[25871.36]
+pipelined-pp: median 21648.06 us/tok (46.19 tok/s)  all=[21648.06]
+######## interleave round 3 ########
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-base.log: env[CUDA_VISIBLE_DEVICES=1] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":693.816,"us_per_tok":5420.43,"tok_s":184.49}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5420.43 us/tok (184.49 tok/s)  all=[5420.43]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-shard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":690.631,"us_per_tok":5395.55,"tok_s":185.34}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":369.010,"us_per_tok":2882.89,"tok_s":346.87}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5395.55 us/tok (185.34 tok/s)  all=[5395.55]
+pipelined-pp: median 2882.89 us/tok (346.87 tok/s)  all=[2882.89]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-noshard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2304.800,"us_per_tok":18006.25,"tok_s":55.54}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1987.169,"us_per_tok":15524.76,"tok_s":64.41}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 18006.25 us/tok (55.54 tok/s)  all=[18006.25]
+pipelined-pp: median 15524.76 us/tok (64.41 tok/s)  all=[15524.76]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-shard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":762.317,"us_per_tok":5955.60,"tok_s":167.91}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.674,"us_per_tok":2856.83,"tok_s":350.04}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5955.60 us/tok (167.91 tok/s)  all=[5955.6]
+pipelined-pp: median 2856.83 us/tok (350.04 tok/s)  all=[2856.83]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-noshard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2988.475,"us_per_tok":23347.46,"tok_s":42.83}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2462.354,"us_per_tok":19237.14,"tok_s":51.98}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23347.46 us/tok (42.83 tok/s)  all=[23347.46]
+pipelined-pp: median 19237.14 us/tok (51.98 tok/s)  all=[19237.14]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-shard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":772.420,"us_per_tok":6034.53,"tok_s":165.71}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":384.194,"us_per_tok":3001.51,"tok_s":333.17}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 6034.53 us/tok (165.71 tok/s)  all=[6034.53]
+pipelined-pp: median 3001.51 us/tok (333.17 tok/s)  all=[3001.51]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-noshard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":3308.880,"us_per_tok":25850.62,"tok_s":38.68}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2771.891,"us_per_tok":21655.40,"tok_s":46.18}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 25850.62 us/tok (38.68 tok/s)  all=[25850.62]
+pipelined-pp: median 21655.40 us/tok (46.18 tok/s)  all=[21655.4]
+######## interleave round 4 ########
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-base.log: env[CUDA_VISIBLE_DEVICES=1] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":685.154,"us_per_tok":5352.76,"tok_s":186.82}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5352.76 us/tok (186.82 tok/s)  all=[5352.76]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-shard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":692.596,"us_per_tok":5410.91,"tok_s":184.81}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":370.251,"us_per_tok":2892.59,"tok_s":345.71}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5410.91 us/tok (184.81 tok/s)  all=[5410.91]
+pipelined-pp: median 2892.59 us/tok (345.71 tok/s)  all=[2892.59]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-noshard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2304.997,"us_per_tok":18007.79,"tok_s":55.53}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1987.476,"us_per_tok":15527.16,"tok_s":64.40}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 18007.79 us/tok (55.53 tok/s)  all=[18007.79]
+pipelined-pp: median 15527.16 us/tok (64.40 tok/s)  all=[15527.16]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-shard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":763.146,"us_per_tok":5962.08,"tok_s":167.73}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.388,"us_per_tok":2854.60,"tok_s":350.31}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5962.08 us/tok (167.73 tok/s)  all=[5962.08]
+pipelined-pp: median 2854.60 us/tok (350.31 tok/s)  all=[2854.6]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-noshard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2993.403,"us_per_tok":23385.96,"tok_s":42.76}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.774,"us_per_tok":19248.24,"tok_s":51.95}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23385.96 us/tok (42.76 tok/s)  all=[23385.96]
+pipelined-pp: median 19248.24 us/tok (51.95 tok/s)  all=[19248.24]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-shard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":776.446,"us_per_tok":6065.98,"tok_s":164.85}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":385.065,"us_per_tok":3008.32,"tok_s":332.41}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 6065.98 us/tok (164.85 tok/s)  all=[6065.98]
+pipelined-pp: median 3008.32 us/tok (332.41 tok/s)  all=[3008.32]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-noshard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":3307.871,"us_per_tok":25842.74,"tok_s":38.70}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2771.003,"us_per_tok":21648.46,"tok_s":46.19}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 25842.74 us/tok (38.70 tok/s)  all=[25842.74]
+pipelined-pp: median 21648.46 us/tok (46.19 tok/s)  all=[21648.46]
+######## interleave round 5 ########
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-base.log: env[CUDA_VISIBLE_DEVICES=1] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+{"arm":"serial-off","rep":0,"g":128,"ms":679.980,"us_per_tok":5312.34,"tok_s":188.24}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-off: median 5312.34 us/tok (188.24 tok/s)  all=[5312.34]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-shard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":690.424,"us_per_tok":5393.93,"tok_s":185.39}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":369.725,"us_per_tok":2888.47,"tok_s":346.20}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5393.93 us/tok (185.39 tok/s)  all=[5393.93]
+pipelined-pp: median 2888.47 us/tok (346.20 tok/s)  all=[2888.47]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n2-noshard.log: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,2 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=2 devices=1,2 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 16, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2305.277,"us_per_tok":18009.98,"tok_s":55.52}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1987.584,"us_per_tok":15528.00,"tok_s":64.40}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 18009.98 us/tok (55.52 tok/s)  all=[18009.98]
+pipelined-pp: median 15528.00 us/tok (64.40 tok/s)  all=[15528.0]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-shard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":763.389,"us_per_tok":5963.97,"tok_s":167.67}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":364.379,"us_per_tok":2846.71,"tok_s":351.28}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 5963.97 us/tok (167.67 tok/s)  all=[5963.97]
+pipelined-pp: median 2846.71 us/tok (351.28 tok/s)  all=[2846.71]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n4-noshard.log: env[MEMRA_PP_STAGES=4 MEMRA_PP_DEVICES=1,2,3,4 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=4 devices=1,2,3,4 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev1 stage1=dev2 stage2=dev3 stage3=dev4 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [1, 2, 3, 4]; weight home: dev1 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":2994.046,"us_per_tok":23390.99,"tok_s":42.75}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2464.309,"us_per_tok":19252.42,"tok_s":51.94}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 23390.99 us/tok (42.75 tok/s)  all=[23390.99]
+pipelined-pp: median 19252.42 us/tok (51.94 tok/s)  all=[19252.42]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-shard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: per-stage (sharded loader))
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":775.171,"us_per_tok":6056.03,"tok_s":165.12}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":385.343,"us_per_tok":3010.49,"tok_s":332.17}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 6056.03 us/tok (165.12 tok/s)  all=[6056.03]
+pipelined-pp: median 3010.49 us/tok (332.17 tok/s)  all=[3010.49]
+=== /home/ubuntu/receipts/m2-pp8/bench-q9-n8-noshard.log: env[MEMRA_PP_STAGES=8 MEMRA_PP_DEVICES=0,1,2,3,4,5,6,7 MEMRA_PP_SHARD=0] target/release/ppn-bench /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf 32 128 1
+ppn-bench M2 config: stages=8 devices=0,1,2,3,4,5,6,7 splits=default(even) shard=OFF streams=per-stage P=32 G=128 reps=1 model=/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev0 stage1=dev1 stage2=dev2 stage3=dev3 stage4=dev4 stage5=dev5 stage6=dev6 stage7=dev7 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1, 2, 3, 4, 5, 6, 7]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":3312.371,"us_per_tok":25877.89,"tok_s":38.64}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2771.811,"us_per_tok":21654.78,"tok_s":46.18}
+---- medians (us/token over 128 gen steps, N=1 reps, interleaved) ----
+serial-pp: median 25877.89 us/tok (38.64 tok/s)  all=[25877.89]
+pipelined-pp: median 21654.78 us/tok (46.18 tok/s)  all=[21654.78]
+
+==== per-config rows (all rounds) ====
+--- bench-q9-base.log
+{"arm":"serial-off","rep":0,"g":128,"ms":689.262,"us_per_tok":5384.86,"tok_s":185.71}
+{"arm":"serial-off","rep":0,"g":128,"ms":688.795,"us_per_tok":5381.21,"tok_s":185.83}
+{"arm":"serial-off","rep":0,"g":128,"ms":693.816,"us_per_tok":5420.43,"tok_s":184.49}
+{"arm":"serial-off","rep":0,"g":128,"ms":685.154,"us_per_tok":5352.76,"tok_s":186.82}
+{"arm":"serial-off","rep":0,"g":128,"ms":679.980,"us_per_tok":5312.34,"tok_s":188.24}
+--- bench-q9-n2-noshard.log
+{"arm":"serial-pp","rep":0,"g":128,"ms":2305.164,"us_per_tok":18009.09,"tok_s":55.53}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1986.830,"us_per_tok":15522.11,"tok_s":64.42}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2304.231,"us_per_tok":18001.81,"tok_s":55.55}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1991.762,"us_per_tok":15560.64,"tok_s":64.26}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2304.800,"us_per_tok":18006.25,"tok_s":55.54}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1987.169,"us_per_tok":15524.76,"tok_s":64.41}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2304.997,"us_per_tok":18007.79,"tok_s":55.53}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1987.476,"us_per_tok":15527.16,"tok_s":64.40}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2305.277,"us_per_tok":18009.98,"tok_s":55.52}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":1987.584,"us_per_tok":15528.00,"tok_s":64.40}
+--- bench-q9-n2-shard.log
+{"arm":"serial-pp","rep":0,"g":128,"ms":688.712,"us_per_tok":5380.56,"tok_s":185.85}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.829,"us_per_tok":2858.04,"tok_s":349.89}
+{"arm":"serial-pp","rep":0,"g":128,"ms":689.751,"us_per_tok":5388.68,"tok_s":185.57}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.087,"us_per_tok":2852.24,"tok_s":350.60}
+{"arm":"serial-pp","rep":0,"g":128,"ms":690.631,"us_per_tok":5395.55,"tok_s":185.34}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":369.010,"us_per_tok":2882.89,"tok_s":346.87}
+{"arm":"serial-pp","rep":0,"g":128,"ms":692.596,"us_per_tok":5410.91,"tok_s":184.81}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":370.251,"us_per_tok":2892.59,"tok_s":345.71}
+{"arm":"serial-pp","rep":0,"g":128,"ms":690.424,"us_per_tok":5393.93,"tok_s":185.39}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":369.725,"us_per_tok":2888.47,"tok_s":346.20}
+--- bench-q9-n4-noshard.log
+{"arm":"serial-pp","rep":0,"g":128,"ms":2993.435,"us_per_tok":23386.21,"tok_s":42.76}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.180,"us_per_tok":19243.60,"tok_s":51.97}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2989.608,"us_per_tok":23356.32,"tok_s":42.81}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.693,"us_per_tok":19247.60,"tok_s":51.95}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2988.475,"us_per_tok":23347.46,"tok_s":42.83}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2462.354,"us_per_tok":19237.14,"tok_s":51.98}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2993.403,"us_per_tok":23385.96,"tok_s":42.76}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2463.774,"us_per_tok":19248.24,"tok_s":51.95}
+{"arm":"serial-pp","rep":0,"g":128,"ms":2994.046,"us_per_tok":23390.99,"tok_s":42.75}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2464.309,"us_per_tok":19252.42,"tok_s":51.94}
+--- bench-q9-n4-shard.log
+{"arm":"serial-pp","rep":0,"g":128,"ms":765.626,"us_per_tok":5981.45,"tok_s":167.18}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":369.978,"us_per_tok":2890.45,"tok_s":345.97}
+{"arm":"serial-pp","rep":0,"g":128,"ms":762.367,"us_per_tok":5955.99,"tok_s":167.90}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":374.018,"us_per_tok":2922.02,"tok_s":342.23}
+{"arm":"serial-pp","rep":0,"g":128,"ms":762.317,"us_per_tok":5955.60,"tok_s":167.91}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.674,"us_per_tok":2856.83,"tok_s":350.04}
+{"arm":"serial-pp","rep":0,"g":128,"ms":763.146,"us_per_tok":5962.08,"tok_s":167.73}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":365.388,"us_per_tok":2854.60,"tok_s":350.31}
+{"arm":"serial-pp","rep":0,"g":128,"ms":763.389,"us_per_tok":5963.97,"tok_s":167.67}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":364.379,"us_per_tok":2846.71,"tok_s":351.28}
+--- bench-q9-n8-noshard.log
+{"arm":"serial-pp","rep":0,"g":128,"ms":3312.913,"us_per_tok":25882.13,"tok_s":38.64}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2772.805,"us_per_tok":21662.54,"tok_s":46.16}
+{"arm":"serial-pp","rep":0,"g":128,"ms":3311.534,"us_per_tok":25871.36,"tok_s":38.65}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2770.951,"us_per_tok":21648.06,"tok_s":46.19}
+{"arm":"serial-pp","rep":0,"g":128,"ms":3308.880,"us_per_tok":25850.62,"tok_s":38.68}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2771.891,"us_per_tok":21655.40,"tok_s":46.18}
+{"arm":"serial-pp","rep":0,"g":128,"ms":3307.871,"us_per_tok":25842.74,"tok_s":38.70}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2771.003,"us_per_tok":21648.46,"tok_s":46.19}
+{"arm":"serial-pp","rep":0,"g":128,"ms":3312.371,"us_per_tok":25877.89,"tok_s":38.64}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":2771.811,"us_per_tok":21654.78,"tok_s":46.18}
+--- bench-q9-n8-shard.log
+{"arm":"serial-pp","rep":0,"g":128,"ms":776.935,"us_per_tok":6069.81,"tok_s":164.75}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":392.954,"us_per_tok":3069.95,"tok_s":325.74}
+{"arm":"serial-pp","rep":0,"g":128,"ms":773.147,"us_per_tok":6040.21,"tok_s":165.56}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":388.452,"us_per_tok":3034.78,"tok_s":329.51}
+{"arm":"serial-pp","rep":0,"g":128,"ms":772.420,"us_per_tok":6034.53,"tok_s":165.71}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":384.194,"us_per_tok":3001.51,"tok_s":333.17}
+{"arm":"serial-pp","rep":0,"g":128,"ms":776.446,"us_per_tok":6065.98,"tok_s":164.85}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":385.065,"us_per_tok":3008.32,"tok_s":332.41}
+{"arm":"serial-pp","rep":0,"g":128,"ms":775.171,"us_per_tok":6056.03,"tok_s":165.12}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":385.343,"us_per_tok":3010.49,"tok_s":332.17}

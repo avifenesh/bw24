@@ -1,0 +1,41 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the current weather in Paris right now? Use the tools available to you."
+    }
+  ],
+  "response": {
+    "object": "chat.completion",
+    "model": "q35",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Thinking Process:\n1.  **Identify User Intent**: The user wants to know the current weather in Paris.\n2.  **Check Available Tools**: I have a `get_weather` tool that takes `city` (required) and `unit` (optional, default celsius).\n3.  **Map Parameters**:\n   - `city`: \"Paris\"\n   - `unit`: Not specified, so I'll use the default or omit it.\n4.  **Execute Tool Call**: Call `get_weather` with `city=\"Paris\"`.\n5.  **Formulate Response**: Wait for tool output, then present the weather information clearly. (I will generate the tool call now).✅\n</think>\n\n",
+          "tool_calls": [
+            {
+              "id": "call_0acaa39fa4e08df2",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Paris\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 330,
+      "completion_tokens": 177,
+      "total_tokens": 507,
+      "prompt_tokens_details": {
+        "cached_tokens": 330
+      },
+      "elapsed_s": 0.989727042
+    }
+  }
+}

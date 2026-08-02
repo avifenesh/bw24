@@ -194,6 +194,28 @@ impl Cache {
         Self::new_inner(&|il| if il < split { dev0 } else { dev1 }, cfg, max_ctx)
     }
 
+    /// M2 N-stage twin of `new_pp2`: `fence` is the stage map from `memra_engine::pp::
+    /// pp_cuts` ([0, c1, .., n_trunk]); layer il allocates through the engine of the
+    /// stage that runs it. Layers at/beyond the fence end (MTP/NextN blocks) allocate
+    /// through the LAST stage. Sizing math is IDENTICAL to `new` — only the allocating
+    /// device varies.
+    pub fn new_ppn<'a>(
+        devs: &[&'a dyn KvDev],
+        fence: &[usize],
+        cfg: &ModelConfig,
+        max_ctx: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        assert_eq!(devs.len() + 1, fence.len(), "ppn cache: devs vs fence mismatch");
+        let pick = |il: usize| -> &dyn KvDev {
+            let s = match fence[1..fence.len() - 1].binary_search(&il) {
+                Ok(k) => k + 1,
+                Err(k) => k,
+            };
+            devs[s.min(devs.len() - 1)]
+        };
+        Self::new_inner(&pick, cfg, max_ctx)
+    }
+
     /// Shared allocation walk: `pick(il)` supplies the device that OWNS layer il's
     /// cache state (always the same device outside the pp2 door).
     fn new_inner<'a>(

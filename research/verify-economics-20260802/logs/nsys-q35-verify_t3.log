@@ -1,0 +1,25 @@
+tree b2f2b19560935ef3114d8b3629d99c6902844525
+[gpu 2026-08-02T10:44:31Z] 59, 28.50 W, 465 MHz, 549 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.76GB (expert budget 19.16GB) -> RESIDENT
+[econ] model=/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf prompt_tokens=2048 N=15 t_max=6
+[econ] primed pos=2048, continuation=[485, 818, 8400, 6649, 332, 6452, 506]
+[econ] verify_t3  N=15  med=  8.241ms  mean=  8.575ms  min=  7.968ms  p90=  9.814ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf","prompt_tokens":2048,"pos":2048,"n":15,"arms":{"verify_t3":{"med_ms":8.2415,"mean_ms":8.5754,"min_ms":7.9680,"p90_ms":9.8140}}}
+Collecting data...
+Generating '/tmp/nsys-report-7a84.qdstrm'
+[1/1] [0%                          ] nsys-q35-verify_t3.nsys-rep[1/1] [0%                          ] nsys-q35-verify_t3.nsys-rep[1/1] [6%                          ] nsys-q35-verify_t3.nsys-rep[1/1] [5%                          ] nsys-q35-verify_t3.nsys-rep[1/1] [6%                          ] nsys-q35-verify_t3.nsys-rep[1/1] [5%                          ] nsys-q35-verify_t3.nsys-rep[1/1] [10%                         ] nsys-q35-verify_t3.nsys-rep[1/1] [==19%                       ] nsys-q35-verify_t3.nsys-rep[1/1] [=====29%                    ] nsys-q35-verify_t3.nsys-rep[1/1] [=======38%                  ] nsys-q35-verify_t3.nsys-rep[1/1] [==========47%               ] nsys-q35-verify_t3.nsys-rep[1/1] [============56%             ] nsys-q35-verify_t3.nsys-rep[1/1] [===============65%          ] nsys-q35-verify_t3.nsys-rep[1/1] [=================74%        ] nsys-q35-verify_t3.nsys-rep[1/1] [====================83%     ] nsys-q35-verify_t3.nsys-rep[1/1] [=====================87%    ] nsys-q35-verify_t3.nsys-rep[1/1] [========================100%] nsys-q35-verify_t3.nsys-rep[1/1] [========================100%] nsys-q35-verify_t3.nsys-rep
+Generated:
+	/home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q35-verify_t3.nsys-rep
+[gpu 2026-08-02T10:44:48Z] 59, 31.92 W, 817 MHz, 549 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+NSYSARM q35 verify_t3 rc=0
+Generating SQLite file /home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q35-verify_t3.sqlite from /home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q35-verify_t3.nsys-rep
+Processing [/home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q35-verify_t3.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [/home/avifenesh/projects/wt-verify-economics/research/verify-economics-20260802/logs/nsys-q35-verify_t3_cuda_gpu_kern_sum.csv]... PROCESSED
+

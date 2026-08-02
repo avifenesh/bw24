@@ -1,0 +1,408 @@
+# stepfun-iq4xs-shard1-head.bin: GGUF v3, tensors=357, kv=49
+KV general.architecture (str) = step35
+KV general.type (str) = model
+KV general.name (str) = Step-3.7
+KV general.size_label (str) = 288x7.4B
+KV step35.block_count (u32) = 45
+KV step35.context_length (u32) = 262144
+KV step35.embedding_length (u32) = 4096
+KV step35.feed_forward_length (u32) = 11264
+KV step35.attention.head_count (arr) = [45 items] first24=[64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96]
+KV step35.rope.freq_base (f32) = 5000000.0
+KV step35.rope.freq_base_swa (f32) = 10000.0
+KV step35.expert_gating_func (u32) = 2
+KV step35.attention.key_length (u32) = 128
+KV step35.attention.value_length (u32) = 128
+KV step35.attention.head_count_kv (arr) = [45 items] first24=[8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
+KV step35.attention.sliding_window (u32) = 512
+KV step35.attention.sliding_window_pattern (arr) = [45 items] first24=[False, True, True, True, False, True, True, True, False, True, True, True, False, True, True, True, False, True, True, True, False, True, True, True]
+KV step35.expert_count (u32) = 288
+KV step35.expert_used_count (u32) = 8
+KV step35.expert_feed_forward_length (u32) = 1280
+KV step35.expert_shared_feed_forward_length (u32) = 1280
+KV step35.expert_weights_scale (f32) = 3.0
+KV step35.expert_weights_norm (bool) = True
+KV step35.leading_dense_block_count (u32) = 3
+KV step35.moe_every_n_layers (u32) = 1
+KV step35.attention.layer_norm_rms_epsilon (f32) = 9.999999747378752e-06
+KV step35.swiglu_clamp_exp (arr) = [45 items] first24=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+KV step35.swiglu_clamp_shexp (arr) = [45 items] first24=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+KV tokenizer.ggml.model (str) = gpt2
+KV tokenizer.ggml.pre (str) = deepseek-v3
+KV tokenizer.ggml.tokens (arr) = [128896 items] first24=['<｜begin▁of▁sentence｜>', '<｜end▁of▁sentence｜>', '<｜▁pad▁｜>', '!', '"', '#', '$', '%', '&', "'", '(', ')', '*', '+', ',', '-', '.', '/', '0', '1', '2', '3', '4', '5']
+KV tokenizer.ggml.token_type (arr) = [128896 items] first24=[3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+KV tokenizer.ggml.merges (arr) = [127741 items] first24=['Ġ t', 'Ġ a', 'i n', 'Ġ Ġ', 'h e', 'e r', 'o n', 'r e', 'e n', 'a t', 'Ġ s', 'Ġt he', 'Ċ Ċ', 'o r', 'e s', 'Ġ c', 'ä ¸', 'a n', 'Ġ o', 'i s', 'i t', 'Ġ p', 'Ġ w', 'a l']
+KV tokenizer.ggml.bos_token_id (u32) = 0
+KV tokenizer.ggml.eos_token_id (u32) = 128007
+KV tokenizer.ggml.padding_token_id (u32) = 1
+KV tokenizer.ggml.add_bos_token (bool) = True
+KV tokenizer.ggml.add_sep_token (bool) = False
+KV tokenizer.ggml.add_eos_token (bool) = False
+KV tokenizer.chat_template (str) = {% macro render_message_content(message) %}{% if message.content is none %}{{- '' }}{% elif message.content is string %}{{- message.content }}{% elif message.content is mapping %}{{- message.content['value'] if 'value' in message.content else message.content['text'] }}{% elif message.content is iterable %}{% set ns = namespace(needs_text_separator=false) %}{% for item in message.content %}{% if it...(5723 chars)
+KV general.quantization_version (u32) = 2
+KV general.file_type (u32) = 30
+KV quantize.imatrix.file (str) = /mnt/lvyichen/step3.6_final_model_bf16/quant/out/Step-3.7.imatrix.gguf
+KV quantize.imatrix.dataset (str) = /mnt/lvyichen/step3.6_final_model_bf16/quant/calib/calibration_step3.7_agentmix.txt
+KV quantize.imatrix.entries_count (u32) = 528
+KV quantize.imatrix.chunks_count (u32) = 4868
+KV split.no (u16) = 0
+KV split.tensors.count (i32) = 754
+KV split.count (u16) = 3
+--- tensors ---
+T output.weight [4096, 128896] Q6_K
+T output_norm.weight [4096] F32
+T rope_freqs.weight [64] F32
+T token_embd.weight [4096, 128896] IQ4_XS
+T blk.0.attn_gate.weight [4096, 64] IQ4_XS
+T blk.0.attn_k.weight [4096, 1024] IQ4_XS
+T blk.0.attn_k_norm.weight [128] F32
+T blk.0.attn_norm.weight [4096] F32
+T blk.0.attn_output.weight [8192, 4096] IQ4_XS
+T blk.0.attn_q.weight [4096, 8192] IQ4_XS
+T blk.0.attn_q_norm.weight [128] F32
+T blk.0.attn_v.weight [4096, 1024] Q5_K
+T blk.0.ffn_down.weight [11264, 4096] IQ4_XS
+T blk.0.ffn_gate.weight [4096, 11264] IQ4_XS
+T blk.0.ffn_norm.weight [4096] F32
+T blk.0.ffn_up.weight [4096, 11264] IQ4_XS
+T blk.1.attn_gate.weight [4096, 96] IQ4_XS
+T blk.1.attn_k.weight [4096, 1024] IQ4_XS
+T blk.1.attn_k_norm.weight [128] F32
+T blk.1.attn_norm.weight [4096] F32
+T blk.1.attn_output.weight [12288, 4096] IQ4_XS
+T blk.1.attn_q.weight [4096, 12288] IQ4_XS
+T blk.1.attn_q_norm.weight [128] F32
+T blk.1.attn_v.weight [4096, 1024] Q5_K
+T blk.1.ffn_down.weight [11264, 4096] IQ4_XS
+T blk.1.ffn_gate.weight [4096, 11264] IQ4_XS
+T blk.1.ffn_norm.weight [4096] F32
+T blk.1.ffn_up.weight [4096, 11264] IQ4_XS
+T blk.2.attn_gate.weight [4096, 96] IQ4_XS
+T blk.2.attn_k.weight [4096, 1024] IQ4_XS
+T blk.2.attn_k_norm.weight [128] F32
+T blk.2.attn_norm.weight [4096] F32
+T blk.2.attn_output.weight [12288, 4096] IQ4_XS
+T blk.2.attn_q.weight [4096, 12288] IQ4_XS
+T blk.2.attn_q_norm.weight [128] F32
+T blk.2.attn_v.weight [4096, 1024] Q5_K
+T blk.2.ffn_down.weight [11264, 4096] IQ4_XS
+T blk.2.ffn_gate.weight [4096, 11264] IQ4_XS
+T blk.2.ffn_norm.weight [4096] F32
+T blk.2.ffn_up.weight [4096, 11264] IQ4_XS
+T blk.3.attn_gate.weight [4096, 96] IQ4_XS
+T blk.3.attn_k.weight [4096, 1024] IQ4_XS
+T blk.3.attn_k_norm.weight [128] F32
+T blk.3.attn_norm.weight [4096] F32
+T blk.3.attn_output.weight [12288, 4096] IQ4_XS
+T blk.3.attn_q.weight [4096, 12288] IQ4_XS
+T blk.3.attn_q_norm.weight [128] F32
+T blk.3.attn_v.weight [4096, 1024] Q5_K
+T blk.3.exp_probs_b.bias [288] F32
+T blk.3.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.3.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.3.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.3.ffn_gate_inp.weight [4096, 288] F32
+T blk.3.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.3.ffn_norm.weight [4096] F32
+T blk.3.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.3.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.4.attn_gate.weight [4096, 64] IQ4_XS
+T blk.4.attn_k.weight [4096, 1024] IQ4_XS
+T blk.4.attn_k_norm.weight [128] F32
+T blk.4.attn_norm.weight [4096] F32
+T blk.4.attn_output.weight [8192, 4096] IQ4_XS
+T blk.4.attn_q.weight [4096, 8192] IQ4_XS
+T blk.4.attn_q_norm.weight [128] F32
+T blk.4.attn_v.weight [4096, 1024] Q5_K
+T blk.4.exp_probs_b.bias [288] F32
+T blk.4.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.4.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.4.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.4.ffn_gate_inp.weight [4096, 288] F32
+T blk.4.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.4.ffn_norm.weight [4096] F32
+T blk.4.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.4.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.5.attn_gate.weight [4096, 96] IQ4_XS
+T blk.5.attn_k.weight [4096, 1024] IQ4_XS
+T blk.5.attn_k_norm.weight [128] F32
+T blk.5.attn_norm.weight [4096] F32
+T blk.5.attn_output.weight [12288, 4096] IQ4_XS
+T blk.5.attn_q.weight [4096, 12288] IQ4_XS
+T blk.5.attn_q_norm.weight [128] F32
+T blk.5.attn_v.weight [4096, 1024] Q5_K
+T blk.5.exp_probs_b.bias [288] F32
+T blk.5.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.5.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.5.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.5.ffn_gate_inp.weight [4096, 288] F32
+T blk.5.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.5.ffn_norm.weight [4096] F32
+T blk.5.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.5.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.6.attn_gate.weight [4096, 96] IQ4_XS
+T blk.6.attn_k.weight [4096, 1024] IQ4_XS
+T blk.6.attn_k_norm.weight [128] F32
+T blk.6.attn_norm.weight [4096] F32
+T blk.6.attn_output.weight [12288, 4096] IQ4_XS
+T blk.6.attn_q.weight [4096, 12288] IQ4_XS
+T blk.6.attn_q_norm.weight [128] F32
+T blk.6.attn_v.weight [4096, 1024] Q5_K
+T blk.6.exp_probs_b.bias [288] F32
+T blk.6.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.6.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.6.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.6.ffn_gate_inp.weight [4096, 288] F32
+T blk.6.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.6.ffn_norm.weight [4096] F32
+T blk.6.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.6.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.7.attn_gate.weight [4096, 96] IQ4_XS
+T blk.7.attn_k.weight [4096, 1024] IQ4_XS
+T blk.7.attn_k_norm.weight [128] F32
+T blk.7.attn_norm.weight [4096] F32
+T blk.7.attn_output.weight [12288, 4096] IQ4_XS
+T blk.7.attn_q.weight [4096, 12288] IQ4_XS
+T blk.7.attn_q_norm.weight [128] F32
+T blk.7.attn_v.weight [4096, 1024] Q5_K
+T blk.7.exp_probs_b.bias [288] F32
+T blk.7.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.7.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.7.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.7.ffn_gate_inp.weight [4096, 288] F32
+T blk.7.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.7.ffn_norm.weight [4096] F32
+T blk.7.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.7.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.8.attn_gate.weight [4096, 64] IQ4_XS
+T blk.8.attn_k.weight [4096, 1024] IQ4_XS
+T blk.8.attn_k_norm.weight [128] F32
+T blk.8.attn_norm.weight [4096] F32
+T blk.8.attn_output.weight [8192, 4096] IQ4_XS
+T blk.8.attn_q.weight [4096, 8192] IQ4_XS
+T blk.8.attn_q_norm.weight [128] F32
+T blk.8.attn_v.weight [4096, 1024] Q5_K
+T blk.8.exp_probs_b.bias [288] F32
+T blk.8.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.8.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.8.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.8.ffn_gate_inp.weight [4096, 288] F32
+T blk.8.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.8.ffn_norm.weight [4096] F32
+T blk.8.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.8.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.9.attn_gate.weight [4096, 96] IQ4_XS
+T blk.9.attn_k.weight [4096, 1024] IQ4_XS
+T blk.9.attn_k_norm.weight [128] F32
+T blk.9.attn_norm.weight [4096] F32
+T blk.9.attn_output.weight [12288, 4096] IQ4_XS
+T blk.9.attn_q.weight [4096, 12288] IQ4_XS
+T blk.9.attn_q_norm.weight [128] F32
+T blk.9.attn_v.weight [4096, 1024] Q5_K
+T blk.9.exp_probs_b.bias [288] F32
+T blk.9.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.9.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.9.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.9.ffn_gate_inp.weight [4096, 288] F32
+T blk.9.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.9.ffn_norm.weight [4096] F32
+T blk.9.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.9.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.10.attn_gate.weight [4096, 96] IQ4_XS
+T blk.10.attn_k.weight [4096, 1024] IQ4_XS
+T blk.10.attn_k_norm.weight [128] F32
+T blk.10.attn_norm.weight [4096] F32
+T blk.10.attn_output.weight [12288, 4096] IQ4_XS
+T blk.10.attn_q.weight [4096, 12288] IQ4_XS
+T blk.10.attn_q_norm.weight [128] F32
+T blk.10.attn_v.weight [4096, 1024] Q5_K
+T blk.10.exp_probs_b.bias [288] F32
+T blk.10.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.10.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.10.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.10.ffn_gate_inp.weight [4096, 288] F32
+T blk.10.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.10.ffn_norm.weight [4096] F32
+T blk.10.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.10.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.11.attn_gate.weight [4096, 96] IQ4_XS
+T blk.11.attn_k.weight [4096, 1024] IQ4_XS
+T blk.11.attn_k_norm.weight [128] F32
+T blk.11.attn_norm.weight [4096] F32
+T blk.11.attn_output.weight [12288, 4096] IQ4_XS
+T blk.11.attn_q.weight [4096, 12288] IQ4_XS
+T blk.11.attn_q_norm.weight [128] F32
+T blk.11.attn_v.weight [4096, 1024] Q5_K
+T blk.11.exp_probs_b.bias [288] F32
+T blk.11.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.11.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.11.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.11.ffn_gate_inp.weight [4096, 288] F32
+T blk.11.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.11.ffn_norm.weight [4096] F32
+T blk.11.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.11.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.12.attn_gate.weight [4096, 64] IQ4_XS
+T blk.12.attn_k.weight [4096, 1024] IQ4_XS
+T blk.12.attn_k_norm.weight [128] F32
+T blk.12.attn_norm.weight [4096] F32
+T blk.12.attn_output.weight [8192, 4096] IQ4_XS
+T blk.12.attn_q.weight [4096, 8192] IQ4_XS
+T blk.12.attn_q_norm.weight [128] F32
+T blk.12.attn_v.weight [4096, 1024] Q5_K
+T blk.12.exp_probs_b.bias [288] F32
+T blk.12.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.12.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.12.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.12.ffn_gate_inp.weight [4096, 288] F32
+T blk.12.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.12.ffn_norm.weight [4096] F32
+T blk.12.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.12.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.13.attn_gate.weight [4096, 96] IQ4_XS
+T blk.13.attn_k.weight [4096, 1024] IQ4_XS
+T blk.13.attn_k_norm.weight [128] F32
+T blk.13.attn_norm.weight [4096] F32
+T blk.13.attn_output.weight [12288, 4096] IQ4_XS
+T blk.13.attn_q.weight [4096, 12288] IQ4_XS
+T blk.13.attn_q_norm.weight [128] F32
+T blk.13.attn_v.weight [4096, 1024] Q5_K
+T blk.13.exp_probs_b.bias [288] F32
+T blk.13.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.13.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.13.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.13.ffn_gate_inp.weight [4096, 288] F32
+T blk.13.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.13.ffn_norm.weight [4096] F32
+T blk.13.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.13.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.14.attn_gate.weight [4096, 96] IQ4_XS
+T blk.14.attn_k.weight [4096, 1024] IQ4_XS
+T blk.14.attn_k_norm.weight [128] F32
+T blk.14.attn_norm.weight [4096] F32
+T blk.14.attn_output.weight [12288, 4096] IQ4_XS
+T blk.14.attn_q.weight [4096, 12288] IQ4_XS
+T blk.14.attn_q_norm.weight [128] F32
+T blk.14.attn_v.weight [4096, 1024] Q5_K
+T blk.14.exp_probs_b.bias [288] F32
+T blk.14.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.14.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.14.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.14.ffn_gate_inp.weight [4096, 288] F32
+T blk.14.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.14.ffn_norm.weight [4096] F32
+T blk.14.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.14.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.15.attn_gate.weight [4096, 96] IQ4_XS
+T blk.15.attn_k.weight [4096, 1024] IQ4_XS
+T blk.15.attn_k_norm.weight [128] F32
+T blk.15.attn_norm.weight [4096] F32
+T blk.15.attn_output.weight [12288, 4096] IQ4_XS
+T blk.15.attn_q.weight [4096, 12288] IQ4_XS
+T blk.15.attn_q_norm.weight [128] F32
+T blk.15.attn_v.weight [4096, 1024] Q5_K
+T blk.15.exp_probs_b.bias [288] F32
+T blk.15.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.15.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.15.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.15.ffn_gate_inp.weight [4096, 288] F32
+T blk.15.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.15.ffn_norm.weight [4096] F32
+T blk.15.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.15.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.16.attn_gate.weight [4096, 64] IQ4_XS
+T blk.16.attn_k.weight [4096, 1024] IQ4_XS
+T blk.16.attn_k_norm.weight [128] F32
+T blk.16.attn_norm.weight [4096] F32
+T blk.16.attn_output.weight [8192, 4096] IQ4_XS
+T blk.16.attn_q.weight [4096, 8192] IQ4_XS
+T blk.16.attn_q_norm.weight [128] F32
+T blk.16.attn_v.weight [4096, 1024] Q5_K
+T blk.16.exp_probs_b.bias [288] F32
+T blk.16.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.16.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.16.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.16.ffn_gate_inp.weight [4096, 288] F32
+T blk.16.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.16.ffn_norm.weight [4096] F32
+T blk.16.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.16.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.17.attn_gate.weight [4096, 96] IQ4_XS
+T blk.17.attn_k.weight [4096, 1024] IQ4_XS
+T blk.17.attn_k_norm.weight [128] F32
+T blk.17.attn_norm.weight [4096] F32
+T blk.17.attn_output.weight [12288, 4096] IQ4_XS
+T blk.17.attn_q.weight [4096, 12288] IQ4_XS
+T blk.17.attn_q_norm.weight [128] F32
+T blk.17.attn_v.weight [4096, 1024] Q5_K
+T blk.17.exp_probs_b.bias [288] F32
+T blk.17.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.17.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.17.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.17.ffn_gate_inp.weight [4096, 288] F32
+T blk.17.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.17.ffn_norm.weight [4096] F32
+T blk.17.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.17.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.18.attn_gate.weight [4096, 96] IQ4_XS
+T blk.18.attn_k.weight [4096, 1024] IQ4_XS
+T blk.18.attn_k_norm.weight [128] F32
+T blk.18.attn_norm.weight [4096] F32
+T blk.18.attn_output.weight [12288, 4096] IQ4_XS
+T blk.18.attn_q.weight [4096, 12288] IQ4_XS
+T blk.18.attn_q_norm.weight [128] F32
+T blk.18.attn_v.weight [4096, 1024] Q5_K
+T blk.18.exp_probs_b.bias [288] F32
+T blk.18.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.18.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.18.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.18.ffn_gate_inp.weight [4096, 288] F32
+T blk.18.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.18.ffn_norm.weight [4096] F32
+T blk.18.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.18.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.19.attn_gate.weight [4096, 96] IQ4_XS
+T blk.19.attn_k.weight [4096, 1024] IQ4_XS
+T blk.19.attn_k_norm.weight [128] F32
+T blk.19.attn_norm.weight [4096] F32
+T blk.19.attn_output.weight [12288, 4096] IQ4_XS
+T blk.19.attn_q.weight [4096, 12288] IQ4_XS
+T blk.19.attn_q_norm.weight [128] F32
+T blk.19.attn_v.weight [4096, 1024] Q5_K
+T blk.19.exp_probs_b.bias [288] F32
+T blk.19.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.19.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.19.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.19.ffn_gate_inp.weight [4096, 288] F32
+T blk.19.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.19.ffn_norm.weight [4096] F32
+T blk.19.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.19.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.20.attn_gate.weight [4096, 64] IQ4_XS
+T blk.20.attn_k.weight [4096, 1024] IQ4_XS
+T blk.20.attn_k_norm.weight [128] F32
+T blk.20.attn_norm.weight [4096] F32
+T blk.20.attn_output.weight [8192, 4096] IQ4_XS
+T blk.20.attn_q.weight [4096, 8192] IQ4_XS
+T blk.20.attn_q_norm.weight [128] F32
+T blk.20.attn_v.weight [4096, 1024] Q5_K
+T blk.20.exp_probs_b.bias [288] F32
+T blk.20.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.20.ffn_down_shexp.weight [1280, 4096] IQ4_XS
+T blk.20.ffn_gate_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.20.ffn_gate_inp.weight [4096, 288] F32
+T blk.20.ffn_gate_shexp.weight [4096, 1280] IQ4_XS
+T blk.20.ffn_norm.weight [4096] F32
+T blk.20.ffn_up_exps.weight [4096, 1280, 288] IQ4_XS
+T blk.20.ffn_up_shexp.weight [4096, 1280] IQ4_XS
+T blk.21.attn_gate.weight [4096, 96] IQ4_XS
+T blk.21.attn_k.weight [4096, 1024] IQ4_XS
+T blk.21.attn_k_norm.weight [128] F32
+T blk.21.attn_norm.weight [4096] F32
+T blk.21.attn_output.weight [12288, 4096] IQ4_XS
+T blk.21.attn_q.weight [4096, 12288] IQ4_XS
+T blk.21.attn_q_norm.weight [128] F32
+T blk.21.attn_v.weight [4096, 1024] Q5_K
+T blk.21.exp_probs_b.bias [288] F32
+T blk.21.ffn_down_exps.weight [1280, 4096, 288] IQ4_XS
+T blk.21.ffn_down_shexp.weight [1280, 4096] IQ4_XS

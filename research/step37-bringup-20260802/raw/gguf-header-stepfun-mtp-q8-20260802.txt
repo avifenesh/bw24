@@ -1,0 +1,100 @@
+# stepfun-mtp-q8-head.bin: GGUF v3, tensors=55, kv=43
+KV general.architecture (str) = step35
+KV general.type (str) = model
+KV general.name (str) = Model
+KV general.size_label (str) = 3.5B
+KV step35.block_count (u32) = 48
+KV step35.context_length (u32) = 262144
+KV step35.embedding_length (u32) = 4096
+KV step35.feed_forward_length (u32) = 11264
+KV step35.attention.head_count (arr) = [48 items] first24=[64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96, 64, 96, 96, 96]
+KV step35.rope.freq_base (f32) = 5000000.0
+KV step35.rope.freq_base_swa (f32) = 10000.0
+KV step35.expert_gating_func (u32) = 2
+KV step35.attention.key_length (u32) = 128
+KV step35.attention.value_length (u32) = 128
+KV general.file_type (u32) = 7
+KV step35.attention.head_count_kv (arr) = [48 items] first24=[8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
+KV step35.attention.sliding_window (u32) = 512
+KV step35.attention.sliding_window_pattern (arr) = [48 items] first24=[False, True, True, True, False, True, True, True, False, True, True, True, False, True, True, True, False, True, True, True, False, True, True, True]
+KV step35.expert_count (u32) = 288
+KV step35.expert_used_count (u32) = 8
+KV step35.expert_feed_forward_length (u32) = 1280
+KV step35.expert_shared_feed_forward_length (u32) = 1280
+KV step35.expert_weights_scale (f32) = 3.0
+KV step35.expert_weights_norm (bool) = True
+KV step35.leading_dense_block_count (u32) = 3
+KV step35.moe_every_n_layers (u32) = 1
+KV step35.attention.layer_norm_rms_epsilon (f32) = 9.999999747378752e-06
+KV step35.swiglu_clamp_exp (arr) = [48 items] first24=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+KV step35.swiglu_clamp_shexp (arr) = [48 items] first24=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+KV step35.nextn_predict_layers (u32) = 3
+KV general.quantization_version (u32) = 2
+KV tokenizer.ggml.model (str) = gpt2
+KV tokenizer.ggml.pre (str) = deepseek-v3
+KV tokenizer.ggml.tokens (arr) = [128896 items] first24=['<｜begin▁of▁sentence｜>', '<｜end▁of▁sentence｜>', '<｜▁pad▁｜>', '!', '"', '#', '$', '%', '&', "'", '(', ')', '*', '+', ',', '-', '.', '/', '0', '1', '2', '3', '4', '5']
+KV tokenizer.ggml.token_type (arr) = [128896 items] first24=[3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+KV tokenizer.ggml.merges (arr) = [127741 items] first24=['Ġ t', 'Ġ a', 'i n', 'Ġ Ġ', 'h e', 'e r', 'o n', 'r e', 'e n', 'a t', 'Ġ s', 'Ġt he', 'Ċ Ċ', 'o r', 'e s', 'Ġ c', 'ä ¸', 'a n', 'Ġ o', 'i s', 'i t', 'Ġ p', 'Ġ w', 'a l']
+KV tokenizer.ggml.bos_token_id (u32) = 0
+KV tokenizer.ggml.eos_token_id (u32) = 128007
+KV tokenizer.ggml.padding_token_id (u32) = 1
+KV tokenizer.ggml.add_bos_token (bool) = True
+KV tokenizer.ggml.add_sep_token (bool) = False
+KV tokenizer.ggml.add_eos_token (bool) = False
+KV tokenizer.chat_template (str) = {% macro render_message_content(message) %}{% if message.content is none %}{{- '' }}{% elif message.content is string %}{{- message.content }}{% elif message.content is mapping %}{{- message.content['value'] if 'value' in message.content else message.content['text'] }}{% elif message.content is iterable %}{% set ns = namespace(needs_text_separator=false) %}{% for item in message.content %}{% if it...(5723 chars)
+--- tensors ---
+T rope_freqs.weight [64] F32
+T output.weight [4096, 128896] Q8_0
+T token_embd.weight [4096, 128896] Q8_0
+T blk.45.nextn.eh_proj.weight [8192, 4096] Q8_0
+T blk.45.nextn.enorm.weight [4096] F32
+T blk.45.nextn.hnorm.weight [4096] F32
+T blk.45.attn_norm.weight [4096] F32
+T blk.45.ffn_down.weight [11264, 4096] Q8_0
+T blk.45.ffn_gate.weight [4096, 11264] Q8_0
+T blk.45.ffn_up.weight [4096, 11264] Q8_0
+T blk.45.ffn_norm.weight [4096] F32
+T blk.45.attn_gate.weight [4096, 96] Q8_0
+T blk.45.attn_k_norm.weight [128] F32
+T blk.45.attn_k.weight [4096, 1024] Q8_0
+T blk.45.attn_output.weight [12288, 4096] Q8_0
+T blk.45.attn_q_norm.weight [128] F32
+T blk.45.attn_q.weight [4096, 12288] Q8_0
+T blk.45.attn_v.weight [4096, 1024] Q8_0
+T blk.45.nextn.shared_head_norm.weight [4096] F32
+T blk.45.nextn.shared_head_head.weight [4096, 128896] Q8_0
+T blk.46.nextn.eh_proj.weight [8192, 4096] Q8_0
+T blk.46.nextn.enorm.weight [4096] F32
+T blk.46.nextn.hnorm.weight [4096] F32
+T blk.46.attn_norm.weight [4096] F32
+T blk.46.ffn_down.weight [11264, 4096] Q8_0
+T blk.46.ffn_gate.weight [4096, 11264] Q8_0
+T blk.46.ffn_up.weight [4096, 11264] Q8_0
+T blk.46.ffn_norm.weight [4096] F32
+T blk.46.attn_gate.weight [4096, 96] Q8_0
+T blk.46.attn_k_norm.weight [128] F32
+T blk.46.attn_k.weight [4096, 1024] Q8_0
+T blk.46.attn_output.weight [12288, 4096] Q8_0
+T blk.46.attn_q_norm.weight [128] F32
+T blk.46.attn_q.weight [4096, 12288] Q8_0
+T blk.46.attn_v.weight [4096, 1024] Q8_0
+T blk.46.nextn.shared_head_norm.weight [4096] F32
+T blk.46.nextn.shared_head_head.weight [4096, 128896] Q8_0
+T blk.47.nextn.eh_proj.weight [8192, 4096] Q8_0
+T blk.47.nextn.enorm.weight [4096] F32
+T blk.47.nextn.hnorm.weight [4096] F32
+T blk.47.attn_norm.weight [4096] F32
+T blk.47.ffn_down.weight [11264, 4096] Q8_0
+T blk.47.ffn_gate.weight [4096, 11264] Q8_0
+T blk.47.ffn_up.weight [4096, 11264] Q8_0
+T blk.47.ffn_norm.weight [4096] F32
+T blk.47.attn_gate.weight [4096, 96] Q8_0
+T blk.47.attn_k_norm.weight [128] F32
+T blk.47.attn_k.weight [4096, 1024] Q8_0
+T blk.47.attn_output.weight [12288, 4096] Q8_0
+T blk.47.attn_q_norm.weight [128] F32
+T blk.47.attn_q.weight [4096, 12288] Q8_0
+T blk.47.attn_v.weight [4096, 1024] Q8_0
+T blk.47.nextn.shared_head_norm.weight [4096] F32
+T blk.47.nextn.shared_head_head.weight [4096, 128896] Q8_0
+T output_norm.weight [4096] F32

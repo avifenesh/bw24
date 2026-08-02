@@ -75,11 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let slot = {
             let _s0 = rt.enter(0);
             let x = e.htod(&pat)?;
-            rt.tx(&x, n)?
+            rt.tx(0, &x, n)?
         };
         // RX inside the stage-1 scope; dtoh through the ambient (stage-1) stream
         let _s1 = rt.enter(1);
-        let work = rt.rx(slot, n)?;
+        let work = rt.rx(0, slot, n)?;
         let back = e.dtoh(&work)?;
         let diff = back.iter().zip(&pat).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
         if diff != 0 { round_fail += 1; }

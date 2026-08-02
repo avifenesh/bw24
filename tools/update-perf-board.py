@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Regenerate README.md's perf tables and the perf-card SVGs from research/tune-data/current-board.json.
+"""Regenerate the perf surfaces from research/tune-data/current-board.json.
 
 Generated surfaces:
-    - README.md PERF-DATE / PERF-PLAIN / PERF-SPEC blocks   (RTX 5090 vs llama.cpp)
-    - README.md PERF-H100 block                             (H100 vs vLLM, from "h100_board")
-    - docs/perf-card.svg                                    (5090 card)
-    - docs/perf-card-h100.svg                               (H100 card, same visual style)
+    - README.md PERF-SAMPLES block          (representative sample comparisons, from "samples")
+    - README.md PERF-MODELS block           (supported-models table, from "supported_models")
+    - docs/PERFORMANCE.md PERF-DATE / PERF-PLAIN / PERF-SPEC blocks  (full 5090 boards)
+    - docs/PERFORMANCE.md PERF-H100 block   (full H100 board, from "h100_board")
+    - docs/perf-card.svg                    (5090 card)
+    - docs/perf-card-h100.svg               (H100 card, same visual style)
 
 Usage:
     tools/update-perf-board.py          # regenerate all surfaces in place
     tools/update-perf-board.py --check  # exit 1 if any surface would change (for a pre-push hook / CI)
 
 The board JSON is the single source of truth for published numbers. Never hand-edit the
-generated regions in README.md (marked with PERF-*:START/END comments) or the SVG cards;
-edit research/tune-data/current-board.json and rerun this script instead.
+generated regions in README.md / docs/PERFORMANCE.md (marked with PERF-*:START/END comments)
+or the SVG cards; edit research/tune-data/current-board.json and rerun this script instead.
+
+The README carries only sample rows ("samples": each entry names a source section and a row's
+"model" key, plus a display "label") and the numbers-free supported-models table
+("supported_models"). The full boards render into docs/PERFORMANCE.md.
 
 Note: 5090 ratios are computed from the display-rounded tok/s values stored in the board JSON,
 not from raw unrounded measurements. This can shift a borderline ratio by ~0.01x versus a value
@@ -31,6 +37,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BOARD_PATH = ROOT / "research" / "tune-data" / "current-board.json"
 README_PATH = ROOT / "README.md"
+PERFORMANCE_PATH = ROOT / "docs" / "PERFORMANCE.md"
 SVG_PATH = ROOT / "docs" / "perf-card.svg"
 H100_SVG_PATH = ROOT / "docs" / "perf-card-h100.svg"
 
@@ -50,8 +57,8 @@ def render_date_block(board):
         f"Measured {board['updated']} on the target rig ({board['rig']}, {board['protocol']}) "
         "against llama.cpp built on the same machine, same exact prompts, both engines "
         "re-baselined the same day. Boards move with the tuning campaign — "
-        "`research/tune-data/rig5090.jsonl` is the running record; the README is refreshed "
-        "with every board-moving merge."
+        "`research/tune-data/rig5090.jsonl` is the running record; the generated boards "
+        "(README samples + this document) are refreshed with every board-moving merge."
     )
 
 
@@ -74,6 +81,60 @@ def render_spec_table(board):
             fmt_ratio(b, l, threshold) for b, l in zip(row["memra"], row["llama"])
         )
         lines.append(f"| {row['model']} | {memra_cells} | {llama_cells} | {ratios} |")
+    return "\n".join(lines)
+
+
+def resolve_sample_row(board, sample):
+    rows = board[sample["source"]]["rows"]
+    for row in rows:
+        if row["model"] == sample["model"]:
+            return row
+    raise SystemExit(
+        f"sample references model {sample['model']!r} not found in {sample['source']!r}"
+    )
+
+
+def render_samples_block(board):
+    """README sample table: a few representative rows resolved out of the full boards."""
+    threshold = board["bold_ratio_threshold"]
+    lines = [
+        "| Model / scenario | memra tok/s | llama.cpp tok/s | Ratio |",
+        "|---|---|---|---|",
+    ]
+    for sample in board["samples"]:
+        row = resolve_sample_row(board, sample)
+        if isinstance(row["memra"], list):
+            memra_cells = " / ".join(str(v) for v in row["memra"])
+            llama_cells = " / ".join(str(v) for v in row["llama"])
+            ratios = " / ".join(
+                fmt_ratio(b, l, threshold) for b, l in zip(row["memra"], row["llama"])
+            )
+        else:
+            memra_cells = str(row["memra"])
+            llama_cells = str(row["llama"])
+            ratios = fmt_ratio(row["memra"], row["llama"], threshold)
+        lines.append(f"| {sample['label']} | {memra_cells} | {llama_cells} | {ratios} |")
+    lines.append("")
+    lines.append(
+        f"*Measured {board['updated']} on the {board['rig']} — same-session interleaved "
+        "medians, same exact prompts; memra at its naked defaults, llama.cpp at its swept "
+        "best ([docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)). N, thermal regime, "
+        "and the full boards: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); raw per-run "
+        "logs: [research/tune-data/](research/tune-data/).*"
+    )
+    return "\n".join(lines)
+
+
+def render_models_block(board):
+    lines = [
+        "| Model | Class | Quant | Drafter | Supported since |",
+        "|---|---|---|---|---|",
+    ]
+    for row in board["supported_models"]:
+        lines.append(
+            f"| {row['model']} | {row['class']} | {row['quants']} | {row['drafter']} "
+            f"| {row['since']} |"
+        )
     return "\n".join(lines)
 
 
@@ -102,21 +163,28 @@ def render_h100_block(board):
     return "\n".join(lines)
 
 
-def replace_block(text, tag, body):
+def replace_block(text, tag, body, path):
     pattern = re.compile(
         rf"(<!-- {tag}:START[^>]*-->\n).*?(\n<!-- {tag}:END -->)", re.DOTALL
     )
     if not pattern.search(text):
-        raise SystemExit(f"marker block {tag} not found in README.md")
+        raise SystemExit(f"marker block {tag} not found in {path.name}")
     return pattern.sub(lambda m: m.group(1) + body + m.group(2), text)
 
 
 def render_readme(board, original):
     text = original
-    text = replace_block(text, "PERF-DATE", render_date_block(board))
-    text = replace_block(text, "PERF-PLAIN", render_plain_table(board))
-    text = replace_block(text, "PERF-SPEC", render_spec_table(board))
-    text = replace_block(text, "PERF-H100", render_h100_block(board))
+    text = replace_block(text, "PERF-SAMPLES", render_samples_block(board), README_PATH)
+    text = replace_block(text, "PERF-MODELS", render_models_block(board), README_PATH)
+    return text
+
+
+def render_performance_doc(board, original):
+    text = original
+    text = replace_block(text, "PERF-DATE", render_date_block(board), PERFORMANCE_PATH)
+    text = replace_block(text, "PERF-PLAIN", render_plain_table(board), PERFORMANCE_PATH)
+    text = replace_block(text, "PERF-SPEC", render_spec_table(board), PERFORMANCE_PATH)
+    text = replace_block(text, "PERF-H100", render_h100_block(board), PERFORMANCE_PATH)
     return text
 
 
@@ -193,7 +261,9 @@ def main():
     board = load_board()
 
     original_readme = README_PATH.read_text()
+    original_perf = PERFORMANCE_PATH.read_text()
     new_readme = render_readme(board, original_readme)
+    new_perf = render_performance_doc(board, original_perf)
     new_svg = render_svg(board)
     new_h100_svg = render_svg_h100(board)
 
@@ -202,6 +272,7 @@ def main():
 
     changed = (
         new_readme != original_readme
+        or new_perf != original_perf
         or new_svg != old_svg
         or new_h100_svg != old_h100_svg
     )
@@ -214,11 +285,15 @@ def main():
         return
 
     README_PATH.write_text(new_readme)
+    PERFORMANCE_PATH.write_text(new_perf)
     SVG_PATH.parent.mkdir(parents=True, exist_ok=True)
     SVG_PATH.write_text(new_svg)
     H100_SVG_PATH.write_text(new_h100_svg)
     if changed:
-        print("regenerated README.md perf tables + docs/perf-card.svg + docs/perf-card-h100.svg")
+        print(
+            "regenerated README.md + docs/PERFORMANCE.md perf tables"
+            " + docs/perf-card.svg + docs/perf-card-h100.svg"
+        )
     else:
         print("no changes (already up to date)")
 

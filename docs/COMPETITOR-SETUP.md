@@ -2,7 +2,7 @@
 
 Beat-target reference for the memra benchmark. Every competitor is tuned to its **best** runnable single-stream config on this box (consumer Blackwell GB203, sm_120, 24 GB, 858 GB/s measured read wall, 82 SMs, thermal-bound). We beat them at their peak, not their defaults.
 
-_Measured tok/s values are point-in-time records from the tuning session — both engines move. The current board lives in the README performance section and `research/tune-data/rig5090.jsonl`; this file documents configs (build flags, serve lines, model files), which change rarely._
+_Measured tok/s values are point-in-time records from the tuning session — both engines move. The current boards live in [docs/PERFORMANCE.md](PERFORMANCE.md) and `research/tune-data/rig5090.jsonl`; this file documents configs (build flags, serve lines, model files), which change rarely._
 
 Daily models: **Qwen3.5-9B** and **Qwen3.6-27B** (hybrid GDN: gated-deltanet linear-attn + periodic full-attn + MTP). The 35B-A3B MoE setups live in per-engine sections of the research dump; this is the 9B + 27B copy-paste reference.
 

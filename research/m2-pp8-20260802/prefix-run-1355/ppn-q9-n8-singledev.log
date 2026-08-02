@@ -1,0 +1,10 @@
+ppn-gate M2 config: stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage
+[q8rp] split-plane decode mirrors built: 249 tensors
+stage fence: [0, 4, 8, 12, 16, 20, 24, 28, 32] over 32 layers
+[pipelined] MISMATCH step 1 (prime): 248318/248320 logits differ, first @[0] ref=4.997882 pp=4.923752
+[pipelined] MISMATCH step 2 (prime): 248319/248320 logits differ, first @[0] ref=4.5650706 pp=4.552829
+[pipelined] MISMATCH step 3 (prime): 248319/248320 logits differ, first @[0] ref=5.313717 pp=5.2781377
+[pipelined] MISMATCH step 4 (prime): 248319/248320 logits differ, first @[0] ref=-2.52043 pp=-2.549205
+[pipelined] MISMATCH step 5 (prime): 248319/248320 logits differ, first @[0] ref=-1.1971538 pp=-1.2268345
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
+ppn gate FAIL [pipelined]: 47/48 steps mismatched (first @ step 1 idx 0: ref=4.997882 pp=4.923752; fence=[0, 4, 8, 12, 16, 20, 24, 28, 32]; stages=8 streams=per-stage overlap=0 devices=default(primary) splits=default(even) shard=per-stage)

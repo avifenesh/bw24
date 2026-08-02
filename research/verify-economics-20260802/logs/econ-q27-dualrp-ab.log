@@ -1,0 +1,51 @@
+=== rep1 dual=off ===
+[econ] decode_h   N=30  med= 21.531ms  mean= 21.562ms  min= 21.255ms  p90= 21.815ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 22.043ms  mean= 22.153ms  min= 21.807ms  p90= 22.700ms  x1.024 vs decode_h
+[econ] verify_t2  N=30  med= 24.265ms  mean= 24.319ms  min= 24.095ms  p90= 24.681ms  x1.127 vs decode_h
+[econ] verify_t3  N=30  med= 25.957ms  mean= 26.070ms  min= 25.486ms  p90= 26.710ms  x1.206 vs decode_h
+[econ] verify_t4  N=30  med= 28.245ms  mean= 28.297ms  min= 27.879ms  p90= 28.840ms  x1.312 vs decode_h
+[econ] verify_t5  N=30  med= 34.752ms  mean= 34.827ms  min= 34.291ms  p90= 35.547ms  x1.614 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":21.5307,"mean_ms":21.5616,"min_ms":21.2552,"p90_ms":21.8155},"verify_t1":{"med_ms":22.0430,"mean_ms":22.1535,"min_ms":21.8066,"p90_ms":22.6998},"verify_t2":{"med_ms":24.2651,"mean_ms":24.3192,"min_ms":24.0949,"p90_ms":24.6808},"verify_t3":{"med_ms":25.9566,"mean_ms":26.0699,"min_ms":25.4862,"p90_ms":26.7100},"verify_t4":{"med_ms":28.2449,"mean_ms":28.2967,"min_ms":27.8793,"p90_ms":28.8402},"verify_t5":{"med_ms":34.7525,"mean_ms":34.8273,"min_ms":34.2915,"p90_ms":35.5466}}}
+=== rep1 dual=on ===
+[memra] dual gate+up batched ENGAGED (m=2 rp=true)
+[econ] decode_h   N=30  med= 21.624ms  mean= 21.662ms  min= 21.310ms  p90= 22.069ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 22.176ms  mean= 22.195ms  min= 21.859ms  p90= 22.554ms  x1.025 vs decode_h
+[econ] verify_t2  N=30  med= 24.126ms  mean= 24.080ms  min= 23.753ms  p90= 24.524ms  x1.116 vs decode_h
+[econ] verify_t3  N=30  med= 25.657ms  mean= 25.674ms  min= 25.432ms  p90= 25.913ms  x1.186 vs decode_h
+[econ] verify_t4  N=30  med= 28.064ms  mean= 28.164ms  min= 27.656ms  p90= 28.861ms  x1.298 vs decode_h
+[econ] verify_t5  N=30  med= 34.795ms  mean= 34.814ms  min= 34.333ms  p90= 35.339ms  x1.609 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":21.6243,"mean_ms":21.6622,"min_ms":21.3100,"p90_ms":22.0693},"verify_t1":{"med_ms":22.1756,"mean_ms":22.1953,"min_ms":21.8590,"p90_ms":22.5537},"verify_t2":{"med_ms":24.1258,"mean_ms":24.0802,"min_ms":23.7534,"p90_ms":24.5242},"verify_t3":{"med_ms":25.6571,"mean_ms":25.6738,"min_ms":25.4318,"p90_ms":25.9134},"verify_t4":{"med_ms":28.0641,"mean_ms":28.1637,"min_ms":27.6562,"p90_ms":28.8613},"verify_t5":{"med_ms":34.7945,"mean_ms":34.8136,"min_ms":34.3332,"p90_ms":35.3390}}}
+=== rep2 dual=off ===
+[econ] decode_h   N=30  med= 21.484ms  mean= 21.654ms  min= 21.358ms  p90= 22.429ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 22.250ms  mean= 22.292ms  min= 21.947ms  p90= 22.712ms  x1.036 vs decode_h
+[econ] verify_t2  N=30  med= 24.415ms  mean= 24.444ms  min= 24.075ms  p90= 24.819ms  x1.136 vs decode_h
+[econ] verify_t3  N=30  med= 26.012ms  mean= 26.099ms  min= 25.635ms  p90= 26.624ms  x1.211 vs decode_h
+[econ] verify_t4  N=30  med= 28.388ms  mean= 28.421ms  min= 28.031ms  p90= 28.746ms  x1.321 vs decode_h
+[econ] verify_t5  N=30  med= 35.011ms  mean= 35.065ms  min= 34.719ms  p90= 35.283ms  x1.630 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":21.4843,"mean_ms":21.6543,"min_ms":21.3578,"p90_ms":22.4285},"verify_t1":{"med_ms":22.2504,"mean_ms":22.2915,"min_ms":21.9472,"p90_ms":22.7118},"verify_t2":{"med_ms":24.4149,"mean_ms":24.4437,"min_ms":24.0751,"p90_ms":24.8192},"verify_t3":{"med_ms":26.0123,"mean_ms":26.0992,"min_ms":25.6345,"p90_ms":26.6238},"verify_t4":{"med_ms":28.3884,"mean_ms":28.4213,"min_ms":28.0314,"p90_ms":28.7461},"verify_t5":{"med_ms":35.0110,"mean_ms":35.0649,"min_ms":34.7192,"p90_ms":35.2826}}}
+=== rep2 dual=on ===
+[memra] dual gate+up batched ENGAGED (m=2 rp=true)
+[econ] decode_h   N=30  med= 21.699ms  mean= 21.733ms  min= 21.347ms  p90= 22.491ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 22.069ms  mean= 22.144ms  min= 21.906ms  p90= 22.473ms  x1.017 vs decode_h
+[econ] verify_t2  N=30  med= 24.150ms  mean= 24.254ms  min= 23.794ms  p90= 24.968ms  x1.113 vs decode_h
+[econ] verify_t3  N=30  med= 25.852ms  mean= 25.835ms  min= 25.311ms  p90= 26.174ms  x1.191 vs decode_h
+[econ] verify_t4  N=30  med= 28.066ms  mean= 28.149ms  min= 27.690ms  p90= 28.692ms  x1.293 vs decode_h
+[econ] verify_t5  N=30  med= 34.917ms  mean= 34.995ms  min= 34.575ms  p90= 35.557ms  x1.609 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":21.6987,"mean_ms":21.7328,"min_ms":21.3469,"p90_ms":22.4913},"verify_t1":{"med_ms":22.0689,"mean_ms":22.1438,"min_ms":21.9056,"p90_ms":22.4726},"verify_t2":{"med_ms":24.1503,"mean_ms":24.2539,"min_ms":23.7944,"p90_ms":24.9683},"verify_t3":{"med_ms":25.8522,"mean_ms":25.8349,"min_ms":25.3107,"p90_ms":26.1741},"verify_t4":{"med_ms":28.0658,"mean_ms":28.1485,"min_ms":27.6898,"p90_ms":28.6922},"verify_t5":{"med_ms":34.9171,"mean_ms":34.9954,"min_ms":34.5752,"p90_ms":35.5575}}}
+=== rep3 dual=off ===
+[econ] decode_h   N=30  med= 21.719ms  mean= 21.698ms  min= 21.353ms  p90= 22.225ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 22.114ms  mean= 22.224ms  min= 21.810ms  p90= 22.694ms  x1.018 vs decode_h
+[econ] verify_t2  N=30  med= 24.492ms  mean= 24.622ms  min= 24.077ms  p90= 25.398ms  x1.128 vs decode_h
+[econ] verify_t3  N=30  med= 26.083ms  mean= 26.134ms  min= 25.845ms  p90= 26.457ms  x1.201 vs decode_h
+[econ] verify_t4  N=30  med= 28.394ms  mean= 28.491ms  min= 28.200ms  p90= 29.134ms  x1.307 vs decode_h
+[econ] verify_t5  N=30  med= 35.035ms  mean= 35.059ms  min= 34.527ms  p90= 35.632ms  x1.613 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":21.7188,"mean_ms":21.6976,"min_ms":21.3535,"p90_ms":22.2251},"verify_t1":{"med_ms":22.1137,"mean_ms":22.2237,"min_ms":21.8103,"p90_ms":22.6939},"verify_t2":{"med_ms":24.4922,"mean_ms":24.6221,"min_ms":24.0772,"p90_ms":25.3979},"verify_t3":{"med_ms":26.0826,"mean_ms":26.1338,"min_ms":25.8451,"p90_ms":26.4569},"verify_t4":{"med_ms":28.3944,"mean_ms":28.4905,"min_ms":28.1999,"p90_ms":29.1341},"verify_t5":{"med_ms":35.0353,"mean_ms":35.0588,"min_ms":34.5272,"p90_ms":35.6325}}}
+=== rep3 dual=on ===
+[memra] dual gate+up batched ENGAGED (m=2 rp=true)
+[econ] decode_h   N=30  med= 21.520ms  mean= 21.671ms  min= 21.331ms  p90= 22.462ms  x1.000 vs decode_h
+[econ] verify_t1  N=30  med= 22.154ms  mean= 22.229ms  min= 21.833ms  p90= 22.671ms  x1.029 vs decode_h
+[econ] verify_t2  N=30  med= 24.103ms  mean= 24.106ms  min= 23.717ms  p90= 24.587ms  x1.120 vs decode_h
+[econ] verify_t3  N=30  med= 25.884ms  mean= 25.923ms  min= 25.552ms  p90= 26.538ms  x1.203 vs decode_h
+[econ] verify_t4  N=30  med= 28.160ms  mean= 28.262ms  min= 27.894ms  p90= 28.783ms  x1.309 vs decode_h
+[econ] verify_t5  N=30  med= 34.909ms  mean= 35.001ms  min= 34.564ms  p90= 35.649ms  x1.622 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":30,"arms":{"decode_h":{"med_ms":21.5199,"mean_ms":21.6712,"min_ms":21.3312,"p90_ms":22.4619},"verify_t1":{"med_ms":22.1541,"mean_ms":22.2288,"min_ms":21.8334,"p90_ms":22.6705},"verify_t2":{"med_ms":24.1028,"mean_ms":24.1064,"min_ms":23.7168,"p90_ms":24.5874},"verify_t3":{"med_ms":25.8843,"mean_ms":25.9232,"min_ms":25.5517,"p90_ms":26.5375},"verify_t4":{"med_ms":28.1603,"mean_ms":28.2623,"min_ms":27.8943,"p90_ms":28.7826},"verify_t5":{"med_ms":34.9093,"mean_ms":35.0010,"min_ms":34.5636,"p90_ms":35.6488}}}

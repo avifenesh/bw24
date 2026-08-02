@@ -1,0 +1,6 @@
+ppn-gate M2 config: stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=OFF(bring-up placement)
+[q8rp] split-plane decode mirrors built: 249 tensors
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+stage fence: [0, 16, 32] over 32 layers
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=OFF(bring-up placement))
+ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=OFF(bring-up placement))

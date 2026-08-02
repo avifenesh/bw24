@@ -18,7 +18,7 @@ GitHub CI is compile-only (no GPU). The release gate runs locally and must be gr
 ./target/release/run-spec <each affected model>    # K=1..8 self-consistency PASS
 ```
 
-If a published number moved: update `research/tune-data/current-board.json`, run `tools/update-perf-board.py`, commit the regenerated README/SVG with the change (the pre-push hook enforces this).
+If a published number moved: update `research/tune-data/current-board.json`, run `tools/update-perf-board.py`, commit the regenerated README + docs/PERFORMANCE.md + SVGs with the change (the pre-push hook enforces this).
 
 ## Cutting the release
 

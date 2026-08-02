@@ -1,0 +1,19 @@
+=== ATTRIBUTION PROBES 2026-08-02T13:34:32Z ===
+--- probe 1: merged, cache OFF — cold determinism ---
+{"tag": "merged-cold2", "rep": 1, "completion": 158, "cached": 0}
+{"tag": "merged-cold2", "rep": 2, "completion": 158, "cached": 0}
+{"tag": "merged-cold2", "probe": "cold-determinism", "identical": true}
+probe1 rc=0
+--- probe 2: merged, cache ON — raw rendered prompt 3x ---
+{"tag": "merged-raw3", "rep": 1, "n_tokens": 158, "prompt_tokens": 330, "cached": 0}
+{"tag": "merged-raw3", "rep": 2, "n_tokens": 177, "prompt_tokens": 330, "cached": 330}
+{"tag": "merged-raw3", "rep": 3, "n_tokens": 177, "prompt_tokens": 330, "cached": 330}
+{"tag": "merged-raw3", "probe": "cold-vs-hit-raw", "rep1_eq_rep3": false, "rep2_eq_rep3": true, "diverge_at_char": 155}
+probe2 rc=0
+--- probe 3: cache-lane binary (pre-merge), cache ON — raw rendered prompt 3x ---
+{"tag": "lane-raw3", "rep": 1, "n_tokens": 158, "prompt_tokens": 330, "cached": 0}
+{"tag": "lane-raw3", "rep": 2, "n_tokens": 177, "prompt_tokens": 330, "cached": 330}
+{"tag": "lane-raw3", "rep": 3, "n_tokens": 177, "prompt_tokens": 330, "cached": 330}
+{"tag": "lane-raw3", "probe": "cold-vs-hit-raw", "rep1_eq_rep3": false, "rep2_eq_rep3": true, "diverge_at_char": 155}
+probe3 rc=0
+ATTRIBUTION-DONE 2026-08-02T13:37:06Z

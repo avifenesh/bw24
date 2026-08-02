@@ -1,24 +1,24 @@
 {
  "updated": "2026-08-02",
  "rig": "RTX 5090 Laptop",
- "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the mode-2 grouped-f16 naked default \u2014 sk visitor + direct expert tiles \u2014 N=3 medians, research/f16g-default-rearb-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
+ "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows re-measured 2026-08-02 after the deep fa_decode merge (d14d7d8d) — N=5 same-session interleaved medians, fresh llama denominator, research/board-remeasure-20260802/ — spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the mode-2 grouped-f16 naked default \u2014 sk visitor + direct expert tiles \u2014 N=3 medians, research/f16g-default-rearb-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
  "plain_decode": {
-  "context": "tg128 at 512-token context, 2026-07-09 cold-start rebaseline (both engines same session)",
+  "context": "tg128 at 512-token context, 2026-08-02 post-fa-deep re-measure (both engines same session, N=5 interleaved)",
   "rows": [
    {
     "model": "Qwen3.5-9B NVFP4 (GGUF)",
-    "memra": 135.7,
-    "llama": 126.7
+    "memra": 137.3,
+    "llama": 121.2
    },
    {
     "model": "Qwen3.6-27B NVFP4 (GGUF)",
-    "memra": 48.4,
-    "llama": 44.9
+    "memra": 47.6,
+    "llama": 43.7
    },
    {
     "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
-    "memra": 178.2,
-    "llama": 167.8
+    "memra": 187.0,
+    "llama": 164.9
    }
   ]
  },
@@ -67,6 +67,95 @@
   ]
  },
  "bold_ratio_threshold": 1.05,
+ "samples": [
+  {
+   "source": "plain_decode",
+   "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+   "label": "Qwen3.6-35B-A3B MoE — plain decode (the flagship serving model, tg128 at 512-token context)"
+  },
+  {
+   "source": "speculative",
+   "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
+   "label": "Qwen3.5-9B — MTP speculative, short / medium / long-agentic prompt classes (both engines at their measured best)"
+  },
+  {
+   "source": "plain_decode_depth",
+   "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+   "label": "Qwen3.6-35B-A3B MoE — plain decode at 6.3k-token context (the short-context lead holds at depth)"
+  }
+ ],
+ "supported_models": [
+  {
+   "model": "Qwen3.5-9B",
+   "class": "dense",
+   "quants": "NVFP4 (5090), Q8_0 (H100)",
+   "drafter": "MTP + own-gen trimmed draft",
+   "since": "v0.1.0"
+  },
+  {
+   "model": "Qwen3.6-27B",
+   "class": "dense",
+   "quants": "NVFP4, Q4_K_M MTP-baked",
+   "drafter": "MTP + own-gen trimmed draft",
+   "since": "v0.1.0"
+  },
+  {
+   "model": "Qwen3.6-35B-A3B",
+   "class": "MoE",
+   "quants": "IQ4_XS",
+   "drafter": "MTP + own-gen trimmed draft",
+   "since": "v0.1.0"
+  },
+  {
+   "model": "Gemma-4 26B-A4B",
+   "class": "MoE",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.23.0"
+  },
+  {
+   "model": "Gemma-4 31B",
+   "class": "dense",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.35.0"
+  },
+  {
+   "model": "Gemma-4 E4B",
+   "class": "dense",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.35.0"
+  },
+  {
+   "model": "Gemma-4 12B",
+   "class": "dense",
+   "quants": "QAT Q4_0",
+   "drafter": "MTP drafter",
+   "since": "v0.40.0"
+  },
+  {
+   "model": "Ornith-1.0-9B",
+   "class": "dense",
+   "quants": "Q8_0",
+   "drafter": "own-gen donor-block draft",
+   "since": "v0.63.0"
+  },
+  {
+   "model": "Ornith-1.0-35B",
+   "class": "MoE",
+   "quants": "Q4_K_M",
+   "drafter": "own-gen donor-block draft",
+   "since": "v0.64.0"
+  },
+  {
+   "model": "Qwen-AgentWorld-35B-A3B",
+   "class": "MoE",
+   "quants": "UD-IQ4_XS (avoid UD-Q4_K_M — its Q5_K expert mix sits outside fast-path coverage)",
+   "drafter": "own-gen drafter",
+   "since": "v0.66.0"
+  }
+ ],
  "h100_board": {
   "updated": "2026-08-01",
   "rig": "1× H100 80GB",
@@ -125,22 +214,22 @@
   ]
  },
  "plain_decode_depth": {
-  "context": "tg128 at 6257-token context (same session/hour-regime)",
+  "context": "tg128 at 6257-token context (same session/hour-regime, 2026-08-02 post-fa-deep re-measure, N=5 interleaved)",
   "rows": [
    {
     "model": "Qwen3.5-9B NVFP4 (GGUF)",
-    "memra": 127.2,
-    "llama": 120.0
+    "memra": 131.2,
+    "llama": 117.3
    },
    {
     "model": "Qwen3.6-27B NVFP4 (GGUF)",
-    "memra": 45.9,
-    "llama": 43.0
+    "memra": 46.2,
+    "llama": 41.8
    },
    {
     "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
-    "memra": 163.7,
-    "llama": 160.9
+    "memra": 177.1,
+    "llama": 156.3
    }
   ]
  },

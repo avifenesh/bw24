@@ -2040,6 +2040,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            // DUAL gate+up batched twins (lane/verify-economics, 2026-08-02): one launch computes
+            // both tensors of the verify FFN pair; per (tensor, token, row) the body is the single
+            // batched program on the SAME layout -> outputs must be BITWISE identical to the two
+            // single launches, on BOTH layouts (GGUF + split-plane rp). bit-bad == 0 required —
+            // any bit diff = a broken chain, fix the kernel not the gate.
+            if let (Some(tg), Some(tu)) = (
+                g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4),
+                g.find("blk.0.ffn_up.weight").filter(|t| t.ggml_type == GgmlType::NVFP4),
+            ) {
+                use memra_engine::model::repack_nvfp4_split;
+                let in_f = tg.ne[0] as usize; let out_f = tg.ne[1] as usize;
+                let raw_g = g.tensor_data(tg); let row_bytes = raw_g.len() / out_f;
+                let raw_u = g.tensor_data(tu);
+                let wg = e.htod_bytes(raw_g)?;
+                let wu = e.htod_bytes(raw_u)?;
+                let wg_rp = e.htod_bytes(&repack_nvfp4_split(raw_g, out_f))?;
+                let wu_rp = e.htod_bytes(&repack_nvfp4_split(raw_u, out_f))?;
+                // b2/b4 tiers only — the dual dispatch stops at m=4 (b8 dual killed, flat).
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
+                    for (rp, w0, w1) in [(false, &wg, &wu), (true, &wg_rp, &wu_rp)] {
+                        let y0ref = e.dtoh(&e.qmatvec_mmvq_batched(w0, &aq, &ad, mm, in_f, out_f,
+                            memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
+                        let y1ref = e.dtoh(&e.qmatvec_mmvq_batched(w1, &aq, &ad, mm, in_f, out_f,
+                            memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
+                        let (y0d, y1d) = e.qmatvec_batched_dual_raw(w0, w1, &aq, &ad, mm, in_f,
+                            out_f, row_bytes, rp)?;
+                        let (y0, y1) = (e.dtoh(&y0d)?, e.dtoh(&y1d)?);
+                        let bad0 = y0ref.iter().zip(&y0).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        let bad1 = y1ref.iter().zip(&y1).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        println!("DUAL-BATCHED gate+up [NVFP4{}] m={mm} mcols={mcols}: bit-bad={}/{} {}",
+                                 if rp { " rp" } else { "" }, bad0, bad1,
+                                 if bad0 == 0 && bad1 == 0 { "OK" } else { fails += 1; "FAIL" });
+                    }
+                }
+            }
         }
     }
 
@@ -2613,6 +2651,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("fa_decode_seqs_v4 vs per-seq loop B={b_n} depths={depths:?}: bitdiff={bitdiff} {}",
                          if bitdiff == 0 {"OK"} else {fails+=1;"FAIL"});
             }
+        }
+
+        // --- FA-DEEP lane (2026-08-02): deep twins vs v4 twins, BYTE identity. The deep
+        // kernels (fa_decode_vec_q_v4_deep / _deep_dc) are order-preserving rewrites of the
+        // v4 program (padded smem, packed stores, L2 prefetch — research/fa-decode-deep-
+        // 20260802/): any nonzero bit here means the rewrite stopped being a scheduling-only
+        // change. Class geometry nkv=2/gqa=8 (q35/KAT/o35b), depths cross the sp8->sp64
+        // ladder rung + tail tiles + a bucketed dc replay. MEMRA_FA_DEEP flips per pair.
+        // Two geometries: the hybrid depth class (nkv=2/gqa=8: q35/KAT/o35b) and the
+        // qwen35 dense/MoE class (nkv=8/gqa=4: 9B/27B) — both ride the v4->deep dispatch.
+        for (hdd, nhd, nhkvd) in [(256usize, 16usize, 2usize), (256, 32, 8)] {
+            let kvd = hdd * nhkvd;
+            let ktb = (kvd / 32) * kbb;
+            let vtb = (kvd / 32) * vbb;
+            let t_max = 6272usize;
+            let kf: Vec<f32> = (0..kvd * t_max).map(|i| pr(i + 7) * 0.2).collect();
+            let vf: Vec<f32> = (0..kvd * t_max).map(|i| pr(i + 11) * 0.2).collect();
+            let kfd = e.htod(&kf)?; let vfd = e.htod(&vf)?;
+            let mut kc = e.alloc_u8(t_max * ktb)?;
+            let mut vc = e.alloc_u8(t_max * vtb)?;
+            for tok in 0..t_max {
+                let k_row = kfd.slice(tok * kvd..(tok + 1) * kvd);
+                let v_row = vfd.slice(tok * kvd..(tok + 1) * kvd);
+                e.append_kv_quantized_view(&k_row, &v_row, &mut kc, &mut vc, tok,
+                                           kvd, kvd, ktb, vtb, false)?;
+            }
+            let q: Vec<f32> = (0..hdd * nhd).map(|i| pr(i + 1) * 0.2).collect();
+            let qd = e.htod(&q)?;
+            unsafe { std::env::set_var("MEMRA_FA_DEEP_MIN", "0"); }
+            // 511/513 straddle the ladder-3072 lane's re-swept sp8->sp64 rung at 512
+            // (2026-08-02); 3071/3073 straddled the old 3072 boundary and stay as
+            // deep-region coverage.
+            for d in [511usize, 512, 513, 3071, 3073, 4096, 6144, 6200] {
+                let kview = e.view_u8(&kc, d * ktb);
+                let vview = e.view_u8(&vc, d * vtb);
+                unsafe { std::env::set_var("MEMRA_FA_DEEP", "0"); }
+                let mut o_v4 = e.zeros(hdd * nhd)?;
+                e.fa_decode(&qd, &kview, &vview, &mut o_v4, hdd, nhd, nhkvd, d, scale, ktb, vtb)?;
+                unsafe { std::env::set_var("MEMRA_FA_DEEP", "1"); }
+                let mut o_dp = e.zeros(hdd * nhd)?;
+                e.fa_decode(&qd, &kview, &vview, &mut o_dp, hdd, nhd, nhkvd, d, scale, ktb, vtb)?;
+                let (a, b) = (e.dtoh(&o_v4)?, e.dtoh(&o_dp)?);
+                let bd = a.iter().zip(&b).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                println!("fa_decode_v4_deep vs v4 (eager) t_kv={d}: bitdiff={bd} {}",
+                         if bd == 0 { "OK" } else { fails += 1; "FAIL" });
+                // dc twins: exact bucket + a bucketed replay (empty-split ONE-PARTITION case)
+                let tdev = e.htod_i32(&[d as i32])?;
+                for bucket in [d, d + 128] {
+                    unsafe { std::env::set_var("MEMRA_FA_DEEP", "0"); }
+                    let mut o4dc = e.zeros(hdd * nhd)?;
+                    e.fa_decode_dc(&qd, &kview, &vview, &mut o4dc, hdd, nhd, nhkvd, &tdev,
+                                   bucket, scale, ktb, vtb, false)?;
+                    unsafe { std::env::set_var("MEMRA_FA_DEEP", "1"); }
+                    let mut odpdc = e.zeros(hdd * nhd)?;
+                    e.fa_decode_dc(&qd, &kview, &vview, &mut odpdc, hdd, nhd, nhkvd, &tdev,
+                                   bucket, scale, ktb, vtb, false)?;
+                    let (adc, bdc) = (e.dtoh(&o4dc)?, e.dtoh(&odpdc)?);
+                    let bd2 = adc.iter().zip(&bdc).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                    println!("fa_decode_v4_deep vs v4 (dc) t_kv={d} bucket={bucket}: bitdiff={bd2} {}",
+                             if bd2 == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+            unsafe { std::env::remove_var("MEMRA_FA_DEEP"); }
+            unsafe { std::env::remove_var("MEMRA_FA_DEEP_MIN"); }
         }
 
         // --- ARC B: fa_prefill_view_ws (dequant-once bf16 workspace) vs fa_prefill_view: BYTE

@@ -1,0 +1,16 @@
+tree 5e37780e699b807290ed63375491be9b1d41fe72
+[gpu 2026-08-02T09:42:01Z] 70, 101.62 W, 1755 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+[econ] model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf prompt_tokens=28 N=50 t_max=6
+[econ] primed pos=28, continuation=[760, 709, 1220, 460, 264, 523, 421]
+[econ] decode_h   N=50  med= 22.929ms  mean= 22.794ms  min= 21.472ms  p90= 24.101ms  x1.000 vs decode_h
+[econ] verify_t1  N=50  med= 24.024ms  mean= 23.768ms  min= 22.020ms  p90= 24.960ms  x1.048 vs decode_h
+[econ] verify_t2  N=50  med= 26.304ms  mean= 26.137ms  min= 23.790ms  p90= 27.338ms  x1.147 vs decode_h
+[econ] verify_t3  N=50  med= 28.354ms  mean= 27.959ms  min= 25.569ms  p90= 29.156ms  x1.237 vs decode_h
+[econ] verify_t4  N=50  med= 30.767ms  mean= 30.664ms  min= 27.638ms  p90= 32.066ms  x1.342 vs decode_h
+[econ] verify_t5  N=50  med= 37.304ms  mean= 37.378ms  min= 35.380ms  p90= 38.656ms  x1.627 vs decode_h
+[econ] verify_t6  N=50  med= 40.291ms  mean= 40.571ms  min= 38.063ms  p90= 42.315ms  x1.757 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":28,"pos":28,"n":50,"arms":{"decode_h":{"med_ms":22.9286,"mean_ms":22.7941,"min_ms":21.4718,"p90_ms":24.1011},"verify_t1":{"med_ms":24.0237,"mean_ms":23.7677,"min_ms":22.0201,"p90_ms":24.9597},"verify_t2":{"med_ms":26.3036,"mean_ms":26.1366,"min_ms":23.7901,"p90_ms":27.3375},"verify_t3":{"med_ms":28.3537,"mean_ms":27.9587,"min_ms":25.5690,"p90_ms":29.1557},"verify_t4":{"med_ms":30.7665,"mean_ms":30.6640,"min_ms":27.6377,"p90_ms":32.0663},"verify_t5":{"med_ms":37.3044,"mean_ms":37.3780,"min_ms":35.3799,"p90_ms":38.6557},"verify_t6":{"med_ms":40.2905,"mean_ms":40.5713,"min_ms":38.0635,"p90_ms":42.3148}}}
+[gpu 2026-08-02T09:42:41Z] 72, 43.91 W, 1762 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+ECON27CODE rc=0

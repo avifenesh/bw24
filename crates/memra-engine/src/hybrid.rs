@@ -869,13 +869,22 @@ impl HybridModel {
         // of this flag). The 9B dense loader is the only ON site.
         crate::KV_FP8_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
 
+        // B0 FIX (hoisted): cfg.n_layer == block_count INCLUDES the MTP/NextN block(s)
+        // (41 for the 35B-MoE); the trunk is n_layer - nextn. Computed before any tensor
+        // upload because the M2 sharded loader (crate::pp::layer_engine) places tensors
+        // by the trunk stage map.
+        let n_trunk = (cfg.n_layer - cfg.nextn_predict_layers) as usize;
         let embd = EmbedHost::from_source(src, "token_embd.weight");
-        let output_norm = load_t(e, src, "output_norm.weight")?;
+        // M2 increment 2 (weight sharding): output_norm + lm head upload through the LAST
+        // stage's engine — the stage that runs them (outside the pp door / MEMRA_PP_SHARD=0
+        // this is the primary engine, byte-identical to the M1 loader).
+        let e_head = crate::pp::layer_engine(e, n_trunk, n_trunk - 1)?;
+        let output_norm = load_t(e_head, src, "output_norm.weight")?;
         // tied embeddings: fall back to tok_embd if output.weight absent.
         let mut output = if src.has("output.weight") {
-            load_t(e, src, "output.weight")?
+            load_t(e_head, src, "output.weight")?
         } else {
-            load_t(e, src, "token_embd.weight")?
+            load_t(e_head, src, "token_embd.weight")?
         };
 
         // SPILLING-PLAN §2: build the tiered-spill context ONCE, before loading any experts, but
@@ -898,13 +907,15 @@ impl HybridModel {
                 Some(ctx)
             } else { None };
 
-        // B0 FIX: cfg.n_layer == block_count INCLUDES the MTP/NextN block(s) (41 for the 35B-MoE).
-        // Running the MTP block as a trunk layer is wrong; iterate only the trunk layers.
-        // 9B (nextn=0): n_trunk = 32 (unchanged). 35B-MoE (nextn=1): n_trunk = 40 (drops MTP block).
-        let n_trunk = (cfg.n_layer - cfg.nextn_predict_layers) as usize;
+        // Running the MTP block as a trunk layer is wrong; iterate only the trunk layers
+        // (n_trunk hoisted above). 9B (nextn=0): n_trunk = 32. 35B-MoE (nextn=1): 40.
         let mut layers = Vec::with_capacity(n_trunk);
         for il in 0..n_trunk as u32 {
             let p = |s: &str| format!("blk.{il}.{s}");
+            // M2 weight sharding: this layer's tensors upload through the OWNING stage's
+            // engine (shadowed `e`) — the bring-up remote peer-read placement dies here.
+            // Door shut / MEMRA_PP_SHARD=0: `layer_engine` returns the primary (no change).
+            let e = crate::pp::layer_engine(e, n_trunk, il as usize)?;
             // attn_norm always; post_attention_norm is the pre-FFN norm in qwen35
             layers.push(HybridLayer {
                 attn_norm: load_t(e, src, &p("attn_norm.weight"))?,
@@ -1255,7 +1266,6 @@ impl HybridModel {
             // the same trunk walk under their own seam (MEMRA_KQRP, default = hopper lane).
             let kqrp_on = crate::Engine::kqrp_enabled();
             if q8rp_on || kqrp_on {
-                let e_ref = e;
                 // f16 prefill mirrors, PER-MODEL argmax-gate arbitration (round 45): on the
                 // qwen Q8_0 dense class the f16-prefill-vs-int8-decode gap (maxdiff ~0.67)
                 // flips the run-gen argmax gate on real prompts (board-2048: 485 vs 332,
@@ -1265,7 +1275,10 @@ impl HybridModel {
                 let f16_model_ok = cfg.gemma4.is_some() || cfg.moe.is_some()
                     || std::env::var("MEMRA_PP_F16").as_deref() == Ok("1");
                 let mut nmir = 0usize;
-                let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
+                // M2 weight sharding: mirrors are the DECODE weights on these paths — each
+                // builds through its layer's OWNING stage engine (`e_ref` param), so the
+                // mirror lands on the device that dereferences it.
+                let mut mir = |e_ref: &crate::Engine, w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
                     let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
                     if q8rp_on { e_ref.build_q8_rp4(w)?; }
                     if kqrp_on {
@@ -1286,24 +1299,25 @@ impl HybridModel {
                     }
                     Ok(())
                 };
-                for layer in layers.iter_mut() {
+                for (il, layer) in layers.iter_mut().enumerate() {
+                    let el = crate::pp::layer_engine(e, n_trunk, il)?;
                     match &mut layer.mixer {
                         Mixer::Full(fa) => {
-                            for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mir(w)?; }
+                            for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mir(el, w)?; }
                         }
                         Mixer::Linear(la) => {
                             for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
-                                      &mut la.ssm_alpha, &mut la.ssm_out] { mir(w)?; }
+                                      &mut la.ssm_alpha, &mut la.ssm_out] { mir(el, w)?; }
                         }
                         // MLA: no decode mirrors in increment 2 (its kernels arrive in inc 4;
                         // mirror admission is arbitrated there with measurements).
                         Mixer::Mla(_) => {}
                     }
                     if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
-                        for w in [ffn_gate, ffn_up, ffn_down] { mir(w)?; }
+                        for w in [ffn_gate, ffn_up, ffn_down] { mir(el, w)?; }
                     }
                 }
-                mir(&mut output)?;
+                mir(e_head, &mut output)?;
                 if nmir > 0 {
                     eprintln!("[q8rp] split-plane decode mirrors built: {nmir} tensors");
                 }
@@ -1324,7 +1338,7 @@ impl HybridModel {
                 if q8rp_on && crate::f16_ffi::pp_f16_enabled() {
                     for (want, tag) in [(crate::QT_Q4_K, "q4kf16"), (crate::QT_Q5_K, "q5kf16")] {
                         let (mut n4, mut b4) = (0usize, 0usize);
-                        let mut mirk = |w: &mut crate::model::GpuTensor|
+                        let mut mirk = |e_ref: &crate::Engine, w: &mut crate::model::GpuTensor|
                                        -> Result<(), Box<dyn std::error::Error>> {
                             if matches!(w, crate::model::GpuTensor::Quant { qtype, f16: None, .. }
                                         if *qtype == want) {
@@ -1336,22 +1350,23 @@ impl HybridModel {
                             }
                             Ok(())
                         };
-                        for layer in layers.iter_mut() {
+                        for (il, layer) in layers.iter_mut().enumerate() {
+                            let el = crate::pp::layer_engine(e, n_trunk, il)?;
                             match &mut layer.mixer {
                                 Mixer::Full(fa) => {
-                                    for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mirk(w)?; }
+                                    for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] { mirk(el, w)?; }
                                 }
                                 Mixer::Linear(la) => {
                                     for w in [&mut la.wqkv, &mut la.wqkv_gate, &mut la.ssm_beta,
-                                              &mut la.ssm_alpha, &mut la.ssm_out] { mirk(w)?; }
+                                              &mut la.ssm_alpha, &mut la.ssm_out] { mirk(el, w)?; }
                                 }
                                 Mixer::Mla(_) => {} // no mirrors in increment 2 (see above)
                             }
                             if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
-                                for w in [ffn_gate, ffn_up, ffn_down] { mirk(w)?; }
+                                for w in [ffn_gate, ffn_up, ffn_down] { mirk(el, w)?; }
                             }
                         }
-                        mirk(&mut output)?;
+                        mirk(e_head, &mut output)?;
                         if n4 > 0 {
                             eprintln!("[{tag}] prefill fp16 mirrors built: {n4} tensors \
                                        ({} MB)", b4 >> 20);
@@ -1368,7 +1383,9 @@ impl HybridModel {
         // swap is the follow-up arc); raw bytes stay for prefill/gemm/Stage-A either way.
         if cfg.gemma4.is_some() && crate::Engine::q4rp_enabled() {
             let mut nmir = 0usize;
-            for layer in layers.iter_mut() {
+            for (il, layer) in layers.iter_mut().enumerate() {
+                // M2 weight sharding: mirrors/concats build through the owning stage engine.
+                let e = crate::pp::layer_engine(e, n_trunk, il)?;
                 // 26B MoE-class trunk (moe_bits) OR the E4B dense trunk (e4b bits). E4B mirror
                 // arithmetic: attn ~7.5MB/layer (shared layers skip wk/wv via build's no-op on
                 // duplicate mirrors is NOT automatic — they alias the target's tensors as
@@ -1449,7 +1466,9 @@ impl HybridModel {
                     Ok("0") => false,
                     _ => crate::f16_ffi::pp_f16_enabled() && q4f16_model_ok,
                 };
-                for layer in layers.iter_mut() {
+                for (il, layer) in layers.iter_mut().enumerate() {
+                    // M2 weight sharding: swap/mirror through the owning stage engine.
+                    let e = crate::pp::layer_engine(e, n_trunk, il)?;
                     let dense_gemma = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_none());
                     if !dense_gemma {
                         continue;
@@ -1511,6 +1530,12 @@ impl HybridModel {
                 .embd_gpu
                 .get_or_init(|| e.upload_u8(&model.embd.raw).expect("embed table upload"));
         }
+        // M2 LOAD BARRIER (pp door open at load): uploads + mirror builds above ran on
+        // the loading engines' worker streams; the first decode consumer runs on OTHER
+        // streams with no event between them. Synchronize every stage context once so
+        // no consumer can ever read a half-built tensor (the 2026-08-02 split5 ref=0.0
+        // head-mirror find). No-op with the door shut.
+        crate::pp::sync_stages_after_load(e, n_trunk)?;
         Ok(model)
     }
 

@@ -1,0 +1,51 @@
+=== 1. Repo byte totals (HF API blobs, 2026-08-02) ===
+BF16 safetensors text shards (incl. MTP shard 24): 398,768,720,352 B = 398.8 GB
+BF16 safetensors vision shards:                    3,962,113,280 B = 3.96 GB
+BF16 safetensors total:                            402.7 GB
+FP8 repo safetensors total (text+vit, MTP shard stays BF16): 212.5 GB
+NVFP4 repo safetensors total: 129.2 GB
+official GGUF BF16    : 394,017,423,776 B = 394.02 GB = 366.96 GiB
+official GGUF IQ4_XS  : 104,993,562,624 B = 104.99 GB = 97.78 GiB
+official GGUF Q4_K_S  : 111,499,087,872 B = 111.50 GB = 103.84 GiB
+official GGUF Q3_K_L  : 102,504,428,544 B = 102.50 GB = 95.46 GiB
+official GGUF Q3_K_M  : 93,801,444,352 B = 93.80 GB = 87.36 GiB
+official GGUF IQ3_XXS : 75,758,680,960 B = 75.76 GB = 70.56 GiB
+official GGUF Q8_0    : 209,417,871,264 B = 209.42 GB = 195.04 GiB
+official Step3.7-flash-mtp-BF16.gguf: 6,973,549,696 B = 6.97 GB
+official Step3.7-flash-mtp-Q8_0.gguf: 3,707,276,416 B = 3.71 GB
+official mmproj-step3.7-flash-f16.gguf: 3,972,828,768 B = 3.97 GB
+official Step-3.7.imatrix.gguf: 465,998,112 B = 0.47 GB
+unsloth GGUF UD-IQ4_XS : 95,336,010,208 B = 95.34 GB = 88.79 GiB
+unsloth GGUF UD-Q4_K_XL: 122,218,291,808 B = 122.22 GB = 113.82 GiB
+unsloth GGUF UD-Q3_K_XL: 89,390,584,320 B = 89.39 GB = 83.25 GiB
+unsloth GGUF UD-IQ3_XXS: 73,591,039,488 B = 73.59 GB = 68.54 GiB
+
+=== 2. Param count from config.json shapes (text model) ===
+main layers: 45 = 12 full + 33 SWA(512); MTP layers: 3 (all SWA per layer_types)
+attention 4.52B | dense FFN 0.42B | routed experts 190.25B | shared experts 0.66B | router 0.050B | emb+head 1.06B
+main text model ~197.0B params; MTP ~2.43B; text total ~199.4B
+cross-check: official BF16 GGUF 394.0 GB / 2 B-per-param -> 197.0B params (main only)
+
+=== 3. IQ4_XS honesty math ===
+official IQ4_XS effective bpw: 4.26 (uniform IQ4_XS experts per header receipt)
+unsloth UD-IQ4_XS effective bpw: 3.87 (gate/up experts IQ3_S=3.44bpw, down IQ4_XS, attn/shexp Q8_0 per header receipts)
+predicted uniform-IQ4_XS size from shapes: 105.1 GB (actual official: 104.99 GB)
+
+=== 4. KV-cache budget (8 KV heads x 128 head_dim, K+V) ===
+-- FP16: 4096 B/token/layer
+   ctx  32K: full-attn   1.50 GiB | SWA ring  0.064 GiB | SWA at max_ctx (memra today)   4.12 GiB | total today   5.62 GiB
+   ctx 128K: full-attn   6.00 GiB | SWA ring  0.064 GiB | SWA at max_ctx (memra today)  16.50 GiB | total today  22.50 GiB
+   ctx 256K: full-attn  12.00 GiB | SWA ring  0.064 GiB | SWA at max_ctx (memra today)  33.00 GiB | total today  45.00 GiB
+-- FP8/q8: 2048 B/token/layer
+   ctx  32K: full-attn   0.75 GiB | SWA ring  0.032 GiB | SWA at max_ctx (memra today)   2.06 GiB | total today   2.81 GiB
+   ctx 128K: full-attn   3.00 GiB | SWA ring  0.032 GiB | SWA at max_ctx (memra today)   8.25 GiB | total today  11.25 GiB
+   ctx 256K: full-attn   6.00 GiB | SWA ring  0.032 GiB | SWA at max_ctx (memra today)  16.50 GiB | total today  22.50 GiB
+
+=== 5. 4x RTX 5090 fit (128 GiB = 137.4 GB total VRAM) ===
+official IQ4_XS + MTP Q8_0: weights 108.7 GB = 101.2 GiB -> headroom 26.8 GiB before KV/activations/runtime
+unsloth UD-IQ4_XS + MTP Q8_0: weights 99.0 GB = 92.2 GiB -> headroom 35.8 GiB before KV/activations/runtime
+
+=== 6. 8-bit / NVFP4 card-count math on 32 GiB 5090s (serving-quant standard) ===
+FP8 safetensors (official repo): 212.5 GB = 197.9 GiB -> 7 cards weights-only (headroom 26.1 GiB); + 128K FP8-KV + ~7 GB runtime = 216 GiB -> 7 cards (next card up for real headroom: 8)
+Q8_0 official GGUF: 209.4 GB = 195.0 GiB -> 7 cards weights-only (headroom 29.0 GiB); + 128K FP8-KV + ~7 GB runtime = 213 GiB -> 7 cards (next card up for real headroom: 8)
+NVFP4 safetensors (official repo): 129.2 GB = 120.4 GiB -> 4 cards weights-only (headroom 7.6 GiB); + 128K FP8-KV + ~7 GB runtime = 138 GiB -> 5 cards (next card up for real headroom: 6)

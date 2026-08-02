@@ -1,11 +1,18 @@
-# Multi-user serving — the replica fleet
+# Serving — the OpenAI surface and the replica fleet
+
+This is the serve-surface doc: fleet topology and measured throughput, the isolation
+contract, the OpenAI tools surface, cross-request prompt caching with per-tenant
+`cache_salt` isolation, and the honestly-stated numeric edges of batched serving.
 
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
 processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
 (M0 comms floor measured — ARCHITECTURE-H100.md).
 
-## Tools
+## Fleet tooling
+
+(Not to be confused with the OpenAI `tools` API surface — that is
+"[OpenAI tools surface](#openai-tools-surface-serve-tools-lane-2026-08-02)" below.)
 
 | tool | what it does |
 |---|---|
@@ -79,6 +86,96 @@ default `MEMRA_CTX=8192` exceed VRAM (captured `CUDA_ERROR_OUT_OF_MEMORY` in the
 pre-admission-wait receipts; ~27 sessions fit — since the VRAM-aware admission wait the
 overflow queues instead of erroring). Set `MEMRA_CTX` to the workload — 2048 clears the
 same cell (machine-specific config per the flags doctrine).
+
+## OpenAI tools surface (serve-tools lane, 2026-08-02)
+
+`/v1/chat/completions` accepts `tools`, `tool_choice` (`"auto"`|`"none"`; `"required"` and
+named-function forms 400 — no constrained decoding yet), assistant-history `tool_calls`,
+`role:"tool"` result turns, and `reasoning_effort`/`reasoning`. The path is **template +
+parsing only — zero engine changes**:
+
+- Tool schemas render into the model chat template's own `<tools>` branch (the qwen3.5/3.6
+  ChatML convention: schemas JSON in the system region, `<tool_call>`/`<function=…>` call
+  format, `<tool_response>` result turns), byte-per-byte per the committed template dumps
+  (`research/onboard-ornith-20260801/templates/`). Models whose template has no tools
+  branch (hy3 dialect, gemma4, bare ChatML) reject `tools` with a 400 at admission.
+- Emitted `<tool_call>` blocks are parsed from the generated stream into OpenAI-shape
+  `tool_calls` (streaming deltas + non-stream `message.tool_calls`, deterministic ids,
+  `finish_reason:"tool_calls"`); argument values coerce per the declared JSON-schema types.
+  **Malformed policy:** a block that does not parse is surfaced verbatim as content — never
+  an error, never dropped bytes; unterminated blocks flush raw at end of generation.
+- `reasoning_effort` `none|minimal|low` → the template's `enable_thinking=false` no-think
+  switch; `medium|high`/absent → the template default (open `<think>`). Models without the
+  switch ignore the parameter. `reasoning: {enabled, effort}` (OpenRouter form) maps the
+  same way.
+- **Isolation:** non-tools traffic bypasses the tools renderer AND the emission parser
+  entirely (legacy render path, byte-identical streams); tools traffic is generation-
+  identical for the identical rendered prompt (raw-completions bijection gate). `usage`
+  now carries worker-truth `prompt_tokens` (rendered tools block included) +
+  `completion_tokens` + `total_tokens` on stream and non-stream shapes, with the
+  prompt-caching split (`prompt_tokens_details.cached_tokens`) — see "Prompt caching"
+  below. Tools requests cache like any other: the prefix cache keys on the rendered
+  prompt's token ids, so a repeated tools block is a cacheable prefix (no special-casing).
+
+Receipts: `research/serve-tools-20260802/` (round-trip transcripts N=3 greedy on
+Qwen3.6-35B + AgentWorld, streaming schema checker, malformed-policy transcript,
+tok-check usage crosscheck, cross-binary c1 refs + c1-vs-c16) and
+`research/integrate-cache-20260802/` (tools x cache intersection gate).
+
+## Prompt caching (cross-request prefix cache) — 2026-08-02
+
+Two caching tiers serve prompt tokens without recomputing them:
+
+1. **Continuation pool** (pre-existing, `MEMRA_KV_REUSE`): a retired session parks its whole
+   (prompt + generation) state; a new prompt that EXACTLY EXTENDS it resumes. Single-use,
+   exact-extension only — a new session that merely shares a system prompt always missed.
+2. **Cross-request prefix cache** (`MEMRA_PREFIX_CACHE_MB`, default 256MB, 0 = off): compact
+   device snapshots of primed state at token boundaries, keyed by the exact token-id prefix,
+   per model, LRU under the byte budget. Entries are REUSABLE — a hit deep-copies the entry
+   into the new session's cache, so one marketplace system prompt serves any number of
+   sessions. Learning sequence for a shared-prefix pattern: request 1 seeds its full prompt,
+   request 2 split-primes at the longest-common-prefix and inserts the boundary entry,
+   request 3+ hit. Hybrid models are safe by construction: GDN conv/ssm state cannot be
+   truncated to a shorter prefix, so the state is snapshotted AT the boundary while a fresh
+   session primes — never rolled back.
+
+**Exactness contract:** an entry stores the KV/recurrent bytes from WHATEVER prime config ran
+(single, chunked, or concat batch-prime); decode from those bytes is deterministic, so a
+cached hit is bit-identical to the run that computed the prefix — gated 16/16 partial-prefix
++ 16/16 full-prefix cached-vs-fresh greedy identity across depths
+(`research/prompt-cache-20260802/gate-exact.jsonl`). Comparing a cached-hit stream against a
+DIFFERENT prime config's fresh stream inherits the batched-prime near-tie first-token law
+("First-token cross-config drift" below) — same documented class, reported not gated.
+
+**Policy:** spec sessions bypass the prefix cache entirely (SpecSession owns trunk + draft
+caches; a trunk-only prefix restore would leave draft state unprimed — the spec tier keeps
+its own continuation pool). Legacy round-robin mode (`MEMRA_SERVE_BATCH=0`) also bypasses.
+Sessions always win over the cache: a failed session-cache allocation evicts every entry and
+retries before erroring.
+
+**Per-tenant isolation (`cache_salt`) — PC-ISO, 2026-08-02:** every cross-request reuse
+tier (prefix cache, continuation pool, spec pool) keys on (model, cache namespace), not
+model alone. The namespace comes from the optional `cache_salt` string field on
+`/v1/completions` and `/v1/chat/completions` (the vLLM `cache_salt` design, OpenAI-
+compatible extension): requests only share cached prefixes with requests carrying the
+SAME salt, in either direction, so `usage.prompt_tokens_details.cached_tokens` can only
+ever reflect the caller's own namespace's history — the CacheProbe/PROMPTPEEK cross-tenant
+hit-oracle mitigation (`research/cache-tools-20260802/REPORT.md` §1.4/§4). No salt = the
+default `""` namespace: single-tenant deployments behave exactly as before (no new env
+knob — the namespace is a request field, not a flag). The LRU byte budget stays GLOBAL
+across namespaces (VRAM is one resource; only visibility is namespaced). A gateway
+multiplexing many end-users through one API key — the marketplace listing shape — MUST set
+a per-end-user/session salt. Gates: `research/pc-iso-20260802/` (same-salt hit, cross-salt
+miss both directions, default-namespace blindness; the integrate-cache intersection gate
+re-run unmodified as the no-salt regression).
+
+**Accounting:** every response shape carries OpenAI-schema usage with the worker-truth split —
+`usage.prompt_tokens`, `completion_tokens`, `total_tokens`, and
+`prompt_tokens_details.cached_tokens` (tokens resumed from ANY cache tier: continuation pool,
+spec resume, or prefix cache). `/metrics` exposes the cumulative split
+(`prompt_tokens_in`/`cached_tokens_in`) plus `prefix_cache_hits`/`entries`/`bytes`. Cached
+prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
+margin lever (`research/or-provider-20260802/REPORT.md`).
 
 ## Knobs
 

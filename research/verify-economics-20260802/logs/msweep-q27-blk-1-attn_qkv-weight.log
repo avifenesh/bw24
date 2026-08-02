@@ -1,0 +1,19 @@
+tree 5e37780e699b807290ed63375491be9b1d41fe72
+[gpu 2026-08-02T09:57:00Z] 67, 173.82 W, 1867 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+weight blk.1.attn_qkv.weight [NVFP4] in_f=5120 out_f=10240 row_bytes=2880 copies=8 variant=auto
+--- grid.y=m (current, no weight reuse) ---
+  m=1: 41.69 us/call  (41.69 us/token)
+  m=2: 64.75 us/call  (32.38 us/token)
+  m=4: 106.03 us/call  (26.51 us/token)
+  m=8: 209.05 us/call  (26.13 us/token)
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=2 (b2): 45.26 us/call  (22.63 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 46.12 us/call  (15.37 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 45.26 us/call  (11.31 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 55.98 us/call  (11.20 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 63.62 us/call  (10.60 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 71.36 us/call  (8.92 us/token)  bit-bad=0 bit-exact-bad=0
+[gpu 2026-08-02T09:57:01Z] 70, 111.95 W, 1920 MHz, 423 MiB
+[apps] 143567, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+MSWEEP q27 blk.1.attn_qkv.weight rc=0

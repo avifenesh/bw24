@@ -1,0 +1,4 @@
+{"model": "kat", "target": 1024, "chars": 3444, "llama_tok_count": 1024, "file": "depth-1024-kat.txt"}
+{"model": "kat", "target": 3072, "chars": 10642, "llama_tok_count": 3072, "file": "depth-3072-kat.txt"}
+{"model": "q35", "target": 1024, "chars": 3444, "llama_tok_count": 1024, "file": "depth-1024-q35.txt"}
+{"model": "q35", "target": 3072, "chars": 10642, "llama_tok_count": 3072, "file": "depth-3072-q35.txt"}

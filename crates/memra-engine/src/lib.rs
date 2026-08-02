@@ -478,7 +478,18 @@ pub(crate) fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
         // says sp64 = 153.0 (sp16/32 147, sp96 147.6, sp128 141). Few-kv-head models need the
         // taper EARLIER than kv=8 (per-split grid 4x thinner, same per-split combine cost).
         // Crossover hunt: sp8 vs sp64 = 156.7/155.9 at d3072, 151.7/155.6 at d4096 -> boundary 3072.
-        if t_kv <= 3072 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
+        // RUNG RE-SWEPT UNDER THE DEEP KERNEL (2026-08-02, lane/ladder-3072 — the stale-verdict
+        // law: the 3072 boundary was calibrated on the conflicted v4 core; the deep rewrite cut
+        // vec cost ~1.2-1.4x while combine scales with n_splits, so sp8's combine bill
+        // dominates far earlier). Kernel receipts (quiet-rig nsys, deep vec + combine us):
+        // d1024 sp8 17.1 vs sp64 10.6; d2048 31.0 vs 12.2; d3072 44.0 vs 18.3. e2e run-gen
+        // tg128 N=3 interleaved (KAT + q35, research/ladder-3072-20260802/): sp8 loses at
+        // EVERY depth >= 1024 (KAT d2048 182.6 vs 188.0 = -2.9%, d3072 175.9 vs 186.4 =
+        // -5.6%; q35 d4096 169.2 vs 182.6 = -7.4%); d512 flat (+-0.2%, inside noise). sp32
+        // ties sp64 within noise in the mid band and loses at d4096 -> no extra rung.
+        // Boundary 3072 -> 512: sp8 keeps only the short-ctx band it was validated on
+        // (ctx128-512); sp64 takes over where the deep kernel made combine the bill.
+        if t_kv <= 512 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
     } else {
         if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
     }
@@ -671,6 +682,29 @@ fn fa_v4_at(t_kv: usize) -> bool {
         .unwrap_or_else(|| FA_V4_MAX_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)));
     fa_v4_on() && t_kv < mx
 }
+/// FA-DEEP gate (2026-08-02, lane fa-decode-deep): deep-ctx v4 twins
+/// (fa_decode_vec_q_v4_deep / _deep_dc) — the depth-decode lane's priced fix. Unlike
+/// v2/v3/v4 this is NOT a numeric config: the deep twins run the v4 program VERBATIM
+/// (same split partition, same softmax/accumulation order, same partials/combine) and only
+/// move the smem physical layout (bank de-conflict row pads) + the load schedule (next-tile
+/// L2 prefetch) — kernel-check pins bitdiff==0 vs the v4 twins across depths, so eager /
+/// rows-verify / graph / seqs stay mutually bit-identical wherever the threshold falls.
+/// Engages at t_kv >= MEMRA_FA_DEEP_MIN. The swept floor is 0 = ALWAYS ON where v4 ran
+/// (fa-deep-bench fine grid 96..6144, 2026-08-02: deep flat-or-better at EVERY depth,
+/// 1.01-1.26x, no losing cell — so there is no engagement boundary and no new
+/// capture-recapture edge; the env stays as a sweep/diagnostic seam only).
+/// MEMRA_FA_DEEP=0 is the rollback seam. Read per call so the battery + bench can A/B
+/// within one process (the v2/v3 pattern).
+pub const FA_DEEP_MIN_DEFAULT: usize = 0;
+fn fa_deep_at(t_kv: usize) -> bool {
+    if std::env::var("MEMRA_FA_DEEP").as_deref() == Ok("0") { return false; }
+    let min = std::env::var("MEMRA_FA_DEEP_MIN").ok().and_then(|v| v.parse().ok())
+        .unwrap_or(FA_DEEP_MIN_DEFAULT);
+    t_kv >= min
+}
+/// Public twin (kernel-check builds the deep-vs-v4 bit pin; bench sweeps the floor).
+pub fn fa_deep_at_pub(t_kv: usize) -> bool { fa_deep_at(t_kv) }
+
 fn fa_v3_active(head_dim: usize) -> bool {
     // v3's dp4a-K walk reads raw q8_0 K bytes — no e4m3 arm; the fp8-KV arm (MEMRA_KV_FP8)
     // must fall back like any non-default KV format (the rows_dc stream path asserts on it).
@@ -1223,63 +1257,113 @@ impl Engine {
     fn pdl_func_flash(&self, g: bool, name: &'static str)
         -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
         use cudarc::driver::sys as cu;
-        static BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        static GMOD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(bool, &'static str), usize>>> =
+        // PER-CONTEXT caches (M1-PP2 cross-device fix, 8x box 2026-08-02): CUmodule and
+        // CUfunction handles are CONTEXT-scoped, and a remote-stage Engine
+        // (MEMRA_PP_DEVICES=a,b) lives in the other device's primary context. The old
+        // process-wide OnceLock cache handed stage 1 the dev-a handles, so every stage-1
+        // launch_pdl* died CUDA_ERROR_INVALID_HANDLE. Key module + function caches by
+        // this engine's CUcontext; single-context runs behave exactly as before.
+        static MODS: std::sync::Mutex<Option<std::collections::HashMap<(usize, bool), usize>>> =
             std::sync::Mutex::new(None);
-        let load = |path: &str| -> usize {
-            let bytes = std::fs::read(path).expect("flash fatbin (pdl)");
-            let mut m: cu::CUmodule = std::ptr::null_mut();
-            let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
-            assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl flash module load: {r:?}");
-            m as usize
+        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(usize, bool, &'static str), usize>>> =
+            std::sync::Mutex::new(None);
+        let ctx_key = self.ctx().cu_ctx() as usize;
+        if let Some(&f) = FNS.lock().unwrap().get_or_insert_with(Default::default)
+            .get(&(ctx_key, g, name)) { return Ok(f as cu::CUfunction); }
+        let module = {
+            let mut mods = MODS.lock().unwrap();
+            let map = mods.get_or_insert_with(Default::default);
+            match map.get(&(ctx_key, g)) {
+                Some(&m) => m,
+                None => {
+                    let m = self.pdl_load_module_in_ctx(
+                        if g { FLASH_FATBIN_KF8VF8 } else { FLASH_FATBIN_PATH })?;
+                    map.insert((ctx_key, g), m);
+                    m
+                }
+            }
         };
-        let module = if g { *GMOD.get_or_init(|| load(FLASH_FATBIN_KF8VF8)) }
-                     else { *BASE.get_or_init(|| load(FLASH_FATBIN_PATH)) };
-        let mut fns = FNS.lock().unwrap();
-        let map = fns.get_or_insert_with(Default::default);
-        if let Some(&f) = map.get(&(g, name)) { return Ok(f as cu::CUfunction); }
         let cname = std::ffi::CString::new(name)?;
         let mut f: cu::CUfunction = std::ptr::null_mut();
         let r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
         if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func_flash {name} (g={g}): {r:?}").into()); }
-        map.insert((g, name), f as usize);
+        FNS.lock().unwrap().get_or_insert_with(Default::default)
+            .insert((ctx_key, g, name), f as usize);
         Ok(f)
+    }
+
+    /// Load a fatbin as a raw CUmodule IN THIS ENGINE'S CONTEXT. `cuModuleLoadData` binds
+    /// the module to the thread's CURRENT context — a remote-stage engine must not
+    /// inherit the primary's (the INVALID_HANDLE class above). Restores the caller's
+    /// current context before returning.
+    fn pdl_load_module_in_ctx(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+        use cudarc::driver::sys as cu;
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("pdl fatbin read {path}: {e}"))?;
+        let mut prev: cu::CUcontext = std::ptr::null_mut();
+        unsafe { cu::cuCtxGetCurrent(&mut prev).result()?; }
+        self.ctx().bind_to_thread()?;
+        let mut m: cu::CUmodule = std::ptr::null_mut();
+        let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+        let restore = if prev.is_null() { cu::CUresult::CUDA_SUCCESS }
+                      else { unsafe { cu::cuCtxSetCurrent(prev) } };
+        if r != cu::CUresult::CUDA_SUCCESS {
+            return Err(format!("pdl module load {path}: {r:?}").into());
+        }
+        if restore != cu::CUresult::CUDA_SUCCESS {
+            return Err(format!("pdl module load {path}: ctx restore {restore:?}").into());
+        }
+        Ok(m as usize)
     }
 
     fn pdl_func(&self, name: &'static str) -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
         use cudarc::driver::sys as cu;
-        static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        static FNS: std::sync::Mutex<Option<std::collections::HashMap<&'static str, usize>>> =
+        // PER-CONTEXT caches — same M1-PP2 cross-device fix as pdl_func_flash (handles
+        // are context-scoped; key everything by this engine's CUcontext).
+        static MODULES: std::sync::Mutex<Option<std::collections::HashMap<usize, usize>>> =
             std::sync::Mutex::new(None);
-        let module = *MODULE.get_or_init(|| {
-            let bytes = std::fs::read(env!("MEMRA_ENGINE_FATBIN")).expect("kernels fatbin");
-            let mut m: cu::CUmodule = std::ptr::null_mut();
-            let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
-            assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl module load: {r:?}");
-            m as usize
-        });
         // PDL wave-A: the mmvq kernels live in the qmatvec fatbin, not kernels.cu — second
         // duplicate module, loaded lazily on the first kernels-module miss.
-        static QMODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let mut fns = FNS.lock().unwrap();
-        let map = fns.get_or_insert_with(Default::default);
-        if let Some(&f) = map.get(name) { return Ok(f as cu::CUfunction); }
+        static QMODULES: std::sync::Mutex<Option<std::collections::HashMap<usize, usize>>> =
+            std::sync::Mutex::new(None);
+        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(usize, &'static str), usize>>> =
+            std::sync::Mutex::new(None);
+        let ctx_key = self.ctx().cu_ctx() as usize;
+        if let Some(&f) = FNS.lock().unwrap().get_or_insert_with(Default::default)
+            .get(&(ctx_key, name)) { return Ok(f as cu::CUfunction); }
+        let module = {
+            let mut mods = MODULES.lock().unwrap();
+            let map = mods.get_or_insert_with(Default::default);
+            match map.get(&ctx_key) {
+                Some(&m) => m,
+                None => {
+                    let m = self.pdl_load_module_in_ctx(env!("MEMRA_ENGINE_FATBIN"))?;
+                    map.insert(ctx_key, m);
+                    m
+                }
+            }
+        };
         let cname = std::ffi::CString::new(name)?;
         let mut f: cu::CUfunction = std::ptr::null_mut();
         let mut r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
         if r == cu::CUresult::CUDA_ERROR_NOT_FOUND {
-            let qmodule = *QMODULE.get_or_init(|| {
-                let bytes = std::fs::read(env!("MEMRA_QMATVEC_FATBIN")).expect("qmatvec fatbin");
-                let mut m: cu::CUmodule = std::ptr::null_mut();
-                let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
-                assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl qmatvec module load: {r:?}");
-                m as usize
-            });
+            let qmodule = {
+                let mut mods = QMODULES.lock().unwrap();
+                let map = mods.get_or_insert_with(Default::default);
+                match map.get(&ctx_key) {
+                    Some(&m) => m,
+                    None => {
+                        let m = self.pdl_load_module_in_ctx(env!("MEMRA_QMATVEC_FATBIN"))?;
+                        map.insert(ctx_key, m);
+                        m
+                    }
+                }
+            };
             r = unsafe { cu::cuModuleGetFunction(&mut f, qmodule as cu::CUmodule, cname.as_ptr()) };
         }
         if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func {name}: {r:?}").into()); }
-        map.insert(name, f as usize);
+        FNS.lock().unwrap().get_or_insert_with(Default::default)
+            .insert((ctx_key, name), f as usize);
         Ok(f)
     }
 
@@ -5600,6 +5684,94 @@ impl Engine {
         self.matmul_pre(w, &aq, &ad, x, m)
     }
 
+    /// DUAL gate+up BATCHED matvec at verify t=2..8 (lane/verify-economics, 2026-08-02): ONE
+    /// launch computes both FFN projections of a verify batch — same activation, same shape,
+    /// blockIdx.y selects the tensor. Per (tensor, token, row) the kernel body is the single
+    /// batched program on the SAME layout (split-plane rp: b2 rp / b4 rpr2 / b8 rpr2; GGUF:
+    /// b2 base / b4 r2 / b8 r2) -> BIT-IDENTICAL to the two single `matmul_decode_exact`
+    /// launches (kernel-check gates bitwise on both layouts; run-spec K=1..8 arbitrates e2e).
+    /// The one activation quantize replaces two IDENTICAL quantizes of the same `x` (same
+    /// kernel, same input -> same q8_1 bytes), and the two independent weight streams in one
+    /// grid restore the memory-level parallelism the two-launch form loses to tail drain +
+    /// launch gap (m=1 dual_mr2 precedent: DRAM 40% -> 47-50% on the 27B pair).
+    /// `Some((y0, y1))` only when both tensors are NVFP4, the SAME layout (both rp or both
+    /// GGUF, no rp4 mirror), identical (in_f, out_f, row_bytes), q8_1-fast, and m in 2..=4
+    /// (the b2/b4 tiers = verify T for K=1..3, the profitable-K window — the b8 dual measured
+    /// FLAT vs the rpsc singles x3 interleaved, research/verify-economics-20260802, and was
+    /// killed per doctrine). None -> caller runs the two singles. MEMRA_SPEC_DUAL_T=0 rollback.
+    pub fn matmul_decode_exact_dual(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                                    x: &CudaSlice<f32>, m: usize)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let on = *ON.get_or_init(|| {
+            std::env::var("MEMRA_SPEC_DUAL_T").map(|v| v != "0").unwrap_or(true)
+        });
+        if !on || !(2..=4).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok()
+            || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) {
+            return Ok(None);
+        }
+        let (in_f, out_f) = (w0.in_features(), w0.out_features());
+        if w1.in_features() != in_f || w1.out_features() != out_f {
+            return Ok(None);
+        }
+        let (b0, b1, row_bytes, s0, s1, rp) = match (w0, w1) {
+            (GpuTensor::Quant { bytes: b0, qtype: q0, row_bytes: rb0, scale: s0, rp: rp0, rp4: None, .. },
+             GpuTensor::Quant { bytes: b1, qtype: q1, row_bytes: rb1, scale: s1, rp: rp1, rp4: None, .. })
+                if *q0 == QT_NVFP4 && *q1 == QT_NVFP4 && rb0 == rb1 && rp0 == rp1 =>
+                (b0, b1, *rb0, *s0, *s1, *rp0),
+            _ => return Ok(None),
+        };
+        // Engagement receipt (MEMRA_DEBUG=1): the first dead-arm A/B lesson — a `rp: false`
+        // gate silently no-op'd the whole experiment; prove the arm is live in the log.
+        if std::env::var("MEMRA_DEBUG").is_ok() {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| eprintln!("[memra] dual gate+up batched ENGAGED (m={m} rp={rp})"));
+        }
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let (y0, y1) = self.qmatvec_batched_dual_raw(b0, b1, &aq, &ad, m, in_f, out_f, row_bytes, rp)?;
+        let mut y0 = y0;
+        let mut y1 = y1;
+        if s0 != 1.0 { self.scale_inplace(&mut y0, s0, m * out_f)?; }
+        if s1 != 1.0 { self.scale_inplace(&mut y1, s1, m * out_f)?; }
+        Ok(Some((y0, y1)))
+    }
+
+    /// Launch body of the dual batched twins from raw NVFP4 weight bytes + a pre-quantized q8_1
+    /// activation (kernel-check's bit-equivalence entry; matmul_decode_exact_dual's core).
+    /// mcols tier = batched_mcols(m); macro-scale NOT applied. `rp` selects the split-plane
+    /// twins (both buffers must be the repacked layout).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_batched_dual_raw(&self, b0: &CudaSlice<u8>, b1: &CudaSlice<u8>,
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                    m: usize, in_f: usize, out_f: usize, row_bytes: usize, rp: bool)
+        -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;
+        let mcols = Self::batched_mcols(m);
+        let (name, rows_per_block) = match (mcols, rp) {
+            (2, false) => ("qmatvec_nvfp4_mmvq_dual_b2", ROWS_PER_BLOCK),
+            (4, false) => ("qmatvec_nvfp4_mmvq_dual_b4_r2", ROWS_PER_BLOCK * 2),
+            (2, true) => ("qmatvec_nvfp4_mmvq_dual_b2_rp", ROWS_PER_BLOCK),
+            (4, true) => ("qmatvec_nvfp4_mmvq_dual_b4_rpr2", ROWS_PER_BLOCK * 2),
+            _ => return Err(format!("qmatvec_batched_dual_raw: no dual kernel for m {m}").into()),
+        };
+        let f = self.func(name);
+        let mut y0 = self.alloc_uninit::<f32>(m * out_f)?;
+        let mut y1 = self.alloc_uninit::<f32>(m * out_f)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 2, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
+            .arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok((y0, y1))
+    }
+
     /// Like `matmul_pre` but RETURNS THE RAW (un-macro-scaled) matmul output together with the
     /// per-tensor NVFP4 scale, instead of applying `scale_inplace` internally. Used by the fused
     /// SwiGLU epilogue (RANK3 LEVER 2) so the gate/up scales fold into one `silu_mul_scaled` launch.
@@ -8499,6 +8671,10 @@ impl Engine {
         // (the same scalar-floor physics as hd256's old 96 floor; short-ctx plain regressed
         // 178.4 -> 173.7 when 512 rode vec unconditionally).
         let fa512_min = fa512_min_tkv();
+        // FA-DEEP pick (bit-identical twins, see fa_deep_at): default module only — the
+        // g-module keeps the v4 pick (its class is not the depth-decay class).
+        let deep = fa_vec && head_dim == 256 && fa_v4_at(t_kv) && !g
+            && fa_deep_at(t_kv) && !matches!(fa_v4_mode(), "noB3" | "stage");
         let (f, cfg) = if fa_vec && head_dim == 512 && t_kv >= fa512_min {
             // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
             // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
@@ -8530,11 +8706,14 @@ impl Engine {
                 let v4name = match fa_v4_mode() {
                     "noB3" => "fa_decode_vec_q_v4_noB3",     // phase probe (WRONG OUTPUT)
                     "stage" => "fa_decode_vec_q_v4_stage",   // phase probe (WRONG OUTPUT)
+                    _ if deep => "fa_decode_vec_q_v4_deep",
                     _ => "fa_decode_vec_q_v4",
                 };
                 let fv = if g { self.func_g(v4name) } else { self.func(v4name) };
-                // fa_v4_smem + sV (g: raw e4m3 sV tile = 1B/elem — half the smem, 3->5 blocks/SM)
-                let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
+                // fa_v4_smem (deep: fa_v4_deep_smem, +640B row pads) + sV (g: raw e4m3 sV
+                // tile = 1B/elem — half the smem, 3->5 blocks/SM)
+                let shmem = (if deep { 12160 } else { 11520 }
+                             + 32 * head_dim * if g { 1 } else { 2 }) as u32;
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
                 (fv,
@@ -8591,6 +8770,8 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
+        // (combine re-tile refuted in the fa-deep lane — flat/worse both shapes; the v4
+        // combine stays for all arms. Receipts research/fa-decode-deep-20260802/.)
         let (fc, cfg2) = (if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) },
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let __s_b2 = self.gpu.stream();
@@ -9350,6 +9531,10 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
+        // FA-DEEP pick keyed on bucket_max (the fa_v4_at precedent) — bit-identical twins,
+        // so a threshold falling between t_kv and bucket_max cannot diverge eager-vs-graph.
+        let deep = fa_vec && head_dim == 256 && fa_v4_at(bucket_max) && !g
+            && fa_deep_at(bucket_max) && !matches!(fa_v4_mode(), "noB3" | "stage");
         let (f, cfg) = if fa_vec && head_dim == 512 && bucket_max >= {
             static FA512_MIN_DC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             *FA512_MIN_DC.get_or_init(|| std::env::var("MEMRA_FA512_MIN").ok()
@@ -9371,8 +9556,11 @@ impl Engine {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
             // incl the g-module route + raw-e4m3 sV sizing.
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") } else { self.func("fa_decode_vec_q_v4_dc") };
-            let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
+            let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") }
+                     else if deep { self.func("fa_decode_vec_q_v4_deep_dc") }
+                     else { self.func("fa_decode_vec_q_v4_dc") };
+            let shmem = (if deep { 12160 } else { 11520 }
+                         + 32 * head_dim * if g { 1 } else { 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),

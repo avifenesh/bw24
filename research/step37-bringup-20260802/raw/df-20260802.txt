@@ -1,0 +1,5 @@
+2026-08-02T14:01:06Z
+Filesystem                 Size  Used Avail Use% Mounted on
+/dev/mapper/data--vg-data  1.9T  1.2T  696G  63% /data
+/dev/nvme0n1p2             1.9T  281G  1.5T  16% /
+/dev/nvme0n1p2             1.9T  281G  1.5T  16% /
