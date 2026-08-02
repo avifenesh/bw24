@@ -94,7 +94,7 @@ add_spec() { local x; for x in ${1//,/ }; do [ "$x" = "-" ] && continue; case ",
 for f in $CHANGED; do
     hit=0
     while IFS=$'\t' read -r rx scope probes spec; do
-        [ -z "$rx" ] || [ "${rx:0:1}" = "#" ] && continue
+        [ -z "$rx" ] || [ "${rx:0:1}" = "#" ] || [ "$rx" = "DEFAULT" ] && continue
         if echo "$f" | grep -qE "$rx"; then
             hit=1
             case "$scope" in
@@ -108,7 +108,17 @@ for f in $CHANGED; do
     done < "$MAP"
     if [ "$hit" = 0 ]; then
         UNMATCHED="$UNMATCHED $f"
-        KC_SCOPE="all"; add_probe "g12,q9,q35"; add_spec "q35spec"
+        # DEFAULT row (map.tsv): conservative plan for unmapped paths.
+        d_scope=$(awk -F'\t' '$1=="DEFAULT"{print $2; exit}' "$MAP")
+        d_probes=$(awk -F'\t' '$1=="DEFAULT"{print $3; exit}' "$MAP")
+        d_spec=$(awk -F'\t' '$1=="DEFAULT"{print $4; exit}' "$MAP")
+        case "${d_scope:-all}" in
+            all) KC_SCOPE="all" ;;
+            synthetic) [ "$KC_SCOPE" = "none" ] && KC_SCOPE="synthetic" ;;
+            none) ;;
+            *) [ "$KC_SCOPE" != "all" ] && KC_SCOPE="csv"; add_csv "$d_scope" ;;
+        esac
+        add_probe "${d_probes:-g12,q9,q35}"; add_spec "${d_spec:--}"
     fi
 done
 [ -n "$PROBES_OVERRIDE" ] && { PLAN_PROBES=""; PLAN_SPEC="";
@@ -205,14 +215,16 @@ run_probe() {
             toks=$(grep -oE "= [0-9.]+ tok/s" "$log" | tail -1 | grep -oE "[0-9.]+")
             ref=$(sed -n '2p' "$GOLDENS/$id.perf")
             if [ -n "$toks" ] && [ -n "$ref" ]; then
-                local drop; drop=$(awk -v n="$toks" -v r="$ref" 'BEGIN{printf "%.1f",(r-n)/r*100}')
+                local drop delta
+                drop=$(awk -v n="$toks" -v r="$ref" 'BEGIN{printf "%.1f",(r-n)/r*100}')
+                delta=$(awk -v n="$toks" -v r="$ref" 'BEGIN{printf "%+.1f",(n-r)/r*100}')
                 if awk -v d="$drop" 'BEGIN{exit !(d>25)}'; then
-                    echo "  $id: PERF-SMOKE FAIL — $toks tok/s vs golden-point $ref (-$drop%, catastrophic; single rep, diagnose w/ full protocol)"
+                    echo "  $id: PERF-SMOKE FAIL — $toks tok/s vs golden-point $ref ($delta%, catastrophic; single rep, diagnose w/ full protocol)"
                     return 1
                 elif awk -v d="$drop" 'BEGIN{exit !(d>10)}'; then
-                    echo "  $id: PERF-SMOKE WARN — $toks tok/s vs golden-point $ref (-$drop%; single rep, NOT evidence — re-measure per research/benchmarks.md)"
+                    echo "  $id: PERF-SMOKE WARN — $toks tok/s vs golden-point $ref ($delta%; single rep, NOT evidence — re-measure per research/benchmarks.md)"
                 else
-                    echo "  $id: perf-smoke ok ($toks tok/s vs $ref, -$drop%; single rep, informational)"
+                    echo "  $id: perf-smoke ok ($toks tok/s vs $ref, $delta%; single rep, informational)"
                 fi
             fi
         fi

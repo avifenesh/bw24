@@ -63,5 +63,6 @@
 # --- no-gate paths ---
 ^(docs/|research/|agent-knowledge/|probe/|\.github/|tools/)	none	-	-
 ^[^/]*\.(md|svg|png|txt|json|lock)$	none	-	-
-# --- DEFAULT (any other crates/ or build path): conservative ---
-^(crates/|Cargo)	all	g12,q9,q35	q35spec
+# --- DEFAULT (first column literally "DEFAULT"): applied ONLY to files no row above
+# matched — it never escalates a file that already has a scoped plan. Conservative. ---
+DEFAULT	all	g12,q9,q35	q35spec
