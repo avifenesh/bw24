@@ -80,15 +80,20 @@ ALL GREEN: kernels match CPU reference.
 
 ## Standing NEGATIVE (open): single-device pipelined intermittent
 
-After all four fixes, an x5 same-build probe of the **singledev** N=2 pipelined arm still
-flaked **1/5** (r3: `FAIL [pipelined]: 25/48 steps mismatched, first @ step 23`), and
-battery 3's three singledev pipelined arms passed once each — so the honest post-fix
-singledev record is **8/9 PASS, 1/9 FAIL, cause not yet isolated** (suspects narrowed:
-shared device default mempool cross-stream reuse, or a remaining Engine-shared surface).
-Cross-device pipelined — the configuration multi-GPU PP exists for — is **0 failures in
-all post-fix runs** (dev01 ×5, dev01-noshard, split5, overlap, asym, dev0123, dev0to7).
-Verdict discipline: the pipelined arm is validated **cross-device**; single-device
-placement keeps a repro'd intermittent and must not be claimed clean.
+After all four fixes, a **x20 same-build soak** of the singledev N=2 pipelined arm
+(`soak-singledev/`) lands at **13/20 PASS, 7/20 FAIL (35% flake)** — every failure a
+different first-divergence step (6, 11, 13, 14, 16, 25, 28), the classic signature of a
+timing-dependent cross-stream race, not a logic bug. Combined with battery 3 + the x5
+probe: singledev pipelined = 21/34 clean, cause not yet isolated (lead suspects: device
+default-mempool cross-stream reuse, or a remaining Engine-shared surface reachable when
+both stage streams live on one device).
+
+The controlled twin: a **x10 dev01 soak** (`soak-dev01/`) on the same build, same window,
+same model is **10/10 PASS.** Cross-device pipelined — the configuration multi-GPU PP
+exists for — has **0 failures across all post-fix runs** (battery 3 all placements +
+dev01 x5 probe + this soak: 18/18). Verdict discipline: the pipelined arm is validated
+**cross-device only**; single-device multi-stage keeps a repro'd 35% intermittent and
+must not be claimed clean or benched.
 
 ## Throughput (final build only; interleaved ×5 at the invocation level)
 

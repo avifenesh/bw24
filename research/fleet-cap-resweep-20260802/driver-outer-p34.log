@@ -1,0 +1,139 @@
+=== pass 1 cap 8 up ===
+[fleet] launched replica :8085 on GPU 5 (pid 114619)
+[fleet] launched replica :8086 on GPU 5 (pid 114622)
+[fleet] launched replica :8087 on GPU 6 (pid 114625)
+[fleet] launched replica :8088 on GPU 6 (pid 114628)
+[fleet] launched replica :8089 on GPU 7 (pid 114631)
+[fleet] launched replica :8090 on GPU 7 (pid 114634)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :8085 healthy
+[fleet] replica :8086 healthy
+[fleet] replica :8087 healthy
+[fleet] replica :8088 healthy
+[fleet] replica :8089 healthy
+[fleet] replica :8090 healthy
+[fleet] launched proxy :8080 cap=8 -> 6 backends
+[fleet] up: 6 replicas on GPUs [5 6 7], proxy :8080 (cap 8)
+{"ts": "2026-08-02T17:52:12+0000", "label": "cap8-greedy-p1", "base": "http://127.0.0.1:8080", "concurrency": 6, "requests": 6, "max_tokens": 128, "greedy": true, "wall_s": 2.0280069149994233, "n_ok": 6, "n_err": 0, "completion_tokens_total": 768, "agg_tok_s": 378.6969335852676, "req_per_s": 2.958569793634903, "lat_p50_s": 1.674457054999948, "lat_p95_s": 2.0259538940008497, "lat_mean_s": 1.730008301166284, "lat_max_s": 2.0259538940008497, "errors_sample": []}
+{"ts": "2026-08-02T17:52:27+0000", "label": "cap8-c48-p1", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 15.31035255200186, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1597.0239690400194, "req_per_s": 12.540534213557063, "lat_p50_s": 3.613057798000227, "lat_p95_s": 3.915704144001211, "lat_mean_s": 3.614902060197911, "lat_max_s": 4.0639133419972495, "errors_sample": []}
+{"ts": "2026-08-02T17:52:51+0000", "label": "cap8-c96-p1", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 23.128266378000262, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1588.4891413628106, "req_per_s": 12.452295182571367, "lat_p50_s": 7.21194076500251, "lat_p95_s": 7.867345216000103, "lat_mean_s": 6.700649346354201, "lat_max_s": 7.894166368001606, "errors_sample": []}
+{"ts": "2026-08-02T17:53:07+0000", "label": "cap8-qosbulk-p1", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 15.654139440997824, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1561.9510795951776, "req_per_s": 12.265126468540105, "lat_p50_s": 7.086932981001155, "lat_p95_s": 7.889468181001575, "lat_mean_s": 6.444683533760497, "lat_max_s": 7.978311504000885, "errors_sample": []}
+{"ts": "2026-08-02T17:53:15+0000", "label": "cap8-qoslat-p1", "base": "http://127.0.0.1:8080", "concurrency": 4, "requests": 24, "max_tokens": 128, "greedy": false, "wall_s": 12.693151643998135, "n_ok": 24, "n_err": 0, "completion_tokens_total": 3072, "agg_tok_s": 242.02027094292006, "req_per_s": 1.890783366741563, "lat_p50_s": 1.7591451549997146, "lat_p95_s": 3.706857991997822, "lat_mean_s": 2.0581084111671166, "lat_max_s": 4.552272545999585, "errors_sample": []}
+[fleet] supervisor stopped
+[fleet] stopped
+=== pass 1 cap 12 up ===
+[fleet] launched replica :8085 on GPU 5 (pid 117540)
+[fleet] launched replica :8086 on GPU 5 (pid 117543)
+[fleet] launched replica :8087 on GPU 6 (pid 117546)
+[fleet] launched replica :8088 on GPU 6 (pid 117549)
+[fleet] launched replica :8089 on GPU 7 (pid 117552)
+[fleet] launched replica :8090 on GPU 7 (pid 117555)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :8085 healthy
+[fleet] replica :8086 healthy
+[fleet] replica :8087 healthy
+[fleet] replica :8088 healthy
+[fleet] replica :8089 healthy
+[fleet] replica :8090 healthy
+[fleet] launched proxy :8080 cap=12 -> 6 backends
+[fleet] up: 6 replicas on GPUs [5 6 7], proxy :8080 (cap 12)
+{"ts": "2026-08-02T17:54:24+0000", "label": "cap12-greedy-p1", "base": "http://127.0.0.1:8080", "concurrency": 6, "requests": 6, "max_tokens": 128, "greedy": true, "wall_s": 2.0358190959996136, "n_ok": 6, "n_err": 0, "completion_tokens_total": 768, "agg_tok_s": 377.2437352165134, "req_per_s": 2.947216681379011, "lat_p50_s": 2.006474994999735, "lat_p95_s": 2.032688008999685, "lat_mean_s": 1.8041781323336181, "lat_max_s": 2.032688008999685, "errors_sample": []}
+{"ts": "2026-08-02T17:54:38+0000", "label": "cap12-c48-p1", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 13.959738083998673, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1751.5371601439226, "req_per_s": 13.75383970993551, "lat_p50_s": 3.468052305997844, "lat_p95_s": 3.6545488800002204, "lat_mean_s": 3.4541518049583146, "lat_max_s": 3.8497591269988334, "errors_sample": []}
+{"ts": "2026-08-02T17:54:57+0000", "label": "cap12-c96-p1", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 18.681020282001555, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1966.6484723747458, "req_per_s": 15.416716841610462, "lat_p50_s": 4.807223003997933, "lat_p95_s": 9.315948003000813, "lat_mean_s": 5.826069927472266, "lat_max_s": 9.596980927999539, "errors_sample": []}
+{"ts": "2026-08-02T17:55:10+0000", "label": "cap12-qosbulk-p1", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 13.195702042998164, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1852.951811152334, "req_per_s": 14.550192128798335, "lat_p50_s": 4.794047616000171, "lat_p95_s": 9.41163086600136, "lat_mean_s": 5.647553867718614, "lat_max_s": 9.443409226001677, "errors_sample": []}
+{"ts": "2026-08-02T17:55:19+0000", "label": "cap12-qoslat-p1", "base": "http://127.0.0.1:8080", "concurrency": 4, "requests": 24, "max_tokens": 128, "greedy": false, "wall_s": 11.669408582998585, "n_ok": 24, "n_err": 0, "completion_tokens_total": 3072, "agg_tok_s": 263.25241576301164, "req_per_s": 2.0566594981485284, "lat_p50_s": 1.7255952630002866, "lat_p95_s": 3.0647221470026125, "lat_mean_s": 1.9341863689170775, "lat_max_s": 3.0653830250012106, "errors_sample": []}
+[fleet] supervisor stopped
+[fleet] stopped
+=== pass 1 cap 16 up ===
+[fleet] launched replica :8085 on GPU 5 (pid 120287)
+[fleet] launched replica :8086 on GPU 5 (pid 120290)
+[fleet] launched replica :8087 on GPU 6 (pid 120293)
+[fleet] launched replica :8088 on GPU 6 (pid 120296)
+[fleet] launched replica :8089 on GPU 7 (pid 120299)
+[fleet] launched replica :8090 on GPU 7 (pid 120302)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :8085 healthy
+[fleet] replica :8086 healthy
+[fleet] replica :8087 healthy
+[fleet] replica :8088 healthy
+[fleet] replica :8089 healthy
+[fleet] replica :8090 healthy
+[fleet] launched proxy :8080 cap=16 -> 6 backends
+[fleet] up: 6 replicas on GPUs [5 6 7], proxy :8080 (cap 16)
+{"ts": "2026-08-02T17:56:27+0000", "label": "cap16-greedy-p1", "base": "http://127.0.0.1:8080", "concurrency": 6, "requests": 6, "max_tokens": 128, "greedy": true, "wall_s": 2.138792320001812, "n_ok": 6, "n_err": 0, "completion_tokens_total": 768, "agg_tok_s": 359.08114725199187, "req_per_s": 2.8053214629061864, "lat_p50_s": 2.0741329190022952, "lat_p95_s": 2.1358636490003846, "lat_mean_s": 1.9398163980010092, "lat_max_s": 2.1358636490003846, "errors_sample": []}
+{"ts": "2026-08-02T17:56:43+0000", "label": "cap16-c48-p1", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 15.739492570999573, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1553.4808310816582, "req_per_s": 12.198614353919199, "lat_p50_s": 3.873387667001225, "lat_p95_s": 4.118920845001412, "lat_mean_s": 3.8061533936770124, "lat_max_s": 4.1381762429991795, "errors_sample": []}
+{"ts": "2026-08-02T17:57:03+0000", "label": "cap16-c96-p1", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 19.45437939600015, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1888.4693904732626, "req_per_s": 14.803864679395183, "lat_p50_s": 6.2930144689999, "lat_p95_s": 6.834188738001103, "lat_mean_s": 6.28308706665617, "lat_max_s": 6.934575621999102, "errors_sample": []}
+{"ts": "2026-08-02T17:57:16+0000", "label": "cap16-qosbulk-p1", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 13.026443668997672, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1877.028037836009, "req_per_s": 14.739249243978312, "lat_p50_s": 6.3123080100012885, "lat_p95_s": 6.8437227140020696, "lat_mean_s": 6.324943474010429, "lat_max_s": 6.867871119000483, "errors_sample": []}
+{"ts": "2026-08-02T17:57:26+0000", "label": "cap16-qoslat-p1", "base": "http://127.0.0.1:8080", "concurrency": 4, "requests": 24, "max_tokens": 128, "greedy": false, "wall_s": 14.97077946400168, "n_ok": 24, "n_err": 0, "completion_tokens_total": 3072, "agg_tok_s": 205.1997364189918, "req_per_s": 1.6031229407733734, "lat_p50_s": 1.860592381999595, "lat_p95_s": 5.958867314999225, "lat_mean_s": 2.3955235727501836, "lat_max_s": 5.958992126998055, "errors_sample": []}
+[fleet] supervisor stopped
+[fleet] stopped
+=== pass 2 cap 8 up ===
+[fleet] launched replica :8085 on GPU 5 (pid 123045)
+[fleet] launched replica :8086 on GPU 5 (pid 123048)
+[fleet] launched replica :8087 on GPU 6 (pid 123051)
+[fleet] launched replica :8088 on GPU 6 (pid 123054)
+[fleet] launched replica :8089 on GPU 7 (pid 123057)
+[fleet] launched replica :8090 on GPU 7 (pid 123060)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :8085 healthy
+[fleet] replica :8086 healthy
+[fleet] replica :8087 healthy
+[fleet] replica :8088 healthy
+[fleet] replica :8089 healthy
+[fleet] replica :8090 healthy
+[fleet] launched proxy :8080 cap=8 -> 6 backends
+[fleet] up: 6 replicas on GPUs [5 6 7], proxy :8080 (cap 8)
+{"ts": "2026-08-02T17:58:35+0000", "label": "cap8-greedy-p2", "base": "http://127.0.0.1:8080", "concurrency": 6, "requests": 6, "max_tokens": 128, "greedy": true, "wall_s": 2.1416484540022793, "n_ok": 6, "n_err": 0, "completion_tokens_total": 768, "agg_tok_s": 358.60227133205433, "req_per_s": 2.8015802447816744, "lat_p50_s": 2.0613596010007313, "lat_p95_s": 2.13910277299874, "lat_mean_s": 1.9535050018330367, "lat_max_s": 2.13910277299874, "errors_sample": []}
+{"ts": "2026-08-02T17:58:51+0000", "label": "cap8-c48-p2", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 15.88395325700185, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1539.3523013058282, "req_per_s": 12.08767092759883, "lat_p50_s": 3.91955355400205, "lat_p95_s": 4.098188198000571, "lat_mean_s": 3.8678770804217115, "lat_max_s": 4.110917007001262, "errors_sample": []}
+{"ts": "2026-08-02T17:59:15+0000", "label": "cap8-c96-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 23.87186470800225, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1539.008387044204, "req_per_s": 12.064411537296355, "lat_p50_s": 7.799226074002945, "lat_p95_s": 8.078500723000616, "lat_mean_s": 7.179025292486206, "lat_max_s": 8.14594969600148, "errors_sample": []}
+{"ts": "2026-08-02T17:59:31+0000", "label": "cap8-qosbulk-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 15.954780893000134, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1532.5186954292444, "req_per_s": 12.034010450387097, "lat_p50_s": 7.7892671689987765, "lat_p95_s": 8.049300587998005, "lat_mean_s": 6.882415194682267, "lat_max_s": 8.105194622999988, "errors_sample": []}
+{"ts": "2026-08-02T17:59:41+0000", "label": "cap8-qoslat-p2", "base": "http://127.0.0.1:8080", "concurrency": 4, "requests": 24, "max_tokens": 128, "greedy": false, "wall_s": 13.961698582999816, "n_ok": 24, "n_err": 0, "completion_tokens_total": 3072, "agg_tok_s": 220.0305343749907, "req_per_s": 1.718988549804615, "lat_p50_s": 1.828446346000419, "lat_p95_s": 5.098226949998207, "lat_mean_s": 2.2298623489587044, "lat_max_s": 5.098587468997721, "errors_sample": []}
+[fleet] supervisor stopped
+[fleet] stopped
+=== pass 2 cap 12 up ===
+[fleet] launched replica :8085 on GPU 5 (pid 126164)
+[fleet] launched replica :8086 on GPU 5 (pid 126167)
+[fleet] launched replica :8087 on GPU 6 (pid 126170)
+[fleet] launched replica :8088 on GPU 6 (pid 126173)
+[fleet] launched replica :8089 on GPU 7 (pid 126176)
+[fleet] launched replica :8090 on GPU 7 (pid 126179)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :8085 healthy
+[fleet] replica :8086 healthy
+[fleet] replica :8087 healthy
+[fleet] replica :8088 healthy
+[fleet] replica :8089 healthy
+[fleet] replica :8090 healthy
+[fleet] launched proxy :8080 cap=12 -> 6 backends
+[fleet] up: 6 replicas on GPUs [5 6 7], proxy :8080 (cap 12)
+{"ts": "2026-08-02T18:00:50+0000", "label": "cap12-greedy-p2", "base": "http://127.0.0.1:8080", "concurrency": 6, "requests": 6, "max_tokens": 128, "greedy": true, "wall_s": 2.1375288700000965, "n_ok": 6, "n_err": 0, "completion_tokens_total": 768, "agg_tok_s": 359.29339284197147, "req_per_s": 2.806979631577902, "lat_p50_s": 2.087136170001031, "lat_p95_s": 2.135331285000575, "lat_mean_s": 1.9942767628326692, "lat_max_s": 2.135331285000575, "errors_sample": []}
+{"ts": "2026-08-02T18:01:06+0000", "label": "cap12-c48-p2", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 16.314133743999264, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1498.7617720734743, "req_per_s": 11.768936249564723, "lat_p50_s": 3.996690130003117, "lat_p95_s": 4.189339206001023, "lat_mean_s": 3.922901951874811, "lat_max_s": 4.253107684999122, "errors_sample": []}
+{"ts": "2026-08-02T18:01:28+0000", "label": "cap12-c96-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 21.623130574000243, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 1699.0601742087777, "req_per_s": 13.319070474757831, "lat_p50_s": 5.644883696000761, "lat_p95_s": 10.001360365000437, "lat_mean_s": 6.526326629176942, "lat_max_s": 10.06997071799924, "errors_sample": []}
+{"ts": "2026-08-02T18:01:44+0000", "label": "cap12-qosbulk-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 15.561474473997805, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1571.2521355772556, "req_per_s": 12.338162448604681, "lat_p50_s": 5.6114940059997025, "lat_p95_s": 10.002406977997452, "lat_mean_s": 6.465296032104277, "lat_max_s": 10.074697369000205, "errors_sample": []}
+{"ts": "2026-08-02T18:01:53+0000", "label": "cap12-qoslat-p2", "base": "http://127.0.0.1:8080", "concurrency": 4, "requests": 24, "max_tokens": 128, "greedy": false, "wall_s": 17.92266924499927, "n_ok": 24, "n_err": 0, "completion_tokens_total": 3072, "agg_tok_s": 171.40304036225746, "req_per_s": 1.3390862528301364, "lat_p50_s": 1.8761408300015319, "lat_p95_s": 8.844142168996768, "lat_mean_s": 2.9717303036248572, "lat_max_s": 8.844805174998328, "errors_sample": []}
+[fleet] supervisor stopped
+[fleet] stopped
+=== pass 2 cap 16 up ===
+[fleet] launched replica :8085 on GPU 5 (pid 129288)
+[fleet] launched replica :8086 on GPU 5 (pid 129291)
+[fleet] launched replica :8087 on GPU 6 (pid 129294)
+[fleet] launched replica :8088 on GPU 6 (pid 129297)
+[fleet] launched replica :8089 on GPU 7 (pid 129300)
+[fleet] launched replica :8090 on GPU 7 (pid 129303)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :8085 healthy
+[fleet] replica :8086 healthy
+[fleet] replica :8087 healthy
+[fleet] replica :8088 healthy
+[fleet] replica :8089 healthy
+[fleet] replica :8090 healthy
+[fleet] launched proxy :8080 cap=16 -> 6 backends
+[fleet] up: 6 replicas on GPUs [5 6 7], proxy :8080 (cap 16)
+{"ts": "2026-08-02T18:03:03+0000", "label": "cap16-greedy-p2", "base": "http://127.0.0.1:8080", "concurrency": 6, "requests": 6, "max_tokens": 128, "greedy": true, "wall_s": 2.0429748879978433, "n_ok": 6, "n_err": 0, "completion_tokens_total": 768, "agg_tok_s": 375.9223887243448, "req_per_s": 2.9368936619089436, "lat_p50_s": 1.922761335001269, "lat_p95_s": 2.0399948859994765, "lat_mean_s": 1.8571059186670027, "lat_max_s": 2.0399948859994765, "errors_sample": []}
+{"ts": "2026-08-02T18:03:17+0000", "label": "cap16-c48-p2", "base": "http://127.0.0.1:8080", "concurrency": 48, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 14.364040355001634, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 1702.2369330427307, "req_per_s": 13.36671265568706, "lat_p50_s": 3.5533710409981722, "lat_p95_s": 3.784332398998231, "lat_mean_s": 3.4861081051302185, "lat_max_s": 3.7937905649996537, "errors_sample": []}
+{"ts": "2026-08-02T18:03:35+0000", "label": "cap16-c96-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 288, "max_tokens": 128, "greedy": false, "wall_s": 17.515118658000574, "n_ok": 288, "n_err": 0, "completion_tokens_total": 36739, "agg_tok_s": 2097.559298190556, "req_per_s": 16.442937420149708, "lat_p50_s": 5.752320160998352, "lat_p95_s": 6.060227475001739, "lat_mean_s": 5.736659957767415, "lat_max_s": 6.345294157999888, "errors_sample": []}
+{"ts": "2026-08-02T18:03:47+0000", "label": "cap16-qosbulk-p2", "base": "http://127.0.0.1:8080", "concurrency": 96, "requests": 192, "max_tokens": 128, "greedy": false, "wall_s": 11.78682278999986, "n_ok": 192, "n_err": 0, "completion_tokens_total": 24451, "agg_tok_s": 2074.4351922169085, "req_per_s": 16.289376995036868, "lat_p50_s": 5.763853503001883, "lat_p95_s": 6.076468183000543, "lat_mean_s": 5.741023268307326, "lat_max_s": 6.095166663002601, "errors_sample": []}
+{"ts": "2026-08-02T18:03:56+0000", "label": "cap16-qoslat-p2", "base": "http://127.0.0.1:8080", "concurrency": 4, "requests": 24, "max_tokens": 128, "greedy": false, "wall_s": 13.730920434998552, "n_ok": 24, "n_err": 0, "completion_tokens_total": 3072, "agg_tok_s": 223.72862872104494, "req_per_s": 1.7478799118831636, "lat_p50_s": 1.7164699409986497, "lat_p95_s": 5.940432311999757, "lat_mean_s": 2.2260543481669024, "lat_max_s": 5.941180521000206, "errors_sample": []}
+[fleet] supervisor stopped
+[fleet] stopped
+==== fleet cap re-sweep complete ====

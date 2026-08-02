@@ -34,3 +34,41 @@
 [prime-batch] B=6 tokens=1356 in 343.7ms
 [prime-batch] B=2 tokens=452 in 121.4ms
 [prime-batch] B=6 tokens=1356 in 356.9ms
+[server] starting; models config = [("qwen", "/opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+[q8rp] split-plane decode mirrors built: 249 tensors
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] qwen: template caps tools=true think=true think_switch=true
+[worker] qwen: decode chunk cap 16 (exact-16 tier)
+[server] worker ready; serving models: ["qwen"]
+[server] listening on http://127.0.0.1:8089
+[worker] observed session VRAM cost for "qwen": 470MB (admission gate = 2x)
+[prime-batch] B=2 tokens=452 in 117.5ms
+[prime-batch] B=6 tokens=1356 in 322.0ms
+[prime-batch] B=2 tokens=452 in 108.1ms
+[prime-batch] B=6 tokens=1356 in 320.2ms
+[prime-batch] B=2 tokens=452 in 107.5ms
+[prime-batch] B=6 tokens=1356 in 307.3ms
+[prime-batch] B=2 tokens=452 in 108.6ms
+[prime-batch] B=6 tokens=1356 in 304.6ms
+[prime-batch] B=2 tokens=452 in 117.4ms
+[prime-batch] B=6 tokens=1356 in 320.5ms
+[prime-batch] B=2 tokens=452 in 106.7ms
+[prime-batch] B=6 tokens=1356 in 311.6ms
+[prime-batch] B=2 tokens=452 in 108.3ms
+[prime-batch] B=6 tokens=1356 in 307.0ms
+[prime-batch] B=2 tokens=452 in 108.2ms
+[prime-batch] B=6 tokens=1356 in 297.4ms
+[prime-batch] B=2 tokens=452 in 107.4ms
+[prime-batch] B=5 tokens=1130 in 273.9ms
+[prime-batch] B=2 tokens=452 in 105.4ms
+[prime-batch] B=5 tokens=1130 in 264.0ms
+[prime-batch] B=2 tokens=452 in 117.9ms
+[prime-batch] B=6 tokens=1356 in 322.3ms
+[prime-batch] B=2 tokens=452 in 117.7ms
+[prime-batch] B=6 tokens=1356 in 326.0ms
+[prime-batch] B=2 tokens=452 in 114.4ms
+[prime-batch] B=6 tokens=1356 in 325.0ms
+[prime-batch] B=2 tokens=452 in 107.3ms
+[prime-batch] B=6 tokens=1356 in 327.1ms
