@@ -41,7 +41,10 @@ Changes touching the Hopper (sm_90a) lane additionally run its one-command batte
 H100: `tools/validate-h100.sh <model.gguf> [--quick]` — kernel-check config pins (incl. the
 KQRP, f16-mirror, f16g-sk, and batched-seqs pins), decode-batch (config + strict, gates 1–3 incl.
 gate3c lean-logits), decode-dc, graph-decode, and graph-session. `ALL GATES GREEN` output
-pasted, same rule as above.
+pasted, same rule as above. Gate1's config-mode verdict is the multi-seed fraction rule
+(#47): FAIL iff >= 4 of 6 `MEMRA_GATE_SEED` draws diverge before step 3 — near-tie seeds
+are legal FP dice, plumbing fails every draw; `MEMRA_GATE_CANARY=1` is the teeth check
+when recalibrating.
 
 ### 1b. Perf regression battery (local CI)
 
