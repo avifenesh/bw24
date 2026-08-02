@@ -1,0 +1,11 @@
+.version 8.8
+.target sm_120a
+.address_size 64
+.visible .entry p()
+{
+    .shared .align 8 .b8 s[8];
+    .reg .b64 %rd<2>; .reg .b32 %r<2>;
+    mov.u64 %rd1, s; mov.u32 %r1, 32;
+    tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%rd1], %r1;
+    ret;
+}
