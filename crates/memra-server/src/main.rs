@@ -64,8 +64,10 @@ struct CompletionReq {
     /// raw token-id prompt (the exact-token validation-gate path; bypasses the tokenizer).
     #[serde(default)]
     prompt_ids: Vec<u32>,
-    #[serde(default = "default_max_tokens")]
-    max_tokens: usize,
+    /// Omitted (gap-scan F2) => context-bounded (session ctx - prompt, model-capped), the
+    /// OpenAI default-when-omitted semantics — NOT a silent 128-token truncation.
+    #[serde(default)]
+    max_tokens: Option<usize>,
     #[serde(default)]
     temperature: f32,
     #[serde(default = "one")]
@@ -156,8 +158,10 @@ impl StopSequences {
 struct ChatCompletionReq {
     model: String,
     messages: Vec<ChatMessage>,
-    #[serde(default = "default_max_tokens", alias = "max_completion_tokens")]
-    max_tokens: usize,
+    /// Omitted (gap-scan F2) => context-bounded (session ctx - prompt, model-capped), the
+    /// OpenAI default-when-omitted semantics — NOT a silent 128-token truncation.
+    #[serde(default, alias = "max_completion_tokens")]
+    max_tokens: Option<usize>,
     #[serde(default)]
     temperature: f32,
     #[serde(default = "one")]
@@ -194,7 +198,6 @@ struct ChatCompletionReq {
     #[serde(default)]
     cache_salt: Option<String>,
 }
-fn default_max_tokens() -> usize { 128 }
 fn one() -> f32 { 1.0 }
 
 #[derive(Serialize)]
@@ -613,7 +616,7 @@ async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
 /// Build the (GenParams, SamplerConfig, stop, prompt) from a request body.
 fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Request {
     let params = GenParams {
-        max_new: req.max_tokens,
+        max_new: req.max_tokens.unwrap_or(worker::MAX_NEW_CTX_BOUNDED),
         max_ctx: req.max_ctx,
         eos: Vec::new(), // worker adds the model's own eos id
     };
@@ -703,7 +706,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             tools_json,
             think,
             params: GenParams {
-                max_new: req.max_tokens,
+                max_new: req.max_tokens.unwrap_or(worker::MAX_NEW_CTX_BOUNDED),
                 max_ctx: req.max_ctx,
                 eos: Vec::new(),
             },
@@ -1041,6 +1044,26 @@ mod tests {
         assert_eq!(request.think, ThinkMode::Default);
         assert_eq!(request.model, "plain_quant");
         assert_eq!(request.params.max_new, 64);
+        // OMITTED max_tokens (gap-scan F2): the context-bounded sentinel, not 128.
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "plain_quant", "messages": [{"role": "user", "content": "task"}]
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let plan = build_chat_request(req, None, tx).unwrap();
+        assert_eq!(plan.request.params.max_new, worker::MAX_NEW_CTX_BOUNDED);
+        // max_completion_tokens alias still honored exactly.
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "plain_quant", "messages": [{"role": "user", "content": "task"}],
+            "max_completion_tokens": 7
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(build_chat_request(req, None, tx).unwrap().request.params.max_new, 7);
+        // completions body: same omission law.
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "plain_quant", "prompt": "task"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert_eq!(build_request(&req, tx).params.max_new, worker::MAX_NEW_CTX_BOUNDED);
         let turns: Vec<(String, String)> = request.chat_turns.iter()
             .map(|t| (t.role.clone(), t.content.clone())).collect();
         assert_eq!(turns, vec![

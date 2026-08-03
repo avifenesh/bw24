@@ -33,6 +33,12 @@ use memra_tokenizer::Tokenizer;
 /// Batched scheduling caps at MEMRA_MAX_SESSIONS (default 64). Admits beyond the cap queue (FIFO).
 pub const MAX_ACTIVE: usize = 4;
 
+/// `GenParams.max_new` sentinel: the request OMITTED `max_tokens` (gap-scan F2), so the
+/// generation budget is CONTEXT-BOUNDED — session ctx minus prompt tokens, model-capped —
+/// the OpenAI default-when-omitted semantics, never a silent 128-token truncation.
+/// (`budget = max_new.min(room)` makes the sentinel safe everywhere downstream.)
+pub const MAX_NEW_CTX_BOUNDED: usize = usize::MAX;
+
 /// Per-tick prefill chunk cap: tokens primed per scheduler tick per session. Priming runs at
 /// prefill throughput instead of tokenwise decode, while the per-tick cap keeps round-robin
 /// latency for concurrent sessions bounded.
@@ -1327,7 +1333,25 @@ fn admit(
     // multi-turn (parked cap 168 < next turn's need 240). Fixed-size sessions are also how the
     // reference server allocates (--ctx-size). KV cost @8192 on the 9B ≈ 119MB/session.
     let ctx_floor: usize = std::env::var("MEMRA_CTX").ok().and_then(|v| v.parse().ok()).unwrap_or(8192);
-    let ctx_cap = req.params.max_ctx.unwrap_or(prompt.len() + req.params.max_new + 8).max(ctx_floor);
+    // max_tokens OMITTED (MAX_NEW_CTX_BOUNDED sentinel, gap-scan F2): the session runs at
+    // the serving context (MEMRA_CTX / explicit max_ctx), capped at the model's trained
+    // context — budget becomes ctx_cap - prompt below, the vLLM/OpenAI default-when-omitted
+    // semantics. Explicit max_tokens keeps the exact legacy sizing (prompt + max_new + 8,
+    // floored at MEMRA_CTX) — honored exactly.
+    let ctx_cap = match (req.params.max_ctx, req.params.max_new) {
+        (Some(c), _) => c.max(ctx_floor),
+        (None, MAX_NEW_CTX_BOUNDED) => {
+            // serving ctx (the MEMRA_CTX floor) normally; a prompt that doesn't fit it
+            // grows the session to prompt + one serving ctx of room; always capped at
+            // the model's trained context (prompts past THAT are a real 400 below).
+            let model_ctx = lm.model.cfg.context_length as usize;
+            let mut c = ctx_floor;
+            if prompt.len() + 16 > c { c = prompt.len().saturating_add(ctx_floor); }
+            if model_ctx > 0 { c = c.min(model_ctx); }
+            c
+        }
+        (None, max_new) => (prompt.len() + max_new + 8).max(ctx_floor),
+    };
     if prompt.len() >= ctx_cap {
         return Err((req.tx, format!(
             "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap)));
