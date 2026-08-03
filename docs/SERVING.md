@@ -90,7 +90,8 @@ same cell (machine-specific config per the flags doctrine).
 ## OpenAI tools surface (serve-tools lane, 2026-08-02)
 
 `/v1/chat/completions` accepts `tools`, `tool_choice` (`"auto"`|`"none"`; `"required"` and
-named-function forms 400 — no constrained decoding yet), assistant-history `tool_calls`,
+named-function forms 400 — the grammar engine isn't wired to tool selection yet),
+assistant-history `tool_calls`,
 `role:"tool"` result turns, and `reasoning_effort`/`reasoning`. The path is **template +
 parsing only — zero engine changes**:
 
@@ -150,11 +151,40 @@ gated by the official `openai` Python SDK against a live server
   reach the GPU.
 - **Parameter breadth + honesty:** `frequency_penalty`/`presence_penalty`/
   `repetition_penalty` plumb to the sampler (whole-history window; greedy+penalized
-  keeps the host-sampled path). Semantic params we can't honor 400 with the param named
-  (`response_format` beyond `{"type":"text"}`, `logit_bias`, `logprobs`/`top_logprobs`,
-  `n != 1`, `best_of != 1`); cosmetic fields (`user`, `stream_options`) are accepted and
-  ignored. Streams exclude stop-sequence text exactly like non-stream responses
-  (holdback buffer).
+  keeps the host-sampled path). `response_format` `json_object`/`json_schema` is REAL
+  constrained decoding (see the section below). Semantic params we can't honor 400 with
+  the param named (`logit_bias`, `logprobs`/`top_logprobs`, `n != 1`, `best_of != 1`,
+  unknown `response_format` types); cosmetic fields (`user`, `stream_options`) are
+  accepted and ignored. Streams exclude stop-sequence text exactly like non-stream
+  responses (holdback buffer).
+
+## Constrained decoding (`response_format`) — lanes constrained + constrained-full, 2026-08-03
+
+`/v1/chat/completions` honors `response_format` `{"type":"json_object"}` and
+`{"type":"json_schema","json_schema":{...,"schema":{...}}}` as REAL constrained decoding:
+the schema compiles to an [llguidance](https://github.com/guidance-ai/llguidance) grammar,
+and each step's packed token bitset uploads to a stable per-session device buffer (~31KB
+H2D) where `mask_logits_f32` bans disallowed tokens on device — BEFORE the same
+device-sample / lean-logits / CUDA-graph / speculative paths unconstrained sessions ride.
+No path is lost to being constrained.
+
+- **Cost:** plain constrained-greedy = **99.4% of unconstrained** (123.7 vs 124.4 tok/s,
+  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. Spec-constrained runs
+  153.4 vs 194.4 unconstrained — the gap is draft acceptance under a tight grammar (the
+  drafter proposes tokens the grammar rejects at verify), not mask overhead.
+- **Exactness:** device-mask greedy is byte-identical to the host -inf oracle
+  (`MEMRA_CONSTRAIN_HOST=1`), spec-constrained is byte-identical to plain-constrained,
+  graphed is byte-identical to eager, and unconstrained requests are byte-identical to the
+  pre-lane binary (the isolation contract). Kernel-check pins `mask_logits_col`
+  bit-identity.
+- **Think interaction:** constrained requests force the template's no-think switch (a
+  grammar masking from token 0 can never close an open `<think>` tail); a think-tail
+  template without an `enable_thinking` switch is a loud 400.
+- Unknown `response_format` types remain loud 400s. `/v1/completions` (non-chat) carries
+  no `response_format`.
+
+Receipts: `research/constrained-20260803/` (v1) + `research/constrained-full-20260803/`
+(full battery: every path, cross-path identity, three-way perf).
 
 ## Prompt caching (cross-request prefix cache) — 2026-08-02
 

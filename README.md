@@ -105,7 +105,10 @@ Receipts and bring-up notes:
 OpenAI-compatible server (axum): batched decode, cross-request prefill batching,
 speculative serving, `/metrics`. OpenAI tool calling (`tools`/`tool_choice`, streaming
 `tool_calls` deltas, `role:"tool"` turns) rides the model's own chat template — zero engine
-changes. Cross-request prompt caching serves repeated prompt prefixes without recomputing
+changes. Constrained decoding (`response_format` `json_object`/`json_schema`) applies the
+grammar mask on device and keeps every fast path — device sampling, CUDA-graph decode,
+speculative serving — at 99.4% of unconstrained speed. Cross-request prompt caching serves
+repeated prompt prefixes without recomputing
 them, reports the split as `usage.prompt_tokens_details.cached_tokens` on every response,
 and namespaces all reuse per tenant via the request-level `cache_salt` field (vLLM-style).
 The contract: greedy serving is isolated-identical under concurrent load — a request's
@@ -126,7 +129,8 @@ tokens never depend on its co-arrivals. Multi-GPU boxes serve as a replica fleet
   layer class.
 - **CUDA-graph decode** — one replay per token, 4 bytes/token host traffic, per-session
   capture.
-- **Loaders** — GGUF (memory-mapped), safetensors (modelopt NVFP4 byte-exact).
+- **Loaders** — GGUF (memory-mapped), safetensors (modelopt NVFP4 byte-exact; official
+  Qwen FP8 block-128 checkpoints load bit-exact).
 
 ## Correctness discipline
 
@@ -170,8 +174,8 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
 - [docs/FLAGS.md](docs/FLAGS.md) — the audited flag catalog.
 - [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.
 - [docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md) — the standard drafter pipeline.
-- [docs/SERVING.md](docs/SERVING.md) — the serve surface: fleet runbook, tools, prompt
-  caching, tenant isolation.
+- [docs/SERVING.md](docs/SERVING.md) — the serve surface: fleet runbook, tools,
+  constrained decoding, prompt caching, tenant isolation.
 - [docs/HY3-SPILL.md](docs/HY3-SPILL.md) — Hy3 spill runbook.
 - [HANDOVER.md](HANDOVER.md) — living state-of-work.
 - [research/](research/) — every experiment as JSONL;
