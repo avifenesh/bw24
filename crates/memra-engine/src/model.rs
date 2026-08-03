@@ -323,6 +323,45 @@ impl GpuTensor {
                 }
             }
         }
+        // ARM B' — GPU BLOCK-128 DEQUANT (MEMRA_FP8_BLK_GPU=1, default OFF; lane fp8-gemm-arm
+        // 2026-08-03). A block-128 FP8 checkpoint (Qwen official FP8 / DeepSeek-V3 lineage)
+        // currently loads via the host path: full f32 dequant of the tensor (f8_deq_f32) then a
+        // host Q8_0 re-encode (f32_to_q8_0) — correct, but a serial CPU pass over every byte of
+        // every projection. This arm does the same math on the GPU in ONE pass
+        // (cu/fp8_blk_dequant.cu): upload the raw e4m3 codes + the scale grid, write Q8_0
+        // blocks directly. BYTE-IDENTICAL to the host path (kernel-check [fp8-blk-gpu] arm
+        // asserts it on ragged and aligned shapes), so the resident tensor, the MMQ/MMVQ
+        // dispatch, and decode are all bit-for-bit unchanged — this is a LOAD-TIME
+        // optimization only, not a numeric config change.
+        //
+        // Placed BEFORE `find` for exactly the reason the MEMRA_ST_E4M3 arm above is: `find`
+        // would otherwise do the host dequant+re-encode we are replacing. Per-tensor and
+        // per-row scale classes are NOT touched (find_fp8_native returns blk=None / None for
+        // them) and neither are V-reorder Transform targets (find_fp8_native rejects those with
+        // a grid — the permutation invalidates the on-disk grid, so they keep the host path).
+        if crate::fp8_ffi::fp8_blk_gpu_enabled() && !crate::fp8_ffi::st_e4m3_enabled() {
+            if let Some(f8) = src.find_fp8_native(name) {
+                if let Some(grid) = f8.blk.as_ref() {
+                    let (in_f, out_f) = (f8.in_f, f8.out_f);
+                    if in_f % 32 == 0 && out_f > 0 && f8.bytes.len() == out_f * in_f {
+                        let bytes =
+                            e.fp8_blk_dequant_q8_0(&f8.bytes, &grid.scales, out_f, in_f)?;
+                        return Ok(GpuTensor::Quant {
+                            bytes,
+                            qtype: QT_Q8_0,
+                            row_bytes: in_f / 32 * 34,
+                            ne: vec![in_f as u64, out_f as u64],
+                            scale: 1.0,
+                            rp: false,
+                            #[cfg(memra_cutlass)]
+                            cutlass: None,
+                            fp8: None, f16: None,
+                            rp4: None,
+                        });
+                    }
+                }
+            }
+        }
         let mut v = src
             .find(name)
             .unwrap_or_else(|| panic!("missing tensor {name}"));
