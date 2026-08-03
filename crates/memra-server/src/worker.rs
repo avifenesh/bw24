@@ -964,17 +964,42 @@ pub fn run(
                 // Now the normal chunked/batched prefill primes first; the graph session
                 // captures OVER that cache (graph_session_from_cache). TTFT pays only the
                 // one-time capture (~340ms), amortized by the gs_min budget gate.
+                // CONSTRAINED sessions promote too (constrained-full, 2026-08-03): the
+                // captured step bans the packed grammar mask on device before its argmax
+                // (stable mask pointer, contents re-uploaded per step). Host-oracle and
+                // fallback-sampler constrained sessions stay eager.
+                let constr_graph_ok = s.constraint.is_none()
+                    || (!constrain_host() && devsample_meta(s).is_some());
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
-                    && s.constraint.is_none() // graph steps device-argmax — no mask hook (v1)
+                    && constr_graph_ok
                     && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
                     && s.prefill_done && s.generated.is_empty() && s.cache.is_some()
                     && !s.last_logits.is_empty()
                 {
                     let lm = &loaded[&s.model];
-                    let first = memra_engine::forward::argmax(&s.last_logits) as u32;
+                    // first generated token: MASKED argmax for constrained sessions (the
+                    // grammar's initial state), plain argmax otherwise.
+                    let (first, mask0) = match s.constraint.as_mut() {
+                        Some(c) => match c.compute_mask() {
+                            Ok(m) => {
+                                let mut row = s.last_logits.clone();
+                                crate::constrained::apply_mask(&m, &mut row);
+                                (memra_engine::forward::argmax(&row) as u32, Some(m))
+                            }
+                            Err(err) => {
+                                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                                finished.push(0);
+                                (0, None)
+                            }
+                        },
+                        None => (memra_engine::forward::argmax(&s.last_logits) as u32, None),
+                    };
+                    if !finished.contains(&0) {
                     let cache = s.cache.take().unwrap();
-                    match lm.model.graph_session_from_cache(&engine, cache, first, s.budget + 2) {
+                    match lm.model.graph_session_from_cache_masked(
+                        &engine, cache, first, s.budget + 2,
+                        mask0.as_ref().map(|m| m.as_slice())) {
                         Ok((g, first)) => {
                             s.graph = Some(g);
                             s.graph_pending = Some(first);
@@ -986,6 +1011,7 @@ pub fn run(
                             finished.push(0);
                         }
                     }
+                    }
                 }
                 // step the (possibly just-promoted) graph session: one token per tick
                 let s = &mut active[0];
@@ -996,6 +1022,24 @@ pub fn run(
                         finished.push(0);
                     } else {
                         s.fed.push(pend);
+                        // CONSTRAINED: fresh post-consume mask into the graph's stable
+                        // buffer before the replay (the KV-pointer update pattern).
+                        let mut mask_err = None;
+                        if let Some(c) = s.constraint.as_mut() {
+                            match c.compute_mask() {
+                                Ok(m) => {
+                                    if let Err(err) = s.graph.as_mut().unwrap()
+                                        .upload_mask(&engine, m.as_slice()) {
+                                        mask_err = Some(err.to_string());
+                                    }
+                                }
+                                Err(err) => mask_err = Some(err),
+                            }
+                        }
+                        if let Some(err) = mask_err {
+                            let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                            finished.push(0);
+                        } else {
                         let lm = &loaded[&s.model];
                         let g = s.graph.as_mut().unwrap();
                         match g.step(&engine, &lm.model) {
@@ -1006,6 +1050,7 @@ pub fn run(
                         lane_tokens[0] += 1;
                         step_stats.record(t_g.elapsed().as_secs_f32() * 1000.0);
                         last_interactive_decode = Instant::now();
+                        }
                     }
                 }
             }
@@ -2088,6 +2133,15 @@ fn advance_token_emit(
     if s.params.eos.contains(&tok) {
         finish(s, StopReason::Eos);
         return (false, ());
+    }
+    // CONSTRAINED graph sessions: the token came from the in-graph masked argmax — advance
+    // the grammar (post-EOS-check, same ordering as advance_sample_emit). An error here is
+    // a real bug: loud stop, never emit schema-violating text as if it conformed.
+    if let Some(c) = s.constraint.as_mut() {
+        if let Err(err) = c.consume(tok) {
+            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            return (false, ());
+        }
     }
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
