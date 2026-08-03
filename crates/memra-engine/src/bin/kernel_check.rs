@@ -177,16 +177,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- DECODE GLUE-FUSION: rms_norm_q8_1 must produce BIT-IDENTICAL q8_1 to rms_norm -> quantize_q8_1
-    //     (same int8 bytes, same f32 block scales). ---
-    {
-        let (ncols, nrows) = (4096usize, 1usize);
+    //     (same int8 bytes, same f32 block scales). nrows=1 is the decode case; nrows=5 is the
+    //     BATCHED-VERIFY twin (lane/vt-fixes fix 2): the kernel is row-indexed (blockIdx.x=row,
+    //     grid=nrows), so the T>1 launch must be the exact per-row m=1 program — the verify's
+    //     unfused rms_norm_decode+quantize chain replaced by ONE launch, bit-identical per row. ---
+    for nrows in [1usize, 5] {
+        let ncols = 4096usize;
         let eps = 1e-6f32;
         let x: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 31)).collect();
         let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 41) * 0.1).collect();
         let xd = e.htod(&x)?; let wd = e.htod(&w)?;
-        // reference: rms_norm then quantize_q8_1.
+        // reference: rms_norm_decode (blockDim=1024, the verify's dispatch-mirror) then quantize_q8_1.
         let mut z_ref = e.zeros(ncols * nrows)?;
-        e.rms_norm(&xd, &wd, &mut z_ref, ncols, nrows, eps)?;
+        e.rms_norm_decode(&xd, &wd, &mut z_ref, ncols, nrows, eps)?;
         let (q_ref, d_ref) = e.quantize_q8_1(&z_ref, nrows, ncols)?;
         // fused.
         let (q_f, d_f) = e.rms_norm_q8_1(&xd, &wd, ncols, nrows, eps)?;
@@ -195,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
         let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
         let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
-        println!("rms_norm_q8_1 fused: q_mismatch={qbad} d_mismatch={dbad} {}",
+        println!("rms_norm_q8_1 fused (nrows={nrows}): q_mismatch={qbad} d_mismatch={dbad} {}",
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -224,6 +227,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
         let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
         println!("add_rms_norm_q8_1 fused: res_mismatch={rbad} q_mismatch={qbad} d_mismatch={dbad} {}",
+                 if rbad == 0 && qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- BATCHED-VERIFY EPILOGUE TWIN (lane/vt-fixes fix 2): add_rms_norm_q8_1 at nrows=T
+    //     (T=2..8, the spec verify tier) must be BIT-IDENTICAL per row to the verify path's
+    //     UNFUSED chain: add_f32 -> rms_norm_decode (blockDim=1024, the dispatch-mirror the
+    //     verify norm pins) -> quantize_q8_1. The fused kernel is row-indexed (blockIdx.x=row),
+    //     so the T-row launch is the exact per-row m=1 program — per-(token,row) chain identity
+    //     by construction. Verifies the whole tier's shapes: T=2 (b2), T=4 (b4), T=5/8 (b8). ---
+    for nrows in [2usize, 4, 5, 8] {
+        let ncols = 4096usize;
+        let eps = 1e-6f32;
+        let a: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 61)).collect();
+        let b: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 67)).collect();
+        let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 71) * 0.1).collect();
+        let ad = e.htod(&a)?; let bd = e.htod(&b)?; let wd = e.htod(&w)?;
+        // reference: the verify t-path's exact unfused chain.
+        let mut res_ref = e.zeros(ncols * nrows)?;
+        e.add(&ad, &bd, &mut res_ref, ncols * nrows)?;
+        let mut z_ref = e.zeros(ncols * nrows)?;
+        e.rms_norm_decode(&res_ref, &wd, &mut z_ref, ncols, nrows, eps)?;
+        let (q_ref, d_ref) = e.quantize_q8_1(&z_ref, nrows, ncols)?;
+        // fused twin at nrows=T.
+        let mut res_f = e.zeros(ncols * nrows)?;
+        let (q_f, d_f) = e.add_rms_norm_q8_1(&ad, &bd, &wd, &mut res_f, ncols, nrows, eps)?;
+        let rr = e.dtoh(&res_ref)?; let rf = e.dtoh(&res_f)?;
+        let qr: Vec<i8> = e.stream().clone_dtoh(&q_ref)?; e.stream().synchronize()?;
+        let qf: Vec<i8> = e.stream().clone_dtoh(&q_f)?; e.stream().synchronize()?;
+        let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
+        let rbad = rr.iter().zip(&rf).filter(|(x, y)| x != y).count();
+        let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
+        let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
+        println!("add_rms_norm_q8_1 batched (T={nrows}): res_mismatch={rbad} q_mismatch={qbad} d_mismatch={dbad} {}",
                  if rbad == 0 && qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -310,6 +346,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let qbad = q_ref.iter().zip(&q_f).filter(|(a, b)| a != b).count();
         let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
         println!("silu_mul_q8_1 fold: int8_mismatch={qbad} scale_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- BATCHED-VERIFY EPILOGUE TWIN (lane/vt-fixes fix 2): silu_mul_scaled_q8_1 at the verify
+    //     tier's FLAT n = T*n_ff, unit scales, vs the verify path's exact unfused chain
+    //     (silu_mul_f32 -> quantize_q8_1). The kernel is warp-per-32-block over flat n with no row
+    //     structure and n_ff % 32 == 0 means blocks never straddle token rows, so the T>1 form is
+    //     the m=1 program per block by construction. Unit scales pin the wiring's contract: the
+    //     verify dual applies macro-scales via scale_inplace BEFORE the epilogue (x*1.0 == x). ---
+    {
+        let (t, n_ff) = (5usize, 2048usize);
+        let n = t * n_ff;
+        let g: Vec<f32> = (0..n).map(|i| pr(i + 7)).collect();
+        let u: Vec<f32> = (0..n).map(|i| pr(i + 11)).collect();
+        let gd = e.htod(&g)?;
+        let ud = e.htod(&u)?;
+        // unfused reference: the verify t-path's ffn_act (silu_mul) then the down-proj's quantize.
+        let mut act = e.zeros(n)?;
+        e.silu_mul(&gd, &ud, &mut act, n)?;
+        let (aq_ref, ad_ref) = e.quantize_q8_1(&act, t, n_ff)?;
+        // fused twin at unit scales over the same flat n.
+        let (aq_f, ad_f) = e.silu_mul_scaled_q8_1(&gd, &ud, 1.0, 1.0, n)?;
+        let q_ref: Vec<i8> = e.stream().clone_dtoh(&aq_ref)?; e.stream().synchronize()?;
+        let q_f: Vec<i8> = e.stream().clone_dtoh(&aq_f)?; e.stream().synchronize()?;
+        let d_ref = e.dtoh(&ad_ref)?;
+        let d_f = e.dtoh(&ad_f)?;
+        let qbad = q_ref.iter().zip(&q_f).filter(|(a, b)| a != b).count();
+        let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
+        println!("silu_mul_q8_1 batched (T={t}): int8_mismatch={qbad} scale_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- GDN OUT-NORM FUSION (lane/vt-fixes fix 2): gated_rmsnorm_q8_1 must be BIT-IDENTICAL to
+    //     gated_rmsnorm -> quantize_q8_1. Both kernels are row-indexed at blockDim=128 (the
+    //     reduce-order pin), and ncols=d_state=128 % 32 == 0 means q8 blocks never straddle rows.
+    //     nrows=num_v covers T=1 decode (the existing fused decode path had no arm); nrows=num_v*5
+    //     is the batched-verify twin (verify runs the SAME kernel at nrows=num_v*T). ---
+    for t in [1usize, 5] {
+        let (d_state, num_v) = (128usize, 16usize);
+        let nrows = num_v * t;
+        let eps = 1e-6f32;
+        let o: Vec<f32> = (0..nrows * d_state).map(|i| pr(i + 83)).collect();
+        let z: Vec<f32> = (0..nrows * d_state).map(|i| pr(i + 89) - 0.5).collect();
+        let w: Vec<f32> = (0..d_state).map(|i| 0.5 + pr(i + 97) * 0.1).collect();
+        let od = e.htod(&o)?; let zd = e.htod(&z)?; let wd = e.htod(&w)?;
+        // reference: gated_rmsnorm (f32, blockDim=128 — the verify path's kernel) then quantize.
+        let mut gn_ref = e.zeros(nrows * d_state)?;
+        e.gated_rmsnorm(&od, &wd, &zd, &mut gn_ref, d_state, nrows, eps)?;
+        let (q_ref, d_ref) = e.quantize_q8_1(&gn_ref, nrows, d_state)?;
+        // fused.
+        let (q_f, d_f) = e.gated_rmsnorm_q8_1(&od, &wd, &zd, d_state, nrows, eps)?;
+        let qr: Vec<i8> = e.stream().clone_dtoh(&q_ref)?; e.stream().synchronize()?;
+        let qf: Vec<i8> = e.stream().clone_dtoh(&q_f)?; e.stream().synchronize()?;
+        let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
+        let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
+        let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
+        println!("gated_rmsnorm_q8_1 (T={t}): q_mismatch={qbad} d_mismatch={dbad} {}",
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -2130,12 +2223,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let wu = e.htod_bytes(raw_u)?;
                 let wg_rp = e.htod_bytes(&repack_nvfp4_split(raw_g, out_f))?;
                 let wu_rp = e.htod_bytes(&repack_nvfp4_split(raw_u, out_f))?;
-                // b2/b4 tiers only — the dual dispatch stops at m=4 (b8 dual killed, flat).
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                // b2/b4 both layouts; m=5..7 rp-only (the vt-fixes fix-1b exact-width duals —
+                // GGUF layout has no b5/b6/b7 dual; the flat MCOLS=8 b8 dual stays dead).
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
                     for (rp, w0, w1) in [(false, &wg, &wu), (true, &wg_rp, &wu_rp)] {
+                        if mm > 4 && !rp { continue; }
                         let y0ref = e.dtoh(&e.qmatvec_mmvq_batched(w0, &aq, &ad, mm, in_f, out_f,
                             memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
                         let y1ref = e.dtoh(&e.qmatvec_mmvq_batched(w1, &aq, &ad, mm, in_f, out_f,
@@ -2208,7 +2303,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // reduces k in two chunks -> deterministic but NOT bit-identical to the reference
                 // (FP add order). Its gate = rel<1e-6-of-max + run-to-run BIT determinism; every
                 // other variant keeps the strict bit-bad==0 contract.
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
+                // (m=5/6/7, mcols=8) exercises the EXACT-WIDTH b5/b6/b7 twins (vt-fixes fix 1):
+                // qmatvec_mmvq_batched remaps those launches to MCOLS=m — same template, columns
+                // c >= m never execute in either form, so bit-bad==0 vs per-m MMVQ still gates.
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8), (8, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, memra_engine::QT_NVFP4, row_bytes, false)?)?;

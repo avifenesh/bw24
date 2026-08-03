@@ -5684,6 +5684,92 @@ impl Engine {
         self.matmul_pre(w, &aq, &ad, x, m)
     }
 
+    /// DECODE-EXACT matmul from a PRE-QUANTIZED q8_1 activation (batched-verify epilogue
+    /// re-fuse, lane/vt-fixes fix 2, 2026-08-03): the EXACT `matmul_decode_exact` dispatch for
+    /// q8_1-fast Quant tensors, with the caller's (aq, ad) replacing the internal
+    /// `quantize_q8_1`. quantize_q8_1 is deterministic (same input bytes -> same q8 bytes), so
+    /// sharing one quantize across sibling matmuls of the same activation — or consuming the
+    /// q8 emitted by a fused epilogue (rms_norm_q8_1 / add_rms_norm_q8_1 /
+    /// silu_mul_scaled_q8_1 / gated_rmsnorm_q8_1, all kernel-check-pinned bit-identical to
+    /// their unfused chains) — cannot change any dispatched kernel's input bytes.
+    /// Caller MUST guarantee `uses_q8_1_fast(w)` (the fused epilogues only exist on that path).
+    pub fn matmul_decode_exact_pre(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>,
+                                   ad: &CudaSlice<f32>, m: usize)
+                                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        debug_assert!(self.uses_q8_1_fast(w),
+                      "matmul_decode_exact_pre: caller must guarantee q8_1-fast");
+        let in_f = w.in_features();
+        let out_f = w.out_features();
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } =>
+                (bytes, *qtype, *row_bytes, *scale, *rp),
+            _ => return Err("matmul_decode_exact_pre: Quant tensor required (q8_1-fast contract)".into()),
+        };
+        // Q4_0 split-plane mirror — same pick as matmul_decode_exact.
+        let (bytes, rp) = match w {
+            GpuTensor::Quant { rp4: Some(m4), .. } => (m4, true),
+            _ => (bytes, rp),
+        };
+        // Dispatch mirror of matmul_decode_exact's q8_1-fast tail, condition for condition.
+        if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
+            && std::env::var("MEMRA_NO_BATCHED").is_err()
+            && (m <= 4 || Self::b8_enabled())
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
+            let mcols = Self::batched_mcols(m);
+            return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
+        }
+        if self.mmvq_supports(qtype) {
+            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, rp);
+        }
+        // Non-MMVQ quant types (Q5_K/Q3_K under MEMRA_MMVQ=0): dp4a via matmul_pre — the same
+        // fallback matmul_decode_exact takes. m <= 16 on the verify tier never reads x_fallback.
+        let x0 = self.zeros(0)?;
+        self.matmul_pre(w, aq, ad, &x0, m)
+    }
+
+    /// DUAL gate+up batched matvec from a PRE-QUANTIZED activation, macro-scales DEFERRED
+    /// (lane/vt-fixes fix 2): same eligibility as `matmul_decode_exact_dual`, but the caller's
+    /// (aq, ad) replaces the internal quantize and the NVFP4 per-tensor scales are RETURNED
+    /// instead of applied via two `scale_inplace` launches — the fused SwiGLU epilogue
+    /// (`silu_mul_scaled_q8_1`) folds them, exactly like the m=1 decode chain does. Deferring
+    /// is value-exact: `y[i]*s` inline in the epilogue is the same IEEE multiply scale_inplace
+    /// would store (f32 store/load round-trips are exact). None -> caller falls back to the
+    /// per-tensor path.
+    pub fn matmul_decode_exact_dual_pre(&self, w0: &crate::model::GpuTensor,
+                                        w1: &crate::model::GpuTensor,
+                                        aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize)
+        -> Result<Option<((CudaSlice<f32>, f32), (CudaSlice<f32>, f32))>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let on = *ON.get_or_init(|| {
+            std::env::var("MEMRA_SPEC_DUAL_T").map(|v| v != "0").unwrap_or(true)
+        });
+        if !on || !(2..=7).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok()
+            || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) {
+            return Ok(None);
+        }
+        let (in_f, out_f) = (w0.in_features(), w0.out_features());
+        if w1.in_features() != in_f || w1.out_features() != out_f {
+            return Ok(None);
+        }
+        let (b0, b1, row_bytes, s0, s1, rp) = match (w0, w1) {
+            (GpuTensor::Quant { bytes: b0, qtype: q0, row_bytes: rb0, scale: s0, rp: rp0, rp4: None, .. },
+             GpuTensor::Quant { bytes: b1, qtype: q1, row_bytes: rb1, scale: s1, rp: rp1, rp4: None, .. })
+                if *q0 == QT_NVFP4 && *q1 == QT_NVFP4 && rb0 == rb1 && rp0 == rp1 =>
+                (b0, b1, *rb0, *s0, *s1, *rp0),
+            _ => return Ok(None),
+        };
+        // m=5..7: only the exact-width rp duals exist (vt-fixes fix 1b); GGUF layout keeps
+        // the singles. The b8 dual (MCOLS=8 at m=5..8) measured FLAT and stays dead.
+        if m > 4 && !(rp && Self::b8_enabled()
+            && std::env::var("MEMRA_B567").as_deref() != Ok("0")) {
+            return Ok(None);
+        }
+        let (y0, y1) = self.qmatvec_batched_dual_raw(b0, b1, aq, ad, m, in_f, out_f, row_bytes, rp)?;
+        Ok(Some(((y0, s0), (y1, s1))))
+    }
+
     /// DUAL gate+up BATCHED matvec at verify t=2..8 (lane/verify-economics, 2026-08-02): ONE
     /// launch computes both FFN projections of a verify batch — same activation, same shape,
     /// blockIdx.y selects the tensor. Per (tensor, token, row) the kernel body is the single
@@ -5748,11 +5834,16 @@ impl Engine {
         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
         let mcols = Self::batched_mcols(m);
-        let (name, rows_per_block) = match (mcols, rp) {
-            (2, false) => ("qmatvec_nvfp4_mmvq_dual_b2", ROWS_PER_BLOCK),
-            (4, false) => ("qmatvec_nvfp4_mmvq_dual_b4_r2", ROWS_PER_BLOCK * 2),
-            (2, true) => ("qmatvec_nvfp4_mmvq_dual_b2_rp", ROWS_PER_BLOCK),
-            (4, true) => ("qmatvec_nvfp4_mmvq_dual_b4_rpr2", ROWS_PER_BLOCK * 2),
+        // EXACT-WIDTH duals at m=5..7 (vt-fixes fix 1b): rp-only; bit-identical to the two
+        // b5/b6/b7 singles (blockIdx.y selects the tensor, same template body).
+        let (name, rows_per_block) = match (mcols, rp, m) {
+            (2, false, _) => ("qmatvec_nvfp4_mmvq_dual_b2", ROWS_PER_BLOCK),
+            (4, false, _) => ("qmatvec_nvfp4_mmvq_dual_b4_r2", ROWS_PER_BLOCK * 2),
+            (2, true, _) => ("qmatvec_nvfp4_mmvq_dual_b2_rp", ROWS_PER_BLOCK),
+            (4, true, _) => ("qmatvec_nvfp4_mmvq_dual_b4_rpr2", ROWS_PER_BLOCK * 2),
+            (8, true, 5) => ("qmatvec_nvfp4_mmvq_dual_b5_rpr2", ROWS_PER_BLOCK * 2),
+            (8, true, 6) => ("qmatvec_nvfp4_mmvq_dual_b6_rpr2", ROWS_PER_BLOCK * 2),
+            (8, true, 7) => ("qmatvec_nvfp4_mmvq_dual_b7_rpr2", ROWS_PER_BLOCK * 2),
             _ => return Err(format!("qmatvec_batched_dual_raw: no dual kernel for m {m}").into()),
         };
         let f = self.func(name);
@@ -7024,6 +7115,30 @@ impl Engine {
         // per-shape perf variants (r2/pf/...) do not apply at this width. rp is a LAYOUT,
         // not a perf variant: it must survive (base kernel on split-plane bytes = NaN).
         let variant = if mcols == 16 { if rp { "rp" } else { "base" } } else { variant };
+        // EXACT-WIDTH b5/b6/b7 twins (lane/vt-fixes fix 1, 2026-08-03): the b8 kernels
+        // allocate acc[WROWS][8] at ANY m, so T=5..7 verify paid the full 8-wide register
+        // tax — the measured T=4->5 cliff. The same template at MCOLS=m runs the identical
+        // per-(token,row) chain (columns c >= m never execute in either form) ->
+        // BIT-IDENTICAL to the b8 launch. NVFP4 split-plane only (the sm_120 default trunk);
+        // covers both b8 auto schedules (rpsc, rpr2w8). MEMRA_B567=0 rollback.
+        static B567: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let b567 = *B567.get_or_init(|| std::env::var("MEMRA_B567").as_deref() != Ok("0"));
+        if b567 && qtype == QT_NVFP4 && rp && mcols == 8 && (5..=7).contains(&m)
+            && matches!(variant, "rpsc" | "rpr2w8") {
+            let f = self.func(&format!("qmatvec_nvfp4_mmvq_b{m}_{variant}"));
+            let rows_per_block = ROWS_PER_BLOCK * 2; // r2-class schedules: 2 rows/warp
+            let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 1, 1),
+                block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0 };
+            let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            unsafe { b.launch(cfg)?; }
+            if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+            return Ok(y);
+        }
         let (name, rows_per_block): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), ROWS_PER_BLOCK),
             "pf" => (format!("{base_name}_pf").into(), ROWS_PER_BLOCK),
