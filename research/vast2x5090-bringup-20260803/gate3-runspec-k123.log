@@ -1,0 +1,12 @@
+=== K=1 ===
+[generate]   63 tok in 1.190s = 52.94 tok/s (gen-only; this run's prime 0.126s)
+[generate_spec K=1] 64 tok in 0.784s = 80.39 tok/s (1.52x vs generate; this run's prime 0.125s)
+  acceptance: 28/36 = 77.8%   self-consistency: PASS (identical to generate)
+=== K=2 ===
+[generate]   63 tok in 1.191s = 52.91 tok/s (gen-only; this run's prime 0.126s)
+[generate_spec K=2] 64 tok in 0.603s = 104.55 tok/s (1.98x vs generate; this run's prime 0.125s)
+  acceptance: 39/52 = 75.0%   self-consistency: PASS (identical to generate)
+=== K=3 ===
+[generate]   63 tok in 1.191s = 52.89 tok/s (gen-only; this run's prime 0.126s)
+[generate_spec K=3] 64 tok in 0.517s = 121.77 tok/s (2.30x vs generate; this run's prime 0.125s)
+  acceptance: 45/63 = 71.4%   self-consistency: PASS (identical to generate)

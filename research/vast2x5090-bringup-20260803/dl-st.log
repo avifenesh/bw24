@@ -1,0 +1,5 @@
+Fetching 17 files:   0%|          | 0/17 [00:00<?, ?it/s]Still waiting to acquire lock on /root/models/nvidia-qwen36-27b-nvfp4/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 17 files:   6%|▌         | 1/17 [00:00<00:07,  2.27it/s]Fetching 17 files:  12%|█▏        | 2/17 [00:00<00:03,  4.07it/s]Fetching 17 files:  47%|████▋     | 8/17 [00:00<00:00,  9.98it/s]Fetching 17 files:  71%|███████   | 12/17 [00:01<00:00,  9.77it/s]Fetching 17 files:  76%|███████▋  | 13/17 [00:01<00:00,  9.48it/s]Fetching 17 files:  82%|████████▏ | 14/17 [00:15<00:07,  2.40s/it]Fetching 17 files:  88%|████████▊ | 15/17 [02:09<00:46, 23.47s/it]Fetching 17 files:  94%|█████████▍| 16/17 [05:46<01:04, 64.72s/it]Fetching 17 files: 100%|██████████| 17/17 [05:50<00:00, 50.56s/it]Fetching 17 files: 100%|██████████| 17/17 [05:50<00:00, 20.64s/it]
+[32m✓ Downloaded[0m
+  path: /root/models/nvidia-qwen36-27b-nvfp4

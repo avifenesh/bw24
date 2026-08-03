@@ -1,0 +1,13 @@
+[11:59:48Z] armA(q8-reenc) rep 1 pre: 31, 180 MHz, 24.50 W
+[12:04:50Z] armA rep 1 post: 40, 2925 MHz, 92.57 W | generated 128 tokens in 1.705s = 75.06 tok/s | oom=0
+[12:04:50Z] armB(e4m3) rep 1 pre: 39, 2647 MHz, 88.41 W
+[12:11:25Z] armB rep 1 post: 38, 2400 MHz, 66.64 W | generated 128 tokens in 1.680s = 76.19 tok/s | oom=0
+[12:11:25Z] armA(q8-reenc) rep 2 pre: 38, 2407 MHz, 70.03 W
+[12:16:33Z] armA rep 2 post: 39, 2925 MHz, 93.96 W | generated 128 tokens in 1.704s = 75.13 tok/s | oom=0
+[12:16:34Z] armB(e4m3) rep 2 pre: 39, 2925 MHz, 93.96 W
+[12:23:06Z] armB rep 2 post: 39, 2925 MHz, 92.41 W | generated 128 tokens in 1.681s = 76.16 tok/s | oom=0
+[12:23:06Z] armA(q8-reenc) rep 3 pre: 39, 2925 MHz, 92.41 W
+[12:28:07Z] armA rep 3 post: 39, 2925 MHz, 92.74 W | generated 128 tokens in 1.706s = 75.05 tok/s | oom=0
+[12:28:07Z] armB(e4m3) rep 3 pre: 39, 2925 MHz, 92.74 W
+[12:34:38Z] armB rep 3 post: 39, 2925 MHz, 93.03 W | generated 128 tokens in 1.680s = 76.18 tok/s | oom=0
+[12:34:38Z] E4M3-AB DONE
