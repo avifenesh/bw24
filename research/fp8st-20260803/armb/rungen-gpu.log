@@ -1,0 +1,4 @@
+
+thread 'main' (2961960) panicked at crates/memra-engine/src/hybrid.rs:853:9:
+not a hybrid arch
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
