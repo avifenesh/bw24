@@ -1,0 +1,19 @@
+tree 13e78e0a70d92670dd0d85fb5ea0a6eb91d0c9de arm=post
+[gpu 2026-08-03T15:26:20Z] 68, 130.91 W, 1695 MHz, 312 MiB
+[apps] 2325609, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=50 t_max=9
+[econ] primed pos=2048, continuation=[332, 83, 6649, 71570, 684, 63, 10278, 506, 15135, 735]
+[econ] decode_h   N=50  med=  7.368ms  mean=  7.379ms  min=  7.254ms  p90=  7.449ms  x1.000 vs decode_h
+[econ] verify_t1  N=50  med=  7.444ms  mean=  7.442ms  min=  7.309ms  p90=  7.475ms  x1.010 vs decode_h
+[econ] verify_t2  N=50  med=  8.437ms  mean=  8.459ms  min=  8.271ms  p90=  8.512ms  x1.145 vs decode_h
+[econ] verify_t3  N=50  med=  8.826ms  mean=  8.847ms  min=  8.696ms  p90=  8.910ms  x1.198 vs decode_h
+[econ] verify_t4  N=50  med=  9.548ms  mean=  9.584ms  min=  9.378ms  p90=  9.639ms  x1.296 vs decode_h
+[econ] verify_t5  N=50  med= 11.733ms  mean= 11.770ms  min= 11.569ms  p90= 11.831ms  x1.592 vs decode_h
+[econ] verify_t6  N=50  med= 12.890ms  mean= 12.930ms  min= 12.759ms  p90= 12.992ms  x1.750 vs decode_h
+[econ] verify_t7  N=50  med= 13.874ms  mean= 13.924ms  min= 13.768ms  p90= 13.985ms  x1.883 vs decode_h
+[econ] verify_t8  N=50  med= 14.881ms  mean= 14.910ms  min= 14.800ms  p90= 14.924ms  x2.020 vs decode_h
+[econ] verify_t9  N=50  med= 29.018ms  mean= 29.037ms  min= 28.694ms  p90= 29.192ms  x3.938 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":50,"arms":{"decode_h":{"med_ms":7.3679,"mean_ms":7.3787,"min_ms":7.2544,"p90_ms":7.4492},"verify_t1":{"med_ms":7.4437,"mean_ms":7.4422,"min_ms":7.3086,"p90_ms":7.4751},"verify_t2":{"med_ms":8.4368,"mean_ms":8.4590,"min_ms":8.2711,"p90_ms":8.5120},"verify_t3":{"med_ms":8.8257,"mean_ms":8.8466,"min_ms":8.6963,"p90_ms":8.9101},"verify_t4":{"med_ms":9.5478,"mean_ms":9.5843,"min_ms":9.3777,"p90_ms":9.6387},"verify_t5":{"med_ms":11.7327,"mean_ms":11.7699,"min_ms":11.5686,"p90_ms":11.8310},"verify_t6":{"med_ms":12.8904,"mean_ms":12.9295,"min_ms":12.7595,"p90_ms":12.9920},"verify_t7":{"med_ms":13.8744,"mean_ms":13.9238,"min_ms":13.7679,"p90_ms":13.9853},"verify_t8":{"med_ms":14.8813,"mean_ms":14.9104,"min_ms":14.8003,"p90_ms":14.9242},"verify_t9":{"med_ms":29.0183,"mean_ms":29.0374,"min_ms":28.6941,"p90_ms":29.1922}}}
+[gpu 2026-08-03T15:26:30Z] 70, 151.42 W, 1852 MHz, 312 MiB
+[apps] 2325609, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+PROBE q9 post rc=0

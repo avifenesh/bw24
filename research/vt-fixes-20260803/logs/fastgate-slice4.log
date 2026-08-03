@@ -1,0 +1,28 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: crates/memra-engine/src/lib.rs
+  changed: crates/memra-engine/src/spec.rs
+  changed: research/vt-fixes-20260803/prefix-bin/kernel-check
+  changed: research/vt-fixes-20260803/prefix-bin/run-gen
+  changed: research/vt-fixes-20260803/prefix-bin/run-spec
+  changed: research/vt-fixes-20260803/prefix-bin/spec-econ
+  changed: research/vt-fixes-20260803/run-fix2.sh
+  kernel-check scope: all
+  tier-1 argmax probes: g12,q9,q35,samp
+  tier-1 spec probes:   q35spec,g31spec
+  logs: /tmp/fast-gate-20260803-174441
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check (FULL): GREEN (251s)
+tier 0: GREEN (251s total)
+== fast-gate tier 1 ==
+  g12: PASS (gates green + golden token-identical, 6s)
+  q9: PASS (gates green + golden token-identical, 3s)
+  q35: PASS (gates green + golden token-identical, 19s)
+  samp: PASS (self-gating check green, 1s)
+  q35spec: PASS (gates green + golden token-identical, 14s)
+  g31spec: PASS (stream agreement 32/32, 8s)
+tier 1: 0 fail (302s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.
+FASTGATE_RC=0
