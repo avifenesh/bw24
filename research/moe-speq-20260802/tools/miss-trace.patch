@@ -1,0 +1,54 @@
+--- /tmp/moe_cache_orig.rs	2026-08-03 07:40:12.042129034 +0300
++++ /tmp/moe_cache.rs	2026-08-03 06:01:39.888879279 +0300
+@@ -26,6 +26,27 @@
+ pub const PROJ_UP: u8 = 1;
+ pub const PROJ_DOWN: u8 = 2;
+ 
++/// MEMRA_MOE_MISS_TRACE=<path>: append one line per SLRU dispatch — "<layer> <proj> <expert> <H|M>"
++/// — the per-lookup hit/miss log behind the MoE-SpeQ oracle-ceiling measurement (moe-speq lane,
++/// 2026-08-03). Unbuffered file writes so an aborted run keeps its tail. Diagnostic only: one
++/// OnceLock read when the flag is unset.
++fn miss_log(id: BlockId, hit: bool) {
++    use std::io::Write as _;
++    use std::sync::{Mutex, OnceLock};
++    static SINK: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
++    let sink = SINK.get_or_init(|| {
++        std::env::var("MEMRA_MOE_MISS_TRACE").ok().and_then(|p| {
++            std::fs::OpenOptions::new().create(true).append(true).open(p).ok()
++        }).map(Mutex::new)
++    });
++    if let Some(m) = sink {
++        if let Ok(mut w) = m.lock() {
++            let _ = writeln!(w, "{} {} {} {}", id.layer, id.proj, id.ex,
++                             if hit { 'H' } else { 'M' });
++        }
++    }
++}
++
+ /// Residency key: expert `ex` of layer `layer` projection `proj` is a distinct block.
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+ pub struct BlockId {
+@@ -1000,6 +1021,7 @@
+         *self.frequencies.entry(id).or_insert(0.0) += increment;
+         if let Some(s) = self.table.get(&id).copied() {
+             self.hits += 1;
++            miss_log(id, true);
+             self.on_hit(s);
+             return Ok(DispatchSlot::Resident(s));
+         }
+@@ -1009,6 +1031,7 @@
+                 return Err(err);
+             }
+             self.misses += 1;
++            miss_log(id, false);
+             let slot = pending.slot;
+             if let Some(keepalive) = pending.keepalive {
+                 self.inflight_sources.push((pending.ready, keepalive));
+@@ -1017,6 +1040,7 @@
+             return Ok(DispatchSlot::Resident(slot));
+         }
+         self.misses += 1;
++        miss_log(id, false);
+         // FIRST-MISS ADMIT (the only policy since 2026-07-08; the second-miss "ghost" filter and
+         // its seams MEMRA_MOE_GHOST / MEMRA_MOE_FAST_ADMIT are gone). Measured record: while FREE
+         // slots remain, admission evicts nothing — filtering only delayed residency (96GB: 83.7%

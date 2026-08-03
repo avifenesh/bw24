@@ -1,0 +1,1 @@
+note: spec2 cross-process pass for d1736/summarize superseded by in-process spec3 (cross-process greedy divergence makes pairing invalid); orphan runs killed 04:47Z to free the window

@@ -1,0 +1,35 @@
+=== miss-codegen start 2026-08-03T03:46:46Z dev=2 chat=1 prompt=/home/ubuntu/memra/research/hy3-accept-profile-20260802/prompts/code-gen-short.txt bin=patched(memra-moespeq) ===
+2, 34, 122.89 W, 0 MiB
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded Hy3 from memra repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.
+<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.\n"
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 359, 120007, 120029, 120030]
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.282e0  MATCH
+generated 128 tokens in 32.102s = 3.99 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 503, 289, 1970, 24621, 35510, 40297, 15189, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63, 6590, 13, 286, 1438, 6515, 185, 4140, 4277, 58035, 667, 1661, 39839, 286, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 4277, 119245, 667, 324, 10542, 3471, 1221, 478, 32733, 1221, 478, 7532, 11207, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 5454, 408, 15881, 244, 4814, 13, 286, 408, 15288, 25, 185, 723, 1364, 25, 424, 1364, 7512, 280, 252, 4814, 13, 185, 408, 5454, 408, 1622, 11669, 25, 1733]
+MoE cache DECODE-WINDOW: 6568 slots | hits=145664 misses=97024 (hit-rate=60.0%) | staged 253.95 GB H2D (1892.1 MB/token)
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: "Below is a complete, self-contained implementation of a **doubly-linked list** in Python, with **full type hints** and **docstrings**, supporting `insert`, `delete`, and `reverse` operations.\n\n```python\nfrom __future__ import annotations\n\nclass Node:\n    \"\"\"A single node in a doubly-linked list.\"\"\"\n\n    __slots__ = (\"value\", \"prev\", \"next\")\n\n    def __init__(self, value: object) -> None:\n        \"\"\"\n        Initialize a node.\n\n        Args:\n            value: The value stored in the node.\n        \"\"\"\n        self.value: object"
+--- generated text ---
+Below is a complete, self-contained implementation of a **doubly-linked list** in Python, with **full type hints** and **docstrings**, supporting `insert`, `delete`, and `reverse` operations.
+
+```python
+from __future__ import annotations
+
+class Node:
+    """A single node in a doubly-linked list."""
+
+    __slots__ = ("value", "prev", "next")
+
+    def __init__(self, value: object) -> None:
+        """
+        Initialize a node.
+
+        Args:
+            value: The value stored in the node.
+        """
+        self.value: object
+=== miss-codegen exit=0 2026-08-03T03:49:45Z ===

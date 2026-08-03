@@ -1,0 +1,25 @@
+{
+ "tag": "d1736",
+ "k": 1,
+ "oracle_sweeps": 128,
+ "batches": 117,
+ "rounds": 118,
+ "skipped_rounds": 1,
+ "shift": 1,
+ "delta": 0,
+ "align_ok": 711,
+ "align_tot": 711,
+ "dispatches": 80896,
+ "missed": 69284,
+ "block_lookups": 242688,
+ "block_misses": 207852,
+ "lockstep_disagreements": 0,
+ "strict": 0.0702470988972923,
+ "partial": 0.33785578199872984,
+ "acc_pos": 9,
+ "any_pos": 117,
+ "miss_at_uncovered": 5965,
+ "by_depth": {
+  "1": 4867
+ }
+}
