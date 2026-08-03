@@ -45,6 +45,23 @@ unsafe extern "C" {
         stream: *mut core::ffi::c_void,
         out_scale: f32,
     ) -> i32;
+    /// Same as `memra_mmq_nvfp4`, plus the activation-quantizer selector.
+    ///   per_token_scale = 1: two-level scaling (per-token row amax folded into the GEMM epilogue
+    ///     + per-sub-block UE4M3). This is what `memra_mmq_nvfp4` does.
+    ///   per_token_scale = 0: the v1 sub-block-only quantizer, retained as the numeric oracle so
+    ///     kernel-check can measure what the row scale bought, and as the rollback seam.
+    pub fn memra_mmq_nvfp4_ex(
+        w_nvfp4_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        out_scale: f32,
+        per_token_scale: i32,
+    ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch for the NVFP4 W4A8 path.
     pub fn memra_mmq_nvfp4_w4a8_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Run the NVFP4 W4A8 MMQ prefill GEMM (STAGE 2 accuracy-safe rung). Same fast MMQ tile as
@@ -801,6 +818,20 @@ impl Engine {
         self.qmatvec_mmq_nvfp4_scaled(bytes, x, m, in_f, out_f, 1.0)
     }
 
+    /// Bare MMQ launch on the PRE-PORT activation quantizer (per-sub-block UE4M3 scale only, no
+    /// per-token row amax). The numeric oracle for the two-level quantizer: kernel-check runs both
+    /// and reports the accuracy delta, so the port's value is measured rather than asserted.
+    pub fn qmatvec_mmq_nvfp4_raw_v1(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, 1.0, false)
+    }
+
     fn qmatvec_mmq_nvfp4_scaled(
         &self,
         bytes: &CudaSlice<u8>,
@@ -809,6 +840,19 @@ impl Engine {
         in_f: usize,
         out_f: usize,
         scale: f32,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, scale, true)
+    }
+
+    fn qmatvec_mmq_nvfp4_inner(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        scale: f32,
+        per_token_scale: bool,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         assert!(
             in_f % 64 == 0,
@@ -824,7 +868,7 @@ impl Engine {
             let (y_p, _gy) = y.device_ptr_mut(&stream);
             let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let rc = unsafe {
-                memra_mmq_nvfp4(
+                memra_mmq_nvfp4_ex(
                     w_p as *const core::ffi::c_void,
                     x_p as *const f32,
                     y_p as *mut f32,
@@ -834,10 +878,11 @@ impl Engine {
                     s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                     scale,
+                    per_token_scale as i32,
                 )
             };
             if rc != 0 {
-                return Err(format!("memra_mmq_nvfp4 rc={rc}").into());
+                return Err(format!("memra_mmq_nvfp4_ex rc={rc}").into());
             }
         }
         Ok(y)

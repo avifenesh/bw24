@@ -27,6 +27,9 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
+#if CUDART_VERSION >= 12080
+#include <cuda_fp4.h>
+#endif
 #include <cstdint>
 #include <cfloat>
 #include <cmath>
@@ -306,7 +309,8 @@ static __device__ __forceinline__ void vec_dot_nvfp4_mma(
 template <int mmq_x, int mmq_y, bool need_check>
 static __device__ __forceinline__ void mmq_write_back_nvfp4(
         const float * __restrict__ sum, const int * __restrict__ ids_dst, float * __restrict__ dst,
-        const int stride, const int i_max, const int j_max, const float out_scale) {
+        const float * __restrict__ y_scale, const int stride, const int i_max, const int j_max,
+        const float out_scale) {
     constexpr int granularity = mmq_get_granularity_device(mmq_x);
     constexpr int nwarps = MMQ_NWARPS;
     typedef tile<16, 8, int> tile_C;
@@ -326,9 +330,17 @@ static __device__ __forceinline__ void mmq_write_back_nvfp4(
                 if (j > j_max) { continue; }
                 const int i = i0 + n * tile_C::I + tile_C::get_i(l);
                 if (need_check && i > i_max) { continue; }
-                // FOLDED per-tensor NVFP4 macro-scale (was a separate scale_f32 launch + full
-                // y round-trip per matmul, 4.2ms of pp512). scale==1.0 for non-scaled tensors.
-                dst[ids_dst[j] * stride + i] = sum[(j0 / tile_C::J + n) * tile_C::ne + l] * out_scale;
+                // TWO folded scales, both applied here so neither costs a separate launch or a
+                // full y round-trip:
+                //   out_scale   — per-tensor NVFP4 macro-scale (was a scale_f32 launch, 4.2ms of
+                //                 pp512). 1.0 for non-scaled tensors.
+                //   y_scale[j]  — per-TOKEN activation row scale from the quantizer's level-1 amax.
+                //                 The quantizer divided token j's row through by it before the
+                //                 sub-block search, so the dot products come back scaled down by
+                //                 the same factor and multiplying restores them. nullptr when the
+                //                 quantizer ran without row scaling (the v1 oracle path).
+                const float acc = sum[(j0 / tile_C::J + n) * tile_C::ne + l] * out_scale;
+                dst[ids_dst[j] * stride + i] = y_scale ? acc * y_scale[j] : acc;
             }
         }
     }
@@ -339,6 +351,7 @@ template <int mmq_x, bool need_check>
 static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst,
+        const float * __restrict__ y_scale,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
         const float out_scale) {
@@ -386,7 +399,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4(
         __syncthreads();
     }
 
-    mmq_write_back_nvfp4<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j, out_scale);
+    mmq_write_back_nvfp4<mmq_x, mmq_y, need_check>(
+        sum, ids_dst, dst, y_scale, stride_col_dst, tile_x_max_i, tile_y_max_j, out_scale);
 }
 
 // ======================= mul_mat_q (conventional xy-tiling, NVFP4) =======================
@@ -396,6 +410,7 @@ template <int mmq_x, bool need_check>
 __launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
 static __global__ void mul_mat_q_nvfp4(
         const char * __restrict__ x, const int * __restrict__ y, float * __restrict__ dst,
+        const float * __restrict__ y_scale,
         const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y,
         const int stride_col_dst, const int blocks_per_ne00, const float out_scale) {
     constexpr int nwarps = MMQ_NWARPS;
@@ -424,13 +439,271 @@ static __global__ void mul_mat_q_nvfp4(
 
     const int offset_x = it * mmq_y * stride_row_x;
 
+    // The per-token scale array is indexed by GLOBAL token, but write_back sees tile-local j, so
+    // advance the base pointer by this tile's first token.
+    const float * y_scale_tile = y_scale ? y_scale + jt * mmq_x : nullptr;
+
     mul_mat_q_process_tile_nvfp4<mmq_x, need_check>(
-        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
-        stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
+        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, y_scale_tile, stride_row_x,
+        ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
 }
 
-// ======================= activation quantizer (quantize.cu:78 quantize_mmq_nvfp4) =======================
+// ======================= activation quantizer (quantize.cu quantize_mmq_nvfp4) =======================
+//
+// PER-TOKEN AMAX SCALING (ported from llama.cpp 1a064ab09, 2026-08-03).
+//
+// The original quantizer scaled each 16-element sub-block by its own UE4M3 micro-scale and nothing
+// else. UE4M3 has a 4-bit exponent, so a sub-block whose amax sits far from the row's dynamic range
+// gets a micro-scale that clamps: the e2m1 grid it then quantizes onto is the wrong decade, and the
+// error is a systematic bias rather than rounding noise. Upstream's fix is a SECOND, coarser level
+// of scaling: reduce the amax over the whole token row, divide the row through by it before the
+// sub-block search, and hand the row factor to the GEMM epilogue to undo. Every sub-block then
+// searches a normalized range where UE4M3 has headroom on both sides.
+//
+// `amax / (6 * 448)`: 6 is the largest e2m1 magnitude and 448 the largest UE4M3 value, so the
+// product is the largest value the two-level product can represent. Dividing the row amax by it
+// maps the row's peak onto the top of the representable range with no clamping.
+
+// 32-byte load struct: maps to 256-bit PTX loads on Blackwell, else two 128-bit loads.
+struct __builtin_align__(32) float8 {
+    float x; float y; float z; float w;
+    float p; float q; float r; float s;
+};
+
+// Full-warp max reduction (common.cuh warp_reduce_max<32>).
+static __device__ __forceinline__ float mmq_warp_reduce_max(float x) {
+#pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        x = fmaxf(x, __shfl_xor_sync(0xffffffff, x, offset, WARP_SIZE));
+    }
+    return x;
+}
+
+#if CUDART_VERSION >= 12080
+// Squared reconstruction error of one candidate sub-block scale, computed through the e2m1 HARDWARE
+// converter (`cvt.rn.satfinite.e2m1x2.f32` behind __nv_fp4x4_e2m1) rather than the scalar
+// nearest-of-8 LUT search. The hardware's rounding is what the packed bytes will actually carry, so
+// the search now scores the code it will really emit: the scalar LUT picks the nearest grid point by
+// absolute distance, while the hardware rounds to nearest-even in the e2m1 encoding, and the two
+// disagree exactly at the ties that a scale search spends its time on.
+static __device__ __forceinline__ float nvfp4_native_scale_error(
+        const float vals[QK_NVFP4_SUB], const float inv_col_scale, const float inv_scale, const float scale) {
+    const float scale_dequant = 2.0f * scale;
+    float err = 0.0f;
+
+#pragma unroll
+    for (int k = 0; k < QK_NVFP4_SUB; k += 4) {
+        const float v0 = vals[k + 0] * inv_col_scale;
+        const float v1 = vals[k + 1] * inv_col_scale;
+        const float v2 = vals[k + 2] * inv_col_scale;
+        const float v3 = vals[k + 3] * inv_col_scale;
+
+        const __nv_fp4x4_e2m1 q(make_float4(v0 * inv_scale, v1 * inv_scale, v2 * inv_scale, v3 * inv_scale));
+        const __nv_fp4x4_storage_t q_storage = q.__x;
+        const __nv_fp4x2_storage_t q_lo = static_cast<__nv_fp4x2_storage_t>(q_storage);
+        const __nv_fp4x2_storage_t q_hi = static_cast<__nv_fp4x2_storage_t>(q_storage >> 8U);
+
+        const __half2_raw hraw2_lo = __nv_cvt_fp4x2_to_halfraw2(q_lo, __NV_E2M1);
+        const __half2_raw hraw2_hi = __nv_cvt_fp4x2_to_halfraw2(q_hi, __NV_E2M1);
+        const float2 dq_lo = __half22float2(static_cast<__half2>(hraw2_lo));
+        const float2 dq_hi = __half22float2(static_cast<__half2>(hraw2_hi));
+
+        const float err0 = fabsf(v0) - fabsf(dq_lo.x) * scale_dequant;
+        const float err1 = fabsf(v1) - fabsf(dq_lo.y) * scale_dequant;
+        const float err2 = fabsf(v2) - fabsf(dq_hi.x) * scale_dequant;
+        const float err3 = fabsf(v3) - fabsf(dq_hi.y) * scale_dequant;
+
+        err = fmaf(err0, err0, err);
+        err = fmaf(err1, err1, err);
+        err = fmaf(err2, err2, err);
+        err = fmaf(err3, err3, err);
+    }
+
+    return err;
+}
+#endif // CUDART_VERSION >= 12080
+
+#define MMQ_QUANT_BLOCK_SIZE 128
+
+// One CTA per token row (was: one thread per sub-block over a 2D grid). The row amax reduction needs
+// every element of the row in one CTA, which fixes the grid shape: blockIdx.x = token, and the CTA
+// then strides its threads over the row's sub-blocks.
+__launch_bounds__(MMQ_QUANT_BLOCK_SIZE, 1)
 static __global__ void quantize_mmq_nvfp4_kernel(
+        const float * __restrict__ x, void * __restrict__ vy, float * __restrict__ scale,
+        const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const bool use_aligned_float8) {
+    const int64_t blocks_per_col = (ne0 + QK_K - 1) / QK_K;
+
+    const int64_t i2  = blockIdx.y % ne2;
+    const int64_t i3  = blockIdx.y / ne2;
+    const int64_t i01 = blockIdx.x;
+    const float * __restrict__ x_row = x + (i3 * s03 + i2 * s02 + i01 * s01);
+
+    // ---- level 1: row amax ----
+    float amax = 0.0f;
+    if (use_aligned_float8) {
+        for (int64_t i0 = 8 * threadIdx.x; i0 < ne00; i0 += 8 * blockDim.x) {
+            const float8 v = reinterpret_cast<const float8 *>(x_row + i0)[0];
+            amax = fmaxf(amax, fabsf(v.x));
+            amax = fmaxf(amax, fabsf(v.y));
+            amax = fmaxf(amax, fabsf(v.z));
+            amax = fmaxf(amax, fabsf(v.w));
+            amax = fmaxf(amax, fabsf(v.p));
+            amax = fmaxf(amax, fabsf(v.q));
+            amax = fmaxf(amax, fabsf(v.r));
+            amax = fmaxf(amax, fabsf(v.s));
+        }
+    } else {
+        for (int64_t i0 = threadIdx.x; i0 < ne00; i0 += blockDim.x) {
+            amax = fmaxf(amax, fabsf(x_row[i0]));
+        }
+    }
+
+    amax = mmq_warp_reduce_max(amax);
+
+    __shared__ float warp_amax[MMQ_QUANT_BLOCK_SIZE / WARP_SIZE];
+    const int lane = threadIdx.x % WARP_SIZE;
+    const int warp = threadIdx.x / WARP_SIZE;
+    if (lane == 0) { warp_amax[warp] = amax; }
+    __syncthreads();
+
+    if (warp == 0) {
+        amax = threadIdx.x < (MMQ_QUANT_BLOCK_SIZE / WARP_SIZE) ? warp_amax[lane] : 0.0f;
+        amax = mmq_warp_reduce_max(amax);
+        if (lane == 0) {
+            // 6 = max e2m1 magnitude, 448 = max UE4M3 value: the row peak lands at the top of the
+            // two-level representable range, so no sub-block scale has to clamp.
+            warp_amax[0] = amax / (6.0f * 448.0f);
+            scale[blockIdx.y * ne1 + blockIdx.x] = warp_amax[0];
+        }
+    }
+    __syncthreads();
+
+    const float row_scale     = warp_amax[0];
+    const float inv_col_scale = row_scale > 0.0f ? 1.0f / row_scale : 0.0f;
+
+    // ---- level 2: per-sub-block UE4M3 micro-scale, searched in the normalized range ----
+    block_fp4_mmq * y = (block_fp4_mmq *) vy;
+    const int64_t n_subblocks = (ne0 + QK_NVFP4_SUB - 1) / QK_NVFP4_SUB;
+
+    for (int64_t isb = threadIdx.x; isb < n_subblocks; isb += blockDim.x) {
+        const int64_t i0_base = isb * QK_NVFP4_SUB;
+        const int64_t k_block = i0_base / QK_K;
+        const int     sub     = (i0_base % QK_K) / QK_NVFP4_SUB;
+
+        float vals[QK_NVFP4_SUB];
+        if (use_aligned_float8) {
+            const float * x_base = x_row + i0_base;
+            const float8 zero = float8{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+            const float8 v0 = i0_base +  7 < ne00 ? reinterpret_cast<const float8 *>(x_base)[0]     : zero;
+            const float8 v1 = i0_base + 15 < ne00 ? reinterpret_cast<const float8 *>(x_base + 8)[0] : zero;
+            vals[0]  = v0.x; vals[1]  = v0.y; vals[2]  = v0.z; vals[3]  = v0.w;
+            vals[4]  = v0.p; vals[5]  = v0.q; vals[6]  = v0.r; vals[7]  = v0.s;
+            vals[8]  = v1.x; vals[9]  = v1.y; vals[10] = v1.z; vals[11] = v1.w;
+            vals[12] = v1.p; vals[13] = v1.q; vals[14] = v1.r; vals[15] = v1.s;
+        } else {
+#pragma unroll
+            for (int k = 0; k < QK_NVFP4_SUB; ++k) {
+                const int64_t i00 = i0_base + k;
+                vals[k] = i00 < ne00 ? x_row[i00] : 0.0f;
+            }
+        }
+
+        float amax_sub = 0.0f;
+#pragma unroll
+        for (int k = 0; k < QK_NVFP4_SUB; ++k) {
+            amax_sub = fmaxf(amax_sub, fabsf(vals[k] * inv_col_scale));
+        }
+
+        static constexpr int test_offsets[5] = { 0, -1, 1, -2, 2 };
+        const int first_fp8_code = (int) ggml_cuda_fp32_to_ue4m3(amax_sub / 6.0f);
+
+        uint8_t fp8_code       = (uint8_t) first_fp8_code;
+        float   subblock_scale = ggml_cuda_ue4m3_to_fp32(fp8_code);
+        float   inv_scale_err  = subblock_scale > 0.0f ? 0.5f / subblock_scale : 0.0f;
+#if CUDART_VERSION >= 12080
+        float best_err = nvfp4_native_scale_error(vals, inv_col_scale, inv_scale_err, subblock_scale);
+#else
+        float best_err = 0.0f;
+#pragma unroll
+        for (int k = 0; k < QK_NVFP4_SUB; ++k) {
+            const float   v        = vals[k] * inv_col_scale;
+            const uint8_t q        = ggml_cuda_float_to_fp4_e2m1(v, inv_scale_err);
+            const float   err_diff = fabsf(v) - fabsf(kvalues_mxfp4[q & 0x7]) * subblock_scale;
+            best_err = fmaf(err_diff, err_diff, best_err);
+        }
+#endif
+
+#pragma unroll
+        for (int i = 1; i < 5; ++i) {
+            const int test_code = first_fp8_code + test_offsets[i];
+            if (test_code < 0 || test_code > 0x7e) { continue; }
+            const float test_scale     = ggml_cuda_ue4m3_to_fp32((uint8_t) test_code);
+            const float test_inv_scale = test_scale > 0.0f ? 0.5f / test_scale : 0.0f;
+#if CUDART_VERSION >= 12080
+            const float cur_err = nvfp4_native_scale_error(vals, inv_col_scale, test_inv_scale, test_scale);
+#else
+            float cur_err = 0.0f;
+#pragma unroll
+            for (int k = 0; k < QK_NVFP4_SUB; ++k) {
+                const float   v        = vals[k] * inv_col_scale;
+                const uint8_t q        = ggml_cuda_float_to_fp4_e2m1(v, test_inv_scale);
+                const float   err_diff = fabsf(v) - fabsf(kvalues_mxfp4[q & 0x7]) * test_scale;
+                cur_err = fmaf(err_diff, err_diff, cur_err);
+            }
+#endif
+            if (cur_err < best_err) {
+                best_err       = cur_err;
+                fp8_code       = (uint8_t) test_code;
+                subblock_scale = test_scale;
+            }
+        }
+
+        const float inv_scale = subblock_scale > 0.0f ? 0.5f / subblock_scale : 0.0f;
+        uint32_t q0 = 0;
+        uint32_t q1 = 0;
+#if CUDART_VERSION >= 12080
+        // Pack through the hardware pair converter. The (0,8,1,9)/(2,10,3,11)/... interleave is the
+        // byte order load_tiles_nvfp4_nvfp4 reads: element w of the sub-block sits in nibble
+        // (w & 7) lo for w < 8 and hi for w >= 8.
+        const float s = inv_col_scale * inv_scale;
+        __nv_fp4x4_e2m1 q0_lo(make_float4(vals[0] * s, vals[8]  * s, vals[1] * s, vals[9]  * s));
+        __nv_fp4x4_e2m1 q0_hi(make_float4(vals[2] * s, vals[10] * s, vals[3] * s, vals[11] * s));
+        __nv_fp4x4_e2m1 q1_lo(make_float4(vals[4] * s, vals[12] * s, vals[5] * s, vals[13] * s));
+        __nv_fp4x4_e2m1 q1_hi(make_float4(vals[6] * s, vals[14] * s, vals[7] * s, vals[15] * s));
+
+        const char2 q0_lo_c = *reinterpret_cast<char2 *>(&q0_lo);
+        const char2 q0_hi_c = *reinterpret_cast<char2 *>(&q0_hi);
+        const char2 q1_lo_c = *reinterpret_cast<char2 *>(&q1_lo);
+        const char2 q1_hi_c = *reinterpret_cast<char2 *>(&q1_hi);
+
+        q0 = uint32_t(uint8_t(q0_lo_c.x)) | (uint32_t(uint8_t(q0_lo_c.y)) <<  8) |
+            (uint32_t(uint8_t(q0_hi_c.x)) << 16) | (uint32_t(uint8_t(q0_hi_c.y)) << 24);
+        q1 = uint32_t(uint8_t(q1_lo_c.x)) | (uint32_t(uint8_t(q1_lo_c.y)) <<  8) |
+            (uint32_t(uint8_t(q1_hi_c.x)) << 16) | (uint32_t(uint8_t(q1_hi_c.y)) << 24);
+#else
+#pragma unroll
+        for (int k = 0; k < QK_NVFP4_SUB / 4; ++k) {
+            q0 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k +  0] * inv_col_scale, inv_scale) << (8 * k);
+            q0 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k +  8] * inv_col_scale, inv_scale) << (8 * k + 4);
+            q1 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k +  4] * inv_col_scale, inv_scale) << (8 * k);
+            q1 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals[k + 12] * inv_col_scale, inv_scale) << (8 * k + 4);
+        }
+#endif
+
+        block_fp4_mmq * yb = y + (blockIdx.y * (blocks_per_col * ne1) + k_block * ne1 + blockIdx.x);
+        uint32_t * yqs = reinterpret_cast<uint32_t *>(yb->qs);
+        yqs[2 * sub + 0] = q0;
+        yqs[2 * sub + 1] = q1;
+        reinterpret_cast<uint8_t *>(yb->d4)[sub] = fp8_code;
+    }
+}
+
+// The pre-port quantizer: per-sub-block UE4M3 micro-scale only, no row scale. Kept as the numeric
+// oracle so the kernel-check arm can measure what the two-level scaling actually bought, and as the
+// rollback seam if the per-token path ever has to be backed out.
+static __global__ void quantize_mmq_nvfp4_kernel_v1(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
         const int64_t ne0, const int64_t ne1, const int64_t ne2) {
@@ -515,13 +788,26 @@ static __global__ void quantize_mmq_nvfp4_kernel(
 // ======================= C-ABI host launcher =======================
 extern "C" {
 
-// Bytes needed for the quantized activation buffer (block_fp4_mmq stream): caller pre-allocs.
+// Bytes needed for the quantized activation buffer: the block_fp4_mmq stream followed by the
+// per-token row-scale array. One allocation rather than two so the caller's scratch-slot cache
+// (MMQ_ACT_SLOT) keeps working unchanged.
 size_t memra_mmq_nvfp4_act_bytes(int in_f, int n_tokens) {
     const int64_t ne10_padded = GGML_PAD((int64_t) in_f, MATRIX_ROW_PADDING);
     // s12 = ne11 * ne10_padded * sizeof(block_fp4_mmq) / (QK_K * sizeof(int)) ints, *sizeof(int) bytes.
     // The full stream (1 channel/sample) = ne11 * ne10_padded/QK_K blocks of block_fp4_mmq.
     const int64_t nblocks = (int64_t) n_tokens * (ne10_padded / QK_K);
-    return (size_t) nblocks * sizeof(block_fp4_mmq);
+    const size_t  qbytes  = (size_t) nblocks * sizeof(block_fp4_mmq);
+    // The scale array is read as float, so it starts on a 4-byte boundary (block_fp4_mmq is 272
+    // bytes, already a multiple of 4, but pad explicitly rather than rely on that).
+    return GGML_PAD(qbytes, 16) + (size_t) n_tokens * sizeof(float);
+}
+
+// Where the per-token row-scale array lives inside that scratch block.
+static float * mmq_nvfp4_scale_ptr(void * act_scratch, int in_f, int n_tokens) {
+    const int64_t ne10_padded = GGML_PAD((int64_t) in_f, MATRIX_ROW_PADDING);
+    const int64_t nblocks     = (int64_t) n_tokens * (ne10_padded / QK_K);
+    const size_t  qbytes      = (size_t) nblocks * sizeof(block_fp4_mmq);
+    return (float *) ((char *) act_scratch + GGML_PAD(qbytes, 16));
 }
 
 // Dynamic-smem byte count for the mul_mat_q kernel at mmq_x=MMQ_X (must opt-in via cudaFuncSetAttribute).
@@ -538,10 +824,12 @@ static size_t mmq_nvfp4_nbytes_shared() {
 //   act_f32        : f32 activation [n_tokens, in_f].
 //   y              : f32 output [n_tokens, out_f].
 //   act_scratch    : pre-allocated quant buffer, >= memra_mmq_nvfp4_act_bytes(in_f, n_tokens).
+//   per_token_scale: 1 = two-level scaling (per-token row amax + per-sub-block UE4M3, the tuned
+//                    path), 0 = the v1 sub-block-only quantizer, kept as the numeric oracle.
 // Returns 0 on success, else (1000 + cudaError).
-int memra_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * y,
+int memra_mmq_nvfp4_ex(const void * W_nvfp4_blocks, const float * act_f32, float * y,
                    int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
-                   float out_scale) {
+                   float out_scale, int per_token_scale) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
 
     // ---- 1) quantize activation f32 -> block_fp4_mmq (quantize_mmq_fp4_cuda, NVFP4 branch) ----
@@ -549,13 +837,26 @@ int memra_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
     const int64_t ne11 = n_tokens;
     const int64_t s11 = in_f; // row stride of act (contiguous [n_tokens, in_f])
-    {
+    float * act_scale = per_token_scale ? mmq_nvfp4_scale_ptr(act_scratch, in_f, n_tokens) : nullptr;
+    if (per_token_scale) {
+        // One CTA per token: the level-1 amax reduction needs the whole row in one block.
+        const dim3 block_size(MMQ_QUANT_BLOCK_SIZE, 1, 1);
+        const dim3 num_blocks((unsigned) ne11, 1, 1);
+        // 32-byte loads need the row base AND the stride 32-byte aligned. Activations come from
+        // cudaMalloc (256-byte aligned), so only the stride has to be checked.
+        const bool aligned8 = (s11 % 8 == 0) && (ne10 % 8 == 0);
+        quantize_mmq_nvfp4_kernel<<<num_blocks, block_size, 0, st>>>(
+            act_f32, act_scratch, act_scale, ne10, s11, /*s02*/0, /*s03*/0, ne10_padded, ne11,
+            /*ne2*/1, aligned8);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { return 1000 + (int) e; }
+    } else {
         constexpr int nvfp4_block_size = 128;
         const int64_t block_num_y = (ne10_padded + (int64_t) QK_NVFP4_SUB * nvfp4_block_size - 1) /
                                      ((int64_t) QK_NVFP4_SUB * nvfp4_block_size);
         const dim3 block_size(nvfp4_block_size, 1, 1);
         const dim3 num_blocks((unsigned) ne11, (unsigned) block_num_y, 1);
-        quantize_mmq_nvfp4_kernel<<<num_blocks, block_size, 0, st>>>(
+        quantize_mmq_nvfp4_kernel_v1<<<num_blocks, block_size, 0, st>>>(
             act_f32, act_scratch, ne10, s11, /*s02*/0, /*s03*/0, ne10_padded, ne11, /*ne2*/1);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) { return 1000 + (int) e; }
@@ -583,15 +884,26 @@ int memra_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * 
     if (need_check) {
         cudaFuncSetAttribute(mul_mat_q_nvfp4<MMQ_X, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
         mul_mat_q_nvfp4<MMQ_X, true><<<grid, block, smem, st>>>(
-            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+            W, y_q, y, act_scale, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst,
+            blocks_per_ne00, out_scale);
     } else {
         cudaFuncSetAttribute(mul_mat_q_nvfp4<MMQ_X, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
         mul_mat_q_nvfp4<MMQ_X, false><<<grid, block, smem, st>>>(
-            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+            W, y_q, y, act_scale, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst,
+            blocks_per_ne00, out_scale);
     }
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { return 1000 + (int) e; }
     return 0;
+}
+
+// Default entry point: two-level scaling on. The per_token_scale=0 arm is reachable only through
+// memra_mmq_nvfp4_ex, which is what the kernel-check accuracy arm uses to compare the two.
+int memra_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * y,
+                   int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
+                   float out_scale) {
+    return memra_mmq_nvfp4_ex(W_nvfp4_blocks, act_f32, y, in_f, out_f, n_tokens, act_scratch,
+                              stream, out_scale, /*per_token_scale=*/1);
 }
 
 } // extern "C"
