@@ -186,3 +186,7 @@ path = "src/bin/pp2_gate.rs"
 [[bin]]
 name = "pp-transport-smoke"
 path = "src/bin/pp_transport_smoke.rs"
+
+[[bin]]
+name = "clc-mmq-bench"
+path = "src/bin/clc_mmq_bench.rs"
