@@ -371,3 +371,31 @@ bought on faith.
 - IL electricity: globalpetrolprices.com Israel Dec-2025 (business ILS 0.353/kWh ≈ $0.116);
   sadanews/timesofisrael Q1-2026 +1.5%.
 - CUDA arch tables: arnon.dk (upd. 2026-04-13) — sm_110 Thor, sm_121 GB10, sm_120a RTX 50.
+
+---
+
+## OWNER OVERRIDE (2026-08-03, post-assessment): box #1 is NOT 2x used 5090
+
+Owner verbatim: "buying now 5090 that cant scale later with the 6000 is missuse."
+
+The staged buy plan's box #1 (2x used 5090, ~$9.5-10k) is REJECTED on scaling-continuity
+grounds: a 5090 pair cannot later join a PRO 6000 stack as one serving group — the GeForce
+side keeps P2P=0 against any peer, VRAM granularity mismatches (32 vs 96 GB stages), so
+the 5090 box stays a permanently separate small-SKU tier. Money spent there does not
+compound toward the large-SKU trajectory.
+
+Revised box #1: **RTX PRO 6000 Blackwell class** — single card used/refurb ($9.5-11k,
+same money class as the rejected 5090 pair) or the 2-card 192 GB PP-2 box (§4.1 of
+hw-buy, $24-28k) when earnings justify. Rationale: 96 GB/card serves 45-90 GB SKUs
+day one AND multi-replica small SKUs via MIG; native P2P means card #2..#N compound
+into one scaling group; same sm_120a — every kernel, gate, and receipt from the 5090
+rigs transfers (G7e receipts already proved byte-identical fatbins on this exact card
+class); workstation resale 75-100% nominal retention.
+
+Trade-off accepted knowingly: 2x5090 has 2x the aggregate bandwidth per dollar for
+bandwidth-bound ≤30 GB decode (3.58 vs 1.79 TB/s at ~equal price). The owner prioritizes
+scaling continuity over throughput-now. Rentals (vast 2x5090 at ~$0.75/hr) keep covering
+the consumer-fleet measurement lane without owning dead-end hardware.
+
+Rental doctrine unchanged: 5090 rentals for dev/measurement; the OWNED trajectory is
+PRO 6000-homogeneous. First buy trigger still earnings-gated per the operating model.
