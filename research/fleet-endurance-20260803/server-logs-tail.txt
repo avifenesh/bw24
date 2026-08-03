@@ -1,0 +1,49 @@
+=== replica-9085.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9086.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9087.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9088.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9089.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9090.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9091.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+=== replica-9092.log tail ===
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model qwen)
+[proxy] listening on http://127.0.0.1:9080 -> ['http://127.0.0.1:9085', 'http://127.0.0.1:9086', 'http://127.0.0.1:9087', 'http://127.0.0.1:9088', 'http://127.0.0.1:9089', 'http://127.0.0.1:9090', 'http://127.0.0.1:9091', 'http://127.0.0.1:9092'] cap=16 queue=256/30.0s

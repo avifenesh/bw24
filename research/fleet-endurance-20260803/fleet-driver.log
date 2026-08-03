@@ -1,0 +1,21 @@
+[fleet] launched replica :9085 on GPU 0 (pid 403958)
+[fleet] launched replica :9086 on GPU 1 (pid 403961)
+[fleet] launched replica :9087 on GPU 2 (pid 403964)
+[fleet] launched replica :9088 on GPU 3 (pid 403967)
+[fleet] launched replica :9089 on GPU 4 (pid 403970)
+[fleet] launched replica :9090 on GPU 5 (pid 403973)
+[fleet] launched replica :9091 on GPU 6 (pid 403976)
+[fleet] launched replica :9092 on GPU 7 (pid 403979)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [0 1 2 3 4 5 6 7], proxy :9080 (cap 16)
+[fleet] supervisor stopped
+[fleet] stopped

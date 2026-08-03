@@ -1,0 +1,6 @@
+model: /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf
+fleet: GPUS=0-7 REPLICAS_PER_GPU=1 CAP=16 BASE_PORT=9085 PROXY_PORT=9080
+load: c=96 via proxy, 120s windows back-to-back, max_tokens=128, temp0.7 seeded
+load window: start ~08:32Z, load-end 2026-08-03T10:45:00Z, sampler-end 10:48Z
+fatal: not a git repository (or any of the parent directories): .git
+SOAK LOAD START 2026-08-03T08:25:02Z sampler=405939 load=405940
