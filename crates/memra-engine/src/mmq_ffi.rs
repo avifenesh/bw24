@@ -62,6 +62,24 @@ unsafe extern "C" {
         out_scale: f32,
         per_token_scale: i32,
     ) -> i32;
+    /// Same as `memra_mmq_nvfp4_ex`, plus the residual high-precision channel count.
+    ///   residual_k = 0: off.
+    ///   residual_k > 0: the k largest-magnitude activation channels (ranked across the batch) are
+    ///     zeroed before quantization and their exact f32 contribution is added back as a rank-k
+    ///     correction. Requires per_token_scale = 1. Clamped to the kernel's max (16).
+    pub fn memra_mmq_nvfp4_ex2(
+        w_nvfp4_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        out_scale: f32,
+        per_token_scale: i32,
+        residual_k: i32,
+    ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch for the NVFP4 W4A8 path.
     pub fn memra_mmq_nvfp4_w4a8_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Run the NVFP4 W4A8 MMQ prefill GEMM (STAGE 2 accuracy-safe rung). Same fast MMQ tile as
@@ -331,6 +349,22 @@ pub fn mmq_w4a8_enabled() -> bool {
             .map(|v| v != "0")
             .unwrap_or(true)
     })
+}
+
+/// Residual high-precision activation channels for the W4A4 MMQ prefill path.
+/// `MEMRA_MMQ_RESIDUAL_K=<k>` keeps the k largest-magnitude activation channels out of the e2m1
+/// quantized path and adds their exact f32 contribution back as a rank-k correction. k=0 (default)
+/// is off; the kernel clamps to 16.
+///
+/// Read LIVE per call, not OnceLock'd, for the same reason `MEMRA_MMQ` is: the W4A4 exactness gate
+/// sweeps arms inside ONE process against ONE set of loaded weights, and a cached first read would
+/// pin every later arm to whatever the first one saw.
+pub fn mmq_residual_k() -> i32 {
+    std::env::var("MEMRA_MMQ_RESIDUAL_K")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(0)
+        .clamp(0, 16)
 }
 
 /// Q8_0 MMQ prefill seam (lane/ppmmq lever 2, DEFAULT ON since 2026-07-09 — `MEMRA_PP_Q8MMQ=0`
@@ -829,7 +863,20 @@ impl Engine {
         in_f: usize,
         out_f: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, 1.0, false)
+        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, 1.0, false, 0)
+    }
+
+    /// Bare MMQ launch with an explicit residual-channel count — for the kernel-check k sweep.
+    pub fn qmatvec_mmq_nvfp4_raw_res(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        residual_k: i32,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, 1.0, true, residual_k)
     }
 
     fn qmatvec_mmq_nvfp4_scaled(
@@ -841,7 +888,7 @@ impl Engine {
         out_f: usize,
         scale: f32,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, scale, true)
+        self.qmatvec_mmq_nvfp4_inner(bytes, x, m, in_f, out_f, scale, true, mmq_residual_k())
     }
 
     fn qmatvec_mmq_nvfp4_inner(
@@ -853,6 +900,7 @@ impl Engine {
         out_f: usize,
         scale: f32,
         per_token_scale: bool,
+        residual_k: i32,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         assert!(
             in_f % 64 == 0,
@@ -868,7 +916,7 @@ impl Engine {
             let (y_p, _gy) = y.device_ptr_mut(&stream);
             let (s_p, _gs) = scratch.device_ptr_mut(&stream);
             let rc = unsafe {
-                memra_mmq_nvfp4_ex(
+                memra_mmq_nvfp4_ex2(
                     w_p as *const core::ffi::c_void,
                     x_p as *const f32,
                     y_p as *mut f32,
@@ -879,10 +927,11 @@ impl Engine {
                     stream.cu_stream() as *mut core::ffi::c_void,
                     scale,
                     per_token_scale as i32,
+                    residual_k,
                 )
             };
             if rc != 0 {
-                return Err(format!("memra_mmq_nvfp4_ex rc={rc}").into());
+                return Err(format!("memra_mmq_nvfp4_ex2 rc={rc}").into());
             }
         }
         Ok(y)

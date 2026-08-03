@@ -531,14 +531,22 @@ static __device__ __forceinline__ float nvfp4_native_scale_error(
 __launch_bounds__(MMQ_QUANT_BLOCK_SIZE, 1)
 static __global__ void quantize_mmq_nvfp4_kernel(
         const float * __restrict__ x, void * __restrict__ vy, float * __restrict__ scale,
+        const uint8_t * __restrict__ chan_skip,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const bool use_aligned_float8) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const bool use_aligned_float8_in) {
     const int64_t blocks_per_col = (ne0 + QK_K - 1) / QK_K;
 
     const int64_t i2  = blockIdx.y % ne2;
     const int64_t i3  = blockIdx.y / ne2;
     const int64_t i01 = blockIdx.x;
     const float * __restrict__ x_row = x + (i3 * s03 + i2 * s02 + i01 * s01);
+
+    // Residual channels are zeroed here and added back exactly in the epilogue correction. Zeroing
+    // before the amax reduction is the point: it removes the outliers from the scale decision, so
+    // every remaining sub-block gets a finer micro-scale.
+    // (The aligned-float8 fast path can't do per-element masking, so it steps aside when active.)
+    const bool residual = chan_skip != nullptr;
+    const bool use_aligned_float8 = use_aligned_float8_in && !residual;
 
     // ---- level 1: row amax ----
     float amax = 0.0f;
@@ -556,6 +564,7 @@ static __global__ void quantize_mmq_nvfp4_kernel(
         }
     } else {
         for (int64_t i0 = threadIdx.x; i0 < ne00; i0 += blockDim.x) {
+            if (residual && chan_skip[i0]) { continue; }
             amax = fmaxf(amax, fabsf(x_row[i0]));
         }
     }
@@ -606,7 +615,8 @@ static __global__ void quantize_mmq_nvfp4_kernel(
 #pragma unroll
             for (int k = 0; k < QK_NVFP4_SUB; ++k) {
                 const int64_t i00 = i0_base + k;
-                vals[k] = i00 < ne00 ? x_row[i00] : 0.0f;
+                const bool    skip = residual && i00 < ne00 && chan_skip[i00];
+                vals[k] = (i00 < ne00 && !skip) ? x_row[i00] : 0.0f;
             }
         }
 
@@ -785,29 +795,185 @@ static __global__ void quantize_mmq_nvfp4_kernel_v1(
     reinterpret_cast<uint8_t *>(yb->d4)[sub] = fp8_code;
 }
 
+// ======================= residual high-precision channels (ARCQuant-style) =======================
+//
+// Two-level scaling fixed the sub-blocks whose micro-scale was CLAMPING, but it cannot fix a
+// sub-block whose values span more dynamic range than the e2m1 grid has points. Transformer
+// activations have a small number of persistent outlier CHANNELS — the same feature dimensions,
+// across every token — that run one to two decades above their neighbours. Normalizing the row by
+// its amax makes those outliers the thing that sets the scale, so the other 15 values in their
+// sub-block get pushed toward the bottom of the grid and lose resolution.
+//
+// The fix is to take the outliers out of the quantized path entirely: pick the k channels with the
+// largest magnitude (ranked per-channel across the whole batch, because the outlier set is a
+// property of the weight matrix's input space, not of one token), zero them before quantization,
+// and add their exact f32 contribution back as a rank-k correction. Zeroing pays twice: the
+// correction is exact for the channels that mattered most, AND the row amax drops, so every
+// remaining sub-block gets a finer scale.
+//
+// k is small (4/8/16) — the correction is a thin rank-k update, not a second GEMM.
+
+#define MMQ_MAX_RESIDUAL_K 16
+
+// Per-channel amax across the whole token batch. Threads own channels, so reads across a token row
+// are coalesced.
+static __global__ void nvfp4_channel_amax_kernel(
+        const float * __restrict__ act, float * __restrict__ chan_amax,
+        const int n_tokens, const int in_f, const int64_t s11) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= in_f) { return; }
+    float a = 0.0f;
+    for (int j = 0; j < n_tokens; ++j) {
+        a = fmaxf(a, fabsf(act[(int64_t) j * s11 + c]));
+    }
+    chan_amax[c] = a;
+}
+
+// Top-k channel selection, one CTA, k masking passes. k <= 16 and in_f is a few thousand, so the
+// O(k * in_f / nthreads) scan is cheaper to write and to run than a sort.
+static __global__ void nvfp4_topk_channels_kernel(
+        const float * __restrict__ chan_amax, uint8_t * __restrict__ chan_skip,
+        int * __restrict__ topk_idx, const int in_f, const int k) {
+    constexpr int NT = 256;
+    __shared__ float sv[NT];
+    __shared__ int   si[NT];
+
+    for (int c = threadIdx.x; c < in_f; c += NT) { chan_skip[c] = 0; }
+    __syncthreads();
+
+    for (int pass = 0; pass < k; ++pass) {
+        float bv = -1.0f;
+        int   bi = -1;
+        for (int c = threadIdx.x; c < in_f; c += NT) {
+            if (chan_skip[c]) { continue; }
+            const float v = chan_amax[c];
+            if (v > bv) { bv = v; bi = c; }
+        }
+        sv[threadIdx.x] = bv;
+        si[threadIdx.x] = bi;
+        __syncthreads();
+#pragma unroll
+        for (int off = NT / 2; off > 0; off >>= 1) {
+            if (threadIdx.x < off) {
+                if (sv[threadIdx.x + off] > sv[threadIdx.x]) {
+                    sv[threadIdx.x] = sv[threadIdx.x + off];
+                    si[threadIdx.x] = si[threadIdx.x + off];
+                }
+            }
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            const int win = si[0];
+            topk_idx[pass] = win;
+            if (win >= 0) { chan_skip[win] = 1; }
+        }
+        __syncthreads();
+    }
+}
+
+// Rank-k correction: y[j][i] += out_scale * sum_s act[j][c_s] * W_dequant[i][c_s].
+//
+// NOT scaled by the per-token row factor: the correction consumes the ORIGINAL f32 activations,
+// which were never divided by it. Each thread owns one output row and holds that row's k weight
+// values in registers for the whole token loop, so the weight bytes are read once per row rather
+// than once per (row, token).
+static __global__ void nvfp4_residual_correct_kernel(
+        const char * __restrict__ W, const float * __restrict__ act, float * __restrict__ y,
+        const int * __restrict__ topk_idx, const int k, const int in_f, const int out_f,
+        const int n_tokens, const int64_t s11, const float out_scale) {
+    constexpr int NT    = 256;
+    constexpr int CHUNK = 64;
+
+    const int i = blockIdx.x * NT + threadIdx.x;
+    const int row_bytes = (in_f / QK_NVFP4) * (int) sizeof(block_nvfp4);
+
+    // Dequantize this row's k outlier-channel weights once.
+    float wdeq[MMQ_MAX_RESIDUAL_K];
+    if (i < out_f) {
+        for (int s = 0; s < k; ++s) {
+            const int c = topk_idx[s];
+            if (c < 0) { wdeq[s] = 0.0f; continue; }
+            const int blk = c / QK_NVFP4;
+            const int sub = (c % QK_NVFP4) / QK_NVFP4_SUB;
+            const int w   = c % QK_NVFP4_SUB;
+            const block_nvfp4 * b =
+                reinterpret_cast<const block_nvfp4 *>(W + (int64_t) i * row_bytes) + blk;
+            const uint8_t byte = b->qs[sub * 8 + (w & 7)];
+            const uint8_t nib  = (w < 8) ? (byte & 0x0f) : (byte >> 4);
+            // GGUF NVFP4 dequant is EXACTLY kvalues_mxfp4[nib] * ue4m3_to_fp32(d) — the doubled
+            // codebook (0,1,2,3,4,6,8,12) and the /2 already inside ggml_cuda_ue4m3_to_fp32 cancel,
+            // so no further factor belongs here. kvalues_mxfp4 carries its own sign in codes 8..15.
+            // (An extra 0.5f here halved the correction; the residual kernel-check arm caught it as
+            // rel == 0.52 ~ exactly half the outlier contribution left unrecovered.)
+            wdeq[s] = (float) kvalues_mxfp4[nib] * ggml_cuda_ue4m3_to_fp32(b->d[sub]);
+        }
+    }
+
+    __shared__ float a_sh[MMQ_MAX_RESIDUAL_K * CHUNK];
+
+    for (int j0 = 0; j0 < n_tokens; j0 += CHUNK) {
+        const int nj = min(CHUNK, n_tokens - j0);
+        for (int t = threadIdx.x; t < k * nj; t += NT) {
+            const int s  = t / nj;
+            const int jj = t % nj;
+            const int c  = topk_idx[s];
+            a_sh[s * CHUNK + jj] = c >= 0 ? act[(int64_t) (j0 + jj) * s11 + c] : 0.0f;
+        }
+        __syncthreads();
+        if (i < out_f) {
+            for (int jj = 0; jj < nj; ++jj) {
+                float acc = 0.0f;
+                for (int s = 0; s < k; ++s) {
+                    acc = fmaf(wdeq[s], a_sh[s * CHUNK + jj], acc);
+                }
+                y[(int64_t) (j0 + jj) * out_f + i] += out_scale * acc;
+            }
+        }
+        __syncthreads();
+    }
+}
+
 // ======================= C-ABI host launcher =======================
 extern "C" {
 
-// Bytes needed for the quantized activation buffer: the block_fp4_mmq stream followed by the
-// per-token row-scale array. One allocation rather than two so the caller's scratch-slot cache
-// (MMQ_ACT_SLOT) keeps working unchanged.
-size_t memra_mmq_nvfp4_act_bytes(int in_f, int n_tokens) {
+// Scratch layout, one allocation so the caller's scratch-slot cache (MMQ_ACT_SLOT) is untouched:
+//   [0]                    block_fp4_mmq quantized activation stream
+//   [+scale_off]           float  scale[n_tokens]     per-token row factor
+//   [+chan_amax_off]       float  chan_amax[in_f]     per-channel amax (residual only)
+//   [+chan_skip_off]       u8     chan_skip[in_f]     residual channel mask
+//   [+topk_off]            int    topk_idx[MAX_K]     selected channel ids
+static size_t mmq_nvfp4_qbytes(int in_f, int n_tokens) {
     const int64_t ne10_padded = GGML_PAD((int64_t) in_f, MATRIX_ROW_PADDING);
     // s12 = ne11 * ne10_padded * sizeof(block_fp4_mmq) / (QK_K * sizeof(int)) ints, *sizeof(int) bytes.
     // The full stream (1 channel/sample) = ne11 * ne10_padded/QK_K blocks of block_fp4_mmq.
     const int64_t nblocks = (int64_t) n_tokens * (ne10_padded / QK_K);
-    const size_t  qbytes  = (size_t) nblocks * sizeof(block_fp4_mmq);
-    // The scale array is read as float, so it starts on a 4-byte boundary (block_fp4_mmq is 272
-    // bytes, already a multiple of 4, but pad explicitly rather than rely on that).
-    return GGML_PAD(qbytes, 16) + (size_t) n_tokens * sizeof(float);
+    return (size_t) nblocks * sizeof(block_fp4_mmq);
 }
 
-// Where the per-token row-scale array lives inside that scratch block.
-static float * mmq_nvfp4_scale_ptr(void * act_scratch, int in_f, int n_tokens) {
-    const int64_t ne10_padded = GGML_PAD((int64_t) in_f, MATRIX_ROW_PADDING);
-    const int64_t nblocks     = (int64_t) n_tokens * (ne10_padded / QK_K);
-    const size_t  qbytes      = (size_t) nblocks * sizeof(block_fp4_mmq);
-    return (float *) ((char *) act_scratch + GGML_PAD(qbytes, 16));
+static size_t mmq_nvfp4_scale_off(int in_f, int n_tokens) {
+    // The scale array is read as float, so it starts 4-byte aligned (block_fp4_mmq is 272 bytes,
+    // already a multiple of 4, but pad explicitly rather than rely on that).
+    return GGML_PAD(mmq_nvfp4_qbytes(in_f, n_tokens), 16);
+}
+static size_t mmq_nvfp4_chan_amax_off(int in_f, int n_tokens) {
+    return GGML_PAD(mmq_nvfp4_scale_off(in_f, n_tokens) + (size_t) n_tokens * sizeof(float), 16);
+}
+static size_t mmq_nvfp4_chan_skip_off(int in_f, int n_tokens) {
+    return GGML_PAD(mmq_nvfp4_chan_amax_off(in_f, n_tokens) + (size_t) in_f * sizeof(float), 16);
+}
+static size_t mmq_nvfp4_topk_off(int in_f, int n_tokens) {
+    return GGML_PAD(mmq_nvfp4_chan_skip_off(in_f, n_tokens) + (size_t) in_f, 16);
+}
+
+// Bytes needed for the activation scratch. Always sized for the residual arrays: they are a few KB
+// against a multi-MB quant stream, and a single size keeps the caller's cached slot valid whether or
+// not residual channels are enabled for a given call.
+size_t memra_mmq_nvfp4_act_bytes(int in_f, int n_tokens) {
+    return mmq_nvfp4_topk_off(in_f, n_tokens) + MMQ_MAX_RESIDUAL_K * sizeof(int);
+}
+
+static float * mmq_nvfp4_scale_ptr(void * s, int in_f, int n_tokens) {
+    return (float *) ((char *) s + mmq_nvfp4_scale_off(in_f, n_tokens));
 }
 
 // Dynamic-smem byte count for the mul_mat_q kernel at mmq_x=MMQ_X (must opt-in via cudaFuncSetAttribute).
@@ -826,10 +992,13 @@ static size_t mmq_nvfp4_nbytes_shared() {
 //   act_scratch    : pre-allocated quant buffer, >= memra_mmq_nvfp4_act_bytes(in_f, n_tokens).
 //   per_token_scale: 1 = two-level scaling (per-token row amax + per-sub-block UE4M3, the tuned
 //                    path), 0 = the v1 sub-block-only quantizer, kept as the numeric oracle.
+//   residual_k     : 0 = off. k>0 keeps the k largest-magnitude activation CHANNELS out of the
+//                    quantized path and adds their exact f32 contribution back as a rank-k
+//                    correction (requires per_token_scale=1). Clamped to MMQ_MAX_RESIDUAL_K.
 // Returns 0 on success, else (1000 + cudaError).
-int memra_mmq_nvfp4_ex(const void * W_nvfp4_blocks, const float * act_f32, float * y,
+int memra_mmq_nvfp4_ex2(const void * W_nvfp4_blocks, const float * act_f32, float * y,
                    int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
-                   float out_scale, int per_token_scale) {
+                   float out_scale, int per_token_scale, int residual_k) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
 
     // ---- 1) quantize activation f32 -> block_fp4_mmq (quantize_mmq_fp4_cuda, NVFP4 branch) ----
@@ -838,6 +1007,34 @@ int memra_mmq_nvfp4_ex(const void * W_nvfp4_blocks, const float * act_f32, float
     const int64_t ne11 = n_tokens;
     const int64_t s11 = in_f; // row stride of act (contiguous [n_tokens, in_f])
     float * act_scale = per_token_scale ? mmq_nvfp4_scale_ptr(act_scratch, in_f, n_tokens) : nullptr;
+
+    // The residual path rides on top of two-level scaling: it changes which values reach the
+    // quantizer, not how they are scaled.
+    const int rk = (per_token_scale && residual_k > 0)
+                 ? (residual_k < MMQ_MAX_RESIDUAL_K ? residual_k : MMQ_MAX_RESIDUAL_K)
+                 : 0;
+    float   * chan_amax = (float *)   ((char *) act_scratch + mmq_nvfp4_chan_amax_off(in_f, n_tokens));
+    uint8_t * chan_skip = (uint8_t *) ((char *) act_scratch + mmq_nvfp4_chan_skip_off(in_f, n_tokens));
+    int     * topk_idx  = (int *)     ((char *) act_scratch + mmq_nvfp4_topk_off(in_f, n_tokens));
+
+    if (rk > 0) {
+        // Rank channels by amax over the WHOLE batch: the outlier set is a property of the weight
+        // matrix's input space, so a per-token choice would make the correction inconsistent
+        // between tokens of the same GEMM.
+        {
+            const int nt = 256;
+            nvfp4_channel_amax_kernel<<<(in_f + nt - 1) / nt, nt, 0, st>>>(
+                act_f32, chan_amax, n_tokens, in_f, s11);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) { return 1000 + (int) e; }
+        }
+        {
+            nvfp4_topk_channels_kernel<<<1, 256, 0, st>>>(chan_amax, chan_skip, topk_idx, in_f, rk);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) { return 1000 + (int) e; }
+        }
+    }
+
     if (per_token_scale) {
         // One CTA per token: the level-1 amax reduction needs the whole row in one block.
         const dim3 block_size(MMQ_QUANT_BLOCK_SIZE, 1, 1);
@@ -846,8 +1043,8 @@ int memra_mmq_nvfp4_ex(const void * W_nvfp4_blocks, const float * act_f32, float
         // cudaMalloc (256-byte aligned), so only the stride has to be checked.
         const bool aligned8 = (s11 % 8 == 0) && (ne10 % 8 == 0);
         quantize_mmq_nvfp4_kernel<<<num_blocks, block_size, 0, st>>>(
-            act_f32, act_scratch, act_scale, ne10, s11, /*s02*/0, /*s03*/0, ne10_padded, ne11,
-            /*ne2*/1, aligned8);
+            act_f32, act_scratch, act_scale, rk > 0 ? chan_skip : nullptr, ne10, s11, /*s02*/0,
+            /*s03*/0, ne10_padded, ne11, /*ne2*/1, aligned8);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) { return 1000 + (int) e; }
     } else {
@@ -892,18 +1089,37 @@ int memra_mmq_nvfp4_ex(const void * W_nvfp4_blocks, const float * act_f32, float
             W, y_q, y, act_scale, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst,
             blocks_per_ne00, out_scale);
     }
-    cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) { return 1000 + (int) e; }
+    {
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { return 1000 + (int) e; }
+    }
+
+    // ---- 3) rank-k residual correction (must follow the GEMM: it accumulates into y) ----
+    if (rk > 0) {
+        constexpr int nt = 256;
+        nvfp4_residual_correct_kernel<<<(out_f + nt - 1) / nt, nt, 0, st>>>(
+            W, act_f32, y, topk_idx, rk, in_f, out_f, n_tokens, s11, out_scale);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { return 1000 + (int) e; }
+    }
     return 0;
 }
 
-// Default entry point: two-level scaling on. The per_token_scale=0 arm is reachable only through
-// memra_mmq_nvfp4_ex, which is what the kernel-check accuracy arm uses to compare the two.
+int memra_mmq_nvfp4_ex(const void * W_nvfp4_blocks, const float * act_f32, float * y,
+                   int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
+                   float out_scale, int per_token_scale) {
+    return memra_mmq_nvfp4_ex2(W_nvfp4_blocks, act_f32, y, in_f, out_f, n_tokens, act_scratch,
+                               stream, out_scale, per_token_scale, /*residual_k=*/0);
+}
+
+// Default entry point: two-level scaling on, residual channels off unless MEMRA_MMQ_RESIDUAL_K asks
+// (the Rust side reads the env var and passes k through ex2). per_token_scale=0 is reachable only
+// through the _ex entry points, which is what the kernel-check accuracy arms use.
 int memra_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * y,
                    int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
                    float out_scale) {
-    return memra_mmq_nvfp4_ex(W_nvfp4_blocks, act_f32, y, in_f, out_f, n_tokens, act_scratch,
-                              stream, out_scale, /*per_token_scale=*/1);
+    return memra_mmq_nvfp4_ex2(W_nvfp4_blocks, act_f32, y, in_f, out_f, n_tokens, act_scratch,
+                               stream, out_scale, /*per_token_scale=*/1, /*residual_k=*/0);
 }
 
 } // extern "C"

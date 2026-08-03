@@ -1446,6 +1446,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel > 0.0 { format!("{:.2}x", rel_v1 / rel) } else { "n/a".into() },
                              if rel < rel_v1 { "OK" } else { fails += 1; "FAIL" });
                 }
+
+                // --- RESIDUAL-CHANNEL arm: validates the rank-k high-precision side path. ---
+                // Real activations carry PERSISTENT outlier CHANNELS: the same feature dims run one
+                // to two decades above their neighbours in every token. One loud channel drags the
+                // whole row amax up, so all 16-element sub-blocks in the row get a coarser scale and
+                // every quiet value loses bits. MEMRA_MMQ_RESIDUAL_K keeps the k loudest channels out
+                // of the e2m1 path and adds their exact f32 contribution back after the GEMM, which
+                // pays twice: exact for the loud channels, and a lower row amax for everything else.
+                //
+                // Here 8 fixed channels are amplified 300x on top of the decade spread. k=8 should
+                // capture exactly those, so the error must fall hard versus k=0. This is the gate
+                // that catches a sign, scale (the e2m1-grid/UE4M3 0.5x factor), or channel-index bug
+                // in the correction kernel — a wrong factor makes rel EXPLODE rather than shrink,
+                // and an end-to-end argmax gate would only report "still diverges".
+                {
+                    let tt = 128usize;
+                    let hot: Vec<usize> = (0..8).map(|c| (c * 977 + 13) % in_f).collect();
+                    let is_hot = {
+                        let mut v = vec![false; in_f];
+                        for &c in &hot { v[c] = true; }
+                        v
+                    };
+                    let x: Vec<f32> = (0..tt * in_f)
+                        .map(|i| {
+                            let token = i / in_f;
+                            let chan = i % in_f;
+                            let decade = 10.0f32.powi((token % 7) as i32 - 3);
+                            let boost = if is_hot[chan] { 300.0 } else { 1.0 };
+                            pr(i + 83) * 0.1 * decade * boost
+                        })
+                        .collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let per_token_rel = |y: &[f32]| -> f32 {
+                        (0..tt)
+                            .map(|j| {
+                                let lo = j * out_f;
+                                let hi = lo + out_f;
+                                let s = cpu[lo..hi].iter().map(|v| v.abs()).fold(0.0, f32::max);
+                                if s <= 0.0 { return 0.0; }
+                                maxdiff(&cpu[lo..hi], &y[lo..hi]) / s
+                            })
+                            .fold(0.0, f32::max)
+                    };
+                    let mut rel_k0 = f32::NAN;
+                    for k in [0i32, 4, 8, 16] {
+                        let y = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_res(&wd, &xd, tt, in_f, out_f, k)?)?;
+                        let r = per_token_rel(&y);
+                        if k == 0 {
+                            rel_k0 = r;
+                            println!("MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T={tt} k=0: rel={r:.2e} \
+                                      (baseline, 8 outlier channels @300x)");
+                            continue;
+                        }
+                        // k >= 8 covers every injected outlier, so it must beat the baseline. k=4
+                        // covers half of them and is informational: a partial cover can legitimately
+                        // land anywhere between the two.
+                        let hard = k >= 8;
+                        let better = r < rel_k0;
+                        let verdict = if better { "OK" } else if hard { fails += 1; "FAIL" } else { "FLAT" };
+                        println!("MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T={tt} k={k}: rel={r:.2e} \
+                                  ({} vs k=0){} {verdict}",
+                                 if r > 0.0 { format!("{:.2}x", rel_k0 / r) } else { "n/a".into() },
+                                 if hard { "" } else { " informational" });
+                    }
+                }
             }
             // --- STAGE 2: VENDORED llama NVFP4 W4A8 MMQ GEMM vs the f32 dequant oracle. ---
             // The accuracy-safe rung: weight FP4 is LUT-dequantized to int8 (bit-exact) and the
