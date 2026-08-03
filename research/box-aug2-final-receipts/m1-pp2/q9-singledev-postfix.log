@@ -1,0 +1,3 @@
+pp2-gate increment-2 config: streams=per-stage overlap=0 devices=default(primary)
+[q8rp] split-plane decode mirrors built: 249 tensors
+pp2 gate PASS: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, n_layers=32, stage0=[0,16), stage1=[16,32); streams=per-stage overlap=0 devices=default(primary))
