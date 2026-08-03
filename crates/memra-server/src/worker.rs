@@ -49,6 +49,11 @@ struct LoadedModel {
     model: HybridModel,
     tok: Tokenizer,
     eos_id: u32,
+    /// Constrained-decoding grammar factory (llguidance TokTrie over this vocab). Built
+    /// LAZILY on the first `response_format` request against this model — unconstrained
+    /// serving never pays the vocab-trie build. `Err` = vocab unusable (kept, so every
+    /// constrained request fails with the same clean message instead of rebuilding).
+    constraints: std::cell::OnceCell<Result<crate::constrained::ConstraintFactory, String>>,
 }
 
 /// What the worker streams back to one request, over its per-request tokio mpsc channel.
@@ -90,6 +95,10 @@ pub struct Request {
     /// yield lane (x-lane header; default interactive). Drives admission + prefill budgets
     /// (lane/dl-metering QoS gate, ported 2026-08-02 — the metering half stayed behind).
     pub lane: crate::lanes::Lane,
+    /// Constrained decoding (`response_format` json_object/json_schema): the parsed
+    /// grammar spec. None = unconstrained — the request takes the exact legacy path
+    /// (no factory, no matcher, no masking branch).
+    pub grammar: Option<crate::constrained::GrammarSpec>,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -550,6 +559,11 @@ struct Session {
     /// rows: penalties/top-k/top-p/min-p configs; non-batched paths). Dropped un-consumed
     /// when a session finishes — same semantics as an unsampled last_logits.
     device_next: Option<u32>,
+    /// Constrained decoding (`response_format`): per-session llguidance grammar state.
+    /// `Some` masks the logits row host-side before every sample and advances with each
+    /// accepted token. Constrained sessions never device-sample (mask is host-side),
+    /// never graph-promote, and never go spec — plain batched/tokenwise decode only.
+    constraint: Option<crate::constrained::SessionConstraint>,
     /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
     /// This is exactly the sequence whose KV + recurrent state live in `cache` — the resume
     /// point for KV PREFIX REUSE on retire (see ReusePool).
@@ -675,7 +689,9 @@ pub fn run(
 
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
-        loaded.insert(name.clone(), LoadedModel { model, tok, eos_id });
+        loaded.insert(name.clone(), LoadedModel {
+            model, tok, eos_id, constraints: std::cell::OnceCell::new(),
+        });
         order.push(name.clone());
     }
     // Template capability probe (serve-tools lane): same substring laws the renderer uses.
@@ -940,6 +956,7 @@ pub fn run(
                 // captures OVER that cache (graph_session_from_cache). TTFT pays only the
                 // one-time capture (~340ms), amortized by the gs_min budget gate.
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
+                    && s.constraint.is_none() // graph steps device-argmax — no mask hook (v1)
                     && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
                     && s.prefill_done && s.generated.is_empty() && s.cache.is_some()
@@ -1165,6 +1182,11 @@ pub fn run(
                             return None;
                         }
                         let s = &active[i];
+                        // constrained rows sample HOST-side from a masked copy — the
+                        // grammar mask has no device hook (v1).
+                        if s.constraint.is_some() {
+                            return None;
+                        }
                         let sm = &s.sampler;
                         let no_pen = sm.penalty_repeat() == 1.0
                             && sm.penalty_freq() == 0.0
@@ -1560,7 +1582,35 @@ fn admit(
     let greedy_penalized = sampler.is_greedy()
         && (sampler.penalty_repeat() != 1.0 || sampler.penalty_freq() != 0.0
             || sampler.penalty_present() != 0.0);
+    // CONSTRAINED DECODING (response_format): compile the request's grammar against this
+    // model's lazily-built vocab factory. Compile errors are clean request errors here —
+    // never a mid-stream worker failure. Unconstrained requests skip everything.
+    let constraint = match &req.grammar {
+        None => None,
+        Some(spec) => {
+            let factory = lm.constraints.get_or_init(||
+                crate::constrained::ConstraintFactory::new(&lm.tok));
+            match factory {
+                Err(err) => return Err((req.tx, format!("constrained decoding: {err}"))),
+                Ok(f) => {
+                    let sc = f.matcher(spec);
+                    if let Some(err) = sc.error() {
+                        return Err((req.tx, format!("response_format: {err}")));
+                    }
+                    Some(sc)
+                }
+            }
+        }
+    };
+    // TODO(spec x constrained): the spec burst verifies K drafted tokens in one batched
+    // step — masking would have to run INSIDE the draft/verify loop (per-position grammar
+    // states). Until that lands, constrained sessions take plain decode; loud, not silent.
+    if constraint.is_some() && serve_spec && lm.model.mtp.is_some() {
+        eprintln!("[worker] constrained request: spec-decode bypassed (grammar masks are \
+                   plain-decode only for now)");
+    }
     let spec_eligible = serve_spec
+        && constraint.is_none()
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
         && !greedy_penalized
         && lm.model.mtp.is_some();
@@ -1768,6 +1818,7 @@ fn admit(
         spec_accepted: 0,
         last_logits: seed_logits,
         device_next: None,
+        constraint,
         fed: seed_fed,
         prefill_queue: if let Some(ts) = text_suffix { ts.into_iter().collect() }
                        else if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
@@ -1913,15 +1964,35 @@ fn advance_sample_emit(
     // Device-presampled token from the last batched tick (Session.device_next): skips the
     // O(n_vocab) host sample (measured 1.36 ms/row at 248k vocab). Greedy device rows are
     // bit-identical to host argmax; temp rows are the seeded device draw (gate3 contract).
-    let next = match s.device_next.take() {
-        Some(t) => t,
-        None => s.sampler.sample(&s.last_logits),
+    // CONSTRAINED rows never device-sample (their samp meta is None) — they host-sample
+    // from a grammar-masked COPY of last_logits (the pristine row still parks into the
+    // reuse pool at retire, so continuations resume unmasked).
+    let next = match (s.device_next.take(), s.constraint.as_mut()) {
+        (Some(t), _) => t,
+        (None, Some(c)) => {
+            let mut row = s.last_logits.clone();
+            if let Err(err) = c.mask_logits(&mut row) {
+                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                return (false, None);
+            }
+            s.sampler.sample(&row)
+        }
+        (None, None) => s.sampler.sample(&s.last_logits),
     };
     s.sampler.accept(next);
     s.generated.push(next);
     if s.params.eos.contains(&next) {
         finish(s, StopReason::Eos);
         return (false, None);
+    }
+    // Advance the grammar with the accepted (non-EOS) token. The token came from this
+    // state's own mask, so an error here is a real bug — stop LOUDLY, never emit
+    // schema-violating text as if it conformed.
+    if let Some(c) = s.constraint.as_mut() {
+        if let Err(err) = c.consume(next) {
+            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            return (false, None);
+        }
     }
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
@@ -2154,9 +2225,16 @@ fn step_session(
         return Ok(false);
     }
 
-    let next = match s.device_next.take() {
-        Some(t) => t,
-        None => s.sampler.sample(&s.last_logits),
+    // CONSTRAINED rows host-sample from a grammar-masked copy (same seam as
+    // advance_sample_emit — the batched path; kept in lockstep).
+    let next = match (s.device_next.take(), s.constraint.as_mut()) {
+        (Some(t), _) => t,
+        (None, Some(c)) => {
+            let mut row = s.last_logits.clone();
+            c.mask_logits(&mut row).map_err(|e| format!("constraint mask: {e}"))?;
+            s.sampler.sample(&row)
+        }
+        (None, None) => s.sampler.sample(&s.last_logits),
     };
     s.sampler.accept(next);
     s.generated.push(next);
@@ -2165,6 +2243,9 @@ fn step_session(
     if s.params.eos.contains(&next) {
         finish(s, StopReason::Eos);
         return Ok(false);
+    }
+    if let Some(c) = s.constraint.as_mut() {
+        c.consume(next).map_err(|e| format!("constraint advance: {e}"))?;
     }
 
     // Detokenize the full generated tail, compute the incremental text delta vs what we've emitted.
@@ -2278,6 +2359,15 @@ fn abort_log(s: &Session) {
 
 fn finish(s: &Session, reason: StopReason) {
     let elapsed = s.t0.elapsed().as_secs_f64();
+    // constrained-session mask-cost receipt (the perf ledger line): steps + total/mean
+    // host-side mask compute time. Unconstrained sessions log nothing.
+    if let Some(c) = s.constraint.as_ref() {
+        if c.steps > 0 {
+            eprintln!("[constrained] {}: {} masked steps, mask total {:.2} ms ({:.3} ms/step)",
+                      s.model, c.steps, c.mask_ns as f64 / 1e6,
+                      c.mask_ns as f64 / 1e6 / c.steps as f64);
+        }
+    }
     let reason = format!("{reason:?}");
     let _ = s.tx.send(Event::Done {
         stop_reason: reason,

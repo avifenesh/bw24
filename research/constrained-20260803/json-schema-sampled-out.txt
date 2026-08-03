@@ -1,0 +1,10 @@
+{
+  "name": "Elara Vance",
+  "age": 29,
+  "tags": [
+    "Urban Gardener",
+    "Former Architect",
+    "Sylph Enthusiast",
+    "Micro-entrepreneur"
+  ]
+}
