@@ -1,0 +1,19 @@
+loaded Qwen35 from safetensors (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+What is the capital of France? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "What is the capital of France? Answer in one short sentence."
+prompt tokens: [248045, 846, 198, 3710, 369, 279, 6511, 314, 9338, 30, 21134, 303, 799, 2716, 11316, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+verify-prefill argmax=90700  decode argmax=90700  logit maxdiff=0.000e0  MATCH
+generated 24 tokens in 0.164s = 146.57 tok/s (ST greedy decode)
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 15380, 25, 328, 3710, 369, 279, 6511]
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Question: \"What is the capital"
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital
