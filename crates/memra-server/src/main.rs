@@ -6,8 +6,10 @@
 //! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
 //!
 //! Endpoints:
-//!   GET  /health                 -> {"status":"ok","models":[...]}
+//!   GET  /health                 -> {"status":"ok"|"draining","models":[...]}
 //!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
+//!   GET  /v1/models              -> OR-schema model list (context_length, architecture,
+//!                                     pricing stub, top_provider; serve-tail 2026-08-04).
 //!   GET  /metrics                -> flat serving counters + step latency percentiles.
 //!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
 //!                                     seed?,stop?,chat?,stream?,cache_salt?}. stream=true => SSE
@@ -23,6 +25,11 @@
 //! CONFIG: MEMRA_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo" (comma-separated;
 //! `+draft.gguf` attaches that model's regime draft — docs/DRAFT-REGIME.md).
 //! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. MEMRA_ADDR sets the bind addr.
+//!
+//! LIFECYCLE: SIGTERM = graceful drain (gap-scan F11) — new completion requests 503 with
+//! Retry-After, /health reports "draining", in-flight requests (streams included) finish
+//! up to MEMRA_DRAIN_S (default 30s), then the process exits 0. Completion responses carry
+//! X-RateLimit-Limit/-Remaining/-Reset (concurrency-slot semantics; gap-scan F12).
 
 /// x-lane QoS (lane/dl-metering gate, QoS-only extraction 2026-08-02): lane types, SLO
 /// admission policy, engine-truth step stats live in the memra-lanes crate so out-of-process
@@ -137,6 +144,42 @@ fn reset_estimate_s(m: &worker::Metrics) -> u64 {
     static D: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *D.get_or_init(|| std::env::var("MEMRA_RL_RESET_S").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(2))
+}
+
+// ---- graceful drain (serve-tail lane, 2026-08-04; gap-scan F11) ----
+//
+// SIGTERM flips the drain flag: new requests on the completion routes get an immediate
+// 503 + Retry-After (never queued), /health reports "draining" (the LB is_ready signal),
+// and the drain task waits on the in-flight gauge (the same HTTP-layer counts the
+// rate-limit headers use — streams hold their slot until fully written) up to
+// MEMRA_DRAIN_S (default 30s), then shuts the listener down and the process exits 0.
+// Fleet restarts stop being SIGKILL-class in-flight loss (the chaos-receipt gap).
+
+/// Process-wide drain flag (set by the SIGTERM task, read by every admission gate).
+static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn draining() -> bool {
+    DRAINING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// MEMRA_DRAIN_S (default 30): how long a draining server waits for in-flight requests.
+fn drain_deadline_s() -> u64 {
+    static D: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("MEMRA_DRAIN_S").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(30))
+}
+
+/// 503 for a request that arrived during drain: OpenAI error object + Retry-After
+/// (the drain window — by then this instance is gone and its replacement is up).
+fn drain_response() -> Response {
+    let mut resp = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "server is draining (shutdown in progress); retry",
+        "server_error", None);
+    if let Ok(v) = axum::http::HeaderValue::from_str(&drain_deadline_s().to_string()) {
+        resp.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+    }
+    resp
 }
 
 /// One request's header values, computed at submission time (the "at admit" snapshot).
@@ -748,6 +791,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|d| d.as_secs()).unwrap_or(0),
         inflight: Arc::new(Default::default()),
     };
+    let inflight_handle = state.inflight.clone();
     let app = Router::new()
         .route("/health", get(health))
         .route("/models", get(list_models))
@@ -761,7 +805,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("MEMRA_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     eprintln!("[server] listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    // GRACEFUL DRAIN (gap-scan F11): SIGTERM flips the drain flag (new completion
+    // requests 503 immediately; /health reports "draining"), then the shutdown future
+    // resolves once every in-flight request finished (the HTTP-layer gauge — streams
+    // hold their slot until fully written) or the MEMRA_DRAIN_S deadline (default 30s)
+    // passed. axum's graceful shutdown stops accepting, lets tracked connections finish
+    // their current response, and returns — exit 0 (in-flight loss only past deadline).
+    let inflight = inflight_handle;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let mut sigterm = match tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!("[server] WARN: no SIGTERM handler ({err}); drain disabled");
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                }
+            };
+            sigterm.recv().await;
+            DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+            let n: usize = inflight.iter()
+                .map(|c| c.load(std::sync::atomic::Ordering::SeqCst)).sum();
+            eprintln!("[server] SIGTERM: draining ({n} in flight, deadline {}s)",
+                      drain_deadline_s());
+            let deadline = std::time::Duration::from_secs(drain_deadline_s());
+            let t0 = std::time::Instant::now();
+            loop {
+                let n: usize = inflight.iter()
+                    .map(|c| c.load(std::sync::atomic::Ordering::SeqCst)).sum();
+                if n == 0 {
+                    eprintln!("[server] drain complete in {:.1}s; exiting",
+                              t0.elapsed().as_secs_f64());
+                    break;
+                }
+                if t0.elapsed() >= deadline {
+                    eprintln!("[server] drain deadline ({}s) hit with {n} in flight; exiting",
+                              drain_deadline_s());
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await?;
     Ok(())
 }
 
@@ -799,7 +885,10 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
 }
 
 async fn health(State(st): State<AppState>) -> impl IntoResponse {
-    Json(json!({ "status": "ok", "models": *st.models }))
+    // "draining" = the LB/orchestrator not-ready signal (gap-scan F11): the process is
+    // finishing in-flight work and will exit; route new traffic elsewhere.
+    let status = if draining() { "draining" } else { "ok" };
+    Json(json!({ "status": status, "models": *st.models }))
 }
 
 /// Flat serving counters + engine-truth step latency percentiles.
@@ -1104,6 +1193,11 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
         Ok(l) => l,
         Err(resp) => return resp,
     };
+    // DRAIN GATE (gap-scan F11): a draining server admits nothing new — immediate
+    // 503 + Retry-After, before any slot/queue state is touched.
+    if draining() {
+        return with_request_id(&env.id, drain_response());
+    }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): take the in-flight slot at submission time;
     // the guard rides the response (stream included) and frees the slot at completion.
     let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
@@ -1174,6 +1268,11 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
             return with_request_id(&env.id, bad_request(&err, None));
         }
     };
+    // DRAIN GATE (gap-scan F11): a draining server admits nothing new — immediate
+    // 503 + Retry-After, before any slot/queue state is touched.
+    if draining() {
+        return with_request_id(&env.id, drain_response());
+    }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): slot taken at submission (post-validation —
     // a 400 never held a slot); freed when the response completes (guard).
     let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
@@ -2097,8 +2196,13 @@ mod tests {
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
+    /// Serializes tests that read or flip the process-global DRAINING flag (the drain
+    /// test must not 503 a concurrently-running handler test).
+    static DRAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn responses_carry_rate_limit_headers_and_slot_frees() {
+        let _l = DRAIN_LOCK.lock().unwrap();
         let st = fake_worker_state();
         // non-stream chat: headers present, remaining = cap - 1 (this request held
         // the only slot), slot freed after completion.
@@ -2129,6 +2233,43 @@ mod tests {
         let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
                    "slot must free when the stream completes");
+    }
+
+    #[tokio::test]
+    async fn draining_rejects_new_requests_with_503_and_retry_after() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        let st = fake_worker_state();
+        DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+        // both completion routes: immediate 503 + Retry-After, no slot held.
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key("retry-after"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["error"]["message"].as_str().unwrap().contains("draining"));
+        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "prompt": "t"
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key("retry-after"));
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "rejected requests must not hold slots");
+        // /health flips to "draining" (the LB not-ready signal).
+        let resp = health(State(st.clone())).await.into_response();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "draining");
+        DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
+        // flag cleared: requests admit again (the gate is the flag, nothing latent).
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[test]
