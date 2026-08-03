@@ -14,12 +14,15 @@ set -uo pipefail
 LANE=/home/avifenesh/projects/wt-w4a4
 BIN=$LANE/target/release/run-gen
 LOGDIR=$LANE/research/w4a4-rescue-20260803/logs
-LABEL=${1:?usage: run-perf.sh <label> [rounds]}
+LABEL=${1:?usage: run-perf.sh <label> [rounds] [prompt-file]}
 ROUNDS=${2:-5}
 LOG=$LOGDIR/$LABEL-perf.log
 
 MODEL=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
-PROMPT=$LANE/research/e2e/prompts/p2-code-medium.txt
+# Prompt is selectable: the correction's cost is per-token (y traffic) while the weight re-reads are
+# per-CTA-pass, so the corrected arm's RATIO against W4A8 need not be constant in prompt length. A
+# single-length window would not support a default-flip claim.
+PROMPT=${3:-$LANE/research/e2e/prompts/p2-code-medium.txt}
 
 mkdir -p "$LOGDIR"
 : > "$LOG"
