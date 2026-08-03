@@ -1353,7 +1353,7 @@ mod tests {
             "model": "plain_quant", "messages": [{"role": "user", "content": "task"}]
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(req, None, tx).unwrap();
+        let plan = build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap();
         assert_eq!(plan.request.params.max_new, worker::MAX_NEW_CTX_BOUNDED);
         // max_completion_tokens alias still honored exactly.
         let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
@@ -1361,13 +1361,13 @@ mod tests {
             "max_completion_tokens": 7
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_chat_request(req, None, tx).unwrap().request.params.max_new, 7);
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.params.max_new, 7);
         // completions body: same omission law.
         let req: CompletionReq = serde_json::from_value(serde_json::json!({
             "model": "plain_quant", "prompt": "task"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_request(&req, tx).params.max_new, worker::MAX_NEW_CTX_BOUNDED);
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive).params.max_new, worker::MAX_NEW_CTX_BOUNDED);
         let turns: Vec<(String, String)> = request.chat_turns.iter()
             .map(|t| (t.role.clone(), t.content.clone())).collect();
         assert_eq!(turns, vec![
@@ -1734,7 +1734,7 @@ mod tests {
             "frequency_penalty": 0.5, "presence_penalty": 0.25, "repetition_penalty": 1.1
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_chat_request(req, None, tx).unwrap().request.sampler_cfg;
+        let cfg = build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.sampler_cfg;
         assert_eq!(cfg.penalty_freq, 0.5);
         assert_eq!(cfg.penalty_present, 0.25);
         assert_eq!(cfg.penalty_repeat, 1.1);
@@ -1744,7 +1744,7 @@ mod tests {
             "model": "m", "prompt": "task", "frequency_penalty": 1.5
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_request(&req, tx).sampler_cfg;
+        let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
         assert_eq!(cfg.penalty_freq, 1.5);
         assert_eq!(cfg.penalty_last_n, usize::MAX);
 
@@ -1753,7 +1753,7 @@ mod tests {
             "model": "m", "prompt": "task"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_request(&req, tx).sampler_cfg;
+        let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
         assert_eq!(cfg.penalty_last_n, 0);
         assert_eq!(cfg.penalty_repeat, 1.0);
     }
