@@ -49,6 +49,11 @@ struct LoadedModel {
     model: HybridModel,
     tok: Tokenizer,
     eos_id: u32,
+    /// Loaded from a checkpoint DIRECTORY (safetensors/repack) rather than a GGUF file.
+    /// Feeds ModelCaps::chat_ok: a dir checkpoint with no chat template 400s on chat
+    /// requests (serve-st v1 honesty gate) instead of silently rendering fallback ChatML;
+    /// GGUF models keep the historical ChatML fallback.
+    from_dir: bool,
     /// Constrained-decoding grammar factory (llguidance TokTrie over this vocab). Built
     /// LAZILY on the first `response_format` request against this model — unconstrained
     /// serving never pays the vocab-trie build. `Err` = vocab unusable (kept, so every
@@ -114,6 +119,11 @@ pub struct ModelCaps {
     pub qwen_think: bool,
     /// template has the `enable_thinking` switch (ThinkMode::NoThink is honored).
     pub think_switch: bool,
+    /// chat requests are honest against this model: it has a chat template, OR it is a
+    /// GGUF (which keeps the historical plain-ChatML fallback). A safetensors/repack DIR
+    /// checkpoint without a template 400s on /v1/chat/completions (serve-st v1 honesty
+    /// gate) instead of silently rendering a format the model was never trained on.
+    pub chat_ok: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -632,7 +642,8 @@ pub fn run(
         eprintln!("[worker] loading model {name:?} <- {path}");
         // DIRECTORY path = safetensors HF checkpoint or a manifest-backed memra repack/overlay;
         // file = GGUF. Repack tokenizers live in the manifest's source_dir.
-        let (model, tok) = if std::path::Path::new(path).is_dir() {
+        let from_dir = std::path::Path::new(path).is_dir();
+        let (model, tok) = if from_dir {
             let dir = std::path::Path::new(path);
             let (src, tok_dir): (Box<dyn memra_gguf::source::TensorSource>, std::path::PathBuf) =
                 if dir.join("manifest.json").exists() {
@@ -698,8 +709,16 @@ pub fn run(
 
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
+        // ST-SPEC QUARANTINE notice (see the serve_spec computation in make_session): loud
+        // once at load, so a dir-checkpoint operator knows why decode is not spec-bursting.
+        if from_dir && model.mtp.is_some()
+            && std::env::var("MEMRA_SERVE_SPEC").map(|v| v == "0" || v.is_empty()).unwrap_or(true) {
+            eprintln!("[worker]   {name:?}: MTP head present but spec-decode is QUARANTINED \
+                       for dir checkpoints (ST serve-spec exactness open, \
+                       research/serve-st-20260803/); MEMRA_SERVE_SPEC=1 forces the door");
+        }
         loaded.insert(name.clone(), LoadedModel {
-            model, tok, eos_id, constraints: std::cell::OnceCell::new(),
+            model, tok, eos_id, from_dir, constraints: std::cell::OnceCell::new(),
         });
         order.push(name.clone());
     }
@@ -711,9 +730,13 @@ pub fn run(
                 && !t.contains("hy_User") && !t.contains("<|turn>")),
             qwen_think: t.is_some_and(|t| t.contains("<think>") && t.contains("add_generation_prompt")),
             think_switch: t.is_some_and(|t| t.contains("enable_thinking")),
+            // GGUF keeps the historical ChatML fallback for template-less models; a dir
+            // checkpoint (safetensors/repack) must CARRY its template (tokenizer_config
+            // chat_template or chat_template.jinja) or chat requests 400 (serve-st v1).
+            chat_ok: t.is_some() || !lm.from_dir,
         };
-        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={}",
-                  caps.tools_branch, caps.qwen_think, caps.think_switch);
+        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={}",
+                  caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
@@ -1644,8 +1667,20 @@ fn admit(
     // cross-request prefix cache entirely (SpecSession owns trunk + draft caches; restoring a
     // trunk-only prefix would leave draft state unprimed — the spec tier keeps its own
     // continuation pool below). Mirrors the spec-branch condition exactly.
+    // ST-SPEC QUARANTINE (serve-st lane, 2026-08-04): dir-loaded checkpoints (safetensors/
+    // repack) are spec-INELIGIBLE unless MEMRA_SERVE_SPEC is EXPLICITLY set nonzero.
+    // Receipts (research/serve-st-20260803/RESULTS.md): on ST models the serve spec-session
+    // path diverges from plain greedy — the 4B BF16 ckpt's draft GRAPH arm corrupts output
+    // outright after ~250 tok (nograph arm exact), and the 9B NVFP4 ST ckpt flips a
+    // near-tie token even at K=1 nograph — while run-spec CLI self-consistency PASSES
+    // K=1..8 on both, so the fault is specific to generate_spec_session on dir-loaded
+    // weights. GGUF spec serving (the battery-pinned path) is untouched. Explicit
+    // MEMRA_SERVE_SPEC=1 = the experimental door until the ST serve-spec gate goes green.
+    let spec_forced = std::env::var("MEMRA_SERVE_SPEC")
+        .map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
     let serve_spec = !confidence_trace_enabled()
-        && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
+        && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true)
+        && (!lm.from_dir || spec_forced);
     let mut sampler = Sampler::new(req.sampler_cfg);
     // GREEDY + penalties keeps the legacy tokenwise path (gap-scan F3 plumbing): the greedy
     // spec arm verifies by pure argmax (sampling=None), which would silently ignore the

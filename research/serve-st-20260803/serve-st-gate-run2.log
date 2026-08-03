@@ -1,0 +1,7 @@
+== serve-st-gate: checkpoint /data/ai-ml/hf-models/qwen35-4b-hf ==
+  ok: /models lists the ST model
+  ok: chat completion coherent (Paris) via ST template
+identical 64 ids
+  ok: CLI-vs-server greedy token streams identical
+  FAIL: spec-vs-plain ST text mismatch
+serve-st-gate: 1 failed

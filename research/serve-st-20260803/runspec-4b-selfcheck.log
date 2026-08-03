@@ -1,0 +1,31 @@
+loaded safetensors (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   199 tok in 1.308s = 152.15 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [198, 2, 220, 16, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15]
+
+[generate_spec K=1] 200 tok in 0.856s = 232.37 tok/s (1.53x vs generate; this run's prime 0.006s)
+  acceptance: 99/101 = 98.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 200 tok in 0.673s = 295.56 tok/s (1.94x vs generate; this run's prime 0.006s)
+  acceptance: 132/136 = 97.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 200 tok in 0.598s = 332.78 tok/s (2.19x vs generate; this run's prime 0.006s)
+  acceptance: 150/156 = 96.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 200 tok in 0.560s = 355.31 tok/s (2.34x vs generate; this run's prime 0.006s)
+  acceptance: 160/168 = 95.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 200 tok in 0.530s = 375.75 tok/s (2.47x vs generate; this run's prime 0.006s)
+  acceptance: 165/175 = 94.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 200 tok in 0.524s = 380.05 tok/s (2.50x vs generate; this run's prime 0.006s)
+  acceptance: 174/186 = 93.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 200 tok in 0.507s = 392.22 tok/s (2.58x vs generate; this run's prime 0.006s)
+  acceptance: 174/189 = 92.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 200 tok in 0.936s = 212.58 tok/s (1.40x vs generate; this run's prime 0.006s)
+  acceptance: 181/200 = 90.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

@@ -1,0 +1,16 @@
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+Traceback (most recent call last):
+  File "<string>", line 5, in <module>
+    assert c.strip(), "empty content"
+           ~~~~~~~^^
+AssertionError: empty content
+  FAIL: chat non-stream
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  FAIL: greedy determinism
+  FAIL: concurrency (0/3)
+  ok: long generation (>=100 tok)
+== serve-smoke: spec serving (draft attached) ==
+  FAIL: spec-vs-plain text mismatch
+serve-smoke: 4 failed
