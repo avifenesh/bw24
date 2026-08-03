@@ -177,6 +177,27 @@ spec resume, or prefix cache). `/metrics` exposes the cumulative split
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
 
+## Multi-tenant QoS — the x-lane SLO gate (lane/qos-p95, 2026-08-02)
+
+Requests may tag a service class via the `x-lane` header: `interactive` (protected;
+also the default when the header is absent — naked traffic is byte-identical),
+`judge` (prefill-shaped), or `harvest` (decode-shaped bulk). The gate is engine-side
+admission control: interactive always admits (waits FIFO past `MEMRA_MAX_SESSIONS`,
+never rejected); judge/harvest admit only while the measured interactive decode-step
+p99 stays under their fraction of `MEMRA_SLO_P99_MS` (50ms default) and shed with an
+immediate `429 + Retry-After` otherwise — dark work is never queued inside the engine.
+Inside the tick, interactive decode rows batch first and dark-lane prefill runs after
+decode within measured SLO headroom only. Per-lane counters + the engine-truth step
+p50/p99 export at `GET /yield/metrics`.
+
+Measured at fleet scale (8 replicas, c=96 harvest + c=4 interactive, N=3 interleaved,
+`research/qos-p95-20260802/`): the lane-blind proxy FIFO alone inflates contended
+interactive p95 to 7.15s (~4x alone); with lanes on and the proxy cap at 16 (so engine
+admission owns the queue — the gate cannot fix a queue it never sees), p95 drops to
+3.69s (~2x alone) at -11% bulk throughput vs the cap-16 ceiling. `MEMRA_SLO_P99_MS`
+is the dial: 25ms makes contended interactive statistically equal to alone
+(p50 1.637s / p95 2.158s) with bulk paying -67%. Lane knobs in [FLAGS.md §1](FLAGS.md).
+
 ## Knobs
 
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are

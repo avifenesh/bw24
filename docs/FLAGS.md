@@ -64,8 +64,13 @@ HANDOVER.md sections from that date.
 | `MEMRA_KV_REUSE` | on | `0` disables the KV prefix-reuse pool (session-gate validated; 42.6x turn-start at 40k) |
 | `MEMRA_REUSE_POOL` | 2 | parked-cache pool cap per model (VRAM budget: ~119MB/entry at ctx 8192 on the 9B). At the default, sequential multi-turn workloads of >2 sessions hit the park-evicts-next-entry cascade (0/N resumes; pinned 2026-07-31) — raise to the expected concurrent-session count when VRAM allows |
 | `MEMRA_SERVE_SPEC` | on | `0` disables the spec-decode serve path (greedy + MTP-head requests) |
-| `MEMRA_MAX_SESSIONS` | 64 | max concurrently-active sessions under batched scheduling (admits beyond it queue FIFO, never rejected). Legacy round-robin mode (`MEMRA_SERVE_BATCH=0`) uses the fixed MAX_ACTIVE=4 bound instead |
+| `MEMRA_MAX_SESSIONS` | 64 | max concurrently-active INTERACTIVE sessions under batched scheduling (admits beyond it queue FIFO, never rejected). Legacy round-robin mode (`MEMRA_SERVE_BATCH=0`) uses the fixed MAX_ACTIVE=4 bound instead. Judge/harvest lanes cap separately (`MEMRA_LANE_MAX_*`) |
 | `MEMRA_SPEC_BURST` | 32 | tokens per spec burst — round-robin latency vs per-burst fixed cost (throughput-neutral, 2026-07-06 A/B null) |
+| `MEMRA_SLO_P99_MS` | 50 | x-lane QoS gate (lane/qos-p95, 2026-08-02 — the dl-metering QoS extraction): the interactive decode-step p99 SLO. Requests tag a class via the `x-lane` header (`interactive`\|`judge`\|`harvest`; absent = interactive — naked traffic is unaffected). Interactive always admits; judge/harvest SHED at admission (HTTP 429 + Retry-After) when measured interactive step p99 crosses `MEMRA_SHED_JUDGE` (1.00) / `MEMRA_SHED_HARVEST` (0.90) of the SLO, and when a starvation sentinel fires. Interactive decode rows sort first; dark prefill runs after decode inside SLO headroom only. This is also the multi-tenant REQUEST-latency dial: fleet QoS@8 measured p50/p95 = 2.39/3.69s at 50ms, 2.06/3.56s at 35ms, 1.64/2.16s at 25ms (bulk pays: 2214 → 1592 → 818 tok/s — `research/qos-p95-20260802/`) |
+| `MEMRA_SHED_JUDGE` / `MEMRA_SHED_HARVEST` | 1.00 / 0.90 | per-lane shed thresholds as fractions of the SLO |
+| `MEMRA_LANE_MAX_INTERACTIVE`/`_JUDGE`/`_HARVEST` | 32 / 4 / 8 | per-lane resident session caps (interactive's applies to the sidecar shape; the serve path uses `MEMRA_MAX_SESSIONS`) |
+| `MEMRA_PREFILL_TICK` / `MEMRA_PREFILL_JUDGE` / `MEMRA_PREFILL_HARVEST` | 1024 / 256 / 256 | per-tick prefill token budgets: interactive full chunk, judge/harvest are per-tick stall bounds (a 2048-tok judge chunk ≈ 230ms decode starvation; 256 ≈ 30ms) further capped by measured SLO headroom |
+| `MEMRA_LANE_WINDOW_S` | 30 | interactive step-p99 estimator window |
 
 ---
 

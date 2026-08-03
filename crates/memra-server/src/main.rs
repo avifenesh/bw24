@@ -24,6 +24,10 @@
 //! `+draft.gguf` attaches that model's regime draft — docs/DRAFT-REGIME.md).
 //! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. MEMRA_ADDR sets the bind addr.
 
+/// x-lane QoS (lane/dl-metering gate, QoS-only extraction 2026-08-02): lane types, SLO
+/// admission policy, engine-truth step stats live in the memra-lanes crate so out-of-process
+/// controllers (the sidecar shape) can share them.
+pub(crate) mod lanes { pub use memra_lanes::*; }
 mod toolcall;
 mod worker;
 
@@ -447,6 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/completions", post(completions))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/metrics", get(get_metrics))
+        .route("/yield/metrics", get(yield_metrics))
         .with_state(state);
 
     let addr = std::env::var("MEMRA_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -516,8 +521,68 @@ async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({ "object": "list", "data": data }))
 }
 
+/// Per-lane counters + engine-truth interactive step latency (sidecar-compatible shape —
+/// the x-lane QoS gate's receipts endpoint).
+async fn yield_metrics(State(st): State<AppState>) -> impl IntoResponse {
+    let m = st.metrics.lock().map(|m| m.clone()).unwrap_or_default();
+    let lane = |i: usize| json!({
+        "admitted": m.lane_admitted[i], "shed": m.lane_shed[i],
+        "completed": m.lane_completed[i], "tokens_out": m.lane_tokens[i],
+    });
+    Json(json!({
+        "lanes": {
+            "interactive": lane(0), "judge": lane(1), "harvest": lane(2),
+        },
+        "interactive_step_ms": { "p50": m.step_p50_ms, "p99": m.step_p99_ms },
+        "batch_size_last": m.batch_size_last,
+    }))
+}
+
+/// Extract the yield lane from `x-lane` (default interactive; unknown value = 400).
+fn lane_from_headers(headers: &axum::http::HeaderMap) -> Result<lanes::Lane, Response> {
+    match headers.get("x-lane").map(|v| v.to_str().unwrap_or("?")) {
+        None => Ok(lanes::Lane::Interactive),
+        Some(v) => lanes::Lane::parse(v).ok_or_else(|| {
+            (StatusCode::BAD_REQUEST,
+             Json(json!({ "error": format!("unknown x-lane {v:?}") }))).into_response()
+        }),
+    }
+}
+
+/// Dark lanes (judge/harvest) can be SHED at admission — surface that as HTTP 429 +
+/// Retry-After before committing to a streaming response. Interactive never sheds, so it
+/// skips the peek (its first token may be legitimately far away; don't hold headers).
+async fn peek_shed(
+    lane: lanes::Lane,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
+) -> Result<tokio::sync::mpsc::UnboundedReceiver<Event>, Response> {
+    if lane == lanes::Lane::Interactive {
+        return Ok(rx);
+    }
+    match rx.recv().await {
+        Some(Event::Error(e)) if e.starts_with("shed:") => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, "2")],
+            Json(json!({ "error": e })),
+        ).into_response()),
+        first => {
+            let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+            if let Some(ev) = first {
+                let _ = tx2.send(ev);
+            }
+            tokio::spawn(async move {
+                while let Some(ev) = rx.recv().await {
+                    if tx2.send(ev).is_err() { break; }
+                }
+            });
+            Ok(rx2)
+        }
+    }
+}
+
 /// Build the (GenParams, SamplerConfig, stop, prompt) from a request body.
-fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Request {
+fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>,
+                 lane: lanes::Lane) -> Request {
     let params = GenParams {
         max_new: req.max_tokens,
         max_ctx: req.max_ctx,
@@ -544,6 +609,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         stop_strings: req.stop.clone().into_vec(),
         trace_id: req.trace_id.clone(),
         cache_ns: cache_namespace(&req.cache_salt),
+        lane,
         tx,
     }
 }
@@ -558,7 +624,8 @@ struct ChatPlan {
 }
 
 fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
-                      tx: tokio::sync::mpsc::UnboundedSender<Event>)
+                      tx: tokio::sync::mpsc::UnboundedSender<Event>,
+                      lane: lanes::Lane)
                       -> Result<ChatPlan, String> {
     let tool_choice = parse_tool_choice(&req.tool_choice)?;
     let think = parse_think(&req.reasoning_effort, &req.reasoning)?;
@@ -624,6 +691,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             stop_strings: req.stop.into_vec(),
             trace_id: None,
             cache_ns: cache_namespace(&req.cache_salt),
+            lane,
             tx,
         },
         parser,
@@ -644,15 +712,23 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     if !authorized(&headers) {
         return (StatusCode::UNAUTHORIZED, "invalid api key").into_response();
     }
+    let lane = match lane_from_headers(&headers) {
+        Ok(l) => l,
+        Err(resp) => return resp,
+    };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
-    let request = build_request(&req, tx);
+    let request = build_request(&req, tx, lane);
     let stop_strings = request.stop_strings.clone();
 
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker unavailable").into_response();
     }
+    let rx = match peek_shed(lane, rx).await {
+        Ok(rx) => rx,
+        Err(resp) => return resp,
+    };
 
     if stream {
         sse_response(rx, model, false, None).into_response()
@@ -673,10 +749,14 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
                 Json(json!({ "error": "messages must use system/user/assistant/tool roles" })))
             .into_response();
     }
+    let lane = match lane_from_headers(&headers) {
+        Ok(l) => l,
+        Err(resp) => return resp,
+    };
     let model = req.model.clone();
     let stream = req.stream;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    let plan = match build_chat_request(req, st.caps.get(&model), tx) {
+    let plan = match build_chat_request(req, st.caps.get(&model), tx, lane) {
         Ok(plan) => plan,
         Err(err) => {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response();
@@ -686,6 +766,10 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker unavailable").into_response();
     }
+    let rx = match peek_shed(lane, rx).await {
+        Ok(rx) => rx,
+        Err(resp) => return resp,
+    };
     if stream {
         sse_response(rx, model, true, plan.parser).into_response()
     } else {
@@ -899,7 +983,7 @@ mod tests {
         });
         let req: ChatCompletionReq = serde_json::from_value(payload).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(req, None, tx).unwrap();
+        let plan = build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap();
         let request = plan.request;
         assert!(plan.parser.is_none(), "no tools -> no parser (isolation contract)");
         assert!(request.tools_json.is_empty());
@@ -973,7 +1057,7 @@ mod tests {
     #[test]
     fn tools_request_renders_client_key_order_and_arms_parser() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(weather_request(json!({})), Some(&tool_caps()), tx).unwrap();
+        let plan = build_chat_request(weather_request(json!({})), Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
         assert!(plan.parser.is_some());
         assert_eq!(plan.request.tools_json.len(), 1);
         // client key order preserved + python-dumps separators (the template's tojson law).
@@ -988,26 +1072,26 @@ mod tests {
     fn tool_choice_none_strips_tools_and_parser() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let plan = build_chat_request(weather_request(json!({"tool_choice": "none"})),
-                                      Some(&tool_caps()), tx).unwrap();
+                                      Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
         assert!(plan.parser.is_none());
         assert!(plan.request.tools_json.is_empty());
         // unsupported tool_choice forms are clean 400s, not silent downgrades.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"tool_choice": "required"})),
-                                   Some(&tool_caps()), tx).is_err());
+                                   Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"tool_choice":
             {"type": "function", "function": {"name": "get_weather"}}})),
-                                   Some(&tool_caps()), tx).is_err());
+                                   Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
     }
 
     #[test]
     fn tools_on_model_without_tools_branch_is_rejected() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let caps = ModelCaps { tools_branch: false, qwen_think: false, think_switch: false };
-        assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx).is_err());
+        assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx, lanes::Lane::Interactive).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert!(build_chat_request(weather_request(json!({})), None, tx).is_err());
+        assert!(build_chat_request(weather_request(json!({})), None, tx, lanes::Lane::Interactive).is_err());
     }
 
     #[test]
@@ -1025,12 +1109,12 @@ mod tests {
         ] {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let plan = build_chat_request(weather_request(extra.clone()),
-                                          Some(&tool_caps()), tx).unwrap();
+                                          Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
             assert_eq!(plan.request.think, want, "extra={extra}");
         }
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"reasoning_effort": "extreme"})),
-                                   Some(&tool_caps()), tx).is_err());
+                                   Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
     }
 
     #[test]
@@ -1048,7 +1132,7 @@ mod tests {
         });
         let req: ChatCompletionReq = serde_json::from_value(payload).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(req, Some(&tool_caps()), tx).unwrap();
+        let plan = build_chat_request(req, Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
         let turns = &plan.request.chat_turns;
         assert_eq!(turns[1].tool_calls, vec![TmplToolCall {
             name: "get_weather".into(),
@@ -1096,26 +1180,26 @@ mod tests {
             "model": "m", "prompt": "task", "cache_salt": "tenant-a"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_request(&req, tx).cache_ns, "tenant-a");
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive).cache_ns, "tenant-a");
 
         let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "task"}],
             "cache_salt": "tenant-b"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_chat_request(req, None, tx).unwrap().request.cache_ns, "tenant-b");
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.cache_ns, "tenant-b");
 
         // no salt -> "" (the default single-tenant namespace; pre-PC-ISO behavior).
         let req: CompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "prompt": "task"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_request(&req, tx).cache_ns, "");
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive).cache_ns, "");
         let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "task"}]
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_chat_request(req, None, tx).unwrap().request.cache_ns, "");
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.cache_ns, "");
     }
 
     #[test]

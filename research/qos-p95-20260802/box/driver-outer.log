@@ -1,0 +1,302 @@
+[23:20:00Z] campaign start — gate binary /home/ubuntu/memra/target/release/memra-server, model /opt/dlami/nvme/models/Qwen3.5-9B-Q8_0.gguf, devices 4-7, f8 proxy :9080
+[23:20:00Z] === pass 1 cond off8 (cap 8) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 218004)
+[fleet] launched replica :9086 on GPU 4 (pid 218007)
+[fleet] launched replica :9087 on GPU 5 (pid 218010)
+[fleet] launched replica :9088 on GPU 5 (pid 218013)
+[fleet] launched replica :9089 on GPU 6 (pid 218016)
+[fleet] launched replica :9090 on GPU 6 (pid 218019)
+[fleet] launched replica :9091 on GPU 7 (pid 218022)
+[fleet] launched replica :9092 on GPU 7 (pid 218025)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+[23:20:23Z] cell p1-off8 (off): interactive alone c=4 24req
+[23:20:33Z] cell p1-off8 (off): bulk c=96 288req + interactive c=4 24req contended
+[23:20:55Z] === pass 1 cond off8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:21:04Z] === pass 1 cond on8 (cap 8) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 220516)
+[fleet] launched replica :9086 on GPU 4 (pid 220519)
+[fleet] launched replica :9087 on GPU 5 (pid 220522)
+[fleet] launched replica :9088 on GPU 5 (pid 220525)
+[fleet] launched replica :9089 on GPU 6 (pid 220528)
+[fleet] launched replica :9090 on GPU 6 (pid 220531)
+[fleet] launched replica :9091 on GPU 7 (pid 220534)
+[fleet] launched replica :9092 on GPU 7 (pid 220537)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+[23:21:26Z] cell p1-on8 (on): interactive alone c=4 24req
+[23:21:37Z] cell p1-on8 (on): bulk c=96 288req + interactive c=4 24req contended
+[23:22:01Z] === pass 1 cond on8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:22:10Z] === pass 1 cond off16 (cap 16) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 223313)
+[fleet] launched replica :9086 on GPU 4 (pid 223316)
+[fleet] launched replica :9087 on GPU 5 (pid 223319)
+[fleet] launched replica :9088 on GPU 5 (pid 223322)
+[fleet] launched replica :9089 on GPU 6 (pid 223325)
+[fleet] launched replica :9090 on GPU 6 (pid 223328)
+[fleet] launched replica :9091 on GPU 7 (pid 223331)
+[fleet] launched replica :9092 on GPU 7 (pid 223334)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:22:31Z] cell p1-off16 (off): interactive alone c=4 24req
+[23:22:42Z] cell p1-off16 (off): bulk c=96 288req + interactive c=4 24req contended
+[23:23:03Z] === pass 1 cond off16 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:23:12Z] === pass 1 cond on16 (cap 16) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 225955)
+[fleet] launched replica :9086 on GPU 4 (pid 225958)
+[fleet] launched replica :9087 on GPU 5 (pid 225961)
+[fleet] launched replica :9088 on GPU 5 (pid 225964)
+[fleet] launched replica :9089 on GPU 6 (pid 225967)
+[fleet] launched replica :9090 on GPU 6 (pid 225970)
+[fleet] launched replica :9091 on GPU 7 (pid 225973)
+[fleet] launched replica :9092 on GPU 7 (pid 225976)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:23:34Z] cell p1-on16 (on): interactive alone c=4 24req
+[23:23:45Z] cell p1-on16 (on): bulk c=96 288req + interactive c=4 24req contended
+[23:24:05Z] === pass 1 cond on16 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:24:14Z] === pass 2 cond off8 (cap 8) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 229314)
+[fleet] launched replica :9086 on GPU 4 (pid 229317)
+[fleet] launched replica :9087 on GPU 5 (pid 229320)
+[fleet] launched replica :9088 on GPU 5 (pid 229323)
+[fleet] launched replica :9089 on GPU 6 (pid 229326)
+[fleet] launched replica :9090 on GPU 6 (pid 229329)
+[fleet] launched replica :9091 on GPU 7 (pid 229332)
+[fleet] launched replica :9092 on GPU 7 (pid 229335)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+[23:24:36Z] cell p2-off8 (off): interactive alone c=4 24req
+[23:24:48Z] cell p2-off8 (off): bulk c=96 288req + interactive c=4 24req contended
+[23:25:13Z] === pass 2 cond off8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:25:22Z] === pass 2 cond on8 (cap 8) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 231849)
+[fleet] launched replica :9086 on GPU 4 (pid 231852)
+[fleet] launched replica :9087 on GPU 5 (pid 231855)
+[fleet] launched replica :9088 on GPU 5 (pid 231858)
+[fleet] launched replica :9089 on GPU 6 (pid 231861)
+[fleet] launched replica :9090 on GPU 6 (pid 231864)
+[fleet] launched replica :9091 on GPU 7 (pid 231867)
+[fleet] launched replica :9092 on GPU 7 (pid 231870)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+[23:25:45Z] cell p2-on8 (on): interactive alone c=4 24req
+[23:25:57Z] cell p2-on8 (on): bulk c=96 288req + interactive c=4 24req contended
+[23:26:21Z] === pass 2 cond on8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:26:29Z] === pass 2 cond off16 (cap 16) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 234390)
+[fleet] launched replica :9086 on GPU 4 (pid 234393)
+[fleet] launched replica :9087 on GPU 5 (pid 234396)
+[fleet] launched replica :9088 on GPU 5 (pid 234399)
+[fleet] launched replica :9089 on GPU 6 (pid 234402)
+[fleet] launched replica :9090 on GPU 6 (pid 234405)
+[fleet] launched replica :9091 on GPU 7 (pid 234408)
+[fleet] launched replica :9092 on GPU 7 (pid 234411)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:26:51Z] cell p2-off16 (off): interactive alone c=4 24req
+[23:27:01Z] cell p2-off16 (off): bulk c=96 288req + interactive c=4 24req contended
+[23:27:21Z] === pass 2 cond off16 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:27:29Z] === pass 2 cond on16 (cap 16) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 237036)
+[fleet] launched replica :9086 on GPU 4 (pid 237039)
+[fleet] launched replica :9087 on GPU 5 (pid 237042)
+[fleet] launched replica :9088 on GPU 5 (pid 237045)
+[fleet] launched replica :9089 on GPU 6 (pid 237048)
+[fleet] launched replica :9090 on GPU 6 (pid 237051)
+[fleet] launched replica :9091 on GPU 7 (pid 237054)
+[fleet] launched replica :9092 on GPU 7 (pid 237057)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:27:53Z] cell p2-on16 (on): interactive alone c=4 24req
+[23:28:04Z] cell p2-on16 (on): bulk c=96 288req + interactive c=4 24req contended
+[23:28:24Z] === pass 2 cond on16 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:28:33Z] === pass 3 cond off8 (cap 8) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 240357)
+[fleet] launched replica :9086 on GPU 4 (pid 240360)
+[fleet] launched replica :9087 on GPU 5 (pid 240363)
+[fleet] launched replica :9088 on GPU 5 (pid 240366)
+[fleet] launched replica :9089 on GPU 6 (pid 240369)
+[fleet] launched replica :9090 on GPU 6 (pid 240372)
+[fleet] launched replica :9091 on GPU 7 (pid 240375)
+[fleet] launched replica :9092 on GPU 7 (pid 240378)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+[23:28:55Z] cell p3-off8 (off): interactive alone c=4 24req
+[23:29:07Z] cell p3-off8 (off): bulk c=96 288req + interactive c=4 24req contended
+[23:29:32Z] === pass 3 cond off8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:29:41Z] === pass 3 cond on8 (cap 8) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 242887)
+[fleet] launched replica :9086 on GPU 4 (pid 242890)
+[fleet] launched replica :9087 on GPU 5 (pid 242893)
+[fleet] launched replica :9088 on GPU 5 (pid 242896)
+[fleet] launched replica :9089 on GPU 6 (pid 242899)
+[fleet] launched replica :9090 on GPU 6 (pid 242902)
+[fleet] launched replica :9091 on GPU 7 (pid 242905)
+[fleet] launched replica :9092 on GPU 7 (pid 242908)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=8 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 8)
+[23:30:03Z] cell p3-on8 (on): interactive alone c=4 24req
+[23:30:13Z] cell p3-on8 (on): bulk c=96 288req + interactive c=4 24req contended
+[23:30:36Z] === pass 3 cond on8 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:30:45Z] === pass 3 cond off16 (cap 16) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 245410)
+[fleet] launched replica :9086 on GPU 4 (pid 245413)
+[fleet] launched replica :9087 on GPU 5 (pid 245416)
+[fleet] launched replica :9088 on GPU 5 (pid 245419)
+[fleet] launched replica :9089 on GPU 6 (pid 245422)
+[fleet] launched replica :9090 on GPU 6 (pid 245425)
+[fleet] launched replica :9091 on GPU 7 (pid 245428)
+[fleet] launched replica :9092 on GPU 7 (pid 245431)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:31:06Z] cell p3-off16 (off): interactive alone c=4 24req
+[23:31:18Z] cell p3-off16 (off): bulk c=96 288req + interactive c=4 24req contended
+[23:31:40Z] === pass 3 cond off16 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:31:49Z] === pass 3 cond on16 (cap 16) UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 247926)
+[fleet] launched replica :9086 on GPU 4 (pid 247929)
+[fleet] launched replica :9087 on GPU 5 (pid 247932)
+[fleet] launched replica :9088 on GPU 5 (pid 247935)
+[fleet] launched replica :9089 on GPU 6 (pid 247938)
+[fleet] launched replica :9090 on GPU 6 (pid 247941)
+[fleet] launched replica :9091 on GPU 7 (pid 247944)
+[fleet] launched replica :9092 on GPU 7 (pid 247947)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:32:11Z] cell p3-on16 (on): interactive alone c=4 24req
+[23:32:23Z] cell p3-on16 (on): bulk c=96 288req + interactive c=4 24req contended
+[23:32:46Z] === pass 3 cond on16 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:32:55Z] campaign done
