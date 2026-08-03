@@ -4024,6 +4024,15 @@ impl Engine {
         Ok(v)
     }
     /// Allocate a zeroed device u32 buffer (persistent spec-loop prediction slots).
+    /// H2D into an EXISTING u32 buffer (stable pointer — the per-step grammar-mask upload:
+    /// contents change every step, the address must not, so a captured graph can read it).
+    pub fn htod_u32_into(&self, dst: &mut CudaSlice<u32>, src: &[u32])
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let mut view = dst.slice_mut(0..src.len());
+        self.gpu.stream().memcpy_htod(src, &mut view)?;
+        Ok(())
+    }
+
     pub fn alloc_u32_zeroed(&self, n: usize) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
         let s = self.gpu.stream().alloc_zeros::<u32>(n)?;
         self.keep_if_capturing(&s);

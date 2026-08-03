@@ -560,10 +560,19 @@ struct Session {
     /// when a session finishes — same semantics as an unsampled last_logits.
     device_next: Option<u32>,
     /// Constrained decoding (`response_format`): per-session llguidance grammar state.
-    /// `Some` masks the logits row host-side before every sample and advances with each
-    /// accepted token. Constrained sessions never device-sample (mask is host-side),
-    /// never graph-promote, and never go spec — plain batched/tokenwise decode only.
+    /// `Some` masks the logits BEFORE every sample and advances with each accepted token.
+    /// FULL path (2026-08-03): the packed mask uploads to `mask_dev` each step and
+    /// mask_logits_f32 bans on DEVICE before the device sampler — constrained rows ride
+    /// the same device-sample/lean-logits tick as everyone else. Fallback sampler configs
+    /// (penalties/top-k/top-p/min-p) and MEMRA_CONSTRAIN_HOST=1 keep the v1 host-side
+    /// masked-copy sample.
     constraint: Option<crate::constrained::SessionConstraint>,
+    /// Device grammar-mask buffer (packed SimpleVob words). Allocated once at first use,
+    /// STABLE POINTER thereafter — contents re-uploaded per step (~n_vocab/8 bytes), the
+    /// graph-capture contract for the in-graph mask read.
+    mask_dev: Option<CudaSlice<u32>>,
+    /// Words uploaded this step (0 = no mask staged for the pending batch step).
+    mask_words: usize,
     /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
     /// This is exactly the sequence whose KV + recurrent state live in `cache` — the resume
     /// point for KV PREFIX REUSE on retire (see ReusePool).
@@ -1151,6 +1160,16 @@ pub fn run(
                 match (cont, next) {
                     (false, _) => finished.push(i),
                     (true, Some(t)) => {
+                        // GRAMMAR MASK STAGING (constrained-full): compute the post-consume
+                        // token mask and H2D the packed bitset into the session's stable
+                        // device buffer — the batched step bans on device BEFORE its device
+                        // sampler, so this row rides the same lean tick as everyone else.
+                        if let Err(err) = stage_grammar_mask(&engine, &mut active[i]) {
+                            let _ = active[i].tx.send(Event::Error(
+                                format!("constraint mask: {err}")));
+                            finished.push(i);
+                            continue;
+                        }
                         had_interactive |= active[i].lane == crate::lanes::Lane::Interactive;
                         ready.push((i, t));
                     }
@@ -1178,26 +1197,28 @@ pub fn run(
                 let samp: Vec<Option<(f32, u64, u32)>> = idxs
                     .iter()
                     .map(|&i| {
-                        if !serve_devsample() {
-                            return None;
-                        }
                         let s = &active[i];
-                        // constrained rows sample HOST-side from a masked copy — the
-                        // grammar mask has no device hook (v1).
-                        if s.constraint.is_some() {
+                        // constrained rows: device-sample iff a mask was staged this tick
+                        // (fallback sampler configs / MEMRA_CONSTRAIN_HOST keep the v1
+                        // host masked-copy sample — mask_words stays 0 for them).
+                        if s.constraint.is_some() && s.mask_words == 0 {
                             return None;
                         }
-                        let sm = &s.sampler;
-                        let no_pen = sm.penalty_repeat() == 1.0
-                            && sm.penalty_freq() == 0.0
-                            && sm.penalty_present() == 0.0;
-                        if !no_pen || sm.top_k() != 0 || sm.top_p() < 1.0 || sm.min_p() > 0.0 {
-                            return None;
-                        }
-                        if sm.is_greedy() {
-                            Some((0.0, 0, 0))
+                        devsample_meta(s)
+                    })
+                    .collect();
+                // GRAMMAR MASKS: staged rows pass (stable device buffer, word count). Raw
+                // pointers here because the caches split-borrow below takes as_mut_ptr on
+                // `active` — the fields are disjoint (mask_dev vs cache), same soundness
+                // class as the existing unique-index split-borrow.
+                let mask_ptrs: Vec<Option<(*const CudaSlice<u32>, usize)>> = idxs
+                    .iter()
+                    .map(|&i| {
+                        let s = &active[i];
+                        if s.mask_words > 0 {
+                            s.mask_dev.as_ref().map(|d| (d as *const _, s.mask_words))
                         } else {
-                            Some((sm.temperature(), sm.seed(), s.generated.len() as u32))
+                            None
                         }
                     })
                     .collect();
@@ -1214,8 +1235,14 @@ pub fn run(
                     // [n_vocab] D2H — their last_logits comes back EMPTY and the row is
                     // parked on-device (cache.last_logits_dev) for the retire-time pool
                     // park below. MEMRA_SERVE_LEANLOGITS=0 restores the full D2H.
-                    lm.model.decode_step_batch_sampled_lean(&engine, &toks, &mut caches,
-                                                            &samp, serve_leanlogits())
+                    // SAFETY: mask_ptrs point at Session.mask_dev fields — disjoint from
+                    // the caches taken above; nothing mutates them for this call's life.
+                    let masks: Vec<Option<(&CudaSlice<u32>, usize)>> = mask_ptrs
+                        .iter()
+                        .map(|m| m.map(|(p, w)| (unsafe { &*p }, w)))
+                        .collect();
+                    lm.model.decode_step_batch_sampled_lean_masked(
+                        &engine, &toks, &mut caches, &samp, &masks, serve_leanlogits())
                 };
                 match logits {
                     Ok((rows, next_toks)) => {
@@ -1819,6 +1846,8 @@ fn admit(
         last_logits: seed_logits,
         device_next: None,
         constraint,
+        mask_dev: None,
+        mask_words: 0,
         fed: seed_fed,
         prefill_queue: if let Some(ts) = text_suffix { ts.into_iter().collect() }
                        else if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
@@ -1949,6 +1978,33 @@ fn prefill_tick(
     Ok(consumed)
 }
 
+/// GRAMMAR MASK STAGING (constrained-full, 2026-08-03): compute the session's current
+/// llguidance token mask and H2D the packed bitset into its STABLE device buffer for the
+/// upcoming batched step. Runs AFTER advance_sample_emit consumed the tick's token — the
+/// mask reflects the post-consume grammar state, exactly the set legal for the NEXT token.
+/// No-op (mask_words = 0 -> host fallback) for unconstrained sessions, fallback sampler
+/// configs (penalties/filters host-sample), and the MEMRA_CONSTRAIN_HOST=1 oracle.
+fn stage_grammar_mask(engine: &Engine, s: &mut Session) -> Result<(), String> {
+    s.mask_words = 0;
+    if s.constraint.is_none() || constrain_host() || devsample_meta(s).is_none() {
+        return Ok(());
+    }
+    let mask = s.constraint.as_mut().unwrap().compute_mask()?;
+    let words = mask.as_slice();
+    match s.mask_dev.as_mut() {
+        Some(d) if d.len() >= words.len() => {
+            engine.htod_u32_into(d, words).map_err(|e| e.to_string())?;
+        }
+        _ => {
+            let mut d = engine.alloc_u32_zeroed(words.len()).map_err(|e| e.to_string())?;
+            engine.htod_u32_into(&mut d, words).map_err(|e| e.to_string())?;
+            s.mask_dev = Some(d);
+        }
+    }
+    s.mask_words = words.len();
+    Ok(())
+}
+
 /// The decode tick's HOST half: sample from last_logits, emit the token, run the stop
 /// battery. Returns (continue?, Some(next_token) to feed the next step). Extracted from
 /// step_session so the batched scheduler can drive many sessions into ONE engine step.
@@ -2065,6 +2121,37 @@ fn serve_devsample() -> bool {
 fn serve_leanlogits() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MEMRA_SERVE_LEANLOGITS").as_deref() != Ok("0"))
+}
+
+/// MEMRA_CONSTRAIN_HOST=1 (rollback oracle): constrained rows keep the v1 host-side
+/// masked-copy sample (full-row D2H + O(n_vocab) host sample) instead of the device
+/// grammar mask. Diagnostics/A-B only — the device path is the shipped default.
+fn constrain_host() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_CONSTRAIN_HOST").as_deref() == Ok("1"))
+}
+
+/// Device-sample meta for a session's row in the batched step (the ONE eligibility rule —
+/// the samp closure and the grammar-mask staging pass must agree): greedy-no-penalties
+/// (device argmax, bit-identical) or pure-temperature (seeded gumbel). Penalty/top-k/
+/// top-p/min-p configs host-sample. Counter = generated.len() — a session-progress
+/// function, independent of batch composition (the isolation contract, gate3).
+fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
+    if !serve_devsample() {
+        return None;
+    }
+    let sm = &s.sampler;
+    let no_pen = sm.penalty_repeat() == 1.0
+        && sm.penalty_freq() == 0.0
+        && sm.penalty_present() == 0.0;
+    if !no_pen || sm.top_k() != 0 || sm.top_p() < 1.0 || sm.min_p() > 0.0 {
+        return None;
+    }
+    if sm.is_greedy() {
+        Some((0.0, 0, 0))
+    } else {
+        Some((sm.temperature(), sm.seed(), s.generated.len() as u32))
+    }
 }
 
 /// Per-model decode chunk width. MEMRA_DECODE_BATCH_CAP (explicit door) wins; otherwise

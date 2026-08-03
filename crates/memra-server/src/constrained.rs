@@ -160,14 +160,22 @@ impl SessionConstraint {
         self.m.get_error()
     }
 
-    /// Compute the current token mask and apply it to `logits`. When the grammar has
-    /// finished, the mask collapses to EOS-only — the normal Eos stop fires.
-    pub fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String> {
+    /// Compute the current token mask (timed — the mask-cost receipt). When the grammar
+    /// has finished, the mask collapses to EOS-only — the normal Eos stop fires. The
+    /// packed form (`SimpleVob::as_slice`) is what the device path H2Ds verbatim.
+    pub fn compute_mask(&mut self) -> Result<SimpleVob, String> {
         let t0 = std::time::Instant::now();
         let mask = self.m.compute_mask_or_eos().map_err(|e| e.to_string())?;
-        apply_mask(&mask, logits);
         self.steps += 1;
         self.mask_ns += t0.elapsed().as_nanos();
+        Ok(mask)
+    }
+
+    /// Compute the current token mask and apply it to `logits` (the HOST path: fallback
+    /// sampler configs + the MEMRA_CONSTRAIN_HOST=1 oracle).
+    pub fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String> {
+        let mask = self.compute_mask()?;
+        apply_mask(&mask, logits);
         Ok(())
     }
 
