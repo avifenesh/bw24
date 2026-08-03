@@ -27,6 +27,7 @@
 /// x-lane QoS (lane/dl-metering gate, QoS-only extraction 2026-08-02): lane types, SLO
 /// admission policy, engine-truth step stats live in the memra-lanes crate so out-of-process
 /// controllers (the sidecar shape) can share them.
+pub(crate) mod constrained;
 pub(crate) mod lanes { pub use memra_lanes::*; }
 mod toolcall;
 mod worker;
@@ -208,9 +209,10 @@ struct ChatCompletionReq {
     stream: bool,
     #[serde(default)]
     max_ctx: Option<usize>,
-    /// Unsupported-but-semantic fields (gap-scan F4): captured so they 400 loudly instead
-    /// of being silently swallowed by serde (policy: clean 400s, not silent downgrades).
-    /// `response_format:{type:"text"}` (the no-op form) is accepted.
+    /// OpenAI `response_format` (constrained decoding, lane/constrained 2026-08-03):
+    /// `{"type":"text"}` (no-op), `{"type":"json_object"}`, and
+    /// `{"type":"json_schema","json_schema":{...,"schema":{...}}}` are supported — the
+    /// grammar masks logits per decode step (llguidance). Unknown types 400 loudly.
     #[serde(default)]
     response_format: Option<serde_json::Value>,
     #[serde(default)]
@@ -782,6 +784,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         trace_id: req.trace_id.clone(),
         cache_ns: cache_namespace(&req.cache_salt),
         lane,
+        grammar: None, // /v1/completions carries no response_format (chat surface only)
         tx,
     }
 }
@@ -801,6 +804,9 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                       -> Result<ChatPlan, String> {
     let tool_choice = parse_tool_choice(&req.tool_choice)?;
     let think = parse_think(&req.reasoning_effort, &req.reasoning)?;
+    // response_format -> grammar spec (constrained decoding). None/text = unconstrained,
+    // the exact legacy path; unknown/malformed forms are loud 400s.
+    let grammar = constrained::parse_response_format(req.response_format.as_ref())?;
 
     // tool_choice "none" = OpenAI "the model will not call tools": the prompt renders
     // WITHOUT the tools block (byte-identical to a no-tools request) and no parser runs.
@@ -874,6 +880,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             trace_id: None,
             cache_ns: cache_namespace(&req.cache_salt),
             lane,
+            grammar,
             tx,
         },
         parser,
@@ -947,12 +954,10 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
             "messages must use system/user/assistant/tool roles", Some("messages")));
     }
     // HONESTY GATE (gap-scan F4): semantic params we can't honor 400 loudly, never
-    // silent downgrades. response_format {type:"text"} is the no-op form — accepted.
-    let response_format_unsupported = req.response_format.as_ref().is_some_and(|rf|
-        rf.get("type").and_then(|t| t.as_str()) != Some("text"));
+    // silent downgrades. response_format json_object/json_schema are now REAL
+    // (constrained decoding, lane/constrained) — parsed below; bad forms 400 with the
+    // parser's own message.
     if let Err((msg, param)) = reject_unsupported(&[
-        ("response_format", response_format_unsupported,
-         " beyond {\"type\":\"text\"} (no constrained decoding yet)"),
         ("logit_bias", req.logit_bias.is_some(),
          " (device-side sampling has no bias hook yet)"),
         ("logprobs", req.logprobs.as_ref().is_some_and(|v| v.as_bool() != Some(false)), ""),
@@ -1756,6 +1761,33 @@ mod tests {
         let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
         assert_eq!(cfg.penalty_last_n, 0);
         assert_eq!(cfg.penalty_repeat, 1.0);
+    }
+
+    #[test]
+    fn response_format_builds_grammar_only_when_present() {
+        // NO-OP CONTRACT (lane/constrained): absent / {"type":"text"} => grammar None —
+        // the worker Request is field-identical to a pre-lane request, no llguidance
+        // object is ever built. json_object / json_schema arm the grammar.
+        let mk = |rf: Option<serde_json::Value>| {
+            let mut body = serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]});
+            if let Some(rf) = rf { body["response_format"] = rf; }
+            let req: ChatCompletionReq = serde_json::from_value(body).unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            build_chat_request(req, None, tx, lanes::Lane::Interactive)
+        };
+        assert!(mk(None).unwrap().request.grammar.is_none());
+        assert!(mk(Some(serde_json::json!({"type": "text"})))
+            .unwrap().request.grammar.is_none());
+        assert!(matches!(mk(Some(serde_json::json!({"type": "json_object"})))
+            .unwrap().request.grammar,
+            Some(constrained::GrammarSpec::JsonObject)));
+        assert!(matches!(mk(Some(serde_json::json!({"type": "json_schema",
+            "json_schema": {"schema": {"type": "object"}}})))
+            .unwrap().request.grammar,
+            Some(constrained::GrammarSpec::JsonSchema(_))));
+        // unknown type: loud error, never silent.
+        assert!(mk(Some(serde_json::json!({"type": "yaml"}))).is_err());
     }
 
     #[test]
