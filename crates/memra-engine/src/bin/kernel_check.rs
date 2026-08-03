@@ -2223,12 +2223,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let wu = e.htod_bytes(raw_u)?;
                 let wg_rp = e.htod_bytes(&repack_nvfp4_split(raw_g, out_f))?;
                 let wu_rp = e.htod_bytes(&repack_nvfp4_split(raw_u, out_f))?;
-                // b2/b4 tiers only — the dual dispatch stops at m=4 (b8 dual killed, flat).
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                // b2/b4 both layouts; m=5..7 rp-only (the vt-fixes fix-1b exact-width duals —
+                // GGUF layout has no b5/b6/b7 dual; the flat MCOLS=8 b8 dual stays dead).
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
                     for (rp, w0, w1) in [(false, &wg, &wu), (true, &wg_rp, &wu_rp)] {
+                        if mm > 4 && !rp { continue; }
                         let y0ref = e.dtoh(&e.qmatvec_mmvq_batched(w0, &aq, &ad, mm, in_f, out_f,
                             memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
                         let y1ref = e.dtoh(&e.qmatvec_mmvq_batched(w1, &aq, &ad, mm, in_f, out_f,

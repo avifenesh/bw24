@@ -5745,7 +5745,7 @@ impl Engine {
         let on = *ON.get_or_init(|| {
             std::env::var("MEMRA_SPEC_DUAL_T").map(|v| v != "0").unwrap_or(true)
         });
-        if !on || !(2..=4).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok()
+        if !on || !(2..=7).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok()
             || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) {
             return Ok(None);
         }
@@ -5760,6 +5760,12 @@ impl Engine {
                 (b0, b1, *rb0, *s0, *s1, *rp0),
             _ => return Ok(None),
         };
+        // m=5..7: only the exact-width rp duals exist (vt-fixes fix 1b); GGUF layout keeps
+        // the singles. The b8 dual (MCOLS=8 at m=5..8) measured FLAT and stays dead.
+        if m > 4 && !(rp && Self::b8_enabled()
+            && std::env::var("MEMRA_B567").as_deref() != Ok("0")) {
+            return Ok(None);
+        }
         let (y0, y1) = self.qmatvec_batched_dual_raw(b0, b1, aq, ad, m, in_f, out_f, row_bytes, rp)?;
         Ok(Some(((y0, s0), (y1, s1))))
     }
@@ -5828,11 +5834,16 @@ impl Engine {
         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
         let mcols = Self::batched_mcols(m);
-        let (name, rows_per_block) = match (mcols, rp) {
-            (2, false) => ("qmatvec_nvfp4_mmvq_dual_b2", ROWS_PER_BLOCK),
-            (4, false) => ("qmatvec_nvfp4_mmvq_dual_b4_r2", ROWS_PER_BLOCK * 2),
-            (2, true) => ("qmatvec_nvfp4_mmvq_dual_b2_rp", ROWS_PER_BLOCK),
-            (4, true) => ("qmatvec_nvfp4_mmvq_dual_b4_rpr2", ROWS_PER_BLOCK * 2),
+        // EXACT-WIDTH duals at m=5..7 (vt-fixes fix 1b): rp-only; bit-identical to the two
+        // b5/b6/b7 singles (blockIdx.y selects the tensor, same template body).
+        let (name, rows_per_block) = match (mcols, rp, m) {
+            (2, false, _) => ("qmatvec_nvfp4_mmvq_dual_b2", ROWS_PER_BLOCK),
+            (4, false, _) => ("qmatvec_nvfp4_mmvq_dual_b4_r2", ROWS_PER_BLOCK * 2),
+            (2, true, _) => ("qmatvec_nvfp4_mmvq_dual_b2_rp", ROWS_PER_BLOCK),
+            (4, true, _) => ("qmatvec_nvfp4_mmvq_dual_b4_rpr2", ROWS_PER_BLOCK * 2),
+            (8, true, 5) => ("qmatvec_nvfp4_mmvq_dual_b5_rpr2", ROWS_PER_BLOCK * 2),
+            (8, true, 6) => ("qmatvec_nvfp4_mmvq_dual_b6_rpr2", ROWS_PER_BLOCK * 2),
+            (8, true, 7) => ("qmatvec_nvfp4_mmvq_dual_b7_rpr2", ROWS_PER_BLOCK * 2),
             _ => return Err(format!("qmatvec_batched_dual_raw: no dual kernel for m {m}").into()),
         };
         let f = self.func(name);

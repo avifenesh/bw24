@@ -2377,6 +2377,38 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b7_rpr2w
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_rp<7, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// EXACT-WIDTH DUAL gate+up twins for T=5..7 (vt-fixes fix 1b). At T<=4 the FFN pair rides
+// ONE dual launch — two independent weight streams in one grid restored the memory-level
+// parallelism (dual_b4_rpr2 measured 84.6% DRAM vs 59.1% for the single); at T>=5 the old
+// m<=4 dual gate dropped gate+up onto two serial singles. The verify-economics b8 dual (an
+// MCOLS=8 kernel at m=5..8) measured FLAT and was killed — these are DIFFERENT cells:
+// exact-width MCOLS=m keeps the register/occupancy shape of the profitable b4 dual. Per
+// (tensor, token, row) the body is the single b5/b6/b7 program (blockIdx.y selects the
+// tensor) -> BIT-IDENTICAL to the two singles. Split-plane rp only (the daily NVFP4 trunk).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b5_rpr2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<5, 2>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                                in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b6_rpr2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<6, 2>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                                in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_b7_rpr2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<7, 2>(blockIdx.y == 0 ? W0 : W1, aq, ad, blockIdx.y == 0 ? y0 : y1,
+                                in_f, out_f, m, row_bytes);
+}
 
 // ---- rpks: K-SPLIT x2 ACROSS WARP PAIRS (2026-07-06). block (32,4) = TWO warp-pairs; a pair
 // owns 2 output rows (same 2 independent weight streams per warp as rpr2), the pair's two warps
