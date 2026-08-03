@@ -778,6 +778,14 @@ pub fn run(
         let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
         let mut requeue: std::collections::VecDeque<Box<Request>> = Default::default();
         while let Some(req) = queue.pop_front() {
+            // DISCONNECT ABORT (gap-scan F8): a queued request whose client already hung
+            // up (receiver dropped) never reaches the GPU — dropped here, logged for the
+            // metering record (0 generated; prompt never primed).
+            if req.tx.is_closed() {
+                eprintln!("[abort] client disconnected while queued (model {:?}); dropped",
+                          req.model);
+                continue;
+            }
             let batching_on = std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
             let cap = if batching_on {
                 std::env::var("MEMRA_MAX_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64)
@@ -840,8 +848,24 @@ pub fn run(
         //        decode_step_batch over survivors in chunks of <= 8.
         let batching = serve_batching();
         let mut finished: Vec<usize> = Vec::new();
+        // DISCONNECT ABORT (gap-scan F8): every send in the tick loop is `let _ =
+        // s.tx.send(..)` — send errors ignored — so an aborted client used to burn GPU
+        // until max_tokens/EOS and hold a slot against admission. The per-tick sweep
+        // retires closed-channel sessions BEFORE any phase steps them; the log line is
+        // the metering record (bill-to-abort-point: prompt/cached/generated so far).
+        // Retire still parks reusable KV — the state is consistent at the abort point.
+        for (i, s) in active.iter().enumerate() {
+            if s.tx.is_closed() {
+                eprintln!("[abort] client disconnected: model {:?}, prompt {} ({} cached), \
+                           {} generated — billed to abort point, {:.2}s",
+                          s.model, s.n_prompt, s.n_cached, s.generated.len(),
+                          s.t0.elapsed().as_secs_f64());
+                finished.push(i);
+            }
+        }
         if !batching {
             for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
                 match step_session(&engine, &loaded, &mut active[i]) {
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
@@ -862,7 +886,7 @@ pub fn run(
             };
             if gs_on && active.len() > 1 {
                 for i in 0..active.len() {
-                    if active[i].graph.is_none() { continue; }
+                    if finished.contains(&i) || active[i].graph.is_none() { continue; }
                     let s = &mut active[i];
                     let g = s.graph.take().unwrap();
                     s.cache = Some(g.cache);
@@ -939,6 +963,7 @@ pub fn run(
             }
             // (a) spec bursts
             for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
                 if active[i].spec.is_some() {
                     match step_session(&engine, &loaded, &mut active[i]) {
                         Ok(true) => {}
@@ -1748,7 +1773,11 @@ fn advance_sample_emit(
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): a failed send = receiver dropped = client gone.
+    // Stop generating THIS tick (the tick-top sweep would only catch it next tick).
+    if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        return (false, None);
+    }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
         finish(s, StopReason::Callback);
         return (false, None);
@@ -1782,7 +1811,10 @@ fn advance_token_emit(
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: tok, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): failed send = client gone, stop this tick.
+    if s.tx.send(Event::Token { id: tok, text: delta }).is_err() {
+        return (false, ());
+    }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
         finish(s, StopReason::Callback);
         return (false, ());
@@ -1902,8 +1934,12 @@ fn step_session(
         let decoded = lm.tok.decode_bytes_special(&s.generated, true);
         let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
         let full = String::from_utf8_lossy(&decoded);
-        if !delta.is_empty() {
-            let _ = s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta });
+        if !delta.is_empty()
+            && s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta }).is_err()
+        {
+            // DISCONNECT ABORT (gap-scan F8): client gone — retire at the abort point
+            // (session still parks; committed state is consistent post-burst).
+            return Ok(false);
         }
         if stop.is_none() && !s.stop_strings.is_empty()
             && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -1971,7 +2007,10 @@ fn step_session(
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): failed send = client gone, retire at the abort point.
+    if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        return Ok(false);
+    }
 
     // stop-string match on the detokenized tail.
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
