@@ -7104,6 +7104,30 @@ impl Engine {
         // per-shape perf variants (r2/pf/...) do not apply at this width. rp is a LAYOUT,
         // not a perf variant: it must survive (base kernel on split-plane bytes = NaN).
         let variant = if mcols == 16 { if rp { "rp" } else { "base" } } else { variant };
+        // EXACT-WIDTH b5/b6/b7 twins (lane/vt-fixes fix 1, 2026-08-03): the b8 kernels
+        // allocate acc[WROWS][8] at ANY m, so T=5..7 verify paid the full 8-wide register
+        // tax — the measured T=4->5 cliff. The same template at MCOLS=m runs the identical
+        // per-(token,row) chain (columns c >= m never execute in either form) ->
+        // BIT-IDENTICAL to the b8 launch. NVFP4 split-plane only (the sm_120 default trunk);
+        // covers both b8 auto schedules (rpsc, rpr2w8). MEMRA_B567=0 rollback.
+        static B567: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let b567 = *B567.get_or_init(|| std::env::var("MEMRA_B567").as_deref() != Ok("0"));
+        if b567 && qtype == QT_NVFP4 && rp && mcols == 8 && (5..=7).contains(&m)
+            && matches!(variant, "rpsc" | "rpr2w8") {
+            let f = self.func(&format!("qmatvec_nvfp4_mmvq_b{m}_{variant}"));
+            let rows_per_block = ROWS_PER_BLOCK * 2; // r2-class schedules: 2 rows/warp
+            let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 1, 1),
+                block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0 };
+            let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            unsafe { b.launch(cfg)?; }
+            if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+            return Ok(y);
+        }
         let (name, rows_per_block): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), ROWS_PER_BLOCK),
             "pf" => (format!("{base_name}_pf").into(), ROWS_PER_BLOCK),

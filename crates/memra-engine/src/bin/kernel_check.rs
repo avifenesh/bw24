@@ -2301,7 +2301,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // reduces k in two chunks -> deterministic but NOT bit-identical to the reference
                 // (FP add order). Its gate = rel<1e-6-of-max + run-to-run BIT determinism; every
                 // other variant keeps the strict bit-bad==0 contract.
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
+                // (m=5/6/7, mcols=8) exercises the EXACT-WIDTH b5/b6/b7 twins (vt-fixes fix 1):
+                // qmatvec_mmvq_batched remaps those launches to MCOLS=m — same template, columns
+                // c >= m never execute in either form, so bit-bad==0 vs per-m MMVQ still gates.
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8), (8, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, memra_engine::QT_NVFP4, row_bytes, false)?)?;

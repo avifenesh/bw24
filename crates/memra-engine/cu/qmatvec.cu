@@ -2332,6 +2332,52 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_rpsc(
     nvfp4_mmvq_batched_rp_sc<8, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+// ---- EXACT-WIDTH b5/b6/b7 twins (lane/vt-fixes fix 1, 2026-08-03). The T=5..7 verify tier
+// used to ride the MCOLS=8 kernels: acc[WROWS][8] is statically allocated at ANY m, so an
+// m=5 launch pays the 8-wide register/occupancy tax — the measured T=4->5 verify cliff
+// (verify-tier-20260802 §3: the whole +5.56ms q27 step is matvec_b). The SAME template at
+// MCOLS=m runs the IDENTICAL per-(token,row) column chain (columns c >= m never execute in
+// either form; same g-order, same dp4a order, same warp_reduce_sum) -> BIT-IDENTICAL to the
+// b8 kernel and to per-m MMVQ. rpsc = the b8-tier auto pick (scale rows prestaged to smem);
+// rpr2w8 = the !sc_ok fallback schedule. Dispatch remaps mcols 8 -> m in
+// qmatvec_mmvq_batched (MEMRA_B567=0 rollback).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b5_rpsc(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_sc<5, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b6_rpsc(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_sc<6, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b7_rpsc(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_sc<7, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b5_rpr2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<5, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b6_rpr2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<6, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b7_rpr2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<7, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ---- rpks: K-SPLIT x2 ACROSS WARP PAIRS (2026-07-06). block (32,4) = TWO warp-pairs; a pair
 // owns 2 output rows (same 2 independent weight streams per warp as rpr2), the pair's two warps
 // split the k-range in half. grid.x = ceil(out_f/4) — 2x rpr2's blocks with the same regs/thread:
