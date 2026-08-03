@@ -76,10 +76,28 @@ struct CompletionReq {
     top_k: usize,
     #[serde(default)]
     min_p: f32,
+    /// OpenAI penalties (gap-scan F3): implemented in SamplerConfig all along, now plumbed.
+    #[serde(default)]
+    frequency_penalty: f32,
+    #[serde(default)]
+    presence_penalty: f32,
+    /// OpenRouter/HF-convention multiplicative penalty (1.0 = off).
+    #[serde(default = "one")]
+    repetition_penalty: f32,
     #[serde(default)]
     seed: u64,
     #[serde(default)]
     stop: StopSequences,
+    /// Unsupported-but-semantic fields (gap-scan F4): captured so they 400 loudly instead
+    /// of being silently swallowed by serde (policy: clean 400s, not silent downgrades).
+    #[serde(default)]
+    logit_bias: Option<serde_json::Value>,
+    #[serde(default)]
+    logprobs: Option<serde_json::Value>,
+    #[serde(default)]
+    n: Option<usize>,
+    #[serde(default)]
+    best_of: Option<usize>,
     /// wrap the prompt in the model's chat template (single user turn).
     #[serde(default)]
     chat: bool,
@@ -170,6 +188,14 @@ struct ChatCompletionReq {
     top_k: usize,
     #[serde(default)]
     min_p: f32,
+    /// OpenAI penalties (gap-scan F3): implemented in SamplerConfig all along, now plumbed.
+    #[serde(default)]
+    frequency_penalty: f32,
+    #[serde(default)]
+    presence_penalty: f32,
+    /// OpenRouter/HF-convention multiplicative penalty (1.0 = off).
+    #[serde(default = "one")]
+    repetition_penalty: f32,
     #[serde(default)]
     seed: u64,
     #[serde(default)]
@@ -178,6 +204,19 @@ struct ChatCompletionReq {
     stream: bool,
     #[serde(default)]
     max_ctx: Option<usize>,
+    /// Unsupported-but-semantic fields (gap-scan F4): captured so they 400 loudly instead
+    /// of being silently swallowed by serde (policy: clean 400s, not silent downgrades).
+    /// `response_format:{type:"text"}` (the no-op form) is accepted.
+    #[serde(default)]
+    response_format: Option<serde_json::Value>,
+    #[serde(default)]
+    logit_bias: Option<serde_json::Value>,
+    #[serde(default)]
+    logprobs: Option<serde_json::Value>,
+    #[serde(default)]
+    top_logprobs: Option<usize>,
+    #[serde(default)]
+    n: Option<usize>,
     /// OpenAI tool schemas: `[{"type":"function","function":{name,description?,parameters?}}]`.
     #[serde(default)]
     tools: Vec<serde_json::Value>,
@@ -424,6 +463,42 @@ fn pyjson_str(v: &serde_json::Value) -> String {
     s
 }
 
+/// Sampler wiring shared by both bodies (gap-scan F3): the penalties existed in
+/// SamplerConfig end-to-end (host sampler + spec rejection-sampling verify) — this is
+/// pure request-struct plumbing. OpenAI penalties apply over the full context window;
+/// SamplerConfig models that as a last-n history window, so an active penalty arms the
+/// whole-history window (usize::MAX — `saturating_sub` makes it the full history).
+fn sampler_config(temperature: f32, top_k: usize, top_p: f32, min_p: f32,
+                  frequency_penalty: f32, presence_penalty: f32, repetition_penalty: f32,
+                  seed: u64) -> SamplerConfig {
+    let penalties_on = frequency_penalty != 0.0 || presence_penalty != 0.0
+        || repetition_penalty != 1.0;
+    SamplerConfig {
+        temperature,
+        top_k,
+        top_p,
+        min_p,
+        penalty_last_n: if penalties_on { usize::MAX } else { 0 },
+        penalty_repeat: repetition_penalty,
+        penalty_freq: frequency_penalty,
+        penalty_present: presence_penalty,
+        seed,
+    }
+}
+
+/// Honesty gate (gap-scan F4): semantic params we cannot honor are explicit 400s with the
+/// offending param named — never silent downgrades (a client sending response_format:
+/// json_object would get unvalidated free text and no error). Cosmetic fields (`user`,
+/// `stream_options`) stay accept-and-ignore.
+fn reject_unsupported(fields: &[(&str, bool, &str)]) -> Result<(), (String, String)> {
+    for (param, present, why) in fields {
+        if *present {
+            return Err((format!("{param} is not supported{why}"), param.to_string()));
+        }
+    }
+    Ok(())
+}
+
 #[derive(PartialEq)]
 enum ToolChoice { Auto, None }
 
@@ -625,14 +700,9 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         max_ctx: req.max_ctx,
         eos: Vec::new(), // worker adds the model's own eos id
     };
-    let sampler_cfg = SamplerConfig {
-        temperature: req.temperature,
-        top_k: req.top_k,
-        top_p: req.top_p,
-        min_p: req.min_p,
-        seed: req.seed,
-        ..Default::default()
-    };
+    let sampler_cfg = sampler_config(
+        req.temperature, req.top_k, req.top_p, req.min_p,
+        req.frequency_penalty, req.presence_penalty, req.repetition_penalty, req.seed);
     Request {
         model: req.model.clone(),
         prompt_ids: req.prompt_ids.clone(),
@@ -729,14 +799,10 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                 max_ctx: req.max_ctx,
                 eos: Vec::new(),
             },
-            sampler_cfg: SamplerConfig {
-                temperature: req.temperature,
-                top_k: req.top_k,
-                top_p: req.top_p,
-                min_p: req.min_p,
-                seed: req.seed,
-                ..Default::default()
-            },
+            sampler_cfg: sampler_config(
+                req.temperature, req.top_k, req.top_p, req.min_p,
+                req.frequency_penalty, req.presence_penalty, req.repetition_penalty,
+                req.seed),
             stop_strings: req.stop.into_vec(),
             trace_id: None,
             cache_ns: cache_namespace(&req.cache_salt),
@@ -761,6 +827,16 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     if !authorized(&headers) {
         return with_request_id(&env.id, error_response(
             StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", None));
+    }
+    // HONESTY GATE (gap-scan F4): semantic params we can't honor 400 loudly.
+    if let Err((msg, param)) = reject_unsupported(&[
+        ("logit_bias", req.logit_bias.is_some(),
+         " (device-side sampling has no bias hook yet)"),
+        ("logprobs", req.logprobs.is_some(), ""),
+        ("n", req.n.is_some_and(|n| n != 1), " for n != 1 (single choice only)"),
+        ("best_of", req.best_of.is_some_and(|n| n != 1), " (single choice only)"),
+    ]) {
+        return with_request_id(&env.id, bad_request(&msg, Some(&param)));
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
@@ -793,6 +869,21 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     }) {
         return with_request_id(&env.id, bad_request(
             "messages must use system/user/assistant/tool roles", Some("messages")));
+    }
+    // HONESTY GATE (gap-scan F4): semantic params we can't honor 400 loudly, never
+    // silent downgrades. response_format {type:"text"} is the no-op form — accepted.
+    let response_format_unsupported = req.response_format.as_ref().is_some_and(|rf|
+        rf.get("type").and_then(|t| t.as_str()) != Some("text"));
+    if let Err((msg, param)) = reject_unsupported(&[
+        ("response_format", response_format_unsupported,
+         " beyond {\"type\":\"text\"} (no constrained decoding yet)"),
+        ("logit_bias", req.logit_bias.is_some(),
+         " (device-side sampling has no bias hook yet)"),
+        ("logprobs", req.logprobs.as_ref().is_some_and(|v| v.as_bool() != Some(false)), ""),
+        ("top_logprobs", req.top_logprobs.is_some(), ""),
+        ("n", req.n.is_some_and(|n| n != 1), " for n != 1 (single choice only)"),
+    ]) {
+        return with_request_id(&env.id, bad_request(&msg, Some(&param)));
     }
     let model = req.model.clone();
     let stream = req.stream;
@@ -1407,6 +1498,63 @@ mod tests {
         assert_eq!(payload["error"]["type"], "invalid_request_error");
         assert!(payload["error"].get("param").is_some());
         assert!(payload["error"].get("code").is_some());
+    }
+
+    #[test]
+    fn penalties_plumb_from_http_to_sampler_config() {
+        // gap-scan F3: the fields existed in SamplerConfig all along — assert the HTTP
+        // layer actually delivers them, with the whole-history window armed.
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "task"}],
+            "frequency_penalty": 0.5, "presence_penalty": 0.25, "repetition_penalty": 1.1
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = build_chat_request(req, None, tx).unwrap().request.sampler_cfg;
+        assert_eq!(cfg.penalty_freq, 0.5);
+        assert_eq!(cfg.penalty_present, 0.25);
+        assert_eq!(cfg.penalty_repeat, 1.1);
+        assert_eq!(cfg.penalty_last_n, usize::MAX);
+
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "task", "frequency_penalty": 1.5
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = build_request(&req, tx).sampler_cfg;
+        assert_eq!(cfg.penalty_freq, 1.5);
+        assert_eq!(cfg.penalty_last_n, usize::MAX);
+
+        // no penalties set -> window off, byte-identical legacy config.
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "task"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = build_request(&req, tx).sampler_cfg;
+        assert_eq!(cfg.penalty_last_n, 0);
+        assert_eq!(cfg.penalty_repeat, 1.0);
+    }
+
+    #[test]
+    fn unsupported_semantic_params_are_named_rejections() {
+        // gap-scan F4: fields serde used to swallow now deserialize into rejection slots.
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}],
+            "response_format": {"type": "json_object"}
+        })).unwrap();
+        assert!(req.response_format.is_some());
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}],
+            "response_format": {"type": "text"}, "logprobs": false, "n": 1,
+            "user": "u-1", "stream_options": {"include_usage": true}
+        })).unwrap();
+        // the no-op forms + cosmetic fields: all fine (accept-and-ignore class).
+        assert_eq!(req.response_format.as_ref().unwrap()["type"], "text");
+        assert_eq!(req.logprobs.as_ref().unwrap().as_bool(), Some(false));
+        assert_eq!(req.n, Some(1));
+        // the gate law itself: present -> named error, absent -> Ok.
+        assert!(reject_unsupported(&[("logit_bias", false, "")]).is_ok());
+        let (msg, param) = reject_unsupported(&[("logit_bias", true, " (why)")]).unwrap_err();
+        assert_eq!(param, "logit_bias");
+        assert_eq!(msg, "logit_bias is not supported (why)");
     }
 
     #[test]

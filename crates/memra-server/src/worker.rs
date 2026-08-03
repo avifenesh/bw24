@@ -1409,8 +1409,16 @@ fn admit(
     let serve_spec = !confidence_trace_enabled()
         && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut sampler = Sampler::new(req.sampler_cfg);
+    // GREEDY + penalties keeps the legacy tokenwise path (gap-scan F3 plumbing): the greedy
+    // spec arm verifies by pure argmax (sampling=None), which would silently ignore the
+    // penalties the host sampler applies pre-argmax. Sampled requests carry penalties into
+    // the rejection-sampling verify (SpecSampling) and stay spec-eligible.
+    let greedy_penalized = sampler.is_greedy()
+        && (sampler.penalty_repeat() != 1.0 || sampler.penalty_freq() != 0.0
+            || sampler.penalty_present() != 0.0);
     let spec_eligible = serve_spec
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
+        && !greedy_penalized
         && lm.model.mtp.is_some();
 
     // CROSS-REQUEST PREFIX CACHE probe (2026-08-02; module doc at PrefixCache). Only when the
