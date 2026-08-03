@@ -913,8 +913,19 @@ static __global__ void nvfp4_residual_correct_kernel(
         const char * __restrict__ W, const float * __restrict__ act, float * __restrict__ y,
         const int * __restrict__ topk_idx, const int in_f, const int out_f,
         const int n_tokens, const int64_t s11, const float out_scale) {
-    constexpr int NT    = 256;
-    constexpr int CHUNK = 64;
+    constexpr int NT = 256;
+    // Tokens staged per CTA. Sized so a_sh is 32 KiB at every K (8192/K floats * K channels), which
+    // fits the 48 KiB static shared-memory limit with room to spare.
+    //
+    // This is the weight-traffic knob, and it is the cost that remains after the grid fix. Every
+    // token-chunk CTA re-dequantizes the SAME out_f*K outlier weights, and those reads are
+    // inherently scattered: consecutive threads hold consecutive output rows, which sit row_bytes
+    // apart (2304 B for in_f=4096), so each one pulls its own sector. At CHUNK=64 that was 29 passes
+    // over pp1845 — order 121 MB of sector traffic against 60 MB for y, i.e. the redundant weight
+    // reads outweighed the output they were correcting. Staging 8192/K tokens instead cuts the pass
+    // count by the same factor (29 -> 8 at K=32) without touching per-element arithmetic: each CTA
+    // still owns a disjoint (row, token) set and still sums groups of 16 in the same order.
+    constexpr int CHUNK = 8192 / K;
 
     const int i = blockIdx.x * NT + threadIdx.x;
     const int row_bytes = (in_f / QK_NVFP4) * (int) sizeof(block_nvfp4);
@@ -1167,28 +1178,23 @@ int memra_mmq_nvfp4_ex2(const void * W_nvfp4_blocks, const float * act_f32, floa
     // ---- 3) rank-k residual correction (must follow the GEMM: it accumulates into y) ----
     if (rk > 0) {
         constexpr int nt = 256;
-        // 2D: x over output rows, y over 64-token chunks. Must match the kernel's CHUNK.
-        constexpr int chunk = 64;
-        const dim3 nb((unsigned) ((out_f + nt - 1) / nt),
-                      (unsigned) ((n_tokens + chunk - 1) / chunk), 1);
+        // 2D: x over output rows, y over token chunks. The chunk width is the kernel's CHUNK, which
+        // is K-dependent (8192/K), so it is derived from the same expression here rather than
+        // duplicated as a literal — a mismatch would silently skip or double-correct tokens.
+        #define MMQ_RESIDUAL_LAUNCH(KK)                                                        \
+            do {                                                                               \
+                const dim3 nb((unsigned) ((out_f + nt - 1) / nt),                              \
+                              (unsigned) ((n_tokens + (8192 / (KK)) - 1) / (8192 / (KK))), 1); \
+                nvfp4_residual_correct_kernel<KK><<<nb, nt, 0, st>>>(                          \
+                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);           \
+            } while (0)
         switch (rk_pad) {
-            case 8:
-                nvfp4_residual_correct_kernel<8><<<nb, nt, 0, st>>>(
-                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
-                break;
-            case 16:
-                nvfp4_residual_correct_kernel<16><<<nb, nt, 0, st>>>(
-                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
-                break;
-            case 32:
-                nvfp4_residual_correct_kernel<32><<<nb, nt, 0, st>>>(
-                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
-                break;
-            default:
-                nvfp4_residual_correct_kernel<64><<<nb, nt, 0, st>>>(
-                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
-                break;
+            case 8:  MMQ_RESIDUAL_LAUNCH(8);  break;
+            case 16: MMQ_RESIDUAL_LAUNCH(16); break;
+            case 32: MMQ_RESIDUAL_LAUNCH(32); break;
+            default: MMQ_RESIDUAL_LAUNCH(64); break;
         }
+        #undef MMQ_RESIDUAL_LAUNCH
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) { return 1000 + (int) e; }
     }
