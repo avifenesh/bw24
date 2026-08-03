@@ -80,9 +80,10 @@ pub struct ToolStreamParser {
     postthink_nl: u8,
 }
 
-/// Length of the longest PROPER prefix of `tag` that `s` ends with (all tags are ASCII, so
-/// the returned byte offset is always a char boundary).
-fn partial_suffix_len(s: &str, tag: &str) -> usize {
+/// Length of the longest PROPER prefix of `tag` that `s` ends with. NOTE: byte-indexed —
+/// callers holding back `keep` bytes must only do so on ASCII tags (always a char
+/// boundary) or re-check boundaries (the stop-scrubber truncates on char_indices).
+pub fn partial_suffix_len(s: &str, tag: &str) -> usize {
     let max = (tag.len() - 1).min(s.len());
     for k in (1..=max).rev() {
         if s.ends_with(&tag[..k]) {

@@ -850,7 +850,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     }
 
     let resp = if stream {
-        sse_response(rx, model, false, None, env.clone()).into_response()
+        sse_response(rx, model, false, None, env.clone(), stop_strings).into_response()
     } else {
         blocking_response(rx, model, false, stop_strings, None, env.clone()).await.into_response()
     };
@@ -900,7 +900,7 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
             StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
     }
     let resp = if stream {
-        sse_response(rx, model, true, plan.parser, env.clone()).into_response()
+        sse_response(rx, model, true, plan.parser, env.clone(), stop_strings).into_response()
     } else {
         blocking_response(rx, model, true, stop_strings, plan.parser, env.clone()).await
             .into_response()
@@ -917,8 +917,14 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
 /// stream-accumulator contract); mid-stream worker errors go out as a `data:` error chunk
 /// (OpenAI clients never parse named SSE events) followed by [DONE].
 fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: String, chat: bool,
-                mut parser: Option<ToolStreamParser>, env: Envelope)
+                mut parser: Option<ToolStreamParser>, env: Envelope,
+                stop_strings: Vec<String>)
     -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+    // STOP-LEAK holdback (gap-scan F9), OpenAI shapes only: content deltas buffer until
+    // they can't start a stop string; matched stop text is excluded exactly like the
+    // non-stream shape. The memra-native stream stays byte-identical (no scrubber).
+    let mut scrub = (!stop_strings.is_empty() && (chat || openai_compat()))
+        .then(|| StopScrubber::new(stop_strings));
     let stream = async_stream::stream! {
         let mut call_index: usize = 0;
         // first chat delta carries the role (applied to whatever delta comes first —
@@ -942,10 +948,19 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
             ($piece:expr) => {{
                 let mut payloads: Vec<String> = Vec::new();
                 match $piece {
-                    Piece::Content(text) => payloads.push(
-                        chat_chunk!(json!({ "content": text }), serde_json::Value::Null)),
+                    Piece::Content(text) => {
+                        let text = match scrub.as_mut() {
+                            Some(sc) => sc.push(&text),
+                            None => text,
+                        };
+                        if !text.is_empty() {
+                            payloads.push(chat_chunk!(json!({ "content": text }),
+                                                      serde_json::Value::Null));
+                        }
+                    }
                     // OR reasoning dialect (gap-scan F13): think text streams as
-                    // delta.reasoning, never as content.
+                    // delta.reasoning, never as content (stop strings scrub content only,
+                    // same as the non-stream truncate law).
                     Piece::Reasoning(text) => payloads.push(
                         chat_chunk!(json!({ "reasoning": text }), serde_json::Value::Null)),
                     Piece::Call(call) => {
@@ -974,6 +989,13 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                         }
                         continue;
                     }
+                    let text = match scrub.as_mut() {
+                        Some(sc) => sc.push(&text),
+                        None => text,
+                    };
+                    if text.is_empty() && scrub.is_some() {
+                        continue; // held back (possible stop prefix) or post-stop
+                    }
                     let payload = if chat {
                         chat_chunk!(json!({ "content": text }), serde_json::Value::Null)
                     } else if openai_compat() {
@@ -994,6 +1016,22 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                             }
                         }
                         if p.n_calls() > 0 { finish = "tool_calls"; }
+                    }
+                    // stop-scrubber flush: held-back text that never became a stop.
+                    if let Some(sc) = scrub.as_mut() {
+                        let tail = sc.finish();
+                        if !tail.is_empty() {
+                            let payload = if chat {
+                                chat_chunk!(json!({ "content": tail }),
+                                            serde_json::Value::Null)
+                            } else {
+                                env.stamp(json!({ "object": "text_completion",
+                                    "model": model,
+                                    "choices": [{ "index": 0, "text": tail,
+                                                  "finish_reason": null }] })).to_string()
+                            };
+                            yield Ok(SseEvent::default().data(payload));
+                        }
                     }
                     if chat || openai_compat() {
                         let usage = usage_json(n_prompt, n_tokens, n_cached, elapsed_s);
@@ -1054,6 +1092,64 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
 fn truncate_at_stop(text: &mut String, stop_strings: &[String]) {
     if let Some(offset) = stop_strings.iter().filter_map(|stop| text.find(stop)).min() {
         text.truncate(offset);
+    }
+}
+
+/// Longest PROPER prefix of `tag` (on tag char boundaries) that `s` ends with — the
+/// char-boundary-safe twin of toolcall's ASCII-tag helper (stop strings are client text).
+fn partial_stop_suffix(s: &str, tag: &str) -> usize {
+    let mut best = 0;
+    for (k, _) in tag.char_indices().skip(1) {
+        if k <= s.len() && s.ends_with(&tag[..k]) {
+            best = k;
+        }
+    }
+    best
+}
+
+/// STREAMING STOP SCRUBBER (gap-scan F9): the worker emits the token delta BEFORE its
+/// stop check, so streams used to leak the stop text (and same-token overshoot) that
+/// non-stream clients never see. Content deltas route through this holdback buffer:
+/// text is released only once it can no longer be the start of a stop string, and a
+/// completed stop truncates exactly like the non-stream `truncate_at_stop`.
+struct StopScrubber {
+    stops: Vec<String>,
+    buf: String,
+    done: bool,
+}
+
+impl StopScrubber {
+    fn new(stops: Vec<String>) -> Self {
+        Self { stops, buf: String::new(), done: false }
+    }
+
+    /// Feed a content delta; returns the text now safe to emit.
+    fn push(&mut self, text: &str) -> String {
+        if self.done {
+            return String::new();
+        }
+        self.buf.push_str(text);
+        if let Some(i) = self.stops.iter().filter_map(|s| self.buf.find(s.as_str())).min() {
+            self.done = true;
+            let out = self.buf[..i].to_string();
+            self.buf.clear();
+            return out;
+        }
+        let keep = self.stops.iter()
+            .map(|s| partial_stop_suffix(&self.buf, s)).max().unwrap_or(0);
+        let emit_to = self.buf.len() - keep;
+        let out = self.buf[..emit_to].to_string();
+        self.buf.drain(..emit_to);
+        out
+    }
+
+    /// End of stream: release held-back text (it never became a stop).
+    fn finish(&mut self) -> String {
+        if self.done {
+            self.buf.clear();
+            return String::new();
+        }
+        std::mem::take(&mut self.buf)
     }
 }
 
@@ -1441,7 +1537,8 @@ mod tests {
             stop_reason: "Eos".into(), n_tokens: 2, n_prompt: 10, n_cached: 0, elapsed_s: 0.1,
         }).unwrap();
         drop(tx);
-        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true)).into_response();
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new())
+            .into_response();
         let lines = sse_data_lines(resp).await;
         assert_eq!(lines.last().map(String::as_str), Some("[DONE]"));
         let chunks: Vec<serde_json::Value> = lines[..lines.len() - 1].iter()
@@ -1466,11 +1563,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_excludes_stop_text_like_non_stream_does() {
+        // gap-scan F9: the worker emits the delta BEFORE its stop check — the stream
+        // shape must still exclude the stop text (and same-token overshoot) exactly
+        // like the non-stream truncate. Stop spans two token events here.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Token { id: 1, text: "answer\nPro".into() }).unwrap();
+        tx.send(Event::Token { id: 2, text: "blem: leaked prompt".into() }).unwrap();
+        tx.send(Event::Done {
+            stop_reason: "Callback".into(), n_tokens: 2, n_prompt: 8, n_cached: 0,
+            elapsed_s: 0.1,
+        }).unwrap();
+        drop(tx);
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
+                                vec!["Problem:".into()]).into_response();
+        let lines = sse_data_lines(resp).await;
+        let content: String = lines.iter()
+            .filter(|l| *l != "[DONE]")
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str()
+                .map(str::to_string))
+            .collect();
+        assert_eq!(content, "answer\n");
+
+        // held-back text that never becomes a stop is flushed at Done.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Token { id: 1, text: "ends in Pro".into() }).unwrap();
+        tx.send(Event::Done {
+            stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 8, n_cached: 0, elapsed_s: 0.1,
+        }).unwrap();
+        drop(tx);
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
+                                vec!["Problem:".into()]).into_response();
+        let lines = sse_data_lines(resp).await;
+        let content: String = lines.iter()
+            .filter(|l| *l != "[DONE]")
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|c| c["choices"][0]["delta"]["content"].as_str()
+                .map(str::to_string))
+            .collect();
+        assert_eq!(content, "ends in Pro");
+    }
+
+    #[tokio::test]
     async fn stream_worker_error_is_a_data_chunk_not_a_named_event() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Error("boom".into())).unwrap();
         drop(tx);
-        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true)).into_response();
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new())
+            .into_response();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
         // OpenAI clients only parse `data:` lines — no named `event: error` on the chat shape.
