@@ -1,0 +1,41 @@
+=== v0.68.0 release battery — 5090 rig, git=9461c7bf1e8144ec7919004dbacf5fc2522b9f85 (train HEAD, restructure/public-split), 2026-08-03 ===
+[gpu] 52, 9.09 W, 180 MHz, 312 MiB
+[apps] 2325609, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+
+[1] kernel-check FULL, naked env (kernel-check.log):
+ALL GREEN: kernels match CPU reference.   (455 OK, 0 FAIL)
+
+[2] run-gen argmax (NGEN=128, pp512 prompt research/e2e/prompts/pp512.txt):
+  q9 (Qwen3.5-9B-NVFP4-MTP):
+    prefill argmax=365  decode argmax=365  logit maxdiff=8.366e-1  MATCH
+    batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=7.100e-1  MATCH
+    prefill 512 tok in 0.1032s = 4961.7 tok/s (pp512)
+  q27 (Qwen3.6-27B-NVFP4-Q4_K_M-mtp):
+    prefill argmax=271  decode argmax=271  logit maxdiff=3.570e-1  MATCH
+    batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=3.927e-1  MATCH
+    prefill 512 tok in 0.3384s = 1513.0 tok/s (pp512)
+
+[3] run-spec K=1..8 self-consistency (q9 + owntrim drafter, board-2048 prompt, NGEN=64):
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+  acceptance: 34/60 = 56.7%   self-consistency: PASS (identical to generate)
+  acceptance: 37/81 = 45.7%   self-consistency: PASS (identical to generate)
+  acceptance: 40/96 = 41.7%   self-consistency: PASS (identical to generate)
+  acceptance: 40/120 = 33.3%   self-consistency: PASS (identical to generate)
+  acceptance: 40/144 = 27.8%   self-consistency: PASS (identical to generate)
+  acceptance: 40/168 = 23.8%   self-consistency: PASS (identical to generate)
+  acceptance: 40/192 = 20.8%   self-consistency: PASS (identical to generate)
+  === SELF-CONSISTENCY PASS ===
+
+[4] tools/serve-smoke.sh (q9 + draft, OpenAI compat surface):
+  4 FAILs: chat non-stream / greedy determinism / concurrency / spec-vs-plain —
+  EXACTLY the receipted pre-existing set (think-tail content routing at small
+  max_tokens on q9; identical-on-baseline receipt:
+  research/constrained-20260803/RESULTS.md). NO NEW failures. All other checks ok:
+  /models, chat stream, /v1/completions, long generation.
+
+Window: llama-server --embedding co-resident (260MiB, allowlisted); every GPU run under
+a short flock /tmp/gpu5090.lock, released between runs; CPUQuota=1600% of 24 cores.
+
+VERDICT: ALL GREEN — kernel-check 455 OK / 0 FAIL; q9+q27 argmax MATCH (primary AND
+batched-prime); 8/8 K self-consistency PASS; serve-smoke fail set exactly the 4 known
+pre-existing think-tail fails, zero new. 9461c7bf is battery-clean for the v0.68.0 tag.
