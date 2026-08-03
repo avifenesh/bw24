@@ -32,11 +32,13 @@
 ^crates/memra-engine/cu/(mmq_fp4|mmq_nvfp4_[a-z0-9_]*|cutlass_fp4_sm120)\.cu$	nvfp4-gemm,nvfp4-27b-shape,nvfp4-batched	q9,k27	-
 # flash_attn.cu: the tier-0 synthetic arms carry the REAL teeth for the live decode arms
 # (fa_decode_rows/seqs_v4 bit-identity caught a v4 K-scale skew with 46 FAILs — receipts
-# break-fa-v4-*). g12d is the DEPTH probe (t_kv ~1740: dpl16 hd512 + deep v4 actually run —
-# the 20-token probes sit below the t_kv=96 vec floor). KNOWN GAP: helpers only consumed by
-# non-default rollback seams (e.g. dq_K_lane's q8_0 branch — plain vec_q with v4 off, smem
-# twin, q8_0 globals under MEMRA_GEMMA_GKV=0) are invisible to naked probes AND to twin
-# self-comparisons that share the helper; see docs/TESTING.md coverage table.
+# break-fa-v4-*). The ~100-token text probes (q9/q35) decode at t_kv ~100-120 — above the
+# 96 vec floor, inside the v4 window — so the default-module v4 hd256 arm runs; g12d adds
+# the gemma fp8-KV g-module at depth (hd512 dpl16 + windowed arms, t_kv ~1740). KNOWN GAP:
+# helpers only consumed by non-default rollback seams (e.g. dq_K_lane's q8_0 branch — v4-off
+# vec_q, smem twin, q8_0 globals under MEMRA_GEMMA_GKV=0) are DEFAULT-DEAD: invisible to
+# naked probes by construction (verified: a lane-swap break there passed everything,
+# break-fa-decode2-*); flipping those seams is battery/A-B territory. docs/TESTING.md.
 ^crates/memra-engine/cu/(flash_attn|fa3_prefill|fattn_vendor)\.cu$	synthetic	g12d,g31,q9,q35	-
 ^crates/memra-engine/cu/(f16_prefill|fp8_prefill|moe_f16_grouped)\.cu$	f16g-kq-direct	g26,q35	-
 ^crates/memra-engine/cu/moe_router\.cu$	fast-router-batch,d2-cache-bit-identity	q35,g26	-

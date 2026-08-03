@@ -16,13 +16,15 @@
 #
 # One model per KERNEL CLASS the dispatch actually forks on (see map.tsv header):
 g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
-# g12d: DEPTH probe (the battery's 1736-id depth prompt). THE FA-FLOOR LESSON (2026-08-03): the
-# 20-token probes sit at t_kv < 96 — BELOW the FA vec floor — so fa_decode_vec_q / v4 / dpl16 /
-# smem decode arms never run, and a broken K-dequant passed every short probe + the run-gen
-# MATCH gates (self-consistent breaks pass self-consistency; only a golden at DEPTH sees them —
-# receipts research/fast-gate-20260802/break-fa-*). At t_kv ~1740 the hd512 globals ride dpl16
-# and the hd256 arms ride v4/deep — the FA decode families are actually exercised.
-g12d	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/depth-prompt-1736-ids.txt	20	-
+# g12d: DEPTH probe (the battery's 1736-id depth prompt) — the gemma fp8-KV g-module FA arms
+# (hd512 dpl16 globals + windowed hd256) actually execute at t_kv ~1740; the 19-id gemma
+# probes decode below the t_kv=96 vec floor and never leave the scalar arm. (The ~100-token
+# text probes q9/q35/etc DO exercise the default-module v4 hd256 arm already.)
+# ngen=16, NOT 20: g12 depth prime is run-to-run NONDETERMINISTIC at a near-tie — token 17
+# flips 107<->45518 (~1/8 runs, prefill logit maxdiff 2.438 vs 2.492 run-to-run; receipts
+# research/fast-gate-20260802/g12-depth-nondeterminism.log). The first 16 generated ids were
+# stable across every observed run; a 20-token golden false-fails ~1/8.
+g12d	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/depth-prompt-1736-ids.txt	16	-
 g31	argmax	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
