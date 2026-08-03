@@ -1,5 +1,13 @@
 # Benchmarks — bw24 vs llama.cpp on RTX 5090 Laptop (the beat-targets)
 
+> **DOCTRINE CHANGE (owner, 2026-08-03): llama benching STOPPED.** The llama numbers in
+> this file and the boards are frozen reference points, recorded through 2026-08-03 — no
+> new llama-bench runs, no fresh llama builds, no interleaved llama arms. All future
+> measurement is SELF-COMPETITION: new binary vs our own baseline binary, same-session
+> interleaved, same window rules below (the A/B protocol now pairs memra-vs-memra).
+> Ratios vs the frozen llama rows carry a stated non-interleaved caveat and are context,
+> not verdicts. Deployment target: q27 on 2x desktop 5090 — beat our own numbers.
+
 Goal (user): beat **vLLM + SGLang + llama.cpp** on **prefill, decode, AND overall**.
 Box: RTX 5090 Laptop sm_120, gpu-full-power on. Model: Qwen3.5-9B Q8_0 (8.86 GiB, hybrid arch).
 

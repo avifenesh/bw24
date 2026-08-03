@@ -187,21 +187,27 @@ collapsed to ~35-39% acceptance). Adopt on e2e tok/s only (law 3). Then complete
 regime checklist (DRAFT-REGIME.md bottom): draft + ranks to the HF bench repo
 (huggingface.co/Avifenesh/memra-bench) with provenance.
 
-## 7. Board rows + the head-to-head (the publish gate)
+## 7. Board rows + the self-competition pairing (the publish gate)
 
-Protocol = exactly `research/board-remeasure-20260802/run-board-remeasure.sh` (copy it,
-swap the model map): memra `run-gen MEMRA_NGEN=128` on pp512.txt / p3-agentic-long.txt vs
-`llama-bench -ngl 999 -fa 1 -ctk q8_0 -ctv q5_1 -p 0 -n 128 -d 512,6257`, FRESH same-session
-llama build, round-robin interleaved per rep, N=5 medians, flock'd, idle-gated, temps
-recorded per rep. Spec row: K-sweep for the best class config, interleaved N>=2 vs llama
-spec-best, same window (the 07-18 q27 protocol, rig5090.jsonl:344).
+**Measurement doctrine (owner, 2026-08-03): llama benching is STOPPED.** The llama
+denominators recorded through 2026-08-03 (board + rig5090.jsonl) are frozen reference
+points — no fresh llama builds, no new llama-bench runs, no interleaved llama arms.
+All pairing is self-competition: memra-vs-memra, interleaved against OUR baseline binary.
 
-**Re-pair the 3.6-27B rows in the same session** — the frozen baseline notes the spec row is
-stale vs HEAD (baseline-36-27b.jsonl STALENESS row); a 3.8-vs-3.6 story needs both measured
-in one window.
+Protocol: memra `run-gen MEMRA_NGEN=128` on pp512.txt / p3-agentic-long.txt, and the
+3.8 arms interleaved round-robin against the **3.6-27B rows re-measured in the same
+session with the same binary** (that pairing is the verdict). N=5 medians, flock'd,
+idle-gated, temps recorded per rep. Spec row: K-sweep for the best class config, N>=2,
+same window (the 07-18 q27 K-sweep shape, rig5090.jsonl:344, minus the llama arm).
 
-Publish decision against the bar: >=1.1x e2e or the lane stays open (model can be
-gates-green and NOT published — that is the honest state, see 3.6's own 1.06-1.09x cells).
+**Re-pair the 3.6-27B rows in the same session** — the frozen baseline notes the spec row
+is stale vs HEAD (baseline-36-27b.jsonl STALENESS row); the 3.8-vs-3.6 story needs both
+measured in one window.
+
+Publish decision: judged against the FROZEN llama row for the 27B class (recorded
+2026-07/08, non-interleaved caveat stated) — >=1.1x vs that frozen number or the lane
+stays open — plus absolute tok/s tracked in jsonl as the ongoing self-competition
+record. Do not run new llama sessions to manufacture a fresh denominator.
 
 Board mechanics (CLAUDE.md perf-board rule):
 
