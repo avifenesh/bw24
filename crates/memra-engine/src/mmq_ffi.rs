@@ -66,7 +66,7 @@ unsafe extern "C" {
     ///   residual_k = 0: off.
     ///   residual_k > 0: the k largest-magnitude activation channels (ranked across the batch) are
     ///     zeroed before quantization and their exact f32 contribution is added back as a rank-k
-    ///     correction. Requires per_token_scale = 1. Clamped to the kernel's max (16).
+    ///     correction. Requires per_token_scale = 1. Clamped to MMQ_MAX_RESIDUAL_K (64).
     pub fn memra_mmq_nvfp4_ex2(
         w_nvfp4_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
@@ -354,7 +354,7 @@ pub fn mmq_w4a8_enabled() -> bool {
 /// Residual high-precision activation channels for the W4A4 MMQ prefill path.
 /// `MEMRA_MMQ_RESIDUAL_K=<k>` keeps the k largest-magnitude activation channels out of the e2m1
 /// quantized path and adds their exact f32 contribution back as a rank-k correction. k=0 (default)
-/// is off; the kernel clamps to 16.
+/// is off; the kernel clamps to MMQ_MAX_RESIDUAL_K (64).
 ///
 /// Read LIVE per call, not OnceLock'd, for the same reason `MEMRA_MMQ` is: the W4A4 exactness gate
 /// sweeps arms inside ONE process against ONE set of loaded weights, and a cached first read would
@@ -364,7 +364,7 @@ pub fn mmq_residual_k() -> i32 {
         .ok()
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(0)
-        .clamp(0, 16)
+        .clamp(0, 64)
 }
 
 /// Q8_0 MMQ prefill seam (lane/ppmmq lever 2, DEFAULT ON since 2026-07-09 — `MEMRA_PP_Q8MMQ=0`

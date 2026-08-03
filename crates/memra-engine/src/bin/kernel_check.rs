@@ -1491,7 +1491,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .fold(0.0, f32::max)
                     };
                     let mut rel_k0 = f32::NAN;
-                    for k in [0i32, 4, 8, 16] {
+                    // k=32/64 also exercise the correction kernel's channel-axis TILING (the
+                    // register weight array holds MMQ_RESIDUAL_S_TILE=16 at a time), so a bug in the
+                    // multi-pass path cannot hide behind a single-pass k.
+                    for k in [0i32, 4, 8, 16, 32, 64] {
                         let y = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_res(&wd, &xd, tt, in_f, out_f, k)?)?;
                         let r = per_token_rel(&y);
                         if k == 0 {

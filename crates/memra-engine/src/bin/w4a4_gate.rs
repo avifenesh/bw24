@@ -83,6 +83,11 @@ struct ArmRun {
     /// vs the reference" is not a property any prefill arm has, and the W4A4 verdict has to be read
     /// against this floor rather than against zero.
     tokens_tokenwise: Vec<u32>,
+    /// Deciding rows of the tokenwise-primed stream, same indexing as `decide_rows`. Paired with
+    /// `decide_rows` these give the arm's OWN logit spread between prefill entry points at any
+    /// position where both streams share a prefix — the per-position numeric noise floor that a
+    /// cross-arm top-2 margin has to be judged against.
+    decide_rows_tokenwise: Vec<Vec<f32>>,
     /// `decide_rows[p]` is the logit row whose argmax produced `tokens[p]` (row 0 IS `prime_logits`).
     /// Kept so the FIRST DIVERGENT position can be classified instead of only position 0: up to that
     /// position both arms fed the same prefix, so the two rows are directly comparable, and quoting
@@ -125,12 +130,16 @@ fn run_arm(
     //      prompt), not an activation-contract difference. Without this control a cross-arm fork
     //      can't be attributed to W4A4 at all.
     let mut tokens_tokenwise = Vec::with_capacity(ngen);
+    let mut decide_rows_tokenwise = Vec::with_capacity(ngen);
     {
         let mut nx = decode_argmax as u32;
+        let mut deciding = logits.clone();
         for _ in 0..ngen {
             tokens_tokenwise.push(nx);
+            decide_rows_tokenwise.push(std::mem::take(&mut deciding));
             let l = model.decode_step(e, nx, &mut dcache)?;
             nx = argmax(&l) as u32;
+            deciding = l;
         }
     }
     drop(dcache);
@@ -166,6 +175,7 @@ fn run_arm(
         tokens,
         tokens_tokenwise,
         decide_rows,
+        decide_rows_tokenwise,
     })
 }
 
@@ -307,17 +317,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .zip(test_row)
                 .map(|(a, b)| (a - b).abs())
                 .fold(0.0f32, f32::max);
+            // Is that margin even resolvable by this engine? The reference arm's own two prefill
+            // entry points agree token-for-token here (see the floor above), so at THIS position its
+            // batched and tokenwise deciding rows describe the same distribution twice, and their
+            // gap on the two candidate ids is the arm's numeric noise on exactly the comparison the
+            // greedy pick makes. A cross-arm margin below that gap is a decision the engine cannot
+            // make repeatably in ANY arm — an argmax coin flip, not a W4A4 accuracy defect.
+            let ref_tw = &reference.decide_rows_tokenwise[pos];
+            let noise_ref = (ref_row[ref_id] - ref_tw[ref_id]).abs();
+            let noise_test = (ref_row[test_id] - ref_tw[test_id]).abs();
+            let ref_margin = ref_row[ref_id] - ref_row[test_id];
+            let entry_noise = noise_ref + noise_test;
             let quoted = format!(
                 ",\"ref_logit_ref_id\":{:.6},\"ref_logit_test_id\":{:.6},\
                  \"test_logit_ref_id\":{:.6},\"test_logit_test_id\":{:.6},\
-                 \"ref_margin\":{:.6},\"test_margin\":{:.6},\"div_row_maxdiff\":{:.6e}",
+                 \"ref_margin\":{ref_margin:.6},\"test_margin\":{:.6},\"div_row_maxdiff\":{:.6e},\
+                 \"ref_entry_noise_at_div\":{entry_noise:.6},\"margin_within_entry_noise\":{}",
                 ref_row[ref_id],
                 ref_row[test_id],
                 test_row[ref_id],
                 test_row[test_id],
-                ref_row[ref_id] - ref_row[test_id],
                 test_row[test_id] - test_row[ref_id],
                 row_maxdiff,
+                ref_margin.abs() <= entry_noise,
             );
             (
                 format!(

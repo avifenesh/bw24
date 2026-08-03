@@ -813,7 +813,14 @@ static __global__ void quantize_mmq_nvfp4_kernel_v1(
 //
 // k is small (4/8/16) — the correction is a thin rank-k update, not a second GEMM.
 
-#define MMQ_MAX_RESIDUAL_K 16
+// Cap on residual channels. Raised 16 -> 64 once the perf window showed the correction is FREE
+// (interleaved x5, q9 pp1845: W4A4 k=0 7404.9 vs k=16 7417.0 tok/s — inside the 0.8% spread), so the
+// only reason to keep k small was cost, and there is none. The correction kernel tiles its register
+// weight array (MMQ_RESIDUAL_S_TILE) so a larger cap does not add registers per thread.
+#define MMQ_MAX_RESIDUAL_K 64
+// Outlier channels dequantized per pass in the correction kernel. 16 floats/thread of registers,
+// independent of MMQ_MAX_RESIDUAL_K.
+#define MMQ_RESIDUAL_S_TILE 16
 
 // Per-channel amax across the whole token batch. Threads own channels, so reads across a token row
 // are coalesced.
@@ -887,49 +894,57 @@ static __global__ void nvfp4_residual_correct_kernel(
     const int i = blockIdx.x * NT + threadIdx.x;
     const int row_bytes = (in_f / QK_NVFP4) * (int) sizeof(block_nvfp4);
 
-    // Dequantize this row's k outlier-channel weights once.
-    float wdeq[MMQ_MAX_RESIDUAL_K];
-    if (i < out_f) {
-        for (int s = 0; s < k; ++s) {
-            const int c = topk_idx[s];
-            if (c < 0) { wdeq[s] = 0.0f; continue; }
-            const int blk = c / QK_NVFP4;
-            const int sub = (c % QK_NVFP4) / QK_NVFP4_SUB;
-            const int w   = c % QK_NVFP4_SUB;
-            const block_nvfp4 * b =
-                reinterpret_cast<const block_nvfp4 *>(W + (int64_t) i * row_bytes) + blk;
-            const uint8_t byte = b->qs[sub * 8 + (w & 7)];
-            const uint8_t nib  = (w < 8) ? (byte & 0x0f) : (byte >> 4);
-            // GGUF NVFP4 dequant is EXACTLY kvalues_mxfp4[nib] * ue4m3_to_fp32(d) — the doubled
-            // codebook (0,1,2,3,4,6,8,12) and the /2 already inside ggml_cuda_ue4m3_to_fp32 cancel,
-            // so no further factor belongs here. kvalues_mxfp4 carries its own sign in codes 8..15.
-            // (An extra 0.5f here halved the correction; the residual kernel-check arm caught it as
-            // rel == 0.52 ~ exactly half the outlier contribution left unrecovered.)
-            wdeq[s] = (float) kvalues_mxfp4[nib] * ggml_cuda_ue4m3_to_fp32(b->d[sub]);
-        }
-    }
+    __shared__ float a_sh[MMQ_RESIDUAL_S_TILE * CHUNK];
 
-    __shared__ float a_sh[MMQ_MAX_RESIDUAL_K * CHUNK];
+    // TILED over the channel axis: each pass handles up to MMQ_RESIDUAL_S_TILE outlier channels, so
+    // the register weight array and the shared activation staging area are both independent of the
+    // cap on k. Raising MMQ_MAX_RESIDUAL_K therefore costs launches, not occupancy.
+    for (int s0 = 0; s0 < k; s0 += MMQ_RESIDUAL_S_TILE) {
+        const int ns = min(MMQ_RESIDUAL_S_TILE, k - s0);
 
-    for (int j0 = 0; j0 < n_tokens; j0 += CHUNK) {
-        const int nj = min(CHUNK, n_tokens - j0);
-        for (int t = threadIdx.x; t < k * nj; t += NT) {
-            const int s  = t / nj;
-            const int jj = t % nj;
-            const int c  = topk_idx[s];
-            a_sh[s * CHUNK + jj] = c >= 0 ? act[(int64_t) (j0 + jj) * s11 + c] : 0.0f;
-        }
-        __syncthreads();
+        // Dequantize this row's slice of outlier-channel weights once per pass, then reuse across
+        // every token: the weight bytes are read once per (row, pass), not once per (row, token).
+        float wdeq[MMQ_RESIDUAL_S_TILE];
         if (i < out_f) {
-            for (int jj = 0; jj < nj; ++jj) {
-                float acc = 0.0f;
-                for (int s = 0; s < k; ++s) {
-                    acc = fmaf(wdeq[s], a_sh[s * CHUNK + jj], acc);
-                }
-                y[(int64_t) (j0 + jj) * out_f + i] += out_scale * acc;
+            for (int s = 0; s < ns; ++s) {
+                const int c = topk_idx[s0 + s];
+                if (c < 0) { wdeq[s] = 0.0f; continue; }
+                const int blk = c / QK_NVFP4;
+                const int sub = (c % QK_NVFP4) / QK_NVFP4_SUB;
+                const int w   = c % QK_NVFP4_SUB;
+                const block_nvfp4 * b =
+                    reinterpret_cast<const block_nvfp4 *>(W + (int64_t) i * row_bytes) + blk;
+                const uint8_t byte = b->qs[sub * 8 + (w & 7)];
+                const uint8_t nib  = (w < 8) ? (byte & 0x0f) : (byte >> 4);
+                // GGUF NVFP4 dequant is EXACTLY kvalues_mxfp4[nib] * ue4m3_to_fp32(d) — the doubled
+                // codebook (0,1,2,3,4,6,8,12) and the /2 already inside ggml_cuda_ue4m3_to_fp32
+                // cancel, so no further factor belongs here. kvalues_mxfp4 carries its own sign in
+                // codes 8..15. (An extra 0.5f here halved the correction; the residual kernel-check
+                // arm caught it as rel == 0.52, exactly half the outlier contribution unrecovered.)
+                wdeq[s] = (float) kvalues_mxfp4[nib] * ggml_cuda_ue4m3_to_fp32(b->d[sub]);
             }
         }
-        __syncthreads();
+
+        for (int j0 = 0; j0 < n_tokens; j0 += CHUNK) {
+            const int nj = min(CHUNK, n_tokens - j0);
+            __syncthreads();
+            for (int t = threadIdx.x; t < ns * nj; t += NT) {
+                const int s  = t / nj;
+                const int jj = t % nj;
+                const int c  = topk_idx[s0 + s];
+                a_sh[s * CHUNK + jj] = c >= 0 ? act[(int64_t) (j0 + jj) * s11 + c] : 0.0f;
+            }
+            __syncthreads();
+            if (i < out_f) {
+                for (int jj = 0; jj < nj; ++jj) {
+                    float acc = 0.0f;
+                    for (int s = 0; s < ns; ++s) {
+                        acc = fmaf(wdeq[s], a_sh[s * CHUNK + jj], acc);
+                    }
+                    y[(int64_t) (j0 + jj) * out_f + i] += out_scale * acc;
+                }
+            }
+        }
     }
 }
 

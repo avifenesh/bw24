@@ -24,6 +24,8 @@ KEEP = [
     "cross_prefill_maxdiff", "cross_prime_maxdiff",
     "ref_logit_ref_id", "ref_logit_test_id", "test_logit_ref_id", "test_logit_test_id",
     "ref_margin", "test_margin", "div_row_maxdiff",
+    "ref_entrypoint_floor_pos", "test_entrypoint_floor_pos",
+    "ref_entry_noise_at_div", "margin_within_entry_noise",
 ]
 
 
