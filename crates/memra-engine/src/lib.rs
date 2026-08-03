@@ -1885,6 +1885,27 @@ impl Engine {
         Ok(())
     }
 
+    /// GRAMMAR TOKEN MASK (constrained decoding, lane/constrained-full): ban every vocab id
+    /// whose bit is unset in the packed llguidance bitset, IN PLACE on row `col` of a stacked
+    /// [B, n_vocab] logits buffer. `mask` = the SimpleVob u32 words H2D'd verbatim
+    /// (~n_vocab/8 bytes/step — trivial on PCIe); ids >= 32*mask_words (padded lm_head tail)
+    /// are banned too, the device twin of constrained::apply_mask. Banned value -FLT_MAX ==
+    /// the argmax/gumbel kernels' init sentinel, so a fully-banned tail can never win and
+    /// ordering matches the host -inf mask bit-for-bit for every finite logit.
+    pub fn mask_logits_col(&self, logits: &mut CudaSlice<f32>, mask: &CudaSlice<u32>,
+                           col: usize, n: usize, mask_words: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("mask_logits_f32");
+        let (ci, ni, mw) = (col as i32, n as i32, mask_words as i32);
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256).min(1024) as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(&mut *logits).arg(mask).arg(&ci).arg(&ni).arg(&mw);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Column-`col` twin of `gumbel_perturb` over stacked logits [B, n_vocab] (the batched
     /// serving tick's device sampler): y = x[col]/temp + gumbel(seed, stream_pos, lane).
     /// SAME kernel/Philox mapping as `gumbel_perturb` — bit-identical perturbation for the
@@ -4003,6 +4024,15 @@ impl Engine {
         Ok(v)
     }
     /// Allocate a zeroed device u32 buffer (persistent spec-loop prediction slots).
+    /// H2D into an EXISTING u32 buffer (stable pointer — the per-step grammar-mask upload:
+    /// contents change every step, the address must not, so a captured graph can read it).
+    pub fn htod_u32_into(&self, dst: &mut CudaSlice<u32>, src: &[u32])
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let mut view = dst.slice_mut(0..src.len());
+        self.gpu.stream().memcpy_htod(src, &mut view)?;
+        Ok(())
+    }
+
     pub fn alloc_u32_zeroed(&self, n: usize) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
         let s = self.gpu.stream().alloc_zeros::<u32>(n)?;
         self.keep_if_capturing(&s);

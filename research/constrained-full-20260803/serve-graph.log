@@ -1,0 +1,16 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8195
+[worker] observed session VRAM cost for "q9": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 102 tokens, 56.4MB (resident 56.4MB / 268MB, model q9)
+[constrained] q9: 37 masked steps, mask total 0.42 ms (0.011 ms/step)
+[prefix-cache] hit: 102 of 102 prompt tokens from cache (model q9)
+[graph-census] segment t_kv 103..=325 fa_plan mains: 8
+[graph-census] {"CU_GRAPH_NODE_TYPE_KERNEL": 523, "CU_GRAPH_NODE_TYPE_MEMCPY": 24, "CU_GRAPH_NODE_TYPE_MEMSET": 24, "CU_GRAPH_NODE_TYPE_MEM_ALLOC": 797, "CU_GRAPH_NODE_TYPE_MEM_FREE": 797}
+[constrained] q9: 37 masked steps, mask total 0.41 ms (0.011 ms/step)

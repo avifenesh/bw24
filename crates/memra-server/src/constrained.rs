@@ -10,11 +10,16 @@
 //! `Option`s that stay `None`. Unconstrained serving is byte-identical to pre-lane behavior
 //! (proved by the A/B gate in research/constrained-20260803/).
 //!
-//! v1 seams (worker.rs):
-//!   - constrained rows never device-sample (the mask lives host-side): `samp[i] = None`,
-//!     so their logits row keeps the full D2H and the host sampler runs on a masked copy.
-//!   - constrained sessions are not graph-promoted (graph steps sample on device).
-//!   - spec-decode x constrained is OFF loudly (TODO in admit) — plain decode only.
+//! FULL path (lane/constrained-full, 2026-08-03 — v1's host-only seams closed):
+//!   - the packed mask (SimpleVob words) H2Ds per step into a stable per-session device
+//!     buffer; `mask_logits_f32` bans on device BEFORE the device sampler — constrained
+//!     rows ride the same device-sample/lean-logits tick as everyone else.
+//!   - constrained greedy sessions graph-promote (in-graph mask node, stable pointer,
+//!     contents re-uploaded per step) and spec-decode (verify-side grammar truncation +
+//!     masked-argmax cut slot; SpecGrammar below adapts the engine's SpecConstraint hook).
+//!   - fallback sampler configs (penalties/top-k/top-p/min-p) and MEMRA_CONSTRAIN_HOST=1
+//!     (the rollback oracle) keep the v1 host masked-copy sample.
+//! Receipts: research/constrained-full-20260803/ (battery + three-way perf + gates).
 
 use std::sync::Arc;
 
@@ -160,14 +165,22 @@ impl SessionConstraint {
         self.m.get_error()
     }
 
-    /// Compute the current token mask and apply it to `logits`. When the grammar has
-    /// finished, the mask collapses to EOS-only — the normal Eos stop fires.
-    pub fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String> {
+    /// Compute the current token mask (timed — the mask-cost receipt). When the grammar
+    /// has finished, the mask collapses to EOS-only — the normal Eos stop fires. The
+    /// packed form (`SimpleVob::as_slice`) is what the device path H2Ds verbatim.
+    pub fn compute_mask(&mut self) -> Result<SimpleVob, String> {
         let t0 = std::time::Instant::now();
         let mask = self.m.compute_mask_or_eos().map_err(|e| e.to_string())?;
-        apply_mask(&mask, logits);
         self.steps += 1;
         self.mask_ns += t0.elapsed().as_nanos();
+        Ok(mask)
+    }
+
+    /// Compute the current token mask and apply it to `logits` (the HOST path: fallback
+    /// sampler configs + the MEMRA_CONSTRAIN_HOST=1 oracle).
+    pub fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String> {
+        let mask = self.compute_mask()?;
+        apply_mask(&mask, logits);
         Ok(())
     }
 
@@ -175,6 +188,55 @@ impl SessionConstraint {
     /// was sampled from this state's own mask) — an error here is a loud session stop.
     pub fn consume(&mut self, tok: u32) -> Result<(), String> {
         self.m.consume_token(tok).map_err(|e| e.to_string())
+    }
+}
+
+/// SpecConstraint adapter (constrained x spec-decode, 2026-08-03): SessionConstraint behind
+/// the engine's grammar hook, with a per-state CACHED mask — the verify walk probes
+/// `is_allowed` once per accepted token and the mask only changes on `consume`, so each
+/// grammar state computes its mask exactly once (the same 0.02-0.06 ms/step cost as plain
+/// constrained decode). EOS is never consumed (the plain path's EOS-before-consume ordering):
+/// a finished grammar collapses its mask to EOS-only, so post-EOS drafts truncate naturally.
+pub struct SpecGrammar<'a> {
+    c: &'a mut SessionConstraint,
+    eos: u32,
+    cur: Option<SimpleVob>,
+}
+
+impl<'a> SpecGrammar<'a> {
+    pub fn new(c: &'a mut SessionConstraint, eos: u32) -> Self {
+        Self { c, eos, cur: None }
+    }
+    fn cur_mask(&mut self) -> Result<&SimpleVob, String> {
+        if self.cur.is_none() {
+            self.cur = Some(self.c.compute_mask()?);
+        }
+        Ok(self.cur.as_ref().unwrap())
+    }
+}
+
+impl memra_engine::spec::SpecConstraint for SpecGrammar<'_> {
+    fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String> {
+        let mask = self.cur_mask()?;
+        apply_mask(mask, logits);
+        Ok(())
+    }
+    fn mask_words(&mut self) -> Result<Vec<u32>, String> {
+        Ok(self.cur_mask()?.as_slice().to_vec())
+    }
+    fn is_allowed(&mut self, tok: u32) -> Result<bool, String> {
+        let mask = self.cur_mask()?;
+        // ids past the mask (padded lm_head tail) are banned; EOS defers to the mask
+        // (a finished grammar's mask is EOS-only, an unfinished one usually bans it).
+        Ok((tok as usize) < mask.len() && mask.is_allowed(tok))
+    }
+    fn consume(&mut self, tok: u32) -> Result<(), String> {
+        if tok == self.eos {
+            return Ok(()); // EOS ends the stream — never fed to the grammar (plain-path order)
+        }
+        self.c.consume(tok)?;
+        self.cur = None;
+        Ok(())
     }
 }
 

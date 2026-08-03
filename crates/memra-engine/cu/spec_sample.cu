@@ -604,3 +604,22 @@ extern "C" __global__ void plain_tok_ring(const unsigned int* __restrict__ vam,
     idx %= cap; if (idx < 0) idx += cap;
     ring[idx] = vam[0];
 }
+
+// ---------------- 7. grammar token mask (constrained decoding, lane/constrained-full) ----------------
+// Ban every vocab id whose packed-bitset bit is 0, IN PLACE on row `col` of a stacked
+// [B, n_vocab] logits buffer (col=0 for a single row). `mask` = llguidance SimpleVob words:
+// bit i lives at word[i>>5], position (i&31) — the toktrie packed layout, H2D'd verbatim
+// (~n_vocab/8 bytes/step). Ids at or past 32*mask_words (the padded lm_head tail) are banned
+// too — the device twin of constrained::apply_mask's tail rule. Banned value is -FLT_MAX,
+// not -inf: identical ordering for the downstream argmax/gumbel kernels (their init is the
+// same -3.4e38 sentinel) with no inf-inf NaN hazard in f32 arithmetic.
+extern "C" __global__ void mask_logits_f32(
+        float* __restrict__ logits, const unsigned int* __restrict__ mask,
+        int col, int n, int mask_words) {
+    const int64_t base = (int64_t) col * n;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        const int w = i >> 5;
+        const bool allowed = (w < mask_words) && ((mask[w] >> (i & 31)) & 1u);
+        if (!allowed) logits[base + i] = -3.402823466e38f;
+    }
+}

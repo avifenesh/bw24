@@ -1,0 +1,58 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8195
+[worker] observed session VRAM cost for "q9": 235MB (admission gate = 2x)
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=23/33 cum=69/90=0.767
+[spec-acc] ctx=124 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=158 burst=18/45 cum=108/174=0.621
+[spec-acc] ctx=191 burst=24/30 cum=132/204=0.647
+[spec-acc] ctx=225 burst=22/30 cum=154/234=0.658
+[spec-acc] ctx=257 burst=1/66 cum=155/300=0.517
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=23/33 cum=69/90=0.767
+[spec-acc] ctx=124 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=158 burst=18/45 cum=108/174=0.621
+[spec-acc] ctx=191 burst=24/30 cum=132/204=0.647
+[spec-acc] ctx=225 burst=22/30 cum=154/234=0.658
+[spec-acc] ctx=257 burst=16/24 cum=170/258=0.659
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=23/33 cum=69/90=0.767
+[spec-acc] ctx=124 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=158 burst=18/45 cum=108/174=0.621
+[spec-acc] ctx=191 burst=24/30 cum=132/204=0.647
+[spec-acc] ctx=225 burst=22/30 cum=154/234=0.658
+[spec-acc] ctx=257 burst=16/24 cum=170/258=0.659
+[spec-acc] ctx=26 burst=19/36 cum=19/36=0.528
+[spec-acc] ctx=58 burst=18/45 cum=37/81=0.457
+[spec-acc] ctx=91 burst=21/42 cum=58/123=0.472
+[spec-acc] ctx=126 burst=22/33 cum=80/156=0.513
+[spec-acc] ctx=159 burst=18/42 cum=98/198=0.495
+[spec-acc] ctx=191 burst=18/42 cum=116/240=0.483
+[spec-acc] ctx=223 burst=17/45 cum=133/285=0.467
+[constrained] q9: 226 masked steps, mask total 1.44 ms (0.006 ms/step)
+[spec-acc] ctx=26 burst=19/36 cum=19/36=0.528
+[spec-acc] ctx=58 burst=18/45 cum=37/81=0.457
+[spec-acc] ctx=91 burst=21/42 cum=58/123=0.472
+[spec-acc] ctx=126 burst=22/33 cum=80/156=0.513
+[spec-acc] ctx=159 burst=18/42 cum=98/198=0.495
+[spec-acc] ctx=191 burst=18/42 cum=116/240=0.483
+[spec-acc] ctx=223 burst=17/45 cum=133/285=0.467
+[constrained] q9: 226 masked steps, mask total 1.44 ms (0.006 ms/step)
+[spec-acc] ctx=26 burst=19/36 cum=19/36=0.528
+[spec-acc] ctx=58 burst=18/45 cum=37/81=0.457
+[spec-acc] ctx=91 burst=21/42 cum=58/123=0.472
+[spec-acc] ctx=126 burst=22/33 cum=80/156=0.513
+[spec-acc] ctx=159 burst=18/42 cum=98/198=0.495
+[spec-acc] ctx=191 burst=18/42 cum=116/240=0.483
+[spec-acc] ctx=223 burst=17/45 cum=133/285=0.467
+[constrained] q9: 226 masked steps, mask total 1.44 ms (0.006 ms/step)

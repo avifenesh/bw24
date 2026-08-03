@@ -1,0 +1,1 @@
+{"name": "Rex", "age": 7, "tags": ["hobby:gardening", "hobby:cooking", "hobby:reading"]}

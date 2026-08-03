@@ -176,6 +176,28 @@ impl HybridModel {
         samp: &[Option<(f32, u64, u32)>],
         lean: bool,
     ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        self.decode_step_batch_sampled_lean_masked(e, tokens, caches, samp, &[], lean)
+    }
+
+    /// `decode_step_batch_sampled_lean` + GRAMMAR MASKS (constrained decoding, 2026-08-03):
+    /// `masks[bi] = Some((packed_bitset, words))` bans every unset-bit vocab id on row bi
+    /// (mask_logits_f32, -FLT_MAX) BETWEEN the lm_head matmul and the device sampler, so a
+    /// constrained row rides the SAME device-sample/lean-logits tick as everyone else — no
+    /// full-row D2H, no host O(n_vocab) sample. Contract: a masked row must also request a
+    /// device sample. The row's PRISTINE logits are preserved for their consumers before the
+    /// in-place ban: lean rows park the unmasked row into `cache.last_logits_dev` (the
+    /// retire-time reuse-pool park stays unmasked — continuations resume grammar-free, the
+    /// v1 host-path contract), non-lean rows D2H the unmasked row. `masks = &[]` is
+    /// bit-for-bit the unmasked method.
+    pub fn decode_step_batch_sampled_lean_masked(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+        masks: &[Option<(&CudaSlice<u32>, usize)>],
+        lean: bool,
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
         // NOTE (inc3 3c, 2026-08-01, KILLED ARM): a deferred-token-readback variant (all
         // chunks of a tick writing device-sampled tokens into one shared buffer, ONE
         // dtoh_u32 after the last chunk instead of one per chunk) measured FLAT at serve
@@ -569,9 +591,37 @@ impl HybridModel {
         let logits = e.matmul(&self.output, &hn, b_n)?;
         ph_mark(10, &mut ph_last)?;
 
+        // GRAMMAR MASKS (constrained decoding): preserve each masked row's PRISTINE logits
+        // for its consumer (lean park into cache.last_logits_dev — the reuse-pool park stays
+        // unmasked, the v1 contract — or the non-lean D2H), then ban in place BEFORE the
+        // device sampler reads the row. All stream-ordered; masks=&[] takes no new branch.
+        let n_vocab = self.output.out_features();
+        let mut logits = logits;
+        let mut pristine: Vec<Option<CudaSlice<f32>>> = Vec::new();
+        if masks.iter().take(b_n).any(|m| m.is_some()) {
+            pristine.resize_with(b_n, || None);
+            for (bi, m) in masks.iter().take(b_n).enumerate() {
+                let Some((mask, words)) = m else { continue };
+                assert!(samp.get(bi).copied().flatten().is_some(),
+                        "grammar-masked row {bi} must request a device sample");
+                if lean {
+                    let cache = &mut caches[bi];
+                    if cache.last_logits_dev.as_ref().map(|d| d.len() < n_vocab).unwrap_or(true) {
+                        cache.last_logits_dev = Some(e.uninit(n_vocab)?);
+                    }
+                    let dst = cache.last_logits_dev.as_mut().unwrap();
+                    e.dtod_copy_view(&logits.slice(bi * n_vocab..(bi + 1) * n_vocab), dst)?;
+                } else {
+                    let mut p = e.uninit(n_vocab)?;
+                    e.dtod_copy_view(&logits.slice(bi * n_vocab..(bi + 1) * n_vocab), &mut p)?;
+                    pristine[bi] = Some(p);
+                }
+                e.mask_logits_col(&mut logits, mask, bi, n_vocab, *words)?;
+            }
+        }
+
         // Device-side sampling for requested rows (see the method doc). Enqueued before the
         // big logits D2H so the tiny [B] token readback rides the same sync.
-        let n_vocab = self.output.out_features();
         let mut next: Vec<Option<u32>> = vec![None; b_n];
         if samp.iter().take(b_n).any(|s| s.is_some()) {
             let mut toks = e.alloc_u32_zeroed(b_n)?;
@@ -604,6 +654,9 @@ impl HybridModel {
             // the big D2H disappears (the [B] token readback above already synced).
             for (bi, s) in samp.iter().take(b_n).enumerate() {
                 if s.is_none() { continue; }
+                // grammar-masked rows already parked their PRISTINE copy above — the
+                // in-place ban has since poisoned this row for the reuse-pool consumer.
+                if masks.get(bi).copied().flatten().is_some() { continue; }
                 let cache = &mut caches[bi];
                 if cache.last_logits_dev.as_ref().map(|d| d.len() < n_vocab).unwrap_or(true) {
                     cache.last_logits_dev = Some(e.uninit(n_vocab)?);
@@ -622,7 +675,14 @@ impl HybridModel {
                 .collect::<Result<_, _>>()?
         } else {
             let host = e.dtoh(&logits)?;
-            (0..b_n).map(|bi| host[bi * n_vocab..(bi + 1) * n_vocab].to_vec()).collect()
+            (0..b_n).map(|bi| {
+                // grammar-masked non-lean rows return the PRISTINE copy (the in-place ban
+                // must never leak into last_logits — reuse-pool/park semantics unchanged).
+                if let Some(p) = pristine.get(bi).and_then(|p| p.as_ref()) {
+                    return e.dtoh(p);
+                }
+                Ok(host[bi * n_vocab..(bi + 1) * n_vocab].to_vec())
+            }).collect::<Result<_, _>>()?
         };
         for c in caches.iter_mut() {
             c.pos += 1;

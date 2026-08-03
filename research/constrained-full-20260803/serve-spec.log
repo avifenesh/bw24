@@ -1,0 +1,15 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8195
+[worker] observed session VRAM cost for "q9": 235MB (admission gate = 2x)
+[spec-acc] ctx=24 burst=21/30 cum=21/30=0.700
+[constrained] q9: 30 masked steps, mask total 0.88 ms (0.029 ms/step)
+[spec-acc] ctx=31 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=63 burst=19/39 cum=41/66=0.621
+[constrained] q9: 63 masked steps, mask total 0.62 ms (0.010 ms/step)
