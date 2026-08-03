@@ -30,7 +30,14 @@
 ^crates/memra-engine/cu/mmq_q45k\.cu$	nvfp4-gemm	o35,k27	-
 ^crates/memra-engine/cu/mmq_iq_experts\.cu$	iq4xs-mmq,dtype5	q35,aw35	-
 ^crates/memra-engine/cu/(mmq_fp4|mmq_nvfp4_[a-z0-9_]*|cutlass_fp4_sm120)\.cu$	nvfp4-gemm,nvfp4-27b-shape,nvfp4-batched	q9,k27	-
-^crates/memra-engine/cu/(flash_attn|fa3_prefill|fattn_vendor)\.cu$	synthetic	g31,q9,q35	-
+# flash_attn.cu: the tier-0 synthetic arms carry the REAL teeth for the live decode arms
+# (fa_decode_rows/seqs_v4 bit-identity caught a v4 K-scale skew with 46 FAILs — receipts
+# break-fa-v4-*). g12d is the DEPTH probe (t_kv ~1740: dpl16 hd512 + deep v4 actually run —
+# the 20-token probes sit below the t_kv=96 vec floor). KNOWN GAP: helpers only consumed by
+# non-default rollback seams (e.g. dq_K_lane's q8_0 branch — plain vec_q with v4 off, smem
+# twin, q8_0 globals under MEMRA_GEMMA_GKV=0) are invisible to naked probes AND to twin
+# self-comparisons that share the helper; see docs/TESTING.md coverage table.
+^crates/memra-engine/cu/(flash_attn|fa3_prefill|fattn_vendor)\.cu$	synthetic	g12d,g31,q9,q35	-
 ^crates/memra-engine/cu/(f16_prefill|fp8_prefill|moe_f16_grouped)\.cu$	f16g-kq-direct	g26,q35	-
 ^crates/memra-engine/cu/moe_router\.cu$	fast-router-batch,d2-cache-bit-identity	q35,g26	-
 ^crates/memra-engine/cu/hybrid\.cu$	synthetic	q9,q35	-

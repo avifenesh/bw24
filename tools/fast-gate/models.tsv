@@ -16,6 +16,13 @@
 #
 # One model per KERNEL CLASS the dispatch actually forks on (see map.tsv header):
 g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+# g12d: DEPTH probe (the battery's 1736-id depth prompt). THE FA-FLOOR LESSON (2026-08-03): the
+# 20-token probes sit at t_kv < 96 — BELOW the FA vec floor — so fa_decode_vec_q / v4 / dpl16 /
+# smem decode arms never run, and a broken K-dequant passed every short probe + the run-gen
+# MATCH gates (self-consistent breaks pass self-consistency; only a golden at DEPTH sees them —
+# receipts research/fast-gate-20260802/break-fa-*). At t_kv ~1740 the hd512 globals ride dpl16
+# and the hd256 arms ride v4/deep — the FA decode families are actually exercised.
+g12d	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/depth-prompt-1736-ids.txt	20	-
 g31	argmax	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
