@@ -20,9 +20,12 @@
 //!                                     `reasoning_effort`/`reasoning` map onto the template's
 //!                                     think switch (serve-tools lane, 2026-08-02).
 //!
-//! CONFIG: MEMRA_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo" (comma-separated;
-//! `+draft.gguf` attaches that model's regime draft — docs/DRAFT-REGIME.md).
-//! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. MEMRA_ADDR sets the bind addr.
+//! CONFIG: MEMRA_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo,name3=/hf_ckpt_dir"
+//! (comma-separated; `+draft.gguf` attaches that model's regime draft — docs/DRAFT-REGIME.md).
+//! A model path may be a GGUF file OR an HF safetensors checkpoint directory
+//! (config.json + model.safetensors[.index.json] — the run-safetensors load path; serve-st
+//! lane 2026-08-04). Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset.
+//! MEMRA_ADDR sets the bind addr.
 
 /// x-lane QoS (lane/dl-metering gate, QoS-only extraction 2026-08-02): lane types, SLO
 /// admission policy, engine-truth step stats live in the memra-lanes crate so out-of-process
@@ -640,10 +643,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// MEMRA_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo". Falls back to the
-/// BASE-4 test pair. `+<draft.gguf>` after a model path attaches that model's regime
-/// draft (docs/DRAFT-REGIME.md) — per model, not the global MEMRA_MTP_DRAFT env, so a
-/// multi-model server gives each model its own draft. Both parts accept hf: specs.
+/// Validate a resolved model-plan path BEFORE the worker thread spins up: a FILE loads as
+/// GGUF; a DIRECTORY must be an HF safetensors checkpoint (`config.json` +
+/// `model.safetensors` or `model.safetensors.index.json` — the run-safetensors load path)
+/// or a memra repack dir (`manifest.json`). A clear error at parse time beats a worker
+/// load failure after the Engine is already up.
+fn validate_model_path(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        return Err(format!("model path {path:?} does not exist"));
+    }
+    if p.is_file() {
+        return Ok(()); // GGUF file (the worker's file branch)
+    }
+    if p.join("manifest.json").exists() {
+        return Ok(()); // memra repack/overlay dir
+    }
+    let has_st = p.join("model.safetensors").exists()
+        || p.join("model.safetensors.index.json").exists();
+    if !has_st {
+        return Err(format!(
+            "model dir {path:?} is not a servable checkpoint: want model.safetensors or \
+             model.safetensors.index.json + config.json (HF safetensors dir), or \
+             manifest.json (memra repack dir)"));
+    }
+    if !p.join("config.json").exists() {
+        return Err(format!("model dir {path:?} has safetensors weights but no config.json"));
+    }
+    Ok(())
+}
+
+/// MEMRA_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo,name3=/hf_ckpt_dir".
+/// Falls back to the BASE-4 test pair. `+<draft.gguf>` after a model path attaches that
+/// model's regime draft (docs/DRAFT-REGIME.md) — per model, not the global MEMRA_MTP_DRAFT
+/// env, so a multi-model server gives each model its own draft. Both parts accept hf: specs.
+/// A model path may also be an HF safetensors checkpoint DIRECTORY (serve-st lane,
+/// 2026-08-04) — validated by `validate_model_path`, loaded through the same
+/// SafetensorsSource seam as run-safetensors/run-gen.
 fn parse_models_config() -> Vec<(String, String, Option<String>)> {
     if let Ok(spec) = std::env::var("MEMRA_MODELS") {
         let mut out = Vec::new();
@@ -659,7 +695,12 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
                     eprintln!("[server] FATAL: model {name:?}: {err}");
                     std::process::exit(1);
                 });
-                out.push((name.trim().to_string(), resolve(mpath), dpath.map(resolve)));
+                let mpath = resolve(mpath);
+                if let Err(err) = validate_model_path(&mpath) {
+                    eprintln!("[server] FATAL: model {name:?}: {err}");
+                    std::process::exit(1);
+                }
+                out.push((name.trim().to_string(), mpath, dpath.map(resolve)));
             } else {
                 eprintln!("[server] WARN: bad MEMRA_MODELS entry {entry:?} (want name=/path[+/draft]); skipping");
             }
@@ -1495,6 +1536,57 @@ mod tests {
         assert!(build_chat_request(weather_request(json!({"tool_choice":
             {"type": "function", "function": {"name": "get_weather"}}})),
                                    Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
+    }
+
+    #[test]
+    fn model_plan_accepts_st_dir_and_rejects_bogus_dir() {
+        let root = std::env::temp_dir().join(format!("memra_plan_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        // (a) single-file ST checkpoint dir: config.json + model.safetensors.
+        let st = root.join("st_single");
+        std::fs::create_dir_all(&st).unwrap();
+        std::fs::write(st.join("config.json"), "{}").unwrap();
+        std::fs::write(st.join("model.safetensors"), b"x").unwrap();
+        assert!(validate_model_path(st.to_str().unwrap()).is_ok());
+
+        // (b) sharded ST checkpoint dir: config.json + model.safetensors.index.json.
+        let sh = root.join("st_sharded");
+        std::fs::create_dir_all(&sh).unwrap();
+        std::fs::write(sh.join("config.json"), "{}").unwrap();
+        std::fs::write(sh.join("model.safetensors.index.json"), "{}").unwrap();
+        assert!(validate_model_path(sh.to_str().unwrap()).is_ok());
+
+        // (c) repack dir: manifest.json alone qualifies.
+        let rp = root.join("repack");
+        std::fs::create_dir_all(&rp).unwrap();
+        std::fs::write(rp.join("manifest.json"), "{}").unwrap();
+        assert!(validate_model_path(rp.to_str().unwrap()).is_ok());
+
+        // (d) bogus dir (no weights): clear error naming what was expected.
+        let bogus = root.join("bogus");
+        std::fs::create_dir_all(&bogus).unwrap();
+        let err = validate_model_path(bogus.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("model.safetensors"), "error should say what is missing: {err}");
+        assert!(err.contains("manifest.json"), "error should mention the repack form: {err}");
+
+        // (e) ST weights but no config.json: distinct clear error.
+        let nc = root.join("no_config");
+        std::fs::create_dir_all(&nc).unwrap();
+        std::fs::write(nc.join("model.safetensors"), b"x").unwrap();
+        let err = validate_model_path(nc.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("config.json"), "error should name config.json: {err}");
+
+        // (f) nonexistent path.
+        let err = validate_model_path(root.join("nowhere").to_str().unwrap()).unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+
+        // (g) plain file = GGUF branch, accepted as-is.
+        let f = root.join("model.gguf");
+        std::fs::write(&f, b"g").unwrap();
+        assert!(validate_model_path(f.to_str().unwrap()).is_ok());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
