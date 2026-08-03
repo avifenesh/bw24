@@ -27,7 +27,12 @@ PROMPTS=$LANE/research/e2e/prompts
 mkdir -p "$LOGDIR"
 : > "$LOG"
 
-for cell in p2-code-medium p3-agentic-long p4-16k; do
+# CELLS is overridable so the corpus can be WIDENED without editing the script (a k that holds on the
+# three original cells has not been shown to hold generally — this path was rejected twice before, so
+# the untested prompts are exactly where a premature default flip would break).
+CELLS=${CELLS:-"p2-code-medium p3-agentic-long p4-16k"}
+
+for cell in $CELLS; do
   for m in q9 q27; do
     case $m in
       q9)  MODEL=$Q9 ;;
