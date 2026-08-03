@@ -1676,7 +1676,8 @@ fn admit(
     // K=1..8 on both, so the fault is specific to generate_spec_session on dir-loaded
     // weights. GGUF spec serving (the battery-pinned path) is untouched. Explicit
     // MEMRA_SERVE_SPEC=1 = the experimental door until the ST serve-spec gate goes green.
-    let spec_forced = std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(false);
+    let spec_forced = std::env::var("MEMRA_SERVE_SPEC")
+        .map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
     let serve_spec = !confidence_trace_enabled()
         && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true)
         && (!lm.from_dir || spec_forced);
