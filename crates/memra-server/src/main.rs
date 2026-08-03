@@ -61,6 +61,121 @@ struct AppState {
     /// unix seconds at worker-ready — the /v1/models `created` value (when this server
     /// instance made the model available; the honest timestamp we actually know).
     started: u64,
+    /// live per-lane in-flight request gauge (HTTP-layer view: submitted and not yet
+    /// finished, queued-at-worker included) — drives the X-RateLimit-* headers and the
+    /// graceful-drain completion barrier (serve-tail lane, gap-scan F11/F12).
+    inflight: InflightCounts,
+}
+
+// ---- rate-limit headers (serve-tail lane, 2026-08-04; gap-scan F12) ----
+//
+// X-RateLimit-Limit / -Remaining / -Reset on /v1/completions and /v1/chat/completions,
+// with CONCURRENCY-SLOT semantics (this server admission-caps concurrent sessions; it has
+// no request/min or token/min budget to report — inventing one would be dishonest):
+//   Limit     = the lane's configured admission cap — the same values the worker's own
+//               admission gate enforces (interactive: MEMRA_MAX_SESSIONS batched /
+//               MAX_ACTIVE legacy; judge/harvest: LanePolicy max_sessions).
+//   Remaining = free slots at submission time (cap minus in-flight, this request
+//               included). Interactive beyond the cap QUEUES (never shed), so Remaining 0
+//               means "you will wait", not "you will be rejected".
+//   Reset     = seconds until a slot is ESTIMATED free: 0 while slots are free; else the
+//               live meter's mean service time (tokens/request x p50 step latency) when
+//               it has signal, else MEMRA_RL_RESET_S (default 2). Honestly coarse — a
+//               hint, not a promise.
+// Dark-lane 429 sheds carry the same trio (Retry-After was already there).
+
+type InflightCounts = Arc<[std::sync::atomic::AtomicUsize; 3]>;
+
+/// RAII in-flight slot: increments the lane gauge at submission, decrements when the
+/// response is complete — dropped at handler exit (blocking) or when the SSE stream
+/// finishes/disconnects (moved into the stream).
+struct InflightGuard {
+    counts: InflightCounts,
+    idx: usize,
+}
+
+impl InflightGuard {
+    /// Returns the guard + the in-flight count INCLUDING this request.
+    fn acquire(counts: InflightCounts, lane: lanes::Lane) -> (Self, usize) {
+        let idx = lane.idx();
+        let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        (InflightGuard { counts, idx }, n)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.counts[self.idx].fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The lane's configured admission cap — mirrors the worker's admission gate exactly
+/// (worker.rs step 2): interactive = MEMRA_MAX_SESSIONS (64) batched / MAX_ACTIVE legacy;
+/// judge/harvest = LanePolicy::from_env().max_sessions. Read once.
+fn lane_cap(lane: lanes::Lane) -> usize {
+    static CAPS: std::sync::OnceLock<[usize; 3]> = std::sync::OnceLock::new();
+    CAPS.get_or_init(|| {
+        let batching = std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
+        let interactive = if batching {
+            std::env::var("MEMRA_MAX_SESSIONS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(64)
+        } else {
+            worker::MAX_ACTIVE
+        };
+        let p = lanes::LanePolicy::from_env();
+        [interactive, p.max_sessions[1], p.max_sessions[2]]
+    })[lane.idx()]
+}
+
+/// Coarse next-slot estimate (seconds): mean tokens/request x p50 step latency from the
+/// live meter when it has signal, else the MEMRA_RL_RESET_S static (default 2).
+fn reset_estimate_s(m: &worker::Metrics) -> u64 {
+    if m.completed > 0 && m.step_p50_ms > 0.0 {
+        let mean_toks = m.tokens_out as f64 / m.completed as f64;
+        return ((mean_toks * m.step_p50_ms as f64 / 1000.0).ceil() as u64).clamp(1, 600);
+    }
+    static D: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("MEMRA_RL_RESET_S").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(2))
+}
+
+/// One request's header values, computed at submission time (the "at admit" snapshot).
+struct RateLimit {
+    limit: usize,
+    remaining: usize,
+    reset_s: u64,
+}
+
+impl RateLimit {
+    fn at_admit(lane: lanes::Lane, n_inflight: usize, metrics: &SharedMetrics) -> Self {
+        Self::compute(lane_cap(lane), n_inflight, metrics)
+    }
+
+    fn compute(limit: usize, n_inflight: usize, metrics: &SharedMetrics) -> Self {
+        let remaining = limit.saturating_sub(n_inflight);
+        let reset_s = if remaining > 0 {
+            0
+        } else {
+            let m = metrics.lock().map(|m| m.clone()).unwrap_or_default();
+            reset_estimate_s(&m)
+        };
+        RateLimit { limit, remaining, reset_s }
+    }
+
+    /// Stamp the X-RateLimit-* trio onto a response.
+    fn attach(&self, mut resp: Response) -> Response {
+        let h = resp.headers_mut();
+        for (k, v) in [
+            ("x-ratelimit-limit", self.limit as u64),
+            ("x-ratelimit-remaining", self.remaining as u64),
+            ("x-ratelimit-reset", self.reset_s),
+        ] {
+            if let Ok(v) = axum::http::HeaderValue::from_str(&v.to_string()) {
+                h.insert(axum::http::HeaderName::from_static(k), v);
+            }
+        }
+        resp
+    }
 }
 
 /// POST /v1/completions request body.
@@ -631,6 +746,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         started: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(0),
+        inflight: Arc::new(Default::default()),
     };
     let app = Router::new()
         .route("/health", get(health))
@@ -988,6 +1104,10 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
         Ok(l) => l,
         Err(resp) => return resp,
     };
+    // RATE-LIMIT SNAPSHOT (gap-scan F12): take the in-flight slot at submission time;
+    // the guard rides the response (stream included) and frees the slot at completion.
+    let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
+    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
@@ -995,20 +1115,24 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     let stop_strings = request.stop_strings.clone();
 
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
-        return with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
+        return rl.attach(with_request_id(&env.id, error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
-        Err(resp) => return resp,
+        Err(resp) => return rl.attach(with_request_id(&env.id, resp)),
     };
 
     let resp = if stream {
-        sse_response(rx, model, false, None, env.clone(), stop_strings).into_response()
+        sse_response(rx, model, false, None, env.clone(), stop_strings, Some(guard))
+            .into_response()
     } else {
-        blocking_response(rx, model, false, stop_strings, None, env.clone()).await.into_response()
+        let resp = blocking_response(rx, model, false, stop_strings, None, env.clone()).await
+            .into_response();
+        drop(guard); // response complete — free the slot before stamping headers
+        resp
     };
-    with_request_id(&env.id, resp)
+    rl.attach(with_request_id(&env.id, resp))
 }
 
 async fn chat_completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
@@ -1050,22 +1174,29 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
             return with_request_id(&env.id, bad_request(&err, None));
         }
     };
+    // RATE-LIMIT SNAPSHOT (gap-scan F12): slot taken at submission (post-validation —
+    // a 400 never held a slot); freed when the response completes (guard).
+    let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
+    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics);
     let stop_strings = plan.request.stop_strings.clone();
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
-        return with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
+        return rl.attach(with_request_id(&env.id, error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
-        Err(resp) => return resp,
+        Err(resp) => return rl.attach(with_request_id(&env.id, resp)),
     };
     let resp = if stream {
-        sse_response(rx, model, true, plan.parser, env.clone(), stop_strings).into_response()
-    } else {
-        blocking_response(rx, model, true, stop_strings, plan.parser, env.clone()).await
+        sse_response(rx, model, true, plan.parser, env.clone(), stop_strings, Some(guard))
             .into_response()
+    } else {
+        let resp = blocking_response(rx, model, true, stop_strings, plan.parser, env.clone())
+            .await.into_response();
+        drop(guard); // response complete — free the slot before stamping headers
+        resp
     };
-    with_request_id(&env.id, resp)
+    rl.attach(with_request_id(&env.id, resp))
 }
 
 /// Streaming (SSE): forward each Token as an SSE `data:` line; emit a final `done` event.
@@ -1078,7 +1209,7 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
 /// (OpenAI clients never parse named SSE events) followed by [DONE].
 fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: String, chat: bool,
                 mut parser: Option<ToolStreamParser>, env: Envelope,
-                stop_strings: Vec<String>)
+                stop_strings: Vec<String>, guard: Option<InflightGuard>)
     -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     // STOP-LEAK holdback (gap-scan F9), OpenAI shapes only: content deltas buffer until
     // they can't start a stop string; matched stop text is excluded exactly like the
@@ -1086,6 +1217,9 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
     let mut scrub = (!stop_strings.is_empty() && (chat || openai_compat()))
         .then(|| StopScrubber::new(stop_strings));
     let stream = async_stream::stream! {
+        // in-flight slot rides the stream: freed when the stream completes or the
+        // client disconnects (drop) — the rate-limit gauge + drain barrier source.
+        let _guard = guard;
         let mut call_index: usize = 0;
         // first chat delta carries the role (applied to whatever delta comes first —
         // content, reasoning, or the tool-call header).
@@ -1700,7 +1834,7 @@ mod tests {
             stop_reason: "Eos".into(), n_tokens: 2, n_prompt: 10, n_cached: 0, elapsed_s: 0.1,
         }).unwrap();
         drop(tx);
-        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new())
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
             .into_response();
         let lines = sse_data_lines(resp).await;
         assert_eq!(lines.last().map(String::as_str), Some("[DONE]"));
@@ -1739,7 +1873,7 @@ mod tests {
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
-                                vec!["Problem:".into()]).into_response();
+                                vec!["Problem:".into()], None).into_response();
         let lines = sse_data_lines(resp).await;
         let content: String = lines.iter()
             .filter(|l| *l != "[DONE]")
@@ -1757,7 +1891,7 @@ mod tests {
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
-                                vec!["Problem:".into()]).into_response();
+                                vec!["Problem:".into()], None).into_response();
         let lines = sse_data_lines(resp).await;
         let content: String = lines.iter()
             .filter(|l| *l != "[DONE]")
@@ -1773,7 +1907,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Error("boom".into())).unwrap();
         drop(tx);
-        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new())
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
             .into_response();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
@@ -1900,6 +2034,101 @@ mod tests {
             })).unwrap();
             assert_eq!(req.stop.into_vec(), expected);
         }
+    }
+
+    /// Fake GPU worker: consumes Generate commands and answers each with one Token +
+    /// Done — handler-level tests (headers, drain) without a GPU or a loaded model.
+    fn fake_worker_state() -> AppState {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        std::thread::spawn(move || {
+            while let Ok(Cmd::Generate(req)) = cmd_rx.recv() {
+                let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
+                let _ = req.tx.send(Event::Done {
+                    stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 1, n_cached: 0,
+                    elapsed_s: 0.01,
+                });
+            }
+        });
+        AppState {
+            cmd_tx,
+            models: Arc::new(vec!["m".into()]),
+            caps: Arc::new(HashMap::new()),
+            metrics: SharedMetrics::default(),
+            started: 1,
+            inflight: Arc::new(Default::default()),
+        }
+    }
+
+    #[test]
+    fn rate_limit_math_remaining_hits_zero_at_cap_and_reset_arms() {
+        let metrics = SharedMetrics::default();
+        // free slots: remaining counts down, reset stays 0.
+        let rl = RateLimit::compute(4, 1, &metrics);
+        assert_eq!((rl.limit, rl.remaining, rl.reset_s), (4, 3, 0));
+        let rl = RateLimit::compute(4, 3, &metrics);
+        assert_eq!(rl.remaining, 1);
+        // at cap: remaining 0, reset arms (static default — no meter signal here).
+        let rl = RateLimit::compute(4, 4, &metrics);
+        assert_eq!(rl.remaining, 0);
+        assert!(rl.reset_s > 0, "reset must arm when no slots are free");
+        // over cap (queued interactive): saturates at 0, never underflows.
+        assert_eq!(RateLimit::compute(4, 9, &metrics).remaining, 0);
+        // meter signal: reset = mean tokens/request x p50 step, ceil seconds.
+        let m = worker::Metrics {
+            completed: 2, tokens_out: 200, step_p50_ms: 20.0, ..Default::default()
+        };
+        assert_eq!(reset_estimate_s(&m), 2); // 100 tok x 20ms = 2.0s
+    }
+
+    #[test]
+    fn inflight_guard_counts_up_and_frees_on_drop() {
+        let counts: InflightCounts = Arc::new(Default::default());
+        let (g1, n1) = InflightGuard::acquire(counts.clone(), lanes::Lane::Interactive);
+        let (g2, n2) = InflightGuard::acquire(counts.clone(), lanes::Lane::Interactive);
+        assert_eq!((n1, n2), (1, 2));
+        // lanes are independent gauges.
+        let (gj, nj) = InflightGuard::acquire(counts.clone(), lanes::Lane::Judge);
+        assert_eq!(nj, 1);
+        drop(g1);
+        drop(gj);
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(counts[1].load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(g2);
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn responses_carry_rate_limit_headers_and_slot_frees() {
+        let st = fake_worker_state();
+        // non-stream chat: headers present, remaining = cap - 1 (this request held
+        // the only slot), slot freed after completion.
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = resp.headers();
+        let limit: usize = h["x-ratelimit-limit"].to_str().unwrap().parse().unwrap();
+        let remaining: usize = h["x-ratelimit-remaining"].to_str().unwrap().parse().unwrap();
+        assert_eq!(remaining, limit - 1);
+        assert_eq!(h["x-ratelimit-reset"], "0");
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "slot must free at completion");
+        // streaming completions: headers on the SSE response too; slot freed once the
+        // body is drained (the guard rides the stream).
+        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "prompt": "t", "stream": true
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("x-ratelimit-limit"));
+        assert!(resp.headers().contains_key("x-ratelimit-remaining"));
+        assert!(resp.headers().contains_key("x-ratelimit-reset"));
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 1,
+                   "stream in flight holds the slot");
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "slot must free when the stream completes");
     }
 
     #[test]
