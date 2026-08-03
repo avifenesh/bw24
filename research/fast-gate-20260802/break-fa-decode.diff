@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/cu/flash_attn.cu b/crates/memra-engine/cu/flash_attn.cu
+index f53be4a8..672b6ee0 100644
+--- a/crates/memra-engine/cu/flash_attn.cu
++++ b/crates/memra-engine/cu/flash_attn.cu
+@@ -295,7 +295,8 @@ static __device__ __forceinline__ float dq_K_lane(const uint8_t* __restrict__ bl
+ #else
+     const float d = __half2float(*(const half*)blk);
+     const int8_t q = ((const int8_t*)(blk + 2))[lane];
+-    return d * (float)q;
++    // FAST-GATE CATCH DEMO (deliberate break, reverted): subtle K-dequant scale skew.
++    return d * (float)q * 1.001f;
+ #endif
+ }
+ static __device__ __forceinline__ float dq_V_lane(const uint8_t* __restrict__ blk, int lane)

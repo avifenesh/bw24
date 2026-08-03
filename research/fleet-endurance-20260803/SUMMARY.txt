@@ -1,0 +1,38 @@
+fleet-endurance soak 2026-08-03 — 8x H100, 1 replica/GPU, proxy cap=16, c=96
+windows: 70 x 120s back-to-back = 140 min sustained load (08:25:02Z -> 10:46:48Z)
+requests: ok=464870 err=0 shed=0 completion_tokens=59461500
+
+THROUGHPUT (agg tok/s per 120s window):
+  first-10-min mean 7000.2 (min 6993.9 max 7007.3)
+  last-10-min  mean 7003.3 (min 7001.3 max 7005.0)
+  drift: +0.045%
+  all-70-window mean 7003.4, min 6993.9, max 7008.9 (spread 0.21%)
+  per-GPU: 875.4 tok/s/GPU
+
+LATENCY p95 (s per window):
+  first-10-min mean 1.7560   last-10-min mean 1.7556   drift -0.4 ms
+  all-window max p95 1.7583, min 1.7547
+  worst single-request latency across soak: 1.861s
+
+SERVER RSS (KB, per replica, sampler @60s):
+  first sample 2026-08-03T08:26:02Z: [1491152, 1494072, 1494296, 1494128, 1493204, 1493008, 1494252, 1494072]
+  last  sample 2026-08-03T10:46:28Z: [1493340, 1496900, 1496456, 1496848, 1495488, 1495216, 1497316, 1496644]
+  delta per replica (KB): [2188, 2828, 2160, 2720, 2284, 2208, 3064, 2572]  (max 3064 KB = 3.0 MiB over ~142 min)
+  proxy rss: 29184 -> 30772 KB
+
+GPU MEMORY (MiB, nvidia-smi memory.used):
+  first: [20885, 20853, 20821, 20853, 20853, 20853, 20853, 20885]
+  last:  [21045, 20981, 20981, 21013, 20981, 20981, 20949, 20981]
+  delta: [160, 128, 160, 160, 128, 128, 96, 96] (max 160 MiB)
+  sample index where each GPU first hit its max mem (of 142): [47, 89, 99, 47, 4, 5, 8, 10]
+
+TEMPERATURE (C): first [47, 51, 48, 53, 53, 49, 52, 48]  last [50, 57, 50, 59, 60, 52, 57, 49]
+
+FAILURES: n_err=0 across all 70 windows and 464870 requests; supervisor UNHEALTHY restarts: 0; sheds (429): 0
+GREEDY determinism: pre-soak and post-soak hash 56b8502cfb8de57a on all 8 replicas (identical).
+
+VERDICTS:
+  throughput : FLAT (drift within +/-0.1%)
+  p95        : FLAT (sub-2ms movement)
+  server RSS : PLATEAU (small early growth, see deltas above; no monotonic climb)
+  gpu memory : PLATEAU (see plateau index above)

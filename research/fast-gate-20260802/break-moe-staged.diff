@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/src/hybrid_forward.rs b/crates/memra-engine/src/hybrid_forward.rs
+index cf8b36c3..ceb4654d 100644
+--- a/crates/memra-engine/src/hybrid_forward.rs
++++ b/crates/memra-engine/src/hybrid_forward.rs
+@@ -3780,7 +3780,8 @@ impl HybridModel {
+                           max_block: usize, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
+                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+         use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};
+-        let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
++        // FAST-GATE CATCH DEMO (deliberate break, reverted): up rides GATE weights.
++        let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.gate_exps, _ => &m.down_exps };
+         let layout = exps.expert_layout(ex);
+         let id = BlockId::new(il, proj, ex as u16);
+         let source = exps.expert_source(ex);

@@ -1,0 +1,24 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:23:59Z] 59, 22.31 W, 180 MHz, 326 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+WARNING: CPU IP/backtrace sampling not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+WARNING: CPU context switch tracing not supported, disabling.
+Try the 'nsys status --environment' command to learn more.
+
+[econ] model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf prompt_tokens=2048 N=15 t_max=8
+[econ] primed pos=2048, continuation=[332, 735, 271, 248068, 198, 8160, 579, 264, 7047]
+[econ] verify_t8  N=15  med= 40.557ms  mean= 41.059ms  min= 40.471ms  p90= 42.336ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":2048,"pos":2048,"n":15,"arms":{"verify_t8":{"med_ms":40.5575,"mean_ms":41.0593,"min_ms":40.4714,"p90_ms":42.3356}}}
+Collecting data...
+Generating '/tmp/nsys-report-a4fb.qdstrm'
+[1/1] [0%                          ] nsys-q27-verify_t8.nsys-rep[1/1] [0%                          ] nsys-q27-verify_t8.nsys-rep[1/1] [6%                          ] nsys-q27-verify_t8.nsys-rep[1/1] [7%                          ] nsys-q27-verify_t8.nsys-rep[1/1] [5%                          ] nsys-q27-verify_t8.nsys-rep[1/1] [==19%                       ] nsys-q27-verify_t8.nsys-rep[1/1] [=16%                        ] nsys-q27-verify_t8.nsys-rep[1/1] [=====30%                    ] nsys-q27-verify_t8.nsys-rep[1/1] [====26%                     ] nsys-q27-verify_t8.nsys-rep[1/1] [===23%                      ] nsys-q27-verify_t8.nsys-rep[1/1] [==20%                       ] nsys-q27-verify_t8.nsys-rep[1/1] [==18%                       ] nsys-q27-verify_t8.nsys-rep[1/1] [=17%                        ] nsys-q27-verify_t8.nsys-rep[1/1] [=15%                        ] nsys-q27-verify_t8.nsys-rep[1/1] [14%                         ] nsys-q27-verify_t8.nsys-rep[1/1] [13%                         ] nsys-q27-verify_t8.nsys-rep[1/1] [==20%                       ] nsys-q27-verify_t8.nsys-rep[1/1] [====26%                     ] nsys-q27-verify_t8.nsys-rep[1/1] [=====32%                    ] nsys-q27-verify_t8.nsys-rep[1/1] [=======38%                  ] nsys-q27-verify_t8.nsys-rep[1/1] [=========45%                ] nsys-q27-verify_t8.nsys-rep[1/1] [===========51%              ] nsys-q27-verify_t8.nsys-rep[1/1] [============57%             ] nsys-q27-verify_t8.nsys-rep[1/1] [==============63%           ] nsys-q27-verify_t8.nsys-rep[1/1] [================69%         ] nsys-q27-verify_t8.nsys-rep[1/1] [==================76%       ] nsys-q27-verify_t8.nsys-rep[1/1] [===================82%      ] nsys-q27-verify_t8.nsys-rep[1/1] [=====================87%    ] nsys-q27-verify_t8.nsys-rep[1/1] [========================100%] nsys-q27-verify_t8.nsys-rep[1/1] [========================100%] nsys-q27-verify_t8.nsys-rep
+Generated:
+	/home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q27-verify_t8.nsys-rep
+[gpu 2026-08-02T20:24:11Z] 60, 28.65 W, 1590 MHz, 326 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NSYS q27 verify_t8 rc=0
+Generating SQLite file /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q27-verify_t8.sqlite from /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q27-verify_t8.nsys-rep
+Processing [/home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q27-verify_t8.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [/home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/logs/nsys-q27-verify_t8_cuda_gpu_kern_sum.csv]... PROCESSED
+

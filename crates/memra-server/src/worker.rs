@@ -33,6 +33,12 @@ use memra_tokenizer::Tokenizer;
 /// Batched scheduling caps at MEMRA_MAX_SESSIONS (default 64). Admits beyond the cap queue (FIFO).
 pub const MAX_ACTIVE: usize = 4;
 
+/// `GenParams.max_new` sentinel: the request OMITTED `max_tokens` (gap-scan F2), so the
+/// generation budget is CONTEXT-BOUNDED — session ctx minus prompt tokens, model-capped —
+/// the OpenAI default-when-omitted semantics, never a silent 128-token truncation.
+/// (`budget = max_new.min(room)` makes the sentinel safe everywhere downstream.)
+pub const MAX_NEW_CTX_BOUNDED: usize = usize::MAX;
+
 /// Per-tick prefill chunk cap: tokens primed per scheduler tick per session. Priming runs at
 /// prefill throughput instead of tokenwise decode, while the per-tick cap keeps round-robin
 /// latency for concurrent sessions bounded.
@@ -43,6 +49,11 @@ struct LoadedModel {
     model: HybridModel,
     tok: Tokenizer,
     eos_id: u32,
+    /// Constrained-decoding grammar factory (llguidance TokTrie over this vocab). Built
+    /// LAZILY on the first `response_format` request against this model — unconstrained
+    /// serving never pays the vocab-trie build. `Err` = vocab unusable (kept, so every
+    /// constrained request fails with the same clean message instead of rebuilding).
+    constraints: std::cell::OnceCell<Result<crate::constrained::ConstraintFactory, String>>,
 }
 
 /// What the worker streams back to one request, over its per-request tokio mpsc channel.
@@ -81,6 +92,13 @@ pub struct Request {
     /// the vLLM `cache_salt` design. Derived by the HTTP layer (request `cache_salt`
     /// field; "" = the default single-tenant namespace, byte-identical to pre-PC-ISO).
     pub cache_ns: String,
+    /// yield lane (x-lane header; default interactive). Drives admission + prefill budgets
+    /// (lane/dl-metering QoS gate, ported 2026-08-02 — the metering half stayed behind).
+    pub lane: crate::lanes::Lane,
+    /// Constrained decoding (`response_format` json_object/json_schema): the parsed
+    /// grammar spec. None = unconstrained — the request takes the exact legacy path
+    /// (no factory, no matcher, no masking branch).
+    pub grammar: Option<crate::constrained::GrammarSpec>,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -120,49 +138,21 @@ pub struct Metrics {
     pub prefix_hits: u64,
     pub prefix_entries: u64,
     pub prefix_bytes: u64,
+    /// per-lane QoS counters [interactive, judge, harvest] — the x-lane yield gate
+    /// (/yield/metrics, sidecar-compatible shape; lane/dl-metering QoS extraction).
+    pub lane_admitted: [u64; 3],
+    pub lane_shed: [u64; 3],
+    pub lane_completed: [u64; 3],
+    pub lane_tokens: [u64; 3],
+    pub batch_size_last: usize,
 }
 pub type SharedMetrics = std::sync::Arc<std::sync::Mutex<Metrics>>;
 
-/// Windowed percentile over decode-step latencies (ms). Engine ground truth: the worker
-/// records the wall time of each batched decode tick that advanced at least one session —
-/// that IS the client-visible TPOT for that tick.
-struct StepStats {
-    window: std::collections::VecDeque<(Instant, f32)>,
-    window_s: f32,
-}
-
-impl StepStats {
-    fn new(window_s: f32) -> Self {
-        Self { window: std::collections::VecDeque::with_capacity(4096), window_s }
-    }
-    fn record(&mut self, ms: f32) {
-        self.window.push_back((Instant::now(), ms));
-        if self.window.len() > 16384 {
-            self.window.pop_front();
-        }
-    }
-    fn evict(&mut self) {
-        let cutoff = self.window_s;
-        while let Some(&(t, _)) = self.window.front() {
-            if t.elapsed().as_secs_f32() > cutoff {
-                self.window.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-    /// q in [0,100]. None until the window has signal.
-    fn p(&mut self, q: f32) -> Option<f32> {
-        self.evict();
-        if self.window.is_empty() {
-            return None;
-        }
-        let mut v: Vec<f32> = self.window.iter().map(|&(_, g)| g).collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let i = ((q / 100.0) * (v.len() - 1) as f32).round() as usize;
-        Some(v[i.min(v.len() - 1)])
-    }
-}
+/// Windowed percentile over decode-step latencies (ms) — the interactive SLO sensor.
+/// Engine ground truth: the worker records the wall time of each batched decode tick that
+/// advanced at least one interactive session — that IS the client-visible TPOT for that
+/// tick. (Shared with out-of-process controllers via the memra-lanes crate.)
+use crate::lanes::StepStats;
 
 /// Live per-session state on the worker thread. One `Session` per in-flight generation.
 /// Holds the per-session `Cache` (model-specific dims — NO sharing between sessions, which is what
@@ -537,6 +527,8 @@ struct Session {
     model: String,
     /// PC-ISO cache namespace this session admits, hits, and parks under (see PoolKey).
     cache_ns: String,
+    /// yield lane — admission class + prefill budget bucket + batch priority.
+    lane: crate::lanes::Lane,
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
     /// double-alloc cost 2GB/128k-session and OOM'd the 27B serve — fixed 2026-07-05).
     cache: Option<Cache>,
@@ -567,6 +559,20 @@ struct Session {
     /// rows: penalties/top-k/top-p/min-p configs; non-batched paths). Dropped un-consumed
     /// when a session finishes — same semantics as an unsampled last_logits.
     device_next: Option<u32>,
+    /// Constrained decoding (`response_format`): per-session llguidance grammar state.
+    /// `Some` masks the logits BEFORE every sample and advances with each accepted token.
+    /// FULL path (2026-08-03): the packed mask uploads to `mask_dev` each step and
+    /// mask_logits_f32 bans on DEVICE before the device sampler — constrained rows ride
+    /// the same device-sample/lean-logits tick as everyone else. Fallback sampler configs
+    /// (penalties/top-k/top-p/min-p) and MEMRA_CONSTRAIN_HOST=1 keep the v1 host-side
+    /// masked-copy sample.
+    constraint: Option<crate::constrained::SessionConstraint>,
+    /// Device grammar-mask buffer (packed SimpleVob words). Allocated once at first use,
+    /// STABLE POINTER thereafter — contents re-uploaded per step (~n_vocab/8 bytes), the
+    /// graph-capture contract for the in-graph mask read.
+    mask_dev: Option<CudaSlice<u32>>,
+    /// Words uploaded this step (0 = no mask staged for the pending batch step).
+    mask_words: usize,
     /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
     /// This is exactly the sequence whose KV + recurrent state live in `cache` — the resume
     /// point for KV PREFIX REUSE on retire (see ReusePool).
@@ -692,7 +698,9 @@ pub fn run(
 
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
-        loaded.insert(name.clone(), LoadedModel { model, tok, eos_id });
+        loaded.insert(name.clone(), LoadedModel {
+            model, tok, eos_id, constraints: std::cell::OnceCell::new(),
+        });
         order.push(name.clone());
     }
     // Template capability probe (serve-tools lane): same substring laws the renderer uses.
@@ -737,12 +745,26 @@ pub fn run(
     let mut session_vram_cost: HashMap<String, usize> = HashMap::new();
 
     // ---- serving counters + engine-truth step stats (30s percentile window) ----
-    let mut step_stats = StepStats::new(30.0);
+    // Lane machinery (x-lane QoS gate, lane/dl-metering port): policy from env; step_stats
+    // is the INTERACTIVE SLO sensor (records only ticks that advanced an interactive
+    // session — on naked traffic every session is interactive, so /metrics is unchanged).
+    let policy = crate::lanes::LanePolicy::from_env();
+    let mut step_stats = StepStats::new(
+        std::env::var("MEMRA_LANE_WINDOW_S").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0));
     let mut n_admitted = 0u64;
     let mut n_completed = 0u64;
     let mut n_tokens_out = 0u64;
     let mut n_prompt_in = 0u64;
     let mut n_cached_in = 0u64;
+    let mut lane_admitted = [0u64; 3];
+    let mut lane_shed = [0u64; 3];
+    let mut lane_completed = [0u64; 3];
+    let mut lane_tokens = [0u64; 3];
+    let mut last_batch = 0usize;
+    // Starvation sentinel (estimator blind spot, 2026-07-26 native-judge battery): last
+    // time an interactive session decoded. Interactive work waiting with no interactive
+    // decode tick inside the SLO age IS an SLO breach the percentile window can't see.
+    let mut last_interactive_decode = Instant::now();
     let mut tick_n: u64 = 0;
 
     loop {
@@ -764,22 +786,60 @@ pub fn run(
             }
         }
 
-        // 2. ADMISSION: sessions admit up to the cap; requests over the cap wait in FIFO
-        //    order (never rejected). Batched scheduling decouples concurrency from batch
-        //    width (decode runs ceil(N/8) chunks per tick), so its cap is a session-count
-        //    knob (MEMRA_MAX_SESSIONS); the legacy MAX_ACTIVE bound applies only in
-        //    round-robin mode (MEMRA_SERVE_BATCH=0).
+        // 2. ADMISSION + LANE GATE (x-lane yield gate, engine-side): interactive admits up
+        //    to the cap and WAITS beyond it (FIFO, never rejected — its queue wait is the
+        //    protected tenant's own backlog). Judge/harvest are gated on the measured
+        //    interactive step p99 vs their SLO fraction and SHED with an immediate
+        //    retryable error (HTTP 429 at the handler) — dark-lane work is NEVER queued
+        //    inside the engine (the B2 lesson: the engine queue is where the tail dies).
+        //    Interactive cap stays the legacy MEMRA_MAX_SESSIONS knob (naked-path
+        //    preserving; policy.max_sessions[0] is the sidecar's knob, unused here);
+        //    judge/harvest caps come from the lane policy.
         let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
         let mut requeue: std::collections::VecDeque<Box<Request>> = Default::default();
         while let Some(req) = queue.pop_front() {
+            // DISCONNECT ABORT (gap-scan F8): a queued request whose client already hung
+            // up (receiver dropped) never reaches the GPU — dropped here, logged for the
+            // metering record (0 generated; prompt never primed).
+            if req.tx.is_closed() {
+                eprintln!("[abort] client disconnected while queued (model {:?}); dropped",
+                          req.model);
+                continue;
+            }
+            let lane = req.lane;
             let batching_on = std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
-            let cap = if batching_on {
-                std::env::var("MEMRA_MAX_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(64)
+            let cap = if lane == crate::lanes::Lane::Interactive {
+                if batching_on {
+                    std::env::var("MEMRA_MAX_SESSIONS").ok()
+                        .and_then(|v| v.parse().ok()).unwrap_or(64)
+                } else {
+                    max_active
+                }
             } else {
-                max_active
+                policy.max_sessions[lane.idx()]
             };
-            if active.len() >= cap {
-                requeue.push_back(req);   // waits (FIFO), never rejected
+            let lane_count = active.iter().filter(|s| s.lane == lane).count();
+            if lane_count >= cap {
+                if lane == crate::lanes::Lane::Interactive {
+                    requeue.push_back(req);   // waits (FIFO), never shed
+                } else {
+                    lane_shed[lane.idx()] += 1;
+                    let _ = req.tx.send(Event::Error(format!(
+                        "shed:{}:lane at capacity, retry", lane.as_str())));
+                }
+                continue;
+            }
+            // Starvation sentinel closes the estimator's blind spot (2026-07-26 native-judge
+            // battery): interactive work EXISTS but no interactive decode tick ran within
+            // the SLO age — starvation IS a breach even though the p99 window can't see it.
+            let interactive_active_or_waiting = active.iter()
+                .any(|s| s.lane == crate::lanes::Lane::Interactive);
+            let starved = interactive_active_or_waiting
+                && last_interactive_decode.elapsed().as_secs_f32() * 1000.0 > policy.slo_p99_ms;
+            if !policy.admit(lane, &mut step_stats, starved) {
+                lane_shed[lane.idx()] += 1;
+                let _ = req.tx.send(Event::Error(format!(
+                    "shed:{}:interactive p99 over budget, retry", lane.as_str())));
                 continue;
             }
             // VRAM-AWARE ADMISSION (lane/fast-router, 2026-08-02). Evidence: c=16 on the
@@ -808,6 +868,7 @@ pub fn run(
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, &mut px, *req) {
                 Ok(s) => {
                     n_admitted += 1;
+                    lane_admitted[lane.idx()] += 1;
                     n_prompt_in += s.n_prompt as u64;
                     n_cached_in += s.n_cached as u64;
                     active.push(s);
@@ -834,8 +895,21 @@ pub fn run(
         //        decode_step_batch over survivors in chunks of <= 8.
         let batching = serve_batching();
         let mut finished: Vec<usize> = Vec::new();
+        // DISCONNECT ABORT (gap-scan F8): every send in the tick loop is `let _ =
+        // s.tx.send(..)` — send errors ignored — so an aborted client used to burn GPU
+        // until max_tokens/EOS and hold a slot against admission. The per-tick sweep
+        // retires closed-channel sessions BEFORE any phase steps them; the log line is
+        // the metering record (bill-to-abort-point: prompt/cached/generated so far).
+        // Retire still parks reusable KV — the state is consistent at the abort point.
+        for (i, s) in active.iter().enumerate() {
+            if s.tx.is_closed() {
+                abort_log(s);
+                finished.push(i);
+            }
+        }
         if !batching {
             for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
                 match step_session(&engine, &loaded, &mut active[i]) {
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
@@ -856,7 +930,7 @@ pub fn run(
             };
             if gs_on && active.len() > 1 {
                 for i in 0..active.len() {
-                    if active[i].graph.is_none() { continue; }
+                    if finished.contains(&i) || active[i].graph.is_none() { continue; }
                     let s = &mut active[i];
                     let g = s.graph.take().unwrap();
                     s.cache = Some(g.cache);
@@ -890,15 +964,42 @@ pub fn run(
                 // Now the normal chunked/batched prefill primes first; the graph session
                 // captures OVER that cache (graph_session_from_cache). TTFT pays only the
                 // one-time capture (~340ms), amortized by the gs_min budget gate.
+                // CONSTRAINED sessions promote too (constrained-full, 2026-08-03): the
+                // captured step bans the packed grammar mask on device before its argmax
+                // (stable mask pointer, contents re-uploaded per step). Host-oracle and
+                // fallback-sampler constrained sessions stay eager.
+                let constr_graph_ok = s.constraint.is_none()
+                    || (!constrain_host() && devsample_meta(s).is_some());
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
+                    && constr_graph_ok
+                    && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
                     && s.prefill_done && s.generated.is_empty() && s.cache.is_some()
                     && !s.last_logits.is_empty()
                 {
                     let lm = &loaded[&s.model];
-                    let first = memra_engine::forward::argmax(&s.last_logits) as u32;
+                    // first generated token: MASKED argmax for constrained sessions (the
+                    // grammar's initial state), plain argmax otherwise.
+                    let (first, mask0) = match s.constraint.as_mut() {
+                        Some(c) => match c.compute_mask() {
+                            Ok(m) => {
+                                let mut row = s.last_logits.clone();
+                                crate::constrained::apply_mask(&m, &mut row);
+                                (memra_engine::forward::argmax(&row) as u32, Some(m))
+                            }
+                            Err(err) => {
+                                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                                finished.push(0);
+                                (0, None)
+                            }
+                        },
+                        None => (memra_engine::forward::argmax(&s.last_logits) as u32, None),
+                    };
+                    if !finished.contains(&0) {
                     let cache = s.cache.take().unwrap();
-                    match lm.model.graph_session_from_cache(&engine, cache, first, s.budget + 2) {
+                    match lm.model.graph_session_from_cache_masked(
+                        &engine, cache, first, s.budget + 2,
+                        mask0.as_ref().map(|m| m.as_slice())) {
                         Ok((g, first)) => {
                             s.graph = Some(g);
                             s.graph_pending = Some(first);
@@ -910,6 +1011,7 @@ pub fn run(
                             finished.push(0);
                         }
                     }
+                    }
                 }
                 // step the (possibly just-promoted) graph session: one token per tick
                 let s = &mut active[0];
@@ -920,6 +1022,24 @@ pub fn run(
                         finished.push(0);
                     } else {
                         s.fed.push(pend);
+                        // CONSTRAINED: fresh post-consume mask into the graph's stable
+                        // buffer before the replay (the KV-pointer update pattern).
+                        let mut mask_err = None;
+                        if let Some(c) = s.constraint.as_mut() {
+                            match c.compute_mask() {
+                                Ok(m) => {
+                                    if let Err(err) = s.graph.as_mut().unwrap()
+                                        .upload_mask(&engine, m.as_slice()) {
+                                        mask_err = Some(err.to_string());
+                                    }
+                                }
+                                Err(err) => mask_err = Some(err),
+                            }
+                        }
+                        if let Some(err) = mask_err {
+                            let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                            finished.push(0);
+                        } else {
                         let lm = &loaded[&s.model];
                         let g = s.graph.as_mut().unwrap();
                         match g.step(&engine, &lm.model) {
@@ -927,12 +1047,16 @@ pub fn run(
                             Err(_) => { finish(s, StopReason::MaxNew); finished.push(0); }
                         }
                         n_tokens_out += 1;
+                        lane_tokens[0] += 1;
                         step_stats.record(t_g.elapsed().as_secs_f32() * 1000.0);
+                        last_interactive_decode = Instant::now();
+                        }
                     }
                 }
             }
             // (a) spec bursts
             for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
                 if active[i].spec.is_some() {
                     match step_session(&engine, &loaded, &mut active[i]) {
                         Ok(true) => {}
@@ -944,12 +1068,16 @@ pub fn run(
                     }
                 }
             }
-            // (b) prefill (TTFT priority, full tick chunk).
+            // (b) INTERACTIVE prefill only (TTFT priority, full tick chunk budgets[0]).
+            // Dark-lane (judge/harvest) prefill runs AFTER decode (phase d) so a judge
+            // prime can never sit between an interactive stream and its next token (the
+            // 282ms-p99 lesson, 2026-07-26 native-judge battery).
             // task #13 (2026-07-26): BATCH fresh short primes across sessions —
             // one concat trunk, GEMMs at m = sum_T. Measured regime (prime-batch-gate --bench):
             // +80% at B=8 T=64, +44-49% at T=128, crossover ~T=320 (above it, single primes
             // win — per-seq m already at the GEMM plateau). Gate: prime-batch-gate ALL GREEN
             // (per-seq argmax + decode-stream equality). MEMRA_PRIME_BATCH=1 disables.
+            let budgets = policy.prefill_budget;
             let (cand, held) = 'pb: loop {
                 // default 6 (2026-07-26): with the varlen GDN core (task #18) the
                 // concat sweet spot moved from B=4 to B=6-8 (16501 vs 15950 tok/s
@@ -960,7 +1088,7 @@ pub fn run(
                 // primes win") was measured on the per-seq core train. With the wgmma
                 // varlen cores (task #22 vl twins) batched wins at EVERY tested T:
                 // +30.1% at T=320, +12.6% at 512, +5.9% at 937, +3.0% at 1536
-                // (prime-batch-gate --bench, B=3). PREFILL_TICK_T still caps per-tick load.
+                // (prime-batch-gate --bench, B=3). budgets[0] still caps per-tick load.
                 let pb_maxt: usize = std::env::var("MEMRA_PRIME_BATCH_MAX_T").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(2048);
                 let min_t = memra_engine::hybrid_forward::PRIME_MIN_T.max(2);
@@ -972,12 +1100,13 @@ pub fn run(
                         let s = &active[i];
                         let ql = s.prefill_queue.len();
                         if s.spec.is_none() && !s.prefill_done && s.graph.is_none()
+                            && s.lane == crate::lanes::Lane::Interactive
                             && s.fed.is_empty()
                             && s.cache.as_ref().is_some_and(|c| c.pos == 0)
                             // prefix-cache LCP split primes alone (the boundary snapshot
                             // needs a per-session stop inside the prompt; concat can't stop).
                             && s.snapshot_at.is_none()
-                            && ql >= min_t && ql <= pb_maxt && ql <= PREFILL_TICK_T
+                            && ql >= min_t && ql <= pb_maxt && ql <= budgets[0]
                             && cand_model.as_ref().is_none_or(|m| *m == s.model)
                         {
                             cand_model.get_or_insert_with(|| s.model.clone());
@@ -1050,7 +1179,8 @@ pub fn run(
                 if held && cand.first() == Some(&i) { continue; }   // batch-formation hold
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
-                match prefill_tick(&engine, &loaded, &mut px, s, PREFILL_TICK_T) {
+                if s.lane != crate::lanes::Lane::Interactive { continue; }
+                match prefill_tick(&engine, &loaded, &mut px, s, budgets[0]) {
                     Ok(_) => {}
                     Err(err) => {
                         let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
@@ -1058,14 +1188,16 @@ pub fn run(
                     }
                 }
             }
-            // (c) batched decode
+            // (c) batched decode, interactive rows first (stable sort by lane index: chunks
+            // fill with protected-class rows before dark rows).
             let t_decode = Instant::now();
-            let decoding: Vec<usize> = (0..active.len())
+            let mut decoding: Vec<usize> = (0..active.len())
                 .filter(|&i| !finished.contains(&i)
                         && active[i].spec.is_none() && active[i].prefill_done
                         && active[i].cache.is_some())
                 .collect();
-            let mut had_decode = false;
+            decoding.sort_by_key(|&i| active[i].lane.idx());
+            let mut had_interactive = false;
             // sample + emit + stop checks (host); survivors carry their next token
             let mut ready: Vec<(usize, u32)> = Vec::new();
             for &i in &decoding {
@@ -1073,7 +1205,17 @@ pub fn run(
                 match (cont, next) {
                     (false, _) => finished.push(i),
                     (true, Some(t)) => {
-                        had_decode = true;
+                        // GRAMMAR MASK STAGING (constrained-full): compute the post-consume
+                        // token mask and H2D the packed bitset into the session's stable
+                        // device buffer — the batched step bans on device BEFORE its device
+                        // sampler, so this row rides the same lean tick as everyone else.
+                        if let Err(err) = stage_grammar_mask(&engine, &mut active[i]) {
+                            let _ = active[i].tx.send(Event::Error(
+                                format!("constraint mask: {err}")));
+                            finished.push(i);
+                            continue;
+                        }
+                        had_interactive |= active[i].lane == crate::lanes::Lane::Interactive;
                         ready.push((i, t));
                     }
                     (true, None) => {} // nothing to do this tick
@@ -1100,21 +1242,28 @@ pub fn run(
                 let samp: Vec<Option<(f32, u64, u32)>> = idxs
                     .iter()
                     .map(|&i| {
-                        if !serve_devsample() {
-                            return None;
-                        }
                         let s = &active[i];
-                        let sm = &s.sampler;
-                        let no_pen = sm.penalty_repeat() == 1.0
-                            && sm.penalty_freq() == 0.0
-                            && sm.penalty_present() == 0.0;
-                        if !no_pen || sm.top_k() != 0 || sm.top_p() < 1.0 || sm.min_p() > 0.0 {
+                        // constrained rows: device-sample iff a mask was staged this tick
+                        // (fallback sampler configs / MEMRA_CONSTRAIN_HOST keep the v1
+                        // host masked-copy sample — mask_words stays 0 for them).
+                        if s.constraint.is_some() && s.mask_words == 0 {
                             return None;
                         }
-                        if sm.is_greedy() {
-                            Some((0.0, 0, 0))
+                        devsample_meta(s)
+                    })
+                    .collect();
+                // GRAMMAR MASKS: staged rows pass (stable device buffer, word count). Raw
+                // pointers here because the caches split-borrow below takes as_mut_ptr on
+                // `active` — the fields are disjoint (mask_dev vs cache), same soundness
+                // class as the existing unique-index split-borrow.
+                let mask_ptrs: Vec<Option<(*const CudaSlice<u32>, usize)>> = idxs
+                    .iter()
+                    .map(|&i| {
+                        let s = &active[i];
+                        if s.mask_words > 0 {
+                            s.mask_dev.as_ref().map(|d| (d as *const _, s.mask_words))
                         } else {
-                            Some((sm.temperature(), sm.seed(), s.generated.len() as u32))
+                            None
                         }
                     })
                     .collect();
@@ -1131,8 +1280,14 @@ pub fn run(
                     // [n_vocab] D2H — their last_logits comes back EMPTY and the row is
                     // parked on-device (cache.last_logits_dev) for the retire-time pool
                     // park below. MEMRA_SERVE_LEANLOGITS=0 restores the full D2H.
-                    lm.model.decode_step_batch_sampled_lean(&engine, &toks, &mut caches,
-                                                            &samp, serve_leanlogits())
+                    // SAFETY: mask_ptrs point at Session.mask_dev fields — disjoint from
+                    // the caches taken above; nothing mutates them for this call's life.
+                    let masks: Vec<Option<(&CudaSlice<u32>, usize)>> = mask_ptrs
+                        .iter()
+                        .map(|m| m.map(|(p, w)| (unsafe { &*p }, w)))
+                        .collect();
+                    lm.model.decode_step_batch_sampled_lean_masked(
+                        &engine, &toks, &mut caches, &samp, &masks, serve_leanlogits())
                 };
                 match logits {
                     Ok((rows, next_toks)) => {
@@ -1141,6 +1296,7 @@ pub fn run(
                             active[i].device_next = next_toks[k];
                             active[i].fed.push(toks[k]);
                             n_tokens_out += 1;
+                            lane_tokens[active[i].lane.idx()] += 1;
                         }
                     }
                     Err(err) => {
@@ -1151,15 +1307,122 @@ pub fn run(
                     }
                 }
             }
+            if had_interactive {
+                last_interactive_decode = Instant::now();
+            }
+            last_batch = ready.len();
             // MEMRA_TICK_TRACE=1: per-tick phase timing to stderr (diagnosis only).
             if std::env::var("MEMRA_TICK_TRACE").as_deref() == Ok("1") {
+                let n_int = active.iter()
+                    .filter(|s| s.lane == crate::lanes::Lane::Interactive).count();
                 let n_pref = active.iter().filter(|s| !s.prefill_done).count();
-                eprintln!("[tick] act={} priming={} ready={} decode_ms={:.1}",
-                          active.len(), n_pref, ready.len(),
+                eprintln!("[tick] act={} int={} priming={} ready={} decode_ms={:.1}",
+                          active.len(), n_int, n_pref, ready.len(),
                           t_decode.elapsed().as_secs_f32() * 1000.0);
             }
-            // Engine-truth TPOT = the client-visible decode tick.
-            if had_decode {
+            // (d) dark-lane prefill, ADAPTIVE: the tick period IS the client TPOT, so dark
+            // primes may only consume the SLO headroom decode left over (2026-07-26 yield
+            // battery: fixed 256-tok chunks pushed client p99 42 -> 91ms while the
+            // decode-only estimator read 44ms). Chunk tokens = headroom_ms x prime rate.
+            let decode_ms = t_decode.elapsed().as_secs_f32() * 1000.0;
+            let headroom_ms = (policy.slo_p99_ms - decode_ms).max(0.0);
+            let prime_tok_per_ms: f32 = std::env::var("MEMRA_PRIME_TOK_PER_MS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(8.0);
+            let adaptive_cap = (headroom_ms * prime_tok_per_ms) as usize;
+            // task #17 increment (2026-07-30): CONCAT small FRESH dark prefills — the
+            // harvest profile (many short prompts) previously burned one tick per
+            // session; a single prime_cache_batch serves them together at m = sum_T,
+            // INSIDE the same headroom budget (sum_T <= lane budget AND adaptive cap,
+            // so the 282ms-p99 lesson holds: dark work never exceeds the SLO headroom).
+            // Same lane + same model only (budget accounting stays per-lane); >= 2
+            // candidates, else the single-chunk path below serves as before.
+            let mut dark_batched = false;
+            {
+                let min_t = memra_engine::hybrid_forward::PRIME_MIN_T.max(2);
+                let mut dcand: Vec<usize> = Vec::new();
+                let mut dmodel: Option<String> = None;
+                let mut dlane: Option<usize> = None;
+                let mut dsum = 0usize;
+                for i in 0..active.len() {
+                    if finished.contains(&i) { continue; }
+                    let s = &active[i];
+                    let li = s.lane.idx();
+                    let ql = s.prefill_queue.len();
+                    if li == 0 || budgets[li] == 0 { continue; }
+                    // FRESH (pos==0, nothing fed) or CONTINUATION (cache primed exactly
+                    // through fed): both prime from cache.pos. Carried gemma4 stays
+                    // single-chunk (no continuation prime; engine rejects). LCP-split
+                    // sessions prime alone (the boundary snapshot needs a per-session
+                    // stop inside the prompt; concat can't stop).
+                    if s.spec.is_some() || s.prefill_done || s.graph.is_some()
+                        || s.snapshot_at.is_some()
+                        || !s.cache.as_ref().is_some_and(|c| c.pos == s.fed.len()) { continue; }
+                    if !s.fed.is_empty() && loaded[&s.model].model.cfg.gemma4.is_some() { continue; }
+                    let cap = budgets[li].min(adaptive_cap);
+                    if ql < min_t || dsum + ql > cap { continue; }
+                    if dlane.is_some_and(|l| l != li) { continue; }
+                    if dmodel.as_ref().is_some_and(|m| *m != s.model) { continue; }
+                    dlane.get_or_insert(li);
+                    dmodel.get_or_insert_with(|| s.model.clone());
+                    dsum += ql;
+                    dcand.push(i);
+                }
+                if dcand.len() >= 2 {
+                    let prompts: Vec<Vec<u32>> = dcand.iter()
+                        .map(|&i| active[i].prefill_queue.drain(..).collect())
+                        .collect();
+                    let prompt_refs: Vec<&[u32]> = prompts.iter().map(|p| p.as_slice()).collect();
+                    let mut cache_refs: Vec<&mut memra_engine::cache::Cache> = active.iter_mut()
+                        .enumerate()
+                        .filter(|(i, _)| dcand.contains(i))
+                        .map(|(_, s)| s.cache.as_mut().unwrap())
+                        .collect();
+                    let lm = &loaded[dmodel.as_ref().unwrap()];
+                    match lm.model.prime_cache_batch(&engine, &prompt_refs, &mut cache_refs) {
+                        Ok(outs) => {
+                            let ncar = dcand.iter()
+                                .filter(|&&i| !active[i].fed.is_empty()).count();
+                            eprintln!("[prime-batch dark] lane={} B={} tokens={dsum} carried={ncar}",
+                                      dlane.unwrap(), dcand.len());
+                            for ((&i, prompt), (l, _h, _x)) in
+                                dcand.iter().zip(&prompts).zip(outs)
+                            {
+                                let s = &mut active[i];
+                                s.last_logits = l;
+                                for &tok in prompt { s.fed.push(tok); s.sampler.accept(tok); }
+                                s.prefill_done = true;
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[prime-batch dark] failed ({err}); chunks serve");
+                            for (&i, prompt) in dcand.iter().zip(&prompts) {
+                                active[i].prefill_queue = prompt.iter().copied().collect();
+                            }
+                            dcand.clear();
+                        }
+                    }
+                    dark_batched = !dcand.is_empty(); // the batch WAS this tick's dark action
+                }
+            }
+            for i in 0..active.len() {
+                if dark_batched { break; }
+                if finished.contains(&i) { continue; }
+                let s = &mut active[i];
+                if s.spec.is_some() || s.prefill_done { continue; }
+                let li = s.lane.idx();
+                if li == 0 || budgets[li] == 0 { continue; }
+                let chunk = budgets[li].min(adaptive_cap);
+                if chunk < memra_engine::hybrid_forward::PRIME_MIN_T { break; }
+                if let Err(err) = prefill_tick(&engine, &loaded, &mut px, s, chunk) {
+                    let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                    finished.push(i);
+                }
+                break; // one dark chunk per tick — the headroom budget is tick-global
+            }
+            // Engine-truth interactive TPOT = the FULL client-visible tick (decode + any
+            // dark prime). Only interactive-carrying ticks feed the SLO estimator; on
+            // naked (all-interactive) traffic this is exactly the pre-gate had_decode.
+            if had_interactive {
                 step_stats.record(t_decode.elapsed().as_secs_f32() * 1000.0);
             }
         }
@@ -1171,6 +1434,7 @@ pub fn run(
             let s = active.remove(i);
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
+            lane_completed[s.lane.idx()] += 1;
             if let Some(mut sess) = s.spec {
                 // PENDING-CARRY flush before parking: a parked session must be fully committed
                 // (committed_text drives the text-prefix resume match — an uncommitted pending
@@ -1232,6 +1496,11 @@ pub fn run(
             m.prefix_hits = px.hits;
             m.prefix_entries = px.n_entries() as u64;
             m.prefix_bytes = px.total_bytes as u64;
+            m.lane_admitted = lane_admitted;
+            m.lane_shed = lane_shed;
+            m.lane_completed = lane_completed;
+            m.lane_tokens = lane_tokens;
+            m.batch_size_last = last_batch;
         } }
         if !finished.is_empty() && std::env::var("MEMRA_SPILL_STATS").as_deref() == Ok("1") {
             if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
@@ -1327,7 +1596,25 @@ fn admit(
     // multi-turn (parked cap 168 < next turn's need 240). Fixed-size sessions are also how the
     // reference server allocates (--ctx-size). KV cost @8192 on the 9B ≈ 119MB/session.
     let ctx_floor: usize = std::env::var("MEMRA_CTX").ok().and_then(|v| v.parse().ok()).unwrap_or(8192);
-    let ctx_cap = req.params.max_ctx.unwrap_or(prompt.len() + req.params.max_new + 8).max(ctx_floor);
+    // max_tokens OMITTED (MAX_NEW_CTX_BOUNDED sentinel, gap-scan F2): the session runs at
+    // the serving context (MEMRA_CTX / explicit max_ctx), capped at the model's trained
+    // context — budget becomes ctx_cap - prompt below, the vLLM/OpenAI default-when-omitted
+    // semantics. Explicit max_tokens keeps the exact legacy sizing (prompt + max_new + 8,
+    // floored at MEMRA_CTX) — honored exactly.
+    let ctx_cap = match (req.params.max_ctx, req.params.max_new) {
+        (Some(c), _) => c.max(ctx_floor),
+        (None, MAX_NEW_CTX_BOUNDED) => {
+            // serving ctx (the MEMRA_CTX floor) normally; a prompt that doesn't fit it
+            // grows the session to prompt + one serving ctx of room; always capped at
+            // the model's trained context (prompts past THAT are a real 400 below).
+            let model_ctx = lm.model.cfg.context_length as usize;
+            let mut c = ctx_floor;
+            if prompt.len() + 16 > c { c = prompt.len().saturating_add(ctx_floor); }
+            if model_ctx > 0 { c = c.min(model_ctx); }
+            c
+        }
+        (None, max_new) => (prompt.len() + max_new + 8).max(ctx_floor),
+    };
     if prompt.len() >= ctx_cap {
         return Err((req.tx, format!(
             "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap)));
@@ -1360,8 +1647,41 @@ fn admit(
     let serve_spec = !confidence_trace_enabled()
         && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut sampler = Sampler::new(req.sampler_cfg);
+    // GREEDY + penalties keeps the legacy tokenwise path (gap-scan F3 plumbing): the greedy
+    // spec arm verifies by pure argmax (sampling=None), which would silently ignore the
+    // penalties the host sampler applies pre-argmax. Sampled requests carry penalties into
+    // the rejection-sampling verify (SpecSampling) and stay spec-eligible.
+    let greedy_penalized = sampler.is_greedy()
+        && (sampler.penalty_repeat() != 1.0 || sampler.penalty_freq() != 0.0
+            || sampler.penalty_present() != 0.0);
+    // CONSTRAINED DECODING (response_format): compile the request's grammar against this
+    // model's lazily-built vocab factory. Compile errors are clean request errors here —
+    // never a mid-stream worker failure. Unconstrained requests skip everything.
+    let constraint = match &req.grammar {
+        None => None,
+        Some(spec) => {
+            let factory = lm.constraints.get_or_init(||
+                crate::constrained::ConstraintFactory::new(&lm.tok));
+            match factory {
+                Err(err) => return Err((req.tx, format!("constrained decoding: {err}"))),
+                Ok(f) => {
+                    let sc = f.matcher(spec);
+                    if let Some(err) = sc.error() {
+                        return Err((req.tx, format!("response_format: {err}")));
+                    }
+                    Some(sc)
+                }
+            }
+        }
+    };
+    // SPEC x CONSTRAINED (constrained-full, 2026-08-03): greedy constrained sessions ride
+    // spec bursts — the grammar truncates acceptance AFTER the exactness verify and forces
+    // the masked argmax at the cut slot (generate_spec_session_constrained). Sampled
+    // constrained and the MEMRA_CONSTRAIN_HOST oracle keep plain decode.
     let spec_eligible = serve_spec
+        && (constraint.is_none() || (sampler.is_greedy() && !constrain_host()))
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
+        && !greedy_penalized
         && lm.model.mtp.is_some();
 
     // CROSS-REQUEST PREFIX CACHE probe (2026-08-02; module doc at PrefixCache). Only when the
@@ -1461,7 +1781,11 @@ fn admit(
         // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
         // Match order: exact token prefix (bit-clean), else TEXT prefix (survives BPE boundary
         // divergence — the ~50% chat-turn miss class). Text hits re-tokenize only the remainder.
-        let resumed = spec_reuse.get_mut(&pool_key).and_then(|pool| {
+        // CONSTRAINED requests never resume parked spec sessions: the park's stashed
+        // next_pred/pending is unconstrained state, and the grammar must own generation
+        // from token 1. Cold spec session instead (still spec — just no pool hit).
+        let resumed = if constraint.is_some() { None } else {
+            spec_reuse.get_mut(&pool_key).and_then(|pool| {
             if let Some(idx) = pool.iter().rposition(|e|
                 e.sess.cache_max_ctx() >= ctx_cap
                     && prompt.len() >= e.sess.committed.len()
@@ -1480,7 +1804,7 @@ fn admit(
                 }
             }
             None
-        });
+        })};
         match resumed {
             Some(sess) => {
                 spec_resumed = sess.committed.len();
@@ -1557,6 +1881,7 @@ fn admit(
     Ok(Session {
         model: req.model,
         cache_ns: req.cache_ns,
+        lane: req.lane,
         cache,
         sampler,
         spec,
@@ -1566,6 +1891,9 @@ fn admit(
         spec_accepted: 0,
         last_logits: seed_logits,
         device_next: None,
+        constraint,
+        mask_dev: None,
+        mask_words: 0,
         fed: seed_fed,
         prefill_queue: if let Some(ts) = text_suffix { ts.into_iter().collect() }
                        else if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
@@ -1696,6 +2024,33 @@ fn prefill_tick(
     Ok(consumed)
 }
 
+/// GRAMMAR MASK STAGING (constrained-full, 2026-08-03): compute the session's current
+/// llguidance token mask and H2D the packed bitset into its STABLE device buffer for the
+/// upcoming batched step. Runs AFTER advance_sample_emit consumed the tick's token — the
+/// mask reflects the post-consume grammar state, exactly the set legal for the NEXT token.
+/// No-op (mask_words = 0 -> host fallback) for unconstrained sessions, fallback sampler
+/// configs (penalties/filters host-sample), and the MEMRA_CONSTRAIN_HOST=1 oracle.
+fn stage_grammar_mask(engine: &Engine, s: &mut Session) -> Result<(), String> {
+    s.mask_words = 0;
+    if s.constraint.is_none() || constrain_host() || devsample_meta(s).is_none() {
+        return Ok(());
+    }
+    let mask = s.constraint.as_mut().unwrap().compute_mask()?;
+    let words = mask.as_slice();
+    match s.mask_dev.as_mut() {
+        Some(d) if d.len() >= words.len() => {
+            engine.htod_u32_into(d, words).map_err(|e| e.to_string())?;
+        }
+        _ => {
+            let mut d = engine.alloc_u32_zeroed(words.len()).map_err(|e| e.to_string())?;
+            engine.htod_u32_into(&mut d, words).map_err(|e| e.to_string())?;
+            s.mask_dev = Some(d);
+        }
+    }
+    s.mask_words = words.len();
+    Ok(())
+}
+
 /// The decode tick's HOST half: sample from last_logits, emit the token, run the stop
 /// battery. Returns (continue?, Some(next_token) to feed the next step). Extracted from
 /// step_session so the batched scheduler can drive many sessions into ONE engine step.
@@ -1711,9 +2066,20 @@ fn advance_sample_emit(
     // Device-presampled token from the last batched tick (Session.device_next): skips the
     // O(n_vocab) host sample (measured 1.36 ms/row at 248k vocab). Greedy device rows are
     // bit-identical to host argmax; temp rows are the seeded device draw (gate3 contract).
-    let next = match s.device_next.take() {
-        Some(t) => t,
-        None => s.sampler.sample(&s.last_logits),
+    // CONSTRAINED rows never device-sample (their samp meta is None) — they host-sample
+    // from a grammar-masked COPY of last_logits (the pristine row still parks into the
+    // reuse pool at retire, so continuations resume unmasked).
+    let next = match (s.device_next.take(), s.constraint.as_mut()) {
+        (Some(t), _) => t,
+        (None, Some(c)) => {
+            let mut row = s.last_logits.clone();
+            if let Err(err) = c.mask_logits(&mut row) {
+                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                return (false, None);
+            }
+            s.sampler.sample(&row)
+        }
+        (None, None) => s.sampler.sample(&s.last_logits),
     };
     s.sampler.accept(next);
     s.generated.push(next);
@@ -1721,10 +2087,24 @@ fn advance_sample_emit(
         finish(s, StopReason::Eos);
         return (false, None);
     }
+    // Advance the grammar with the accepted (non-EOS) token. The token came from this
+    // state's own mask, so an error here is a real bug — stop LOUDLY, never emit
+    // schema-violating text as if it conformed.
+    if let Some(c) = s.constraint.as_mut() {
+        if let Err(err) = c.consume(next) {
+            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            return (false, None);
+        }
+    }
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): a failed send = receiver dropped = client gone.
+    // Stop generating THIS tick (the tick-top sweep would only catch it next tick).
+    if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        abort_log(s);
+        return (false, None);
+    }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
         finish(s, StopReason::Callback);
         return (false, None);
@@ -1755,10 +2135,23 @@ fn advance_token_emit(
         finish(s, StopReason::Eos);
         return (false, ());
     }
+    // CONSTRAINED graph sessions: the token came from the in-graph masked argmax — advance
+    // the grammar (post-EOS-check, same ordering as advance_sample_emit). An error here is
+    // a real bug: loud stop, never emit schema-violating text as if it conformed.
+    if let Some(c) = s.constraint.as_mut() {
+        if let Err(err) = c.consume(tok) {
+            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            return (false, ());
+        }
+    }
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: tok, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): failed send = client gone, stop this tick.
+    if s.tx.send(Event::Token { id: tok, text: delta }).is_err() {
+        abort_log(s);
+        return (false, ());
+    }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
         finish(s, StopReason::Callback);
         return (false, ());
@@ -1783,6 +2176,37 @@ fn serve_devsample() -> bool {
 fn serve_leanlogits() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MEMRA_SERVE_LEANLOGITS").as_deref() != Ok("0"))
+}
+
+/// MEMRA_CONSTRAIN_HOST=1 (rollback oracle): constrained rows keep the v1 host-side
+/// masked-copy sample (full-row D2H + O(n_vocab) host sample) instead of the device
+/// grammar mask. Diagnostics/A-B only — the device path is the shipped default.
+fn constrain_host() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_CONSTRAIN_HOST").as_deref() == Ok("1"))
+}
+
+/// Device-sample meta for a session's row in the batched step (the ONE eligibility rule —
+/// the samp closure and the grammar-mask staging pass must agree): greedy-no-penalties
+/// (device argmax, bit-identical) or pure-temperature (seeded gumbel). Penalty/top-k/
+/// top-p/min-p configs host-sample. Counter = generated.len() — a session-progress
+/// function, independent of batch composition (the isolation contract, gate3).
+fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
+    if !serve_devsample() {
+        return None;
+    }
+    let sm = &s.sampler;
+    let no_pen = sm.penalty_repeat() == 1.0
+        && sm.penalty_freq() == 0.0
+        && sm.penalty_present() == 0.0;
+    if !no_pen || sm.top_k() != 0 || sm.top_p() < 1.0 || sm.min_p() > 0.0 {
+        return None;
+    }
+    if sm.is_greedy() {
+        Some((0.0, 0, 0))
+    } else {
+        Some((sm.temperature(), sm.seed(), s.generated.len() as u32))
+    }
 }
 
 /// Per-model decode chunk width. MEMRA_DECODE_BATCH_CAP (explicit door) wins; otherwise
@@ -1858,7 +2282,17 @@ fn step_session(
                 penalty_present: s.sampler.penalty_present(),
             })
         } else { None };
-        let (burst, d, a) = lm.model.generate_spec_session_sampled(engine, spec, &suffix, room, k, sampling)?;
+        // SPEC x CONSTRAINED: greedy constrained bursts carry the grammar hook — verify-side
+        // truncation + masked-argmax cut slots (engine contract; sampled never gets here).
+        let (burst, d, a) = match s.constraint.as_mut() {
+            Some(c) => {
+                let mut g = crate::constrained::SpecGrammar::new(c, lm.eos_id);
+                lm.model.generate_spec_session_constrained(
+                    engine, spec, &suffix, room, k, sampling, Some(&mut g))?
+            }
+            None => lm.model.generate_spec_session_sampled(
+                engine, spec, &suffix, room, k, sampling)?,
+        };
         s.spec_drafted += d;
         s.spec_accepted += a;
         if d > 0 {
@@ -1875,11 +2309,24 @@ fn step_session(
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
         // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
-        let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+        // EOS text is never streamed (serve-compat, 2026-08-03): the tokenwise path stops
+        // BEFORE emitting the EOS token's text, but the burst used to detokenize the whole
+        // tail — clients saw a literal `<|im_end|>` in content (caught by the SDK gate's G4
+        // receipt). The token still counts (generated/fed keep it; committed state intact).
+        let visible = match stop {
+            Some(StopReason::Eos) => &s.generated[..s.generated.len() - 1],
+            _ => &s.generated[..],
+        };
+        let decoded = lm.tok.decode_bytes_special(visible, true);
         let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
         let full = String::from_utf8_lossy(&decoded);
-        if !delta.is_empty() {
-            let _ = s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta });
+        if !delta.is_empty()
+            && s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta }).is_err()
+        {
+            // DISCONNECT ABORT (gap-scan F8): client gone — retire at the abort point
+            // (session still parks; committed state is consistent post-burst).
+            abort_log(s);
+            return Ok(false);
         }
         if stop.is_none() && !s.stop_strings.is_empty()
             && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -1930,9 +2377,16 @@ fn step_session(
         return Ok(false);
     }
 
-    let next = match s.device_next.take() {
-        Some(t) => t,
-        None => s.sampler.sample(&s.last_logits),
+    // CONSTRAINED rows host-sample from a grammar-masked copy (same seam as
+    // advance_sample_emit — the batched path; kept in lockstep).
+    let next = match (s.device_next.take(), s.constraint.as_mut()) {
+        (Some(t), _) => t,
+        (None, Some(c)) => {
+            let mut row = s.last_logits.clone();
+            c.mask_logits(&mut row).map_err(|e| format!("constraint mask: {e}"))?;
+            s.sampler.sample(&row)
+        }
+        (None, None) => s.sampler.sample(&s.last_logits),
     };
     s.sampler.accept(next);
     s.generated.push(next);
@@ -1942,12 +2396,19 @@ fn step_session(
         finish(s, StopReason::Eos);
         return Ok(false);
     }
+    if let Some(c) = s.constraint.as_mut() {
+        c.consume(next).map_err(|e| format!("constraint advance: {e}"))?;
+    }
 
     // Detokenize the full generated tail, compute the incremental text delta vs what we've emitted.
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): failed send = client gone, retire at the abort point.
+    if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        abort_log(s);
+        return Ok(false);
+    }
 
     // stop-string match on the detokenized tail.
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -2038,8 +2499,27 @@ fn write_confidence_trace(
     Ok(())
 }
 
+/// DISCONNECT ABORT metering record (gap-scan F8): one log line per aborted session —
+/// prompt/cached/generated at the abort point (bill-to-abort). Called from every
+/// send-failure retire; the tick-top sweep prints the same shape.
+fn abort_log(s: &Session) {
+    eprintln!("[abort] client disconnected: model {:?}, prompt {} ({} cached), \
+               {} generated — billed to abort point, {:.2}s",
+              s.model, s.n_prompt, s.n_cached, s.generated.len(),
+              s.t0.elapsed().as_secs_f64());
+}
+
 fn finish(s: &Session, reason: StopReason) {
     let elapsed = s.t0.elapsed().as_secs_f64();
+    // constrained-session mask-cost receipt (the perf ledger line): steps + total/mean
+    // host-side mask compute time. Unconstrained sessions log nothing.
+    if let Some(c) = s.constraint.as_ref() {
+        if c.steps > 0 {
+            eprintln!("[constrained] {}: {} masked steps, mask total {:.2} ms ({:.3} ms/step)",
+                      s.model, c.steps, c.mask_ns as f64 / 1e6,
+                      c.mask_ns as f64 / 1e6 / c.steps as f64);
+        }
+    }
     let reason = format!("{reason:?}");
     let _ = s.tx.send(Event::Done {
         stop_reason: reason,

@@ -1,0 +1,63 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: research/fast-gate-20260802/break-forward10-console.log
+  changed: research/fast-gate-20260802/break-forward10-logs/build.log
+  changed: research/fast-gate-20260802/break-forward10-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-all-console.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-console.log
+  changed: research/fast-gate-20260802/break-forward-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-moe-console.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-kernel-console.log
+  changed: research/fast-gate-20260802/break-kernel-logs/build.log
+  changed: research/fast-gate-20260802/break-kernel-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-console.log
+  changed: research/fast-gate-20260802/break-moedev-logs/build.log
+  changed: research/fast-gate-20260802/break-moedev-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q9.log
+  changed: research/fast-gate-20260802/clean-run-console.log
+  changed: research/fast-gate-20260802/clean-run-logs/build.log
+  changed: research/fast-gate-20260802/clean-run-logs/kernel-check.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-g12.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-o35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q9.log
+  changed: research/fast-gate-20260802/revert-run-console.log
+  changed: tools/fast-gate/fast-gate.sh
+  changed: tools/fast-gate/map.tsv
+  kernel-check scope: none
+  tier-1 argmax probes: none
+  tier-1 spec probes:   q35spec
+  logs: /home/avifenesh/projects/wt-fast-gate/research/fast-gate-20260802/revert-run-logs
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check: SKIP (no matched kernel scope)
+tier 0: GREEN (1s total)
+== fast-gate tier 1 ==
+  q35spec: PASS (gates green + golden token-identical, 7s)
+tier 1: 0 fail (8s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.

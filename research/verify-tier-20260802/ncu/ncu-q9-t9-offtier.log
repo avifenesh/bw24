@@ -1,0 +1,33 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:54:42Z] 59, 62.28 W, 1620 MHz, 314 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+==PROF== Connected to process 3049874 (/home/avifenesh/projects/wt-verify-tier/target/release/spec-econ)
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=6 t_max=9
+[econ] primed pos=2048, continuation=[332, 83, 6649, 71570, 684, 63, 10278, 506, 15135, 735]
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q5_K_mmvq": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_nvfp4_mmvq_rp": 0%....50%....100% - 16 passes
+[econ] verify_t9  N=6  med= 55.102ms  mean= 55.044ms  min= 53.510ms  p90= 56.163ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":6,"arms":{"verify_t9":{"med_ms":55.1019,"mean_ms":55.0437,"min_ms":53.5097,"p90_ms":56.1631}}}
+==PROF== Disconnected from process 3049874
+==PROF== Report: /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/ncu/ncu-q9-t9-offtier.ncu-rep
+[gpu 2026-08-02T20:54:57Z] 61, 81.06 W, 1920 MHz, 312 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NCU q9 t9-offtier rc=0

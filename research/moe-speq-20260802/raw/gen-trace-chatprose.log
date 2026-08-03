@@ -1,0 +1,28 @@
+=== trace-chatprose start 2026-08-03T02:03:30Z dev=1 chat=1 prompt=/home/ubuntu/memra/research/hy3-accept-profile-20260802/prompts/chat-prose-medium.txt ===
+1, 37, 122.21 W, 0 MiB
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded Hy3 from memra repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain how photosynthesis works to a curious 12-year-old, covering what plants take in and what they produce.
+<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain how photosynthesis works to a curious 12-year-old, covering what plants take in and what they produce.\n"
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 32120, 4178, 287, 244, 29419, 206, 16, 17, 8369, 13792, 11, 18402, 1385, 5864, 2289, 280, 289, 1385, 890, 5512, 359, 120007, 120029, 120030]
+verify-prefill argmax=43285  decode argmax=43285  logit maxdiff=1.856e0  MATCH
+generated 128 tokens in 31.439s = 4.07 tok/s (ST greedy decode)
+tokens: [43285, 244, 4803, 316, 1447, 244, 15443, 2860, 15865, 0, 28959, 220, 109, 286, 91896, 8819, 280, 1230, 3517, 562, 252, 2385, 2799, 1214, 25, 286, 16, 13, 1970, 27420, 503, 2088, 2454, 36429, 423, 1017, 562, 252, 35159, 1594, 859, 9942, 11, 1447, 244, 26792, 13, 185, 17, 13, 1970, 33707, 503, 2088, 2454, 31728, 280, 244, 5259, 562, 252, 3605, 2478, 712, 38838, 14310, 9, 341, 1032, 539, 625, 83, 1901, 423, 11, 883, 423, 625, 82, 1126, 0, 3528, 11854, 11, 252, 4803, 3865, 68767, 0, 424, 9074, 7116, 1970, 62695, 4801, 503, 1447, 3999, 8576, 23502, 13, 286, 54970, 252, 15017, 11, 244, 21972, 16956, 8517, 25, 185, 12, 11687, 496, 11116, 496, 8172, 4801, 206, 10696, 206, 20369, 4335, 1970, 82, 23976, 503]
+MoE cache DECODE-WINDOW: 6568 slots | hits=155988 misses=86700 (hit-rate=64.3%) | staged 223.04 GB H2D (1661.8 MB/token)
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: "Imagine a plant is like a tiny food factory! 🌱\n\nPlants drink in two things from the world around them:\n\n1. **Water** – They suck it up from the dirt through their roots, like a straw.\n2. **Air** – They breathe in a gas from the air called *carbon dioxide* (we can’t see it, but it’s there!).\n\nThen, the plant uses sunshine! The leaves catch **sunlight** like little solar panels.\n\nInside the leaf, a magic recipe happens:\n- Water + Air + Sunlight  →  Plant makes **sugar**"
+--- generated text ---
+Imagine a plant is like a tiny food factory! 🌱
+
+Plants drink in two things from the world around them:
+
+1. **Water** – They suck it up from the dirt through their roots, like a straw.
+2. **Air** – They breathe in a gas from the air called *carbon dioxide* (we can’t see it, but it’s there!).
+
+Then, the plant uses sunshine! The leaves catch **sunlight** like little solar panels.
+
+Inside the leaf, a magic recipe happens:
+- Water + Air + Sunlight  →  Plant makes **sugar**
+=== trace-chatprose exit=0 2026-08-03T02:06:30Z ===

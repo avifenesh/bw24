@@ -93,6 +93,27 @@ pub(crate) fn spec_devacc() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_SPEC_DEVACC").as_deref() == Ok("1"))
 }
 
+/// GRAMMAR HOOK for constrained spec decode (lane/constrained-full, 2026-08-03). The engine
+/// stays llguidance-agnostic: the server adapts its per-session grammar state behind this
+/// trait. CONTRACT (the verify-side truncation rule — token-identical to constrained plain
+/// greedy decode): the exactness walk runs UNMASKED first; the hook then (a) truncates
+/// acceptance at the first grammar-illegal accepted token, and (b) when the truncation fired
+/// or the bonus is illegal, the engine recomputes that slot as the MASKED argmax of the
+/// target's own verify column (an unmasked argmax that is grammar-legal IS the masked argmax
+/// — masking only removes tokens — so the common case pays nothing). `consume` advances the
+/// state with each EMITTED token in order; EOS handling is the implementor's job (skip).
+pub trait SpecConstraint {
+    /// -inf the current state's banned ids on a HOST logits row (prompt-tail / init-feed
+    /// masked argmax).
+    fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String>;
+    /// Packed 32-bit bitset words of the CURRENT state's allowed set (device-mask form).
+    fn mask_words(&mut self) -> Result<Vec<u32>, String>;
+    /// Is `tok` consumable in the CURRENT state?
+    fn is_allowed(&mut self, tok: u32) -> Result<bool, String>;
+    /// Advance the state with an emitted token.
+    fn consume(&mut self, tok: u32) -> Result<(), String>;
+}
+
 /// Keep the full token-embedding table in host memory and upload only the rows needed by each
 /// MTP/verify step. This is an exact memory-capacity seam for very large BF16 vocab tables: host
 /// gather expands the same source bits to f32, and only O(T*n_embd) bytes cross PCIe per step.
@@ -1019,6 +1040,14 @@ impl HybridModel {
             _ => e.htod(&self.embd.gather(n_embd, tokens))?,
         };
 
+        // CROSS-LAYER ADD+NORM FUSION (lane/vt-fixes fix 2, mirroring decode_step_h's
+        // launch-arc form): layer il's post-FFN residual add (x2 = x1 + ffn_out) and layer
+        // il+1's attn_norm(+quantize) are consecutive row-wise ops — ONE add_rms_norm_q8_1
+        // launch at nrows=t does all three (bit-identity pinned by the T-row kernel-check
+        // arms). Carry the un-added (x1, ffn_out) pair; the fused launch materializes x2 (the
+        // residual the next layer needs) as its `res` output. Falls back to the separate add
+        // when the next layer is off the fused-q8 path.
+        let mut pending: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
         for (il, layer) in self.layers.iter().enumerate() {
             // DISPATCH-MIRRORED attn-input RMSNorm (FP-order lesson #8): eager decode fuses the
             // 1024-thread rms_norm_q8_1 ONLY when every mixer projection is q8_1-fast; layers with
@@ -1029,16 +1058,57 @@ impl HybridModel {
             // 2.3e-1 logit maxdiff at the head -> K=1..8 divergence at a 0.03-margin token).
             let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
             let norm_fused = std::env::var("MEMRA_NO_FUSE_NORMQ").is_err() && mixer_fast;
-            let mut h = vbuf(e, t * n_embd)?; // fully written by either rms_norm arm
-            if norm_fused {
-                e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            // BATCHED EPILOGUE RE-FUSE (lane/vt-fixes fix 2, 2026-08-03): when the norm is
+            // dispatch-fused AND every consumer of `h` reads only its q8_1 form (Full mixer:
+            // projections only; Linear mixer: the batched arm — the per-column fallback needs
+            // f32 h), emit the attn-input norm DIRECTLY as q8_1 via `rms_norm_q8_1` at nrows=t
+            // (row-indexed kernel — the T-row launch is the per-row m=1 program, kernel-check
+            // pins bit-identity vs rms_norm_decode -> quantize_q8_1). Kills the standalone
+            // quantize launch(es) + the f32 h HBM round-trip that decode never pays.
+            let lin_q8_only = match &layer.mixer {
+                Mixer::Linear(la) => {
+                    (t >= 3 || (t == 2 && spec_m2())) && e.uses_q8_1_fast(&la.ssm_out)
+                }
+                _ => true,
+            };
+            // NOTE decode.rs's take()-first lesson: take the pending pair BEFORE branching so
+            // a non-fused layer still performs the residual add.
+            let taken = pending.take();
+            let (h, h_q8) = if norm_fused && lin_q8_only {
+                let pair = match taken {
+                    // fused add + attn_norm + q8_1: ONE launch resolves the carried residual
+                    // AND emits this layer's mixer input pre-quantized. res -> x2 (= new x).
+                    Some((x1p, f1p)) => {
+                        let mut x2 = vbuf(e, t * n_embd)?; // fully written (res output)
+                        let p = e.add_rms_norm_q8_1(
+                            &x1p, &f1p, layer.attn_norm.float_data(), &mut x2, n_embd, t, eps,
+                        )?;
+                        x = x2;
+                        p
+                    }
+                    None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
+                };
+                (e.zeros(0)?, Some(pair)) // h unused on this path (q8-only consumers)
             } else {
-                e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
-            }
+                if let Some((x1p, f1p)) = taken {
+                    let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
+                    e.add(&x1p, &f1p, &mut x2, t * n_embd)?;
+                    x = x2;
+                }
+                let mut h = vbuf(e, t * n_embd)?; // fully written by either rms_norm arm
+                if norm_fused {
+                    e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+                } else {
+                    e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+                }
+                (h, None)
+            };
+            let h_q8_ref = h_q8.as_ref().map(|(q, d)| (q, d));
 
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => {
-                    self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il, stream.map(|(_, c)| c))?
+                    self.full_attn_verify(e, fa, &h, h_q8_ref, &pos_d, t, cache, il,
+                                          stream.map(|(_, c)| c))?
                 }
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
@@ -1059,7 +1129,7 @@ impl HybridModel {
                     {
                         let want = ckpt.is_some();
                         let (out, stash) =
-                            self.linear_attn_verify_t(e, la, &h, t, cache, il, want)?;
+                            self.linear_attn_verify_t(e, la, &h, h_q8_ref, t, cache, il, want)?;
                         if let (Some(ck), Some(st)) = (ckpt.as_deref_mut(), stash) {
                             ck.gdn[il] = Some(st);
                         }
@@ -1123,30 +1193,54 @@ impl HybridModel {
                 }
                 crate::hybrid::Ffn::Moe(_) => false,
             };
-            let mut x1 = vbuf(e, t * n_embd)?; // fully written by add / add_rms_norm
-            let mut z = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode / add_rms_norm
-            if ffn_fuse {
-                e.add(&x, &mixed, &mut x1, t * n_embd)?;
-                e.rms_norm_decode(
-                    &x1,
-                    layer.post_attn_norm.float_data(),
-                    &mut z,
-                    n_embd,
-                    t,
-                    eps,
-                )?;
-            } else {
-                e.add_rms_norm(
+            // BATCHED EPILOGUE RE-FUSE (lane/vt-fixes fix 2): on the ffn_fuse path (Dense,
+            // gate+up q8_1-fast, non-M3) the FFN input is emitted DIRECTLY as q8_1 by ONE
+            // add_rms_norm_q8_1 launch at nrows=t (row-indexed kernel: the T-row launch is the
+            // per-row m=1 program; kernel-check pins bit-identity vs the unfused
+            // add_f32 -> rms_norm_decode -> quantize_q8_1 chain at T=2/4/5/8) — replacing the
+            // add + rms_norm_decode launches AND the dual/singles' internal re-quantize.
+            // M3's swigluoai must keep the f32 chain (the fused SwiGLU epilogue encodes plain
+            // SiLU), mirroring residual_norm_ffn's m3 guard on the decode path.
+            let fuse_q8 = ffn_fuse && self.cfg.m3.is_none();
+            let mut x1 = vbuf(e, t * n_embd)?; // fully written by add / add_rms_norm*
+            let mut z = e.zeros(0)?; // replaced below on the unfused arms
+            let z_q8 = if fuse_q8 {
+                Some(e.add_rms_norm_q8_1(
                     &x,
                     &mixed,
                     layer.post_attn_norm.float_data(),
                     &mut x1,
-                    &mut z,
                     n_embd,
                     t,
                     eps,
-                )?;
-            }
+                )?)
+            } else {
+                let mut zf = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode / add_rms_norm
+                if ffn_fuse {
+                    e.add(&x, &mixed, &mut x1, t * n_embd)?;
+                    e.rms_norm_decode(
+                        &x1,
+                        layer.post_attn_norm.float_data(),
+                        &mut zf,
+                        n_embd,
+                        t,
+                        eps,
+                    )?;
+                } else {
+                    e.add_rms_norm(
+                        &x,
+                        &mixed,
+                        layer.post_attn_norm.float_data(),
+                        &mut x1,
+                        &mut zf,
+                        n_embd,
+                        t,
+                        eps,
+                    )?;
+                }
+                z = zf;
+                None
+            };
             // DECODE-EXACT FFN projections: force MMVQ for gate/up/down at any T to match the
             // T=1 decode FP accumulation order. At T>=5 the generic matmul/matmul_pre falls to dp4a
             // (128-thread, different FP sum order). At T=2-4 the batched MMVQ is already bit-identical.
@@ -1157,25 +1251,63 @@ impl HybridModel {
                     ffn_down,
                 } => {
                     let n_ff = ffn_gate.out_features();
-                    // DUAL gate+up batched twin (lane/verify-economics, 2026-08-02): one launch
-                    // for the pair at t=2..8 — bit-identical per (tensor,token,row) to the two
-                    // singles (kernel-check pins bitwise; MEMRA_SPEC_DUAL_T=0 reverts). None
-                    // (non-NVFP4 / t outside the tier / seam off) -> the two singles, unchanged.
-                    let (gate, up) = match e.matmul_decode_exact_dual(ffn_gate, ffn_up, &z, t)? {
-                        Some(pair) => pair,
-                        None => (
-                            e.matmul_decode_exact(ffn_gate, &z, t)?,
-                            e.matmul_decode_exact(ffn_up, &z, t)?,
-                        ),
-                    };
-                    let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
-                    e.matmul_decode_exact(ffn_down, &act, t)?
+                    if let Some((zq, zd)) = z_q8.as_ref() {
+                        // FUSED CHAIN (fix 2): pre-quantized z feeds the projections; the SwiGLU
+                        // epilogue emits act pre-quantized for ffn_down (silu_mul_scaled_q8_1,
+                        // bit-identical to silu_mul + quantize — kernel-check-pinned) with the
+                        // NVFP4 macro-scales folded (deferred-scale dual: y*s inline == the
+                        // scale_inplace store, value-exact) — the exact m=1 decode epilogue
+                        // structure at nrows=t.
+                        let pair = match e.matmul_decode_exact_dual_pre(ffn_gate, ffn_up, zq, zd, t)? {
+                            Some(((g, gs), (u, us))) => Some((g, gs, u, us)),
+                            None => None,
+                        };
+                        let (gate, gs, up, us) = match pair {
+                            Some(x4) => x4,
+                            None => (
+                                e.matmul_decode_exact_pre(ffn_gate, zq, zd, t)?,
+                                1.0, // scale already applied inside _pre
+                                e.matmul_decode_exact_pre(ffn_up, zq, zd, t)?,
+                                1.0,
+                            ),
+                        };
+                        if e.uses_q8_1_fast(ffn_down) {
+                            let (aq, ad) = e.silu_mul_scaled_q8_1(&gate, &up, gs, us, t * n_ff)?;
+                            e.matmul_decode_exact_pre(ffn_down, &aq, &ad, t)?
+                        } else {
+                            let mut act = vbuf(e, t * n_ff)?;
+                            e.silu_mul_scaled(&gate, &up, gs, us, &mut act, t * n_ff)?;
+                            e.matmul_decode_exact(ffn_down, &act, t)?
+                        }
+                    } else {
+                        // UNFUSED (pre-fix) chain — MoE-adjacent/M3/off-fast layers, unchanged.
+                        // DUAL gate+up batched twin (lane/verify-economics, 2026-08-02): one launch
+                        // for the pair at t=2..8 — bit-identical per (tensor,token,row) to the two
+                        // singles (kernel-check pins bitwise; MEMRA_SPEC_DUAL_T=0 reverts). None
+                        // (non-NVFP4 / t outside the tier / seam off) -> the two singles, unchanged.
+                        let (gate, up) = match e.matmul_decode_exact_dual(ffn_gate, ffn_up, &z, t)? {
+                            Some(pair) => pair,
+                            None => (
+                                e.matmul_decode_exact(ffn_gate, &z, t)?,
+                                e.matmul_decode_exact(ffn_up, &z, t)?,
+                            ),
+                        };
+                        let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
+                        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                        e.matmul_decode_exact(ffn_down, &act, t)?
+                    }
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
+            // CROSS-LAYER fusion: defer this layer's post-FFN residual add — the next layer's
+            // fused-q8 attn norm folds it in (add_rms_norm_q8_1 == add; rms_norm; quantize,
+            // kernel-check-pinned at nrows=T). Non-fused next layers add explicitly above.
+            pending = Some((x1, ffn_out));
+        }
+        // final layer's add (no next norm to fuse with — output_norm is f32-out)
+        if let Some((x1p, f1p)) = pending.take() {
             let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
-            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
+            e.add(&x1p, &f1p, &mut x2, t * n_embd)?;
             x = x2;
         }
 
@@ -1198,11 +1330,13 @@ impl HybridModel {
     /// ssm state exactly like T sequential decode steps.
     /// `want_stash`: additionally RETAIN the gdn-scan inputs (pure buffer keep-alives, zero extra
     /// kernels) so a partial accept can rebuild the state after any column prefix (REPLAY-FREE).
+    #[allow(clippy::too_many_arguments)]
     fn linear_attn_verify_t(
         &self,
         e: &Engine,
         la: &LinearAttnLayer,
         h: &CudaSlice<f32>,
+        h_q8: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
         t: usize,
         cache: &mut Cache,
         il: usize,
@@ -1230,7 +1364,13 @@ impl HybridModel {
         // ssm_beta+ssm_alpha) — each fused2 batched launch then replaces two decode-exact
         // calls (each of which re-quantizes the same h + runs its own _b2/_b4 launch).
         // Bit-identical per (tensor,token,row) — see spec_fused_t().
-        let h_q8_t = if spec_fused_t()
+        // BATCHED EPILOGUE RE-FUSE (lane/vt-fixes fix 2): `h_q8` = the attn-input norm emitted
+        // directly as q8_1 by the caller's fused rms_norm_q8_1 (bit-identical to the unfused
+        // chain, kernel-check-pinned). When present it REPLACES the standalone quantize below
+        // and feeds every projection; the caller guaranteed all four input projections are
+        // q8_1-fast. When absent, the old shared-quantize (fused-t window) stands.
+        let h_q8_t = if h_q8.is_none()
+            && spec_fused_t()
             && (2..=4).contains(&t)
             && ((e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate))
                 || (e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha)))
@@ -1239,17 +1379,26 @@ impl HybridModel {
         } else {
             None
         };
+        // one view: the caller's fused-norm q8 or this fn's own shared quantize.
+        let hq8_any: Option<(&CudaSlice<i8>, &CudaSlice<f32>)> =
+            h_q8.or(h_q8_t.as_ref().map(|(q, d)| (q, d)));
         let (qkv_mixed, z) = {
             let mut fused = None;
             if t == 1 && e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate) {
                 let (hq, hd) = e.quantize_q8_1(h, 1, cfg.n_embd as usize)?;
                 fused = e.matmul_q8_fused2(&la.wqkv, &la.wqkv_gate, &hq, &hd)?;
-            } else if let Some((hq, hd)) = h_q8_t.as_ref() {
-                fused = e.matmul_q8_fused2_t(&la.wqkv, &la.wqkv_gate, hq, hd, t)?;
+            } else if let Some((hq, hd)) = hq8_any {
+                if spec_fused_t() && (2..=4).contains(&t) {
+                    fused = e.matmul_q8_fused2_t(&la.wqkv, &la.wqkv_gate, hq, hd, t)?;
+                }
             }
-            match fused {
-                Some(pair) => pair,
-                None => (
+            match (fused, hq8_any) {
+                (Some(pair), _) => pair,
+                (None, Some((hq, hd))) if h_q8.is_some() => (
+                    e.matmul_decode_exact_pre(&la.wqkv, hq, hd, t)?,
+                    e.matmul_decode_exact_pre(&la.wqkv_gate, hq, hd, t)?,
+                ),
+                (None, _) => (
                     e.matmul_decode_exact(&la.wqkv, h, t)?,
                     e.matmul_decode_exact(&la.wqkv_gate, h, t)?,
                 ),
@@ -1286,12 +1435,18 @@ impl HybridModel {
             // fused-t twin (9B stores beta/alpha as Q8_0): same shared-quantize + one launch
             // contract as the wqkv pair above; 35B beta/alpha are Float -> None -> fallback.
             let mut fused = None;
-            if let Some((hq, hd)) = h_q8_t.as_ref() {
-                fused = e.matmul_q8_fused2_t(&la.ssm_beta, &la.ssm_alpha, hq, hd, t)?;
+            if let Some((hq, hd)) = hq8_any {
+                if spec_fused_t() && (2..=4).contains(&t) {
+                    fused = e.matmul_q8_fused2_t(&la.ssm_beta, &la.ssm_alpha, hq, hd, t)?;
+                }
             }
-            match fused {
-                Some(pair) => pair,
-                None => (
+            match (fused, hq8_any) {
+                (Some(pair), _) => pair,
+                (None, Some((hq, hd))) if h_q8.is_some() => (
+                    e.matmul_decode_exact_pre(&la.ssm_beta, hq, hd, t)?,
+                    e.matmul_decode_exact_pre(&la.ssm_alpha, hq, hd, t)?,
+                ),
+                (None, _) => (
                     e.matmul_decode_exact(&la.ssm_beta, h, t)?,
                     e.matmul_decode_exact(&la.ssm_alpha, h, t)?,
                 ),
@@ -1360,20 +1515,32 @@ impl HybridModel {
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
-        // gated RMSNorm + out projection, T-wide.
-        let mut gn = e.uninit(d_state * num_v * t)?;
-        e.gated_rmsnorm(
-            &o,
-            la.ssm_norm.float_data(),
-            &z,
-            &mut gn,
-            d_state,
-            num_v * t,
-            eps,
-        )?;
-        // DECODE-EXACT out-projection: same MMVQ path as the T=1 decode (ssm_out at m>=5 would
-        // fall to dp4a with a different FP reduction order — same class of bug as the input projs).
-        let out = e.matmul_decode_exact(&la.ssm_out, &gn, t)?;
+        // gated RMSNorm + out projection, T-wide. FUSED-QUANTIZE ARM (lane/vt-fixes fix 2,
+        // mirroring the T=1 decode's launch-arc form): when ssm_out rides the q8_1 fast path,
+        // emit q8_1 straight from the gated norm at nrows=num_v*t (row-indexed kernel, the
+        // T-wide launch is the per-row program; kernel-check pins bit-identity vs
+        // gated_rmsnorm -> quantize_q8_1 at T=1 and T=5) and feed the decode-exact dispatch
+        // pre-quantized — one launch replaces norm + quantize. Fallback = the f32 chain.
+        let out = if e.uses_q8_1_fast(&la.ssm_out) {
+            let (gq, gd) =
+                e.gated_rmsnorm_q8_1(&o, la.ssm_norm.float_data(), &z, d_state, num_v * t, eps)?;
+            e.matmul_decode_exact_pre(&la.ssm_out, &gq, &gd, t)?
+        } else {
+            let mut gn = e.uninit(d_state * num_v * t)?;
+            e.gated_rmsnorm(
+                &o,
+                la.ssm_norm.float_data(),
+                &z,
+                &mut gn,
+                d_state,
+                num_v * t,
+                eps,
+            )?;
+            // DECODE-EXACT out-projection: same MMVQ path as the T=1 decode (ssm_out at m>=5
+            // would fall to dp4a with a different FP reduction order — same class of bug as
+            // the input projs).
+            e.matmul_decode_exact(&la.ssm_out, &gn, t)?
+        };
         let stash = if want_stash {
             Some(GdnStash {
                 qkv_mixed,
@@ -1595,7 +1762,9 @@ impl HybridModel {
                 e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il, None)?,
+                Mixer::Full(fa) => {
+                    self.full_attn_verify(e, fa, &h, None, &pos_d, t, cache, il, None)?
+                }
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     let mut out = e.zeros(t * n_embd)?;
@@ -1692,11 +1861,13 @@ impl HybridModel {
     /// Full-attention mixer over T query tokens with a GROWING resident KV (verify path, §D.3).
     /// Appends the T new K/V columns to cache.kv[il] then attends causally over [0..len) via
     /// fa_prefill. Token-major [T, kv_dim] projection layout == cache row layout (single copy).
+    #[allow(clippy::too_many_arguments)]
     fn full_attn_verify(
         &self,
         e: &Engine,
         fa: &FullAttnLayer,
         h: &CudaSlice<f32>,
+        h_q8: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
         pos_d: &CudaSlice<i32>,
         t: usize,
         cache: &mut Cache,
@@ -1715,30 +1886,49 @@ impl HybridModel {
         // for every m, matching the T=1 decode's FP accumulation order. matmul_pre at m>=5 would
         // fall to dp4a (128-thread, two-level reduce) with a different FP sum order.
         // Q8 TRUNK-FUSION at T=1: DISPATCH-MIRRORS the eager decode's fused3 (bit-identical body).
+        // BATCHED EPILOGUE RE-FUSE (lane/vt-fixes fix 2): `h_q8` = the attn-input norm's q8_1
+        // form emitted by the fused rms_norm_q8_1 (bit-identical to rms_norm_decode ->
+        // quantize_q8_1, kernel-check-pinned). When present (caller checked mixer q8_1-fast),
+        // every projection consumes it — `h` may be a zero-len placeholder and must not be read.
         let (qf, mut k, v) = {
             let mut fused = None;
-            if t == 1
-                && e.uses_q8_1_fast(&fa.wq)
+            let qkv_fast = e.uses_q8_1_fast(&fa.wq)
                 && e.uses_q8_1_fast(&fa.wk)
-                && e.uses_q8_1_fast(&fa.wv)
-            {
-                let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-                fused = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hd)?;
-            } else if spec_fused_t()
-                && (2..=4).contains(&t)
-                && e.uses_q8_1_fast(&fa.wq)
-                && e.uses_q8_1_fast(&fa.wk)
-                && e.uses_q8_1_fast(&fa.wv)
-            {
+                && e.uses_q8_1_fast(&fa.wv);
+            if t == 1 && qkv_fast {
+                let (hq_o, hd_o);
+                let (hq, hd): (&CudaSlice<i8>, &CudaSlice<f32>) = match h_q8 {
+                    Some(p) => p,
+                    None => {
+                        (hq_o, hd_o) = e.quantize_q8_1(h, 1, n_embd)?;
+                        (&hq_o, &hd_o)
+                    }
+                };
+                fused = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hd)?;
+            } else if spec_fused_t() && (2..=4).contains(&t) && qkv_fast {
                 // VERIFY-TIER TRUNK FUSION (MEMRA_SPEC_FUSED_T): one shared quantize + one
                 // fused3 batched launch replaces three decode-exact calls (3 re-quantizes of
                 // the same h + 3 _b2/_b4 launches). Bit-identical per (tensor,token,row).
-                let (hq, hd) = e.quantize_q8_1(h, t, n_embd)?;
-                fused = e.matmul_q8_fused3_t(&fa.wq, &fa.wk, &fa.wv, &hq, &hd, t)?;
+                let (hq_o, hd_o);
+                let (hq, hd): (&CudaSlice<i8>, &CudaSlice<f32>) = match h_q8 {
+                    Some(p) => p,
+                    None => {
+                        (hq_o, hd_o) = e.quantize_q8_1(h, t, n_embd)?;
+                        (&hq_o, &hd_o)
+                    }
+                };
+                fused = e.matmul_q8_fused3_t(&fa.wq, &fa.wk, &fa.wv, hq, hd, t)?;
             }
-            match fused {
-                Some(triple) => triple,
-                None => (
+            match (fused, h_q8) {
+                (Some(triple), _) => triple,
+                // shared pre-quantized activation (q8_1-fast guaranteed by the caller): the
+                // decode-exact dispatch consumes (hq, hd) instead of re-quantizing 3x.
+                (None, Some((hq, hd))) if qkv_fast => (
+                    e.matmul_decode_exact_pre(&fa.wq, hq, hd, t)?,
+                    e.matmul_decode_exact_pre(&fa.wk, hq, hd, t)?,
+                    e.matmul_decode_exact_pre(&fa.wv, hq, hd, t)?,
+                ),
+                (None, _) => (
                     e.matmul_decode_exact(&fa.wq, h, t)?,
                     e.matmul_decode_exact(&fa.wk, h, t)?,
                     e.matmul_decode_exact(&fa.wv, h, t)?,
@@ -2087,6 +2277,31 @@ impl HybridModel {
         k: usize,
         sampling: Option<SpecSampling>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        self.generate_spec_session_constrained(e, sess, suffix, max_new, k, sampling, None)
+    }
+
+    /// `generate_spec_session_sampled` + GRAMMAR (constrained decoding, 2026-08-03): the
+    /// hook truncates acceptance at the first grammar-illegal token AFTER the exactness
+    /// verify (grammar is an extra rejection rule, ordering like the batched-verify twins)
+    /// and replaces an illegal bonus with the MASKED argmax of the target's own verify
+    /// column — token-identical to constrained plain greedy decode. GREEDY only (the
+    /// worker routes sampled constrained to plain decode). Acceptance under tight grammars
+    /// may drop (drafter is unconstrained); that is measured, not hidden.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_spec_session_constrained(
+        &self,
+        e: &Engine,
+        sess: &mut SpecSession,
+        suffix: &[u32],
+        max_new: usize,
+        k: usize,
+        sampling: Option<SpecSampling>,
+        constraint: Option<&mut dyn SpecConstraint>,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        if constraint.is_some() && sampling.is_some_and(|s| s.temp > 0.0) {
+            return Err("constrained spec decode is greedy-only (worker routes sampled \
+                        constrained to plain decode)".into());
+        }
         // PENDING-CARRY entry flush: a carried bonus precedes any new suffix in the sequence,
         // so it must commit BEFORE the suffix primes; the sampled path doesn't carry (its
         // round-0 accept needs the commit pass's logits). Empty-suffix greedy bursts — the
@@ -2120,7 +2335,7 @@ impl HybridModel {
                 e.ctx().disable_event_tracking();
             }
         }
-        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling);
+        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling, constraint);
         if graph_draft && was_tracking {
             unsafe {
                 e.ctx().enable_event_tracking();
@@ -2155,7 +2370,7 @@ impl HybridModel {
             && k + 2 < 96
             && !crate::model::full_prec_enabled();
         if !graph_draft {
-            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None);
+            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None, None);
         }
         let was_tracking = e.ctx().is_event_tracking();
         if was_tracking {
@@ -2163,7 +2378,7 @@ impl HybridModel {
                 e.ctx().disable_event_tracking();
             }
         }
-        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None);
+        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None, None);
         if was_tracking {
             unsafe {
                 e.ctx().enable_event_tracking();
@@ -2181,6 +2396,7 @@ impl HybridModel {
         graph_draft: bool,
         mut sess: Option<&mut SpecSession>,
         sampling: Option<SpecSampling>,
+        mut constraint: Option<&mut dyn SpecConstraint>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self
@@ -2280,6 +2496,10 @@ impl HybridModel {
         // reads/round at long ctx). MEMRA_SPEC_REPLAY=1 restores the legacy rollback+replay (A/B
         // + fallback seam).
         let spec_replay = std::env::var("MEMRA_SPEC_REPLAY").is_ok();
+        if constraint.is_some() && spec_replay {
+            return Err("constrained spec decode does not support MEMRA_SPEC_REPLAY=1 \
+                        (legacy replay commits an unmasked bonus)".into());
+        }
         // TRUE-HIDDEN REFRESH (default in persistent-draft-KV mode): every round overwrites the
         // committed positions' scratch entries from the verify's exact hiddens (mtp_kv_fill batch)
         // instead of keeping chain-approximate entries. MEMRA_SPEC_NOREFRESH=1 = legacy (A/B seam).
@@ -2367,6 +2587,20 @@ impl HybridModel {
         // Emit it, then FEED it to establish the loop invariant below.
         // PENDING-CARRY: the carried bonus was already emitted by the LAST burst — it becomes
         // last_token WITHOUT re-emission, and round 0 consumes it as pending (no init feed).
+        // CONSTRAINED entry rules: the first emitted token is the MASKED argmax of the
+        // prompt's last logits (plain constrained-greedy identity); a continuation without
+        // a carried pending would emit an UNMASKED stashed next_pred — refused loudly (the
+        // worker never resumes constrained sessions from the pool, so this cannot fire).
+        if let Some(c) = constraint.as_deref_mut() {
+            if continuation && carried_pending.is_none() {
+                return Err("constrained spec continuation requires a carried pending \
+                            (pool resume is unconstrained-only)".into());
+            }
+            if !continuation {
+                c.mask_logits(&mut prime_logits)
+                    .map_err(|e2| format!("constraint: {e2}"))?;
+            }
+        }
         let mut last_token = if let Some(b) = carried_pending {
             b
         } else if continuation {
@@ -2376,6 +2610,11 @@ impl HybridModel {
         };
         if carried_pending.is_none() {
             out.push(last_token);
+            // grammar advances with every emitted token (carried pendings were consumed
+            // by the burst that emitted them).
+            if let Some(c) = constraint.as_deref_mut() {
+                c.consume(last_token).map_err(|e2| format!("constraint: {e2}"))?;
+            }
         }
         if continuation {
             // draft-KV invariant: entries [0..base) are the session's exact fills; truncate any
@@ -2495,9 +2734,15 @@ impl HybridModel {
         // pending path (t_pred reads verify col 0 — the accept walk overwrites it).
         let mut last_pred = 0u32;
         let mut last_col_logits: Option<CudaSlice<f32>> = None;
+        // CONSTRAINED: the init feed's logits back the (n_acc==0, base==0) masked-argmax
+        // recompute in the grammar-truncation walk — retained host-side, round 0 only.
+        let mut init_logits_host: Option<Vec<f32>> = None;
         let h_seed0: CudaSlice<f32> = if carried_pending.is_none() {
             let (init_logits, h) = self.decode_step_h(e, last_token, &mut *cache)?;
             last_pred = argmax(&init_logits) as u32;
+            if constraint.is_some() {
+                init_logits_host = Some(init_logits.clone());
+            }
             // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
             if sampled {
                 last_col_logits = Some(e.htod(&init_logits)?);
@@ -2785,6 +3030,7 @@ impl HybridModel {
         let stream_on = crate::spec::spec_stream()
             && !sampled
             && !spec_replay
+            && constraint.is_none()
             && !session_mode
             && embd_gpu.is_some()
             && !crate::model::full_prec_enabled()
@@ -3308,7 +3554,8 @@ impl HybridModel {
                 // (spec_accept_greedy, verbatim rule) and the host reads back 8B (n_acc, bonus)
                 // instead of the [T] preds. Same sync count — machinery for stages (b)/(c),
                 // gated on token identity vs the host walk (the arms below are bit-equal rules).
-                if crate::spec::spec_devacc() && k_round > 0 && !spec_replay {
+                if crate::spec::spec_devacc() && k_round > 0 && !spec_replay
+                    && constraint.is_none() {
                     let draft_d = e.htod_u32_v(&draft)?;
                     let mut acc_out = e.alloc_u32_zeroed(2)?;
                     e.spec_accept_greedy(
@@ -3640,6 +3887,48 @@ impl HybridModel {
                     e.dtoh_u32(&sample_tok)?[0]
                 };
                 (n_acc, bonus)
+            };
+            // --- 3b. GRAMMAR TRUNCATION (constrained spec, 2026-08-03): the grammar is
+            // an extra rejection rule AFTER the exactness verify (the batched-verify-twins
+            // ordering). Walk the accepted drafts through the grammar in commit order; the
+            // first illegal token truncates acceptance at its slot, and that slot's emission
+            // is recomputed as the MASKED argmax of the target's own verify column — token-
+            // identical to constrained plain greedy decode (an unmasked argmax that is
+            // grammar-legal IS the masked argmax: masking only removes competitors). The
+            // column D2H (~1MB) is paid only when a cut fires — the tight-grammar cost,
+            // measured in acceptance numbers, never hidden.
+            let (n_acc, bonus) = match constraint.as_deref_mut() {
+                None => (n_acc, bonus),
+                Some(c) => {
+                    fn ce(e2: String) -> Box<dyn std::error::Error> {
+                        format!("constraint: {e2}").into()
+                    }
+                    let mut na = n_acc;
+                    let mut cut = false;
+                    for (j, &d) in draft.iter().enumerate().take(n_acc) {
+                        if c.is_allowed(d).map_err(ce)? {
+                            c.consume(d).map_err(ce)?;
+                        } else {
+                            na = j;
+                            cut = true;
+                            break;
+                        }
+                    }
+                    let mut bo = bonus;
+                    if cut || !c.is_allowed(bo).map_err(ce)? {
+                        let mut row = if na == 0 && base == 0 {
+                            init_logits_host.clone()
+                                .ok_or("constraint: init logits missing (round-0 cut)")?
+                        } else {
+                            e.dtoh_view(&tlogits_d.slice(
+                                (base + na - 1) * n_vocab..(base + na) * n_vocab))?
+                        };
+                        c.mask_logits(&mut row).map_err(ce)?;
+                        bo = argmax(&row) as u32;
+                    }
+                    c.consume(bo).map_err(ce)?;
+                    (na, bo)
+                }
             };
             total_drafted += k_round;
             total_accepted += n_acc;

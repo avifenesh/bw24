@@ -1,0 +1,9 @@
+[moe] resident-experts decision: experts 12.85GB + trunk 1.58GB vs free 23.87GB (expert budget 20.30GB) -> RESIDENT
+[q4rp] split-plane decode mirrors built: 210 trunk tensors
+loaded gemma4 (30 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=818  decode argmax=818  logit maxdiff=8.245e-1  MATCH
+batched-prime argmax=818  tokenwise argmax=818  logit maxdiff=8.245e-1  MATCH
+prefill 19 tok in 0.0297s = 639.8 tok/s (pp19)
+generated 20 tokens in 0.098s = 204.24 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.030s) [stop: MaxNew]
+tokens: [818, 1813, 8881, 563, 506, 8906, 7296, 529, 1813, 699, 506, 10824, 236789, 236751, 3761, 1131, 506, 11661, 532, 1063]

@@ -1,0 +1,1 @@
+{"lanes":{"interactive":{"admitted":0,"shed":0,"completed":0,"tokens_out":0},"judge":{"admitted":0,"shed":0,"completed":0,"tokens_out":0},"harvest":{"admitted":36,"shed":79,"completed":32,"tokens_out":4566}},"interactive_step_ms":{"p50":0.0,"p99":0.0},"batch_size_last":4}

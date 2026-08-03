@@ -1,0 +1,28 @@
+{
+ "tag": "summarize",
+ "k": 4,
+ "oracle_sweeps": 128,
+ "batches": 75,
+ "rounds": 76,
+ "skipped_rounds": 1,
+ "shift": 1,
+ "delta": 0,
+ "align_ok": 4029,
+ "align_tot": 4029,
+ "dispatches": 80896,
+ "missed": 70773,
+ "block_lookups": 242688,
+ "block_misses": 212317,
+ "lockstep_disagreements": 0,
+ "strict": 0.3985700761589872,
+ "partial": 0.6764585364475153,
+ "acc_pos": 51,
+ "any_pos": 125,
+ "miss_at_uncovered": 1659,
+ "by_depth": {
+  "1": 20464,
+  "2": 5531,
+  "3": 1659,
+  "4": 554
+ }
+}

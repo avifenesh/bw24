@@ -1,0 +1,5 @@
+# GPU assignment board — update per claim, check before each run
+devices 0-3: moe-speq spike (baseline + oracle-ceiling; was m2-pp8 idle) — claimed 2026-08-02
+devices 4-7: FREE (qos-p95 lane DONE 2026-08-03T00:5xZ — gate verified, receipts in ~/receipts/qos-p95, committed locally on lane/qos-p95)
+devices 0-3: moe-speq lane, claimed 2026-08-03T00:24:37Z window-end 2026-08-03T11:30Z
+devices 0-3: RELEASED by moe-speq lane 2026-08-03T05:36:44Z — 12/12 ceiling cells complete, GPUs idle

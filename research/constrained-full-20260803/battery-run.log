@@ -1,0 +1,63 @@
+== Phase A: unconstrained byte-identity (c2ed69ed baseline vs constrained-full) ==
+  ok: unconstrained greedy #0 byte-identical
+  ok: unconstrained temp #0 byte-identical
+  ok: unconstrained greedy #1 byte-identical
+  ok: unconstrained temp #1 byte-identical
+  ok: unconstrained greedy #2 byte-identical
+  ok: unconstrained temp #2 byte-identical
+== Phase B1: spec path (default env) ==
+  ok: spec json_object parses as object
+  ok: spec json_schema parses AND validates
+  ok: spec bursts confirmed in log
+== Phase B2: plain batched path (MEMRA_SERVE_SPEC=0) + sampled ==
+  ok: plain json_object parses as object
+  ok: plain json_schema parses AND validates
+  ok: sampled json_schema (device gumbel + mask) parses AND validates
+== Phase B3: graphed path (SPEC=0, GS_MIN=32) ==
+  ok: graphed json_schema parses AND validates
+  FAIL: no graph capture in log (constrained did not promote)
+== Phase B4: host oracle (MEMRA_CONSTRAIN_HOST=1, SPEC=0) ==
+  ok: host-oracle json_schema parses AND validates
+  ok: device-mask greedy == host-oracle greedy (byte-identical)
+  ok: spec constrained == plain constrained (byte-identical)
+== Phase C: perf (N=3 interleaved same-session per arm) ==
+-- plain decode (MEMRA_SERVE_SPEC=0) --
+  plain-unconstrained run1: 256 tok in 2.10s = 122.0 tok/s
+  plain-unconstrained run2: 256 tok in 2.06s = 124.5 tok/s
+  plain-unconstrained run3: 256 tok in 2.06s = 124.4 tok/s
+  plain-constr-v1host run1: 217 tok in 2.31s = 93.7 tok/s
+  plain-constr-v1host run2: 217 tok in 1.84s = 117.8 tok/s
+  plain-constr-v1host run3: 217 tok in 1.84s = 117.7 tok/s
+  plain-constr-full run1: 217 tok in 2.21s = 98.3 tok/s
+  plain-constr-full run2: 217 tok in 1.75s = 123.8 tok/s
+  plain-constr-full run3: 217 tok in 1.75s = 123.7 tok/s
+-- spec decode (default env) --
+  spec-unconstrained run1: 256 tok in 1.57s = 163.1 tok/s
+  spec-unconstrained run2: 257 tok in 1.32s = 194.4 tok/s
+  spec-unconstrained run3: 257 tok in 1.32s = 194.4 tok/s
+  spec-constr-full run1: 226 tok in 1.89s = 119.6 tok/s
+  spec-constr-full run2: 226 tok in 1.47s = 153.4 tok/s
+  spec-constr-full run3: 226 tok in 1.47s = 153.8 tok/s
+/tmp/cfull-perf-full.log:[constrained] q9: 217 masked steps, mask total 1.58 ms (0.007 ms/step)
+/tmp/cfull-perf-full.log:[constrained] q9: 217 masked steps, mask total 1.54 ms (0.007 ms/step)
+/tmp/cfull-perf-full.log:[constrained] q9: 217 masked steps, mask total 1.40 ms (0.006 ms/step)
+/tmp/cfull-perf-spec.log:[constrained] q9: 226 masked steps, mask total 1.44 ms (0.006 ms/step)
+/tmp/cfull-perf-spec.log:[constrained] q9: 226 masked steps, mask total 1.44 ms (0.006 ms/step)
+/tmp/cfull-perf-spec.log:[constrained] q9: 226 masked steps, mask total 1.44 ms (0.006 ms/step)
+[spec-acc] ctx=58 burst=18/45 cum=37/81=0.457
+[spec-acc] ctx=91 burst=21/42 cum=58/123=0.472
+[spec-acc] ctx=126 burst=22/33 cum=80/156=0.513
+[spec-acc] ctx=159 burst=18/42 cum=98/198=0.495
+[spec-acc] ctx=191 burst=18/42 cum=116/240=0.483
+[spec-acc] ctx=223 burst=17/45 cum=133/285=0.467
+
+battery: 1 failure(s)
+
+--- ADDENDUM (same day): Phase B3 initial FAIL was a battery-script bug, not a code bug —
+--- promotion engages on prefill-done-at-admit sessions (prefix-hit/continuation), which the
+--- baseline binary also requires (verified: cold single request = 0 captures on c2ed69ed too).
+--- B3 re-run with the two-request prefix-hit form (run-battery.sh updated):
+graphed schema VALID
+captures: 2
+graphed == eager BYTE-IDENTICAL
+--- final: 0 failures across all phases.

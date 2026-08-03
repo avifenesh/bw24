@@ -14,6 +14,28 @@ use memra_engine::Engine;
 /// A miss prints ONE loud actionable line — a skipped section must always be visible in the
 /// battery log and name the env that enables it, never silent.
 fn kc_model(section: &str, fname: &str, legacy: &[&str], gguf_arg: &Option<String>) -> Option<String> {
+    // fast-gate seams (tools/fast-gate, 2026-08-02). The model-backed weight-oracle sections
+    // are >98% of the kernel-check wall (266s of 268s measured on the 5090 rig); the synthetic
+    // arms alone run in ~2s. Two diagnostics envs let the dev-loop gate scope this binary to
+    // the sections a diff actually touches — every skip is LOUD, and the full battery (no env)
+    // still gates merges/tags. Section names are the first kc_model argument (dtype5,
+    // nvfp4-gemm, q8mmq-gemm, q4_0-mmq, q4_0-sk-arm, iq4xs-mmq, f16g-kq-direct,
+    // nvfp4-27b-shape, nvfp4-mmvq, nvfp4-batched, a6-split-plane(9b-fallback),
+    // d2-cache-bit-identity, fast-router-batch).
+    //   MEMRA_KC_FAST=1        skip ALL weight-oracle sections (synthetic arms only, ~2s)
+    //   MEMRA_KC_ONLY=a,b,...  run only sections whose name contains one of the csv terms
+    if std::env::var("MEMRA_KC_FAST").as_deref() == Ok("1") {
+        println!("KC-SKIP [{section}] {fname}: MEMRA_KC_FAST=1 (weight-oracle section skipped; \
+                  synthetic arms only — full battery still required before merge/tag)");
+        return None;
+    }
+    if let Ok(filter) = std::env::var("MEMRA_KC_ONLY") {
+        if !filter.split(',').any(|f| !f.is_empty() && section.contains(f)) {
+            println!("KC-SKIP [{section}] {fname}: filtered by MEMRA_KC_ONLY={filter} \
+                      (fast-gate change-scoped run — full battery still required before merge/tag)");
+            return None;
+        }
+    }
     let mut cands: Vec<String> = Vec::new();
     if let Ok(d) = std::env::var("MEMRA_KC_MODELS_DIR") {
         cands.push(format!("{}/{fname}", d.trim_end_matches('/')));
@@ -155,16 +177,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- DECODE GLUE-FUSION: rms_norm_q8_1 must produce BIT-IDENTICAL q8_1 to rms_norm -> quantize_q8_1
-    //     (same int8 bytes, same f32 block scales). ---
-    {
-        let (ncols, nrows) = (4096usize, 1usize);
+    //     (same int8 bytes, same f32 block scales). nrows=1 is the decode case; nrows=5 is the
+    //     BATCHED-VERIFY twin (lane/vt-fixes fix 2): the kernel is row-indexed (blockIdx.x=row,
+    //     grid=nrows), so the T>1 launch must be the exact per-row m=1 program — the verify's
+    //     unfused rms_norm_decode+quantize chain replaced by ONE launch, bit-identical per row. ---
+    for nrows in [1usize, 5] {
+        let ncols = 4096usize;
         let eps = 1e-6f32;
         let x: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 31)).collect();
         let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 41) * 0.1).collect();
         let xd = e.htod(&x)?; let wd = e.htod(&w)?;
-        // reference: rms_norm then quantize_q8_1.
+        // reference: rms_norm_decode (blockDim=1024, the verify's dispatch-mirror) then quantize_q8_1.
         let mut z_ref = e.zeros(ncols * nrows)?;
-        e.rms_norm(&xd, &wd, &mut z_ref, ncols, nrows, eps)?;
+        e.rms_norm_decode(&xd, &wd, &mut z_ref, ncols, nrows, eps)?;
         let (q_ref, d_ref) = e.quantize_q8_1(&z_ref, nrows, ncols)?;
         // fused.
         let (q_f, d_f) = e.rms_norm_q8_1(&xd, &wd, ncols, nrows, eps)?;
@@ -173,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
         let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
         let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
-        println!("rms_norm_q8_1 fused: q_mismatch={qbad} d_mismatch={dbad} {}",
+        println!("rms_norm_q8_1 fused (nrows={nrows}): q_mismatch={qbad} d_mismatch={dbad} {}",
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -202,6 +227,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
         let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
         println!("add_rms_norm_q8_1 fused: res_mismatch={rbad} q_mismatch={qbad} d_mismatch={dbad} {}",
+                 if rbad == 0 && qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- BATCHED-VERIFY EPILOGUE TWIN (lane/vt-fixes fix 2): add_rms_norm_q8_1 at nrows=T
+    //     (T=2..8, the spec verify tier) must be BIT-IDENTICAL per row to the verify path's
+    //     UNFUSED chain: add_f32 -> rms_norm_decode (blockDim=1024, the dispatch-mirror the
+    //     verify norm pins) -> quantize_q8_1. The fused kernel is row-indexed (blockIdx.x=row),
+    //     so the T-row launch is the exact per-row m=1 program — per-(token,row) chain identity
+    //     by construction. Verifies the whole tier's shapes: T=2 (b2), T=4 (b4), T=5/8 (b8). ---
+    for nrows in [2usize, 4, 5, 8] {
+        let ncols = 4096usize;
+        let eps = 1e-6f32;
+        let a: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 61)).collect();
+        let b: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 67)).collect();
+        let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 71) * 0.1).collect();
+        let ad = e.htod(&a)?; let bd = e.htod(&b)?; let wd = e.htod(&w)?;
+        // reference: the verify t-path's exact unfused chain.
+        let mut res_ref = e.zeros(ncols * nrows)?;
+        e.add(&ad, &bd, &mut res_ref, ncols * nrows)?;
+        let mut z_ref = e.zeros(ncols * nrows)?;
+        e.rms_norm_decode(&res_ref, &wd, &mut z_ref, ncols, nrows, eps)?;
+        let (q_ref, d_ref) = e.quantize_q8_1(&z_ref, nrows, ncols)?;
+        // fused twin at nrows=T.
+        let mut res_f = e.zeros(ncols * nrows)?;
+        let (q_f, d_f) = e.add_rms_norm_q8_1(&ad, &bd, &wd, &mut res_f, ncols, nrows, eps)?;
+        let rr = e.dtoh(&res_ref)?; let rf = e.dtoh(&res_f)?;
+        let qr: Vec<i8> = e.stream().clone_dtoh(&q_ref)?; e.stream().synchronize()?;
+        let qf: Vec<i8> = e.stream().clone_dtoh(&q_f)?; e.stream().synchronize()?;
+        let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
+        let rbad = rr.iter().zip(&rf).filter(|(x, y)| x != y).count();
+        let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
+        let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
+        println!("add_rms_norm_q8_1 batched (T={nrows}): res_mismatch={rbad} q_mismatch={qbad} d_mismatch={dbad} {}",
                  if rbad == 0 && qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -266,6 +324,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("silu_mul     maxdiff={d:.2e} {}", if d < 1e-5 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- GRAMMAR TOKEN MASK (constrained decoding): mask_logits_col must be BIT-IDENTICAL to
+    //     the host reference (allowed ids untouched, banned + tail ids = -FLT_MAX) on synthetic
+    //     packed bitsets, incl. a stacked-column case and a mask shorter than the row (padded
+    //     lm_head tail rule). ANY mismatch = FAIL. ---
+    {
+        let n = 4099usize;             // deliberately not a multiple of 32 (tail-word path)
+        let mask_words = (n - 67).div_ceil(32); // mask covers fewer ids than the row: tail ban
+        // synthetic bitset: allow ~1/7 of ids, deterministic
+        let mask: Vec<u32> = (0..mask_words).map(|w| {
+            let mut bits = 0u32;
+            for b in 0..32 { if (w * 32 + b) % 7 == 3 { bits |= 1 << b; } }
+            bits as u32
+        }).collect();
+        let allowed = |i: usize| -> bool { i < mask_words * 32 && i % 7 == 3 };
+        // two stacked rows; mask applied to col 1 only (col addressing under test)
+        let rows = 2usize;
+        let x: Vec<f32> = (0..rows * n).map(|i| pr(i) * 8.0).collect();
+        let mut cpu = x.clone();
+        for i in 0..n {
+            if !allowed(i) { cpu[n + i] = f32::MIN; }
+        }
+        let mut xd = e.htod(&x)?;
+        let md = e.htod_u32_v(&mask)?;
+        e.mask_logits_col(&mut xd, &md, 1, n, mask_words)?;
+        let gpu = e.dtoh(&xd)?;
+        let bad = cpu.iter().zip(&gpu).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        // argmax equivalence on the masked row (the property the sampler consumes)
+        let am_cpu = cpu[n..].iter().enumerate()
+            .max_by(|(i, a), (j, b)| a.partial_cmp(b).unwrap().then(j.cmp(i))).unwrap().0;
+        let am_gpu = gpu[n..].iter().enumerate()
+            .max_by(|(i, a), (j, b)| a.partial_cmp(b).unwrap().then(j.cmp(i))).unwrap().0;
+        println!("mask_logits_col: mismatch={bad} argmax {}=={} {}",
+                 am_cpu, am_gpu,
+                 if bad == 0 && am_cpu == am_gpu { "OK (byte-identical)" }
+                 else { fails += 1; "FAIL" });
+    }
+
     // --- RANK2 LEVER (q8_1 quant-fold): silu_mul_scaled_q8_1 must produce BIT-IDENTICAL q8_1 to the
     //     unfused silu_mul_scaled -> quantize_q8_1 (same int8 bytes, same f32 block scales). ---
     {
@@ -288,6 +383,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let qbad = q_ref.iter().zip(&q_f).filter(|(a, b)| a != b).count();
         let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
         println!("silu_mul_q8_1 fold: int8_mismatch={qbad} scale_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- BATCHED-VERIFY EPILOGUE TWIN (lane/vt-fixes fix 2): silu_mul_scaled_q8_1 at the verify
+    //     tier's FLAT n = T*n_ff, unit scales, vs the verify path's exact unfused chain
+    //     (silu_mul_f32 -> quantize_q8_1). The kernel is warp-per-32-block over flat n with no row
+    //     structure and n_ff % 32 == 0 means blocks never straddle token rows, so the T>1 form is
+    //     the m=1 program per block by construction. Unit scales pin the wiring's contract: the
+    //     verify dual applies macro-scales via scale_inplace BEFORE the epilogue (x*1.0 == x). ---
+    {
+        let (t, n_ff) = (5usize, 2048usize);
+        let n = t * n_ff;
+        let g: Vec<f32> = (0..n).map(|i| pr(i + 7)).collect();
+        let u: Vec<f32> = (0..n).map(|i| pr(i + 11)).collect();
+        let gd = e.htod(&g)?;
+        let ud = e.htod(&u)?;
+        // unfused reference: the verify t-path's ffn_act (silu_mul) then the down-proj's quantize.
+        let mut act = e.zeros(n)?;
+        e.silu_mul(&gd, &ud, &mut act, n)?;
+        let (aq_ref, ad_ref) = e.quantize_q8_1(&act, t, n_ff)?;
+        // fused twin at unit scales over the same flat n.
+        let (aq_f, ad_f) = e.silu_mul_scaled_q8_1(&gd, &ud, 1.0, 1.0, n)?;
+        let q_ref: Vec<i8> = e.stream().clone_dtoh(&aq_ref)?; e.stream().synchronize()?;
+        let q_f: Vec<i8> = e.stream().clone_dtoh(&aq_f)?; e.stream().synchronize()?;
+        let d_ref = e.dtoh(&ad_ref)?;
+        let d_f = e.dtoh(&ad_f)?;
+        let qbad = q_ref.iter().zip(&q_f).filter(|(a, b)| a != b).count();
+        let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
+        println!("silu_mul_q8_1 batched (T={t}): int8_mismatch={qbad} scale_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- GDN OUT-NORM FUSION (lane/vt-fixes fix 2): gated_rmsnorm_q8_1 must be BIT-IDENTICAL to
+    //     gated_rmsnorm -> quantize_q8_1. Both kernels are row-indexed at blockDim=128 (the
+    //     reduce-order pin), and ncols=d_state=128 % 32 == 0 means q8 blocks never straddle rows.
+    //     nrows=num_v covers T=1 decode (the existing fused decode path had no arm); nrows=num_v*5
+    //     is the batched-verify twin (verify runs the SAME kernel at nrows=num_v*T). ---
+    for t in [1usize, 5] {
+        let (d_state, num_v) = (128usize, 16usize);
+        let nrows = num_v * t;
+        let eps = 1e-6f32;
+        let o: Vec<f32> = (0..nrows * d_state).map(|i| pr(i + 83)).collect();
+        let z: Vec<f32> = (0..nrows * d_state).map(|i| pr(i + 89) - 0.5).collect();
+        let w: Vec<f32> = (0..d_state).map(|i| 0.5 + pr(i + 97) * 0.1).collect();
+        let od = e.htod(&o)?; let zd = e.htod(&z)?; let wd = e.htod(&w)?;
+        // reference: gated_rmsnorm (f32, blockDim=128 — the verify path's kernel) then quantize.
+        let mut gn_ref = e.zeros(nrows * d_state)?;
+        e.gated_rmsnorm(&od, &wd, &zd, &mut gn_ref, d_state, nrows, eps)?;
+        let (q_ref, d_ref) = e.quantize_q8_1(&gn_ref, nrows, d_state)?;
+        // fused.
+        let (q_f, d_f) = e.gated_rmsnorm_q8_1(&od, &wd, &zd, d_state, nrows, eps)?;
+        let qr: Vec<i8> = e.stream().clone_dtoh(&q_ref)?; e.stream().synchronize()?;
+        let qf: Vec<i8> = e.stream().clone_dtoh(&q_f)?; e.stream().synchronize()?;
+        let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
+        let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
+        let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
+        println!("gated_rmsnorm_q8_1 (T={t}): q_mismatch={qbad} d_mismatch={dbad} {}",
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -1339,10 +1491,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             // --- VENDORED llama NVFP4 MMQ GEMM vs the f32 dequant oracle. ---
-            // W4A4-native (mxf4nvf4 block-scale mma) but with llama's 2-level FP8-e8m0/UE4M3 activation
-            // quant -> should be MUCH closer to the f32 oracle than the memra hand-roll FP4 (rel ~0.1).
-            // Authoritative gate is still end-to-end argmax; this rel is the accuracy signal that
-            // llama's activation quant fixed memra's W4A4 maxdiff 1.46.
+            // W4A4-native (mxf4nvf4 block-scale mma). The e2m1 ACTIVATION grid is the lossy side
+            // (the weight side is bit-exact — probe/fp4_4x_final.cu maxrel=0), so this rel measures
+            // the activation quantizer and nothing else.
+            //
+            // TWO ARMS, same weights and same activations, differing only in the quantizer:
+            //   MMQ-GEMM     — two-level scaling: per-token row amax (folded into the epilogue) plus
+            //                  the per-sub-block UE4M3 micro-scale. The shipped path.
+            //   MMQ-GEMM-V1  — the pre-port sub-block-only quantizer, kept as the numeric oracle.
+            // Printing both makes the port's value measurable instead of asserted: V1's rel is the
+            // "before" number and any regression in the delta shows up here rather than only in an
+            // end-to-end argmax gate. Both rels stay INFORMATIONAL — the authoritative W4A4 gate is
+            // end-to-end greedy decode (w4a4-gate / run-gen argmax), because a rel that looks fine
+            // on synthetic activations can still fork real text.
             if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
                 use memra_gguf::dequant;
                 use memra_runtime::cpu_linear;
@@ -1355,12 +1516,134 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
-                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
-                    let d = maxdiff(&cpu, &yb);
                     let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
-                    let rel = d / scale;
+
+                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                    let rel = maxdiff(&cpu, &yb) / scale;
+                    let y1 = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_v1(&wd, &xd, tt, in_f, out_f)?)?;
+                    let rel_v1 = maxdiff(&cpu, &y1) / scale;
+
                     println!("MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (informational; \
                               authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
+                    println!("MMQ-GEMM-V1 blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel_v1:.2e} \
+                              (pre-port oracle; two-level/{}) {}",
+                             if rel > 0.0 { format!("{:.2}x", rel_v1 / rel) } else { "n/a".into() },
+                             if rel <= rel_v1 { "IMPROVED" } else { "WORSE" });
+                }
+
+                // --- DYNAMIC-RANGE arm: the case the per-token row scale actually exists for. ---
+                // UE4M3 holds roughly 1e-3..2e2 after the /2 in ue4m3_to_fp32. The sub-block scale is
+                // amax_sub/6, so a sub-block whose values sit near 1e-5 wants a scale of ~2e-6 — below
+                // the smallest UE4M3 subnormal — and the micro-scale CLAMPS. Every value in that
+                // sub-block then quantizes against the wrong decade, which is a systematic bias, not
+                // rounding noise. The uniform 0.1-scale activations above never reach either clamp
+                // (amax_sub/6 ~ 0.017, mid-range), which is why they show almost no delta.
+                //
+                // Here token j is scaled by 10^((j % 7) - 3), spanning 1e-3..1e3 across the batch —
+                // the per-token magnitude spread real activations show across layers and outlier
+                // channels. Two-level scaling normalizes each row before the search, so no token's
+                // micro-scale clamps; V1 has no such protection. HARD gate: if the row scale does not
+                // beat sub-block-only scaling HERE, the port bought nothing and should be reverted.
+                for tt in [16usize, 128] {
+                    let x: Vec<f32> = (0..tt * in_f)
+                        .map(|i| {
+                            let token = i / in_f;
+                            let decade = 10.0f32.powi((token % 7) as i32 - 3);
+                            pr(i + 83) * 0.1 * decade
+                        })
+                        .collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    // Per-token relative error: a single scale over the whole batch would be set by
+                    // the loudest token and would hide everything the quiet tokens do.
+                    let per_token_rel = |y: &[f32]| -> f32 {
+                        (0..tt)
+                            .map(|j| {
+                                let lo = j * out_f;
+                                let hi = lo + out_f;
+                                let s = cpu[lo..hi].iter().map(|v| v.abs()).fold(0.0, f32::max);
+                                if s <= 0.0 { return 0.0; }
+                                maxdiff(&cpu[lo..hi], &y[lo..hi]) / s
+                            })
+                            .fold(0.0, f32::max)
+                    };
+                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                    let y1 = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_v1(&wd, &xd, tt, in_f, out_f)?)?;
+                    let rel = per_token_rel(&yb);
+                    let rel_v1 = per_token_rel(&y1);
+                    println!("MMQ-GEMM-DYN blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} \
+                              v1={rel_v1:.2e} ({}) {}",
+                             if rel > 0.0 { format!("{:.2}x", rel_v1 / rel) } else { "n/a".into() },
+                             if rel < rel_v1 { "OK" } else { fails += 1; "FAIL" });
+                }
+
+                // --- RESIDUAL-CHANNEL arm: validates the rank-k high-precision side path. ---
+                // Real activations carry PERSISTENT outlier CHANNELS: the same feature dims run one
+                // to two decades above their neighbours in every token. One loud channel drags the
+                // whole row amax up, so all 16-element sub-blocks in the row get a coarser scale and
+                // every quiet value loses bits. MEMRA_MMQ_RESIDUAL_K keeps the k loudest channels out
+                // of the e2m1 path and adds their exact f32 contribution back after the GEMM, which
+                // pays twice: exact for the loud channels, and a lower row amax for everything else.
+                //
+                // Here 8 fixed channels are amplified 300x on top of the decade spread. k=8 should
+                // capture exactly those, so the error must fall hard versus k=0. This is the gate
+                // that catches a sign, scale (the e2m1-grid/UE4M3 0.5x factor), or channel-index bug
+                // in the correction kernel — a wrong factor makes rel EXPLODE rather than shrink,
+                // and an end-to-end argmax gate would only report "still diverges".
+                {
+                    let tt = 128usize;
+                    let hot: Vec<usize> = (0..8).map(|c| (c * 977 + 13) % in_f).collect();
+                    let is_hot = {
+                        let mut v = vec![false; in_f];
+                        for &c in &hot { v[c] = true; }
+                        v
+                    };
+                    let x: Vec<f32> = (0..tt * in_f)
+                        .map(|i| {
+                            let token = i / in_f;
+                            let chan = i % in_f;
+                            let decade = 10.0f32.powi((token % 7) as i32 - 3);
+                            let boost = if is_hot[chan] { 300.0 } else { 1.0 };
+                            pr(i + 83) * 0.1 * decade * boost
+                        })
+                        .collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let per_token_rel = |y: &[f32]| -> f32 {
+                        (0..tt)
+                            .map(|j| {
+                                let lo = j * out_f;
+                                let hi = lo + out_f;
+                                let s = cpu[lo..hi].iter().map(|v| v.abs()).fold(0.0, f32::max);
+                                if s <= 0.0 { return 0.0; }
+                                maxdiff(&cpu[lo..hi], &y[lo..hi]) / s
+                            })
+                            .fold(0.0, f32::max)
+                    };
+                    let mut rel_k0 = f32::NAN;
+                    // k=32/64 also exercise the correction kernel's channel-axis TILING (the
+                    // register weight array holds MMQ_RESIDUAL_S_TILE=16 at a time), so a bug in the
+                    // multi-pass path cannot hide behind a single-pass k.
+                    for k in [0i32, 4, 8, 16, 32, 64] {
+                        let y = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_res(&wd, &xd, tt, in_f, out_f, k)?)?;
+                        let r = per_token_rel(&y);
+                        if k == 0 {
+                            rel_k0 = r;
+                            println!("MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T={tt} k=0: rel={r:.2e} \
+                                      (baseline, 8 outlier channels @300x)");
+                            continue;
+                        }
+                        // k >= 8 covers every injected outlier, so it must beat the baseline. k=4
+                        // covers half of them and is informational: a partial cover can legitimately
+                        // land anywhere between the two.
+                        let hard = k >= 8;
+                        let better = r < rel_k0;
+                        let verdict = if better { "OK" } else if hard { fails += 1; "FAIL" } else { "FLAT" };
+                        println!("MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T={tt} k={k}: rel={r:.2e} \
+                                  ({} vs k=0){} {verdict}",
+                                 if r > 0.0 { format!("{:.2}x", rel_k0 / r) } else { "n/a".into() },
+                                 if hard { "" } else { " informational" });
+                    }
                 }
             }
             // --- STAGE 2: VENDORED llama NVFP4 W4A8 MMQ GEMM vs the f32 dequant oracle. ---
@@ -1559,6 +1842,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
                             println!("MMQ-Q4_0-RP {tname} T={tt}: bit-mismatch {nbad}/{} {}",
                                      yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                            // CLC work-stealing arm (perf-frontier lever #1, MEMRA_MMQ_CLC):
+                            // clusterlaunchcontrol.try_cancel block-stealing over the SAME tile
+                            // grid — schedule-only, so the gate is BIT-identity vs the forced
+                            // static xy-tiling kernel (raw AND rp), never a band. A bit-diff
+                            // here means a tile ran twice/never or fixup leaked in: DOA.
+                            memra_engine::MMQ_SK_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+                            let clc_avail = unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(0) } == 1;
+                            if clc_avail {
+                                let yt = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(1) };
+                                let yc = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let nbad = yt.iter().zip(yc.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-CLC {tname} T={tt}: bit-mismatch {nbad}/{} {}",
+                                         yt.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                                let yc_rp = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd_rp, &xd, tt, in_f, out_f, true)?)?;
+                                let nbad_rp = yt.iter().zip(yc_rp.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-CLC-RP {tname} T={tt}: bit-mismatch {nbad_rp}/{} {}",
+                                         yt.len(), if nbad_rp == 0 { "OK" } else { fails += 1; "FAIL" });
+                            } else {
+                                println!("MMQ-Q4_0-CLC {tname} T={tt}: SKIP (pre-SM100 build — CLC kernel not compiled)");
+                            }
+                            unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(-1) };
+                            memra_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 }
@@ -1622,13 +1930,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let xd = e.htod(&x)?;
                             let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
                             let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let mut y_tile: Vec<f32> = Vec::new();
                             for (force, label) in [(0i8, "TILE"), (1, "SK")] {
                                 memra_engine::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
                                 let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
                                 let rel = maxdiff(&cpu, &yb) / scale;
                                 println!("MMQ-Q4_0-RAGK {label} [in={in_f} out={out_f} nc=false] T={tt}: rel={rel:.2e} {}",
                                          if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                                if force == 0 { y_tile = yb; }
                             }
+                            // CLC on the ragged-k shape: no k split, so the ITER_K-alignment
+                            // hazard that killed SK here cannot exist — gate stays bit-identity.
+                            memra_engine::MMQ_SK_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+                            if unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(1) } == 1 {
+                                let yc = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let nbad = y_tile.iter().zip(yc.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-RAGK CLC [in={in_f} out={out_f} nc=false] T={tt}: bit-mismatch {nbad}/{} {}",
+                                         yc.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                            }
+                            unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(-1) };
                             memra_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -1645,13 +1966,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let xd = e.htod(&x)?;
                             let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
                             let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let mut y_tile: Vec<f32> = Vec::new();
                             for (force, label) in [(0i8, "TILE"), (1, "SK")] {
                                 memra_engine::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
                                 let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
                                 let rel = maxdiff(&cpu, &yb) / scale;
                                 println!("MMQ-Q4_0-NC26 {tname} {label} [in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
                                          if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                                if force == 0 { y_tile = yb; }
                             }
+                            // CLC on the need_check=true clamped-last-row-tile class (the exact
+                            // family where Hopper SK went wrong) — bit-identity vs forced TILE.
+                            memra_engine::MMQ_SK_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+                            if unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(1) } == 1 {
+                                let yc = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let nbad = y_tile.iter().zip(yc.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-NC26 {tname} CLC [in={in_f} out={out_f}] T={tt}: bit-mismatch {nbad}/{} {}",
+                                         yc.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                            }
+                            unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(-1) };
                             memra_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -2057,12 +2391,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let wu = e.htod_bytes(raw_u)?;
                 let wg_rp = e.htod_bytes(&repack_nvfp4_split(raw_g, out_f))?;
                 let wu_rp = e.htod_bytes(&repack_nvfp4_split(raw_u, out_f))?;
-                // b2/b4 tiers only — the dual dispatch stops at m=4 (b8 dual killed, flat).
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                // b2/b4 both layouts; m=5..7 rp-only (the vt-fixes fix-1b exact-width duals —
+                // GGUF layout has no b5/b6/b7 dual; the flat MCOLS=8 b8 dual stays dead).
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
                     for (rp, w0, w1) in [(false, &wg, &wu), (true, &wg_rp, &wu_rp)] {
+                        if mm > 4 && !rp { continue; }
                         let y0ref = e.dtoh(&e.qmatvec_mmvq_batched(w0, &aq, &ad, mm, in_f, out_f,
                             memra_engine::QT_NVFP4, row_bytes, mcols, 1.0, rp)?)?;
                         let y1ref = e.dtoh(&e.qmatvec_mmvq_batched(w1, &aq, &ad, mm, in_f, out_f,
@@ -2135,7 +2471,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // reduces k in two chunks -> deterministic but NOT bit-identical to the reference
                 // (FP add order). Its gate = rel<1e-6-of-max + run-to-run BIT determinism; every
                 // other variant keeps the strict bit-bad==0 contract.
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
+                // (m=5/6/7, mcols=8) exercises the EXACT-WIDTH b5/b6/b7 twins (vt-fixes fix 1):
+                // qmatvec_mmvq_batched remaps those launches to MCOLS=m — same template, columns
+                // c >= m never execute in either form, so bit-bad==0 vs per-m MMVQ still gates.
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8), (8, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, memra_engine::QT_NVFP4, row_bytes, false)?)?;

@@ -1,0 +1,21 @@
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 24.04GB (expert budget 19.44GB) -> RESIDENT
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.\n"
+prompt tokens: [248045, 846, 198, 760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083, 3545, 4779, 11, 1332, 9966, 1452, 5344, 3947, 61369, 23304, 1070, 13, 8618, 6228, 369, 16384, 3658, 440, 279, 3672, 11, 1521, 264, 10281, 9705, 628, 9959, 264, 795, 1395, 14043, 29551, 13, 58737, 11, 2923, 539, 2923, 11, 1204, 264, 20340, 8404, 17830, 15089, 23776, 47493, 321, 49703, 1141, 11312, 364, 264, 3074, 3817, 11, 321, 10033, 864, 6228, 80018, 37972, 948, 279, 6009, 5883, 34105, 3545, 4779, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=8160  decode argmax=8160  logit maxdiff=7.077e-1  MATCH
+batched-prime argmax=8160  tokenwise argmax=8160  logit maxdiff=7.992e-1  MATCH
+prefill 99 tok in 0.0598s = 1654.7 tok/s (pp99)
+generated 32 tokens in 0.176s = 181.75 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.060s) [stop: MaxNew]
+tokens: [8160, 579, 264, 7047, 1817, 25, 271, 16, 13, 220, 2972, 1847, 7355, 279, 2570, 57491, 64700, 198, 256, 471, 2972, 1905, 64700, 14269, 4534, 11147, 8232, 14855, 364, 380, 12370, 8404]
+OUTPUT TEXT: "Here's a thinking process:\n\n1.  **Deconstruct the User Prompt:**\n   - **Context:** Storage-to-compute pipeline for Mixture-of"
+--- generated text ---
+Here's a thinking process:
+
+1.  **Deconstruct the User Prompt:**
+   - **Context:** Storage-to-compute pipeline for Mixture-of

@@ -1,0 +1,18 @@
+=== kernel-check ===
+0
+moe async-prefetch ordering + protected victim: OK
+
+ALL GREEN: kernels match CPU reference.
+=== run-gen ===
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+prefill argmax=268  decode argmax=268  logit maxdiff=5.987e-1  MATCH
+generated 16 tokens in 0.112s = 143.43 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.007s) [stop: MaxNew]
+tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709]
+=== run-spec ===
+  acceptance: 21/70 = 30.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.425s = 72.86 tok/s (0.53x vs generate; this run's prime 0.007s)
+  acceptance: 21/80 = 26.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

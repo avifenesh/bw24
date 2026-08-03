@@ -693,6 +693,17 @@ impl Tokenizer {
         self.decode_special(ids, true)
     }
 
+    /// True for Control/Unknown tokens — vocab entries that are protocol markers, not text.
+    /// External vocab consumers (llguidance's toktrie, constrained decoding) must not let a
+    /// grammar match these as literal bytes (a JSON string could otherwise smuggle
+    /// `<|im_start|>`); they substitute a non-text marker form instead.
+    pub fn token_is_control(&self, id: u32) -> bool {
+        match self.attrs.get(id as usize) {
+            Some(TokAttr::Control) | Some(TokAttr::Unknown) => true,
+            _ => false,
+        }
+    }
+
     pub fn decode_special(&self, ids: &[u32], special: bool) -> String {
         String::from_utf8_lossy(&self.decode_bytes_special(ids, special)).into_owned()
     }

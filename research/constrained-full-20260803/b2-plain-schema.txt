@@ -1,0 +1,11 @@
+{
+  "name": "Rex",
+  "age": 7,
+  "tags": [
+    "Space Explorer",
+    "Robot Builder",
+    "Dinosaur Fan",
+    "Card Collector",
+    "Night Sky Watcher"
+  ]
+}

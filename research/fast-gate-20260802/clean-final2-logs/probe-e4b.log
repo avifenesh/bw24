@@ -1,0 +1,10 @@
+[gemma4-e4b] per-layer-embed model detected (n_epl=256, row 10752) — first-light forward (eager decode + prime); dc/graph/spec unwired (HANDOVER-E4B.md)
+[q4rp] split-plane decode mirrors built: 402 trunk tensors
+[q4rp] split-plane IN-PLACE swap: 294 dense trunk tensors
+loaded gemma4 (42 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=8291  decode argmax=8291  logit maxdiff=2.814e0  MATCH
+batched-prime argmax=8291  tokenwise argmax=8291  logit maxdiff=2.814e0  MATCH
+prefill 19 tok in 0.0299s = 635.9 tok/s (pp19)
+generated 20 tokens in 0.097s = 205.19 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.030s) [stop: MaxNew]
+tokens: [8291, 236789, 236751, 496, 6972, 1657, 600, 9025, 531, 506, 10340, 15569, 236787, 108, 236770, 236761, 138, 1018, 115863, 506]

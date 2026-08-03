@@ -90,7 +90,8 @@ same cell (machine-specific config per the flags doctrine).
 ## OpenAI tools surface (serve-tools lane, 2026-08-02)
 
 `/v1/chat/completions` accepts `tools`, `tool_choice` (`"auto"`|`"none"`; `"required"` and
-named-function forms 400 — no constrained decoding yet), assistant-history `tool_calls`,
+named-function forms 400 — the grammar engine isn't wired to tool selection yet),
+assistant-history `tool_calls`,
 `role:"tool"` result turns, and `reasoning_effort`/`reasoning`. The path is **template +
 parsing only — zero engine changes**:
 
@@ -121,6 +122,69 @@ Receipts: `research/serve-tools-20260802/` (round-trip transcripts N=3 greedy on
 Qwen3.6-35B + AgentWorld, streaming schema checker, malformed-policy transcript,
 tok-check usage crosscheck, cross-binary c1 refs + c1-vs-c16) and
 `research/integrate-cache-20260802/` (tools x cache intersection gate).
+
+## OpenAI compatibility contract (serve-compat lane, 2026-08-03)
+
+The five gap-scan listing-blockers (`research/gap-scan-20260802/REPORT.md`), fixed and
+gated by the official `openai` Python SDK against a live server
+(`research/serve-compat-20260802/`):
+
+- **Envelope:** every OpenAI-shape completion and stream chunk carries `id`
+  (`chatcmpl-…`/`cmpl-…`), `created`, and `system_fingerprint` (`memra-<git sha>`, baked
+  at build); the id echoes as the `x-request-id` response header. The first stream delta
+  carries `role:"assistant"`. Error bodies are the OpenAI object —
+  `{"error": {"message","type","param","code"}}` — and mid-stream worker errors arrive as
+  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive
+  comments flow every 5s (long-prompt prefill streams nothing before first token;
+  OpenRouter cancels silent streams).
+- **Reasoning separation:** on think-open prompts, `<think>` text routes to
+  `message.reasoning` / `delta.reasoning` (+ `reasoning_details`, the OpenRouter
+  dialect); `content` is post-think only. `include_reasoning:false` (or
+  `reasoning: {exclude: true}`) drops the separated text. Non-think models keep
+  byte-identical no-parser streams.
+- **`max_tokens` omitted** ⇒ context-bounded budget (session ctx − prompt, capped at the
+  model's trained context) — the OpenAI default-when-omitted semantics, not a silent
+  128-token truncation. Explicit `max_tokens`/`max_completion_tokens` honored exactly.
+- **Disconnect abort:** a hung-up client's session retires at the next tick (all serve
+  paths: batched, graph, spec, legacy) and is billed to the abort point (the `[abort]`
+  log line records prompt/cached/generated); queued requests from dead clients never
+  reach the GPU.
+- **Parameter breadth + honesty:** `frequency_penalty`/`presence_penalty`/
+  `repetition_penalty` plumb to the sampler (whole-history window; greedy+penalized
+  keeps the host-sampled path). `response_format` `json_object`/`json_schema` is REAL
+  constrained decoding (see the section below). Semantic params we can't honor 400 with
+  the param named (`logit_bias`, `logprobs`/`top_logprobs`, `n != 1`, `best_of != 1`,
+  unknown `response_format` types); cosmetic fields (`user`, `stream_options`) are
+  accepted and ignored. Streams exclude stop-sequence text exactly like non-stream
+  responses (holdback buffer).
+
+## Constrained decoding (`response_format`) — lanes constrained + constrained-full, 2026-08-03
+
+`/v1/chat/completions` honors `response_format` `{"type":"json_object"}` and
+`{"type":"json_schema","json_schema":{...,"schema":{...}}}` as REAL constrained decoding:
+the schema compiles to an [llguidance](https://github.com/guidance-ai/llguidance) grammar,
+and each step's packed token bitset uploads to a stable per-session device buffer (~31KB
+H2D) where `mask_logits_f32` bans disallowed tokens on device — BEFORE the same
+device-sample / lean-logits / CUDA-graph / speculative paths unconstrained sessions ride.
+No path is lost to being constrained.
+
+- **Cost:** plain constrained-greedy = **99.4% of unconstrained** (123.7 vs 124.4 tok/s,
+  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. Spec-constrained runs
+  153.4 vs 194.4 unconstrained — the gap is draft acceptance under a tight grammar (the
+  drafter proposes tokens the grammar rejects at verify), not mask overhead.
+- **Exactness:** device-mask greedy is byte-identical to the host -inf oracle
+  (`MEMRA_CONSTRAIN_HOST=1`), spec-constrained is byte-identical to plain-constrained,
+  graphed is byte-identical to eager, and unconstrained requests are byte-identical to the
+  pre-lane binary (the isolation contract). Kernel-check pins `mask_logits_col`
+  bit-identity.
+- **Think interaction:** constrained requests force the template's no-think switch (a
+  grammar masking from token 0 can never close an open `<think>` tail); a think-tail
+  template without an `enable_thinking` switch is a loud 400.
+- Unknown `response_format` types remain loud 400s. `/v1/completions` (non-chat) carries
+  no `response_format`.
+
+Receipts: `research/constrained-20260803/` (v1) + `research/constrained-full-20260803/`
+(full battery: every path, cross-path identity, three-way perf).
 
 ## Prompt caching (cross-request prefix cache) — 2026-08-02
 
@@ -176,6 +240,27 @@ spec resume, or prefix cache). `/metrics` exposes the cumulative split
 (`prompt_tokens_in`/`cached_tokens_in`) plus `prefix_cache_hits`/`entries`/`bytes`. Cached
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
+
+## Multi-tenant QoS — the x-lane SLO gate (lane/qos-p95, 2026-08-02)
+
+Requests may tag a service class via the `x-lane` header: `interactive` (protected;
+also the default when the header is absent — naked traffic is byte-identical),
+`judge` (prefill-shaped), or `harvest` (decode-shaped bulk). The gate is engine-side
+admission control: interactive always admits (waits FIFO past `MEMRA_MAX_SESSIONS`,
+never rejected); judge/harvest admit only while the measured interactive decode-step
+p99 stays under their fraction of `MEMRA_SLO_P99_MS` (50ms default) and shed with an
+immediate `429 + Retry-After` otherwise — dark work is never queued inside the engine.
+Inside the tick, interactive decode rows batch first and dark-lane prefill runs after
+decode within measured SLO headroom only. Per-lane counters + the engine-truth step
+p50/p99 export at `GET /yield/metrics`.
+
+Measured at fleet scale (8 replicas, c=96 harvest + c=4 interactive, N=3 interleaved,
+`research/qos-p95-20260802/`): the lane-blind proxy FIFO alone inflates contended
+interactive p95 to 7.15s (~4x alone); with lanes on and the proxy cap at 16 (so engine
+admission owns the queue — the gate cannot fix a queue it never sees), p95 drops to
+3.69s (~2x alone) at -11% bulk throughput vs the cap-16 ceiling. `MEMRA_SLO_P99_MS`
+is the dial: 25ms makes contended interactive statistically equal to alone
+(p50 1.637s / p95 2.158s) with bulk paying -67%. Lane knobs in [FLAGS.md §1](FLAGS.md).
 
 ## Knobs
 

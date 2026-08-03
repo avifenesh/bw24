@@ -1,0 +1,28 @@
+{
+ "tag": "codegen",
+ "k": 4,
+ "oracle_sweeps": 128,
+ "batches": 52,
+ "rounds": 53,
+ "skipped_rounds": 1,
+ "shift": 1,
+ "delta": 0,
+ "align_ok": 5688,
+ "align_tot": 5688,
+ "dispatches": 80896,
+ "missed": 38896,
+ "block_lookups": 242688,
+ "block_misses": 116688,
+ "lockstep_disagreements": 0,
+ "strict": 0.5608288770053476,
+ "partial": 0.660196421225833,
+ "acc_pos": 72,
+ "any_pos": 120,
+ "miss_at_uncovered": 3041,
+ "by_depth": {
+  "1": 10830,
+  "2": 7099,
+  "3": 2691,
+  "4": 1194
+ }
+}

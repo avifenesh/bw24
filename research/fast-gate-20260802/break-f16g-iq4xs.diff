@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/cu/moe_f16_grouped.cu b/crates/memra-engine/cu/moe_f16_grouped.cu
+index 99c1acee..5ef5eb02 100644
+--- a/crates/memra-engine/cu/moe_f16_grouped.cu
++++ b/crates/memra-engine/cu/moe_f16_grouped.cu
+@@ -947,7 +947,8 @@ __device__ __forceinline__ KqRaw kq_fetch(const uint8_t* __restrict__ wrow, int
+         const uint8_t* sl = b+4;
+         int g = l0>>5, lg = l0&31;
+         int ls = ((sl[g>>1]>>(4*(g&1)))&0xf) | (((sh>>(2*g))&3)<<4);
+-        r.f1 = d_sb * (float)(ls-32);
++        // FAST-GATE CATCH DEMO (deliberate break, reverted): off-by-one scale bias.
++        r.f1 = d_sb * (float)(ls-31);
+         r.f2 = 0.0f;
+         r.sel = (lg >= 16);
+         const uint8_t* gqs = b + 8 + g*16;

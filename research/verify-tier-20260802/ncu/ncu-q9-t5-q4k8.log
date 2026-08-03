@@ -1,0 +1,21 @@
+tree 216419d65be487673189c8c492ab8b55b66715a2
+[gpu 2026-08-02T20:54:05Z] 58, 52.06 W, 1612 MHz, 426 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+==PROF== Connected to process 3010968 (/home/avifenesh/projects/wt-verify-tier/target/release/spec-econ)
+[econ] model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf prompt_tokens=2048 N=6 t_max=5
+[econ] primed pos=2048, continuation=[332, 83, 6649, 71570, 684, 63]
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+==PROF== Profiling "qmatvec_q4_K_mmvq_b8_r2": 0%....50%....100% - 16 passes
+[econ] verify_t5  N=6  med= 60.052ms  mean=849.749ms  min= 54.250ms  p90=4807.402ms
+[econ-json] {"probe":"spec-econ","model":"/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf","prompt_tokens":2048,"pos":2048,"n":6,"arms":{"verify_t5":{"med_ms":60.0517,"mean_ms":849.7488,"min_ms":54.2501,"p90_ms":4807.4016}}}
+==PROF== Disconnected from process 3010968
+==PROF== Report: /home/avifenesh/projects/wt-verify-tier/research/verify-tier-20260802/ncu/ncu-q9-t5-q4k8.ncu-rep
+[gpu 2026-08-02T20:54:13Z] 59, 61.57 W, 2670 MHz, 424 MiB
+[apps] 141404, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+NCU q9 t5-q4k8 rc=0

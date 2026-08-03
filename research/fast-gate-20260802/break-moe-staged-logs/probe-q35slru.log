@@ -1,0 +1,17 @@
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.\n"
+prompt tokens: [248045, 846, 198, 760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083, 3545, 4779, 11, 1332, 9966, 1452, 5344, 3947, 61369, 23304, 1070, 13, 8618, 6228, 369, 16384, 3658, 440, 279, 3672, 11, 1521, 264, 10281, 9705, 628, 9959, 264, 795, 1395, 14043, 29551, 13, 58737, 11, 2923, 539, 2923, 11, 1204, 264, 20340, 8404, 17830, 15089, 23776, 47493, 321, 49703, 1141, 11312, 364, 264, 3074, 3817, 11, 321, 10033, 864, 6228, 80018, 37972, 948, 279, 6009, 5883, 34105, 3545, 4779, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=1510  decode argmax=258  logit maxdiff=1.281e1  MISMATCH
+[gate] prefill: l[1510]=12.7450 l[258]=5.5879 | decode: l[1510]=7.4364 l[258]=12.5520
+
+thread 'main' (1356434) panicked at crates/memra-engine/src/bin/run_gen.rs:720:5:
+assertion `left == right` failed: decode-step diverges from prefill — cache threading bug
+  left: 1510
+ right: 258
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

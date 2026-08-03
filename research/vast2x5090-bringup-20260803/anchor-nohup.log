@@ -1,0 +1,77 @@
+[10:21:50Z] plain-d512 rep 1 pre: 32, 180 MHz, 25.54 W
+[10:22:14Z] plain-d512 rep 1 post: 38, 2407 MHz, 77.37 W | generated 128 tokens in 2.385s = 53.66 tok/s
+[10:22:14Z] plain-d512 rep 2 pre: 38, 2407 MHz, 77.37 W
+[10:22:37Z] plain-d512 rep 2 post: 41, 2407 MHz, 82.41 W | generated 128 tokens in 2.386s = 53.65 tok/s
+[10:22:37Z] plain-d512 rep 3 pre: 41, 2407 MHz, 82.41 W
+[10:23:00Z] plain-d512 rep 3 post: 43, 2407 MHz, 87.69 W | generated 128 tokens in 2.392s = 53.51 tok/s
+[10:23:00Z] plain-d512 rep 4 pre: 43, 2407 MHz, 87.69 W
+[10:23:23Z] plain-d512 rep 4 post: 45, 2407 MHz, 76.62 W | generated 128 tokens in 2.387s = 53.62 tok/s
+[10:23:23Z] plain-d512 rep 5 pre: 45, 2407 MHz, 76.62 W
+[10:23:46Z] plain-d512 rep 5 post: 47, 2407 MHz, 80.70 W | generated 128 tokens in 2.387s = 53.63 tok/s
+[10:23:46Z] plain-dlong rep 1 pre: 47, 2407 MHz, 80.70 W
+[10:25:58Z] plain-dlong rep 1 post: 56, 2407 MHz, 87.47 W | 
+[10:25:58Z] plain-dlong rep 2 pre: 56, 2407 MHz, 87.47 W
+[10:28:10Z] plain-dlong rep 2 post: 55, 2407 MHz, 87.49 W | 
+[10:28:10Z] plain-dlong rep 3 pre: 55, 2407 MHz, 87.49 W
+[10:30:23Z] plain-dlong rep 3 post: 56, 2400 MHz, 91.55 W | 
+[10:30:23Z] plain-dlong rep 4 pre: 55, 2400 MHz, 82.84 W
+[10:32:35Z] plain-dlong rep 4 post: 56, 2422 MHz, 93.31 W | 
+[10:32:35Z] plain-dlong rep 5 pre: 55, 2400 MHz, 83.39 W
+[10:34:47Z] plain-dlong rep 5 post: 55, 2407 MHz, 84.54 W | 
+[10:34:47Z] pp512 rep 1 pre: 55, 2407 MHz, 84.54 W
+[10:34:58Z] pp512 rep 1 post: 52, 2407 MHz, 86.88 W | pp-only MEDIAN: 512 tok in 0.1241s = 4127.1 tok/s (pp512, 3 reps)
+[10:34:58Z] pp512 rep 2 pre: 52, 2407 MHz, 86.88 W
+[10:35:09Z] pp512 rep 2 post: 49, 2400 MHz, 80.77 W | pp-only MEDIAN: 512 tok in 0.1236s = 4143.6 tok/s (pp512, 3 reps)
+[10:35:09Z] pp512 rep 3 pre: 49, 2400 MHz, 80.77 W
+[10:35:20Z] pp512 rep 3 post: 48, 2400 MHz, 79.13 W | pp-only MEDIAN: 512 tok in 0.1233s = 4151.2 tok/s (pp512, 3 reps)
+[10:35:20Z] pp512 rep 4 pre: 48, 2400 MHz, 79.13 W
+[10:35:31Z] pp512 rep 4 post: 47, 2400 MHz, 82.23 W | pp-only MEDIAN: 512 tok in 0.1232s = 4156.0 tok/s (pp512, 3 reps)
+[10:35:31Z] pp512 rep 5 pre: 47, 2400 MHz, 82.23 W
+[10:35:42Z] pp512 rep 5 post: 46, 2407 MHz, 79.44 W | pp-only MEDIAN: 512 tok in 0.1232s = 4155.6 tok/s (pp512, 3 reps)
+[10:35:42Z] pplong rep 1 pre: 46, 2407 MHz, 79.44 W
+[10:35:59Z] pplong rep 1 post: 47, 2407 MHz, 80.09 W | pp-only MEDIAN: 6257 tok in 1.5351s = 4075.9 tok/s (pp6257, 3 reps)
+[10:35:59Z] pplong rep 2 pre: 47, 2407 MHz, 80.09 W
+[10:36:16Z] pplong rep 2 post: 48, 2400 MHz, 84.86 W | pp-only MEDIAN: 6257 tok in 1.5343s = 4078.1 tok/s (pp6257, 3 reps)
+[10:36:16Z] pplong rep 3 pre: 48, 2400 MHz, 84.86 W
+[10:36:33Z] pplong rep 3 post: 48, 2407 MHz, 80.15 W | pp-only MEDIAN: 6257 tok in 1.5365s = 4072.3 tok/s (pp6257, 3 reps)
+[10:36:33Z] pplong rep 4 pre: 48, 2407 MHz, 80.15 W
+[10:36:49Z] pplong rep 4 post: 48, 2407 MHz, 80.48 W | pp-only MEDIAN: 6257 tok in 1.5379s = 4068.6 tok/s (pp6257, 3 reps)
+[10:36:50Z] pplong rep 5 pre: 48, 2407 MHz, 80.48 W
+[10:37:06Z] pplong rep 5 post: 49, 2400 MHz, 85.25 W | pp-only MEDIAN: 6257 tok in 1.5377s = 4069.2 tok/s (pp6257, 3 reps)
+[10:37:06Z] spec-ksweep K=2 rep 1 pre: 48, 2400 MHz, 75.55 W
+[10:37:21Z] spec-ksweep K=2 rep 1 post: 47, 2407 MHz, 82.25 W | generate_spec K=2] 128 tok in 1.155s = 109.99 tok/s | acceptance: 77/102 = 75.5%
+[10:37:21Z] spec-ksweep K=2 rep 2 pre: 47, 2407 MHz, 82.25 W
+[10:37:36Z] spec-ksweep K=2 rep 2 post: 47, 2437 MHz, 85.96 W | generate_spec K=2] 128 tok in 1.154s = 110.10 tok/s | acceptance: 77/102 = 75.5%
+[10:37:36Z] spec-ksweep K=3 rep 1 pre: 47, 2437 MHz, 85.96 W
+[10:37:50Z] spec-ksweep K=3 rep 1 post: 46, 2400 MHz, 82.61 W | generate_spec K=3] 128 tok in 0.963s = 131.90 tok/s | acceptance: 87/120 = 72.5%
+[10:37:50Z] spec-ksweep K=3 rep 2 pre: 46, 2400 MHz, 82.61 W
+[10:38:05Z] spec-ksweep K=3 rep 2 post: 46, 2437 MHz, 85.09 W | generate_spec K=3] 128 tok in 0.961s = 132.09 tok/s | acceptance: 87/120 = 72.5%
+[10:38:05Z] spec-ksweep K=4 rep 1 pre: 46, 2437 MHz, 85.09 W
+[10:38:19Z] spec-ksweep K=4 rep 1 post: 46, 2400 MHz, 83.05 W | generate_spec K=4] 128 tok in 0.919s = 138.18 tok/s | acceptance: 93/144 = 64.6%
+[10:38:19Z] spec-ksweep K=4 rep 2 pre: 46, 2400 MHz, 83.05 W
+[10:38:34Z] spec-ksweep K=4 rep 2 post: 46, 2407 MHz, 81.93 W | generate_spec K=4] 128 tok in 0.922s = 137.69 tok/s | acceptance: 93/144 = 64.6%
+[10:38:34Z] spec-ksweep K=5 rep 1 pre: 46, 2407 MHz, 81.93 W
+[10:38:49Z] spec-ksweep K=5 rep 1 post: 45, 2400 MHz, 80.13 W | generate_spec K=5] 128 tok in 0.960s = 132.26 tok/s | acceptance: 95/180 = 52.8%
+[10:38:49Z] spec-ksweep K=5 rep 2 pre: 45, 2400 MHz, 80.13 W
+[10:39:03Z] spec-ksweep K=5 rep 2 post: 45, 2407 MHz, 81.81 W | generate_spec K=5] 128 tok in 0.965s = 131.57 tok/s | acceptance: 95/180 = 52.8%
+[10:39:03Z] spec-p1-k3 rep 1 pre: 45, 2407 MHz, 81.81 W
+[10:39:17Z] spec-p1-k3 rep 1 post: 45, 2640 MHz, 87.51 W | generate_spec K=3] 128 tok in 1.009s = 125.83 tok/s | acceptance: 90/120 = 75.0%
+[10:39:17Z] spec-p1-k3 rep 2 pre: 45, 2407 MHz, 78.90 W
+[10:39:32Z] spec-p1-k3 rep 2 post: 45, 2437 MHz, 85.25 W | generate_spec K=3] 128 tok in 1.009s = 125.87 tok/s | acceptance: 90/120 = 75.0%
+[10:39:32Z] spec-p1-k3 rep 3 pre: 44, 2400 MHz, 75.69 W
+[10:39:46Z] spec-p1-k3 rep 3 post: 44, 2400 MHz, 84.15 W | generate_spec K=3] 128 tok in 1.008s = 126.05 tok/s | acceptance: 90/120 = 75.0%
+[10:39:46Z] spec-p1-k3 rep 4 pre: 44, 2400 MHz, 84.15 W
+[10:40:00Z] spec-p1-k3 rep 4 post: 44, 2407 MHz, 82.11 W | generate_spec K=3] 128 tok in 1.012s = 125.44 tok/s | acceptance: 90/120 = 75.0%
+[10:40:01Z] spec-p1-k3 rep 5 pre: 44, 2407 MHz, 82.11 W
+[10:40:15Z] spec-p1-k3 rep 5 post: 44, 2407 MHz, 81.09 W | generate_spec K=3] 128 tok in 1.007s = 126.18 tok/s | acceptance: 90/120 = 75.0%
+[10:40:15Z] spec-p2-k3 rep 1 pre: 44, 2407 MHz, 81.09 W
+[10:40:31Z] spec-p2-k3 rep 1 post: 45, 2407 MHz, 87.58 W | generate_spec K=3] 128 tok in 1.178s = 107.83 tok/s | acceptance: 80/141 = 56.7%
+[10:40:31Z] spec-p2-k3 rep 2 pre: 45, 2407 MHz, 87.58 W
+[10:40:47Z] spec-p2-k3 rep 2 post: 45, 2407 MHz, 82.62 W | generate_spec K=3] 128 tok in 1.162s = 109.30 tok/s | acceptance: 80/141 = 56.7%
+[10:40:47Z] spec-p2-k3 rep 3 pre: 45, 2407 MHz, 82.62 W
+[10:41:03Z] spec-p2-k3 rep 3 post: 45, 2437 MHz, 85.50 W | generate_spec K=3] 128 tok in 1.164s = 109.12 tok/s | acceptance: 80/141 = 56.7%
+[10:41:03Z] spec-p2-k3 rep 4 pre: 45, 2400 MHz, 77.82 W
+[10:41:19Z] spec-p2-k3 rep 4 post: 45, 2400 MHz, 81.93 W | generate_spec K=3] 128 tok in 1.164s = 109.12 tok/s | acceptance: 80/141 = 56.7%
+[10:41:19Z] spec-p2-k3 rep 5 pre: 45, 2400 MHz, 81.93 W
+[10:41:34Z] spec-p2-k3 rep 5 post: 45, 2407 MHz, 80.40 W | generate_spec K=3] 128 tok in 1.163s = 109.21 tok/s | acceptance: 80/141 = 56.7%
+[10:41:34Z] ANCHOR BATTERY DONE

@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/memra-probe", "crates/memra-gguf", "crates/memra-runtime", "crates/memra-engine", "crates/memra-tokenizer", "crates/memra-sampling", "crates/memra-validate", "crates/memra-kv", "crates/memra-server"]
+members = ["crates/memra-probe", "crates/memra-gguf", "crates/memra-runtime", "crates/memra-engine", "crates/memra-tokenizer", "crates/memra-sampling", "crates/memra-validate", "crates/memra-kv", "crates/memra-lanes", "crates/memra-server"]

@@ -1,0 +1,159 @@
+=== spec-codegen-k1 start 2026-08-03T02:06:34Z dev=2 ===
+2, 37, 136.35 W, 0 MiB
+[q8rp] split-plane decode mirrors built: 324 tensors
+loaded memra-repack (81 layers, nextn=1)
+text prompt (146 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 359, 120007, 120029, 120030]
+
+[generate]   127 tok in 38.650s = 3.29 tok/s (gen-only; this run's prime 7.828s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 503, 289, 1970, 24621, 35510, 40297, 15189, 25, 286, 9, 607, 13130, 63, 341, 18264, 1320, 8528, 552, 4304, 584, 9, 607, 19392, 63, 341, 3595, 1364, 445, 4304, 584, 9, 607, 55266, 63, 341, 245, 61292, 1362, 1438, 6515, 185, 4140, 25274, 1661, 24708, 11, 5465, 2243, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 1622, 11669, 25, 1733, 324, 1364, 185, 408, 1622, 79100, 25, 24708, 58, 5661, 60, 324, 5953, 185, 408, 1622, 15538, 25, 24708, 58, 5661]
+[spec] stream_on=false env=false samp=false dg=false captured=false active=false session=false replay=false
+[R0] pos=43 out_len=1 last_tok=40129 draft=[316] n_acc=1 bonus=244 t_pred0=316
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R1] pos=44 out_len=3 last_tok=244 draft=[4871] n_acc=1 bonus=11 t_pred0=4871
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R2] pos=46 out_len=5 last_tok=11 draft=[1622] n_acc=1 bonus=81425 t_pred0=1622
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R3] pos=48 out_len=7 last_tok=81425 draft=[5278] n_acc=1 bonus=279 t_pred0=5278
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R4] pos=50 out_len=9 last_tok=279 draft=[244] n_acc=1 bonus=1970 t_pred0=244
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R5] pos=52 out_len=11 last_tok=1970 draft=[101435] n_acc=1 bonus=59909 t_pred0=101435
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R6] pos=54 out_len=13 last_tok=59909 draft=[9840] n_acc=0 bonus=46997 t_pred0=46997
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R7] pos=55 out_len=14 last_tok=46997 draft=[1703] n_acc=1 bonus=503 t_pred0=1703
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R8] pos=57 out_len=16 last_tok=503 draft=[280] n_acc=1 bonus=7164 t_pred0=280
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R9] pos=59 out_len=18 last_tok=7164 draft=[13] n_acc=0 bonus=11 t_pred0=11
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R10] pos=60 out_len=19 last_tok=11 draft=[413] n_acc=1 bonus=1970 t_pred0=413
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R11] pos=62 out_len=21 last_tok=1970 draft=[26223] n_acc=1 bonus=1932 t_pred0=26223
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R12] pos=64 out_len=23 last_tok=1932 draft=[42970] n_acc=1 bonus=503 t_pred0=42970
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R13] pos=66 out_len=25 last_tok=503 draft=[289] n_acc=1 bonus=1970 t_pred0=289
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R14] pos=68 out_len=27 last_tok=1970 draft=[24621] n_acc=1 bonus=35510 t_pred0=24621
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R15] pos=70 out_len=29 last_tok=35510 draft=[40297] n_acc=1 bonus=15189 t_pred0=40297
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R16] pos=72 out_len=31 last_tok=15189 draft=[1970] n_acc=0 bonus=25 t_pred0=25
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R17] pos=73 out_len=32 last_tok=25 draft=[286] n_acc=1 bonus=9 t_pred0=286
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R18] pos=75 out_len=34 last_tok=9 draft=[607] n_acc=1 bonus=13130 t_pred0=607
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R19] pos=77 out_len=36 last_tok=13130 draft=[15294] n_acc=0 bonus=63 t_pred0=63
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R20] pos=78 out_len=37 last_tok=63 draft=[341] n_acc=1 bonus=18264 t_pred0=341
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R21] pos=80 out_len=39 last_tok=18264 draft=[552] n_acc=0 bonus=1320 t_pred0=1320
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R22] pos=81 out_len=40 last_tok=1320 draft=[8528] n_acc=1 bonus=552 t_pred0=8528
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R23] pos=83 out_len=42 last_tok=552 draft=[4304] n_acc=1 bonus=584 t_pred0=4304
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R24] pos=85 out_len=44 last_tok=584 draft=[9] n_acc=1 bonus=607 t_pred0=9
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R25] pos=87 out_len=46 last_tok=607 draft=[10319] n_acc=0 bonus=19392 t_pred0=19392
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R26] pos=88 out_len=47 last_tok=19392 draft=[10294] n_acc=0 bonus=63 t_pred0=63
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R27] pos=89 out_len=48 last_tok=63 draft=[341] n_acc=1 bonus=3595 t_pred0=341
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R28] pos=91 out_len=50 last_tok=3595 draft=[1364] n_acc=1 bonus=445 t_pred0=1364
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R29] pos=93 out_len=52 last_tok=445 draft=[493] n_acc=0 bonus=4304 t_pred0=4304
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R30] pos=94 out_len=53 last_tok=4304 draft=[584] n_acc=1 bonus=9 t_pred0=584
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R31] pos=96 out_len=55 last_tok=9 draft=[607] n_acc=1 bonus=55266 t_pred0=607
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R32] pos=98 out_len=57 last_tok=55266 draft=[63] n_acc=1 bonus=341 t_pred0=63
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R33] pos=100 out_len=59 last_tok=341 draft=[245] n_acc=1 bonus=61292 t_pred0=245
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R34] pos=102 out_len=61 last_tok=61292 draft=[1362] n_acc=1 bonus=1438 t_pred0=1362
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R35] pos=104 out_len=63 last_tok=1438 draft=[6515] n_acc=1 bonus=185 t_pred0=6515
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R36] pos=106 out_len=65 last_tok=185 draft=[4140] n_acc=1 bonus=25274 t_pred0=4140
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R37] pos=108 out_len=67 last_tok=25274 draft=[1661] n_acc=1 bonus=24708 t_pred0=1661
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R38] pos=110 out_len=69 last_tok=24708 draft=[11] n_acc=1 bonus=5465 t_pred0=11
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R39] pos=112 out_len=71 last_tok=5465 draft=[11] n_acc=0 bonus=2243 t_pred0=2243
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R40] pos=113 out_len=72 last_tok=2243 draft=[2732] n_acc=1 bonus=14006 t_pred0=2732
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R41] pos=115 out_len=74 last_tok=14006 draft=[25] n_acc=1 bonus=185 t_pred0=25
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R42] pos=117 out_len=76 last_tok=185 draft=[300] n_acc=1 bonus=12196 t_pred0=300
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R43] pos=119 out_len=78 last_tok=12196 draft=[32] n_acc=1 bonus=3548 t_pred0=32
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R44] pos=121 out_len=80 last_tok=3548 draft=[4814] n_acc=1 bonus=280 t_pred0=4814
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R45] pos=123 out_len=82 last_tok=280 draft=[244] n_acc=1 bonus=78357 t_pred0=244
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R46] pos=125 out_len=84 last_tok=78357 draft=[9840] n_acc=0 bonus=46997 t_pred0=46997
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R47] pos=126 out_len=85 last_tok=46997 draft=[1703] n_acc=1 bonus=64102 t_pred0=1703
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R48] pos=128 out_len=87 last_tok=64102 draft=[300] n_acc=1 bonus=1120 t_pred0=300
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R49] pos=130 out_len=89 last_tok=1120 draft=[4277] n_acc=1 bonus=5428 t_pred0=4277
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R50] pos=132 out_len=91 last_tok=5428 draft=[667] n_acc=0 bonus=9575 t_pred0=9575
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R51] pos=133 out_len=92 last_tok=9575 draft=[1961] n_acc=1 bonus=11 t_pred0=1961
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R52] pos=135 out_len=94 last_tok=11 draft=[1364] n_acc=1 bonus=25 t_pred0=1364
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R53] pos=137 out_len=96 last_tok=25 draft=[1733] n_acc=1 bonus=8 t_pred0=1733
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R54] pos=139 out_len=98 last_tok=8 draft=[5131] n_acc=1 bonus=5953 t_pred0=5131
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R55] pos=141 out_len=100 last_tok=5953 draft=[592] n_acc=0 bonus=25 t_pred0=25
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R56] pos=142 out_len=101 last_tok=25 draft=[185] n_acc=1 bonus=408 t_pred0=185
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R57] pos=144 out_len=103 last_tok=408 draft=[1054] n_acc=0 bonus=1622 t_pred0=1622
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R58] pos=145 out_len=104 last_tok=1622 draft=[11669] n_acc=1 bonus=25 t_pred0=11669
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R59] pos=147 out_len=106 last_tok=25 draft=[1733] n_acc=1 bonus=324 t_pred0=1733
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R60] pos=149 out_len=108 last_tok=324 draft=[1364] n_acc=1 bonus=185 t_pred0=1364
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R61] pos=151 out_len=110 last_tok=185 draft=[408] n_acc=1 bonus=1622 t_pred0=408
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R62] pos=153 out_len=112 last_tok=1622 draft=[4563] n_acc=0 bonus=79100 t_pred0=79100
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R63] pos=154 out_len=113 last_tok=79100 draft=[25] n_acc=1 bonus=24708 t_pred0=25
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R64] pos=156 out_len=115 last_tok=24708 draft=[5831] n_acc=0 bonus=58 t_pred0=58
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+[R65] pos=157 out_len=116 last_tok=58 draft=[5661] n_acc=1 bonus=60 t_pred0=5661
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R66] pos=159 out_len=118 last_tok=60 draft=[324] n_acc=1 bonus=5953 t_pred0=324
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R67] pos=161 out_len=120 last_tok=5953 draft=[185] n_acc=1 bonus=408 t_pred0=185
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R68] pos=163 out_len=122 last_tok=408 draft=[1622] n_acc=1 bonus=15538 t_pred0=1622
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R69] pos=165 out_len=124 last_tok=15538 draft=[25] n_acc=1 bonus=24708 t_pred0=25
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[R70] pos=167 out_len=126 last_tok=24708 draft=[58] n_acc=1 bonus=5661 t_pred0=58
+  -> FULL ACCEPT (bonus pending, prev-h seed)
+[spec-stats] rounds=71 full_accept=56 len_hist=[0, 71] per_slot=[56/71=0.789] total=56/71=0.789 tok_per_round=1.789
+
+[generate_spec K=1] 128 tok in 43.569s = 2.91 tok/s (0.89x vs generate; this run's prime 7.670s)
+  acceptance: 56/71 = 78.9%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== spec-codegen-k1 exit=0 2026-08-03T02:11:39Z ===

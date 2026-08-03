@@ -1,0 +1,3 @@
+# GPU assignment board — update per claim, check before each run
+devices 0-3: moe-speq spike (baseline + oracle-ceiling; was m2-pp8 idle) — claimed 2026-08-02
+# devices 4-7: free for incoming lanes (fleet-resweep capacity lane COMPLETE 20:38Z, GPUs drained)

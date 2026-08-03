@@ -1,0 +1,11 @@
+[10:46:18Z] dlong-pg0 rep 1 pre: 31, 180 MHz, 24.10 W
+[10:48:35Z] dlong-pg0 rep 1 post: generated 128 tokens in 2.426s = 52.75 tok/s 0 oom
+[10:48:35Z] dlong-pg0 rep 2 pre: 55, 2407 MHz, 90.48 W
+[10:50:52Z] dlong-pg0 rep 2 post: generated 128 tokens in 2.426s = 52.75 tok/s 0 oom
+[10:50:52Z] dlong-pg0 rep 3 pre: 55, 2407 MHz, 89.42 W
+[10:53:08Z] dlong-pg0 rep 3 post: generated 128 tokens in 2.426s = 52.76 tok/s 0 oom
+[10:53:09Z] dlong-pg0 rep 4 pre: 55, 2400 MHz, 89.42 W
+[10:55:25Z] dlong-pg0 rep 4 post: generated 128 tokens in 2.427s = 52.75 tok/s 0 oom
+[10:55:25Z] dlong-pg0 rep 5 pre: 55, 2407 MHz, 92.65 W
+[10:57:42Z] dlong-pg0 rep 5 post: generated 128 tokens in 2.428s = 52.73 tok/s 0 oom
+DLONG-RERUN-DONE

@@ -13,6 +13,9 @@ memra-engine = { path = "../memra-engine" }
 # cross-request prefix cache: entries own compact device copies of primed KV/recurrent state.
 cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
 memra-gguf = { path = "../memra-gguf" }
+# x-lane QoS: lane types, SLO admission policy, engine-truth step stats (lane/dl-metering
+# gate, QoS-only extraction — the metering half stays darklane-side).
+memra-lanes = { path = "../memra-lanes" }
 memra-tokenizer = { path = "../memra-tokenizer" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 axum = "0.7"
@@ -23,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 async-stream = "0.3"
 futures-core = "0.3"
+llguidance = "1.7.6"
 
 [[bin]]
 name = "memra-server"
