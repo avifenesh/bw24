@@ -1,0 +1,152 @@
+[23:47:10Z] slo confirm sweep start — cap 16, lanes on, slo50 vs slo25, N=3 interleaved
+[23:47:10Z] === pass 1 slo 50 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 254256)
+[fleet] launched replica :9086 on GPU 4 (pid 254259)
+[fleet] launched replica :9087 on GPU 5 (pid 254262)
+[fleet] launched replica :9088 on GPU 5 (pid 254265)
+[fleet] launched replica :9089 on GPU 6 (pid 254268)
+[fleet] launched replica :9090 on GPU 6 (pid 254271)
+[fleet] launched replica :9091 on GPU 7 (pid 254274)
+[fleet] launched replica :9092 on GPU 7 (pid 254277)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:47:26Z] cell s1-slo50: interactive alone c=4 24req
+[23:47:38Z] cell s1-slo50: bulk c=96 288req + interactive c=4 24req contended
+[23:48:00Z] === pass 1 slo 50 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:48:09Z] === pass 1 slo 25 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 257543)
+[fleet] launched replica :9086 on GPU 4 (pid 257546)
+[fleet] launched replica :9087 on GPU 5 (pid 257549)
+[fleet] launched replica :9088 on GPU 5 (pid 257552)
+[fleet] launched replica :9089 on GPU 6 (pid 257555)
+[fleet] launched replica :9090 on GPU 6 (pid 257558)
+[fleet] launched replica :9091 on GPU 7 (pid 257561)
+[fleet] launched replica :9092 on GPU 7 (pid 257564)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:48:24Z] cell s1-slo25: interactive alone c=4 24req
+[23:48:35Z] cell s1-slo25: bulk c=96 288req + interactive c=4 24req contended
+[23:49:20Z] === pass 1 slo 25 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:49:29Z] === pass 2 slo 50 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 266398)
+[fleet] launched replica :9086 on GPU 4 (pid 266401)
+[fleet] launched replica :9087 on GPU 5 (pid 266404)
+[fleet] launched replica :9088 on GPU 5 (pid 266407)
+[fleet] launched replica :9089 on GPU 6 (pid 266410)
+[fleet] launched replica :9090 on GPU 6 (pid 266413)
+[fleet] launched replica :9091 on GPU 7 (pid 266416)
+[fleet] launched replica :9092 on GPU 7 (pid 266419)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:49:44Z] cell s2-slo50: interactive alone c=4 24req
+[23:49:56Z] cell s2-slo50: bulk c=96 288req + interactive c=4 24req contended
+[23:50:19Z] === pass 2 slo 50 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:50:28Z] === pass 2 slo 25 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 269669)
+[fleet] launched replica :9086 on GPU 4 (pid 269672)
+[fleet] launched replica :9087 on GPU 5 (pid 269675)
+[fleet] launched replica :9088 on GPU 5 (pid 269678)
+[fleet] launched replica :9089 on GPU 6 (pid 269681)
+[fleet] launched replica :9090 on GPU 6 (pid 269684)
+[fleet] launched replica :9091 on GPU 7 (pid 269687)
+[fleet] launched replica :9092 on GPU 7 (pid 269690)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:50:43Z] cell s2-slo25: interactive alone c=4 24req
+[23:50:54Z] cell s2-slo25: bulk c=96 288req + interactive c=4 24req contended
+[23:51:39Z] === pass 2 slo 25 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:51:48Z] === pass 3 slo 50 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 278575)
+[fleet] launched replica :9086 on GPU 4 (pid 278578)
+[fleet] launched replica :9087 on GPU 5 (pid 278581)
+[fleet] launched replica :9088 on GPU 5 (pid 278584)
+[fleet] launched replica :9089 on GPU 6 (pid 278587)
+[fleet] launched replica :9090 on GPU 6 (pid 278590)
+[fleet] launched replica :9091 on GPU 7 (pid 278593)
+[fleet] launched replica :9092 on GPU 7 (pid 278596)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:52:04Z] cell s3-slo50: interactive alone c=4 24req
+[23:52:14Z] cell s3-slo50: bulk c=96 288req + interactive c=4 24req contended
+[23:52:35Z] === pass 3 slo 50 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:52:44Z] === pass 3 slo 25 UP ===
+[fleet] launched replica :9085 on GPU 4 (pid 281789)
+[fleet] launched replica :9086 on GPU 4 (pid 281792)
+[fleet] launched replica :9087 on GPU 5 (pid 281795)
+[fleet] launched replica :9088 on GPU 5 (pid 281798)
+[fleet] launched replica :9089 on GPU 6 (pid 281801)
+[fleet] launched replica :9090 on GPU 6 (pid 281804)
+[fleet] launched replica :9091 on GPU 7 (pid 281807)
+[fleet] launched replica :9092 on GPU 7 (pid 281810)
+[fleet] waiting for replicas (model load)...
+[fleet] replica :9085 healthy
+[fleet] replica :9086 healthy
+[fleet] replica :9087 healthy
+[fleet] replica :9088 healthy
+[fleet] replica :9089 healthy
+[fleet] replica :9090 healthy
+[fleet] replica :9091 healthy
+[fleet] replica :9092 healthy
+[fleet] launched proxy :9080 cap=16 -> 8 backends
+[fleet] up: 8 replicas on GPUs [4 5 6 7], proxy :9080 (cap 16)
+[23:52:59Z] cell s3-slo25: interactive alone c=4 24req
+[23:53:10Z] cell s3-slo25: bulk c=96 288req + interactive c=4 24req contended
+[23:53:56Z] === pass 3 slo 25 DOWN ===
+[fleet] supervisor stopped
+[fleet] stopped
+[23:54:05Z] slo confirm sweep done

@@ -11,6 +11,19 @@ Reports aggregate output tok/s (sum completion_tokens / wall window), p50/p95 la
 error count. Emits one JSON line per load point to --out (append), one line per request
 with --per-request.
 
+dl-metering additions (2026-08-02):
+  --lane interactive|judge|harvest   sends the x-lane QoS header
+  --tenant NAME                      sends x-tenant-id (metering identity)
+  --api-key KEY                      sends Authorization: Bearer KEY
+  --duration SECS                    run for a wall window instead of a request count
+                                     (workers loop until the deadline; overlapping-class
+                                     contention runs use this)
+  429 responses are counted separately as `n_shed` (the lane admission signal, not an
+  error); --retry-shed retries after Retry-After (default 0.5s) so a batch-class worker
+  keeps pressure on the gate the way a real harvest client would.
+  Per-request rows carry the server-assigned request id (`rid`) + prompt_tokens from the
+  usage block — the reconciliation join keys for tools/usage-report.py --reconcile.
+
 Usage:
   python3 load-serve.py --base http://127.0.0.1:8085 --concurrency 8 --requests 32 \
       --model qwen --out points.jsonl --label single-8085
@@ -32,7 +45,7 @@ PROMPT = ("Summarize the operational state of a GPU serving cluster in exactly t
           "sentences, then list four risks. Context follows. " + FILLER * 8)
 
 
-def one_request(base, model, max_tokens, greedy, seed, timeout):
+def one_request(base, model, max_tokens, greedy, seed, timeout, headers=None):
     body = {
         "model": model,
         "messages": [{"role": "user", "content": PROMPT}],
@@ -41,9 +54,11 @@ def one_request(base, model, max_tokens, greedy, seed, timeout):
         "seed": seed,
         "stream": False,
     }
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
     req = urllib.request.Request(base + "/v1/chat/completions",
-                                 data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 data=json.dumps(body).encode(), headers=h)
     t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -53,6 +68,7 @@ def one_request(base, model, max_tokens, greedy, seed, timeout):
         return {
             "ok": True,
             "latency_s": dt,
+            "rid": data.get("id"),
             "completion_tokens": usage.get("completion_tokens", 0),
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "finish_reason": data["choices"][0].get("finish_reason"),
@@ -60,28 +76,54 @@ def one_request(base, model, max_tokens, greedy, seed, timeout):
         }
     except Exception as e:
         detail = ""
+        shed = False
+        retry_after = 0.5
         if isinstance(e, urllib.error.HTTPError):
+            shed = e.code == 429
+            try:
+                retry_after = float(e.headers.get("Retry-After", retry_after))
+            except (TypeError, ValueError):
+                pass
             try:
                 detail = e.read()[:300].decode(errors="replace")
             except Exception:
                 pass
-        return {"ok": False, "latency_s": time.monotonic() - t0,
+        return {"ok": False, "shed": shed, "retry_after": retry_after,
+                "latency_s": time.monotonic() - t0,
                 "error": f"{type(e).__name__}: {e} {detail}".strip()}
 
 
-def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout):
+def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout,
+              headers=None, duration=None, retry_shed=False):
     results = []
     rlock = threading.Lock()
     idx = {"n": 0}
+    deadline = (time.monotonic() + duration) if duration else None
 
     def worker(wid):
         while True:
-            with rlock:
-                if idx["n"] >= requests:
+            if deadline is not None:
+                if time.monotonic() >= deadline:
                     return
-                my = idx["n"]
-                idx["n"] += 1
-            res = one_request(base, model, max_tokens, greedy, seed=1000 + my, timeout=timeout)
+                with rlock:
+                    my = idx["n"]
+                    idx["n"] += 1
+            else:
+                with rlock:
+                    if idx["n"] >= requests:
+                        return
+                    my = idx["n"]
+                    idx["n"] += 1
+            while True:
+                res = one_request(base, model, max_tokens, greedy, seed=1000 + my,
+                                  timeout=timeout, headers=headers)
+                if res.get("shed") and retry_shed and \
+                        (deadline is None or time.monotonic() < deadline):
+                    with rlock:
+                        results.append({**res, "worker": wid, "req_index": my})
+                    time.sleep(res.get("retry_after", 0.5))
+                    continue
+                break
             res["worker"] = wid
             res["req_index"] = my
             with rlock:
@@ -96,9 +138,11 @@ def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout):
     wall = time.monotonic() - t0
 
     oks = [r for r in results if r["ok"]]
-    errs = [r for r in results if not r["ok"]]
+    sheds = [r for r in results if not r["ok"] and r.get("shed")]
+    errs = [r for r in results if not r["ok"] and not r.get("shed")]
     lats = sorted(r["latency_s"] for r in oks)
     tot_completion = sum(r["completion_tokens"] for r in oks)
+    tot_prompt = sum(r["prompt_tokens"] for r in oks)
 
     def pct(p):
         if not lats:
@@ -109,8 +153,10 @@ def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout):
     return {
         "wall_s": wall,
         "n_ok": len(oks),
+        "n_shed": len(sheds),
         "n_err": len(errs),
         "completion_tokens_total": tot_completion,
+        "prompt_tokens_total": tot_prompt,
         "agg_tok_s": tot_completion / wall if wall > 0 else 0.0,
         "req_per_s": len(oks) / wall if wall > 0 else 0.0,
         "lat_p50_s": pct(50),
@@ -128,8 +174,16 @@ def main():
     ap.add_argument("--concurrency", type=int, required=True)
     ap.add_argument("--requests", type=int, default=None,
                     help="total requests (default 4x concurrency, min 8)")
+    ap.add_argument("--duration", type=float, default=None,
+                    help="run for SECS instead of a request count")
     ap.add_argument("--max-tokens", type=int, default=128)
     ap.add_argument("--greedy", action="store_true", help="temperature=0")
+    ap.add_argument("--lane", default=None,
+                    help="x-lane QoS class header (interactive|judge|harvest)")
+    ap.add_argument("--tenant", default=None, help="x-tenant-id header")
+    ap.add_argument("--api-key", default=None, help="Authorization: Bearer <key>")
+    ap.add_argument("--retry-shed", action="store_true",
+                    help="retry 429-shed requests after Retry-After")
     ap.add_argument("--timeout", type=float, default=600.0)
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default=None, help="append summary JSONL here")
@@ -139,18 +193,31 @@ def main():
     args = ap.parse_args()
 
     requests = args.requests if args.requests is not None else max(8, 4 * args.concurrency)
+    headers = {}
+    if args.lane:
+        headers["x-lane"] = args.lane
+    if args.tenant:
+        headers["x-tenant-id"] = args.tenant
+    if args.api_key:
+        headers["Authorization"] = f"Bearer {args.api_key}"
 
     for _ in range(args.warmup):
-        one_request(args.base, args.model, 16, True, seed=1, timeout=args.timeout)
+        one_request(args.base, args.model, 16, True, seed=1, timeout=args.timeout,
+                    headers=headers)
 
     summary, results = run_point(args.base, args.model, args.concurrency, requests,
-                                 args.max_tokens, args.greedy, args.timeout)
+                                 args.max_tokens, args.greedy, args.timeout,
+                                 headers=headers, duration=args.duration,
+                                 retry_shed=args.retry_shed)
     point = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "label": args.label,
         "base": args.base,
         "concurrency": args.concurrency,
-        "requests": requests,
+        "requests": requests if args.duration is None else None,
+        "duration_s": args.duration,
+        "lane": args.lane,
+        "tenant": args.tenant,
         "max_tokens": args.max_tokens,
         "greedy": args.greedy,
         **summary,
@@ -164,6 +231,8 @@ def main():
             for r in results:
                 row = {k: v for k, v in r.items() if k != "text"}
                 row["label"] = args.label
+                row["lane"] = args.lane
+                row["tenant"] = args.tenant
                 row["concurrency"] = args.concurrency
                 f.write(json.dumps(row) + "\n")
 

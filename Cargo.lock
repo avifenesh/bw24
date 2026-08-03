@@ -351,6 +351,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "memra-lanes"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "memra-probe"
 version = "0.0.0"
 dependencies = [
@@ -379,6 +386,7 @@ dependencies = [
  "futures-core",
  "memra-engine",
  "memra-gguf",
+ "memra-lanes",
  "memra-tokenizer",
  "serde",
  "serde_json",

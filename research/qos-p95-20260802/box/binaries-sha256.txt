@@ -1,0 +1,2 @@
+5b4bf744bfcff42f71895fb497f7ad347efa74b77fe6133d3320fdea9ccc6edf  /home/ubuntu/memra/target/release/memra-server
+d9460808cdd21e3c6a12fdb72098d43b95e097b17f3fce9fa9e6a02606aeebf7  /home/ubuntu/memra-base/target/release/memra-server
