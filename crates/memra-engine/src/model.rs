@@ -71,11 +71,36 @@ pub enum GpuTensor {
 }
 
 /// FP8-native prefill operand: raw checkpoint e4m3 codes `[out_f, in_f]` row-major (EXACT — the
-/// weight side of the FP8 GEMM does no re-quantization) + the per-tensor `weight_scale` dequant
-/// scalar, folded into the GEMM's scale pointer together with the per-batch activation scale.
+/// weight side of the FP8 GEMM does no re-quantization) + its weight scale(s). Per-tensor class:
+/// `scale` is the dequant scalar folded into the GEMM's scale pointer together with the per-batch
+/// activation scale, `blk == None`. Block-128 class (Qwen official FP8): `blk == Some` and
+/// `scale == 1.0` — see `Fp8BlockScales` for the resident layout contract.
 pub struct Fp8Weight {
     pub bytes: CudaSlice<u8>,
     pub scale: f32,
+    pub blk: Option<Fp8BlockScales>,
+}
+
+/// Device-resident block-128 weight-scale grid for an e4m3 operand (B1b, lane fp8st 2026-08-03).
+///
+/// STORAGE LAYOUT (the canonical device layout every future consumer builds from): a flat f32
+/// buffer in the CHECKPOINT'S on-disk order — row-major `[rows = ceil(out_f/128),
+/// cols = ceil(in_f/128)]`, so `scales[ob * cols + kb]` scales the 128x128 weight tile at
+/// output-block `ob`, input-block `kb` (uploaded verbatim from `memra_gguf::source::F8BlockGrid`,
+/// no permutation — one host decode, one htod). Rationale: (1) the per-block-dequant mmvq twin
+/// (qmatvec_e4m3_mmvq extension, DECISION.md B1) indexes `(o >> 7) * cols + (e >> 7)` — natural
+/// in this order; (2) for cuBLASLt BLK128x128 the weight `[out, in]` row-major is the TN GEMM's
+/// column-major `[k=in, n=out]` A operand, and this same linear order IS that view's column-major
+/// block grid with ld = cols(=kblk) — probe P1 (`probe/fp8_lt_blk_probe.cu`) verifies whether
+/// sm_120 accepts it directly; if Lt wants a different order, the reorder happens at the GEMM
+/// plan build, NOT here. NO KERNEL CONSUMES THIS YET: the loader keeps every block-128 tensor's
+/// decode/prefill on the Q8_0 re-encode until the consuming kernels land (try_fp8_gemm skips
+/// blk operands; the QT_F8_E4M3 one-copy arm rejects them). This struct's job is bytes+scales
+/// resident and correct.
+pub struct Fp8BlockScales {
+    pub scales: CudaSlice<f32>,
+    pub rows: usize, // ceil(out_f/128)
+    pub cols: usize, // ceil(in_f/128)
 }
 
 /// Host-side split-plane repack of NVFP4 GGUF block bytes (A6). Input: out_f rows of in_f/64
@@ -274,9 +299,15 @@ impl GpuTensor {
         // with no VRAM budget. Placed BEFORE `find` so the host-side F8->Q8_0 re-encode is skipped
         // entirely (faster load). in_f%32 is the q8_1 activation block gate (every F8 projection in
         // the NV-27B satisfies it; a violator falls through to the Q8_0 arm unchanged).
+        // BLOCK-128 GATE: the QT_F8_E4M3 decode kernel family (qmatvec_e4m3_mmvq + batched
+        // twins) consumes ONE scalar weight scale — dispatching a block-128 operand through it
+        // would silently dequant every tile with scale 1.0. Until the per-block-dequant mmvq
+        // twin lands (DECISION.md B1 second half), block-128 tensors fall through to the Q8_0
+        // re-encode (correct floor); their raw bytes+scales still go resident via the
+        // MEMRA_PP_FP8 stash arm below for the P1 GEMM work.
         if crate::fp8_ffi::st_e4m3_enabled() {
             if let Some(f8) = src.find_fp8_native(name) {
-                if f8.in_f % 32 == 0 && f8.out_f > 0 {
+                if f8.blk.is_none() && f8.in_f % 32 == 0 && f8.out_f > 0 {
                     return Ok(GpuTensor::Quant {
                         bytes: e.htod_bytes(&f8.bytes)?,
                         qtype: crate::QT_F8_E4M3,
@@ -432,9 +463,21 @@ impl GpuTensor {
                             });
                             let sz = f8.bytes.len();
                             if FP8_SPENT.fetch_add(sz, Ordering::Relaxed) + sz <= budget {
+                                // Block-128 grid rides along resident (checkpoint order,
+                                // Fp8BlockScales layout contract). try_fp8_gemm skips blk
+                                // operands until the block-scaled GEMM (P1) lands.
+                                let blk = match f8.blk {
+                                    Some(g) => Some(Fp8BlockScales {
+                                        scales: e.htod(&g.scales)?,
+                                        rows: g.rows,
+                                        cols: g.cols,
+                                    }),
+                                    None => None,
+                                };
                                 Some(Fp8Weight {
                                     bytes: e.htod_bytes(&f8.bytes)?,
                                     scale: f8.scale,
+                                    blk,
                                 })
                             } else {
                                 FP8_SPENT.fetch_sub(sz, Ordering::Relaxed);
