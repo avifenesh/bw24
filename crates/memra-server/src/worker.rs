@@ -106,7 +106,10 @@ pub struct Request {
 /// Chat-template capabilities probed from a loaded model's template at spawn time — the
 /// HTTP layer rejects `tools` on models whose template has no tools branch BEFORE the
 /// request reaches the worker, and arms the tool-call parser's think gate.
-#[derive(Debug, Clone, Copy, Default)]
+/// Plus the /v1/models metadata surface (serve-tail lane, 2026-08-04): trained context,
+/// tokenizer family, chat-template family — worker truth captured once at spawn so the
+/// HTTP layer never invents values (unknown = 0/""/None -> honest nulls in the route).
+#[derive(Debug, Clone, Default)]
 pub struct ModelCaps {
     /// template carries the qwen-class `<tools>` branch (tools + tool_response rendering).
     pub tools_branch: bool,
@@ -114,6 +117,12 @@ pub struct ModelCaps {
     pub qwen_think: bool,
     /// template has the `enable_thinking` switch (ThinkMode::NoThink is honored).
     pub think_switch: bool,
+    /// model's trained context length (config; 0 = unknown) — /v1/models `context_length`.
+    pub context_length: usize,
+    /// tokenizer family (the GGUF/HF pre-tokenizer name, e.g. "qwen2"; "" = unknown).
+    pub tokenizer: String,
+    /// chat-template family ("chatml" / "gemma"); None = no template or unrecognized.
+    pub instruct_type: Option<String>,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -704,6 +713,9 @@ pub fn run(
         order.push(name.clone());
     }
     // Template capability probe (serve-tools lane): same substring laws the renderer uses.
+    // + /v1/models metadata (serve-tail lane): context length from the model config,
+    // tokenizer family from the pre-tokenizer name, instruct family from the template's
+    // turn markers. Unknown stays 0/""/None — the route reports honest nulls.
     let caps: HashMap<String, ModelCaps> = loaded.iter().map(|(n, lm)| {
         let t = lm.tok.chat_template();
         let caps = ModelCaps {
@@ -711,9 +723,18 @@ pub fn run(
                 && !t.contains("hy_User") && !t.contains("<|turn>")),
             qwen_think: t.is_some_and(|t| t.contains("<think>") && t.contains("add_generation_prompt")),
             think_switch: t.is_some_and(|t| t.contains("enable_thinking")),
+            context_length: lm.model.cfg.context_length as usize,
+            tokenizer: lm.tok.pre().to_string(),
+            instruct_type: t.and_then(|t| {
+                if t.contains("<|im_start|>") { Some("chatml".to_string()) }
+                else if t.contains("<start_of_turn>") { Some("gemma".to_string()) }
+                else { None }
+            }),
         };
-        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={}",
-                  caps.tools_branch, caps.qwen_think, caps.think_switch);
+        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} \
+                   ctx={} tok={:?} instruct={:?}",
+                  caps.tools_branch, caps.qwen_think, caps.think_switch,
+                  caps.context_length, caps.tokenizer, caps.instruct_type);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));

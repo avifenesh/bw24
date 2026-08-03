@@ -58,6 +58,9 @@ struct AppState {
     models: Arc<Vec<String>>,
     caps: Arc<HashMap<String, ModelCaps>>,
     metrics: SharedMetrics,
+    /// unix seconds at worker-ready — the /v1/models `created` value (when this server
+    /// instance made the model available; the honest timestamp we actually know).
+    started: u64,
 }
 
 /// POST /v1/completions request body.
@@ -623,10 +626,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     eprintln!("[server] worker ready; serving models: {model_names:?}");
 
-    let state = AppState { cmd_tx, models: model_names, caps, metrics };
+    let state = AppState {
+        cmd_tx, models: model_names, caps, metrics,
+        started: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0),
+    };
     let app = Router::new()
         .route("/health", get(health))
         .route("/models", get(list_models))
+        .route("/v1/models", get(list_models_v1))
         .route("/v1/completions", post(completions))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/metrics", get(get_metrics))
@@ -697,6 +706,51 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
 
 async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
     let data: Vec<_> = st.models.iter().map(|m| json!({ "id": m, "object": "model" })).collect();
+    Json(json!({ "object": "list", "data": data }))
+}
+
+/// One /v1/models entry in the OpenRouter model schema (serve-tail lane, 2026-08-04).
+/// Values are worker truth from the loaded model plan (ModelCaps probed at spawn);
+/// anything the plan doesn't know is an honest null, never an invented value.
+/// Pricing is the self-hosted stub ("0" USD strings, the OR convention for an
+/// unpriced endpoint) — a marketplace listing overrides it on the OR side.
+fn model_entry_v1(name: &str, caps: Option<&ModelCaps>, created: u64) -> serde_json::Value {
+    let ctx = caps.map(|c| c.context_length).filter(|&c| c > 0);
+    let tokenizer = caps.map(|c| c.tokenizer.as_str()).filter(|t| !t.is_empty());
+    let instruct = caps.and_then(|c| c.instruct_type.as_deref());
+    json!({
+        "id": name,
+        "name": name,
+        "object": "model",
+        "created": created,
+        "context_length": ctx,
+        "architecture": {
+            // text-only serving surface (no image/audio inputs on this server).
+            "modality": "text->text",
+            "tokenizer": tokenizer,
+            "instruct_type": instruct,
+        },
+        "pricing": {
+            "prompt": "0",
+            "completion": "0",
+            "request": "0",
+            "image": "0",
+        },
+        "top_provider": {
+            "context_length": ctx,
+            // no static per-request completion cap: max_tokens is context-bounded
+            // (gap-scan F2), so the honest schema value is null.
+            "max_completion_tokens": serde_json::Value::Null,
+        },
+    })
+}
+
+/// GET /v1/models — the OpenAI/OpenRouter model listing, enriched with per-model
+/// metadata from the loaded plan (context length, tokenizer, instruct family).
+async fn list_models_v1(State(st): State<AppState>) -> impl IntoResponse {
+    let data: Vec<_> = st.models.iter()
+        .map(|m| model_entry_v1(m, st.caps.get(m), st.started))
+        .collect();
     Json(json!({ "object": "list", "data": data }))
 }
 
@@ -1345,7 +1399,10 @@ mod tests {
     use super::*;
 
     fn tool_caps() -> ModelCaps {
-        ModelCaps { tools_branch: true, qwen_think: true, think_switch: true }
+        ModelCaps {
+            tools_branch: true, qwen_think: true, think_switch: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1500,7 +1557,7 @@ mod tests {
     #[test]
     fn tools_on_model_without_tools_branch_is_rejected() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let caps = ModelCaps { tools_branch: false, qwen_think: false, think_switch: false };
+        let caps = ModelCaps::default();
         assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx, lanes::Lane::Interactive).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({})), None, tx, lanes::Lane::Interactive).is_err());
@@ -1843,6 +1900,44 @@ mod tests {
             })).unwrap();
             assert_eq!(req.stop.into_vec(), expected);
         }
+    }
+
+    #[test]
+    fn v1_models_entry_matches_or_schema_with_honest_nulls() {
+        // KNOWN plan metadata populates every OR-schema field from worker truth.
+        let caps = ModelCaps {
+            tools_branch: true, qwen_think: true, think_switch: true,
+            context_length: 262144,
+            tokenizer: "qwen2".into(),
+            instruct_type: Some("chatml".into()),
+        };
+        let e = model_entry_v1("main", Some(&caps), 1_754_000_000);
+        assert_eq!(e["id"], "main");
+        assert_eq!(e["name"], "main");
+        assert_eq!(e["object"], "model");
+        assert_eq!(e["created"], 1_754_000_000u64);
+        assert_eq!(e["context_length"], 262144);
+        assert_eq!(e["architecture"]["modality"], "text->text");
+        assert_eq!(e["architecture"]["tokenizer"], "qwen2");
+        assert_eq!(e["architecture"]["instruct_type"], "chatml");
+        // pricing stub: OR-convention USD strings, self-hosted zeros.
+        assert_eq!(e["pricing"]["prompt"], "0");
+        assert_eq!(e["pricing"]["completion"], "0");
+        assert_eq!(e["top_provider"]["context_length"], 262144);
+        // no static completion cap (context-bounded, gap-scan F2) -> honest null.
+        assert!(e["top_provider"]["max_completion_tokens"].is_null());
+
+        // UNKNOWN metadata (no caps / empty fields) -> honest nulls, never invented.
+        let e = model_entry_v1("m", None, 7);
+        assert!(e["context_length"].is_null());
+        assert!(e["architecture"]["tokenizer"].is_null());
+        assert!(e["architecture"]["instruct_type"].is_null());
+        assert!(e["top_provider"]["context_length"].is_null());
+        let bare = ModelCaps::default(); // caps present, fields unknown (0/""/None)
+        let e = model_entry_v1("m", Some(&bare), 7);
+        assert!(e["context_length"].is_null());
+        assert!(e["architecture"]["tokenizer"].is_null());
+        assert!(e["architecture"]["instruct_type"].is_null());
     }
 
     #[tokio::test]
