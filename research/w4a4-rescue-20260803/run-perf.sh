@@ -44,6 +44,9 @@ for R in $(seq 1 "$ROUNDS"); do
   run_arm w4a8      MEMRA_RP=0
   run_arm w4a4-k0   MEMRA_RP=0 MEMRA_MMQ=1 MEMRA_MMQ_RESIDUAL_K=0
   run_arm w4a4-k16  MEMRA_RP=0 MEMRA_MMQ=1 MEMRA_MMQ_RESIDUAL_K=16
+  # k=32 is the exactness-landing point (IDENTICAL on all five measurable gate cells), so it is the
+  # arm any default-flip argument has to be priced on.
+  run_arm w4a4-k32  MEMRA_RP=0 MEMRA_MMQ=1 MEMRA_MMQ_RESIDUAL_K=32
 done
 
 echo "raw -> $LOG"

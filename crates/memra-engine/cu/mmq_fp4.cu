@@ -814,13 +814,14 @@ static __global__ void quantize_mmq_nvfp4_kernel_v1(
 // k is small (4/8/16) — the correction is a thin rank-k update, not a second GEMM.
 
 // Cap on residual channels. Raised 16 -> 64 once the perf window showed the correction is FREE
-// (interleaved x5, q9 pp1845: W4A4 k=0 7404.9 vs k=16 7417.0 tok/s — inside the 0.8% spread), so the
-// only reason to keep k small was cost, and there is none. The correction kernel tiles its register
-// weight array (MMQ_RESIDUAL_S_TILE) so a larger cap does not add registers per thread.
+// (interleaved x5, q9 pp1845: W4A4 k=0 7404.9 vs k=16 7417.0 tok/s — inside the 0.8% spread), and
+// the exactness sweep then landed on k=32, so the cap has to clear it.
 #define MMQ_MAX_RESIDUAL_K 64
-// Outlier channels dequantized per pass in the correction kernel. 16 floats/thread of registers,
-// independent of MMQ_MAX_RESIDUAL_K.
-#define MMQ_RESIDUAL_S_TILE 16
+// The correction kernel is instantiated at these compile-time channel counts and a runtime k is
+// rounded UP to the next bucket, with the padding channels marked -1 (zero weight, zero activation).
+// Compile-time K is what keeps the register weight array out of local memory and keeps y touched
+// exactly once; see the kernel comment for the measured cost of the runtime-k form.
+#define MMQ_RESIDUAL_BUCKETS 4
 
 // Per-channel amax across the whole token batch. Threads own channels, so reads across a token row
 // are coalesced.
@@ -836,16 +837,20 @@ static __global__ void nvfp4_channel_amax_kernel(
     chan_amax[c] = a;
 }
 
-// Top-k channel selection, one CTA, k masking passes. k <= 16 and in_f is a few thousand, so the
+// Top-k channel selection, one CTA, k masking passes. k <= 64 and in_f is a few thousand, so the
 // O(k * in_f / nthreads) scan is cheaper to write and to run than a sort.
+//
+// k_pad >= k is the compile-time bucket the correction kernel will run at. Entries in [k, k_pad) are
+// left at -1 so the correction's padding lanes contribute nothing.
 static __global__ void nvfp4_topk_channels_kernel(
         const float * __restrict__ chan_amax, uint8_t * __restrict__ chan_skip,
-        int * __restrict__ topk_idx, const int in_f, const int k) {
+        int * __restrict__ topk_idx, const int in_f, const int k, const int k_pad) {
     constexpr int NT = 256;
     __shared__ float sv[NT];
     __shared__ int   si[NT];
 
     for (int c = threadIdx.x; c < in_f; c += NT) { chan_skip[c] = 0; }
+    for (int s = threadIdx.x; s < k_pad; s += NT) { topk_idx[s] = -1; }
     __syncthreads();
 
     for (int pass = 0; pass < k; ++pass) {
@@ -881,12 +886,32 @@ static __global__ void nvfp4_topk_channels_kernel(
 // Rank-k correction: y[j][i] += out_scale * sum_s act[j][c_s] * W_dequant[i][c_s].
 //
 // NOT scaled by the per-token row factor: the correction consumes the ORIGINAL f32 activations,
-// which were never divided by it. Each thread owns one output row and holds that row's k weight
-// values in registers for the whole token loop, so the weight bytes are read once per row rather
-// than once per (row, token).
+// which were never divided by it.
+//
+// TEMPLATED on the channel count, and the reason is measured, not stylistic. A runtime-k form has to
+// keep the per-row dequantized weights in a dynamically indexed array (nvcc puts that in local
+// memory) and, once k passes the register budget, has to visit y once per channel tile — a
+// read-modify-write of the whole output per pass. Priced on q9 pp1845 interleaved x5: the runtime-k
+// tiled form ran 1.088x vs W4A8 at k=16 and 0.840x at k=32, against 1.631x for the untiled k=16
+// form. With a compile-time K the weight array unrolls into registers and y is touched EXACTLY ONCE
+// regardless of k, so the correction stays a thin rank-k update instead of extra output traffic.
+//
+// Runtime k <= K: topk_idx is pre-filled with -1, and a -1 channel contributes a zero weight and a
+// zero activation, so the padding lanes are arithmetic no-ops. Each thread owns one output row and
+// reads its K weight values once for the whole token loop.
+//
+// SUMMATION ORDER IS LOAD-BEARING, and this is a receipt, not a preference. The kernel that gated
+// IDENTICAL on all five measurable cells at k=32 summed in groups of 16 channels, each group rounded
+// into y separately. Accumulating all K in one f32 chain instead is more accurate in isolation but
+// changes the last bits, and two q9 cells (p2-code-medium, p3-agentic-long) went DIVERGENT on that
+// change alone — greedy decode sits on knife-edge argmax margins, so "different rounding" is
+// indistinguishable from "wrong". The GROUP structure below reproduces the gated arithmetic exactly
+// (group sums rounded to f32, then summed in group order) while still writing y ONCE, which is where
+// the cost was. Do not fuse the groups to "clean this up" without re-running the gate.
+template <int K>
 static __global__ void nvfp4_residual_correct_kernel(
         const char * __restrict__ W, const float * __restrict__ act, float * __restrict__ y,
-        const int * __restrict__ topk_idx, const int k, const int in_f, const int out_f,
+        const int * __restrict__ topk_idx, const int in_f, const int out_f,
         const int n_tokens, const int64_t s11, const float out_scale) {
     constexpr int NT    = 256;
     constexpr int CHUNK = 64;
@@ -894,55 +919,70 @@ static __global__ void nvfp4_residual_correct_kernel(
     const int i = blockIdx.x * NT + threadIdx.x;
     const int row_bytes = (in_f / QK_NVFP4) * (int) sizeof(block_nvfp4);
 
-    __shared__ float a_sh[MMQ_RESIDUAL_S_TILE * CHUNK];
+    __shared__ float a_sh[K * CHUNK];
+    __shared__ int   c_sh[K];
+    for (int s = threadIdx.x; s < K; s += NT) { c_sh[s] = topk_idx[s]; }
+    __syncthreads();
 
-    // TILED over the channel axis: each pass handles up to MMQ_RESIDUAL_S_TILE outlier channels, so
-    // the register weight array and the shared activation staging area are both independent of the
-    // cap on k. Raising MMQ_MAX_RESIDUAL_K therefore costs launches, not occupancy.
-    for (int s0 = 0; s0 < k; s0 += MMQ_RESIDUAL_S_TILE) {
-        const int ns = min(MMQ_RESIDUAL_S_TILE, k - s0);
-
-        // Dequantize this row's slice of outlier-channel weights once per pass, then reuse across
-        // every token: the weight bytes are read once per (row, pass), not once per (row, token).
-        float wdeq[MMQ_RESIDUAL_S_TILE];
-        if (i < out_f) {
-            for (int s = 0; s < ns; ++s) {
-                const int c = topk_idx[s0 + s];
-                if (c < 0) { wdeq[s] = 0.0f; continue; }
-                const int blk = c / QK_NVFP4;
-                const int sub = (c % QK_NVFP4) / QK_NVFP4_SUB;
-                const int w   = c % QK_NVFP4_SUB;
-                const block_nvfp4 * b =
-                    reinterpret_cast<const block_nvfp4 *>(W + (int64_t) i * row_bytes) + blk;
-                const uint8_t byte = b->qs[sub * 8 + (w & 7)];
-                const uint8_t nib  = (w < 8) ? (byte & 0x0f) : (byte >> 4);
-                // GGUF NVFP4 dequant is EXACTLY kvalues_mxfp4[nib] * ue4m3_to_fp32(d) — the doubled
-                // codebook (0,1,2,3,4,6,8,12) and the /2 already inside ggml_cuda_ue4m3_to_fp32
-                // cancel, so no further factor belongs here. kvalues_mxfp4 carries its own sign in
-                // codes 8..15. (An extra 0.5f here halved the correction; the residual kernel-check
-                // arm caught it as rel == 0.52, exactly half the outlier contribution unrecovered.)
-                wdeq[s] = (float) kvalues_mxfp4[nib] * ggml_cuda_ue4m3_to_fp32(b->d[sub]);
-            }
+    float wdeq[K];
+#pragma unroll
+    for (int s = 0; s < K; ++s) {
+        wdeq[s] = 0.0f;
+    }
+    if (i < out_f) {
+#pragma unroll
+        for (int s = 0; s < K; ++s) {
+            const int c = c_sh[s];
+            if (c < 0) { continue; }
+            const int blk = c / QK_NVFP4;
+            const int sub = (c % QK_NVFP4) / QK_NVFP4_SUB;
+            const int w   = c % QK_NVFP4_SUB;
+            const block_nvfp4 * b =
+                reinterpret_cast<const block_nvfp4 *>(W + (int64_t) i * row_bytes) + blk;
+            const uint8_t byte = b->qs[sub * 8 + (w & 7)];
+            const uint8_t nib  = (w < 8) ? (byte & 0x0f) : (byte >> 4);
+            // GGUF NVFP4 dequant is EXACTLY kvalues_mxfp4[nib] * ue4m3_to_fp32(d) — the doubled
+            // codebook (0,1,2,3,4,6,8,12) and the /2 already inside ggml_cuda_ue4m3_to_fp32
+            // cancel, so no further factor belongs here. kvalues_mxfp4 carries its own sign in
+            // codes 8..15. (An extra 0.5f here halved the correction; the residual kernel-check
+            // arm caught it as rel == 0.52, exactly half the outlier contribution unrecovered.)
+            wdeq[s] = (float) kvalues_mxfp4[nib] * ggml_cuda_ue4m3_to_fp32(b->d[sub]);
         }
+    }
 
-        for (int j0 = 0; j0 < n_tokens; j0 += CHUNK) {
-            const int nj = min(CHUNK, n_tokens - j0);
-            __syncthreads();
-            for (int t = threadIdx.x; t < ns * nj; t += NT) {
-                const int s  = t / nj;
-                const int jj = t % nj;
-                const int c  = topk_idx[s0 + s];
-                a_sh[s * CHUNK + jj] = c >= 0 ? act[(int64_t) (j0 + jj) * s11 + c] : 0.0f;
-            }
-            __syncthreads();
-            if (i < out_f) {
-                for (int jj = 0; jj < nj; ++jj) {
+    for (int j0 = 0; j0 < n_tokens; j0 += CHUNK) {
+        const int nj = min(CHUNK, n_tokens - j0);
+        __syncthreads();
+        for (int t = threadIdx.x; t < K * nj; t += NT) {
+            const int s  = t / nj;
+            const int jj = t % nj;
+            const int c  = c_sh[s];
+            a_sh[s * CHUNK + jj] = c >= 0 ? act[(int64_t) (j0 + jj) * s11 + c] : 0.0f;
+        }
+        __syncthreads();
+        if (i < out_f) {
+            for (int jj = 0; jj < nj; ++jj) {
+                const int64_t off = (int64_t) (j0 + jj) * out_f + i;
+                // Groups of GROUP channels, accumulated INTO the y value in a register. The old tiled
+                // kernel did `y[off] += out_scale * acc` once per group, so each group sum rounded
+                // against the running y — including the large GEMM term. Summing the groups on their
+                // own first and adding y at the end pairs different magnitudes and lands on different
+                // last bits, which is exactly what turned two q9 cells DIVERGENT. Hoisting y into a
+                // register keeps the addition sequence, the operands, and the rounding identical while
+                // costing one load and one store instead of K/GROUP read-modify-writes. Each y element
+                // is owned by exactly one thread for the whole kernel, so the hoist is safe.
+                constexpr int GROUP = 16;
+                float yv = y[off];
+#pragma unroll
+                for (int s0 = 0; s0 < K; s0 += GROUP) {
                     float acc = 0.0f;
-                    for (int s = 0; s < ns; ++s) {
+#pragma unroll
+                    for (int s = s0; s < s0 + GROUP && s < K; ++s) {
                         acc = fmaf(wdeq[s], a_sh[s * CHUNK + jj], acc);
                     }
-                    y[(int64_t) (j0 + jj) * out_f + i] += out_scale * acc;
+                    yv += out_scale * acc;
                 }
+                y[off] = yv;
             }
         }
     }
@@ -1028,6 +1068,10 @@ int memra_mmq_nvfp4_ex2(const void * W_nvfp4_blocks, const float * act_f32, floa
     const int rk = (per_token_scale && residual_k > 0)
                  ? (residual_k < MMQ_MAX_RESIDUAL_K ? residual_k : MMQ_MAX_RESIDUAL_K)
                  : 0;
+    // Round up to the compile-time bucket the correction kernel is instantiated at. The padding
+    // channels are -1 and contribute nothing, so a k of 20 costs a k=32 launch but is numerically
+    // identical to k=20.
+    const int rk_pad = rk <= 0 ? 0 : (rk <= 8 ? 8 : (rk <= 16 ? 16 : (rk <= 32 ? 32 : 64)));
     float   * chan_amax = (float *)   ((char *) act_scratch + mmq_nvfp4_chan_amax_off(in_f, n_tokens));
     uint8_t * chan_skip = (uint8_t *) ((char *) act_scratch + mmq_nvfp4_chan_skip_off(in_f, n_tokens));
     int     * topk_idx  = (int *)     ((char *) act_scratch + mmq_nvfp4_topk_off(in_f, n_tokens));
@@ -1044,7 +1088,8 @@ int memra_mmq_nvfp4_ex2(const void * W_nvfp4_blocks, const float * act_f32, floa
             if (e != cudaSuccess) { return 1000 + (int) e; }
         }
         {
-            nvfp4_topk_channels_kernel<<<1, 256, 0, st>>>(chan_amax, chan_skip, topk_idx, in_f, rk);
+            nvfp4_topk_channels_kernel<<<1, 256, 0, st>>>(
+                chan_amax, chan_skip, topk_idx, in_f, rk, rk_pad);
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) { return 1000 + (int) e; }
         }
@@ -1112,8 +1157,25 @@ int memra_mmq_nvfp4_ex2(const void * W_nvfp4_blocks, const float * act_f32, floa
     // ---- 3) rank-k residual correction (must follow the GEMM: it accumulates into y) ----
     if (rk > 0) {
         constexpr int nt = 256;
-        nvfp4_residual_correct_kernel<<<(out_f + nt - 1) / nt, nt, 0, st>>>(
-            W, act_f32, y, topk_idx, rk, in_f, out_f, n_tokens, s11, out_scale);
+        const int nb = (out_f + nt - 1) / nt;
+        switch (rk_pad) {
+            case 8:
+                nvfp4_residual_correct_kernel<8><<<nb, nt, 0, st>>>(
+                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
+                break;
+            case 16:
+                nvfp4_residual_correct_kernel<16><<<nb, nt, 0, st>>>(
+                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
+                break;
+            case 32:
+                nvfp4_residual_correct_kernel<32><<<nb, nt, 0, st>>>(
+                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
+                break;
+            default:
+                nvfp4_residual_correct_kernel<64><<<nb, nt, 0, st>>>(
+                    W, act_f32, y, topk_idx, in_f, out_f, n_tokens, s11, out_scale);
+                break;
+        }
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) { return 1000 + (int) e; }
     }

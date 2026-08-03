@@ -35,7 +35,7 @@ def main() -> int:
         if m and cur:
             samples.setdefault(cur, []).append(float(m.group(3)))
 
-    order = ["w4a8", "w4a4-k0", "w4a4-k16"]
+    order = ["w4a8", "w4a4-k0", "w4a4-k16", "w4a4-k32"]
     base = None
     print(f"{'arm':<10} {'N':>2} {'median':>9} {'min':>9} {'max':>9} {'spread':>7} {'vs w4a8':>8}")
     for a in order:
