@@ -856,10 +856,7 @@ pub fn run(
         // Retire still parks reusable KV — the state is consistent at the abort point.
         for (i, s) in active.iter().enumerate() {
             if s.tx.is_closed() {
-                eprintln!("[abort] client disconnected: model {:?}, prompt {} ({} cached), \
-                           {} generated — billed to abort point, {:.2}s",
-                          s.model, s.n_prompt, s.n_cached, s.generated.len(),
-                          s.t0.elapsed().as_secs_f64());
+                abort_log(s);
                 finished.push(i);
             }
         }
@@ -1784,6 +1781,7 @@ fn advance_sample_emit(
     // DISCONNECT ABORT (gap-scan F8): a failed send = receiver dropped = client gone.
     // Stop generating THIS tick (the tick-top sweep would only catch it next tick).
     if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        abort_log(s);
         return (false, None);
     }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -1821,6 +1819,7 @@ fn advance_token_emit(
     let full = String::from_utf8_lossy(&decoded);
     // DISCONNECT ABORT (gap-scan F8): failed send = client gone, stop this tick.
     if s.tx.send(Event::Token { id: tok, text: delta }).is_err() {
+        abort_log(s);
         return (false, ());
     }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -1939,7 +1938,15 @@ fn step_session(
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
         // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
-        let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+        // EOS text is never streamed (serve-compat, 2026-08-03): the tokenwise path stops
+        // BEFORE emitting the EOS token's text, but the burst used to detokenize the whole
+        // tail — clients saw a literal `<|im_end|>` in content (caught by the SDK gate's G4
+        // receipt). The token still counts (generated/fed keep it; committed state intact).
+        let visible = match stop {
+            Some(StopReason::Eos) => &s.generated[..s.generated.len() - 1],
+            _ => &s.generated[..],
+        };
+        let decoded = lm.tok.decode_bytes_special(visible, true);
         let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
         let full = String::from_utf8_lossy(&decoded);
         if !delta.is_empty()
@@ -1947,6 +1954,7 @@ fn step_session(
         {
             // DISCONNECT ABORT (gap-scan F8): client gone — retire at the abort point
             // (session still parks; committed state is consistent post-burst).
+            abort_log(s);
             return Ok(false);
         }
         if stop.is_none() && !s.stop_strings.is_empty()
@@ -2017,6 +2025,7 @@ fn step_session(
     let full = String::from_utf8_lossy(&decoded);
     // DISCONNECT ABORT (gap-scan F8): failed send = client gone, retire at the abort point.
     if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        abort_log(s);
         return Ok(false);
     }
 
@@ -2107,6 +2116,16 @@ fn write_confidence_trace(
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{record}")?;
     Ok(())
+}
+
+/// DISCONNECT ABORT metering record (gap-scan F8): one log line per aborted session —
+/// prompt/cached/generated at the abort point (bill-to-abort). Called from every
+/// send-failure retire; the tick-top sweep prints the same shape.
+fn abort_log(s: &Session) {
+    eprintln!("[abort] client disconnected: model {:?}, prompt {} ({} cached), \
+               {} generated — billed to abort point, {:.2}s",
+              s.model, s.n_prompt, s.n_cached, s.generated.len(),
+              s.t0.elapsed().as_secs_f64());
 }
 
 fn finish(s: &Session, reason: StopReason) {
