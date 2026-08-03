@@ -122,6 +122,40 @@ Qwen3.6-35B + AgentWorld, streaming schema checker, malformed-policy transcript,
 tok-check usage crosscheck, cross-binary c1 refs + c1-vs-c16) and
 `research/integrate-cache-20260802/` (tools x cache intersection gate).
 
+## OpenAI compatibility contract (serve-compat lane, 2026-08-03)
+
+The five gap-scan listing-blockers (`research/gap-scan-20260802/REPORT.md`), fixed and
+gated by the official `openai` Python SDK against a live server
+(`research/serve-compat-20260802/`):
+
+- **Envelope:** every OpenAI-shape completion and stream chunk carries `id`
+  (`chatcmpl-…`/`cmpl-…`), `created`, and `system_fingerprint` (`memra-<git sha>`, baked
+  at build); the id echoes as the `x-request-id` response header. The first stream delta
+  carries `role:"assistant"`. Error bodies are the OpenAI object —
+  `{"error": {"message","type","param","code"}}` — and mid-stream worker errors arrive as
+  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive
+  comments flow every 5s (long-prompt prefill streams nothing before first token;
+  OpenRouter cancels silent streams).
+- **Reasoning separation:** on think-open prompts, `<think>` text routes to
+  `message.reasoning` / `delta.reasoning` (+ `reasoning_details`, the OpenRouter
+  dialect); `content` is post-think only. `include_reasoning:false` (or
+  `reasoning: {exclude: true}`) drops the separated text. Non-think models keep
+  byte-identical no-parser streams.
+- **`max_tokens` omitted** ⇒ context-bounded budget (session ctx − prompt, capped at the
+  model's trained context) — the OpenAI default-when-omitted semantics, not a silent
+  128-token truncation. Explicit `max_tokens`/`max_completion_tokens` honored exactly.
+- **Disconnect abort:** a hung-up client's session retires at the next tick (all serve
+  paths: batched, graph, spec, legacy) and is billed to the abort point (the `[abort]`
+  log line records prompt/cached/generated); queued requests from dead clients never
+  reach the GPU.
+- **Parameter breadth + honesty:** `frequency_penalty`/`presence_penalty`/
+  `repetition_penalty` plumb to the sampler (whole-history window; greedy+penalized
+  keeps the host-sampled path). Semantic params we can't honor 400 with the param named
+  (`response_format` beyond `{"type":"text"}`, `logit_bias`, `logprobs`/`top_logprobs`,
+  `n != 1`, `best_of != 1`); cosmetic fields (`user`, `stream_options`) are accepted and
+  ignored. Streams exclude stop-sequence text exactly like non-stream responses
+  (holdback buffer).
+
 ## Prompt caching (cross-request prefix cache) — 2026-08-02
 
 Two caching tiers serve prompt tokens without recomputing them:

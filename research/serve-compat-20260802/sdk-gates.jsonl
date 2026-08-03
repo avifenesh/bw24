@@ -1,0 +1,29 @@
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-sdk-validates", "verdict": "PASS", "detail": "ChatCompletion parsed"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-id", "verdict": "PASS", "detail": "chatcmpl-1a1652765eb44ca"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-created", "verdict": "PASS", "detail": "1785720176"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-fingerprint", "verdict": "PASS", "detail": "memra-f1c00dd94ff2"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-role", "verdict": "PASS", "detail": "assistant"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-x-request-id", "verdict": "PASS", "detail": "chatcmpl-1a1652765eb44caba98cae493ab8ef52"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G1-usage", "verdict": "PASS", "detail": "13+32"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G2-sdk-validates", "verdict": "PASS", "detail": "2 chunks"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G2-one-id", "verdict": "PASS", "detail": "{'chatcmpl-af7070a97a396e53cfb80adf63f4925b'}"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G2-fingerprint-all", "verdict": "PASS", "detail": "all chunks"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G2-first-role", "verdict": "PASS", "detail": "assistant"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G2-finish", "verdict": "PASS", "detail": "['length']"}
+{"ts": "2026-08-03T04:22:56+0300", "gate": "G2-usage-final", "verdict": "PASS", "detail": "usage on finish chunk"}
+{"ts": "2026-08-03T04:22:57+0300", "gate": "G3-finish", "verdict": "PASS", "detail": "tool_calls"}
+{"ts": "2026-08-03T04:22:57+0300", "gate": "G3-call", "verdict": "PASS", "detail": "{\"city\":\"Paris\"}"}
+{"ts": "2026-08-03T04:22:57+0300", "gate": "G3-stream", "verdict": "PASS", "detail": "finish=tool_calls name=get_weather args={\"city\":\"Paris\"}"}
+{"ts": "2026-08-03T04:22:58+0300", "gate": "G4-reasoning-field", "verdict": "PASS", "detail": "425 chars"}
+{"ts": "2026-08-03T04:22:58+0300", "gate": "G4-content-clean", "verdict": "PASS", "detail": "17 + 25 = **42**"}
+{"ts": "2026-08-03T04:22:58+0300", "gate": "G4-details", "verdict": "PASS", "detail": "reasoning_details mirrors"}
+{"ts": "2026-08-03T04:22:59+0300", "gate": "G4-exclude", "verdict": "PASS", "detail": "include_reasoning:false drops it"}
+{"ts": "2026-08-03T04:23:00+0300", "gate": "G4-stream-split", "verdict": "PASS", "detail": "reasoning=425ch content=16ch"}
+{"ts": "2026-08-03T04:23:10+0300", "gate": "G5-not-128", "verdict": "PASS", "detail": "finish=stop tokens=2530"}
+{"ts": "2026-08-03T04:23:10+0300", "gate": "G5-past-128", "verdict": "PASS", "detail": "2530 completion tokens"}
+{"ts": "2026-08-03T04:23:10+0300", "gate": "G6-logit_bias", "verdict": "PASS", "detail": "{'message': 'logit_bias is not supported (device-side sampling has no bias hook yet)', 'type': 'invalid_request_error', "}
+{"ts": "2026-08-03T04:23:10+0300", "gate": "G6-n", "verdict": "PASS", "detail": "{'message': 'n is not supported for n != 1 (single choice only)', 'type': 'invalid_request_error', 'param': 'n', 'code':"}
+{"ts": "2026-08-03T04:23:10+0300", "gate": "G6-response_format", "verdict": "PASS", "detail": "{'message': 'response_format is not supported beyond {\"type\":\"text\"} (no constrained decoding yet)', 'type': 'invalid_re"}
+{"ts": "2026-08-03T04:23:10+0300", "gate": "G7-penalties", "verdict": "PASS", "detail": "49 tokens"}
+{"ts": "2026-08-03T04:23:14+0300", "gate": "G8-disconnect", "verdict": "PASS", "detail": "read 5 lines, hung up, health=200 ([abort] log line asserted by the runner)"}
+{"gate":"G8-abort-logline","verdict":"PASS"}

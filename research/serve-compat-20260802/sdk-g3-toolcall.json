@@ -1,0 +1,53 @@
+{
+  "id": "chatcmpl-b23cf6d58e6720de5e4635bd405dcf85",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "content": null,
+        "refusal": null,
+        "role": "assistant",
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "tool_calls": [
+          {
+            "id": "call_0acaa39fa4e08df2",
+            "function": {
+              "arguments": "{\"city\":\"Paris\"}",
+              "name": "get_weather"
+            },
+            "type": "function"
+          }
+        ],
+        "reasoning": "The user is asking about the current weather in Paris. I have a tool called \"get_weather\" that can get the current weather for a city. I need to call this tool with the city parameter set to \"Paris\".\n",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "The user is asking about the current weather in Paris. I have a tool called \"get_weather\" that can get the current weather for a city. I need to call this tool with the city parameter set to \"Paris\".\n"
+          }
+        ]
+      }
+    }
+  ],
+  "created": 1785720176,
+  "model": "q9",
+  "object": "chat.completion",
+  "moderation": null,
+  "service_tier": null,
+  "system_fingerprint": "memra-f1c00dd94ff2",
+  "usage": {
+    "completion_tokens": 74,
+    "prompt_tokens": 294,
+    "total_tokens": 368,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": {
+      "audio_tokens": null,
+      "cache_write_tokens": null,
+      "cached_tokens": 0
+    },
+    "elapsed_s": 0.542445218
+  }
+}

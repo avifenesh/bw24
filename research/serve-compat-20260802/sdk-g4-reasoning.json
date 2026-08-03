@@ -1,0 +1,33 @@
+{
+  "object": "chat.completion",
+  "model": "q9",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "17 + 25 = **42**",
+        "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for the sum of two numbers: 17 and 25.\n2.  **Perform the Calculation:**\n    *   17 + 25\n    *   Break it down: 10 + 20 = 30, 7 + 5 = 12.\n    *   30 + 12 = 42.\n    *   Alternatively: 17 + 20 = 37, 37 + 5 = 42.\n3.  **Formulate the Output:** State the answer clearly.\n4.  **Final Check:** Does 17 + 25 equal 42? Yes.\n5.  **Construct Response:** \"17 + 25 = 42\".\n",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for the sum of two numbers: 17 and 25.\n2.  **Perform the Calculation:**\n    *   17 + 25\n    *   Break it down: 10 + 20 = 30, 7 + 5 = 12.\n    *   30 + 12 = 42.\n    *   Alternatively: 17 + 20 = 37, 37 + 5 = 42.\n3.  **Formulate the Output:** State the answer clearly.\n4.  **Final Check:** Does 17 + 25 equal 42? Yes.\n5.  **Construct Response:** \"17 + 25 = 42\".\n"
+          }
+        ]
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 200,
+    "total_tokens": 220,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "elapsed_s": 0.855657649
+  },
+  "id": "chatcmpl-c29fc37fb28f316c9414ef4bfd54f58d",
+  "created": 1785720177,
+  "system_fingerprint": "memra-f1c00dd94ff2"
+}
