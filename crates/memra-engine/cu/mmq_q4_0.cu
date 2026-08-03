@@ -38,6 +38,15 @@
 #include <cstdlib>
 #include <cstdio>
 
+// CLC (clusterlaunchcontrol.try_cancel) work-stealing needs SM_100+ (PTX ISA 8.6; verified
+// on-device on sm_120a — research/perf-frontier-20260802/ptxprobe/clc_test.cu). Gate on
+// __CUDA_ARCH_LIST__ (defined in BOTH host and device passes for single-gencode builds, unlike
+// __CUDA_ARCH__) so sm_89/90a builds never see the libcu++ CLC externs.
+#if defined(__CUDA_ARCH_LIST__) && (__CUDA_ARCH_LIST__ >= 1000)
+#define MMQ_CLC_AVAILABLE 1
+#include <cuda/ptx>
+#endif
+
 // ======================= ggml constants/macros (vendored) =======================
 #define WARP_SIZE 32
 #define GGML_PAD(x, n) (((x) + (n) - 1) / (n) * (n))
@@ -445,6 +454,85 @@ static __global__ void mul_mat_q_q4_0(
         stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00);
 }
 
+// ======================= mul_mat_q CLC work-stealing (perf-frontier lever #1) =======================
+// clusterlaunchcontrol.try_cancel hardware block-stealing over the SAME (it, jt) tile grid as the
+// static kernel: a block finishes its home tile, then atomically cancels one not-yet-launched
+// block and takes over that block's tile coordinates. Every tile still computes its FULL k range
+// inside ONE block with the EXACT per-tile math and accumulation order of mul_mat_q_q4_0 (same
+// process_tile call, write_back path, no fixup, no k split) — stealing changes WHICH SM runs a
+// tile, never tile-internal order. Deterministic in RESULT, opportunistic in SCHEDULE: the legal
+// stream-K (the sk arm's partial-sum fold order is a band class; this form is bit-identical to
+// xy-tiling by construction). Attacks the same tail-wave/wave-quantization loss sk was built for.
+// try_cancel is issued BEFORE the tile mainloop (the CUTLASS SM120 pingpong scheduler pattern,
+// CUDA 13.3 PG §4.12) so the cancellation DMA overlaps compute; the response is consumed only
+// after the mbarrier transaction completes. On-device receipts (sm_120a, RTX 5090):
+// research/perf-frontier-20260802/ptxprobe/clc_test.cu (4096 blocks, every index exactly once)
+// + this lane's 2D-grid steal-count probes (research/clc-mmq-20260802/).
+#ifdef MMQ_CLC_AVAILABLE
+template <int mmq_x, bool need_check, bool is_rp>
+__launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
+static __global__ void mul_mat_q_q4_0_clc(
+        const char * __restrict__ x, const char * __restrict__ x_d, const int * __restrict__ y,
+        float * __restrict__ dst, const int nrows_x, const int ncols_dst, const int stride_row_x,
+        const int ncols_y, const int stride_col_dst, const int blocks_per_ne00) {
+    constexpr int nwarps = MMQ_NWARPS;
+    constexpr int warp_size = MMQ_WARP_SIZE;
+    constexpr int mmq_y = MMQ_Y;
+
+    // ids_dst identity map is tile-invariant: init once, survives across stolen tiles (the tile
+    // smem buffers start at data_mul_mat_q + mmq_x, so process_tile never overwrites it).
+    extern __shared__ int ids_dst_shared[];
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += nwarps * warp_size) {
+        const int j = j0 + threadIdx.y * warp_size + threadIdx.x;
+        if (j0 + nwarps * warp_size > mmq_x && j >= mmq_x) { break; }
+        ids_dst_shared[j] = j;
+    }
+
+    __shared__ uint4    clc_response;
+    __shared__ uint64_t clc_bar;
+    int clc_phase = 0;
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        cuda::ptx::mbarrier_init(&clc_bar, 1);
+    }
+
+    int it = blockIdx.x; // out-row tile (home assignment; stolen values after cancel)
+    int jt = blockIdx.y; // n-token tile
+    while (true) {
+        __syncthreads();  // publishes mbarrier init / orders prior-round response reads
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+            cuda::ptx::fence_proxy_async_generic_sync_restrict(
+                cuda::ptx::sem_acquire, cuda::ptx::space_cluster, cuda::ptx::scope_cluster);
+            cuda::ptx::clusterlaunchcontrol_try_cancel(&clc_response, &clc_bar);
+            cuda::ptx::mbarrier_arrive_expect_tx(
+                cuda::ptx::sem_relaxed, cuda::ptx::scope_cta, cuda::ptx::space_shared,
+                &clc_bar, sizeof(uint4));
+        }
+
+        // ---- the tile: IDENTICAL body + offsets to mul_mat_q_q4_0 ----
+        const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
+        const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+        const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
+        const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
+        const int offset_x = it * mmq_y * stride_row_x;
+
+        mul_mat_q_process_tile_q4_0<mmq_x, need_check, is_rp, false>(
+            x, x_d, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, nullptr,
+            stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j,
+            0, blocks_per_ne00);
+
+        while (!cuda::ptx::mbarrier_try_wait_parity(
+                cuda::ptx::sem_acquire, cuda::ptx::scope_cta, &clc_bar, clc_phase)) {}
+        clc_phase ^= 1;
+        if (!cuda::ptx::clusterlaunchcontrol_query_cancel_is_canceled(clc_response)) { break; }
+        it = cuda::ptx::clusterlaunchcontrol_query_cancel_get_first_ctaid_x<int>(clc_response);
+        jt = cuda::ptx::clusterlaunchcontrol_query_cancel_get_first_ctaid_y<int>(clc_response);
+        cuda::ptx::fence_proxy_async_generic_sync_restrict(
+            cuda::ptx::sem_release, cuda::ptx::space_shared, cuda::ptx::scope_cluster);
+    }
+}
+#endif // MMQ_CLC_AVAILABLE
+
 // ======================= mul_mat_q stream-k (small-batch tail-wave fix) =======================
 // llama mmq.cuh stream-k port, 2D case (no channels/samples/experts): the kbc walk splits the
 // (it, jt, kb0) work space evenly across gridDim.x blocks; interior tiles write dst directly,
@@ -646,6 +734,27 @@ static size_t mmq_q4_0_nbytes_shared() {
     return nbs_ids + nbs_x + GGML_PAD(nbs_y, pad);
 }
 
+// CLC work-stealing seam (perf-frontier lever #1, research/clc-mmq-20260802/): default STATIC
+// xy-tiling; MEMRA_MMQ_CLC=1 swaps the static grid for the CLC pingpong kernel (same tile grid,
+// bit-identical output — schedule-only change). memra_mmq_q4_0_set_clc(0|1) overrides the env
+// deterministically for gates (the #23 lesson: a timing-picked arm can hide from correctness
+// batteries — every arm must be forceable). -1 = env default.
+[[maybe_unused]] static int g_mmq_clc_force = -1;   // read only on SM_100+ builds
+
+[[maybe_unused]] static bool mmq_clc_on() {   // referenced only on SM_100+ builds
+#ifdef MMQ_CLC_AVAILABLE
+    if (g_mmq_clc_force >= 0) { return g_mmq_clc_force != 0; }
+    static int env_on = -1;
+    if (env_on < 0) {
+        const char * ev = getenv("MEMRA_MMQ_CLC");
+        env_on = (ev != nullptr && ev[0] == '1') ? 1 : 0;
+    }
+    return env_on != 0;
+#else
+    return false;
+#endif
+}
+
 template <bool need_check, bool is_rp>
 static int mmq_q4_0_launch(const char * W, const char * W_d, const int * y_q, float * y,
                            int in_f, int out_f, int n_tokens, cudaStream_t st) {
@@ -660,6 +769,17 @@ static int mmq_q4_0_launch(const char * W, const char * W_d, const int * y_q, fl
     const dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
     const size_t smem = mmq_q4_0_nbytes_shared();
 
+#ifdef MMQ_CLC_AVAILABLE
+    if (mmq_clc_on()) {
+        cudaFuncSetAttribute(mul_mat_q_q4_0_clc<MMQ_X, need_check, is_rp>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        mul_mat_q_q4_0_clc<MMQ_X, need_check, is_rp><<<grid, block, smem, st>>>(
+            W, W_d, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { return 1000 + (int) e; }
+        return 0;
+    }
+#endif
     cudaFuncSetAttribute(mul_mat_q_q4_0<MMQ_X, need_check, is_rp>,
                          cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
     mul_mat_q_q4_0<MMQ_X, need_check, is_rp><<<grid, block, smem, st>>>(
@@ -801,6 +921,19 @@ extern "C" {
 // Fixup scratch bytes for the stream-k GEMM (one [MMQ_X x MMQ_Y] f32 slot per SM).
 size_t memra_mmq_q4_0_fixup_bytes(void) {
     return (size_t) mmq_nsm() * MMQ_X * MMQ_Y * sizeof(float);
+}
+
+// Force the CLC work-stealing arm on (1) / off (0) / back to the MEMRA_MMQ_CLC env default (-1)
+// — the deterministic gate/bench knob (kernel-check pins BOTH arms; see mmq_clc_on()).
+// Returns 1 when the CLC kernel is compiled in (SM_100+ gencode), 0 on stub-class builds so
+// callers can tell "forced" from "unavailable".
+int memra_mmq_q4_0_set_clc(int force) {
+    g_mmq_clc_force = force < 0 ? -1 : (force != 0 ? 1 : 0);
+#ifdef MMQ_CLC_AVAILABLE
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 // Stream-k GEMM entry: shape-autotuned sk-vs-tiling (MEMRA_MMQ_SK=0 upstream reverts wholesale).

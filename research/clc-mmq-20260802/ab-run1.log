@@ -1,0 +1,36 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  reps=30 sessions=3
+shape              in_f  out_f     T  tiles  waves waveeff | static_us    clc_us   ratio | bits
+q9-qkv             4096   8192   512    256   3.12   78.0% |     293.7     320.9  0.915x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-qkv","in_f":4096,"out_f":8192,"T":512,"tiles":256,"waves":3.122,"wave_eff":0.7805,"static_us":293.66,"clc_us":320.89,"ratio":0.9151,"bit_identical":true,"reps":30,"sessions":3,"n_static":[272.02, 293.66, 313.89],"n_clc":[277.88, 320.89, 323.43]}
+q9-qkv             4096   8192  1736    896  10.93   99.3% |     895.9     913.6  0.981x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-qkv","in_f":4096,"out_f":8192,"T":1736,"tiles":896,"waves":10.927,"wave_eff":0.9933,"static_us":895.92,"clc_us":913.56,"ratio":0.9807,"bit_identical":true,"reps":30,"sessions":3,"n_static":[888.12, 895.92, 899.54],"n_clc":[908.54, 913.56, 929.47]}
+q9-gateup          4096  12288   512    384   4.68   93.7% |     398.4     417.0  0.955x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-gateup","in_f":4096,"out_f":12288,"T":512,"tiles":384,"waves":4.683,"wave_eff":0.9366,"static_us":398.39,"clc_us":417.02,"ratio":0.9553,"bit_identical":true,"reps":30,"sessions":3,"n_static":[371.03, 398.39, 408.5],"n_clc":[403.67, 417.02, 417.46]}
+q9-gateup          4096  12288  1736   1344  16.39   96.4% |    1366.4    1397.2  0.978x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-gateup","in_f":4096,"out_f":12288,"T":1736,"tiles":1344,"waves":16.390,"wave_eff":0.9641,"static_us":1366.40,"clc_us":1397.24,"ratio":0.9779,"bit_identical":true,"reps":30,"sessions":3,"n_static":[1365.84, 1366.4, 1368.17],"n_clc":[1396.34, 1397.24, 1409.53]}
+q9-down           12288   4096   512    128   1.56   78.0% |     432.9     444.6  0.974x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-down","in_f":12288,"out_f":4096,"T":512,"tiles":128,"waves":1.561,"wave_eff":0.7805,"static_us":432.94,"clc_us":444.58,"ratio":0.9738,"bit_identical":true,"reps":30,"sessions":3,"n_static":[427.75, 432.94, 433.95],"n_clc":[439.42, 444.58, 446.36]}
+q9-down           12288   4096  1736    448   5.46   91.1% |    1408.1    1442.0  0.976x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-down","in_f":12288,"out_f":4096,"T":1736,"tiles":448,"waves":5.463,"wave_eff":0.9106,"static_us":1408.10,"clc_us":1441.99,"ratio":0.9765,"bit_identical":true,"reps":30,"sessions":3,"n_static":[1399.27, 1408.1, 1413.53],"n_clc":[1435.26, 1441.99, 1447.18]}
+q9-attngate        4096   4096   512    128   1.56   78.0% |     145.3     150.7  0.964x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-attngate","in_f":4096,"out_f":4096,"T":512,"tiles":128,"waves":1.561,"wave_eff":0.7805,"static_us":145.27,"clc_us":150.69,"ratio":0.9640,"bit_identical":true,"reps":30,"sessions":3,"n_static":[145.21, 145.27, 160.7],"n_clc":[149.47, 150.69, 151.94]}
+q9-attngate        4096   4096  1736    448   5.46   91.1% |     487.1     500.8  0.973x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"q9-attngate","in_f":4096,"out_f":4096,"T":1736,"tiles":448,"waves":5.463,"wave_eff":0.9106,"static_us":487.14,"clc_us":500.75,"ratio":0.9728,"bit_identical":true,"reps":30,"sessions":3,"n_static":[456.0, 487.14, 491.05],"n_clc":[485.39, 500.75, 504.01]}
+wavequant-84t      4096  10752   128     84   1.02   51.2% |     148.5     153.2  0.969x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"wavequant-84t","in_f":4096,"out_f":10752,"T":128,"tiles":84,"waves":1.024,"wave_eff":0.5122,"static_us":148.47,"clc_us":153.22,"ratio":0.9690,"bit_identical":true,"reps":30,"sessions":3,"n_static":[147.25, 148.47, 168.51],"n_clc":[153.0, 153.22, 169.04]}
+wavequant-336t     4096  10752   512    336   4.10   82.0% |     389.8     403.5  0.966x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"wavequant-336t","in_f":4096,"out_f":10752,"T":512,"tiles":336,"waves":4.098,"wave_eff":0.8195,"static_us":389.83,"clc_us":403.54,"ratio":0.9660,"bit_identical":true,"reps":30,"sessions":3,"n_static":[361.72, 389.83, 398.5],"n_clc":[384.72, 403.54, 407.7]}
+wavequant-168t     4096  10752   256    168   2.05   68.3% |     228.9     234.7  0.975x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"wavequant-168t","in_f":4096,"out_f":10752,"T":256,"tiles":168,"waves":2.049,"wave_eff":0.6829,"static_us":228.91,"clc_us":234.70,"ratio":0.9753,"bit_identical":true,"reps":30,"sessions":3,"n_static":[228.89, 228.91, 234.82],"n_clc":[234.66, 234.7, 235.07]}
+g12-attn_q         3840   4096   512    128   1.56   78.0% |     137.1     139.9  0.980x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"g12-attn_q","in_f":3840,"out_f":4096,"T":512,"tiles":128,"waves":1.561,"wave_eff":0.7805,"static_us":137.10,"clc_us":139.93,"ratio":0.9798,"bit_identical":true,"reps":30,"sessions":3,"n_static":[136.19, 137.1, 137.49],"n_clc":[139.42, 139.93, 141.62]}
+g12-attn_q         3840   4096  1736    448   5.46   91.1% |     467.7     477.7  0.979x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"g12-attn_q","in_f":3840,"out_f":4096,"T":1736,"tiles":448,"waves":5.463,"wave_eff":0.9106,"static_us":467.67,"clc_us":477.72,"ratio":0.9790,"bit_identical":true,"reps":30,"sessions":3,"n_static":[420.27, 467.67, 468.79],"n_clc":[439.85, 477.72, 478.33]}
+g12-ffn_gate       3840  15360   512    480   5.85   97.6% |     463.5     473.5  0.979x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"g12-ffn_gate","in_f":3840,"out_f":15360,"T":512,"tiles":480,"waves":5.854,"wave_eff":0.9756,"static_us":463.50,"clc_us":473.46,"ratio":0.9790,"bit_identical":true,"reps":30,"sessions":3,"n_static":[438.31, 463.5, 469.29],"n_clc":[445.71, 473.46, 474.47]}
+g12-ffn_gate       3840  15360  1736   1680  20.49   97.6% |    1604.3    1642.0  0.977x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"g12-ffn_gate","in_f":3840,"out_f":15360,"T":1736,"tiles":1680,"waves":20.488,"wave_eff":0.9756,"static_us":1604.26,"clc_us":1641.95,"ratio":0.9770,"bit_identical":true,"reps":30,"sessions":3,"n_static":[1592.06, 1604.26, 1616.76],"n_clc":[1634.28, 1641.95, 1642.1]}
+g12-ffn_down      15360   3840   512    120   1.46   73.2% |     530.6     549.6  0.965x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"g12-ffn_down","in_f":15360,"out_f":3840,"T":512,"tiles":120,"waves":1.463,"wave_eff":0.7317,"static_us":530.58,"clc_us":549.55,"ratio":0.9655,"bit_identical":true,"reps":30,"sessions":3,"n_static":[518.65, 530.58, 539.09],"n_clc":[545.02, 549.55, 555.17]}
+g12-ffn_down      15360   3840  1736    420   5.12   85.4% |    1720.7    1756.1  0.980x | IDENTICAL
+JSONL {"lane":"clc-mmq","shape":"g12-ffn_down","in_f":15360,"out_f":3840,"T":1736,"tiles":420,"waves":5.122,"wave_eff":0.8537,"static_us":1720.73,"clc_us":1756.13,"ratio":0.9798,"bit_identical":true,"reps":30,"sessions":3,"n_static":[1706.52, 1720.73, 1720.93],"n_clc":[1755.05, 1756.13, 1759.61]}

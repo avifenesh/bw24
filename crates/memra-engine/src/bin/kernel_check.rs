@@ -1559,6 +1559,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
                             println!("MMQ-Q4_0-RP {tname} T={tt}: bit-mismatch {nbad}/{} {}",
                                      yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                            // CLC work-stealing arm (perf-frontier lever #1, MEMRA_MMQ_CLC):
+                            // clusterlaunchcontrol.try_cancel block-stealing over the SAME tile
+                            // grid — schedule-only, so the gate is BIT-identity vs the forced
+                            // static xy-tiling kernel (raw AND rp), never a band. A bit-diff
+                            // here means a tile ran twice/never or fixup leaked in: DOA.
+                            memra_engine::MMQ_SK_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+                            let clc_avail = unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(0) } == 1;
+                            if clc_avail {
+                                let yt = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(1) };
+                                let yc = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let nbad = yt.iter().zip(yc.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-CLC {tname} T={tt}: bit-mismatch {nbad}/{} {}",
+                                         yt.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                                let yc_rp = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd_rp, &xd, tt, in_f, out_f, true)?)?;
+                                let nbad_rp = yt.iter().zip(yc_rp.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-CLC-RP {tname} T={tt}: bit-mismatch {nbad_rp}/{} {}",
+                                         yt.len(), if nbad_rp == 0 { "OK" } else { fails += 1; "FAIL" });
+                            } else {
+                                println!("MMQ-Q4_0-CLC {tname} T={tt}: SKIP (pre-SM100 build — CLC kernel not compiled)");
+                            }
+                            unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(-1) };
+                            memra_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
                 }
@@ -1622,13 +1647,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let xd = e.htod(&x)?;
                             let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
                             let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let mut y_tile: Vec<f32> = Vec::new();
                             for (force, label) in [(0i8, "TILE"), (1, "SK")] {
                                 memra_engine::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
                                 let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
                                 let rel = maxdiff(&cpu, &yb) / scale;
                                 println!("MMQ-Q4_0-RAGK {label} [in={in_f} out={out_f} nc=false] T={tt}: rel={rel:.2e} {}",
                                          if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                                if force == 0 { y_tile = yb; }
                             }
+                            // CLC on the ragged-k shape: no k split, so the ITER_K-alignment
+                            // hazard that killed SK here cannot exist — gate stays bit-identity.
+                            memra_engine::MMQ_SK_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+                            if unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(1) } == 1 {
+                                let yc = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let nbad = y_tile.iter().zip(yc.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-RAGK CLC [in={in_f} out={out_f} nc=false] T={tt}: bit-mismatch {nbad}/{} {}",
+                                         yc.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                            }
+                            unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(-1) };
                             memra_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -1645,13 +1683,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let xd = e.htod(&x)?;
                             let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
                             let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let mut y_tile: Vec<f32> = Vec::new();
                             for (force, label) in [(0i8, "TILE"), (1, "SK")] {
                                 memra_engine::MMQ_SK_FORCE.store(force, std::sync::atomic::Ordering::Relaxed);
                                 let yb = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
                                 let rel = maxdiff(&cpu, &yb) / scale;
                                 println!("MMQ-Q4_0-NC26 {tname} {label} [in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
                                          if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                                if force == 0 { y_tile = yb; }
                             }
+                            // CLC on the need_check=true clamped-last-row-tile class (the exact
+                            // family where Hopper SK went wrong) — bit-identity vs forced TILE.
+                            memra_engine::MMQ_SK_FORCE.store(0, std::sync::atomic::Ordering::Relaxed);
+                            if unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(1) } == 1 {
+                                let yc = e.dtoh(&e.qmatvec_mmq_q4_0_raw(&wd, &xd, tt, in_f, out_f, false)?)?;
+                                let nbad = y_tile.iter().zip(yc.iter())
+                                    .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                                println!("MMQ-Q4_0-NC26 {tname} CLC [in={in_f} out={out_f}] T={tt}: bit-mismatch {nbad}/{} {}",
+                                         yc.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
+                            }
+                            unsafe { memra_engine::mmq_ffi::memra_mmq_q4_0_set_clc(-1) };
                             memra_engine::MMQ_SK_FORCE.store(-1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }

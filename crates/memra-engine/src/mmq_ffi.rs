@@ -166,6 +166,11 @@ unsafe extern "C" {
     ) -> i32;
     /// Stream-k fixup scratch bytes (one [MMQ_X x MMQ_Y] f32 slot per SM).
     pub fn memra_mmq_q4_0_fixup_bytes() -> usize;
+    /// Force the CLC work-stealing arm: 1 = on, 0 = off (static grid), -1 = MEMRA_MMQ_CLC env
+    /// default. Schedule-only swap of the xy-tiling kernel — bit-identical output by
+    /// construction (perf-frontier lever #1). Returns 1 when the CLC kernel is compiled in
+    /// (SM_100+ gencode), 0 on sm_89/90a builds (force is a no-op there; static grid always).
+    pub fn memra_mmq_q4_0_set_clc(force: i32) -> i32;
     /// Stream-k GEMM entry: tiling when wave efficiency >= 90%, else stream-k + fixup.
     pub fn memra_mmq_q4_0_gemm_sk(
         w_q4_0: *const core::ffi::c_void,

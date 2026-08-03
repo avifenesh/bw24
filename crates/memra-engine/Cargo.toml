@@ -194,3 +194,7 @@ path = "src/bin/ppn_gate.rs"
 [[bin]]
 name = "ppn-bench"
 path = "src/bin/ppn_bench.rs"
+
+[[bin]]
+name = "clc-mmq-bench"
+path = "src/bin/clc_mmq_bench.rs"
