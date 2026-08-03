@@ -1,0 +1,9 @@
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+loaded gemma4 (48 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=818  decode argmax=818  logit maxdiff=1.290e0  MATCH
+batched-prime argmax=818  tokenwise argmax=818  logit maxdiff=1.290e0  MATCH
+prefill 19 tok in 0.0319s = 595.8 tok/s (pp19)
+generated 20 tokens in 0.214s = 93.63 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.032s) [stop: MaxNew]
+tokens: [818, 1813, 8881, 568, 23681, 3224, 618, 506, 5213, 13865, 138059, 8881, 119542, 563, 506, 8906, 1657, 684, 837, 1813]

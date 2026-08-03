@@ -1,0 +1,30 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: crates/memra-engine/cu/qmatvec.cu
+  changed: research/fast-gate-20260802/clean-run-console.log
+  changed: tools/fast-gate/fast-gate.sh
+  changed: tools/fast-gate/map.tsv
+  kernel-check scope: csv [dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane]
+  tier-1 argmax probes: q9,q35,g12,o35
+  tier-1 spec probes:   none
+  logs: /home/avifenesh/projects/wt-fast-gate/research/fast-gate-20260802/clean-run-logs
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check (synthetic + dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane): GREEN (3s)
+tier 0: GREEN (3s total)
+== fast-gate tier 1 ==
+  q9: PASS (gates green + golden token-identical, 4s)
+  q9: perf-smoke ok (134.12 tok/s vs 127.91, +4.9%; single rep, informational)
+  q35: PASS (gates green + golden token-identical, 8s)
+  q35: perf-smoke ok (187.31 tok/s vs 174.57, +7.3%; single rep, informational)
+  g12: PASS (gates green + golden token-identical, 3s)
+  g12: perf-smoke ok (93.67 tok/s vs 93.63, +0.0%; single rep, informational)
+  o35: PASS (gates green + golden token-identical, 15s)
+  o35: PERF-SMOKE WARN — 173.42 tok/s vs golden-point 197.22 (-12.1%; single rep, NOT evidence — re-measure per research/benchmarks.md)
+tier 1: 0 fail (33s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.
+
+real	0m32.875s
+user	0m12.368s
+sys	0m16.928s

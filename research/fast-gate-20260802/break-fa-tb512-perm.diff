@@ -1,0 +1,15 @@
+diff --git a/crates/memra-engine/cu/flash_attn.cu b/crates/memra-engine/cu/flash_attn.cu
+index f53be4a8..d0832b54 100644
+--- a/crates/memra-engine/cu/flash_attn.cu
++++ b/crates/memra-engine/cu/flash_attn.cu
+@@ -9622,7 +9622,9 @@ static __device__ __forceinline__ void fa_v4_stage_k_512(
+             #pragma unroll
+             for (int b8 = 0; b8 < 4; b8++) {
+                 const int e = w * 4 + b8;
+-                const int q = __float2int_rn(vals[e] * inv);
++                // FAST-GATE CATCH DEMO (deliberate break, reverted): element permutation in
++                // the LIVE gemma hd512 tb512 K staging (index-mixup class).
++                const int q = __float2int_rn(vals[e ^ 1] * inv);
+                 packed |= (q & 0xFF) << (8 * b8);
+             }
+             sm->k_ints[j][c * 8 + w] = packed;

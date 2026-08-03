@@ -1,0 +1,29 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: crates/memra-engine/cu/qmatvec.cu
+  changed: research/fast-gate-20260802/break-kernel-console.log
+  changed: research/fast-gate-20260802/clean-run-console.log
+  changed: research/fast-gate-20260802/clean-run-logs/build.log
+  changed: research/fast-gate-20260802/clean-run-logs/kernel-check.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-g12.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-o35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q9.log
+  changed: tools/fast-gate/fast-gate.sh
+  changed: tools/fast-gate/map.tsv
+  kernel-check scope: csv [dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane]
+  tier-1 argmax probes: q9,q35,g12,o35
+  tier-1 spec probes:   none
+  logs: /home/avifenesh/projects/wt-fast-gate/research/fast-gate-20260802/break-kernel-logs
+== fast-gate tier 0 ==
+  build: OK (143s)
+  kernel-check FAIL:
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+KC-SKIP [d2-cache-bit-identity] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: filtered by MEMRA_KC_ONLY=dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane (fast-gate change-scoped run — full battery still required before merge/tag)
+KC-SKIP [fast-router-batch] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: filtered by MEMRA_KC_ONLY=dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane (fast-gate change-scoped run — full battery still required before merge/tag)
+moe async-prefetch ordering + protected victim: OK
+Error: "3 kernel(s) FAILED"
+
+real	2m26.599s
+user	3m26.487s
+sys	0m11.495s

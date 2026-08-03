@@ -1,0 +1,63 @@
+# fast-gate probe registry. TAB-separated.
+#   id	kind(argmax|spec|gspec|cmd)	model-path	prompt	ngen	extra-env
+# kind=cmd: a SELF-GATING check command (host unit tests / GPU oracle gates). col3 = command,
+# col4 = args (or -), col5/col6 = placeholders/extra-env. Gate = exit 0; pins no golden.
+# prompt: a token-ids file (fed as raw ids — ONLY valid for the model family that produced
+# them) or @<textfile> (tokenized by the model's own tokenizer via MEMRA_PROMPT_FILE — safe
+# across families). Gemma probes reuse the battery's pinned gemma ids; every other family
+# uses the shared text probe.
+#
+# argmax probes run run-gen with MEMRA_NGEN=<ngen>; the gate is (1) the run-gen argmax
+# MATCH line + no MISMATCH-STRUCTURED, and (2) the `tokens:` line byte-equal to the pinned
+# golden in goldens/<id>.tokens (goldens refresh ONLY at full-battery green points).
+# spec probes run run-spec at the single MEMRA_SPEC_K pinned in extra-env (the K=1..8 sweep
+# stays tier-2); their gate is the SELF-CONSISTENCY PASS line plus the same golden pin on
+# the plain-generate `tokens:` line.
+#
+# One model per KERNEL CLASS the dispatch actually forks on (see map.tsv header):
+g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+# g12d: DEPTH probe (the battery's 1736-id depth prompt) — the gemma fp8-KV g-module FA arms
+# (hd512 dpl16 globals + windowed hd256) actually execute at t_kv ~1740; the 19-id gemma
+# probes decode below the t_kv=96 vec floor and never leave the scalar arm. (The ~100-token
+# text probes q9/q35/etc DO exercise the default-module v4 hd256 arm already.)
+# ngen=16, NOT 20: g12 depth prime is run-to-run NONDETERMINISTIC at a near-tie — token 17
+# flips 107<->45518 (~1/8 runs, prefill logit maxdiff 2.438 vs 2.492 run-to-run; receipts
+# research/fast-gate-20260802/g12-depth-nondeterminism.log). The first 16 generated ids were
+# stable across every observed run; a 20-token golden false-fails ~1/8.
+g12d	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/depth-prompt-1736-ids.txt	16	-
+g31	argmax	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+q9	argmax	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+k27	argmax	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+# q35 chat-wrapped: the raw continuation hits EOS after 1 token (a 1-id golden is no net).
+q35	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	MEMRA_CHAT=1
+# q35slru: SAME model FORCED into the spill regime — MEMRA_MOE_RESIDENT=0 kills the resident
+# slabs AND MEMRA_MOE_SLOTS=1024 caps the SLRU below the bank (~1GB vs 15.6GB), so prewarm can
+# cover only layer 0 and every other layer rides the staged miss path (SLRU dispatch, eviction,
+# H2D staging, moe_cached_gemm*). On a 24GB rig every resident-fitting probe (q35, g26, o35,
+# kat) NEVER exercises that dispatch class — a break there was demonstrably invisible to the
+# plain q35 probe (research/fast-gate-20260802/break-moe-staged-*). Uncapped RESIDENT=0 is not
+# enough either: the default SLRU budget still swallows the whole bank and the dev-from-slots
+# arm serves everything. This probe exists so the moe_cache/spill/staged rows have a probe
+# that EXERCISES them.
+q35slru	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	MEMRA_CHAT=1 MEMRA_MOE_RESIDENT=0 MEMRA_MOE_SLOTS=1024
+aw35	argmax	/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+o9	argmax	/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+o35	argmax	/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+kat	argmax	/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+# spec probes (ONE K each — the K=1..8 sweep is tier-2).
+# kind=spec  -> run-spec at MEMRA_SPEC_K (qwen MTP/NextN family); gate = SELF-CONSISTENCY PASS
+#               + golden pin on the plain-generate tokens line.
+# kind=gspec -> gemma-gate at MEMRA_SPEC (gemma assistant-drafter family, the battery's own
+#               invocation); gate = "stream agreement ngen/ngen" (spec self-compares vs plain
+#               in the same run — no separate golden needed).
+q35spec	spec	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	32	MEMRA_SPEC_K=3 MEMRA_DRAFT=/data/ai-ml/hf-models/qwen36-35b-moe/draft-35b-owntrim-nvfp4head-q4blk.gguf
+# cmd probes (self-gating; exit 0 = PASS). NOTE the greedy blind spot they close: every argmax
+# probe runs temp=0, which routes around the sampler chain entirely — a broken sampler or
+# spec-sample kernel is INVISIBLE to token goldens (demonstrated in
+# research/fast-gate-20260802/break-sampling-*). sample-check oracles spec_sample.cu on-GPU;
+# the memra-sampling host chain has its own cargo unit tests.
+samp	cmd	target/release/sample_check	-	-	-
+sampt	cmd	cargo	test -p memra-sampling --release -q	-	-
+g31spec	gspec	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	32	MEMRA_SPEC=3 MEMRA_DRAFT=/data/ai-ml/hf-models/gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf

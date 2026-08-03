@@ -1,0 +1,76 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: crates/memra-engine/src/hybrid_forward.rs
+  changed: research/fast-gate-20260802/break-forward10-console.log
+  changed: research/fast-gate-20260802/break-forward10-logs/build.log
+  changed: research/fast-gate-20260802/break-forward10-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-all-console.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-console.log
+  changed: research/fast-gate-20260802/break-forward-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-moe-console.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-kernel-console.log
+  changed: research/fast-gate-20260802/break-kernel-logs/build.log
+  changed: research/fast-gate-20260802/break-kernel-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-console.log
+  changed: research/fast-gate-20260802/break-moedev-logs/build.log
+  changed: research/fast-gate-20260802/break-moedev-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-moe-staged-console.log
+  changed: research/fast-gate-20260802/break-moe-staged.diff
+  changed: research/fast-gate-20260802/clean-run-console.log
+  changed: research/fast-gate-20260802/clean-run-logs/build.log
+  changed: research/fast-gate-20260802/clean-run-logs/kernel-check.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-g12.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-o35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q9.log
+  changed: research/fast-gate-20260802/refresh-q35slru-console.log
+  changed: research/fast-gate-20260802/refresh-q35slru-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/revert-run-console.log
+  changed: research/fast-gate-20260802/revert-run-logs/build.log
+  changed: research/fast-gate-20260802/revert-run-logs/probe-q35spec.log
+  kernel-check scope: synthetic
+  tier-1 argmax probes: g12,q9,q35,q35slru
+  tier-1 spec probes:   q35spec
+  logs: research/fast-gate-20260802/break-moe-staged-logs
+== fast-gate tier 0 ==
+  build: OK (20s)
+  kernel-check (synthetic arms): GREEN (1s)
+tier 0: GREEN (23s total)
+== fast-gate tier 1 ==
+  g12: PASS (gates green + golden token-identical, 5s)
+  q9: PASS (gates green + golden token-identical, 4s)
+  q35: PASS (gates green + golden token-identical, 14s)
+  q35slru: FAIL (exit 101, 11s) — tail:
+      assertion `left == right` failed: decode-step diverges from prefill — cache threading bug
+        left: 1510
+       right: 258
+      note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+  q35spec: PASS (gates green + golden token-identical, 7s)
+tier 1: 1 fail (64s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.

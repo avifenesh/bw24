@@ -1,0 +1,22 @@
+
+running 5 tests
+.... 4/5
+tests::top_k_one_is_argmax --- FAILED
+
+failures:
+
+---- tests::top_k_one_is_argmax stdout ----
+
+thread 'tests::top_k_one_is_argmax' (1518195) panicked at crates/memra-sampling/src/lib.rs:320:9:
+assertion `left == right` failed: top_k=1 collapses to argmax
+  left: 3
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::top_k_one_is_argmax
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p memra-sampling --lib`

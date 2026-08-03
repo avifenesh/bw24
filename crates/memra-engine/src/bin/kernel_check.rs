@@ -14,6 +14,28 @@ use memra_engine::Engine;
 /// A miss prints ONE loud actionable line — a skipped section must always be visible in the
 /// battery log and name the env that enables it, never silent.
 fn kc_model(section: &str, fname: &str, legacy: &[&str], gguf_arg: &Option<String>) -> Option<String> {
+    // fast-gate seams (tools/fast-gate, 2026-08-02). The model-backed weight-oracle sections
+    // are >98% of the kernel-check wall (266s of 268s measured on the 5090 rig); the synthetic
+    // arms alone run in ~2s. Two diagnostics envs let the dev-loop gate scope this binary to
+    // the sections a diff actually touches — every skip is LOUD, and the full battery (no env)
+    // still gates merges/tags. Section names are the first kc_model argument (dtype5,
+    // nvfp4-gemm, q8mmq-gemm, q4_0-mmq, q4_0-sk-arm, iq4xs-mmq, f16g-kq-direct,
+    // nvfp4-27b-shape, nvfp4-mmvq, nvfp4-batched, a6-split-plane(9b-fallback),
+    // d2-cache-bit-identity, fast-router-batch).
+    //   MEMRA_KC_FAST=1        skip ALL weight-oracle sections (synthetic arms only, ~2s)
+    //   MEMRA_KC_ONLY=a,b,...  run only sections whose name contains one of the csv terms
+    if std::env::var("MEMRA_KC_FAST").as_deref() == Ok("1") {
+        println!("KC-SKIP [{section}] {fname}: MEMRA_KC_FAST=1 (weight-oracle section skipped; \
+                  synthetic arms only — full battery still required before merge/tag)");
+        return None;
+    }
+    if let Ok(filter) = std::env::var("MEMRA_KC_ONLY") {
+        if !filter.split(',').any(|f| !f.is_empty() && section.contains(f)) {
+            println!("KC-SKIP [{section}] {fname}: filtered by MEMRA_KC_ONLY={filter} \
+                      (fast-gate change-scoped run — full battery still required before merge/tag)");
+            return None;
+        }
+    }
     let mut cands: Vec<String> = Vec::new();
     if let Ok(d) = std::env::var("MEMRA_KC_MODELS_DIR") {
         cands.push(format!("{}/{fname}", d.trim_end_matches('/')));

@@ -1,0 +1,15 @@
+diff --git a/crates/memra-engine/cu/flash_attn.cu b/crates/memra-engine/cu/flash_attn.cu
+index f53be4a8..a8c8ab9c 100644
+--- a/crates/memra-engine/cu/flash_attn.cu
++++ b/crates/memra-engine/cu/flash_attn.cu
+@@ -9613,7 +9613,9 @@ static __device__ __forceinline__ void fa_v4_stage_k_512(
+             vals[e] = (float)((const __nv_fp8_e4m3*)blk)[e];
+             amax = fmaxf(amax, fabsf(vals[e]));
+         }
+-        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
++        // FAST-GATE CATCH DEMO (deliberate break, reverted): K requant scale skew on the
++        // LIVE gemma hd512 tb512 staging arm.
++        const float kd = (amax > 0.0f) ? (amax / 126.0f) : 0.0f;
+         const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+         sm->k_d[j][c] = kd;
+         #pragma unroll

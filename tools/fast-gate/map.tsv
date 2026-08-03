@@ -1,0 +1,89 @@
+# fast-gate change->gate mapping (tools/fast-gate/fast-gate.sh). TAB-separated, first match
+# is NOT exclusive — every matching row contributes, the plan is the UNION of matches.
+#
+#   col 1  regex matched against each `git diff --name-only` path (extended regex, anchored
+#          however you write it)
+#   col 2  kernel-check scope for tier-0:
+#            all        full kernel-check (no env)
+#            synthetic  MEMRA_KC_FAST=1 (synthetic arms only, ~2s — skips weight-oracle sections)
+#            none       skip kernel-check entirely (build-only tier-0)
+#            <csv>      MEMRA_KC_ONLY=<csv> (synthetic arms + only these weight-oracle sections;
+#                       names = kc_model section tags: dtype5, nvfp4-gemm, q8mmq-gemm, q4_0-mmq,
+#                       q4_0-sk-arm, iq4xs-mmq, f16g-kq-direct, nvfp4-27b-shape, nvfp4-mmvq,
+#                       nvfp4-batched, a6-split-plane, d2-cache-bit-identity, fast-router-batch)
+#   col 3  tier-1 golden argmax probes (csv of ids from models.tsv), or -
+#   col 4  tier-1 spec probes (csv of ids from models.tsv), or -
+#
+# Scope union rule: none < synthetic < csv < all. Unmatched engine/runtime paths fall through
+# to the DEFAULT row at the bottom (conservative: full kernel-check + one probe per model class).
+#
+# The mapping encodes the dispatch structure: which kernels serve which model classes.
+# Model classes (see models.tsv): g12/g31/e4b = gemma4 dense Q4_0 (hd512 MQA + GQA16, SWA hd256);
+# g26 = gemma4 MoE Q4_0; q9 = qwen hybrid dense NVFP4 (hd128, GDN linear-attn); k27 = qwen dense
+# NVFP4; q35/aw35 = qwen hybrid MoE IQ4_XS+Q8_0-trunk; o9 = dense Q8_0; o35 = MoE Q4_K_M.
+#
+# --- CUDA kernels ---
+^crates/memra-engine/cu/qmatvec\.cu$	dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane	q9,q35,g12,o35	-
+^crates/memra-engine/cu/qmatvec_gemm\.cu$	nvfp4-gemm,nvfp4-27b-shape	q9,k27	-
+^crates/memra-engine/cu/mmq_q4_0.*\.cu$	q4_0-mmq,q4_0-sk-arm	g12,g26	-
+^crates/memra-engine/cu/mmq_q8_0\.cu$	q8mmq-gemm	o9,q35	-
+^crates/memra-engine/cu/mmq_q45k\.cu$	nvfp4-gemm	o35,k27	-
+^crates/memra-engine/cu/mmq_iq_experts\.cu$	iq4xs-mmq,dtype5	q35,aw35	-
+^crates/memra-engine/cu/(mmq_fp4|mmq_nvfp4_[a-z0-9_]*|cutlass_fp4_sm120)\.cu$	nvfp4-gemm,nvfp4-27b-shape,nvfp4-batched	q9,k27	-
+# flash_attn.cu: the tier-0 synthetic arms carry the REAL teeth for the live decode arms
+# (fa_decode_rows/seqs_v4 bit-identity caught a v4 K-scale skew with 46 FAILs — receipts
+# break-fa-v4-*). The ~100-token text probes (q9/q35) decode at t_kv ~100-120 — above the
+# 96 vec floor, inside the v4 window — so the default-module v4 hd256 arm runs; g12d adds
+# the gemma fp8-KV g-module at depth (hd512 dpl16 + windowed arms, t_kv ~1740). KNOWN GAP:
+# helpers only consumed by non-default rollback seams (e.g. dq_K_lane's q8_0 branch — v4-off
+# vec_q, smem twin, q8_0 globals under MEMRA_GEMMA_GKV=0) are DEFAULT-DEAD: invisible to
+# naked probes by construction (verified: a lane-swap break there passed everything,
+# break-fa-decode2-*); flipping those seams is battery/A-B territory. docs/TESTING.md.
+^crates/memra-engine/cu/(flash_attn|fa3_prefill|fattn_vendor)\.cu$	synthetic	g12d,g31,q9,q35	-
+^crates/memra-engine/cu/(f16_prefill|fp8_prefill|moe_f16_grouped)\.cu$	f16g-kq-direct	g26,q35	-
+^crates/memra-engine/cu/moe_router\.cu$	fast-router-batch,d2-cache-bit-identity	q35,g26	-
+^crates/memra-engine/cu/hybrid\.cu$	synthetic	q9,q35	-
+^crates/memra-engine/cu/kernels\.cu$	synthetic	g12,q9,q35	-
+# spec_sample.cu: the golden probes are all GREEDY (temp 0) — they route around the sampled-spec
+# kernels entirely, so a broken gumbel/softmax_gather/residual sampler is INVISIBLE to token
+# goldens. sample-check (samp) is the on-GPU oracle for exactly these kernels.
+^crates/memra-engine/cu/spec_sample\.cu$	synthetic	samp	q35spec,g31spec
+^crates/memra-engine/cu/[a-z0-9_]*\.(cuh|inc)$	all	g12,q9,q35	-
+# --- engine Rust: spec/draft pipeline (spec.rs also hosts the sampled-spec host Philox mirror —
+# samp oracles the device twins the greedy spec probes never run) ---
+^crates/memra-engine/src/(spec|gemma_spec|dflash|eagle|round_stream)\.rs$	synthetic	samp	q35spec,g31spec
+# --- engine Rust: MoE residency/spill. THE PROBE-REGIME LESSON (2026-08-03): on a 24GB rig
+# every MoE probe model loads RESIDENT (whole bank in device slabs), so the SLRU cache, the
+# staged moe_cached_gemm* loop, and the spill paths are NEVER exercised by a naked probe — a
+# break there was demonstrably invisible to q35 (research/fast-gate-20260802/break-moe-staged-*).
+# q35slru (MEMRA_MOE_RESIDENT=0 + capped slots) forces that dispatch class. ---
+^crates/memra-engine/src/(moe_cache|spill|spill_pread|cpu_experts)\.rs$	d2-cache-bit-identity,fast-router-batch	q35slru,q35	-
+# --- engine Rust: forward passes / graphs. kernel-check exercises Engine FFI wrappers, not
+# the forward passes — synthetic arms are a cheap link-sanity check; the REAL gate for these
+# files is the golden probes (three kernel classes + one spec probe). ---
+# hybrid_forward.rs also hosts the staged/SLRU MoE dispatch (moe_cached_gemm*) that resident-
+# fitting models never run — q35slru covers it (the probe-regime lesson, see the MoE row above).
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru	q35spec
+# --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
+^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
+# --- gate/bench binaries: build-only (they ARE the gates) ---
+^crates/memra-engine/src/bin/	none	-	-
+^crates/memra-engine/tests/	none	-	-
+# --- other crates ---
+^crates/memra-kv/	synthetic	q35,g31	-
+^crates/memra-gguf/	synthetic	g12,q35	-
+^crates/memra-tokenizer/	none	g12,q35	-
+# memra-sampling: greedy goldens collapse to argmax and never run the sampler transforms —
+# sampt (the crate's own unit tests) + samp (device sampler oracle) are the real gates here.
+^crates/memra-sampling/	synthetic	g12,sampt,samp	q35spec
+^crates/memra-runtime/	all	g12,q9,q35	-
+^crates/memra-validate/	synthetic	-	-
+# memra-server: fast-gate prints a pointer to tools/serve-smoke.sh (the serving battery);
+# engine-side effects are covered by the DEFAULT row only if engine files are also touched.
+^crates/memra-server/	none	-	-
+# --- no-gate paths ---
+^(docs/|research/|agent-knowledge/|probe/|\.github/|tools/)	none	-	-
+^[^/]*\.(md|svg|png|txt|json|lock)$	none	-	-
+# --- DEFAULT (first column literally "DEFAULT"): applied ONLY to files no row above
+# matched — it never escalates a file that already has a scoped plan. Conservative. ---
+DEFAULT	all	g12,q9,q35	q35spec

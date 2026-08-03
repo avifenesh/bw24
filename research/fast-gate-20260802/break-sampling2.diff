@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/cu/spec_sample.cu b/crates/memra-engine/cu/spec_sample.cu
+index 7fa07065..1f31aab4 100644
+--- a/crates/memra-engine/cu/spec_sample.cu
++++ b/crates/memra-engine/cu/spec_sample.cu
+@@ -96,7 +96,8 @@ extern "C" __global__ void softmax_gather_f32(
+     __syncthreads();
+     if (tid == 0) {
+         for (int w = 1; w < (nth + 31) / 32; ++w) s += red[w];
+-        out[pair] = __expf((xr[ids[pair]] - m) / temp) / s;
++        // FAST-GATE CATCH DEMO (deliberate break, reverted): acceptance-probability skew.
++        out[pair] = __expf((xr[ids[pair]] - m) / temp) / s * 1.001f;
+     }
+ }
+ 
