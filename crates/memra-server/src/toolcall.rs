@@ -42,12 +42,18 @@ pub struct ParsedToolCall {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Piece {
     Content(String),
+    /// Think-segment text (serve-compat lane, 2026-08-03; gap-scan F13): the OpenRouter
+    /// `reasoning` response field. Emitted while the prompt's open `<think>` tail is live;
+    /// the `</think>` tag itself and its trailing `\n\n` separator are syntax, not output.
+    Reasoning(String),
     Call(ParsedToolCall),
 }
 
 enum State {
-    /// Prompt ended with an open `<think>` — pass text through until `</think>`.
+    /// Prompt ended with an open `<think>` — text routes to `reasoning` until `</think>`.
     Prethink,
+    /// Just past `</think>`: swallow the (up to two) separator newlines, then Scan.
+    PostThink,
     /// Scanning content for `<tool_call>`.
     Scan,
     /// Inside a `<tool_call>` block, buffering until `</tool_call>`.
@@ -65,6 +71,13 @@ pub struct ToolStreamParser {
     /// Declared JSON-schema `type` per (function, parameter) — drives argument coercion.
     schemas: HashMap<String, HashMap<String, String>>,
     n_calls: usize,
+    /// false = reasoning-only mode (non-tools chat on a think-class model): post-think text
+    /// is pure content, never scanned for `<tool_call>` (no holdback, byte-identical stream).
+    scan_tools: bool,
+    /// OpenRouter `include_reasoning:false` — think text is separated AND dropped.
+    include_reasoning: bool,
+    /// Separator-newline budget right after `</think>` (the template emits `</think>\n\n`).
+    postthink_nl: u8,
 }
 
 /// Length of the longest PROPER prefix of `tag` that `s` ends with (all tags are ASCII, so
@@ -88,7 +101,26 @@ impl ToolStreamParser {
             buf: String::new(),
             schemas,
             n_calls: 0,
+            scan_tools: true,
+            include_reasoning: true,
+            postthink_nl: 0,
         }
+    }
+
+    /// Reasoning-only parser for NON-tools chat on a think-open model (gap-scan F13):
+    /// think text -> `reasoning`, everything after `</think>` passes through as content
+    /// unscanned (a `<tool_call>` in plain prose is prose).
+    pub fn reasoning_only(include_reasoning: bool) -> Self {
+        let mut p = Self::new(HashMap::new(), true);
+        p.scan_tools = false;
+        p.include_reasoning = include_reasoning;
+        p
+    }
+
+    /// Honor OpenRouter `include_reasoning:false`: think text stays separated but is dropped.
+    pub fn with_include_reasoning(mut self, include: bool) -> Self {
+        self.include_reasoning = include;
+        self
     }
 
     pub fn push(&mut self, text: &str) -> Vec<Piece> {
@@ -98,21 +130,41 @@ impl ToolStreamParser {
             match self.state {
                 State::Prethink => {
                     if let Some(i) = self.buf.find(THINK_END) {
-                        let cut = i + THINK_END.len();
-                        emit_content(&mut out, self.buf[..cut].to_string());
-                        self.buf.drain(..cut);
-                        self.state = State::Scan;
+                        // think text -> reasoning; the tag itself is syntax, not output.
+                        self.emit_reasoning(&mut out, self.buf[..i].to_string());
+                        self.buf.drain(..i + THINK_END.len());
+                        self.state = State::PostThink;
+                        self.postthink_nl = 2;
                         continue;
                     }
                     let keep = partial_suffix_len(&self.buf, THINK_END);
                     let emit_to = self.buf.len() - keep;
                     if emit_to > 0 {
-                        emit_content(&mut out, self.buf[..emit_to].to_string());
+                        self.emit_reasoning(&mut out, self.buf[..emit_to].to_string());
                         self.buf.drain(..emit_to);
                     }
                     break;
                 }
+                State::PostThink => {
+                    // swallow the template's `</think>\n\n` separator newlines (syntax).
+                    while self.postthink_nl > 0 && self.buf.starts_with('\n') {
+                        self.buf.drain(..1);
+                        self.postthink_nl -= 1;
+                    }
+                    if self.postthink_nl > 0 && self.buf.is_empty() {
+                        break; // more separator may still arrive
+                    }
+                    self.state = State::Scan;
+                    continue;
+                }
                 State::Scan => {
+                    if !self.scan_tools {
+                        // reasoning-only mode: post-think text is pure content, unscanned.
+                        if !self.buf.is_empty() {
+                            emit_content(&mut out, std::mem::take(&mut self.buf));
+                        }
+                        break;
+                    }
                     if let Some(i) = self.buf.find(OPEN) {
                         if i > 0 {
                             emit_content(&mut out, self.buf[..i].to_string());
@@ -147,16 +199,17 @@ impl ToolStreamParser {
     }
 
     /// End of generation: flush any held-back text. An unterminated `<tool_call>` block is
-    /// surfaced raw (opening tag restored) — same malformed policy.
+    /// surfaced raw (opening tag restored) — same malformed policy. A generation that ended
+    /// still inside the think segment flushes the tail as reasoning (never-closed `</think>`).
     pub fn finish(&mut self) -> Vec<Piece> {
         let mut out = Vec::new();
         if !self.buf.is_empty() {
             let tail = std::mem::take(&mut self.buf);
-            let text = match self.state {
-                State::InCall => format!("{OPEN}{tail}"),
-                _ => tail,
-            };
-            emit_content(&mut out, text);
+            match self.state {
+                State::Prethink => self.emit_reasoning(&mut out, tail),
+                State::InCall => emit_content(&mut out, format!("{OPEN}{tail}")),
+                _ => emit_content(&mut out, tail),
+            }
         }
         self.state = State::Scan;
         out
@@ -164,6 +217,18 @@ impl ToolStreamParser {
 
     pub fn n_calls(&self) -> usize {
         self.n_calls
+    }
+
+    /// Think-segment text: a Reasoning piece, or dropped under `include_reasoning:false`.
+    fn emit_reasoning(&self, out: &mut Vec<Piece>, text: String) {
+        if !self.include_reasoning || text.is_empty() {
+            return;
+        }
+        if let Some(Piece::Reasoning(prev)) = out.last_mut() {
+            prev.push_str(&text);
+            return;
+        }
+        out.push(Piece::Reasoning(text));
     }
 
     /// Parse one block body (the text between the `<tool_call>` tags). None = malformed.
@@ -262,15 +327,23 @@ Paris\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=metric>\ntrue
 </function>\n</tool_call>";
 
     fn reassemble(pieces: &[Piece]) -> (String, Vec<ParsedToolCall>) {
+        let (content, reasoning, calls) = reassemble3(pieces);
+        assert!(reasoning.is_empty(), "unexpected reasoning: {reasoning:?}");
+        (content, calls)
+    }
+
+    fn reassemble3(pieces: &[Piece]) -> (String, String, Vec<ParsedToolCall>) {
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut calls = Vec::new();
         for p in pieces {
             match p {
                 Piece::Content(t) => content.push_str(t),
+                Piece::Reasoning(t) => reasoning.push_str(t),
                 Piece::Call(c) => calls.push(c.clone()),
             }
         }
-        (content, calls)
+        (content, reasoning, calls)
     }
 
     #[test]
@@ -301,16 +374,65 @@ Paris\n</parameter>\n<parameter=days>\n3\n</parameter>\n<parameter=metric>\ntrue
     }
 
     #[test]
-    fn think_gate_passes_tool_call_mentions_through() {
+    fn think_gate_routes_think_text_to_reasoning_not_content() {
+        // gap-scan F13: think-segment text is the REASONING field, never content — a
+        // `<tool_call>` mentioned while reasoning is not a call, the tag + separator
+        // newlines are syntax, and post-think calls still parse.
         let mut p = ToolStreamParser::new(weather_schema(), true);
         let text = "planning a <tool_call> here...</think>\n\n<tool_call>\n\
 <function=get_weather>\n<parameter=city>\nOslo\n</parameter>\n</function>\n</tool_call>";
         let mut pieces = p.push(text);
         pieces.extend(p.finish());
-        let (content, calls) = reassemble(&pieces);
-        assert_eq!(content, "planning a <tool_call> here...</think>\n\n");
+        let (content, reasoning, calls) = reassemble3(&pieces);
+        assert_eq!(reasoning, "planning a <tool_call> here...");
+        assert_eq!(content, "");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments, r#"{"city":"Oslo"}"#);
+    }
+
+    #[test]
+    fn reasoning_only_mode_splits_think_from_content_char_by_char() {
+        // non-tools chat on a think-open model: reasoning/content split, post-think
+        // text NEVER scanned for tool tags.
+        let text = "step one\nstep two</think>\n\nAnswer with a <tool_call> literal.";
+        for chunked in [false, true] {
+            let mut p = ToolStreamParser::reasoning_only(true);
+            let mut pieces = Vec::new();
+            if chunked {
+                for ch in text.chars() {
+                    pieces.extend(p.push(&ch.to_string()));
+                }
+            } else {
+                pieces.extend(p.push(text));
+            }
+            pieces.extend(p.finish());
+            let (content, reasoning, calls) = reassemble3(&pieces);
+            assert_eq!(reasoning, "step one\nstep two", "chunked={chunked}");
+            assert_eq!(content, "Answer with a <tool_call> literal.", "chunked={chunked}");
+            assert!(calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn include_reasoning_false_drops_think_text() {
+        let mut p = ToolStreamParser::reasoning_only(false);
+        let mut pieces = p.push("hidden plan</think>\n\nvisible answer");
+        pieces.extend(p.finish());
+        let (content, reasoning, calls) = reassemble3(&pieces);
+        assert_eq!(reasoning, "");
+        assert_eq!(content, "visible answer");
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn unclosed_think_flushes_as_reasoning() {
+        // generation died inside the think segment: the tail is reasoning, not content.
+        let mut p = ToolStreamParser::reasoning_only(true);
+        let mut pieces = p.push("half a thought");
+        pieces.extend(p.finish());
+        let (content, reasoning, _) = reassemble3(&pieces);
+        assert_eq!(reasoning, "half a thought");
+        assert_eq!(content, "");
     }
 
     #[test]

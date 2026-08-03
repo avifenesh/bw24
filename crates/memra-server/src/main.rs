@@ -189,9 +189,14 @@ struct ChatCompletionReq {
     /// ignore the parameter gracefully.
     #[serde(default)]
     reasoning_effort: Option<String>,
-    /// OpenRouter object form: {"effort": "...", "enabled": bool} (max_tokens etc ignored).
+    /// OpenRouter object form: {"effort": "...", "enabled": bool, "exclude": bool}
+    /// (max_tokens etc ignored).
     #[serde(default)]
     reasoning: Option<serde_json::Value>,
+    /// OpenRouter legacy switch: false = think text is separated AND dropped from the
+    /// response (`reasoning.exclude` in the object form does the same).
+    #[serde(default)]
+    include_reasoning: Option<bool>,
     /// PC-ISO prefix-cache namespace (vLLM `cache_salt` convention, optional): requests
     /// only share cached prefixes with requests carrying the SAME salt. Absent/"" = the
     /// default single-tenant namespace (pre-PC-ISO behavior). See `cache_namespace`.
@@ -688,13 +693,27 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
         return Err(format!("model {:?} chat template has no tools branch", req.model));
     }
 
-    // Parser think gate: armed only when the rendered prompt will end with an OPEN think
-    // tail (template default, not switched off by reasoning_effort on a switch-carrying
-    // template) — reasoning text is content, not tool-call surface.
+    // Parser think gate: the rendered prompt ends with an OPEN think tail (template
+    // default, not switched off by reasoning_effort on a switch-carrying template).
     let think_open = caps.map(|c| c.qwen_think
         && !(think == ThinkMode::NoThink && c.think_switch)).unwrap_or(false);
-    let parser = (!tools_json.is_empty())
-        .then(|| ToolStreamParser::new(schemas, think_open));
+    // REASONING SEPARATION (gap-scan F13): think-segment text routes to the OpenRouter
+    // `reasoning` response field on EVERY chat request against a think-open prompt —
+    // content is post-think only. `include_reasoning:false` / `reasoning.exclude:true`
+    // drops the separated text. Tools requests keep the full tool-call scanner; non-tools
+    // think-open requests get the reasoning-only splitter (post-think text unscanned).
+    // Models without a think tail keep a byte-identical no-parser stream.
+    let include_reasoning = req.include_reasoning.unwrap_or(true)
+        && req.reasoning.as_ref()
+            .and_then(|r| r.get("exclude")).and_then(|v| v.as_bool()) != Some(true);
+    let parser = if !tools_json.is_empty() {
+        Some(ToolStreamParser::new(schemas, think_open)
+            .with_include_reasoning(include_reasoning))
+    } else if think_open {
+        Some(ToolStreamParser::reasoning_only(include_reasoning))
+    } else {
+        None
+    };
 
     Ok(ChatPlan {
         request: Request {
@@ -834,6 +853,10 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                 match $piece {
                     Piece::Content(text) => payloads.push(
                         chat_chunk!(json!({ "content": text }), serde_json::Value::Null)),
+                    // OR reasoning dialect (gap-scan F13): think text streams as
+                    // delta.reasoning, never as content.
+                    Piece::Reasoning(text) => payloads.push(
+                        chat_chunk!(json!({ "reasoning": text }), serde_json::Value::Null)),
                     Piece::Call(call) => {
                         payloads.push(chat_chunk!(json!({ "tool_calls": [{
                             "index": call_index, "id": call.id, "type": "function",
@@ -947,12 +970,15 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                            chat: bool, stop_strings: Vec<String>,
                            mut parser: Option<ToolStreamParser>, env: Envelope) -> Response {
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut tokens: Vec<u32> = Vec::new();
     let mut calls: Vec<ParsedToolCall> = Vec::new();
-    let consume = |pieces: Vec<Piece>, text: &mut String, calls: &mut Vec<ParsedToolCall>| {
+    let consume = |pieces: Vec<Piece>, text: &mut String, reasoning: &mut String,
+                   calls: &mut Vec<ParsedToolCall>| {
         for piece in pieces {
             match piece {
                 Piece::Content(t) => text.push_str(&t),
+                Piece::Reasoning(t) => reasoning.push_str(&t),
                 Piece::Call(c) => calls.push(c),
             }
         }
@@ -962,13 +988,13 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
             Event::Token { id, text: delta } => {
                 tokens.push(id);
                 match parser.as_mut() {
-                    Some(p) => consume(p.push(&delta), &mut text, &mut calls),
+                    Some(p) => consume(p.push(&delta), &mut text, &mut reasoning, &mut calls),
                     None => text.push_str(&delta),
                 }
             }
             Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s } => {
                 if let Some(p) = parser.as_mut() {
-                    consume(p.finish(), &mut text, &mut calls);
+                    consume(p.finish(), &mut text, &mut reasoning, &mut calls);
                 }
                 truncate_at_stop(&mut text, &stop_strings);
                 let finish = if calls.is_empty() { stop_reason_to_finish(&stop_reason) }
@@ -981,6 +1007,13 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                         serde_json::Value::String(text)
                     };
                     let mut message = json!({ "role": "assistant", "content": content });
+                    // OR reasoning dialect (gap-scan F13): think text is a dedicated
+                    // message field (+ reasoning_details), content is post-think only.
+                    if !reasoning.is_empty() {
+                        message["reasoning"] = json!(reasoning);
+                        message["reasoning_details"] = json!([{
+                            "type": "reasoning.text", "text": reasoning }]);
+                    }
                     if !calls.is_empty() {
                         message["tool_calls"] = serde_json::Value::Array(
                             calls.iter().map(tool_call_json).collect());
@@ -1152,7 +1185,14 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let plan = build_chat_request(weather_request(json!({"tool_choice": "none"})),
                                       Some(&tool_caps()), tx).unwrap();
-        assert!(plan.parser.is_none());
+        // tools stripped: no tool-call scanning; the think-open prompt still arms the
+        // reasoning-only splitter (F13) — a <tool_call> in post-think prose stays prose.
+        let mut p = plan.parser.expect("think-open chat arms the reasoning splitter");
+        let pieces = p.push("x</think>\n\n<tool_call> stays prose");
+        assert_eq!(pieces, vec![
+            Piece::Reasoning("x".into()),
+            Piece::Content("<tool_call> stays prose".into()),
+        ]);
         assert!(plan.request.tools_json.is_empty());
         // unsupported tool_choice forms are clean 400s, not silent downgrades.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1219,8 +1259,14 @@ mod tests {
         }]);
         assert_eq!(turns[2].role, "tool");
         assert_eq!(turns[2].content, "{\"temp_c\": 21}");
-        // no tools field on this follow-up turn: parser stays unarmed, tool turns still render.
-        assert!(plan.parser.is_none());
+        // no tools field on this follow-up turn: no tool-call scanning — but the think-open
+        // prompt still arms the reasoning-only splitter (gap-scan F13).
+        let mut p = plan.parser.expect("think-open chat arms the reasoning splitter");
+        let pieces = p.push("thought</think>\n\nanswer <tool_call> is prose here");
+        assert_eq!(pieces, vec![
+            Piece::Reasoning("thought".into()),
+            Piece::Content("answer <tool_call> is prose here".into()),
+        ]);
     }
 
     #[tokio::test]
@@ -1240,7 +1286,11 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(payload["choices"][0]["finish_reason"], "tool_calls");
-        assert_eq!(payload["choices"][0]["message"]["content"], "plan</think>\n\n");
+        // reasoning separation (gap-scan F13): think text -> message.reasoning (+details),
+        // content is post-think only (null here — a pure tool-call turn).
+        assert_eq!(payload["choices"][0]["message"]["content"], serde_json::Value::Null);
+        assert_eq!(payload["choices"][0]["message"]["reasoning"], "plan");
+        assert_eq!(payload["choices"][0]["message"]["reasoning_details"][0]["text"], "plan");
         let call = &payload["choices"][0]["message"]["tool_calls"][0];
         assert_eq!(call["type"], "function");
         assert_eq!(call["function"]["name"], "get_weather");
