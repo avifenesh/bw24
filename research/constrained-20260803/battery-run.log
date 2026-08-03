@@ -1,0 +1,27 @@
+== Phase A: unconstrained byte-identity (baseline vs lane binary) ==
+  ok: unconstrained greedy #0 byte-identical
+  ok: unconstrained temp #0 byte-identical
+  ok: unconstrained greedy #1 byte-identical
+  ok: unconstrained temp #1 byte-identical
+  ok: unconstrained greedy #2 byte-identical
+  ok: unconstrained temp #2 byte-identical
+== Phase B: constrained correctness ==
+  ok: json_object parses as object
+  ok: json_schema parses AND validates
+  ok: sampled json_schema validates
+  ok: unknown response_format type is a 400
+== Phase C: mask cost (N=3 each, same session) ==
+unconstrained run1: 256 tok in 1.50s = 170.8 tok/s
+unconstrained run2: 257 tok in 1.32s = 194.1 tok/s
+unconstrained run3: 257 tok in 1.32s = 194.3 tok/s
+constrained   run1: 217 tok in 1.85s = 117.6 tok/s
+constrained   run2: 217 tok in 1.85s = 117.4 tok/s
+constrained   run3: 217 tok in 1.85s = 117.4 tok/s
+[constrained] q9: 30 masked steps, mask total 1.95 ms (0.065 ms/step)
+[constrained] q9: 63 masked steps, mask total 3.44 ms (0.055 ms/step)
+[constrained] q9: 64 masked steps, mask total 3.50 ms (0.055 ms/step)
+[constrained] q9: 217 masked steps, mask total 12.00 ms (0.055 ms/step)
+[constrained] q9: 217 masked steps, mask total 12.67 ms (0.058 ms/step)
+[constrained] q9: 217 masked steps, mask total 12.62 ms (0.058 ms/step)
+
+battery: 0 failure(s)

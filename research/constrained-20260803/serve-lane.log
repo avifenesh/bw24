@@ -1,0 +1,46 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8191
+[worker] constrained request: spec-decode bypassed (grammar masks are plain-decode only for now)
+[worker] observed session VRAM cost for "q9": 235MB (admission gate = 2x)
+[constrained] q9: 30 masked steps, mask total 1.95 ms (0.065 ms/step)
+[worker] constrained request: spec-decode bypassed (grammar masks are plain-decode only for now)
+[constrained] q9: 63 masked steps, mask total 3.44 ms (0.055 ms/step)
+[worker] constrained request: spec-decode bypassed (grammar masks are plain-decode only for now)
+[constrained] q9: 64 masked steps, mask total 3.50 ms (0.055 ms/step)
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=23/33 cum=69/90=0.767
+[spec-acc] ctx=124 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=158 burst=18/45 cum=108/174=0.621
+[spec-acc] ctx=191 burst=24/30 cum=132/204=0.647
+[spec-acc] ctx=225 burst=22/30 cum=154/234=0.658
+[spec-acc] ctx=257 burst=2/63 cum=156/297=0.525
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=23/33 cum=69/90=0.767
+[spec-acc] ctx=124 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=158 burst=18/45 cum=108/174=0.621
+[spec-acc] ctx=191 burst=24/30 cum=132/204=0.647
+[spec-acc] ctx=225 burst=22/30 cum=154/234=0.658
+[spec-acc] ctx=257 burst=16/24 cum=170/258=0.659
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=23/33 cum=69/90=0.767
+[spec-acc] ctx=124 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=158 burst=18/45 cum=108/174=0.621
+[spec-acc] ctx=191 burst=24/30 cum=132/204=0.647
+[spec-acc] ctx=225 burst=22/30 cum=154/234=0.658
+[spec-acc] ctx=257 burst=16/24 cum=170/258=0.659
+[worker] constrained request: spec-decode bypassed (grammar masks are plain-decode only for now)
+[constrained] q9: 217 masked steps, mask total 12.00 ms (0.055 ms/step)
+[worker] constrained request: spec-decode bypassed (grammar masks are plain-decode only for now)
+[constrained] q9: 217 masked steps, mask total 12.67 ms (0.058 ms/step)
+[worker] constrained request: spec-decode bypassed (grammar masks are plain-decode only for now)
+[constrained] q9: 217 masked steps, mask total 12.62 ms (0.058 ms/step)

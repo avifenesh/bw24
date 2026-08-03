@@ -803,10 +803,27 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                       lane: lanes::Lane)
                       -> Result<ChatPlan, String> {
     let tool_choice = parse_tool_choice(&req.tool_choice)?;
-    let think = parse_think(&req.reasoning_effort, &req.reasoning)?;
+    let mut think = parse_think(&req.reasoning_effort, &req.reasoning)?;
     // response_format -> grammar spec (constrained decoding). None/text = unconstrained,
     // the exact legacy path; unknown/malformed forms are loud 400s.
     let grammar = constrained::parse_response_format(req.response_format.as_ref())?;
+    // GRAMMAR x THINK (measured live 2026-08-03): the grammar masks from the FIRST
+    // generated token, so an open <think> tail can never be closed — the forced JSON
+    // lands in the think segment and `content` comes back empty. Constrained requests
+    // force the template's no-think switch; a think-tail template WITHOUT the switch is
+    // a loud 400 (honesty gate), not a silently broken stream.
+    if grammar.is_some() {
+        if let Some(c) = caps {
+            if c.qwen_think && think != ThinkMode::NoThink {
+                if c.think_switch {
+                    think = ThinkMode::NoThink;
+                } else {
+                    return Err("response_format requires disabling the model's think tail, \
+                                but this chat template has no enable_thinking switch".into());
+                }
+            }
+        }
+    }
 
     // tool_choice "none" = OpenAI "the model will not call tools": the prompt renders
     // WITHOUT the tools block (byte-identical to a no-tools request) and no parser runs.
