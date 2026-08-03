@@ -811,7 +811,7 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
     let mut text = String::new();
     let mut tokens: Vec<u32> = Vec::new();
     let mut calls: Vec<ParsedToolCall> = Vec::new();
-    let mut consume = |pieces: Vec<Piece>, text: &mut String, calls: &mut Vec<ParsedToolCall>| {
+    let consume = |pieces: Vec<Piece>, text: &mut String, calls: &mut Vec<ParsedToolCall>| {
         for piece in pieces {
             match piece {
                 Piece::Content(t) => text.push_str(&t),
