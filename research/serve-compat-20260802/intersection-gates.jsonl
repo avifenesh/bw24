@@ -1,0 +1,9 @@
+{"ts": "2026-08-03T04:24:48+0300", "gate": "R-rep1", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 158, "total_tokens": 488, "cached_tokens": 0, "finish": "tool_calls"}
+{"ts": "2026-08-03T04:24:49+0300", "gate": "R-rep2", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 177, "total_tokens": 507, "cached_tokens": 330, "finish": "tool_calls"}
+{"ts": "2026-08-03T04:24:50+0300", "gate": "R-rep3", "verdict": "PASS", "prompt_tokens": 330, "tok_check": 330, "completion_tokens": 177, "total_tokens": 507, "cached_tokens": 330, "finish": "tool_calls"}
+{"ts": "2026-08-03T04:24:50+0300", "gate": "R-intersection", "verdict": "PASS", "rep1_cached": 0, "rep2_cached": 330, "rep3_cached": 330, "prompt_tokens": 330, "cold_ok": true, "third_hits": true, "prompt_count_stable": true, "tool_calls_identical": true}
+{"ts": "2026-08-03T04:24:50+0300", "gate": "R-content-identity", "verdict": "PASS", "gated": false, "cold_vs_hit_identical": true, "hit_vs_hit_identical": true}
+{"ts": "2026-08-03T04:24:51+0300", "gate": "M-A-cold", "verdict": "PASS", "prompt_tokens": 361, "tok_check": 361, "completion_tokens": 114, "total_tokens": 475, "cached_tokens": 0}
+{"ts": "2026-08-03T04:24:52+0300", "gate": "M-B-hit", "verdict": "PASS", "prompt_tokens": 360, "tok_check": 360, "completion_tokens": 114, "total_tokens": 474, "cached_tokens": 301}
+{"ts": "2026-08-03T04:24:53+0300", "gate": "M-C-hit", "verdict": "PASS", "prompt_tokens": 361, "tok_check": 361, "completion_tokens": 184, "total_tokens": 545, "cached_tokens": 301}
+{"ts": "2026-08-03T04:24:54+0300", "gate": "M-B2-hit-identical", "verdict": "PASS", "prompt_tokens": 360, "tok_check": 360, "completion_tokens": 114, "total_tokens": 474, "cached_tokens": 301, "generation_matches_B": true}

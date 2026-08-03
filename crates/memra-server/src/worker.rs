@@ -33,6 +33,12 @@ use memra_tokenizer::Tokenizer;
 /// Batched scheduling caps at MEMRA_MAX_SESSIONS (default 64). Admits beyond the cap queue (FIFO).
 pub const MAX_ACTIVE: usize = 4;
 
+/// `GenParams.max_new` sentinel: the request OMITTED `max_tokens` (gap-scan F2), so the
+/// generation budget is CONTEXT-BOUNDED — session ctx minus prompt tokens, model-capped —
+/// the OpenAI default-when-omitted semantics, never a silent 128-token truncation.
+/// (`budget = max_new.min(room)` makes the sentinel safe everywhere downstream.)
+pub const MAX_NEW_CTX_BOUNDED: usize = usize::MAX;
+
 /// Per-tick prefill chunk cap: tokens primed per scheduler tick per session. Priming runs at
 /// prefill throughput instead of tokenwise decode, while the per-tick cap keeps round-robin
 /// latency for concurrent sessions bounded.
@@ -767,6 +773,14 @@ pub fn run(
         let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
         let mut requeue: std::collections::VecDeque<Box<Request>> = Default::default();
         while let Some(req) = queue.pop_front() {
+            // DISCONNECT ABORT (gap-scan F8): a queued request whose client already hung
+            // up (receiver dropped) never reaches the GPU — dropped here, logged for the
+            // metering record (0 generated; prompt never primed).
+            if req.tx.is_closed() {
+                eprintln!("[abort] client disconnected while queued (model {:?}); dropped",
+                          req.model);
+                continue;
+            }
             let lane = req.lane;
             let batching_on = std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
             let cap = if lane == crate::lanes::Lane::Interactive {
@@ -856,8 +870,21 @@ pub fn run(
         //        decode_step_batch over survivors in chunks of <= 8.
         let batching = serve_batching();
         let mut finished: Vec<usize> = Vec::new();
+        // DISCONNECT ABORT (gap-scan F8): every send in the tick loop is `let _ =
+        // s.tx.send(..)` — send errors ignored — so an aborted client used to burn GPU
+        // until max_tokens/EOS and hold a slot against admission. The per-tick sweep
+        // retires closed-channel sessions BEFORE any phase steps them; the log line is
+        // the metering record (bill-to-abort-point: prompt/cached/generated so far).
+        // Retire still parks reusable KV — the state is consistent at the abort point.
+        for (i, s) in active.iter().enumerate() {
+            if s.tx.is_closed() {
+                abort_log(s);
+                finished.push(i);
+            }
+        }
         if !batching {
             for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
                 match step_session(&engine, &loaded, &mut active[i]) {
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
@@ -878,7 +905,7 @@ pub fn run(
             };
             if gs_on && active.len() > 1 {
                 for i in 0..active.len() {
-                    if active[i].graph.is_none() { continue; }
+                    if finished.contains(&i) || active[i].graph.is_none() { continue; }
                     let s = &mut active[i];
                     let g = s.graph.take().unwrap();
                     s.cache = Some(g.cache);
@@ -958,6 +985,7 @@ pub fn run(
             }
             // (a) spec bursts
             for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
                 if active[i].spec.is_some() {
                     match step_session(&engine, &loaded, &mut active[i]) {
                         Ok(true) => {}
@@ -1474,7 +1502,25 @@ fn admit(
     // multi-turn (parked cap 168 < next turn's need 240). Fixed-size sessions are also how the
     // reference server allocates (--ctx-size). KV cost @8192 on the 9B ≈ 119MB/session.
     let ctx_floor: usize = std::env::var("MEMRA_CTX").ok().and_then(|v| v.parse().ok()).unwrap_or(8192);
-    let ctx_cap = req.params.max_ctx.unwrap_or(prompt.len() + req.params.max_new + 8).max(ctx_floor);
+    // max_tokens OMITTED (MAX_NEW_CTX_BOUNDED sentinel, gap-scan F2): the session runs at
+    // the serving context (MEMRA_CTX / explicit max_ctx), capped at the model's trained
+    // context — budget becomes ctx_cap - prompt below, the vLLM/OpenAI default-when-omitted
+    // semantics. Explicit max_tokens keeps the exact legacy sizing (prompt + max_new + 8,
+    // floored at MEMRA_CTX) — honored exactly.
+    let ctx_cap = match (req.params.max_ctx, req.params.max_new) {
+        (Some(c), _) => c.max(ctx_floor),
+        (None, MAX_NEW_CTX_BOUNDED) => {
+            // serving ctx (the MEMRA_CTX floor) normally; a prompt that doesn't fit it
+            // grows the session to prompt + one serving ctx of room; always capped at
+            // the model's trained context (prompts past THAT are a real 400 below).
+            let model_ctx = lm.model.cfg.context_length as usize;
+            let mut c = ctx_floor;
+            if prompt.len() + 16 > c { c = prompt.len().saturating_add(ctx_floor); }
+            if model_ctx > 0 { c = c.min(model_ctx); }
+            c
+        }
+        (None, max_new) => (prompt.len() + max_new + 8).max(ctx_floor),
+    };
     if prompt.len() >= ctx_cap {
         return Err((req.tx, format!(
             "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap)));
@@ -1507,8 +1553,16 @@ fn admit(
     let serve_spec = !confidence_trace_enabled()
         && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut sampler = Sampler::new(req.sampler_cfg);
+    // GREEDY + penalties keeps the legacy tokenwise path (gap-scan F3 plumbing): the greedy
+    // spec arm verifies by pure argmax (sampling=None), which would silently ignore the
+    // penalties the host sampler applies pre-argmax. Sampled requests carry penalties into
+    // the rejection-sampling verify (SpecSampling) and stay spec-eligible.
+    let greedy_penalized = sampler.is_greedy()
+        && (sampler.penalty_repeat() != 1.0 || sampler.penalty_freq() != 0.0
+            || sampler.penalty_present() != 0.0);
     let spec_eligible = serve_spec
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
+        && !greedy_penalized
         && lm.model.mtp.is_some();
 
     // CROSS-REQUEST PREFIX CACHE probe (2026-08-02; module doc at PrefixCache). Only when the
@@ -1872,7 +1926,12 @@ fn advance_sample_emit(
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): a failed send = receiver dropped = client gone.
+    // Stop generating THIS tick (the tick-top sweep would only catch it next tick).
+    if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        abort_log(s);
+        return (false, None);
+    }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
         finish(s, StopReason::Callback);
         return (false, None);
@@ -1906,7 +1965,11 @@ fn advance_token_emit(
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: tok, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): failed send = client gone, stop this tick.
+    if s.tx.send(Event::Token { id: tok, text: delta }).is_err() {
+        abort_log(s);
+        return (false, ());
+    }
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
         finish(s, StopReason::Callback);
         return (false, ());
@@ -2023,11 +2086,24 @@ fn step_session(
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
         // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
-        let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+        // EOS text is never streamed (serve-compat, 2026-08-03): the tokenwise path stops
+        // BEFORE emitting the EOS token's text, but the burst used to detokenize the whole
+        // tail — clients saw a literal `<|im_end|>` in content (caught by the SDK gate's G4
+        // receipt). The token still counts (generated/fed keep it; committed state intact).
+        let visible = match stop {
+            Some(StopReason::Eos) => &s.generated[..s.generated.len() - 1],
+            _ => &s.generated[..],
+        };
+        let decoded = lm.tok.decode_bytes_special(visible, true);
         let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
         let full = String::from_utf8_lossy(&decoded);
-        if !delta.is_empty() {
-            let _ = s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta });
+        if !delta.is_empty()
+            && s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta }).is_err()
+        {
+            // DISCONNECT ABORT (gap-scan F8): client gone — retire at the abort point
+            // (session still parks; committed state is consistent post-burst).
+            abort_log(s);
+            return Ok(false);
         }
         if stop.is_none() && !s.stop_strings.is_empty()
             && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -2095,7 +2171,11 @@ fn step_session(
     let decoded = lm.tok.decode_bytes_special(&s.generated, true);
     let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
     let full = String::from_utf8_lossy(&decoded);
-    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    // DISCONNECT ABORT (gap-scan F8): failed send = client gone, retire at the abort point.
+    if s.tx.send(Event::Token { id: next, text: delta }).is_err() {
+        abort_log(s);
+        return Ok(false);
+    }
 
     // stop-string match on the detokenized tail.
     if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
@@ -2184,6 +2264,16 @@ fn write_confidence_trace(
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{record}")?;
     Ok(())
+}
+
+/// DISCONNECT ABORT metering record (gap-scan F8): one log line per aborted session —
+/// prompt/cached/generated at the abort point (bill-to-abort). Called from every
+/// send-failure retire; the tick-top sweep prints the same shape.
+fn abort_log(s: &Session) {
+    eprintln!("[abort] client disconnected: model {:?}, prompt {} ({} cached), \
+               {} generated — billed to abort point, {:.2}s",
+              s.model, s.n_prompt, s.n_cached, s.generated.len(),
+              s.t0.elapsed().as_secs_f64());
 }
 
 fn finish(s: &Session, reason: StopReason) {
