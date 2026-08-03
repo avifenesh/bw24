@@ -288,6 +288,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("silu_mul     maxdiff={d:.2e} {}", if d < 1e-5 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- GRAMMAR TOKEN MASK (constrained decoding): mask_logits_col must be BIT-IDENTICAL to
+    //     the host reference (allowed ids untouched, banned + tail ids = -FLT_MAX) on synthetic
+    //     packed bitsets, incl. a stacked-column case and a mask shorter than the row (padded
+    //     lm_head tail rule). ANY mismatch = FAIL. ---
+    {
+        let n = 4099usize;             // deliberately not a multiple of 32 (tail-word path)
+        let mask_words = (n - 67).div_ceil(32); // mask covers fewer ids than the row: tail ban
+        // synthetic bitset: allow ~1/7 of ids, deterministic
+        let mask: Vec<u32> = (0..mask_words).map(|w| {
+            let mut bits = 0u32;
+            for b in 0..32 { if (w * 32 + b) % 7 == 3 { bits |= 1 << b; } }
+            bits as u32
+        }).collect();
+        let allowed = |i: usize| -> bool { i < mask_words * 32 && i % 7 == 3 };
+        // two stacked rows; mask applied to col 1 only (col addressing under test)
+        let rows = 2usize;
+        let x: Vec<f32> = (0..rows * n).map(|i| pr(i) * 8.0).collect();
+        let mut cpu = x.clone();
+        for i in 0..n {
+            if !allowed(i) { cpu[n + i] = f32::MIN; }
+        }
+        let mut xd = e.htod(&x)?;
+        let md = e.htod_u32_v(&mask)?;
+        e.mask_logits_col(&mut xd, &md, 1, n, mask_words)?;
+        let gpu = e.dtoh(&xd)?;
+        let bad = cpu.iter().zip(&gpu).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        // argmax equivalence on the masked row (the property the sampler consumes)
+        let am_cpu = cpu[n..].iter().enumerate()
+            .max_by(|(i, a), (j, b)| a.partial_cmp(b).unwrap().then(j.cmp(i))).unwrap().0;
+        let am_gpu = gpu[n..].iter().enumerate()
+            .max_by(|(i, a), (j, b)| a.partial_cmp(b).unwrap().then(j.cmp(i))).unwrap().0;
+        println!("mask_logits_col: mismatch={bad} argmax {}=={} {}",
+                 am_cpu, am_gpu,
+                 if bad == 0 && am_cpu == am_gpu { "OK (byte-identical)" }
+                 else { fails += 1; "FAIL" });
+    }
+
     // --- RANK2 LEVER (q8_1 quant-fold): silu_mul_scaled_q8_1 must produce BIT-IDENTICAL q8_1 to the
     //     unfused silu_mul_scaled -> quantize_q8_1 (same int8 bytes, same f32 block scales). ---
     {
