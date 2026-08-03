@@ -1,0 +1,16 @@
+== item 1: /v1/models OR schema (live) ==
+  live entry: {"id": "tail", "name": "tail", "object": "model", "created": 1785801161, "context_length": 262144, "architecture": {"modality": "text->text", "tokenizer": "qwen35", "instruct_type": "chatml"}, "pricin ...
+  ok: /v1/models live OR-schema entry
+== item 2: rate-limit headers (hammer concurrency > cap) ==
+  limits=[4, 4, 4, 4, 4, 4, 4, 4]
+  remainings(sorted)=[3, 2, 1, 0, 0, 0, 0, 0]
+  ok: interactive hammer: trio on all 8, Remaining hits 0 (limit=4)
+  harvest: 2 served, 4 shed (429+Retry-After), remainings=[1, 0, 0, 0, 0, 0]
+  ok: harvest hammer: sheds carry trio + Retry-After, Remaining hit 0
+== item 3: graceful drain (SIGTERM mid-stream) ==
+  ok: in-flight stream completed through drain ([DONE] received)
+  ok: new request during drain: 503 + Retry-After
+  ok: /health reports draining
+  ok: SIGTERM landed with the stream in flight (server log)
+  ok: process exited 0 after drain
+battery: 0 failed

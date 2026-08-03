@@ -1,0 +1,1 @@
+{"object":"list","data":[{"id":"tail","name":"tail","object":"model","created":1785801161,"context_length":262144,"architecture":{"modality":"text->text","tokenizer":"qwen35","instruct_type":"chatml"},"pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},"top_provider":{"context_length":262144,"max_completion_tokens":null}}]}

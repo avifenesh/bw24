@@ -1,0 +1,10 @@
+HTTP/1.1 429 Too Many Requests
+content-type: application/json
+retry-after: 2
+x-request-id: chatcmpl-207c3fb7bd7850422b9ed2eb2627b4e6
+x-ratelimit-limit: 2
+x-ratelimit-remaining: 0
+x-ratelimit-reset: 2
+content-length: 48
+date: Mon, 03 Aug 2026 23:52:44 GMT
+

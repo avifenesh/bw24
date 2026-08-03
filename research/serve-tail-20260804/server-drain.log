@@ -1,0 +1,29 @@
+[server] starting; models config = [("tail", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "tail" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "tail": 33 layers, eos=248046
+[worker] tail: template caps tools=true think=true think_switch=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] tail: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["tail"]
+[server] listening on http://127.0.0.1:8188
+[worker] observed session VRAM cost for "tail": 235MB (admission gate = 2x)
+[spec-acc] ctx=25 burst=24/24 cum=24/24=1.000
+[server] SIGTERM: draining (1 in flight, deadline 30s)
+[spec-acc] ctx=58 burst=25/30 cum=49/54=0.907
+[spec-acc] ctx=93 burst=22/30 cum=71/84=0.845
+[spec-acc] ctx=125 burst=23/30 cum=94/114=0.825
+[spec-acc] ctx=158 burst=25/30 cum=119/144=0.826
+[spec-acc] ctx=193 burst=25/27 cum=144/171=0.842
+[spec-acc] ctx=227 burst=22/39 cum=166/210=0.790
+[spec-acc] ctx=262 burst=4/84 cum=170/294=0.578
+[spec-acc] ctx=294 burst=5/81 cum=175/375=0.467
+[spec-acc] ctx=326 burst=0/96 cum=175/471=0.372
+[spec-acc] ctx=358 burst=1/93 cum=176/564=0.312
+[spec-acc] ctx=390 burst=3/87 cum=179/651=0.275
+[spec-acc] ctx=422 burst=6/81 cum=185/732=0.253
+[spec-acc] ctx=455 burst=0/96 cum=185/828=0.223
+[spec-acc] ctx=487 burst=0/96 cum=185/924=0.200
+[spec-acc] ctx=519 burst=0/96 cum=185/1020=0.181
+[spec-acc] ctx=551 burst=1/93 cum=186/1113=0.167
+[server] drain complete in 5.1s; exiting

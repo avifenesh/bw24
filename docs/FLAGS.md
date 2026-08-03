@@ -61,6 +61,8 @@ HANDOVER.md sections from that date.
 | `MEMRA_API_KEY` | none | bearer key; setting it also defaults `MEMRA_COMPAT=openai` |
 | `MEMRA_COMPAT` | native (`openai` when API_KEY set) | response shape: `openai` = OpenAI completions SSE |
 | `MEMRA_CTX` | 8192 | session-cache context floor (KV @8192 ≈ 119MB/session on the 9B). Machine envelope: on the 24GB 5090 under the q8rp-mirror config, c=32 ctx-8192 sessions OOM (captured `CUDA_ERROR_OUT_OF_MEMORY`; ~27 admit) — set it to the workload, 2048 clears the same cell at 502 tok/s (`research/batched-tick-inc3-20260801/`) |
+| `MEMRA_DRAIN_S` | 30 | graceful-drain deadline (serve-tail lane, 2026-08-04): on SIGTERM the server 503s new completion requests (Retry-After = this value), `/health` reports `"draining"`, in-flight requests (streams included) finish up to this many seconds, then the process exits 0 |
+| `MEMRA_RL_RESET_S` | 2 | static `X-RateLimit-Reset` fallback (seconds) when all slots are taken and the live meter has no signal yet; with signal, Reset = mean tokens/request x p50 step latency (honestly coarse) |
 | `MEMRA_KV_REUSE` | on | `0` disables the KV prefix-reuse pool (session-gate validated; 42.6x turn-start at 40k) |
 | `MEMRA_REUSE_POOL` | 2 | parked-cache pool cap per model (VRAM budget: ~119MB/entry at ctx 8192 on the 9B). At the default, sequential multi-turn workloads of >2 sessions hit the park-evicts-next-entry cascade (0/N resumes; pinned 2026-07-31) — raise to the expected concurrent-session count when VRAM allows |
 | `MEMRA_SERVE_SPEC` | on | `0` disables the spec-decode serve path (greedy + MTP-head requests) |
