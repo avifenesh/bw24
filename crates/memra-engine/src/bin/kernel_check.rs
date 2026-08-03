@@ -177,16 +177,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- DECODE GLUE-FUSION: rms_norm_q8_1 must produce BIT-IDENTICAL q8_1 to rms_norm -> quantize_q8_1
-    //     (same int8 bytes, same f32 block scales). ---
-    {
-        let (ncols, nrows) = (4096usize, 1usize);
+    //     (same int8 bytes, same f32 block scales). nrows=1 is the decode case; nrows=5 is the
+    //     BATCHED-VERIFY twin (lane/vt-fixes fix 2): the kernel is row-indexed (blockIdx.x=row,
+    //     grid=nrows), so the T>1 launch must be the exact per-row m=1 program — the verify's
+    //     unfused rms_norm_decode+quantize chain replaced by ONE launch, bit-identical per row. ---
+    for nrows in [1usize, 5] {
+        let ncols = 4096usize;
         let eps = 1e-6f32;
         let x: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 31)).collect();
         let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 41) * 0.1).collect();
         let xd = e.htod(&x)?; let wd = e.htod(&w)?;
-        // reference: rms_norm then quantize_q8_1.
+        // reference: rms_norm_decode (blockDim=1024, the verify's dispatch-mirror) then quantize_q8_1.
         let mut z_ref = e.zeros(ncols * nrows)?;
-        e.rms_norm(&xd, &wd, &mut z_ref, ncols, nrows, eps)?;
+        e.rms_norm_decode(&xd, &wd, &mut z_ref, ncols, nrows, eps)?;
         let (q_ref, d_ref) = e.quantize_q8_1(&z_ref, nrows, ncols)?;
         // fused.
         let (q_f, d_f) = e.rms_norm_q8_1(&xd, &wd, ncols, nrows, eps)?;
@@ -195,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
         let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
         let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
-        println!("rms_norm_q8_1 fused: q_mismatch={qbad} d_mismatch={dbad} {}",
+        println!("rms_norm_q8_1 fused (nrows={nrows}): q_mismatch={qbad} d_mismatch={dbad} {}",
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
@@ -224,6 +227,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
         let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
         println!("add_rms_norm_q8_1 fused: res_mismatch={rbad} q_mismatch={qbad} d_mismatch={dbad} {}",
+                 if rbad == 0 && qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- BATCHED-VERIFY EPILOGUE TWIN (lane/vt-fixes fix 2): add_rms_norm_q8_1 at nrows=T
+    //     (T=2..8, the spec verify tier) must be BIT-IDENTICAL per row to the verify path's
+    //     UNFUSED chain: add_f32 -> rms_norm_decode (blockDim=1024, the dispatch-mirror the
+    //     verify norm pins) -> quantize_q8_1. The fused kernel is row-indexed (blockIdx.x=row),
+    //     so the T-row launch is the exact per-row m=1 program — per-(token,row) chain identity
+    //     by construction. Verifies the whole tier's shapes: T=2 (b2), T=4 (b4), T=5/8 (b8). ---
+    for nrows in [2usize, 4, 5, 8] {
+        let ncols = 4096usize;
+        let eps = 1e-6f32;
+        let a: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 61)).collect();
+        let b: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 67)).collect();
+        let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 71) * 0.1).collect();
+        let ad = e.htod(&a)?; let bd = e.htod(&b)?; let wd = e.htod(&w)?;
+        // reference: the verify t-path's exact unfused chain.
+        let mut res_ref = e.zeros(ncols * nrows)?;
+        e.add(&ad, &bd, &mut res_ref, ncols * nrows)?;
+        let mut z_ref = e.zeros(ncols * nrows)?;
+        e.rms_norm_decode(&res_ref, &wd, &mut z_ref, ncols, nrows, eps)?;
+        let (q_ref, d_ref) = e.quantize_q8_1(&z_ref, nrows, ncols)?;
+        // fused twin at nrows=T.
+        let mut res_f = e.zeros(ncols * nrows)?;
+        let (q_f, d_f) = e.add_rms_norm_q8_1(&ad, &bd, &wd, &mut res_f, ncols, nrows, eps)?;
+        let rr = e.dtoh(&res_ref)?; let rf = e.dtoh(&res_f)?;
+        let qr: Vec<i8> = e.stream().clone_dtoh(&q_ref)?; e.stream().synchronize()?;
+        let qf: Vec<i8> = e.stream().clone_dtoh(&q_f)?; e.stream().synchronize()?;
+        let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
+        let rbad = rr.iter().zip(&rf).filter(|(x, y)| x != y).count();
+        let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
+        let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
+        println!("add_rms_norm_q8_1 batched (T={nrows}): res_mismatch={rbad} q_mismatch={qbad} d_mismatch={dbad} {}",
                  if rbad == 0 && qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
