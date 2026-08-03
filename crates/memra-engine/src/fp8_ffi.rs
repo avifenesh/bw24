@@ -103,6 +103,10 @@ impl crate::Engine {
         //    prefill rides them directly (one copy, no budget). Unconditional: this dtype has no
         //    other prefill GEMM class, so the FP8 path is inherent to the config, not a flag.
         //  * fp8 stash (MEMRA_PP_FP8=1): the Q8_0-decode config's optional duplicate operand.
+        //    Block-128 stash operands (blk: Some, Qwen official FP8) are SKIPPED: this GEMM
+        //    feeds ONE folded scalar via B_SCALE_POINTER; a block grid through it would apply
+        //    scale 1.0 to every tile. The block-scaled GEMM is P1 (probe/fp8_lt_blk_probe.cu
+        //    arbitrates cuBLASLt BLK128x128 vs a scale-fold pre-pass on sm_120).
         let (w_bytes, w_scale, ne) = match w {
             GpuTensor::Quant {
                 qtype,
@@ -113,7 +117,7 @@ impl crate::Engine {
             } if *qtype == crate::QT_F8_E4M3 => (bytes, *scale, ne),
             GpuTensor::Quant {
                 fp8: Some(f8), ne, ..
-            } if pp_fp8_enabled() => (&f8.bytes, f8.scale, ne),
+            } if pp_fp8_enabled() && f8.blk.is_none() => (&f8.bytes, f8.scale, ne),
             _ => return Ok(None),
         };
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);

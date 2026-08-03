@@ -93,17 +93,42 @@ pub struct Nvfp4Native<'a> {
     pub in_f: usize,
 }
 
-/// Raw FP8-E4M3-native weight view (MEMRA_PP_FP8 prefill operand): the checkpoint's e4m3 codes
-/// `[out_f, in_f]` row-major + the per-tensor f32 `weight_scale`. For a PLAIN (untransformed)
-/// F8 Linear this borrows the mmap verbatim (EXACT bytes); for the hybrid V-reordered F8
-/// projections it is an OWNED buffer produced by the f32 transform round-trip — exact too, since
-/// the V-reorder is a pure permutation and every f32 value is `e4m3_code * scale`, which the
-/// nearest-e4m3 re-encode of `value/scale` recovers bit-for-bit (grid spacing >> f32 rounding).
+/// Raw FP8-E4M3-native weight view (MEMRA_PP_FP8 prefill operand / MEMRA_ST_E4M3 resident copy):
+/// the checkpoint's e4m3 codes `[out_f, in_f]` row-major + its weight scale(s). For a PLAIN
+/// (untransformed) F8 Linear this borrows the mmap verbatim (EXACT bytes); for the hybrid
+/// V-reordered F8 projections it is an OWNED buffer produced by the f32 transform round-trip —
+/// exact too, since the V-reorder is a pure permutation and every f32 value is
+/// `e4m3_code * scale`, which the nearest-e4m3 re-encode of `value/scale` recovers bit-for-bit
+/// (grid spacing >> f32 rounding).
+///
+/// Scale carriage, two mutually exclusive forms:
+///  * per-tensor: `scale` is the dequant multiplier, `blk == None` (modelopt / NVIDIA class).
+///  * block-128: `blk == Some(grid)` and `scale == 1.0` (Qwen official FP8 class). The grid is
+///    the checkpoint's `weight_scale_inv` decoded to f32, in its ON-DISK order — see
+///    `F8BlockGrid` for the layout contract.
 pub struct Fp8Native<'a> {
     pub bytes: Cow<'a, [u8]>, // e4m3 codes, [out_f, in_f] row-major
-    pub scale: f32,           // per-tensor weight_scale (dequant multiplier)
+    pub scale: f32,           // per-tensor weight_scale (dequant multiplier); 1.0 when blk is Some
+    pub blk: Option<F8BlockGrid>, // block-128 fine-grained scales (Qwen official FP8)
     pub out_f: usize,
     pub in_f: usize,
+}
+
+/// Host-side block-128 scale grid, decoded to f32 in checkpoint order.
+///
+/// LAYOUT (the storage decision B1b pins, P1 consumes): row-major
+/// `[rows = ceil(out_f/128), cols = ceil(in_f/128)]`, i.e. `scales[ob * cols + kb]` scales the
+/// 128x128 tile at output-block `ob`, input-block `kb`. Equivalence note for the cuBLASLt
+/// consumer: the weight `[out, in]` row-major is the GEMM's column-major `[k=in, n=out]` A^T
+/// operand, and this linear order — `ob` outer, `kb` inner — is column-major `[kblk, nblk]`
+/// with leading dimension `kblk` for that view. Whether cuBLASLt's
+/// `CUBLASLT_MATMUL_MATRIX_SCALE_BLK128x128_32F` accepts this order on sm_120 at all is what
+/// probe P1 (`probe/fp8_lt_blk_probe.cu`) answers; until then this struct is the single
+/// canonical layout and any consumer-side reorder happens at that consumer's build step.
+pub struct F8BlockGrid {
+    pub scales: Vec<f32>,
+    pub rows: usize, // ceil(out_f/128)
+    pub cols: usize, // ceil(in_f/128)
 }
 
 /// One immutable expert extent backed by an opened file and its whole-file mmap. Retaining both
@@ -698,6 +723,16 @@ impl SafetensorsSource {
         None
     }
 
+    /// FP8 weight-scale sibling lookup: `<stem>.weight_scale` (modelopt / compressed-tensors)
+    /// OR `<stem>.weight_scale_inv` (Qwen official FP8 / DeepSeek-V3 lineage). Despite the
+    /// `_inv` suffix, `weight_scale_inv` is the DEQUANT MULTIPLIER (dequant = code * scale —
+    /// the "inv" names the inverse of the QUANT divide; DeepSeek-V3 reference kernel and vLLM
+    /// both multiply by it), so both spellings feed the same downstream math.
+    fn f8_scale_sibling(&self, stem: &str) -> Option<(&crate::safetensors::StInfo, &[u8])> {
+        self.lookup(&format!("{stem}.weight_scale"))
+            .or_else(|| self.lookup(&format!("{stem}.weight_scale_inv")))
+    }
+
     /// Dequantize an HF tensor to f32 (used by the value-transform producers). Handles BOTH plain
     /// F32/F16/BF16 tensors AND modelopt (compressed-tensors) NVFP4 weights: a `<name>.weight` stored
     /// `U8` with a sibling `<name>.weight_scale` is dequantized through the NVFP4 path (per-16 UE4M3
@@ -725,28 +760,19 @@ impl SafetensorsSource {
                 return Some((data, vec![in_f as u64, out_f as u64]));
             }
         }
-        // FP8 E4M3 weight + weight_scale sibling (per-tensor F32 scalar = NVIDIA 27B
-        // linear_attn class; per-channel [out,1] F32/BF16 = unsloth compressed-tensors
-        // mixed-precision class): dequant to f32 here so the V-reorder transforms consume
-        // it like a BF16 tensor.
+        // FP8 E4M3 weight + scale sibling (per-tensor F32 scalar = NVIDIA 27B linear_attn
+        // class; per-channel [out,1] F32/BF16 = unsloth compressed-tensors mixed-precision
+        // class; block-128 2-D grid = Qwen official FP8 / DeepSeek-V3 lineage): dequant to
+        // f32 here so the V-reorder transforms consume it like a BF16 tensor.
         if hf_name.ends_with(".weight") {
             if let Some((info, bytes)) = self.lookup(hf_name) {
                 if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
                     let stem = hf_name.strip_suffix(".weight").unwrap_or(hf_name);
                     let out_f = info.shape[0] as usize;
                     let in_f = info.shape[1] as usize;
-                    if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
-                        if let Some(scales) = f8_row_scales(&sinfo, sbytes, out_f) {
-                            let ne = info.ne();
-                            let mut data = vec![0f32; out_f * in_f];
-                            for o in 0..out_f {
-                                let s = scales[if scales.len() > 1 { o } else { 0 }];
-                                for e in 0..in_f {
-                                    data[o * in_f + e] =
-                                        crate::nvfp4_repack::fp8_e4m3_to_f32(bytes[o * in_f + e]) * s;
-                                }
-                            }
-                            return Some((data, ne));
+                    if let Some((sinfo, sbytes)) = self.f8_scale_sibling(stem) {
+                        if let Some(scales) = f8_scales(sinfo, sbytes, out_f, in_f) {
+                            return Some((f8_deq_f32(bytes, out_f, in_f, &scales), info.ne()));
                         }
                     }
                 }
@@ -831,23 +857,91 @@ impl SafetensorsSource {
     }
 }
 
-/// FP8 `weight_scale` sibling -> per-row f32 scales. Every observed encoding:
-/// modelopt per-tensor F32 scalar (NVIDIA 27B linear_attn), compressed-tensors
-/// per-channel `[out, 1]` in F32 or BF16 (unsloth mixed-precision FP8 class).
-/// Returns a 1-element vec (splat) or out_f elements; None = unrecognized encoding.
-fn f8_row_scales(sinfo: &crate::safetensors::StInfo, sbytes: &[u8], out_f: usize) -> Option<Vec<f32>> {
-    let n = sinfo.shape.iter().product::<u64>() as usize;
-    if n != 1 && n != out_f {
-        return None;
+/// FP8 weight-scale granularity, decoded to f32. Every observed encoding:
+///  * `PerTensor`: modelopt F32 scalar (NVIDIA 27B linear_attn class).
+///  * `PerRow`: compressed-tensors per-channel `[out, 1]` in F32 or BF16 (unsloth
+///    mixed-precision FP8 class).
+///  * `Block128`: fine-grained 2-D grid `[ceil(out/128), ceil(in/128)]` row-major
+///    (Qwen official FP8, DeepSeek-V3 lineage; Qwen3.6-27B-FP8 ships it as BF16 under
+///    the `weight_scale_inv` name — e.g. gate_proj [17408,5120] -> scales [136,40],
+///    verified from the HF shard header 2026-08-03). `scales[(o/128)*cols + (e/128)]`
+///    applies to element W[o][e].
+enum F8Scales {
+    PerTensor(f32),
+    PerRow(Vec<f32>),
+    Block128 { scales: Vec<f32>, cols: usize },
+}
+
+impl F8Scales {
+    /// Dequant multiplier for element W[o][e].
+    #[inline]
+    fn at(&self, o: usize, e: usize) -> f32 {
+        match self {
+            F8Scales::PerTensor(s) => *s,
+            F8Scales::PerRow(v) => v[o],
+            F8Scales::Block128 { scales, cols } => scales[(o >> 7) * cols + (e >> 7)],
+        }
     }
-    let scales: Vec<f32> = match sinfo.dtype.as_str() {
+}
+
+/// Dequantize a full F8-E4M3 `[out_f, in_f]` weight to f32 with any scale granularity.
+/// Block-128 note: within one row the scale changes only every 128 elements, so the inner
+/// loop hoists the multiplier per 128-chunk — same result as `at()` per element.
+fn f8_deq_f32(bytes: &[u8], out_f: usize, in_f: usize, scales: &F8Scales) -> Vec<f32> {
+    let mut data = vec![0f32; out_f * in_f];
+    for o in 0..out_f {
+        let row = &bytes[o * in_f..(o + 1) * in_f];
+        let drow = &mut data[o * in_f..(o + 1) * in_f];
+        let mut e = 0;
+        while e < in_f {
+            let end = (e + 128 - (e & 127)).min(in_f); // next 128 boundary (or row end)
+            let s = scales.at(o, e);
+            for i in e..end {
+                drow[i] = crate::nvfp4_repack::fp8_e4m3_to_f32(row[i]) * s;
+            }
+            e = end;
+        }
+    }
+    data
+}
+
+/// Parse an FP8 `weight_scale` / `weight_scale_inv` sibling into its granularity.
+/// F32 and BF16 payloads accepted for every granularity. None = unrecognized encoding
+/// (element count matches neither 1, out_f, nor the ceil-128 block grid) — the caller
+/// falls through and the raw-path assert names the tensor loudly.
+fn f8_scales(
+    sinfo: &crate::safetensors::StInfo,
+    sbytes: &[u8],
+    out_f: usize,
+    in_f: usize,
+) -> Option<F8Scales> {
+    let n = sinfo.shape.iter().product::<u64>() as usize;
+    let vals: Vec<f32> = match sinfo.dtype.as_str() {
         "F32" if sbytes.len() >= n * 4 => sbytes[..n * 4].chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
         "BF16" if sbytes.len() >= n * 2 => sbytes[..n * 2].chunks_exact(2)
             .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
         _ => return None,
     };
-    scales.iter().all(|s| s.is_finite() && *s > 0.0).then_some(scales)
+    if !vals.iter().all(|s| s.is_finite() && *s > 0.0) {
+        return None;
+    }
+    if n == 1 {
+        return Some(F8Scales::PerTensor(vals[0]));
+    }
+    if n == out_f {
+        return Some(F8Scales::PerRow(vals));
+    }
+    // Block-128 grid: shape must be exactly [ceil(out/128), ceil(in/128)] (ceil handles
+    // dims that are not multiples of 128; every Qwen3.6-27B dim happens to divide evenly).
+    let (rows, cols) = (out_f.div_ceil(128), in_f.div_ceil(128));
+    if sinfo.shape.len() == 2
+        && sinfo.shape[0] as usize == rows
+        && sinfo.shape[1] as usize == cols
+    {
+        return Some(F8Scales::Block128 { scales: vals, cols });
+    }
+    None
 }
 
 impl TensorSource for SafetensorsSource {
@@ -873,12 +967,20 @@ impl TensorSource for SafetensorsSource {
         let (out_f, in_f, wbytes, wscale, _macro) = self.nvfp4_quant(&hf)?;
         Some(Nvfp4Native { wbytes, wscale, out_f, in_f })
     }
-    /// FP8-E4M3-native access (MEMRA_PP_FP8 prefill operand). Two arms, mirroring the Q8_0
-    /// re-encode arms in `find` (the engine only stashes this when `find` surfaced Q8_0):
-    ///  * Plain: borrow the checkpoint's e4m3 bytes verbatim (zero copy, EXACT).
+    /// FP8-E4M3-native access (MEMRA_PP_FP8 prefill operand / MEMRA_ST_E4M3 resident copy).
+    /// Two arms, mirroring the Q8_0 re-encode arms in `find`:
+    ///  * Plain: borrow the checkpoint's e4m3 bytes verbatim (zero copy, EXACT). Per-tensor and
+    ///    block-128 scale classes both qualify — block-128 rides `blk` (grid decoded to f32,
+    ///    on-disk order, F8BlockGrid layout contract).
     ///  * Transform (hybrid V-reorders): run the SAME `deq_f32` + `kind.apply` the Q8_0 arm runs,
     ///    then re-encode `value/scale` to nearest e4m3 — exact for a pure permutation (every value
-    ///    is `code*scale`; the e4m3 grid spacing dwarfs the f32 divide rounding).
+    ///    is `code*scale`; the e4m3 grid spacing dwarfs the f32 divide rounding). PER-TENSOR ONLY:
+    ///    a V-reorder permutes ROWS across 128-row scale-block boundaries, so the on-disk block
+    ///    grid no longer maps to the permuted rows; re-deriving a permuted grid is P1-consumer
+    ///    work, not loader work. Block-128 transform targets fall back to the Q8_0 arm (which
+    ///    dequants with the pre-permutation grid, correctly).
+    /// Per-row (unsloth per-channel) stays excluded from BOTH arms as before: no kernel consumes
+    /// a per-row e4m3 operand.
     /// Dim gates: 2D, in_f/out_f % 16 == 0 (cuBLASLt FP8 TN alignment), and the Transform arm
     /// keeps the >=1M-element gate of its Q8_0 twin (small tensors stay F32 there).
     fn find_fp8_native(&self, ggml_name: &str) -> Option<Fp8Native<'_>> {
@@ -890,18 +992,27 @@ impl TensorSource for SafetensorsSource {
         let (info, bytes) = self.lookup(&hf)?;
         if info.dtype != "F8_E4M3" || info.shape.len() != 2 { return None; }
         let stem = hf.strip_suffix(".weight").unwrap_or(&hf);
-        let (sinfo, sbytes) = self.lookup(&format!("{stem}.weight_scale"))?;
-        if sinfo.dtype != "F32" || sbytes.len() < 4 { return None; }
-        let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
-        if !(scale > 0.0) || !scale.is_finite() { return None; }
+        let (sinfo, sbytes) = self.f8_scale_sibling(stem)?;
+        let (out_hf, in_hf) = (info.shape[0] as usize, info.shape[1] as usize);
+        let (scale, blk) = match f8_scales(sinfo, sbytes, out_hf, in_hf)? {
+            F8Scales::PerTensor(s) => (s, None),
+            F8Scales::Block128 { scales, cols } => {
+                let rows = scales.len() / cols;
+                (1.0, Some(F8BlockGrid { scales, rows, cols }))
+            }
+            // Per-row: no e4m3 kernel consumes a per-channel scale vector; the Q8_0
+            // re-encode arm in `find` (which folds it host-side) stays that class's path.
+            F8Scales::PerRow(_) => return None,
+        };
         match kind {
             None => {
                 let ne = info.ne();
                 let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
                 if in_f % 16 != 0 || out_f % 16 != 0 { return None; }
-                Some(Fp8Native { bytes: Cow::Borrowed(bytes), scale, out_f, in_f })
+                Some(Fp8Native { bytes: Cow::Borrowed(bytes), scale, blk, out_f, in_f })
             }
             Some(kind) => {
+                if blk.is_some() { return None; } // block grid does not survive a row permutation
                 let (mut data, ne_in) = self.deq_f32(&hf)?;
                 let (ne, fbytes) = kind.apply(&mut data, ne_in, &self.cfg);
                 if ne.len() != 2 || ne.iter().product::<u64>() < 1_000_000 { return None; }
@@ -911,7 +1022,7 @@ impl TensorSource for SafetensorsSource {
                     .map(|c| crate::nvfp4_repack::f32_to_fp8_e4m3(
                         f32::from_le_bytes(c.try_into().unwrap()) / scale))
                     .collect();
-                Some(Fp8Native { bytes: Cow::Owned(enc), scale, out_f, in_f })
+                Some(Fp8Native { bytes: Cow::Owned(enc), scale, blk: None, out_f, in_f })
             }
         }
     }
@@ -1011,22 +1122,20 @@ impl TensorSource for SafetensorsSource {
                     }
                     if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
                         let stem = hf.strip_suffix(".weight").unwrap_or(&hf);
-                        if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
-                            // Scale sibling: per-tensor F32 scalar (modelopt / NVIDIA) or
-                            // per-channel [out,1] F32/BF16 (unsloth compressed-tensors FP8).
-                            if let Some(scales) = f8_row_scales(&sinfo, sbytes, info.shape[0] as usize) {
+                        if let Some((sinfo, sbytes)) = self.f8_scale_sibling(stem) {
+                            // Scale sibling: per-tensor F32 scalar (modelopt / NVIDIA),
+                            // per-channel [out,1] F32/BF16 (unsloth compressed-tensors FP8),
+                            // or block-128 [out/128, in/128] grid (Qwen official FP8,
+                            // `weight_scale_inv`). The Q8_0 per-32 re-encode grid is FINER
+                            // than all three source granularities — accuracy class-equal
+                            // or better in every case (the block-128 arm's 128x128 tile is
+                            // 4x coarser along in_f than one Q8_0 block).
+                            let (out_f, in_f) = (info.shape[0] as usize, info.shape[1] as usize);
+                            if let Some(scales) = f8_scales(sinfo, sbytes, out_f, in_f) {
                                 let ne = info.ne();
                                 assert!(bytes.len() % 32 == 0,
                                         "F8 tensor {hf} len {} not 32-aligned", bytes.len());
-                                let (out_f, in_f) = (info.shape[0] as usize, info.shape[1] as usize);
-                                let mut data = vec![0f32; out_f * in_f];
-                                for o in 0..out_f {
-                                    let s = scales[if scales.len() > 1 { o } else { 0 }];
-                                    for e in 0..in_f {
-                                        data[o * in_f + e] =
-                                            crate::nvfp4_repack::fp8_e4m3_to_f32(bytes[o * in_f + e]) * s;
-                                    }
-                                }
+                                let data = f8_deq_f32(bytes, out_f, in_f, &scales);
                                 // MEMRA_NV_W4=1: F8 attention weights -> NVFP4 (0.56 B/w vs Q8_0's
                                 // 1.06) — decode is bandwidth-bound and these layers are 35-40% of
                                 // per-token kernel time (nsys 2026-07-07). Real e4m3->e2m1 re-quant;
@@ -1804,6 +1913,260 @@ mod compressed_tensors_roundtrip {
             matches!(sv.bytes, std::borrow::Cow::Borrowed(_)),
             "modelopt .scale should be Cow::Borrowed (zero-copy)"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod f8_block128 {
+    use super::*;
+
+    /// Deterministic pseudo-random e4m3 byte, NaN codes remapped (0x7F/0xFF -> exp field 0xE).
+    fn e4m3_byte(i: usize) -> u8 {
+        let mut b = ((i.wrapping_mul(2654435761) ^ 0x9E37_79B9) >> 9) as u8;
+        if b & 0x7F == 0x7F { b &= 0xF7; }
+        b
+    }
+
+    /// f8_scales granularity detection: scalar, per-row, block-128 (F32 + BF16 payloads),
+    /// and rejection of anything else.
+    #[test]
+    fn scale_shape_detection() {
+        use crate::safetensors::StInfo;
+        let (out_f, in_f) = (256usize, 384usize); // block grid [2, 3]
+        let info = |dtype: &str, shape: Vec<u64>| StInfo {
+            dtype: dtype.to_string(), shape, data_offsets: [0, 0],
+        };
+        let f32b = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+
+        // per-tensor scalar
+        let s = f8_scales(&info("F32", vec![1]), &f32b(&[0.5]), out_f, in_f).unwrap();
+        assert!(matches!(s, F8Scales::PerTensor(v) if v == 0.5));
+
+        // per-row [out, 1]
+        let rows: Vec<f32> = (0..out_f).map(|i| 1.0 + i as f32).collect();
+        let s = f8_scales(&info("F32", vec![out_f as u64, 1]), &f32b(&rows), out_f, in_f).unwrap();
+        assert!(matches!(&s, F8Scales::PerRow(v) if v.len() == out_f && v[255] == 256.0));
+
+        // block-128 [2, 3] in F32
+        let grid: Vec<f32> = (0..6).map(|i| 0.25 * (i + 1) as f32).collect();
+        let s = f8_scales(&info("F32", vec![2, 3]), &f32b(&grid), out_f, in_f).unwrap();
+        match &s {
+            F8Scales::Block128 { scales, cols } => {
+                assert_eq!(*cols, 3);
+                assert_eq!(scales, &grid);
+            }
+            other => panic!("expected Block128, got {}", match other {
+                F8Scales::PerTensor(_) => "PerTensor", F8Scales::PerRow(_) => "PerRow",
+                _ => unreachable!(),
+            }),
+        }
+        // at(): element (o=130, e=200) -> block (1, 1) -> grid[1*3+1]
+        assert_eq!(s.at(130, 200), grid[4]);
+        assert_eq!(s.at(0, 0), grid[0]);
+        assert_eq!(s.at(255, 383), grid[5]);
+
+        // block-128 in BF16 (the Qwen3.6-27B on-disk encoding): bf16(0.5) = 0x3F00
+        let bf: Vec<u8> = std::iter::repeat_n(0x3F00u16.to_le_bytes(), 6).flatten().collect();
+        let s = f8_scales(&info("BF16", vec![2, 3]), &bf, out_f, in_f).unwrap();
+        assert!(matches!(s, F8Scales::Block128 { ref scales, cols: 3 } if scales.iter().all(|&v| v == 0.5)));
+
+        // ceil grid: out=200, in=300 -> [2, 3] must also be accepted
+        assert!(f8_scales(&info("F32", vec![2, 3]), &f32b(&grid), 200, 300).is_some());
+
+        // wrong grid shape -> None (falls to the loud raw-path assert downstream)
+        assert!(f8_scales(&info("F32", vec![3, 2]), &f32b(&grid), out_f, in_f).is_none());
+        // non-positive scale -> None
+        assert!(f8_scales(&info("F32", vec![1]), &f32b(&[0.0]), out_f, in_f).is_none());
+        // transposed count that coincidentally matches nothing
+        assert!(f8_scales(&info("F32", vec![5]), &f32b(&[1.0; 5]), out_f, in_f).is_none());
+    }
+
+    /// f8_deq_f32 with block-128 scales is BIT-EXACT against the naive per-element reference
+    /// (including non-multiple-of-128 dims where the last blocks are ragged).
+    #[test]
+    fn block128_dequant_bit_exact() {
+        for (out_f, in_f) in [(256usize, 384usize), (200, 300)] {
+            let (rows, cols) = (out_f.div_ceil(128), in_f.div_ceil(128));
+            let codes: Vec<u8> = (0..out_f * in_f).map(e4m3_byte).collect();
+            let grid: Vec<f32> = (0..rows * cols).map(|i| 0.03125 * (i + 1) as f32).collect();
+            let scales = F8Scales::Block128 { scales: grid.clone(), cols };
+
+            let got = f8_deq_f32(&codes, out_f, in_f, &scales);
+
+            // independent reference: no chunk-hoisting, straight (o,e) -> block indexing
+            for o in 0..out_f {
+                for e in 0..in_f {
+                    let s = grid[(o / 128) * cols + (e / 128)];
+                    let expect = crate::nvfp4_repack::fp8_e4m3_to_f32(codes[o * in_f + e]) * s;
+                    let v = got[o * in_f + e];
+                    assert!(
+                        v.to_bits() == expect.to_bits(),
+                        "({out_f}x{in_f}) mismatch at [{o}][{e}]: got {v} want {expect}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Build a synthetic Qwen-official-style FP8 checkpoint (F8_E4M3 weight + BF16
+    /// `weight_scale_inv` [out/128, in/128]) and load it end-to-end through `find`:
+    /// the loader must recognize the block grid, dequant, and re-encode to Q8_0 whose
+    /// bytes are BIT-IDENTICAL to `f32_to_q8_0(reference dequant)`.
+    #[test]
+    fn qwen_official_fp8_find_q8_0_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("memra_f8blk_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (out_f, in_f) = (256usize, 256usize); // grid [2, 2]
+        let codes: Vec<u8> = (0..out_f * in_f).map(e4m3_byte).collect();
+        // BF16 scale grid: pick exactly-representable values so bf16->f32 is lossless here.
+        let grid_f32 = [0.5f32, 0.25, 2.0, 1.5];
+        let grid_bf16: Vec<u8> = grid_f32.iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+
+        let w_len = codes.len();
+        let s_start = w_len;
+        let s_len = grid_bf16.len();
+        let json = format!(
+            concat!(
+                "{{",
+                "\"model.layers.0.self_attn.q_proj.weight\":{{\"dtype\":\"F8_E4M3\",\"shape\":[{o},{i}],\"data_offsets\":[0,{wl}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_scale_inv\":{{\"dtype\":\"BF16\",\"shape\":[2,2],\"data_offsets\":[{ss},{se}]}}",
+                "}}"
+            ),
+            o = out_f, i = in_f, wl = w_len, ss = s_start, se = s_start + s_len,
+        );
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        buf.extend_from_slice(&codes);
+        buf.extend_from_slice(&grid_bf16);
+        std::fs::write(dir.join("model.safetensors"), &buf).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":256,"num_attention_heads":2,"num_key_value_heads":2,"head_dim":128,"intermediate_size":512,"vocab_size":16,"max_position_embeddings":128}"#,
+        ).unwrap();
+
+        let src = SafetensorsSource::open(&dir).unwrap();
+        let v = src.find("blk.0.attn_q.weight")
+            .expect("block-128 FP8 weight must load (was the st_dtype_to_ggml panic)");
+        assert_eq!(v.ggml_type, GgmlType::Q8_0);
+        assert_eq!(v.ne, vec![in_f as u64, out_f as u64]);
+
+        // reference: dequant with the block grid, then the SAME Q8_0 encoder
+        let mut reference = vec![0f32; out_f * in_f];
+        for o in 0..out_f {
+            for e in 0..in_f {
+                let s = grid_f32[(o / 128) * 2 + (e / 128)];
+                reference[o * in_f + e] =
+                    crate::nvfp4_repack::fp8_e4m3_to_f32(codes[o * in_f + e]) * s;
+            }
+        }
+        let expect = crate::nvfp4_repack::f32_to_q8_0(&reference);
+        assert_eq!(v.bytes.as_ref(), expect.as_slice(), "Q8_0 bytes must be bit-identical");
+
+        // deq_f32 (the Transform-arm feeder) resolves the same block grid
+        let (deq, ne) = src.deq_f32("model.layers.0.self_attn.q_proj.weight")
+            .expect("deq_f32 must handle block-128 scales");
+        assert_eq!(ne, vec![in_f as u64, out_f as u64]);
+        assert!(deq.iter().zip(&reference).all(|(a, b)| a.to_bits() == b.to_bits()));
+
+        // `has` must be true and not panic through the raw path
+        assert!(src.has("blk.0.attn_q.weight"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B1b loader side: find_fp8_native on a block-128 checkpoint must return the raw e4m3
+    /// bytes BORROWED (zero copy) + the decoded block grid in checkpoint order, scale == 1.0.
+    #[test]
+    fn fp8_native_carries_block_grid() {
+        let dir = std::env::temp_dir().join(format!("memra_f8nat_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (out_f, in_f) = (256usize, 256usize); // grid [2, 2]
+        let codes: Vec<u8> = (0..out_f * in_f).map(e4m3_byte).collect();
+        let grid_f32 = [0.5f32, 0.25, 2.0, 1.5];
+        let grid_bf16: Vec<u8> = grid_f32.iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        let w_len = codes.len();
+        let json = format!(
+            concat!(
+                "{{",
+                "\"model.layers.0.self_attn.q_proj.weight\":{{\"dtype\":\"F8_E4M3\",\"shape\":[{o},{i}],\"data_offsets\":[0,{wl}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_scale_inv\":{{\"dtype\":\"BF16\",\"shape\":[2,2],\"data_offsets\":[{wl},{se}]}}",
+                "}}"
+            ),
+            o = out_f, i = in_f, wl = w_len, se = w_len + grid_bf16.len(),
+        );
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        buf.extend_from_slice(&codes);
+        buf.extend_from_slice(&grid_bf16);
+        std::fs::write(dir.join("model.safetensors"), &buf).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":256,"num_attention_heads":2,"num_key_value_heads":2,"head_dim":128,"intermediate_size":512,"vocab_size":16,"max_position_embeddings":128}"#,
+        ).unwrap();
+
+        let src = SafetensorsSource::open(&dir).unwrap();
+        let f8 = src.find_fp8_native("blk.0.attn_q.weight")
+            .expect("block-128 FP8 must surface through find_fp8_native");
+        assert_eq!((f8.out_f, f8.in_f), (out_f, in_f));
+        assert_eq!(f8.scale, 1.0, "block-128 class carries scale in blk, scalar must be 1.0");
+        assert!(matches!(f8.bytes, std::borrow::Cow::Borrowed(_)), "plain arm is zero-copy");
+        assert_eq!(f8.bytes.as_ref(), codes.as_slice(), "raw e4m3 codes verbatim");
+        let blk = f8.blk.expect("block grid must ride along");
+        assert_eq!((blk.rows, blk.cols), (2, 2));
+        assert_eq!(blk.scales, grid_f32, "grid decoded to f32 in checkpoint order");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The existing per-tensor F32 `weight_scale` class must still parse identically
+    /// (regression guard for the f8_row_scales -> f8_scales refactor).
+    #[test]
+    fn per_tensor_scale_class_unchanged() {
+        let dir = std::env::temp_dir().join(format!("memra_f8pt_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (out_f, in_f) = (64usize, 64usize);
+        let codes: Vec<u8> = (0..out_f * in_f).map(e4m3_byte).collect();
+        let scale = 0.125f32;
+        let w_len = codes.len();
+        let json = format!(
+            concat!(
+                "{{",
+                "\"model.layers.0.self_attn.q_proj.weight\":{{\"dtype\":\"F8_E4M3\",\"shape\":[{o},{i}],\"data_offsets\":[0,{wl}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_scale\":{{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[{wl},{se}]}}",
+                "}}"
+            ),
+            o = out_f, i = in_f, wl = w_len, se = w_len + 4,
+        );
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        buf.extend_from_slice(&codes);
+        buf.extend_from_slice(&scale.to_le_bytes());
+        std::fs::write(dir.join("model.safetensors"), &buf).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":64,"num_attention_heads":2,"num_key_value_heads":2,"head_dim":32,"intermediate_size":128,"vocab_size":16,"max_position_embeddings":128}"#,
+        ).unwrap();
+
+        let src = SafetensorsSource::open(&dir).unwrap();
+        let v = src.find("blk.0.attn_q.weight").expect("per-tensor FP8 still loads");
+        assert_eq!(v.ggml_type, GgmlType::Q8_0);
+        let reference: Vec<f32> = codes.iter()
+            .map(|&c| crate::nvfp4_repack::fp8_e4m3_to_f32(c) * scale)
+            .collect();
+        let expect = crate::nvfp4_repack::f32_to_q8_0(&reference);
+        assert_eq!(v.bytes.as_ref(), expect.as_slice());
 
         std::fs::remove_dir_all(&dir).ok();
     }

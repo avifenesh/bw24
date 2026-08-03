@@ -1147,10 +1147,17 @@ mod hf_tests {
 #[cfg(test)]
 mod minimax_tests {
     use super::*;
+    /// Checkpoint dir for the on-disk MiniMax tests below. Like `real_qwen3_17b_header`,
+    /// they SKIP (not fail) when the model is absent from the box.
+    const MINIMAX_DIR: &str = "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50";
+
     #[test]
     fn parse_minimax_m3_vl() {
-        let cfg = HfConfig::parse(&std::fs::read_to_string(
-            "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50/config.json").unwrap());
+        let Ok(txt) = std::fs::read_to_string(format!("{MINIMAX_DIR}/config.json")) else {
+            eprintln!("SKIP parse_minimax_m3_vl: no model at {MINIMAX_DIR}");
+            return;
+        };
+        let cfg = HfConfig::parse(&txt);
         assert_eq!(Arch::from_hf_model_type(&cfg.model_type), Arch::MinimaxM3);
         assert_eq!(cfg.num_hidden_layers, 60);
         assert_eq!(cfg.num_local_experts, Some(64));   // REAP50 artifact
@@ -1182,11 +1189,14 @@ mod minimax_tests {
     #[test]
     fn minimax_name_mapping_against_index() {
         use crate::hf_mapping::{ggml_to_hf, hf_expert_name, resolve_ggml, HfTarget};
-        let cfg = ModelConfig::from_hf(&HfConfig::parse(&std::fs::read_to_string(
-            "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50/config.json").unwrap()));
+        let Ok(cfg_txt) = std::fs::read_to_string(format!("{MINIMAX_DIR}/config.json")) else {
+            eprintln!("SKIP minimax_name_mapping_against_index: no model at {MINIMAX_DIR}");
+            return;
+        };
+        let cfg = ModelConfig::from_hf(&HfConfig::parse(&cfg_txt));
         let idx: std::collections::HashSet<String> = {
             let txt = std::fs::read_to_string(
-                "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50/model.safetensors.index.json").unwrap();
+                format!("{MINIMAX_DIR}/model.safetensors.index.json")).unwrap();
             // crude but sufficient: harvest every JSON key that looks like a tensor name
             txt.split('"').filter(|s| s.contains('.') && !s.contains(' '))
                 .map(|s| s.to_string()).collect()
