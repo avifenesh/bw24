@@ -1,0 +1,25 @@
+{
+ "tag": "summarize",
+ "k": 1,
+ "oracle_sweeps": 128,
+ "batches": 83,
+ "rounds": 84,
+ "skipped_rounds": 1,
+ "shift": 1,
+ "delta": 0,
+ "align_ok": 3397,
+ "align_tot": 3397,
+ "dispatches": 80896,
+ "missed": 70773,
+ "block_lookups": 242688,
+ "block_misses": 212317,
+ "lockstep_disagreements": 0,
+ "strict": 0.33600384327356475,
+ "partial": 0.4532378166815028,
+ "acc_pos": 43,
+ "any_pos": 83,
+ "miss_at_uncovered": 24876,
+ "by_depth": {
+  "1": 23780
+ }
+}

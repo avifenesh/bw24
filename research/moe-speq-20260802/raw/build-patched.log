@@ -1,0 +1,14 @@
+   Compiling libc v0.2.186
+   Compiling cudarc v0.19.8
+   Compiling cfg-if v1.0.4
+   Compiling memra-engine v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-engine)
+   Compiling memra-sampling v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-sampling)
+   Compiling memra-validate v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-validate)
+   Compiling libloading v0.9.0
+   Compiling memmap2 v0.9.11
+   Compiling memra-gguf v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-gguf)
+   Compiling memra-tokenizer v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-tokenizer)
+   Compiling memra-kv v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-kv)
+   Compiling memra-runtime v0.0.0 (/home/ubuntu/memra-moespeq/crates/memra-runtime)
+warning: memra-engine@0.0.0: MEMRA_CUDA_ARCH auto-detected 90a (compute_cap 9.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 3m 57s
