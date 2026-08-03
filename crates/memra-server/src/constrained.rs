@@ -186,6 +186,55 @@ impl SessionConstraint {
     }
 }
 
+/// SpecConstraint adapter (constrained x spec-decode, 2026-08-03): SessionConstraint behind
+/// the engine's grammar hook, with a per-state CACHED mask — the verify walk probes
+/// `is_allowed` once per accepted token and the mask only changes on `consume`, so each
+/// grammar state computes its mask exactly once (the same 0.02-0.06 ms/step cost as plain
+/// constrained decode). EOS is never consumed (the plain path's EOS-before-consume ordering):
+/// a finished grammar collapses its mask to EOS-only, so post-EOS drafts truncate naturally.
+pub struct SpecGrammar<'a> {
+    c: &'a mut SessionConstraint,
+    eos: u32,
+    cur: Option<SimpleVob>,
+}
+
+impl<'a> SpecGrammar<'a> {
+    pub fn new(c: &'a mut SessionConstraint, eos: u32) -> Self {
+        Self { c, eos, cur: None }
+    }
+    fn cur_mask(&mut self) -> Result<&SimpleVob, String> {
+        if self.cur.is_none() {
+            self.cur = Some(self.c.compute_mask()?);
+        }
+        Ok(self.cur.as_ref().unwrap())
+    }
+}
+
+impl memra_engine::spec::SpecConstraint for SpecGrammar<'_> {
+    fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String> {
+        let mask = self.cur_mask()?;
+        apply_mask(mask, logits);
+        Ok(())
+    }
+    fn mask_words(&mut self) -> Result<Vec<u32>, String> {
+        Ok(self.cur_mask()?.as_slice().to_vec())
+    }
+    fn is_allowed(&mut self, tok: u32) -> Result<bool, String> {
+        let mask = self.cur_mask()?;
+        // ids past the mask (padded lm_head tail) are banned; EOS defers to the mask
+        // (a finished grammar's mask is EOS-only, an unfinished one usually bans it).
+        Ok((tok as usize) < mask.len() && mask.is_allowed(tok))
+    }
+    fn consume(&mut self, tok: u32) -> Result<(), String> {
+        if tok == self.eos {
+            return Ok(()); // EOS ends the stream — never fed to the grammar (plain-path order)
+        }
+        self.c.consume(tok)?;
+        self.cur = None;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

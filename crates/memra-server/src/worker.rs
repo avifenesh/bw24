@@ -1674,15 +1674,12 @@ fn admit(
             }
         }
     };
-    // TODO(spec x constrained): the spec burst verifies K drafted tokens in one batched
-    // step — masking would have to run INSIDE the draft/verify loop (per-position grammar
-    // states). Until that lands, constrained sessions take plain decode; loud, not silent.
-    if constraint.is_some() && serve_spec && lm.model.mtp.is_some() {
-        eprintln!("[worker] constrained request: spec-decode bypassed (grammar masks are \
-                   plain-decode only for now)");
-    }
+    // SPEC x CONSTRAINED (constrained-full, 2026-08-03): greedy constrained sessions ride
+    // spec bursts — the grammar truncates acceptance AFTER the exactness verify and forces
+    // the masked argmax at the cut slot (generate_spec_session_constrained). Sampled
+    // constrained and the MEMRA_CONSTRAIN_HOST oracle keep plain decode.
     let spec_eligible = serve_spec
-        && constraint.is_none()
+        && (constraint.is_none() || (sampler.is_greedy() && !constrain_host()))
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
         && !greedy_penalized
         && lm.model.mtp.is_some();
@@ -1784,7 +1781,11 @@ fn admit(
         // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
         // Match order: exact token prefix (bit-clean), else TEXT prefix (survives BPE boundary
         // divergence — the ~50% chat-turn miss class). Text hits re-tokenize only the remainder.
-        let resumed = spec_reuse.get_mut(&pool_key).and_then(|pool| {
+        // CONSTRAINED requests never resume parked spec sessions: the park's stashed
+        // next_pred/pending is unconstrained state, and the grammar must own generation
+        // from token 1. Cold spec session instead (still spec — just no pool hit).
+        let resumed = if constraint.is_some() { None } else {
+            spec_reuse.get_mut(&pool_key).and_then(|pool| {
             if let Some(idx) = pool.iter().rposition(|e|
                 e.sess.cache_max_ctx() >= ctx_cap
                     && prompt.len() >= e.sess.committed.len()
@@ -1803,7 +1804,7 @@ fn admit(
                 }
             }
             None
-        });
+        })};
         match resumed {
             Some(sess) => {
                 spec_resumed = sess.committed.len();
@@ -2281,7 +2282,17 @@ fn step_session(
                 penalty_present: s.sampler.penalty_present(),
             })
         } else { None };
-        let (burst, d, a) = lm.model.generate_spec_session_sampled(engine, spec, &suffix, room, k, sampling)?;
+        // SPEC x CONSTRAINED: greedy constrained bursts carry the grammar hook — verify-side
+        // truncation + masked-argmax cut slots (engine contract; sampled never gets here).
+        let (burst, d, a) = match s.constraint.as_mut() {
+            Some(c) => {
+                let mut g = crate::constrained::SpecGrammar::new(c, lm.eos_id);
+                lm.model.generate_spec_session_constrained(
+                    engine, spec, &suffix, room, k, sampling, Some(&mut g))?
+            }
+            None => lm.model.generate_spec_session_sampled(
+                engine, spec, &suffix, room, k, sampling)?,
+        };
         s.spec_drafted += d;
         s.spec_accepted += a;
         if d > 0 {

@@ -93,6 +93,27 @@ pub(crate) fn spec_devacc() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_SPEC_DEVACC").as_deref() == Ok("1"))
 }
 
+/// GRAMMAR HOOK for constrained spec decode (lane/constrained-full, 2026-08-03). The engine
+/// stays llguidance-agnostic: the server adapts its per-session grammar state behind this
+/// trait. CONTRACT (the verify-side truncation rule — token-identical to constrained plain
+/// greedy decode): the exactness walk runs UNMASKED first; the hook then (a) truncates
+/// acceptance at the first grammar-illegal accepted token, and (b) when the truncation fired
+/// or the bonus is illegal, the engine recomputes that slot as the MASKED argmax of the
+/// target's own verify column (an unmasked argmax that is grammar-legal IS the masked argmax
+/// — masking only removes tokens — so the common case pays nothing). `consume` advances the
+/// state with each EMITTED token in order; EOS handling is the implementor's job (skip).
+pub trait SpecConstraint {
+    /// -inf the current state's banned ids on a HOST logits row (prompt-tail / init-feed
+    /// masked argmax).
+    fn mask_logits(&mut self, logits: &mut [f32]) -> Result<(), String>;
+    /// Packed 32-bit bitset words of the CURRENT state's allowed set (device-mask form).
+    fn mask_words(&mut self) -> Result<Vec<u32>, String>;
+    /// Is `tok` consumable in the CURRENT state?
+    fn is_allowed(&mut self, tok: u32) -> Result<bool, String>;
+    /// Advance the state with an emitted token.
+    fn consume(&mut self, tok: u32) -> Result<(), String>;
+}
+
 /// Keep the full token-embedding table in host memory and upload only the rows needed by each
 /// MTP/verify step. This is an exact memory-capacity seam for very large BF16 vocab tables: host
 /// gather expands the same source bits to f32, and only O(T*n_embd) bytes cross PCIe per step.
@@ -2087,6 +2108,31 @@ impl HybridModel {
         k: usize,
         sampling: Option<SpecSampling>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        self.generate_spec_session_constrained(e, sess, suffix, max_new, k, sampling, None)
+    }
+
+    /// `generate_spec_session_sampled` + GRAMMAR (constrained decoding, 2026-08-03): the
+    /// hook truncates acceptance at the first grammar-illegal token AFTER the exactness
+    /// verify (grammar is an extra rejection rule, ordering like the batched-verify twins)
+    /// and replaces an illegal bonus with the MASKED argmax of the target's own verify
+    /// column — token-identical to constrained plain greedy decode. GREEDY only (the
+    /// worker routes sampled constrained to plain decode). Acceptance under tight grammars
+    /// may drop (drafter is unconstrained); that is measured, not hidden.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_spec_session_constrained(
+        &self,
+        e: &Engine,
+        sess: &mut SpecSession,
+        suffix: &[u32],
+        max_new: usize,
+        k: usize,
+        sampling: Option<SpecSampling>,
+        constraint: Option<&mut dyn SpecConstraint>,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        if constraint.is_some() && sampling.is_some_and(|s| s.temp > 0.0) {
+            return Err("constrained spec decode is greedy-only (worker routes sampled \
+                        constrained to plain decode)".into());
+        }
         // PENDING-CARRY entry flush: a carried bonus precedes any new suffix in the sequence,
         // so it must commit BEFORE the suffix primes; the sampled path doesn't carry (its
         // round-0 accept needs the commit pass's logits). Empty-suffix greedy bursts — the
@@ -2120,7 +2166,7 @@ impl HybridModel {
                 e.ctx().disable_event_tracking();
             }
         }
-        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling);
+        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling, constraint);
         if graph_draft && was_tracking {
             unsafe {
                 e.ctx().enable_event_tracking();
@@ -2155,7 +2201,7 @@ impl HybridModel {
             && k + 2 < 96
             && !crate::model::full_prec_enabled();
         if !graph_draft {
-            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None);
+            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None, None);
         }
         let was_tracking = e.ctx().is_event_tracking();
         if was_tracking {
@@ -2163,7 +2209,7 @@ impl HybridModel {
                 e.ctx().disable_event_tracking();
             }
         }
-        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None);
+        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None, None);
         if was_tracking {
             unsafe {
                 e.ctx().enable_event_tracking();
@@ -2181,6 +2227,7 @@ impl HybridModel {
         graph_draft: bool,
         mut sess: Option<&mut SpecSession>,
         sampling: Option<SpecSampling>,
+        mut constraint: Option<&mut dyn SpecConstraint>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self
@@ -2280,6 +2327,10 @@ impl HybridModel {
         // reads/round at long ctx). MEMRA_SPEC_REPLAY=1 restores the legacy rollback+replay (A/B
         // + fallback seam).
         let spec_replay = std::env::var("MEMRA_SPEC_REPLAY").is_ok();
+        if constraint.is_some() && spec_replay {
+            return Err("constrained spec decode does not support MEMRA_SPEC_REPLAY=1 \
+                        (legacy replay commits an unmasked bonus)".into());
+        }
         // TRUE-HIDDEN REFRESH (default in persistent-draft-KV mode): every round overwrites the
         // committed positions' scratch entries from the verify's exact hiddens (mtp_kv_fill batch)
         // instead of keeping chain-approximate entries. MEMRA_SPEC_NOREFRESH=1 = legacy (A/B seam).
@@ -2367,6 +2418,20 @@ impl HybridModel {
         // Emit it, then FEED it to establish the loop invariant below.
         // PENDING-CARRY: the carried bonus was already emitted by the LAST burst — it becomes
         // last_token WITHOUT re-emission, and round 0 consumes it as pending (no init feed).
+        // CONSTRAINED entry rules: the first emitted token is the MASKED argmax of the
+        // prompt's last logits (plain constrained-greedy identity); a continuation without
+        // a carried pending would emit an UNMASKED stashed next_pred — refused loudly (the
+        // worker never resumes constrained sessions from the pool, so this cannot fire).
+        if let Some(c) = constraint.as_deref_mut() {
+            if continuation && carried_pending.is_none() {
+                return Err("constrained spec continuation requires a carried pending \
+                            (pool resume is unconstrained-only)".into());
+            }
+            if !continuation {
+                c.mask_logits(&mut prime_logits)
+                    .map_err(|e2| format!("constraint: {e2}"))?;
+            }
+        }
         let mut last_token = if let Some(b) = carried_pending {
             b
         } else if continuation {
@@ -2376,6 +2441,11 @@ impl HybridModel {
         };
         if carried_pending.is_none() {
             out.push(last_token);
+            // grammar advances with every emitted token (carried pendings were consumed
+            // by the burst that emitted them).
+            if let Some(c) = constraint.as_deref_mut() {
+                c.consume(last_token).map_err(|e2| format!("constraint: {e2}"))?;
+            }
         }
         if continuation {
             // draft-KV invariant: entries [0..base) are the session's exact fills; truncate any
@@ -2495,9 +2565,15 @@ impl HybridModel {
         // pending path (t_pred reads verify col 0 — the accept walk overwrites it).
         let mut last_pred = 0u32;
         let mut last_col_logits: Option<CudaSlice<f32>> = None;
+        // CONSTRAINED: the init feed's logits back the (n_acc==0, base==0) masked-argmax
+        // recompute in the grammar-truncation walk — retained host-side, round 0 only.
+        let mut init_logits_host: Option<Vec<f32>> = None;
         let h_seed0: CudaSlice<f32> = if carried_pending.is_none() {
             let (init_logits, h) = self.decode_step_h(e, last_token, &mut *cache)?;
             last_pred = argmax(&init_logits) as u32;
+            if constraint.is_some() {
+                init_logits_host = Some(init_logits.clone());
+            }
             // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
             if sampled {
                 last_col_logits = Some(e.htod(&init_logits)?);
@@ -2785,6 +2861,7 @@ impl HybridModel {
         let stream_on = crate::spec::spec_stream()
             && !sampled
             && !spec_replay
+            && constraint.is_none()
             && !session_mode
             && embd_gpu.is_some()
             && !crate::model::full_prec_enabled()
@@ -3308,7 +3385,8 @@ impl HybridModel {
                 // (spec_accept_greedy, verbatim rule) and the host reads back 8B (n_acc, bonus)
                 // instead of the [T] preds. Same sync count — machinery for stages (b)/(c),
                 // gated on token identity vs the host walk (the arms below are bit-equal rules).
-                if crate::spec::spec_devacc() && k_round > 0 && !spec_replay {
+                if crate::spec::spec_devacc() && k_round > 0 && !spec_replay
+                    && constraint.is_none() {
                     let draft_d = e.htod_u32_v(&draft)?;
                     let mut acc_out = e.alloc_u32_zeroed(2)?;
                     e.spec_accept_greedy(
@@ -3640,6 +3718,48 @@ impl HybridModel {
                     e.dtoh_u32(&sample_tok)?[0]
                 };
                 (n_acc, bonus)
+            };
+            // --- 3b. GRAMMAR TRUNCATION (constrained spec, 2026-08-03): the grammar is
+            // an extra rejection rule AFTER the exactness verify (the batched-verify-twins
+            // ordering). Walk the accepted drafts through the grammar in commit order; the
+            // first illegal token truncates acceptance at its slot, and that slot's emission
+            // is recomputed as the MASKED argmax of the target's own verify column — token-
+            // identical to constrained plain greedy decode (an unmasked argmax that is
+            // grammar-legal IS the masked argmax: masking only removes competitors). The
+            // column D2H (~1MB) is paid only when a cut fires — the tight-grammar cost,
+            // measured in acceptance numbers, never hidden.
+            let (n_acc, bonus) = match constraint.as_deref_mut() {
+                None => (n_acc, bonus),
+                Some(c) => {
+                    fn ce(e2: String) -> Box<dyn std::error::Error> {
+                        format!("constraint: {e2}").into()
+                    }
+                    let mut na = n_acc;
+                    let mut cut = false;
+                    for (j, &d) in draft.iter().enumerate().take(n_acc) {
+                        if c.is_allowed(d).map_err(ce)? {
+                            c.consume(d).map_err(ce)?;
+                        } else {
+                            na = j;
+                            cut = true;
+                            break;
+                        }
+                    }
+                    let mut bo = bonus;
+                    if cut || !c.is_allowed(bo).map_err(ce)? {
+                        let mut row = if na == 0 && base == 0 {
+                            init_logits_host.clone()
+                                .ok_or("constraint: init logits missing (round-0 cut)")?
+                        } else {
+                            e.dtoh_view(&tlogits_d.slice(
+                                (base + na - 1) * n_vocab..(base + na) * n_vocab))?
+                        };
+                        c.mask_logits(&mut row).map_err(ce)?;
+                        bo = argmax(&row) as u32;
+                    }
+                    c.consume(bo).map_err(ce)?;
+                    (na, bo)
+                }
             };
             total_drafted += k_round;
             total_accepted += n_acc;
