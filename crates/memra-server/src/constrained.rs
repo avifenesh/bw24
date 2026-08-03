@@ -10,11 +10,16 @@
 //! `Option`s that stay `None`. Unconstrained serving is byte-identical to pre-lane behavior
 //! (proved by the A/B gate in research/constrained-20260803/).
 //!
-//! v1 seams (worker.rs):
-//!   - constrained rows never device-sample (the mask lives host-side): `samp[i] = None`,
-//!     so their logits row keeps the full D2H and the host sampler runs on a masked copy.
-//!   - constrained sessions are not graph-promoted (graph steps sample on device).
-//!   - spec-decode x constrained is OFF loudly (TODO in admit) — plain decode only.
+//! FULL path (lane/constrained-full, 2026-08-03 — v1's host-only seams closed):
+//!   - the packed mask (SimpleVob words) H2Ds per step into a stable per-session device
+//!     buffer; `mask_logits_f32` bans on device BEFORE the device sampler — constrained
+//!     rows ride the same device-sample/lean-logits tick as everyone else.
+//!   - constrained greedy sessions graph-promote (in-graph mask node, stable pointer,
+//!     contents re-uploaded per step) and spec-decode (verify-side grammar truncation +
+//!     masked-argmax cut slot; SpecGrammar below adapts the engine's SpecConstraint hook).
+//!   - fallback sampler configs (penalties/top-k/top-p/min-p) and MEMRA_CONSTRAIN_HOST=1
+//!     (the rollback oracle) keep the v1 host masked-copy sample.
+//! Receipts: research/constrained-full-20260803/ (battery + three-way perf + gates).
 
 use std::sync::Arc;
 
