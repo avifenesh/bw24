@@ -919,6 +919,16 @@ static __global__ void nvfp4_residual_correct_kernel(
     const int i = blockIdx.x * NT + threadIdx.x;
     const int row_bytes = (in_f / QK_NVFP4) * (int) sizeof(block_nvfp4);
 
+    // GRID IS 2D: x over output rows, y over token chunks. A row-only grid launches out_f/NT CTAs —
+    // 16 for out_f=4096 — on a 170-SM GPU, with each thread then walking every token serially. nsys
+    // priced that at 756us average against a 40us bandwidth bound for the y traffic (60.5 MB at
+    // pp1845), i.e. ~19x off and occupancy-bound, which made the correction cost MORE than the
+    // 650us GEMM it corrects. Splitting the token axis across CTAs takes the same work to 464 CTAs.
+    // Each CTA owns a disjoint set of (row, token) pairs, so no element's arithmetic or rounding
+    // order changes — the exactness result is preserved by construction, not by luck.
+    const int j_base = blockIdx.y * CHUNK;
+    if (j_base >= n_tokens) { return; }
+
     __shared__ float a_sh[K * CHUNK];
     __shared__ int   c_sh[K];
     for (int s = threadIdx.x; s < K; s += NT) { c_sh[s] = topk_idx[s]; }
@@ -950,9 +960,9 @@ static __global__ void nvfp4_residual_correct_kernel(
         }
     }
 
-    for (int j0 = 0; j0 < n_tokens; j0 += CHUNK) {
+    {
+        const int j0 = j_base;
         const int nj = min(CHUNK, n_tokens - j0);
-        __syncthreads();
         for (int t = threadIdx.x; t < K * nj; t += NT) {
             const int s  = t / nj;
             const int jj = t % nj;
@@ -1157,7 +1167,10 @@ int memra_mmq_nvfp4_ex2(const void * W_nvfp4_blocks, const float * act_f32, floa
     // ---- 3) rank-k residual correction (must follow the GEMM: it accumulates into y) ----
     if (rk > 0) {
         constexpr int nt = 256;
-        const int nb = (out_f + nt - 1) / nt;
+        // 2D: x over output rows, y over 64-token chunks. Must match the kernel's CHUNK.
+        constexpr int chunk = 64;
+        const dim3 nb((unsigned) ((out_f + nt - 1) / nt),
+                      (unsigned) ((n_tokens + chunk - 1) / chunk), 1);
         switch (rk_pad) {
             case 8:
                 nvfp4_residual_correct_kernel<8><<<nb, nt, 0, st>>>(
