@@ -349,6 +349,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- BATCHED-VERIFY EPILOGUE TWIN (lane/vt-fixes fix 2): silu_mul_scaled_q8_1 at the verify
+    //     tier's FLAT n = T*n_ff, unit scales, vs the verify path's exact unfused chain
+    //     (silu_mul_f32 -> quantize_q8_1). The kernel is warp-per-32-block over flat n with no row
+    //     structure and n_ff % 32 == 0 means blocks never straddle token rows, so the T>1 form is
+    //     the m=1 program per block by construction. Unit scales pin the wiring's contract: the
+    //     verify dual applies macro-scales via scale_inplace BEFORE the epilogue (x*1.0 == x). ---
+    {
+        let (t, n_ff) = (5usize, 2048usize);
+        let n = t * n_ff;
+        let g: Vec<f32> = (0..n).map(|i| pr(i + 7)).collect();
+        let u: Vec<f32> = (0..n).map(|i| pr(i + 11)).collect();
+        let gd = e.htod(&g)?;
+        let ud = e.htod(&u)?;
+        // unfused reference: the verify t-path's ffn_act (silu_mul) then the down-proj's quantize.
+        let mut act = e.zeros(n)?;
+        e.silu_mul(&gd, &ud, &mut act, n)?;
+        let (aq_ref, ad_ref) = e.quantize_q8_1(&act, t, n_ff)?;
+        // fused twin at unit scales over the same flat n.
+        let (aq_f, ad_f) = e.silu_mul_scaled_q8_1(&gd, &ud, 1.0, 1.0, n)?;
+        let q_ref: Vec<i8> = e.stream().clone_dtoh(&aq_ref)?; e.stream().synchronize()?;
+        let q_f: Vec<i8> = e.stream().clone_dtoh(&aq_f)?; e.stream().synchronize()?;
+        let d_ref = e.dtoh(&ad_ref)?;
+        let d_f = e.dtoh(&ad_f)?;
+        let qbad = q_ref.iter().zip(&q_f).filter(|(a, b)| a != b).count();
+        let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
+        println!("silu_mul_q8_1 batched (T={t}): int8_mismatch={qbad} scale_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- GDN OUT-NORM FUSION (lane/vt-fixes fix 2): gated_rmsnorm_q8_1 must be BIT-IDENTICAL to
+    //     gated_rmsnorm -> quantize_q8_1. Both kernels are row-indexed at blockDim=128 (the
+    //     reduce-order pin), and ncols=d_state=128 % 32 == 0 means q8 blocks never straddle rows.
+    //     nrows=num_v covers T=1 decode (the existing fused decode path had no arm); nrows=num_v*5
+    //     is the batched-verify twin (verify runs the SAME kernel at nrows=num_v*T). ---
+    for t in [1usize, 5] {
+        let (d_state, num_v) = (128usize, 16usize);
+        let nrows = num_v * t;
+        let eps = 1e-6f32;
+        let o: Vec<f32> = (0..nrows * d_state).map(|i| pr(i + 83)).collect();
+        let z: Vec<f32> = (0..nrows * d_state).map(|i| pr(i + 89) - 0.5).collect();
+        let w: Vec<f32> = (0..d_state).map(|i| 0.5 + pr(i + 97) * 0.1).collect();
+        let od = e.htod(&o)?; let zd = e.htod(&z)?; let wd = e.htod(&w)?;
+        // reference: gated_rmsnorm (f32, blockDim=128 — the verify path's kernel) then quantize.
+        let mut gn_ref = e.zeros(nrows * d_state)?;
+        e.gated_rmsnorm(&od, &wd, &zd, &mut gn_ref, d_state, nrows, eps)?;
+        let (q_ref, d_ref) = e.quantize_q8_1(&gn_ref, nrows, d_state)?;
+        // fused.
+        let (q_f, d_f) = e.gated_rmsnorm_q8_1(&od, &wd, &zd, d_state, nrows, eps)?;
+        let qr: Vec<i8> = e.stream().clone_dtoh(&q_ref)?; e.stream().synchronize()?;
+        let qf: Vec<i8> = e.stream().clone_dtoh(&q_f)?; e.stream().synchronize()?;
+        let dr = e.dtoh(&d_ref)?; let df = e.dtoh(&d_f)?;
+        let qbad = qr.iter().zip(&qf).filter(|(x, y)| x != y).count();
+        let dbad = dr.iter().zip(&df).filter(|(x, y)| x != y).count();
+        println!("gated_rmsnorm_q8_1 (T={t}): q_mismatch={qbad} d_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- FUSED ACT-EPILOGUE (MoE prefill MMA arms): mmq_iq_fused_act_quant must produce a
     //     BYTE-IDENTICAL block_q8_1_mmq D4 scratch to the two-pass chain
     //     moe_pairs_{silu,gelu}_mul -> mmq_iq_quantize_act. Covers both activations and the
