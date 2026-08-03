@@ -1019,6 +1019,14 @@ impl HybridModel {
             _ => e.htod(&self.embd.gather(n_embd, tokens))?,
         };
 
+        // CROSS-LAYER ADD+NORM FUSION (lane/vt-fixes fix 2, mirroring decode_step_h's
+        // launch-arc form): layer il's post-FFN residual add (x2 = x1 + ffn_out) and layer
+        // il+1's attn_norm(+quantize) are consecutive row-wise ops — ONE add_rms_norm_q8_1
+        // launch at nrows=t does all three (bit-identity pinned by the T-row kernel-check
+        // arms). Carry the un-added (x1, ffn_out) pair; the fused launch materializes x2 (the
+        // residual the next layer needs) as its `res` output. Falls back to the separate add
+        // when the next layer is off the fused-q8 path.
+        let mut pending: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
         for (il, layer) in self.layers.iter().enumerate() {
             // DISPATCH-MIRRORED attn-input RMSNorm (FP-order lesson #8): eager decode fuses the
             // 1024-thread rms_norm_q8_1 ONLY when every mixer projection is q8_1-fast; layers with
@@ -1042,11 +1050,30 @@ impl HybridModel {
                 }
                 _ => true,
             };
+            // NOTE decode.rs's take()-first lesson: take the pending pair BEFORE branching so
+            // a non-fused layer still performs the residual add.
+            let taken = pending.take();
             let (h, h_q8) = if norm_fused && lin_q8_only {
-                let pair =
-                    e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?;
+                let pair = match taken {
+                    // fused add + attn_norm + q8_1: ONE launch resolves the carried residual
+                    // AND emits this layer's mixer input pre-quantized. res -> x2 (= new x).
+                    Some((x1p, f1p)) => {
+                        let mut x2 = vbuf(e, t * n_embd)?; // fully written (res output)
+                        let p = e.add_rms_norm_q8_1(
+                            &x1p, &f1p, layer.attn_norm.float_data(), &mut x2, n_embd, t, eps,
+                        )?;
+                        x = x2;
+                        p
+                    }
+                    None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
+                };
                 (e.zeros(0)?, Some(pair)) // h unused on this path (q8-only consumers)
             } else {
+                if let Some((x1p, f1p)) = taken {
+                    let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
+                    e.add(&x1p, &f1p, &mut x2, t * n_embd)?;
+                    x = x2;
+                }
                 let mut h = vbuf(e, t * n_embd)?; // fully written by either rms_norm arm
                 if norm_fused {
                     e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
@@ -1251,8 +1278,15 @@ impl HybridModel {
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
+            // CROSS-LAYER fusion: defer this layer's post-FFN residual add — the next layer's
+            // fused-q8 attn norm folds it in (add_rms_norm_q8_1 == add; rms_norm; quantize,
+            // kernel-check-pinned at nrows=T). Non-fused next layers add explicitly above.
+            pending = Some((x1, ffn_out));
+        }
+        // final layer's add (no next norm to fuse with — output_norm is f32-out)
+        if let Some((x1p, f1p)) = pending.take() {
             let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
-            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
+            e.add(&x1p, &f1p, &mut x2, t * n_embd)?;
             x = x2;
         }
 
