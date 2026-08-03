@@ -23,7 +23,7 @@ KEEP = [
     "first_divergent_pos", "ref_token", "test_token",
     "cross_prefill_maxdiff", "cross_prime_maxdiff",
     "ref_logit_ref_id", "ref_logit_test_id", "test_logit_ref_id", "test_logit_test_id",
-    "ref_margin", "test_margin",
+    "ref_margin", "test_margin", "div_row_maxdiff",
 ]
 
 
@@ -40,6 +40,11 @@ def main() -> int:
         if cur_model is None:
             return
         row = {"stage": stage, "model_tag": cur_model, "cell_tag": cur_cell}
+        # The k the W4A4 arm ran under, echoed into the log by run-gate.sh. Recorded per row so a
+        # summary file can never be read as belonging to the wrong sweep point.
+        rk = next((l for l in buf if l.startswith("MEMRA_MMQ_RESIDUAL_K=")), None)
+        if rk:
+            row["residual_k"] = int(rk.split("=", 1)[1])
         payload = next((l for l in buf if l.startswith("JSONL ")), None)
         if payload:
             parsed = json.loads(payload[len("JSONL "):])

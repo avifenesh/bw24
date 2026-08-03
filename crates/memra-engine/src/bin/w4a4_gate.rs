@@ -76,6 +76,20 @@ struct ArmRun {
     prime_argmax: usize,
     /// Greedy continuation off the serving-primed cache — the stream a user actually sees.
     tokens: Vec<u32>,
+    /// Greedy continuation off the TOKENWISE-built cache, same arm, same weights, same process.
+    /// The gate's NOISE FLOOR: this stream and `tokens` differ only in which prefill entry point
+    /// wrote the prompt's K/V (batched `prime_cache` vs m=1 `decode_step`), never in the activation
+    /// contract. If a single arm forks its own continuation here, then "byte-identical greedy output
+    /// vs the reference" is not a property any prefill arm has, and the W4A4 verdict has to be read
+    /// against this floor rather than against zero.
+    tokens_tokenwise: Vec<u32>,
+    /// `decide_rows[p]` is the logit row whose argmax produced `tokens[p]` (row 0 IS `prime_logits`).
+    /// Kept so the FIRST DIVERGENT position can be classified instead of only position 0: up to that
+    /// position both arms fed the same prefix, so the two rows are directly comparable, and quoting
+    /// both arms' values for both candidate ids separates a near-tie (two tokens within noise, the
+    /// arm merely rounded the other way) from a structural fork (the arm prefers a different token
+    /// by a wide margin). ~29 MB per arm at ngen=48 on a 150k vocab — worth it for the signature.
+    decide_rows: Vec<Vec<f32>>,
 }
 
 fn run_arm(
@@ -93,7 +107,8 @@ fn run_arm(
     let prefill_argmax = argmax(&prefill_logits);
 
     // (2) Tokenwise decode over the same prompt: the arm-invariant control.
-    let mut dcache = memra_engine::cache::Cache::new(e, &model.cfg, prompt.len() + 8)?;
+    // Sized for the prompt AND the noise-floor continuation (pass 2b) off the same cache.
+    let mut dcache = memra_engine::cache::Cache::new(e, &model.cfg, max_ctx)?;
     let mut logits = Vec::new();
     for &t in prompt {
         logits = model.decode_step(e, t, &mut dcache)?;
@@ -104,6 +119,20 @@ fn run_arm(
         .zip(&logits)
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
+
+    // (2b) NOISE FLOOR: greedy-decode the same ngen off the TOKENWISE-primed cache. Same arm, so any
+    //      fork against pass (3) is entry-point noise (batched prefill vs m=1 decode over the same
+    //      prompt), not an activation-contract difference. Without this control a cross-arm fork
+    //      can't be attributed to W4A4 at all.
+    let mut tokens_tokenwise = Vec::with_capacity(ngen);
+    {
+        let mut nx = decode_argmax as u32;
+        for _ in 0..ngen {
+            tokens_tokenwise.push(nx);
+            let l = model.decode_step(e, nx, &mut dcache)?;
+            nx = argmax(&l) as u32;
+        }
+    }
     drop(dcache);
 
     // (3) The SERVING path: prime the whole KV cache through the batched prefill (this is what
@@ -116,11 +145,15 @@ fn run_arm(
     let prime_argmax = argmax(&prime_logits);
 
     let mut tokens = Vec::with_capacity(ngen);
+    let mut decide_rows = Vec::with_capacity(ngen);
     let mut next = prime_argmax as u32;
+    let mut deciding = prime_logits.clone();
     for _ in 0..ngen {
         tokens.push(next);
+        decide_rows.push(std::mem::take(&mut deciding));
         logits = model.decode_step(e, next, &mut cache)?;
         next = argmax(&logits) as u32;
+        deciding = logits.clone();
     }
 
     Ok(ArmRun {
@@ -131,6 +164,8 @@ fn run_arm(
         prime_logits,
         prime_argmax,
         tokens,
+        tokens_tokenwise,
+        decide_rows,
     })
 }
 
@@ -259,23 +294,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(pos) => {
             let ref_id = reference.tokens[pos] as usize;
             let test_id = test.tokens[pos] as usize;
-            // At pos 0 the seeding logits ARE the prime rows, so we can quote both arms' logit
-            // values for both candidate ids — the near-tie-vs-structural discriminator.
-            let quoted = if pos == 0 {
-                format!(
-                    ",\"ref_logit_ref_id\":{:.6},\"ref_logit_test_id\":{:.6},\
-                     \"test_logit_ref_id\":{:.6},\"test_logit_test_id\":{:.6},\
-                     \"ref_margin\":{:.6},\"test_margin\":{:.6}",
-                    reference.prime_logits[ref_id],
-                    reference.prime_logits[test_id],
-                    test.prime_logits[ref_id],
-                    test.prime_logits[test_id],
-                    reference.prime_logits[ref_id] - reference.prime_logits[test_id],
-                    test.prime_logits[test_id] - test.prime_logits[ref_id],
-                )
-            } else {
-                String::new()
-            };
+            // Quote both arms' logits for BOTH candidate ids at the position where they actually
+            // part company. Every token before `pos` matched, so both arms decoded the same prefix
+            // and their deciding rows are directly comparable — the margins classify the fork:
+            // both small = near-tie (the arm rounded the other way on a coin flip), either large =
+            // structural (the arm genuinely prefers a different continuation). Also carry the
+            // cross-arm distance of that row, which is the quantization error that did the damage.
+            let ref_row = &reference.decide_rows[pos];
+            let test_row = &test.decide_rows[pos];
+            let row_maxdiff = ref_row
+                .iter()
+                .zip(test_row)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            let quoted = format!(
+                ",\"ref_logit_ref_id\":{:.6},\"ref_logit_test_id\":{:.6},\
+                 \"test_logit_ref_id\":{:.6},\"test_logit_test_id\":{:.6},\
+                 \"ref_margin\":{:.6},\"test_margin\":{:.6},\"div_row_maxdiff\":{:.6e}",
+                ref_row[ref_id],
+                ref_row[test_id],
+                test_row[ref_id],
+                test_row[test_id],
+                ref_row[ref_id] - ref_row[test_id],
+                test_row[test_id] - test_row[ref_id],
+                row_maxdiff,
+            );
             (
                 format!(
                     "\"first_divergent_pos\":{pos},\"ref_token\":{ref_id},\"test_token\":{test_id},\
@@ -284,6 +327,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 "DIVERGENT",
             )
+        }
+    };
+
+    // The noise floor, per arm: where does an arm's OWN batched-primed stream leave its OWN
+    // tokenwise-primed stream? Read the cross-arm verdict against this, not against zero.
+    let floor = |r: &ArmRun| -> String {
+        match r
+            .tokens
+            .iter()
+            .zip(&r.tokens_tokenwise)
+            .position(|(a, b)| a != b)
+        {
+            None => "null".to_string(),
+            Some(p) => p.to_string(),
         }
     };
 
@@ -296,8 +353,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          \"ref_prime_argmax\":{},\
          \"test_prefill_argmax\":{},\"test_decode_argmax\":{},\"test_self_maxdiff\":{:.6e},\
          \"test_prime_argmax\":{},\
+         \"ref_entrypoint_floor_pos\":{},\"test_entrypoint_floor_pos\":{},\
          {div_json},\"verdict\":\"{verdict}\",\
          \"ref_tokens\":{:?},\"test_tokens\":{:?},\
+         \"ref_tokens_tokenwise\":{:?},\"test_tokens_tokenwise\":{:?},\
          \"ref_text\":\"{}\",\"test_text\":\"{}\"}}",
         prompt.len(),
         reference.prefill_argmax,
@@ -308,8 +367,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         test.decode_argmax,
         test.self_maxdiff,
         test.prime_argmax,
+        floor(&reference),
+        floor(&test),
         reference.tokens,
         test.tokens,
+        reference.tokens_tokenwise,
+        test.tokens_tokenwise,
         json_escape(&ref_text),
         json_escape(&test_text),
     );
