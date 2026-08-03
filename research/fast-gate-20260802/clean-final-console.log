@@ -1,0 +1,177 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: research/fast-gate-20260802/break-f16g-iq4xs-console.log
+  changed: research/fast-gate-20260802/break-f16g-iq4xs.diff
+  changed: research/fast-gate-20260802/break-f16g-iq4xs-logs/build.log
+  changed: research/fast-gate-20260802/break-f16g-iq4xs-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-fa-decode2-console.log
+  changed: research/fast-gate-20260802/break-fa-decode2.diff
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-g31.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-g31spec.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-fa-decode3-console.log
+  changed: research/fast-gate-20260802/break-fa-decode3-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-decode3-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-fa-decode3-logs/probe-g12d.log
+  changed: research/fast-gate-20260802/break-fa-decode3-logs/probe-g31.log
+  changed: research/fast-gate-20260802/break-fa-decode3-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-fa-decode3-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-fa-decode-console.log
+  changed: research/fast-gate-20260802/break-fa-decode.diff
+  changed: research/fast-gate-20260802/break-fa-decode-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/probe-g31.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-fa-v4-console.log
+  changed: research/fast-gate-20260802/break-fa-v4.diff
+  changed: research/fast-gate-20260802/break-fa-v4-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-v4-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward10-console.log
+  changed: research/fast-gate-20260802/break-forward10-logs/build.log
+  changed: research/fast-gate-20260802/break-forward10-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-all-console.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-console.log
+  changed: research/fast-gate-20260802/break-forward-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-moe-console.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-kernel-console.log
+  changed: research/fast-gate-20260802/break-kernel-logs/build.log
+  changed: research/fast-gate-20260802/break-kernel-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-mmq-q8-console.log
+  changed: research/fast-gate-20260802/break-mmq-q8.diff
+  changed: research/fast-gate-20260802/break-mmq-q8-idx-console.log
+  changed: research/fast-gate-20260802/break-mmq-q8-idx.diff
+  changed: research/fast-gate-20260802/break-mmq-q8-idx-logs/build.log
+  changed: research/fast-gate-20260802/break-mmq-q8-idx-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-mmq-q8-logs/build.log
+  changed: research/fast-gate-20260802/break-mmq-q8-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-mmq-q8-logs/probe-o9.log
+  changed: research/fast-gate-20260802/break-mmq-q8-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moedev-console.log
+  changed: research/fast-gate-20260802/break-moedev-logs/build.log
+  changed: research/fast-gate-20260802/break-moedev-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-moe-staged-console.log
+  changed: research/fast-gate-20260802/break-moe-staged.diff
+  changed: research/fast-gate-20260802/break-moe-staged-logs/build.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-sampler-host-console.log
+  changed: research/fast-gate-20260802/break-sampler-host.diff
+  changed: research/fast-gate-20260802/break-sampler-host-logs/build.log
+  changed: research/fast-gate-20260802/break-sampler-host-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-sampler-host-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-sampler-host-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-sampler-host-logs/probe-samp.log
+  changed: research/fast-gate-20260802/break-sampler-host-logs/probe-sampt.log
+  changed: research/fast-gate-20260802/break-sampling2-console.log
+  changed: research/fast-gate-20260802/break-sampling2.diff
+  changed: research/fast-gate-20260802/break-sampling2-logs/build.log
+  changed: research/fast-gate-20260802/break-sampling2-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-sampling2-logs/probe-g31spec.log
+  changed: research/fast-gate-20260802/break-sampling2-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-sampling2-logs/probe-samp.log
+  changed: research/fast-gate-20260802/break-sampling-console.log
+  changed: research/fast-gate-20260802/break-sampling.diff
+  changed: research/fast-gate-20260802/break-sampling-logs/build.log
+  changed: research/fast-gate-20260802/break-sampling-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-sampling-logs/probe-g31spec.log
+  changed: research/fast-gate-20260802/break-sampling-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-sampling-logs/probe-samp.log
+  changed: research/fast-gate-20260802/clean-final-console.log
+  changed: research/fast-gate-20260802/clean-run-console.log
+  changed: research/fast-gate-20260802/clean-run-logs/build.log
+  changed: research/fast-gate-20260802/clean-run-logs/kernel-check.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-g12.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-o35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q9.log
+  changed: research/fast-gate-20260802/refresh-g12d-logs/probe-g12d.log
+  changed: research/fast-gate-20260802/refresh-q35slru-console.log
+  changed: research/fast-gate-20260802/refresh-q35slru-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/revert-moe-staged-console.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/build.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-g12.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q35.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q9.log
+  changed: research/fast-gate-20260802/revert-run-console.log
+  changed: research/fast-gate-20260802/revert-run-logs/build.log
+  changed: research/fast-gate-20260802/revert-run-logs/probe-q35spec.log
+  kernel-check scope: none
+  tier-1 argmax probes: g12,g12d,g31,q9,q35,q35slru,o9,o35,g26,k27,aw35,kat,e4b,samp,sampt
+  tier-1 spec probes:   q35spec,g31spec
+  logs: research/fast-gate-20260802/clean-final-logs
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check: SKIP (no matched kernel scope)
+tier 0: GREEN (3s total)
+== fast-gate tier 1 ==
+  g12: PASS (gates green + golden token-identical, 4s)
+  g12: perf-smoke ok (93.20 tok/s vs 93.63, -0.5%; single rep, informational)
+  g12d: FAIL — TOKEN DIVERGENCE vs golden (# golden @ 488bcce1 2026-08-03T01:33:04Z ngen=20 model=/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf, 23s)
+      golden: tokens: [623, 1437, 3056, 107, 101, 818, 3658, 600, 9177, 1346, 3187, 691, 623, 1437, 3056, 106, 106...
+      got:    tokens: [623, 1437, 3056, 107, 101, 818, 3658, 600, 9177, 1346, 3187, 691, 623, 1437, 3056, 106, 106...
+  g31: PASS (gates green + golden token-identical, 7s)
+  g31: perf-smoke ok (41.05 tok/s vs 41.51, -1.1%; single rep, informational)
+  q9: PASS (gates green + golden token-identical, 4s)
+  q9: perf-smoke ok (132.48 tok/s vs 127.91, +3.6%; single rep, informational)
+  q35: PASS (gates green + golden token-identical, 9s)
+  q35: perf-smoke ok (186.18 tok/s vs 174.57, +6.7%; single rep, informational)
+  q35slru: PASS (gates green + golden token-identical, 13s)
+  q35slru: perf-smoke ok (34.01 tok/s vs 34.07, -0.2%; single rep, informational)
+  o9: PASS (gates green + golden token-identical, 9s)
+  o9: perf-smoke ok (79.52 tok/s vs 87.14, -8.7%; single rep, informational)
+  o35: PASS (gates green + golden token-identical, 11s)
+  o35: perf-smoke ok (181.63 tok/s vs 197.22, -7.9%; single rep, informational)
+  g26: PASS (gates green + golden token-identical, 12s)
+  g26: perf-smoke ok (204.53 tok/s vs 204.26, +0.1%; single rep, informational)
+  k27: PASS (gates green + golden token-identical, 12s)
+  k27: perf-smoke ok (47.43 tok/s vs 48.38, -2.0%; single rep, informational)
+  aw35: PASS (gates green + golden token-identical, 9s)
+  aw35: perf-smoke ok (167.24 tok/s vs 168.48, -0.7%; single rep, informational)
+  kat: PASS (gates green + golden token-identical, 10s)
+  kat: perf-smoke ok (184.05 tok/s vs 173.54, +6.1%; single rep, informational)
+  e4b: PASS (gates green + golden token-identical, 4s)
+  e4b: perf-smoke ok (205.19 tok/s vs 205.84, -0.3%; single rep, informational)
+  samp: PASS (self-gating check green, 0s)
+  sampt: PASS (self-gating check green, 1s)
+  q35spec: PASS (gates green + golden token-identical, 10s)
+  q35spec: perf-smoke ok (242.70 tok/s vs 236.75, +2.5%; single rep, informational)
+  g31spec: PASS (stream agreement 32/32, 8s)
+tier 1: 1 fail (149s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.

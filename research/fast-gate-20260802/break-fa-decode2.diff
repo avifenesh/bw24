@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/cu/flash_attn.cu b/crates/memra-engine/cu/flash_attn.cu
+index f53be4a8..9a754a6b 100644
+--- a/crates/memra-engine/cu/flash_attn.cu
++++ b/crates/memra-engine/cu/flash_attn.cu
+@@ -294,7 +294,8 @@ static __device__ __forceinline__ float dq_K_lane(const uint8_t* __restrict__ bl
+     return (float)((const __nv_fp8_e4m3*)blk)[lane];
+ #else
+     const float d = __half2float(*(const half*)blk);
+-    const int8_t q = ((const int8_t*)(blk + 2))[lane];
++    // FAST-GATE CATCH DEMO (deliberate break, reverted): wrong-lane K read (index mixup class).
++    const int8_t q = ((const int8_t*)(blk + 2))[lane ^ 1];
+     return d * (float)q;
+ #endif
+ }

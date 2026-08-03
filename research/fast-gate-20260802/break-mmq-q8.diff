@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/cu/mmq_q8_0.cu b/crates/memra-engine/cu/mmq_q8_0.cu
+index 0e5ed316..c1557932 100644
+--- a/crates/memra-engine/cu/mmq_q8_0.cu
++++ b/crates/memra-engine/cu/mmq_q8_0.cu
+@@ -198,7 +198,8 @@ static __device__ __forceinline__ void load_tiles_q8_0(
+ 
+         const block_q8_0 * bxi = (const block_q8_0 *) x + kbx0 + i * stride + kbxd;
+ 
+-        x_df[i * MMQ_MMA_TILE_X_K_Q8_0 + kbxd] = __half2float(bxi->d);
++        // FAST-GATE CATCH DEMO (deliberate break, reverted): subtle block-scale skew.
++        x_df[i * MMQ_MMA_TILE_X_K_Q8_0 + kbxd] = __half2float(bxi->d) * 1.001f;
+     }
+ }
+ 

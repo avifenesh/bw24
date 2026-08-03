@@ -1,0 +1,14 @@
+diff --git a/crates/memra-engine/cu/spec_sample.cu b/crates/memra-engine/cu/spec_sample.cu
+index 7fa07065..620d9848 100644
+--- a/crates/memra-engine/cu/spec_sample.cu
++++ b/crates/memra-engine/cu/spec_sample.cu
+@@ -52,7 +52,8 @@ extern "C" __global__ void gumbel_perturb_f32(
+     uint4 r = philox4(seed_lo, seed_hi, (uint32_t) (i >> 2), stream_pos);
+     uint32_t v = (i & 3) == 0 ? r.x : (i & 3) == 1 ? r.y : (i & 3) == 2 ? r.z : r.w;
+     float g = -__logf(-__logf(u01(v)));
+-    y[i] = x[i] / temp + g;
++    // FAST-GATE CATCH DEMO (deliberate break, reverted): gumbel scale skew.
++    y[i] = x[i] / temp + g * 1.01f;
+ }
+ 
+ // ---------------- 2. softmax prob gather ----------------

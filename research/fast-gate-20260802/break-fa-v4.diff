@@ -1,0 +1,15 @@
+diff --git a/crates/memra-engine/cu/flash_attn.cu b/crates/memra-engine/cu/flash_attn.cu
+index f53be4a8..1f4de44e 100644
+--- a/crates/memra-engine/cu/flash_attn.cu
++++ b/crates/memra-engine/cu/flash_attn.cu
+@@ -7113,7 +7113,9 @@ static __device__ __forceinline__ void fa_v4_stage_k(
+     for (int task = bt; task < nt * 8; task += bsz) {
+         int j = task >> 3, c = task & 7;
+         const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+-        sm->k_d[j][c] = __half2float(*(const half*)blk);
++        // FAST-GATE CATCH DEMO (deliberate break, reverted): subtle K-scale skew on the
++        // DEFAULT v4 staging arm (the arm q35 decode actually rides).
++        sm->k_d[j][c] = __half2float(*(const half*)blk) * 1.001f;
+         // aligned-word + funnelshift extraction (REVISION 4b recipe) — same ints as the byte
+         // path, 9 aligned LDG.32 instead of ~32 byte loads.
+         const uint8_t* qs = blk + 2;

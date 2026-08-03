@@ -1,0 +1,15 @@
+diff --git a/crates/memra-sampling/src/lib.rs b/crates/memra-sampling/src/lib.rs
+index 3040f6bb..3fc6312d 100644
+--- a/crates/memra-sampling/src/lib.rs
++++ b/crates/memra-sampling/src/lib.rs
+@@ -143,7 +143,9 @@ impl Sampler {
+ 
+         // 3. top-k: keep the k highest-logit candidates (partial sort by logit desc).
+         if self.cfg.top_k > 0 && self.cfg.top_k < cand.len() {
+-            cand.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
++            // FAST-GATE CATCH DEMO (deliberate break, reverted): ascending sort keeps the
++            // WORST k candidates.
++            cand.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+             cand.truncate(self.cfg.top_k);
+         }
+ 

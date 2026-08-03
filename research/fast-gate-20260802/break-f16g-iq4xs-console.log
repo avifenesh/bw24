@@ -1,0 +1,103 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: crates/memra-engine/cu/moe_f16_grouped.cu
+  changed: research/fast-gate-20260802/break-f16g-iq4xs-console.log
+  changed: research/fast-gate-20260802/break-f16g-iq4xs.diff
+  changed: research/fast-gate-20260802/break-fa-decode2-console.log
+  changed: research/fast-gate-20260802/break-fa-decode2.diff
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-g31.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-g31spec.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-fa-decode2-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-fa-decode-console.log
+  changed: research/fast-gate-20260802/break-fa-decode.diff
+  changed: research/fast-gate-20260802/break-fa-decode-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/probe-g31.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-fa-decode-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-fa-v4-console.log
+  changed: research/fast-gate-20260802/break-fa-v4.diff
+  changed: research/fast-gate-20260802/break-fa-v4-logs/build.log
+  changed: research/fast-gate-20260802/break-fa-v4-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward10-console.log
+  changed: research/fast-gate-20260802/break-forward10-logs/build.log
+  changed: research/fast-gate-20260802/break-forward10-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward10-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-all-console.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-all-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-console.log
+  changed: research/fast-gate-20260802/break-forward-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-forward-moe-console.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/build.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-forward-moe-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-kernel-console.log
+  changed: research/fast-gate-20260802/break-kernel-logs/build.log
+  changed: research/fast-gate-20260802/break-kernel-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-console.log
+  changed: research/fast-gate-20260802/break-moedev-logs/build.log
+  changed: research/fast-gate-20260802/break-moedev-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-moedev-logs/probe-q9.log
+  changed: research/fast-gate-20260802/break-moe-staged-console.log
+  changed: research/fast-gate-20260802/break-moe-staged.diff
+  changed: research/fast-gate-20260802/break-moe-staged-logs/build.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/kernel-check.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-g12.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q35.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/break-moe-staged-logs/probe-q9.log
+  changed: research/fast-gate-20260802/clean-run-console.log
+  changed: research/fast-gate-20260802/clean-run-logs/build.log
+  changed: research/fast-gate-20260802/clean-run-logs/kernel-check.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-g12.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-o35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q35.log
+  changed: research/fast-gate-20260802/clean-run-logs/probe-q9.log
+  changed: research/fast-gate-20260802/refresh-q35slru-console.log
+  changed: research/fast-gate-20260802/refresh-q35slru-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/revert-moe-staged-console.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/build.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-g12.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q35.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q35slru.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q35spec.log
+  changed: research/fast-gate-20260802/revert-moe-staged-logs/probe-q9.log
+  changed: research/fast-gate-20260802/revert-run-console.log
+  changed: research/fast-gate-20260802/revert-run-logs/build.log
+  changed: research/fast-gate-20260802/revert-run-logs/probe-q35spec.log
+  kernel-check scope: csv [f16g-kq-direct]
+  tier-1 argmax probes: g26,q35
+  tier-1 spec probes:   none
+  logs: research/fast-gate-20260802/break-f16g-iq4xs-logs
+== fast-gate tier 0 ==
+  build: OK (135s)
+  kernel-check FAIL:
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+KC-SKIP [d2-cache-bit-identity] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: filtered by MEMRA_KC_ONLY=f16g-kq-direct (fast-gate change-scoped run — full battery still required before merge/tag)
+KC-SKIP [fast-router-batch] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: filtered by MEMRA_KC_ONLY=f16g-kq-direct (fast-gate change-scoped run — full battery still required before merge/tag)
+moe async-prefetch ordering + protected victim: OK
+Error: "8 kernel(s) FAILED"
