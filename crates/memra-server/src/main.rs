@@ -224,6 +224,77 @@ fn usage_json(n_prompt: usize, n_tokens: usize, n_cached: usize, elapsed_s: f64)
     })
 }
 
+// ---- OpenAI response envelope (serve-compat lane, 2026-08-03; gap-scan F1) ----
+//
+// The official `openai` SDKs pydantic-validate every response: `ChatCompletion` /
+// `ChatCompletionChunk` REQUIRE `id: str` and `created: int`, so a response without them
+// is rejected client-side before the caller ever sees the content. Every OpenAI-shape
+// completion and every stream chunk therefore carries `id` + `created` +
+// `system_fingerprint`; the id doubles as the `x-request-id` response header (vLLM
+// convention, serving_engine.py) for support/tracing. The memra-native response shape
+// (non-chat, MEMRA_COMPAT unset) is untouched — validation harnesses depend on it.
+
+/// Backend-config fingerprint: the build's git SHA (baked by build.rs). Together with
+/// `seed`, responses are checkable for determinism across deploys — the OpenAI
+/// `system_fingerprint` contract.
+const SYSTEM_FINGERPRINT: &str = concat!("memra-", env!("MEMRA_BUILD_SHA"));
+
+/// 128 random-ish hex bits: two RandomState-seeded hashes over a process counter + time.
+/// Uniqueness class (request ids), not crypto.
+fn gen_hex128() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut h1 = std::collections::hash_map::RandomState::new().build_hasher();
+    h1.write_u64(n);
+    h1.write_u64(t);
+    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+    h2.write_u64(t.rotate_left(17));
+    h2.write_u64(n);
+    format!("{:016x}{:016x}", h1.finish(), h2.finish())
+}
+
+/// One request's envelope identity: the completion `id` (`chatcmpl-…` chat, `cmpl-…`
+/// text) + `created` unix seconds, shared by the response and every chunk of its stream.
+#[derive(Clone)]
+struct Envelope {
+    id: String,
+    created: u64,
+}
+
+impl Envelope {
+    fn new(chat: bool) -> Self {
+        Envelope {
+            id: format!("{}-{}", if chat { "chatcmpl" } else { "cmpl" }, gen_hex128()),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        }
+    }
+
+    /// Stamp the envelope fields onto one completion/chunk payload.
+    fn stamp(&self, mut v: serde_json::Value) -> serde_json::Value {
+        v["id"] = json!(self.id);
+        v["created"] = json!(self.created);
+        v["system_fingerprint"] = json!(SYSTEM_FINGERPRINT);
+        v
+    }
+}
+
+/// Attach the request id as the `x-request-id` response header.
+fn with_request_id(id: &str, mut resp: Response) -> Response {
+    if let Ok(v) = axum::http::HeaderValue::from_str(id) {
+        resp.headers_mut()
+            .insert(axum::http::HeaderName::from_static("x-request-id"), v);
+    }
+    resp
+}
+
 /// OpenAI-compat mapping (2026-07-05, serve-parity arc): the pi daily client speaks
 /// `openai-completions` — POST /v1/completions with the OpenAI body, expecting
 /// `{choices:[{text, finish_reason, index}], usage:{...}}` and, when streaming, OpenAI SSE
@@ -253,6 +324,29 @@ fn openai_compat() -> bool {
 /// can only reveal the caller's own namespace's history (CacheProbe/PROMPTPEEK mitigation).
 fn cache_namespace(cache_salt: &Option<String>) -> String {
     cache_salt.clone().unwrap_or_default()
+}
+
+/// OpenAI error body: `{"error": {"message", "type", "param", "code"}}` — the object
+/// shape every OpenAI SDK parses (gap-scan F1; the old `{"error": "<string>"}` made
+/// clients show a blank error). `type` follows the OpenAI vocabulary:
+/// invalid_request_error / authentication_error / not_found_error / server_error.
+fn error_body(message: &str, etype: &str, param: Option<&str>, code: Option<&str>)
+    -> serde_json::Value {
+    json!({ "error": {
+        "message": message,
+        "type": etype,
+        "param": param,
+        "code": code,
+    } })
+}
+
+fn error_response(status: StatusCode, message: &str, etype: &str, param: Option<&str>)
+    -> Response {
+    (status, Json(error_body(message, etype, param, None))).into_response()
+}
+
+fn bad_request(message: &str, param: Option<&str>) -> Response {
+    error_response(StatusCode::BAD_REQUEST, message, "invalid_request_error", param)
 }
 
 fn stop_reason_to_finish(r: &str) -> &'static str {
@@ -641,8 +735,10 @@ fn authorized(headers: &axum::http::HeaderMap) -> bool {
 async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
                      Json(req): Json<CompletionReq>) -> Response {
     // API key (MEMRA_API_KEY): OpenAI-style `Authorization: Bearer <key>`. Absent env = open.
+    let env = Envelope::new(false);
     if !authorized(&headers) {
-        return (StatusCode::UNAUTHORIZED, "invalid api key").into_response();
+        return with_request_id(&env.id, error_response(
+            StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", None));
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
@@ -651,27 +747,30 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     let stop_strings = request.stop_strings.clone();
 
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "worker unavailable").into_response();
+        return with_request_id(&env.id, error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
     }
 
-    if stream {
-        sse_response(rx, model, false, None).into_response()
+    let resp = if stream {
+        sse_response(rx, model, false, None, env.clone()).into_response()
     } else {
-        blocking_response(rx, model, false, stop_strings, None).await.into_response()
-    }
+        blocking_response(rx, model, false, stop_strings, None, env.clone()).await.into_response()
+    };
+    with_request_id(&env.id, resp)
 }
 
 async fn chat_completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
                           Json(req): Json<ChatCompletionReq>) -> Response {
+    let env = Envelope::new(true);
     if !authorized(&headers) {
-        return (StatusCode::UNAUTHORIZED, "invalid api key").into_response();
+        return with_request_id(&env.id, error_response(
+            StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", None));
     }
     if req.messages.is_empty() || req.messages.iter().any(|message| {
         !matches!(message.role.as_str(), "system" | "user" | "assistant" | "tool")
     }) {
-        return (StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "messages must use system/user/assistant/tool roles" })))
-            .into_response();
+        return with_request_id(&env.id, bad_request(
+            "messages must use system/user/assistant/tool roles", Some("messages")));
     }
     let model = req.model.clone();
     let stream = req.stream;
@@ -679,49 +778,68 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     let plan = match build_chat_request(req, st.caps.get(&model), tx) {
         Ok(plan) => plan,
         Err(err) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": err }))).into_response();
+            return with_request_id(&env.id, bad_request(&err, None));
         }
     };
     let stop_strings = plan.request.stop_strings.clone();
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "worker unavailable").into_response();
+        return with_request_id(&env.id, error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
     }
-    if stream {
-        sse_response(rx, model, true, plan.parser).into_response()
+    let resp = if stream {
+        sse_response(rx, model, true, plan.parser, env.clone()).into_response()
     } else {
-        blocking_response(rx, model, true, stop_strings, plan.parser).await.into_response()
-    }
+        blocking_response(rx, model, true, stop_strings, plan.parser, env.clone()).await
+            .into_response()
+    };
+    with_request_id(&env.id, resp)
 }
 
 /// Streaming (SSE): forward each Token as an SSE `data:` line; emit a final `done` event.
 /// `parser`: Some only for tools-armed chat requests — content routes through the tool-call
 /// parser and parsed calls stream as OpenAI `tool_calls` deltas (one header chunk carrying
 /// id/type/name, one arguments chunk), with `finish_reason:"tool_calls"` on the final chunk.
+/// ENVELOPE (gap-scan F1): every OpenAI-shape chunk is stamped with the request's
+/// id/created/system_fingerprint; the FIRST chat delta carries `role:"assistant"` (SDK
+/// stream-accumulator contract); mid-stream worker errors go out as a `data:` error chunk
+/// (OpenAI clients never parse named SSE events) followed by [DONE].
 fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: String, chat: bool,
-                mut parser: Option<ToolStreamParser>)
+                mut parser: Option<ToolStreamParser>, env: Envelope)
     -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let stream = async_stream::stream! {
         let mut call_index: usize = 0;
+        // first chat delta carries the role (applied to whatever delta comes first —
+        // content, reasoning, or the tool-call header).
+        let mut role_sent = false;
+        macro_rules! chat_chunk {
+            ($delta:expr, $finish:expr) => {{
+                let mut delta = $delta;
+                if chat && !role_sent {
+                    role_sent = true;
+                    delta["role"] = json!("assistant");
+                }
+                env.stamp(json!({ "object": "chat.completion.chunk", "model": model,
+                                  "choices": [{ "index": 0, "delta": delta,
+                                                "finish_reason": $finish }] }))
+                    .to_string()
+            }};
+        }
         // renders Piece -> chat.completion.chunk payloads (tools-armed path only).
         macro_rules! piece_chunks {
             ($piece:expr) => {{
                 let mut payloads: Vec<String> = Vec::new();
                 match $piece {
                     Piece::Content(text) => payloads.push(
-                        json!({ "object": "chat.completion.chunk", "model": model,
-                                "choices": [{ "index": 0, "delta": { "content": text },
-                                              "finish_reason": null }] }).to_string()),
+                        chat_chunk!(json!({ "content": text }), serde_json::Value::Null)),
                     Piece::Call(call) => {
-                        payloads.push(json!({ "object": "chat.completion.chunk", "model": model,
-                            "choices": [{ "index": 0, "delta": { "tool_calls": [{
-                                "index": call_index, "id": call.id, "type": "function",
-                                "function": { "name": call.name, "arguments": "" } }] },
-                                "finish_reason": null }] }).to_string());
-                        payloads.push(json!({ "object": "chat.completion.chunk", "model": model,
-                            "choices": [{ "index": 0, "delta": { "tool_calls": [{
-                                "index": call_index,
-                                "function": { "arguments": call.arguments } }] },
-                                "finish_reason": null }] }).to_string());
+                        payloads.push(chat_chunk!(json!({ "tool_calls": [{
+                            "index": call_index, "id": call.id, "type": "function",
+                            "function": { "name": call.name, "arguments": "" } }] }),
+                            serde_json::Value::Null));
+                        payloads.push(chat_chunk!(json!({ "tool_calls": [{
+                            "index": call_index,
+                            "function": { "arguments": call.arguments } }] }),
+                            serde_json::Value::Null));
                         call_index += 1;
                     }
                 }
@@ -740,12 +858,10 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                         continue;
                     }
                     let payload = if chat {
-                        json!({ "object": "chat.completion.chunk", "model": model,
-                                "choices": [{ "index": 0, "delta": { "content": text },
-                                              "finish_reason": null }] }).to_string()
+                        chat_chunk!(json!({ "content": text }), serde_json::Value::Null)
                     } else if openai_compat() {
-                        json!({ "object": "text_completion", "model": model,
-                                "choices": [{ "index": 0, "text": text, "finish_reason": null }] })
+                        env.stamp(json!({ "object": "text_completion", "model": model,
+                                "choices": [{ "index": 0, "text": text, "finish_reason": null }] }))
                             .to_string()
                     } else {
                         json!({ "model": model, "id": id, "text": text }).to_string()
@@ -765,15 +881,21 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                     if chat || openai_compat() {
                         let usage = usage_json(n_prompt, n_tokens, n_cached, elapsed_s);
                         let fin = if chat {
-                            json!({ "object": "chat.completion.chunk", "model": model,
+                            let mut v = env.stamp(json!({
+                                "object": "chat.completion.chunk", "model": model,
                                 "choices": [{ "index": 0, "delta": {},
                                               "finish_reason": finish }],
-                                "usage": usage })
+                                "usage": usage }));
+                            // zero-token stream: the role must still arrive (SDK contract).
+                            if !role_sent {
+                                v["choices"][0]["delta"]["role"] = json!("assistant");
+                            }
+                            v
                         } else {
-                            json!({ "object": "text_completion", "model": model,
+                            env.stamp(json!({ "object": "text_completion", "model": model,
                                 "choices": [{ "index": 0, "text": "",
                                               "finish_reason": finish }],
-                                "usage": usage })
+                                "usage": usage }))
                         }.to_string();
                         yield Ok(SseEvent::default().data(fin));
                         yield Ok(SseEvent::default().data("[DONE]".to_string()));
@@ -788,14 +910,27 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                     break;
                 }
                 Event::Error(msg) => {
-                    let payload = json!({ "error": msg }).to_string();
-                    yield Ok(SseEvent::default().event("error").data(payload));
+                    if chat || openai_compat() {
+                        // OpenAI clients only parse `data:` lines — a named `event: error`
+                        // reads as a silent hang. Error object as the final data chunk.
+                        let payload = error_body(&msg, "server_error", None, None).to_string();
+                        yield Ok(SseEvent::default().data(payload));
+                        yield Ok(SseEvent::default().data("[DONE]".to_string()));
+                    } else {
+                        let payload = json!({ "error": msg }).to_string();
+                        yield Ok(SseEvent::default().event("error").data(payload));
+                    }
                     break;
                 }
             }
         }
     };
-    Sse::new(stream)
+    Sse::new(stream).keep_alive(
+        // OR cancels + fails over on silent phases (fetch timeout) — long-prompt prefill
+        // streams nothing for many seconds before first token. SSE comment every 5s.
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(5)),
+    )
 }
 
 /// Blocking JSON: collect all tokens, return one {text, tokens, stop_reason} when done.
@@ -807,7 +942,7 @@ fn truncate_at_stop(text: &mut String, stop_strings: &[String]) {
 
 async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: String,
                            chat: bool, stop_strings: Vec<String>,
-                           mut parser: Option<ToolStreamParser>) -> Response {
+                           mut parser: Option<ToolStreamParser>, env: Envelope) -> Response {
     let mut text = String::new();
     let mut tokens: Vec<u32> = Vec::new();
     let mut calls: Vec<ParsedToolCall> = Vec::new();
@@ -847,21 +982,21 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                         message["tool_calls"] = serde_json::Value::Array(
                             calls.iter().map(tool_call_json).collect());
                     }
-                    return Json(json!({
+                    return Json(env.stamp(json!({
                         "object": "chat.completion", "model": model,
                         "choices": [{ "index": 0,
                                       "message": message,
                                       "finish_reason": finish }],
                         "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s)
-                    })).into_response();
+                    }))).into_response();
                 }
                 if openai_compat() {
-                    return Json(json!({
+                    return Json(env.stamp(json!({
                         "object": "text_completion", "model": model,
                         "choices": [{ "index": 0, "text": text,
                                       "finish_reason": finish }],
                         "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s)
-                    })).into_response();
+                    }))).into_response();
                 }
                 return Json(CompletionResp {
                     model, text, tokens, stop_reason, n_tokens,
@@ -869,11 +1004,11 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                 }).into_response();
             }
             Event::Error(msg) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+                return bad_request(&msg, None);
             }
         }
     }
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "worker closed stream" }))).into_response()
+    error_response(StatusCode::INTERNAL_SERVER_ERROR, "worker closed stream", "server_error", None)
 }
 
 #[cfg(test)]
@@ -937,11 +1072,16 @@ mod tests {
             stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 42, n_cached: 30, elapsed_s: 0.5,
         }).unwrap();
         drop(tx);
-        let response = blocking_response(rx, "plain_quant".into(), true, Vec::new(), None).await;
+        let response = blocking_response(rx, "plain_quant".into(), true, Vec::new(), None,
+                                         Envelope::new(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(payload["object"], "chat.completion");
+        // OpenAI envelope (gap-scan F1): the official SDK pydantic-REQUIRES id + created.
+        assert!(payload["id"].as_str().unwrap().starts_with("chatcmpl-"));
+        assert!(payload["created"].as_u64().unwrap() > 1_700_000_000);
+        assert!(payload["system_fingerprint"].as_str().unwrap().starts_with("memra-"));
         assert_eq!(payload["choices"][0]["message"]["role"], "assistant");
         assert_eq!(payload["choices"][0]["message"]["content"], "hello");
         assert_eq!(payload["choices"][0]["finish_reason"], "stop");
@@ -1071,7 +1211,8 @@ mod tests {
         }).unwrap();
         drop(tx);
         let parser = ToolStreamParser::new(HashMap::new(), true);
-        let response = blocking_response(rx, "m".into(), true, Vec::new(), Some(parser)).await;
+        let response = blocking_response(rx, "m".into(), true, Vec::new(), Some(parser),
+                                         Envelope::new(true)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1118,6 +1259,83 @@ mod tests {
         assert_eq!(build_chat_request(req, None, tx).unwrap().request.cache_ns, "");
     }
 
+    /// Drain an Sse response into its `data:` payload lines (keep-alive comments skipped).
+    async fn sse_data_lines(resp: Response) -> Vec<String> {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: ").map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stream_chunks_carry_envelope_and_first_delta_role() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Token { id: 1, text: "he".into() }).unwrap();
+        tx.send(Event::Token { id: 2, text: "llo".into() }).unwrap();
+        tx.send(Event::Done {
+            stop_reason: "Eos".into(), n_tokens: 2, n_prompt: 10, n_cached: 0, elapsed_s: 0.1,
+        }).unwrap();
+        drop(tx);
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true)).into_response();
+        let lines = sse_data_lines(resp).await;
+        assert_eq!(lines.last().map(String::as_str), Some("[DONE]"));
+        let chunks: Vec<serde_json::Value> = lines[..lines.len() - 1].iter()
+            .map(|l| serde_json::from_str(l).unwrap()).collect();
+        // every chunk: id (chatcmpl-, SAME id) + created + system_fingerprint + object.
+        let id = chunks[0]["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("chatcmpl-"));
+        for c in &chunks {
+            assert_eq!(c["id"], id.as_str());
+            assert!(c["created"].as_u64().unwrap() > 1_700_000_000);
+            assert!(c["system_fingerprint"].as_str().unwrap().starts_with("memra-"));
+            assert_eq!(c["object"], "chat.completion.chunk");
+        }
+        // FIRST delta carries role:"assistant" (SDK accumulator contract); later ones don't.
+        assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(chunks[0]["choices"][0]["delta"]["content"], "he");
+        assert!(chunks[1]["choices"][0]["delta"].get("role").is_none());
+        // final chunk: finish_reason + usage.
+        let fin = chunks.last().unwrap();
+        assert_eq!(fin["choices"][0]["finish_reason"], "stop");
+        assert_eq!(fin["usage"]["prompt_tokens"], 10);
+    }
+
+    #[tokio::test]
+    async fn stream_worker_error_is_a_data_chunk_not_a_named_event() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Error("boom".into())).unwrap();
+        drop(tx);
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true)).into_response();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        // OpenAI clients only parse `data:` lines — no named `event: error` on the chat shape.
+        assert!(!body.contains("event: error"), "named SSE event leaked: {body}");
+        let lines: Vec<&str> = body.lines()
+            .filter_map(|l| l.strip_prefix("data: ")).collect();
+        let err: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(err["error"]["message"], "boom");
+        assert_eq!(err["error"]["type"], "server_error");
+        assert_eq!(lines.last(), Some(&"[DONE]"));
+    }
+
+    #[tokio::test]
+    async fn error_bodies_use_the_openai_object_shape() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Error("unknown model \"x\"".into())).unwrap();
+        drop(tx);
+        let response = blocking_response(rx, "m".into(), true, Vec::new(), None,
+                                         Envelope::new(true)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // {"error": {message, type, param, code}} — the object every OpenAI SDK parses.
+        assert_eq!(payload["error"]["message"], "unknown model \"x\"");
+        assert_eq!(payload["error"]["type"], "invalid_request_error");
+        assert!(payload["error"].get("param").is_some());
+        assert!(payload["error"].get("code").is_some());
+    }
+
     #[test]
     fn completions_accept_openai_stop_forms() {
         for (value, expected) in [
@@ -1142,7 +1360,7 @@ mod tests {
         }).unwrap();
         drop(tx);
         let response = blocking_response(
-            rx, "plain_quant".into(), false, vec!["Problem:".into()], None
+            rx, "plain_quant".into(), false, vec!["Problem:".into()], None, Envelope::new(false)
         ).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
