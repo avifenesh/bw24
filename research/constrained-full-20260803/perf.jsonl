@@ -1,0 +1,15 @@
+{"arm": "plain-unconstrained", "run": 1, "tokens": 256, "wall_s": 2.098, "tok_s": 122.0}
+{"arm": "plain-unconstrained", "run": 2, "tokens": 256, "wall_s": 2.057, "tok_s": 124.5}
+{"arm": "plain-unconstrained", "run": 3, "tokens": 256, "wall_s": 2.057, "tok_s": 124.4}
+{"arm": "plain-constr-v1host", "run": 1, "tokens": 217, "wall_s": 2.315, "tok_s": 93.7}
+{"arm": "plain-constr-v1host", "run": 2, "tokens": 217, "wall_s": 1.842, "tok_s": 117.8}
+{"arm": "plain-constr-v1host", "run": 3, "tokens": 217, "wall_s": 1.844, "tok_s": 117.7}
+{"arm": "plain-constr-full", "run": 1, "tokens": 217, "wall_s": 2.208, "tok_s": 98.3}
+{"arm": "plain-constr-full", "run": 2, "tokens": 217, "wall_s": 1.753, "tok_s": 123.8}
+{"arm": "plain-constr-full", "run": 3, "tokens": 217, "wall_s": 1.754, "tok_s": 123.7}
+{"arm": "spec-unconstrained", "run": 1, "tokens": 256, "wall_s": 1.57, "tok_s": 163.1}
+{"arm": "spec-unconstrained", "run": 2, "tokens": 257, "wall_s": 1.322, "tok_s": 194.4}
+{"arm": "spec-unconstrained", "run": 3, "tokens": 257, "wall_s": 1.322, "tok_s": 194.4}
+{"arm": "spec-constr-full", "run": 1, "tokens": 226, "wall_s": 1.889, "tok_s": 119.6}
+{"arm": "spec-constr-full", "run": 2, "tokens": 226, "wall_s": 1.473, "tok_s": 153.4}
+{"arm": "spec-constr-full", "run": 3, "tokens": 226, "wall_s": 1.469, "tok_s": 153.8}
