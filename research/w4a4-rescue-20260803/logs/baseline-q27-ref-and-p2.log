@@ -1,0 +1,14 @@
+=== ARM A: q27 REFERENCE (naked default, W4A8) p3 ===
+prefill argmax=271  decode argmax=271  logit maxdiff=1.175e0  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=1.017e0  MATCH
+prefill 6257 tok in 4.7615s = 1314.1 tok/s (pp6257)
+generated 32 tokens in 0.686s = 46.67 tok/s (Stage-B int8 dp4a decode, gen-only; prime 4.899s) [stop: MaxNew]
+tokens: [271, 248068, 198, 760, 21297, 369, 1510, 18702, 547, 8978, 34131, 63, 506, 1510, 20804, 24822, 25, 18, 15, 16, 27653, 198, 760, 1433, 1500, 1245, 1518, 424, 369, 74988, 20804, 60]
+OUTPUT TEXT: "\n\n<think>\nThe panic is `detok prefix mismatch` at `worker.rs:301`.\nThe log line right before it is `[worker]"
+=== ARM B: q27 W4A4 p2 (control, shorter prompt) ===
+prefill argmax=271  decode argmax=271  logit maxdiff=2.582e0  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=1.834e0  MATCH
+prefill 1845 tok in 0.7956s = 2319.0 tok/s (pp1845)
+generated 32 tokens in 0.707s = 45.28 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.828s) [stop: MaxNew]
+tokens: [271, 248068, 198, 8160, 579, 264, 7047, 1817, 25, 271, 16, 13, 220, 2972, 15771, 2598, 2570, 38622, 92217, 561, 1156, 6587, 310, 89109, 264, 32671, 9830, 3421, 318, 940, 1510, 686]
+OUTPUT TEXT: "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Goal**: The user wants to refactor a Rust HTTP server (using `ax"
