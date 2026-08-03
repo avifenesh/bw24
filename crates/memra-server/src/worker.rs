@@ -49,6 +49,11 @@ struct LoadedModel {
     model: HybridModel,
     tok: Tokenizer,
     eos_id: u32,
+    /// Loaded from a checkpoint DIRECTORY (safetensors/repack) rather than a GGUF file.
+    /// Feeds ModelCaps::chat_ok: a dir checkpoint with no chat template 400s on chat
+    /// requests (serve-st v1 honesty gate) instead of silently rendering fallback ChatML;
+    /// GGUF models keep the historical ChatML fallback.
+    from_dir: bool,
     /// Constrained-decoding grammar factory (llguidance TokTrie over this vocab). Built
     /// LAZILY on the first `response_format` request against this model — unconstrained
     /// serving never pays the vocab-trie build. `Err` = vocab unusable (kept, so every
@@ -114,6 +119,11 @@ pub struct ModelCaps {
     pub qwen_think: bool,
     /// template has the `enable_thinking` switch (ThinkMode::NoThink is honored).
     pub think_switch: bool,
+    /// chat requests are honest against this model: it has a chat template, OR it is a
+    /// GGUF (which keeps the historical plain-ChatML fallback). A safetensors/repack DIR
+    /// checkpoint without a template 400s on /v1/chat/completions (serve-st v1 honesty
+    /// gate) instead of silently rendering a format the model was never trained on.
+    pub chat_ok: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -632,7 +642,8 @@ pub fn run(
         eprintln!("[worker] loading model {name:?} <- {path}");
         // DIRECTORY path = safetensors HF checkpoint or a manifest-backed memra repack/overlay;
         // file = GGUF. Repack tokenizers live in the manifest's source_dir.
-        let (model, tok) = if std::path::Path::new(path).is_dir() {
+        let from_dir = std::path::Path::new(path).is_dir();
+        let (model, tok) = if from_dir {
             let dir = std::path::Path::new(path);
             let (src, tok_dir): (Box<dyn memra_gguf::source::TensorSource>, std::path::PathBuf) =
                 if dir.join("manifest.json").exists() {
@@ -699,7 +710,7 @@ pub fn run(
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
         loaded.insert(name.clone(), LoadedModel {
-            model, tok, eos_id, constraints: std::cell::OnceCell::new(),
+            model, tok, eos_id, from_dir, constraints: std::cell::OnceCell::new(),
         });
         order.push(name.clone());
     }
@@ -711,9 +722,13 @@ pub fn run(
                 && !t.contains("hy_User") && !t.contains("<|turn>")),
             qwen_think: t.is_some_and(|t| t.contains("<think>") && t.contains("add_generation_prompt")),
             think_switch: t.is_some_and(|t| t.contains("enable_thinking")),
+            // GGUF keeps the historical ChatML fallback for template-less models; a dir
+            // checkpoint (safetensors/repack) must CARRY its template (tokenizer_config
+            // chat_template or chat_template.jinja) or chat requests 400 (serve-st v1).
+            chat_ok: t.is_some() || !lm.from_dir,
         };
-        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={}",
-                  caps.tools_branch, caps.qwen_think, caps.think_switch);
+        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={}",
+                  caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));

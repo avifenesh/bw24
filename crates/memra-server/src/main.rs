@@ -844,6 +844,19 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                       lane: lanes::Lane)
                       -> Result<ChatPlan, String> {
     let tool_choice = parse_tool_choice(&req.tool_choice)?;
+    // Template honesty gate (serve-st lane, 2026-08-04): a directory checkpoint
+    // (safetensors/repack) with NO chat template cannot honestly serve chat — 400 with a
+    // clear message instead of silently rendering fallback ChatML the model never saw.
+    // GGUF models keep the historical fallback (chat_ok=true there regardless).
+    if let Some(c) = caps {
+        if !c.chat_ok {
+            return Err(format!(
+                "model {:?} has no chat template (checkpoint carries neither \
+                 tokenizer_config.json chat_template nor chat_template.jinja) — \
+                 /v1/chat/completions unavailable; use /v1/completions with a raw prompt",
+                req.model));
+        }
+    }
     let mut think = parse_think(&req.reasoning_effort, &req.reasoning)?;
     // response_format -> grammar spec (constrained decoding). None/text = unconstrained,
     // the exact legacy path; unknown/malformed forms are loud 400s.
@@ -1386,7 +1399,7 @@ mod tests {
     use super::*;
 
     fn tool_caps() -> ModelCaps {
-        ModelCaps { tools_branch: true, qwen_think: true, think_switch: true }
+        ModelCaps { tools_branch: true, qwen_think: true, think_switch: true, chat_ok: true }
     }
 
     #[test]
@@ -1590,9 +1603,30 @@ mod tests {
     }
 
     #[test]
+    fn chat_on_templateless_dir_checkpoint_is_rejected_with_clear_message() {
+        // serve-st v1 honesty gate: a dir checkpoint whose tokenizer carries no chat
+        // template probes chat_ok=false -> every chat request 400s BEFORE the worker.
+        let caps = ModelCaps {
+            tools_branch: false, qwen_think: false, think_switch: false, chat_ok: false };
+        let payload = serde_json::json!({
+            "model": "st_model",
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        let req: ChatCompletionReq = serde_json::from_value(payload).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = match build_chat_request(req, Some(&caps), tx, lanes::Lane::Interactive) {
+            Err(e) => e,
+            Ok(_) => panic!("templateless dir checkpoint must reject chat"),
+        };
+        assert!(err.contains("no chat template"), "message should name the cause: {err}");
+        assert!(err.contains("/v1/completions"), "message should point at the raw-prompt escape hatch: {err}");
+    }
+
+    #[test]
     fn tools_on_model_without_tools_branch_is_rejected() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let caps = ModelCaps { tools_branch: false, qwen_think: false, think_switch: false };
+        let caps = ModelCaps {
+            tools_branch: false, qwen_think: false, think_switch: false, chat_ok: true };
         assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx, lanes::Lane::Interactive).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({})), None, tx, lanes::Lane::Interactive).is_err());
