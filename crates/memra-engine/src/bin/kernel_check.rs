@@ -3146,6 +3146,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- ARM B' [fp8-blk-gpu]: device-side block-128 FP8(e4m3) -> Q8_0 dequant pass
+    // (cu/fp8_blk_dequant.cu) must be BYTE-EQUAL to the host reference (per-block dequant
+    // then nvfp4_repack::f32_to_q8_0). Synthetic: every e4m3 code exercised (the byte cycle
+    // includes the NaN code, which the modelopt convention decodes to 0.0), scales spanning
+    // several binades so the per-32 amax/f16-d path is exercised in more than one exponent,
+    // and a RAGGED out_dim (136 = 128 + 8, a non-multiple-of-128 row tail sharing the last
+    // scale row) plus a ragged in_dim (160 = 128 + 32, one trailing 32-wide Q8_0 block in a
+    // partial 128-segment) — the two edges the flat-grid launcher must handle. ---
+    {
+        use memra_gguf::nvfp4_repack::{f32_to_q8_0, fp8_e4m3_to_f32};
+        for &(out_f, in_f) in &[(256usize, 512usize), (136usize, 160usize), (8usize, 32usize)] {
+            let (rows, cols) = (out_f.div_ceil(128), in_f.div_ceil(128));
+            // codes cycle over all 256 e4m3 bytes; grid spans ~2^-4..2^5 across blocks.
+            let codes: Vec<u8> = (0..out_f * in_f).map(|i| (i % 256) as u8).collect();
+            let grid: Vec<f32> = (0..rows * cols)
+                .map(|i| 2f32.powi((i % 10) as i32 - 4) * (1.0 + 0.125 * (i % 3) as f32))
+                .collect();
+            // host reference: exactly the block-128 arm of the ST loader (f8_deq_f32 +
+            // f32_to_q8_0), row-major Q8_0 blocks.
+            let mut cpu: Vec<u8> = Vec::with_capacity(out_f * (in_f / 32) * 34);
+            for o in 0..out_f {
+                let row: Vec<f32> = (0..in_f)
+                    .map(|e| fp8_e4m3_to_f32(codes[o * in_f + e]) * grid[(o >> 7) * cols + (e >> 7)])
+                    .collect();
+                cpu.extend_from_slice(&f32_to_q8_0(&row));
+            }
+            let dev = e.fp8_blk_dequant_q8_0(&codes, &grid, out_f, in_f)?;
+            let gpu = e.dtoh_u8(&dev)?;
+            let bad = if gpu.len() != cpu.len() {
+                usize::MAX
+            } else {
+                gpu.iter().zip(&cpu).filter(|(a, b)| a != b).count()
+            };
+            println!("fp8-blk-gpu Q8_0 bit-parity [{out_f}x{in_f}] bytes={} bad={bad} {}",
+                     cpu.len(), if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+        }
+    }
+
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }

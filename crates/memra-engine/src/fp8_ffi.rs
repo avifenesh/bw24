@@ -177,3 +177,107 @@ impl crate::Engine {
         Ok(Some(y))
     }
 }
+
+// ============================================================================================
+// ARM B' — device-side block-128 FP8 -> Q8_0 dequant pass (cu/fp8_blk_dequant.cu)
+// ============================================================================================
+
+unsafe extern "C" {
+    /// Q8_0 slab bytes for an `[out_dim x in_dim]` weight (0 = bad dims).
+    fn memra_fp8_blk_q8_0_bytes(out_dim: i32, in_dim: i32) -> usize;
+    /// One device pass: e4m3 codes + block-128 f32 scale grid -> Q8_0 blocks.
+    /// rc: 0 ok, 1 bad dims, else a cudaError_t.
+    fn memra_fp8_blk_dequant_q8_0(
+        f8_weights: *const core::ffi::c_void,
+        blk_scales: *const f32,
+        out_q8: *mut core::ffi::c_void,
+        out_dim: i32,
+        in_dim: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+}
+
+/// `MEMRA_FP8_BLK_GPU=1` gate (default OFF; ARM B', lane fp8-gemm-arm 2026-08-03): block-128
+/// FP8 safetensors weights dequant to Q8_0 ON THE GPU at load instead of host-dequant +
+/// host-re-encode. Bit-parity with the CPU path is a kernel-check gate (`fp8-blk-gpu` arm) and
+/// a real-checkpoint argmax gate — the flag exists because the CPU path stays default until
+/// both are green on the 5090.
+pub fn fp8_blk_gpu_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("MEMRA_FP8_BLK_GPU")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
+impl crate::Engine {
+    /// Q8_0 slab byte count for an `[out_f, in_f]` block-128 FP8 weight.
+    pub fn fp8_blk_q8_0_bytes(out_f: usize, in_f: usize) -> usize {
+        unsafe { memra_fp8_blk_q8_0_bytes(out_f as i32, in_f as i32) }
+    }
+
+    /// ARM B' load-time pass: upload the raw e4m3 codes + the block-128 scale grid, dequant on
+    /// the GPU, and return the Q8_0 slab (byte-identical to the host re-encode). `f8` is the
+    /// checkpoint's row-major `[out_f x in_f]` codes; `grid` is the row-major
+    /// `[ceil(out_f/128) x ceil(in_f/128)]` f32 scale grid (F8BlockGrid order, verbatim).
+    pub fn fp8_blk_dequant_q8_0(
+        &self,
+        f8: &[u8],
+        grid: &[f32],
+        out_f: usize,
+        in_f: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let (rows, cols) = (out_f.div_ceil(128), in_f.div_ceil(128));
+        if f8.len() != out_f * in_f {
+            return Err(format!(
+                "fp8_blk_dequant_q8_0: f8 len {} != out_f*in_f {}",
+                f8.len(),
+                out_f * in_f
+            )
+            .into());
+        }
+        if grid.len() != rows * cols {
+            return Err(format!(
+                "fp8_blk_dequant_q8_0: grid len {} != rows*cols {rows}*{cols}",
+                grid.len()
+            )
+            .into());
+        }
+        let need = Self::fp8_blk_q8_0_bytes(out_f, in_f);
+        if need == 0 {
+            return Err(format!(
+                "fp8_blk_dequant_q8_0: bad dims out_f={out_f} in_f={in_f} (in_f must be %32)"
+            )
+            .into());
+        }
+        let src = self.htod_bytes(f8)?;
+        let scales = self.htod(grid)?;
+        let mut dst = self.alloc_u8_uninit(need)?;
+        let rc = {
+            let stream = self.gpu.stream();
+            let (s_p, _gs) = src.device_ptr(&stream);
+            let (g_p, _gg) = scales.device_ptr(&stream);
+            let (d_p, _gd) = dst.device_ptr_mut(&stream);
+            unsafe {
+                memra_fp8_blk_dequant_q8_0(
+                    s_p as *const core::ffi::c_void,
+                    g_p as *const f32,
+                    d_p as *mut core::ffi::c_void,
+                    out_f as i32,
+                    in_f as i32,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!(
+                "memra_fp8_blk_dequant_q8_0 rc={rc} (out_f={out_f} in_f={in_f}; 1=bad dims, \
+                 else cudaError_t)"
+            )
+            .into());
+        }
+        self.gpu.stream().synchronize()?;
+        Ok(dst)
+    }
+}
