@@ -1,0 +1,18 @@
+=== q9 REFERENCE p3 ===
+prefill argmax=271  decode argmax=271  logit maxdiff=2.187e0  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=2.426e0  MATCH
+prefill 6257 tok in 1.3270s = 4715.0 tok/s (pp6257)
+generated 32 tokens in 0.243s = 131.93 tok/s (Stage-B int8 dp4a decode, gen-only; prime 1.376s) [stop: MaxNew]
+tokens: [271, 248068, 271, 248069, 271, 13962, 91094, 271, 760, 21297, 1510, 18702, 547, 8978, 34131, 63, 506, 1510, 20804, 24822, 25, 18, 15, 16, 63, 13273, 6849, 1238, 279, 1433, 25, 198]
+=== q9 W4A4 p2 ===
+prefill argmax=271  decode argmax=271  logit maxdiff=1.659e0  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=1.473e0  MATCH
+prefill 1845 tok in 0.2702s = 6828.7 tok/s (pp1845)
+generated 32 tokens in 0.242s = 132.12 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.286s) [stop: MaxNew]
+tokens: [271, 8160, 369, 279, 1985, 519, 2922, 1970, 440, 74715, 23022, 11205, 13, 271, 13962, 5141, 27227, 198, 16, 13, 220, 2972, 25953, 53844, 92217, 17158, 264, 1510, 28627, 789, 476, 25770]
+=== q9 W4A4 p4-16k ===
+prefill argmax=271  decode argmax=271  logit maxdiff=2.325e0  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=1.756e0  MATCH
+prefill 23476 tok in 4.6503s = 5048.3 tok/s (pp23476)
+generated 16 tokens in 0.143s = 111.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 4.967s) [stop: MaxNew]
+tokens: [271, 248068, 271, 248069, 271, 27775, 383, 279, 21297, 1876, 1510, 18702, 547, 8978, 34131, 63]

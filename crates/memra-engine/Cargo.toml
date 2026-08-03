@@ -116,6 +116,10 @@ name = "argmax-gate"
 path = "src/bin/argmax_gate.rs"
 
 [[bin]]
+name = "w4a4-gate"
+path = "src/bin/w4a4_gate.rs"
+
+[[bin]]
 name = "moe-devq8-check"
 path = "src/bin/moe_devq8_check.rs"
 

@@ -1491,10 +1491,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             // --- VENDORED llama NVFP4 MMQ GEMM vs the f32 dequant oracle. ---
-            // W4A4-native (mxf4nvf4 block-scale mma) but with llama's 2-level FP8-e8m0/UE4M3 activation
-            // quant -> should be MUCH closer to the f32 oracle than the memra hand-roll FP4 (rel ~0.1).
-            // Authoritative gate is still end-to-end argmax; this rel is the accuracy signal that
-            // llama's activation quant fixed memra's W4A4 maxdiff 1.46.
+            // W4A4-native (mxf4nvf4 block-scale mma). The e2m1 ACTIVATION grid is the lossy side
+            // (the weight side is bit-exact — probe/fp4_4x_final.cu maxrel=0), so this rel measures
+            // the activation quantizer and nothing else.
+            //
+            // TWO ARMS, same weights and same activations, differing only in the quantizer:
+            //   MMQ-GEMM     — two-level scaling: per-token row amax (folded into the epilogue) plus
+            //                  the per-sub-block UE4M3 micro-scale. The shipped path.
+            //   MMQ-GEMM-V1  — the pre-port sub-block-only quantizer, kept as the numeric oracle.
+            // Printing both makes the port's value measurable instead of asserted: V1's rel is the
+            // "before" number and any regression in the delta shows up here rather than only in an
+            // end-to-end argmax gate. Both rels stay INFORMATIONAL — the authoritative W4A4 gate is
+            // end-to-end greedy decode (w4a4-gate / run-gen argmax), because a rel that looks fine
+            // on synthetic activations can still fork real text.
             if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
                 use memra_gguf::dequant;
                 use memra_runtime::cpu_linear;
@@ -1507,12 +1516,134 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
-                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
-                    let d = maxdiff(&cpu, &yb);
                     let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
-                    let rel = d / scale;
+
+                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                    let rel = maxdiff(&cpu, &yb) / scale;
+                    let y1 = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_v1(&wd, &xd, tt, in_f, out_f)?)?;
+                    let rel_v1 = maxdiff(&cpu, &y1) / scale;
+
                     println!("MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (informational; \
                               authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
+                    println!("MMQ-GEMM-V1 blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel_v1:.2e} \
+                              (pre-port oracle; two-level/{}) {}",
+                             if rel > 0.0 { format!("{:.2}x", rel_v1 / rel) } else { "n/a".into() },
+                             if rel <= rel_v1 { "IMPROVED" } else { "WORSE" });
+                }
+
+                // --- DYNAMIC-RANGE arm: the case the per-token row scale actually exists for. ---
+                // UE4M3 holds roughly 1e-3..2e2 after the /2 in ue4m3_to_fp32. The sub-block scale is
+                // amax_sub/6, so a sub-block whose values sit near 1e-5 wants a scale of ~2e-6 — below
+                // the smallest UE4M3 subnormal — and the micro-scale CLAMPS. Every value in that
+                // sub-block then quantizes against the wrong decade, which is a systematic bias, not
+                // rounding noise. The uniform 0.1-scale activations above never reach either clamp
+                // (amax_sub/6 ~ 0.017, mid-range), which is why they show almost no delta.
+                //
+                // Here token j is scaled by 10^((j % 7) - 3), spanning 1e-3..1e3 across the batch —
+                // the per-token magnitude spread real activations show across layers and outlier
+                // channels. Two-level scaling normalizes each row before the search, so no token's
+                // micro-scale clamps; V1 has no such protection. HARD gate: if the row scale does not
+                // beat sub-block-only scaling HERE, the port bought nothing and should be reverted.
+                for tt in [16usize, 128] {
+                    let x: Vec<f32> = (0..tt * in_f)
+                        .map(|i| {
+                            let token = i / in_f;
+                            let decade = 10.0f32.powi((token % 7) as i32 - 3);
+                            pr(i + 83) * 0.1 * decade
+                        })
+                        .collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    // Per-token relative error: a single scale over the whole batch would be set by
+                    // the loudest token and would hide everything the quiet tokens do.
+                    let per_token_rel = |y: &[f32]| -> f32 {
+                        (0..tt)
+                            .map(|j| {
+                                let lo = j * out_f;
+                                let hi = lo + out_f;
+                                let s = cpu[lo..hi].iter().map(|v| v.abs()).fold(0.0, f32::max);
+                                if s <= 0.0 { return 0.0; }
+                                maxdiff(&cpu[lo..hi], &y[lo..hi]) / s
+                            })
+                            .fold(0.0, f32::max)
+                    };
+                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                    let y1 = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_v1(&wd, &xd, tt, in_f, out_f)?)?;
+                    let rel = per_token_rel(&yb);
+                    let rel_v1 = per_token_rel(&y1);
+                    println!("MMQ-GEMM-DYN blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} \
+                              v1={rel_v1:.2e} ({}) {}",
+                             if rel > 0.0 { format!("{:.2}x", rel_v1 / rel) } else { "n/a".into() },
+                             if rel < rel_v1 { "OK" } else { fails += 1; "FAIL" });
+                }
+
+                // --- RESIDUAL-CHANNEL arm: validates the rank-k high-precision side path. ---
+                // Real activations carry PERSISTENT outlier CHANNELS: the same feature dims run one
+                // to two decades above their neighbours in every token. One loud channel drags the
+                // whole row amax up, so all 16-element sub-blocks in the row get a coarser scale and
+                // every quiet value loses bits. MEMRA_MMQ_RESIDUAL_K keeps the k loudest channels out
+                // of the e2m1 path and adds their exact f32 contribution back after the GEMM, which
+                // pays twice: exact for the loud channels, and a lower row amax for everything else.
+                //
+                // Here 8 fixed channels are amplified 300x on top of the decade spread. k=8 should
+                // capture exactly those, so the error must fall hard versus k=0. This is the gate
+                // that catches a sign, scale (the e2m1-grid/UE4M3 0.5x factor), or channel-index bug
+                // in the correction kernel — a wrong factor makes rel EXPLODE rather than shrink,
+                // and an end-to-end argmax gate would only report "still diverges".
+                {
+                    let tt = 128usize;
+                    let hot: Vec<usize> = (0..8).map(|c| (c * 977 + 13) % in_f).collect();
+                    let is_hot = {
+                        let mut v = vec![false; in_f];
+                        for &c in &hot { v[c] = true; }
+                        v
+                    };
+                    let x: Vec<f32> = (0..tt * in_f)
+                        .map(|i| {
+                            let token = i / in_f;
+                            let chan = i % in_f;
+                            let decade = 10.0f32.powi((token % 7) as i32 - 3);
+                            let boost = if is_hot[chan] { 300.0 } else { 1.0 };
+                            pr(i + 83) * 0.1 * decade * boost
+                        })
+                        .collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let per_token_rel = |y: &[f32]| -> f32 {
+                        (0..tt)
+                            .map(|j| {
+                                let lo = j * out_f;
+                                let hi = lo + out_f;
+                                let s = cpu[lo..hi].iter().map(|v| v.abs()).fold(0.0, f32::max);
+                                if s <= 0.0 { return 0.0; }
+                                maxdiff(&cpu[lo..hi], &y[lo..hi]) / s
+                            })
+                            .fold(0.0, f32::max)
+                    };
+                    let mut rel_k0 = f32::NAN;
+                    // k=32/64 also exercise the correction kernel's channel-axis TILING (the
+                    // register weight array holds MMQ_RESIDUAL_S_TILE=16 at a time), so a bug in the
+                    // multi-pass path cannot hide behind a single-pass k.
+                    for k in [0i32, 4, 8, 16, 32, 64] {
+                        let y = e.dtoh(&e.qmatvec_mmq_nvfp4_raw_res(&wd, &xd, tt, in_f, out_f, k)?)?;
+                        let r = per_token_rel(&y);
+                        if k == 0 {
+                            rel_k0 = r;
+                            println!("MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T={tt} k=0: rel={r:.2e} \
+                                      (baseline, 8 outlier channels @300x)");
+                            continue;
+                        }
+                        // k >= 8 covers every injected outlier, so it must beat the baseline. k=4
+                        // covers half of them and is informational: a partial cover can legitimately
+                        // land anywhere between the two.
+                        let hard = k >= 8;
+                        let better = r < rel_k0;
+                        let verdict = if better { "OK" } else if hard { fails += 1; "FAIL" } else { "FLAT" };
+                        println!("MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T={tt} k={k}: rel={r:.2e} \
+                                  ({} vs k=0){} {verdict}",
+                                 if r > 0.0 { format!("{:.2}x", rel_k0 / r) } else { "n/a".into() },
+                                 if hard { "" } else { " informational" });
+                    }
                 }
             }
             // --- STAGE 2: VENDORED llama NVFP4 W4A8 MMQ GEMM vs the f32 dequant oracle. ---
