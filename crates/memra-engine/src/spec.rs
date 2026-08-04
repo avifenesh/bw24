@@ -3047,6 +3047,16 @@ impl HybridModel {
         // per-replay async D2D into the round's q slot (q_slots, K x d_vocab, allocated once).
         // seed/temp are capture-time constants — baked into graph_s, so a pool-resumed request
         // with a different (seed, temp, k) drops the parked sampled graph and recaptures.
+        // COST OF THE FRESH-SEED SERVE DEFAULT (dogfood F4, 2026-08-04): omitting `seed` on a
+        // serve request now draws fresh per-request entropy (it used to default to a pinned 0),
+        // so a seed-omitting request that RESUMES a parked spec session finds an s_key baked
+        // with the PREVIOUS request's seed and pays one recapture. Bounded, and it does not
+        // reopen the ~16ms/burst regression the persistent ctx exists to fix: a session's seed
+        // is fixed for its whole lifetime (worker.rs reads s.sampler.seed() per burst), so
+        // this compare misses at most ONCE per resumed request — the first burst recaptures
+        // and every later burst in that request replays. A client that wants the parked graph
+        // AND reproducibility supplies an explicit `seed`, honored exactly, which keeps s_key
+        // stable across its whole conversation.
         // COMPOSITION RULE (fspec x gsd merge): the in-graph chain samples from the RAW
         // softmax — it can hold neither per-row filter stats nor the varying penalty history.
         // The sampled graph therefore engages only in the PURE-TEMP regime; filters/penalties

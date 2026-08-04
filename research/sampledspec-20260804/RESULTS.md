@@ -66,6 +66,61 @@ Unit test `omitted_temperature_is_openai_default_not_greedy` pins all four corne
 (omitted / explicit-0 x chat / completions) through to the `SamplerConfig`, plus the filter
 defaults and `is_greedy()` / `is_spec_sampling()`. memra-server suite **47/47 PASS**.
 
+## The bug's SECOND HALF (found in Part 3) — `seed` also defaulted to a pinned 0
+
+Fixing the temperature default is **not sufficient**. Both structs also carried
+
+```rust
+#[serde(default)]
+seed: u64,        // -> 0
+```
+
+and `0` is a perfectly valid FIXED seed. So a temperature-1.0 request that omits `seed`
+replays one single sampled stream forever — same context in, same tokens out. The loop
+survives the temperature fix untouched.
+
+Found by driving the LIVE pre-fix server (the owner's own 8002 daily driver, old binary from
+`bw24-unified`) rather than by reading code. Raw: `prefix-control.log`, per-run JSON in
+`raw-prefix/`. Content sha256[:16] over `reasoning + content`:
+
+| arm | request | runs | result |
+|---|---|---|---|
+| loop repro | agentic tool-check prompt, **temp omitted, seed omitted** (pi's exact shape) | 3 | `ecb102d458e0bc04` x3 — **identical** |
+| seed isolation | `temperature: 1.0`, **seed omitted** | 3 | `98ce5c171213e4fe` x3 — **identical** |
+| sampler control | `temperature: 1.0`, `seed: 1/2/3` | 3 | `bac60db73f70ab0a` / `df9687784f89f44b` / `0b50c59940e5da4f` — **differ** |
+
+Row 2 is the finding: temperature 1.0 alone still loops. Row 3 proves the sampler and the
+rejection-sampling spec path are fine — the seed was the remaining pin. Same bug class as
+F4, same file, same `#[serde(default)]`-on-a-meaningful-zero mistake.
+
+Fix (`6f51d4a1`): `seed: Option<u64>` on both structs, resolved as
+`seed.unwrap_or_else(fresh_seed)`. `fresh_seed()` mixes the nanosecond clock with a
+process-lifetime `AtomicU64` counter through SplitMix64's finalizer, so two requests in the
+same nanosecond tick (batched arrivals) still get distinct streams, and it never returns 0.
+
+**Explicit seeds — including an explicit `0` — are honored exactly.** Audited the ripple the
+same way as the temperature default: every determinism-sensitive script sends BOTH
+`temperature:0` and (where it matters) `seed:0` explicitly, so no gate changes behavior.
+Scripts that send a nonzero temperature (`sdk_gate.py` 0.7, the two `run-row-repair.sh`
+rebaseline p3 lines at 0.7) all pin `seed` explicitly (0 / 42). Scripts that omit `seed`
+entirely all send `temperature:0`, where the seed is unused — `devsample_meta` returns
+`(0.0, 0, 0)` for greedy rows and the spec path builds `SpecSampling` only when
+`temperature() > 0.0`, so a greedy request never reads the seed at all.
+
+### One real interaction, documented at the site (spec.rs `s_key`)
+
+The sampled draft CUDA graph bakes `(seed, temp.to_bits(), k)` as capture-time constants
+(`DraftGraphCtx::s_key`). A seed-omitting request that RESUMES a parked spec session now
+finds an `s_key` from the previous request's seed and pays one recapture. Bounded: a
+session's seed is fixed for its lifetime (`worker.rs` reads `s.sampler.seed()` per burst),
+so the miss happens at most **once per resumed request** — the first burst recaptures, every
+later burst replays. This does not reopen the ~16 ms/burst regression the persistent
+`DraftGraphCtx` exists to fix. A client wanting both the parked graph and reproducibility
+supplies an explicit `seed`, which keeps `s_key` stable across its whole conversation.
+
+Also documented the corrected omitted-param semantics in `docs/SERVING.md`'s OpenAI
+compatibility contract, next to the structurally identical `max_tokens`-omitted bullet.
+
 ## Part 2 — sampled spec-decode ALREADY EXISTS (task premise was stale)
 
 The brief asked to implement rejection-sampling spec decode. **It was already implemented and
