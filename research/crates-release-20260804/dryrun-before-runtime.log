@@ -1,0 +1,8 @@
+    Updating crates.io index
+error: failed to verify manifest at `/home/avifenesh/projects/wt-cratesio/crates/memra-runtime/Cargo.toml`
+
+Caused by:
+  all dependencies must have a version requirement specified when publishing.
+  dependency `memra-gguf` does not specify a version
+  Note: The published dependency will use the version from crates.io,
+  the `path` specification will be removed from the dependency declaration.

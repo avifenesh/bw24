@@ -1,0 +1,67 @@
+    Updating crates.io index
+   Packaging memra-gguf v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-gguf)
+    Updating crates.io index
+    Packaged 19 files, 362.1KiB (97.1KiB compressed)
+   Packaging memra-kv v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-kv)
+    Updating crates.io index
+    Packaged 5 files, 24.6KiB (9.0KiB compressed)
+   Packaging memra-runtime v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-runtime)
+    Updating crates.io index
+    Packaged 6 files, 17.1KiB (7.0KiB compressed)
+   Packaging memra-sampling v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-sampling)
+    Packaged 5 files, 13.2KiB (4.6KiB compressed)
+   Packaging memra-tokenizer v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-tokenizer)
+    Updating crates.io index
+    Packaged 13 files, 184.9KiB (42.5KiB compressed)
+   Packaging memra-validate v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-validate)
+    Packaged 5 files, 5.3KiB (2.7KiB compressed)
+   Packaging memra-engine v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-engine)
+    Updating crates.io index
+    Packaged 131 files, 4.7MiB (1.1MiB compressed)
+   Packaging memra-lanes v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-lanes)
+    Updating crates.io index
+    Packaged 5 files, 10.2KiB (4.3KiB compressed)
+   Packaging memra-server v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-server)
+    Updating crates.io index
+    Packaged 9 files, 326.7KiB (90.1KiB compressed)
+   Verifying memra-gguf v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-gguf)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.81s
+   Verifying memra-kv v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-kv)
+    Updating crates.io index
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.29s
+   Verifying memra-runtime v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-runtime)
+    Updating crates.io index
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.89s
+   Verifying memra-sampling v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-sampling)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.93s
+   Verifying memra-tokenizer v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-tokenizer)
+    Updating crates.io index
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.37s
+   Verifying memra-validate v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-validate)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.40s
+   Verifying memra-engine v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-engine)
+    Updating crates.io index
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 23s
+   Verifying memra-lanes v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-lanes)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 23s
+   Verifying memra-server v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-server)
+    Updating crates.io index
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 24s
+   Uploading memra-gguf v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-gguf)
+warning: aborting upload due to dry run
+   Uploading memra-lanes v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-lanes)
+warning: aborting upload due to dry run
+   Uploading memra-sampling v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-sampling)
+warning: aborting upload due to dry run
+   Uploading memra-validate v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-validate)
+warning: aborting upload due to dry run
+   Uploading memra-kv v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-kv)
+warning: aborting upload due to dry run
+   Uploading memra-runtime v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-runtime)
+warning: aborting upload due to dry run
+   Uploading memra-tokenizer v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-tokenizer)
+warning: aborting upload due to dry run
+   Uploading memra-engine v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-engine)
+warning: aborting upload due to dry run
+   Uploading memra-server v0.69.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-server)
+warning: aborting upload due to dry run

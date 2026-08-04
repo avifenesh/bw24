@@ -27,7 +27,36 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-That's it. The `release` workflow builds, drafts changelog from conventional commits since previous tag (`tools/changelog.sh` — `perf:`/`feat:`/`fix:`/`config:`/`docs:` grouped; `data:`/`chore:` dropped as research-log noise), and publishes GitHub release. Edit notes on GitHub afterwards if the draft needs headline or context — draft is floor, not ceiling.
+Before tagging: bump `[workspace.package].version` AND the pinned `[workspace.dependencies]`
+versions in the root `Cargo.toml` to `X.Y.Z` (one sed pass — they must match the tag;
+`publish.yml` refuses a mismatched tag).
+
+That's it. Two workflows fire on the tag:
+
+- `release` — builds the prebuilt binary matrix (glibc 2.35/2.39 x sm_120a/sm_90a/sm_89,
+  fatbins embedded — self-contained), drafts the changelog from conventional commits since
+  the previous tag (`tools/changelog.sh` — `perf:`/`feat:`/`fix:`/`config:`/`docs:` grouped;
+  `data:`/`chore:` dropped as research-log noise), attaches tarballs + `SHA256SUMS` + the
+  stable-name `memra-server-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` (the cargo-binstall /
+  `tools/install.sh` target), and publishes the GitHub release. Edit notes on GitHub
+  afterwards if the draft needs headline or context — draft is floor, not ceiling.
+- `publish` — `cargo publish --workspace --exclude memra-probe --locked` to crates.io
+  (cargo resolves dependency order and waits for index propagation between crates).
+  Dry-run first without tagging: Actions → publish → Run workflow (`workflow_dispatch`
+  runs the full package+verify with no upload and no token).
+
+## Publishing to crates.io — one-time setup (owner)
+
+- crates.io account (GitHub login), email verified.
+- Generate an API token at <https://crates.io/settings/tokens> with `publish-new` +
+  `publish-update` scopes.
+- Add it as the repo secret `CARGO_REGISTRY_TOKEN` (Settings → Secrets and variables →
+  Actions). The publish workflow fails with a pointed error if it's missing.
+- The first tagged publish claims all nine `memra-*` crate names (verified available
+  2026-08-04, `research/crates-release-20260804/`). `memra-probe` stays unpublished
+  (`publish = false` — dev spike).
+- Publishing is irreversible (yank ≠ delete): the tag must already have passed the on-rig
+  gate battery like any release.
 
 Preview the draft locally before tagging:
 

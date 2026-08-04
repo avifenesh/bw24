@@ -29,6 +29,35 @@ fn detect_arch() -> String {
 
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
+    // docs.rs builders have no nvcc and no CUDA libs: emit empty placeholder fatbins so
+    // the include_bytes!/env! consts compile, skip every nvcc/ar/link step. The resulting
+    // rlib is documentation-only — Engine::new would fail to load a zero-byte module, but
+    // docs.rs never runs code. Normal builds (CI included) never set DOCS_RS.
+    if std::env::var_os("DOCS_RS").is_some() {
+        for stem in ["kernels", "hybrid", "qmatvec", "flash_attn", "qmatvec_gemm",
+                     "moe_router", "spec_sample", "flash_attn_vq4", "flash_attn_vf8",
+                     "flash_attn_kf8", "flash_attn_kf8vq4", "flash_attn_kf8vf8"] {
+            std::fs::write(out.join(format!("{stem}.fatbin")), []).unwrap();
+        }
+        for (env, stem) in [("MEMRA_ENGINE_FATBIN", "kernels"), ("MEMRA_HYBRID_FATBIN", "hybrid"),
+                            ("MEMRA_QMATVEC_FATBIN", "qmatvec"), ("MEMRA_FLASH_FATBIN", "flash_attn"),
+                            ("MEMRA_GEMM_FATBIN", "qmatvec_gemm"), ("MEMRA_ROUTER_FATBIN", "moe_router"),
+                            ("MEMRA_SAMPLE_FATBIN", "spec_sample"),
+                            ("MEMRA_FLASH_FATBIN_VQ4", "flash_attn_vq4"),
+                            ("MEMRA_FLASH_FATBIN_VF8", "flash_attn_vf8"),
+                            ("MEMRA_FLASH_FATBIN_KF8", "flash_attn_kf8"),
+                            ("MEMRA_FLASH_FATBIN_KF8VQ4", "flash_attn_kf8vq4"),
+                            ("MEMRA_FLASH_FATBIN_KF8VF8", "flash_attn_kf8vf8")] {
+            println!("cargo:rustc-env={env}={}", out.join(format!("{stem}.fatbin")).display());
+        }
+        println!("cargo:rustc-check-cfg=cfg(memra_portable_cuda)");
+        println!("cargo:rustc-check-cfg=cfg(memra_hopper_mma)");
+        println!("cargo:rustc-check-cfg=cfg(memra_cutlass)");
+        println!("cargo:rustc-env=MEMRA_BUILT_CUDA_ARCH=120a");
+        return;
+    }
+
     let nvcc = std::env::var("MEMRA_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
     println!("cargo:rerun-if-env-changed=MEMRA_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MEMRA_CUTLASS");
@@ -101,7 +130,7 @@ fn main() {
 
     // ---- KV-format fatbin variants of flash_attn.cu (kvbytes lane, 2026-07-08) ----
     // Same kernels/entry names, compile-time K/V cache format via -D. Engine::new picks the
-    // fatbin at runtime from env MEMRA_KV_K / MEMRA_KV_V (lib.rs flash_fatbin_path); the default
+    // fatbin at runtime from env MEMRA_KV_K / MEMRA_KV_V (lib.rs flash_fatbin_bytes); the default
     // (no env) loads the plain flash_attn.fatbin built above — bit-identical daily config.
     for (suffix, kfmt, vfmt) in [("VQ4", 0, 1), ("VF8", 0, 2), ("KF8", 1, 0),
                                  ("KF8VQ4", 1, 1), ("KF8VF8", 1, 2)] {

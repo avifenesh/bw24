@@ -1,8 +1,12 @@
 [package]
 name = "memra-kv"
-version = "0.0.0"
+description = "KV-cache format policy (q8_0/q5_1/q4_0/fp8 block layouts) for the memra inference engine"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition = "2021"
 
 [dependencies]
 cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
-memra-gguf = { path = "../memra-gguf" }
+memra-gguf = { workspace = true }

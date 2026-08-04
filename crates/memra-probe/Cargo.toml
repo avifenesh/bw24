@@ -1,6 +1,8 @@
 [package]
 name = "memra-probe"
 version = "0.0.0"
+# Phase-0 dev spike (hardcoded sm_120a fatbin path); not part of the published surface.
+publish = false
 edition = "2024"
 
 [dependencies]
