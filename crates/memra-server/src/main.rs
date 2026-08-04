@@ -237,12 +237,19 @@ struct CompletionReq {
     /// OpenAI default-when-omitted semantics — NOT a silent 128-token truncation.
     #[serde(default)]
     max_tokens: Option<usize>,
-    #[serde(default)]
+    /// Omitted (dogfood F4) => 1.0, the OpenAI default-when-omitted — NOT 0.0/greedy.
+    /// `serde(default)` on an f32 yielded 0.0, which silently locked every
+    /// temperature-omitting client (the owner's own agentic pill) into deterministic
+    /// argmax: same context in, same token out, identical tool-call cycles forever.
+    /// Explicit `"temperature": 0` still means greedy — that's a caller decision.
+    #[serde(default = "default_temperature")]
     temperature: f32,
     #[serde(default = "one")]
     top_p: f32,
+    /// Not an OpenAI parameter (OpenRouter/HF convention); 0 = disabled = keep all.
     #[serde(default)]
     top_k: usize,
+    /// Not an OpenAI parameter (OpenRouter/HF convention); 0.0 = disabled.
     #[serde(default)]
     min_p: f32,
     /// OpenAI penalties (gap-scan F3): implemented in SamplerConfig all along, now plumbed.
@@ -349,12 +356,15 @@ struct ChatCompletionReq {
     /// OpenAI default-when-omitted semantics — NOT a silent 128-token truncation.
     #[serde(default, alias = "max_completion_tokens")]
     max_tokens: Option<usize>,
-    #[serde(default)]
+    /// Omitted (dogfood F4) => 1.0, the OpenAI default-when-omitted. See CompletionReq.
+    #[serde(default = "default_temperature")]
     temperature: f32,
     #[serde(default = "one")]
     top_p: f32,
+    /// Not an OpenAI parameter (OpenRouter/HF convention); 0 = disabled = keep all.
     #[serde(default)]
     top_k: usize,
+    /// Not an OpenAI parameter (OpenRouter/HF convention); 0.0 = disabled.
     #[serde(default)]
     min_p: f32,
     /// OpenAI penalties (gap-scan F3): implemented in SamplerConfig all along, now plumbed.
@@ -413,6 +423,10 @@ struct ChatCompletionReq {
     cache_salt: Option<String>,
 }
 fn one() -> f32 { 1.0 }
+/// OpenAI's documented default for an omitted `temperature` on both completion surfaces.
+/// Kept distinct from `one()` so the intent is greppable: this is a COMPAT default, not a
+/// coincidence that it equals the top_p disable value.
+fn default_temperature() -> f32 { 1.0 }
 
 #[derive(Serialize)]
 struct CompletionResp {
@@ -2194,6 +2208,66 @@ mod tests {
         let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
         assert_eq!(cfg.penalty_last_n, 0);
         assert_eq!(cfg.penalty_repeat, 1.0);
+    }
+
+    #[test]
+    fn omitted_temperature_is_openai_default_not_greedy() {
+        // dogfood F4: `#[serde(default)] temperature: f32` yielded 0.0 = greedy, so any
+        // client that omits temperature (the owner's own agentic pill, the OpenAI SDK's
+        // documented "leave it out" path) got locked into deterministic argmax — same
+        // context in, same token out, identical tool-call cycles forever. OpenAI's
+        // default-when-omitted is 1.0 on BOTH surfaces.
+        let chat_temp = |body: serde_json::Value| {
+            let req: ChatCompletionReq = serde_json::from_value(body).unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            build_chat_request(req, None, tx, lanes::Lane::Interactive)
+                .unwrap().request.sampler_cfg.temperature
+        };
+        let comp_temp = |body: serde_json::Value| {
+            let req: CompletionReq = serde_json::from_value(body).unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg.temperature
+        };
+
+        // OMITTED => 1.0 (sampled), all the way through to the SamplerConfig.
+        assert_eq!(chat_temp(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}]})), 1.0,
+            "omitted chat temperature must be the OpenAI 1.0 default, not 0.0/greedy");
+        assert_eq!(comp_temp(serde_json::json!({
+            "model": "m", "prompt": "t"})), 1.0,
+            "omitted completions temperature must be the OpenAI 1.0 default");
+
+        // EXPLICIT 0 still means greedy — a caller asking for determinism gets it.
+        assert_eq!(chat_temp(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}],
+            "temperature": 0.0})), 0.0, "explicit temperature 0 must stay greedy");
+        assert_eq!(comp_temp(serde_json::json!({
+            "model": "m", "prompt": "t", "temperature": 0})), 0.0,
+            "explicit temperature 0 must stay greedy");
+        // and the greedy predicate agrees (this is what gates the spec/graph arms).
+        assert!(memra_engine::sampler::Sampler::new(sampler_config(0.0, 0, 1.0, 0.0, 0.0, 0.0, 1.0, 0)).is_greedy());
+        assert!(!memra_engine::sampler::Sampler::new(sampler_config(1.0, 0, 1.0, 0.0, 0.0, 0.0, 1.0, 0)).is_greedy());
+
+        // explicit non-default values still pass through untouched.
+        assert_eq!(chat_temp(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}],
+            "temperature": 0.7})), 0.7);
+
+        // OMITTED filter defaults: top_p disabled at 1.0 (OpenAI default), top_k/min_p
+        // disabled at 0 (not OpenAI params — OpenRouter/HF convention, 0 = keep all).
+        // An omitted-temperature request must therefore be PURE temperature-1.0 sampling.
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "t"})).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
+        assert_eq!(cfg.top_p, 1.0, "omitted top_p = OpenAI 1.0 = disabled");
+        assert_eq!(cfg.top_k, 0, "omitted top_k = disabled");
+        assert_eq!(cfg.min_p, 0.0, "omitted min_p = disabled");
+        assert_eq!(cfg.penalty_last_n, 0, "omitted penalties = window off");
+        // and it is SPEC-ELIGIBLE: the rejection-sampling verify covers temp+filters, so
+        // the default-shaped request keeps the spec speedup instead of falling to plain.
+        assert!(memra_engine::sampler::Sampler::new(cfg).is_spec_sampling(),
+                "the omitted-temperature default must ride sampled spec");
     }
 
     #[test]
