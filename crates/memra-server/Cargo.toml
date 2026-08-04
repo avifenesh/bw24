@@ -35,3 +35,11 @@ llguidance = "1.7.6"
 [[bin]]
 name = "memra-server"
 path = "src/main.rs"
+
+# cargo-binstall: point at the stable-name release artifact (sm_120a, glibc-2.35 floor)
+# built by .github/workflows/release.yml. `cargo binstall memra-server` then installs the
+# prebuilt self-contained binary instead of compiling CUDA locally.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/memra-server-v{ version }-{ target }.tar.gz"
+bin-dir = "memra-server-v{ version }-{ target }/{ bin }"
+pkg-fmt = "tgz"
