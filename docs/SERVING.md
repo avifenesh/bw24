@@ -169,14 +169,31 @@ device-sample / lean-logits / CUDA-graph / speculative paths unconstrained sessi
 No path is lost to being constrained.
 
 - **Cost:** plain constrained-greedy = **99.4% of unconstrained** (123.7 vs 124.4 tok/s,
-  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. Spec-constrained runs
-  153.4 vs 194.4 unconstrained — the gap is draft acceptance under a tight grammar (the
-  drafter proposes tokens the grammar rejects at verify), not mask overhead.
+  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. The remaining
+  constrained-vs-unconstrained gap is draft acceptance under a tight grammar, not mask
+  overhead.
+- **Draft-side masking (lane/draft-mask, 2026-08-04):** the drafter is masked too. A
+  constrained spec session clones the session's grammar matcher once per spec round
+  (0.002 ms), advances the clone with each proposed token, and bans the illegal ids in the
+  draft head's own logits — in-graph on the captured draft chain, permuted through `d2t`
+  for trimmed draft heads. Proposals are legal by construction, so the verify-side
+  truncation backstop (which stays, as the correctness backstop) stops firing:
+  `gram_cuts` went 3/12, 3/15, 1/10, 28/30, 18/25 -> **0/N on every cell measured**.
+  Bounded tight schema: acceptance 0.561 -> 0.651, 216.6 -> 227.5 tok/s (+5.0%, N=3 warm).
+  Cells whose drafter already proposed legal tokens (json_object, loose prose) move inside
+  noise; unconstrained traffic is inert. Rollback seam `MEMRA_DRAFT_MASK=0`. Receipts
+  `research/draft-mask-20260804/`.
 - **Exactness:** device-mask greedy is byte-identical to the host -inf oracle
   (`MEMRA_CONSTRAIN_HOST=1`), spec-constrained is byte-identical to plain-constrained,
-  graphed is byte-identical to eager, and unconstrained requests are byte-identical to the
-  pre-lane binary (the isolation contract). Kernel-check pins `mask_logits_col`
-  bit-identity.
+  graphed is byte-identical to eager, draft-masking ON is byte-identical to OFF (greedy and
+  seeded-sampled, 7 cells), and unconstrained requests are byte-identical to the pre-lane
+  binary (the isolation contract). Kernel-check pins `mask_logits_col` bit-identity.
+  One measured exception, documented because it is NOT a masking property: an unbounded
+  schema that lets the model degenerate into arbitrary whitespace against a token cap has a
+  draft-chain-SHAPE-dependent tail (verify batch shape T changes FP summation order, which
+  flips argmax at the near-ties in that tail). The pre-lane binary shows the same
+  divergence across `MEMRA_SPEC_K=3/2/1` on that cell with no draft-mask code present;
+  with shape held fixed the arms are byte-identical. Bound the schema and it goes away.
 - **Think interaction:** constrained requests force the template's no-think switch (a
   grammar masking from token 0 can never close an open `<think>` tail); a think-tail
   template without an `enable_thinking` switch is a loud 400.
