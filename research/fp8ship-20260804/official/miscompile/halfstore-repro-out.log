@@ -1,0 +1,10 @@
+blk 0: ref 0x250e got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 1: ref 0x2522 got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 2: ref 0x2536 got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 3: ref 0x254b got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 4: ref 0x255f got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 5: ref 0x2573 got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 6: ref 0x2588 got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+blk 7: ref 0x259c got 0x2500 (got==ref&0xff00: YES; low byte 0x00)
+REPRO: 8/8 d-half stores wrong in the ISOLATED pattern
+u16-store variant CORRECT (0/8 bad)

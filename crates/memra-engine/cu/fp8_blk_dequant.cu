@@ -116,9 +116,14 @@ __global__ __launch_bounds__(128) void fp8_blk_dequant_q8_0_kernel(
 
     uint8_t *dst = out_q8 + ((size_t)row * (size_t)blocks_per_row + (size_t)qb) * Q8_0_BYTES;
     if (lane == 0) {
-        const uint16_t bits = __half_as_ushort(__float2half_rn(d));
-        dst[0] = (uint8_t)(bits & 0xffu);
-        dst[1] = (uint8_t)(bits >> 8);
+        // ONE aligned u16 store, NOT two byte stores. nvcc 13.0.88 (CUDA 13.0, sm_120a)
+        // miscompiles the byte-split form: dst[0] lands as 0x00 (isolated 40-line repro,
+        // 8/8 blocks; nvcc 13.1 compiles the same source correctly). Found by the
+        // kernel-check [fp8-blk-gpu] arm failing on the vast 2x5090 box, 2026-08-04 —
+        // research/fp8ship-20260804/official/BLK-GPU-MISCOMPILE.md. The alignment is
+        // guaranteed: dst walks in 34-byte strides from a cudaMalloc'd base, so dst is
+        // always even.
+        *(uint16_t *)dst = __half_as_ushort(__float2half_rn(d));
     }
     dst[2 + lane] = (uint8_t)(int8_t)qi;
 }

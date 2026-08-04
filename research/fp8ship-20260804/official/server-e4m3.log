@@ -1,0 +1,21 @@
+[server] starting; models config = [("fp8", "/root/models/qwen36-27b-fp8-official", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "fp8" <- /root/models/qwen36-27b-fp8-official
+[worker]   loaded "fp8": 65 layers, eos=248046
+[worker] fp8: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="default" instruct=Some("chatml")
+[worker] fp8: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["fp8"]
+[server] listening on http://127.0.0.1:8199
+[worker] observed session VRAM cost for "fp8": 537MB (admission gate = 2x)
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 175.6MB / 268MB, model fp8, ns "st-e4m3-r1")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model fp8, ns "st-e4m3-r2")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model fp8, ns "st-e4m3-r1")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model fp8, ns "st-e4m3-r3")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model fp8, ns "st-e4m3-r2")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model fp8, ns "st-e4m3-r4")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model fp8, ns "st-e4m3-r3")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model fp8, ns "st-e4m3-r5")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model fp8, ns "st-e4m3-r4")
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

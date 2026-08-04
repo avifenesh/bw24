@@ -63,7 +63,9 @@ start_server() {  # $1 = extra env (e.g. "MEMRA_SERVE_SPEC=0"), sets SPID
   env $1 MEMRA_MODELS="st=$ST" MEMRA_ADDR=$ADDR target/release/memra-server \
     > /tmp/serve-st-server.log 2>&1 &
   SPID=$!
-  for _ in $(seq 120); do curl -sf $BASE/health >/dev/null 2>&1 && return 0; sleep 2; done
+  # 27B-class ST dirs CPU-dequant ~29 GB at load (~13 min); 240s was calibrated on the
+  # 4B default ckpt and times out spuriously (fp8ship-20260804 official-27B run).
+  for _ in $(seq 600); do curl -sf $BASE/health >/dev/null 2>&1 && return 0; sleep 2; done
   echo "server did not come up; log tail:"; tail -5 /tmp/serve-st-server.log; return 1
 }
 stop_server() { kill "${SPID:-0}" 2>/dev/null; wait "${SPID:-0}" 2>/dev/null || true; }

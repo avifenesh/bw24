@@ -1,0 +1,8 @@
+pp512 default rep1 wall_s 843.876 rc=0
+pp512 blkgpu rep1 wall_s 291.556 rc=0
+pp512 default rep2 wall_s 843.539 rc=0
+pp512 blkgpu rep2 wall_s 294.961 rc=0
+pp512 default rep3 wall_s 844.090 rc=0
+pp512 blkgpu rep3 wall_s 287.022 rc=0
+p1 default rep1 wall_s 822.738 rc=0
+p1 blkgpu rep1 wall_s 281.292 rc=0

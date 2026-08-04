@@ -1,0 +1,39 @@
+[16:06:31Z] == PHASE 2/3: serving gates, DEFAULT env (spec-on for MTP dir ckpts per ac99e675) ==
+[16:06:31Z] server start pre: 29, 180 MHz, 16.43 W, 2 MiB
+[16:20:39Z] server (default env) up in 847.6s
+[16:20:39Z]   ok: /models lists fp8
+coherent: The capital of France is Paris.Thinking Process: 1.  **Analyze User Input:** The user asks "What is the capital of Franc
+[16:20:41Z]   ok: chat completion coherent (Paris) via ckpt template
+[16:20:46Z]   ok: greedy determinism x3 (default/spec server, fresh compute each)
+[16:20:48Z] == PHASE 3b: serve-st-gate.sh on the official ckpt (spec-ON item 4 per ac99e675) ==
+== serve-st-gate: checkpoint /root/models/qwen36-27b-fp8-official ==
+  ok: /models lists the ST model
+  ok: chat completion coherent (Paris) via ST template
+identical 64 ids
+  ok: CLI-vs-server greedy token streams identical
+  ok: no quarantine notice (dir checkpoints spec-eligible)
+default (spec) text prefix-matches the tokenwise serve oracle (624/624 chars)
+  ok: default (spec) server == tokenwise serve oracle (400-tok window)
+serve-st-gate: 0 failed
+[17:17:18Z]   ok: serve-st-gate.sh
+[17:17:18Z] == waiting for phase 1 (GPU0 load gates) to finish before perf cells ==
+[17:17:18Z] phase 1 done — box quiet for perf
+[17:17:18Z] == PHASE 4: serve-path perf cells, pp512-class prompt, N=5, single card (GPU1) ==
+[17:31:20Z] perf ST-plain pre: 32, 2400 MHz, 63.22 W, 26976 MiB
+[17:31:34Z]   ok: perf cell st-plain
+[17:31:34Z] perf ST-plain post: 40, 2865 MHz, 380.50 W, 31456 MiB | SUMMARY {"label": "st-plain", "n": 5, "median_ttft_s": 0.17, "median_decode_tok_s": 48.99, "median_prefill_tok_s_ttft_derived": 3064.1, "median_prompt_tokens": 521, "greedy_texts_identical": true}
+[17:45:37Z] perf ST-spec pre: 32, 2400 MHz, 62.81 W, 26976 MiB
+[17:45:45Z]   ok: perf cell st-spec-default
+[17:45:45Z] perf ST-spec post: 41, 2857 MHz, 434.17 W, 31424 MiB | SUMMARY {"label": "st-spec-default", "n": 5, "median_ttft_s": 0.4662, "median_decode_tok_s": 128.06, "median_prefill_tok_s_ttft_derived": 1117.5, "median_prompt_tokens": 521, "greedy_texts_identical": true}
+spec-vs-plain greedy text: DIVERGE at char 45: plain='\n   - Question: "What is the capital of ' spec=' The user asks "What is the capital of F'
+[server] starting; models config = [("fp8", "/root/models/qwen36-27b-fp8-official", Some("/root/models/bench/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf"))]
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] fp8: regime draft attached (/root/models/bench/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf)
+[17:59:49Z] perf ST-spec-drafter pre: 33, 2400 MHz, 63.16 W, 27296 MiB
+[17:59:56Z]   ok: perf cell st-spec-drafter
+[17:59:56Z] perf ST-spec-drafter post: 44, 2842 MHz, 436.83 W, 31328 MiB | SUMMARY {"label": "st-spec-drafter", "n": 5, "median_ttft_s": 0.463, "median_decode_tok_s": 136.75, "median_prefill_tok_s_ttft_derived": 1125.3, "median_prompt_tokens": 521, "greedy_texts_identical": true}
+[18:14:02Z] perf ST-e4m3 pre: 32, 2400 MHz, 63.28 W, 26976 MiB
+[18:14:16Z]   ok: perf cell st-e4m3
+[18:14:16Z] perf ST-e4m3 post: 41, 2865 MHz, 397.37 W, 31456 MiB | SUMMARY {"label": "st-e4m3", "n": 5, "median_ttft_s": 0.1706, "median_decode_tok_s": 48.99, "median_prefill_tok_s_ttft_derived": 3053.5, "median_prompt_tokens": 521, "greedy_texts_identical": true}
+[18:14:19Z] e4m3 vs plain greedy text: IDENTICAL (expected — block-128 tensors fall through to the same Q8_0 path)
+[18:14:22Z] PHASE 2-5 DONE: 0 failed
