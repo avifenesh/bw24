@@ -10,6 +10,8 @@ no-loop, greedy byte-identity, and seed semantics all PASS on the new binary, wi
 sessions keeping **1.72x** over plain-sampled (73.92 vs 43.00 tok/s, N=5). The brief's Part 2
 premise was stale — rejection-sampling spec decode shipped 2026-07-09/10 — so Part 2 became
 the missing distribution gate (arc gate (c)) plus two negative controls that prove it catches.
+Pre-merge battery green: fast-gate tier 0+1 0 fail, `run-spec` K=1..8 PASS in **both** the
+greedy (token-identical) and sampled (seeded-rerun) regimes, serve-smoke 8/8 — raw in `gates/`.
 
 ## The bug (Part 1) — CONFIRMED, fixed
 
@@ -304,6 +306,116 @@ lane took `/tmp/gpu5090.lock`**) holding 22498 MiB, plus llama-server 260 MiB an
 this is the documented `MEMRA_MAX_SESSIONS=1` VRAM math, not a new bug. No number was
 reported from that attempt; the battery was re-run after the box freed, and the medians above
 come entirely from the clean run.
+
+## Pre-merge correctness battery — raw logs in `gates/`
+
+The three repo-mandated gates (CONTRIBUTING.md / CLAUDE.md "CI is compile-only") plus the
+serving-surface smoke, run on the lane binary. Every log is committed under `gates/`.
+
+### 1. fast-gate `--diff 8aa1eb1e` — `gates/fast-gate.log` (+ per-probe logs)
+
+```
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check (synthetic arms): GREEN (2s)
+tier 0: GREEN (4s total)
+== fast-gate tier 1 ==
+  samp: PASS (self-gating check green, 2s)
+  g12: PASS (gates green + golden token-identical, 154s)
+  sampt: PASS (self-gating check green, 0s)
+  q35spec: PASS (gates green + golden token-identical, 12s)
+  g31spec: PASS (stream agreement 32/32, 8s)
+tier 1: 0 fail (180s total)
+```
+
+`samp` is the arm-6 composition gate added by this lane; `g12`/`sampt` are the argmax
+(`run-gen`) probes; `q35spec` (`gates/probe-q35spec.log`: `acceptance: 23/30 = 76.7%
+self-consistency: PASS (identical to generate)`) and `g31spec`
+(`gates/probe-g31spec.log`: `stream agreement 32/32`) are the spec probes. fast-gate printed
+`NOTE: memra-server touched — run tools/serve-smoke.sh`, which is gate 3 below.
+
+### 2. `run-spec` K=1..8 self-consistency — BOTH regimes PASS
+
+Model: `Qwen3.5-9B-NVFP4-MTP-GGUF.gguf` (`run-spec` drafts from the model's own MTP head;
+`MEMRA_DRAFT` is not read by this binary). `MEMRA_NGEN=48 MEMRA_CHAT=1`, real text prompt.
+
+**Greedy arm** (the gate as CONTRIBUTING.md defines it — every K token-identical to plain
+decode) — `gates/run-spec-greedy-K1-8.log`:
+
+| K | acceptance | self-consistency |
+|---|---|---|
+| 1 | 22/25 = 88.0% | PASS (identical to generate) |
+| 2 | 31/36 = 86.1% | PASS (identical to generate) |
+| 3 | 34/39 = 87.2% | PASS (identical to generate) |
+| 4 | 36/48 = 75.0% | PASS (identical to generate) |
+| 5 | 38/55 = 69.1% | PASS (identical to generate) |
+| 6 | 38/66 = 57.6% | PASS (identical to generate) |
+| 7 | 38/77 = 49.4% | PASS (identical to generate) |
+| 8 | 39/80 = 48.8% | PASS (identical to generate) |
+
+```
+=== SELF-CONSISTENCY PASS ===
+```
+
+**Sampled arm** (`MEMRA_SPEC_TEMP=1.0 MEMRA_SEED=4242`) — the arm this lane makes the serve
+default, so it is gated too. Greedy identity is *undefined* here by construction
+(Leviathan/Chen give distribution equality, not stream equality), so run-spec switches to the
+seeded-reproducibility gate: same `(seed, prompt, K)` must reproduce the identical stream on a
+second generation. `gates/run-spec-sampled-K1-8.log`:
+
+| K | acceptance | self-consistency |
+|---|---|---|
+| 1 | 23/24 = 95.8% | PASS (seeded rerun identical) |
+| 2 | 29/36 = 80.6% | PASS (seeded rerun identical) |
+| 3 | 35/42 = 83.3% | PASS (seeded rerun identical) |
+| 4 | 35/56 = 62.5% | PASS (seeded rerun identical) |
+| 5 | 38/60 = 63.3% | PASS (seeded rerun identical) |
+| 6 | 42/60 = 70.0% | PASS (seeded rerun identical) |
+| 7 | 40/63 = 63.5% | PASS (seeded rerun identical) |
+| 8 | 38/80 = 47.5% | PASS (seeded rerun identical) |
+
+```
+=== SELF-CONSISTENCY PASS ===
+```
+
+Acceptance is non-zero at every K in both arms, so run-spec's second gate (a wrong MTP head
+passes identity via the bonus token while accepting nothing) is also clear.
+
+**Timing honesty:** both run-spec sweeps ran with the owner's live 8002 server resident
+(14786 MiB of 24463; PID 739917 holding `/tmp/gpu5090.lock`, captured in the log headers).
+This is a *correctness* gate needing VRAM, not exclusivity, so it ran unlocked — but the
+`tok/s` and `x vs generate` figures in those logs are **contended, not perf evidence**, and
+are recorded here only because they are part of the verbatim output. The perf numbers in this
+document come from the Part-3 battery, not from these logs.
+
+### 3. `tools/serve-smoke.sh` — `gates/serve-smoke.log`
+
+fast-gate does not cover the serving surface, and this lane changed `memra-server` request
+parsing, so this is the gate that actually exercises the fix's blast radius.
+
+```
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+serve-smoke: 0 failed
+```
+
+`greedy determinism (2 runs identical)` and `spec == plain greedy text` are the two that prove
+the F4 defaults did not leak into the greedy path: both scripts send `temperature:0`
+explicitly, and both still get byte-identical output.
+
+Not run on this lane: `tools/local-ci.sh` tier 2 (the full battery + perf stage) — it needs
+exclusive GPU, and the box is shared with the v0.69 release wave, the specpool lane, and the
+owner's live daily driver. fast-gate's own footer says tier 2 gates every merge and tag; this
+lane's code is already merged into `restructure/public-split` (as `c716954b`) by the release
+wave, so tier 2 falls to that wave's pre-tag battery, with these results as the lane's evidence.
 
 ## Known gaps (NOT closed by this lane — named, not hidden)
 

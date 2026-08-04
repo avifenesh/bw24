@@ -1,0 +1,37 @@
+=== run-spec K=1..8 SAMPLED arm (MEMRA_SPEC_TEMP=1.0) — seeded-reproducibility gate ===
+This is the lane-relevant arm: the F4 fix makes SAMPLED spec the serve default.
+gpu-before:
+15176 MiB, 24463 MiB
+loaded qwen35 (33 layers, nextn=1)
+text prompt (58 chars, chat-templated) -> 20 tokens
+prompt tokens: [248045, 846, 198, 814, 20139, 303, 2250, 22157, 1204, 63520, 45543, 4138, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+
+[generate]   47 tok in 0.345s = 136.18 tok/s (gen-only; this run's prime 0.032s)
+  tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 31819, 25, 10636, 21473, 3588, 3574, 13, 198, 262, 348, 256, 42794, 25, 79091, 303, 6681, 2250, 22157, 13, 271, 17, 13, 220, 2972, 15771, 2598, 10636, 21473, 3588, 3574, 64700]
+
+[generate_spec K=1] 48 tok in 0.262s = 179.60 tok/s (1.32x vs generate; this run's prime 0.033s)
+  acceptance: 23/24 = 95.8%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=2] 48 tok in 0.241s = 195.14 tok/s (1.43x vs generate; this run's prime 0.034s)
+  acceptance: 29/36 = 80.6%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=3] 48 tok in 0.224s = 210.17 tok/s (1.54x vs generate; this run's prime 0.034s)
+  acceptance: 35/42 = 83.3%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=4] 48 tok in 0.271s = 173.37 tok/s (1.27x vs generate; this run's prime 0.034s)
+  acceptance: 35/56 = 62.5%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=5] 48 tok in 0.269s = 174.90 tok/s (1.28x vs generate; this run's prime 0.033s)
+  acceptance: 38/60 = 63.3%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=6] 48 tok in 0.254s = 185.06 tok/s (1.36x vs generate; this run's prime 0.033s)
+  acceptance: 42/60 = 70.0%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=7] 48 tok in 0.259s = 181.79 tok/s (1.33x vs generate; this run's prime 0.033s)
+  acceptance: 40/63 = 63.5%   self-consistency: PASS (seeded rerun identical)
+
+[generate_spec K=8] 48 tok in 0.445s = 105.58 tok/s (0.78x vs generate; this run's prime 0.033s)
+  acceptance: 38/80 = 47.5%   self-consistency: PASS (seeded rerun identical)
+
+=== SELF-CONSISTENCY PASS ===
+run-spec sampled exit rc=0
