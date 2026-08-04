@@ -1,0 +1,15 @@
+# NEGATIVE CONTROL for fp8-mmq-check (2026-08-04, RTX 5090 Laptop sm_120, flock'd)
+# Purpose: prove the gate BITES. Perturbation: in cu/mmq_fp8_blk.cu, the k-block scale
+# lookup for the first vec_dot was swapped to the NEXT block column
+#   const float sc0 = s_row[min(c0, scale_cols - 1)];  ->  s_row[min(c1, scale_cols - 1)]
+# i.e. exactly the off-by-one a per-128-block scale grid invites. Rebuilt, reran shape 256,256,64:
+
+shape(in,out,m)           arm      max_abs      rms_rel    bit_mismatch   nan
+256,256,64              EXACT      2.669e4      2.121e0     16382/16384     0  FAIL
+256,256,64               RAND      8.616e2      4.380e0     16384/16384     0  FAIL
+
+=== fp8-mmq-check 2 FAILURES ===
+
+# Both arms reject at O(1) rms_rel. Kernel restored (verified: 1 occurrence of
+# "min(c0, scale_cols" present) and the full battery re-run ALL GREEN
+# (fp8-mmq-check-synth.log).

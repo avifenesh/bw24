@@ -120,6 +120,39 @@ unsafe extern "C" {
         out_scale: f32,
         rp: i32,
     ) -> i32;
+    /// Bytes for the per-block FP8 MMQ activation scratch (delegates to the F8F4 sizing — the
+    /// two arms deliberately share ONE activation format, `block_e4m3_mmq`).
+    pub fn memra_mmq_fp8_blk_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Scale-grid dims for an [out_f x in_f] block-128 FP8 tensor (ceil-div by 128).
+    pub fn memra_mmq_fp8_blk_scale_rows(out_f: i32) -> i32;
+    pub fn memra_mmq_fp8_blk_scale_cols(in_f: i32) -> i32;
+    /// PER-BLOCK FP8 MMQ prefill GEMM (cu/mmq_fp8_blk.cu, P1 option (b)): consumes the
+    /// Qwen-official e4m3 weight bytes + the per-[128x128] f32 scale grid DIRECTLY. The weight
+    /// side is never re-quantized (the checkpoint bytes are the MMA A operand), so unlike ARM A's
+    /// per-tensor fold there is no precision loss; unlike ARM B' it does not land on the Q8_0
+    /// floor. `blk_scales` is device f32 [ceil(out_f/128) x ceil(in_f/128)], row-major.
+    /// Requires in_f % 16 == 0. Returns 0 / 1 (bad dims) / 1000+cudaError / 2000+cudaError.
+    pub fn memra_mmq_fp8_blk(
+        w_e4m3: *const core::ffi::c_void,
+        blk_scales: *const f32,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        out_scale: f32,
+    ) -> i32;
+    /// Count e4m3 NaN codes (magnitude 0x7F) in a device weight buffer. Those decode to NaN in
+    /// hardware but to 0.0 in the host/ARM B' convention, so a tensor containing any must NOT
+    /// ride `memra_mmq_fp8_blk`. `out_count` is a device u32 (zeroed by the call).
+    pub fn memra_fp8_blk_count_nan(
+        w_e4m3: *const core::ffi::c_void,
+        nbytes: usize,
+        out_count: *mut u32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn memra_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Run the Q4_K W4A8 MMQ prefill GEMM. Same contract as memra_mmq_nvfp4 (raw ggml block_q4_K
@@ -1040,6 +1073,106 @@ impl Engine {
             }
         }
         Ok(y)
+    }
+
+    /// PER-BLOCK FP8 MMQ prefill GEMM (cu/mmq_fp8_blk.cu). `w_e4m3` is the raw checkpoint e4m3
+    /// plane [out_f x in_f] and `blk_scales` the device f32 grid [ceil(out_f/128) x
+    /// ceil(in_f/128)] — no re-quantization of either.
+    pub fn qmatvec_mmq_fp8_blk(
+        &self,
+        w_e4m3: &CudaSlice<u8>,
+        blk_scales: &CudaSlice<f32>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_fp8_blk_scaled(w_e4m3, blk_scales, x, m, in_f, out_f, 1.0)
+    }
+
+    pub fn qmatvec_mmq_fp8_blk_scaled(
+        &self,
+        w_e4m3: &CudaSlice<u8>,
+        blk_scales: &CudaSlice<f32>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        scale: f32,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(
+            in_f % 16 == 0,
+            "per-block FP8 MMQ requires in_f % 16 == 0, got {in_f}"
+        );
+        let want_scales = ((out_f + 127) / 128) * ((in_f + 127) / 128);
+        assert!(
+            blk_scales.len() >= want_scales,
+            "blk_scales too small: {} < {want_scales}",
+            blk_scales.len()
+        );
+        assert!(
+            w_e4m3.len() >= out_f * in_f,
+            "e4m3 plane too small: {} < {}",
+            w_e4m3.len(),
+            out_f * in_f
+        );
+        let act_bytes = unsafe { memra_mmq_fp8_blk_act_bytes(in_f as i32, m as i32) };
+        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        {
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w_e4m3.device_ptr(&stream);
+            let (sc_p, _gsc) = blk_scales.device_ptr(&stream);
+            let (x_p, _gx) = x.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(&stream);
+            let rc = unsafe {
+                memra_mmq_fp8_blk(
+                    w_p as *const core::ffi::c_void,
+                    sc_p as *const f32,
+                    x_p as *const f32,
+                    y_p as *mut f32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
+                    s_p as *mut core::ffi::c_void,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                    scale,
+                )
+            };
+            if rc != 0 {
+                return Err(format!("memra_mmq_fp8_blk rc={rc}").into());
+            }
+        }
+        Ok(y)
+    }
+
+    /// Count e4m3 NaN codes (magnitude 0x7F) in a device e4m3 plane. 0 is the precondition for
+    /// routing that tensor through `qmatvec_mmq_fp8_blk` (hardware decodes them to NaN, the
+    /// host/ARM B' reference to 0.0).
+    pub fn fp8_blk_nan_count(
+        &self,
+        w_e4m3: &CudaSlice<u8>,
+    ) -> Result<u32, Box<dyn std::error::Error>> {
+        let mut cnt = self.htod_u32_v(&[0u32])?;
+        let n = w_e4m3.len();
+        {
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w_e4m3.device_ptr(&stream);
+            let (c_p, _gc) = cnt.device_ptr_mut(&stream);
+            let rc = unsafe {
+                memra_fp8_blk_count_nan(
+                    w_p as *const core::ffi::c_void,
+                    n,
+                    c_p as *mut u32,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 {
+                return Err(format!("memra_fp8_blk_count_nan rc={rc}").into());
+            }
+        }
+        Ok(self.dtoh_u32(&cnt)?[0])
     }
 
     /// Quantize token-major f32 activation [n_tokens, in_f] to the block_q8_1_mmq (D4) scratch the

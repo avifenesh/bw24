@@ -165,7 +165,7 @@ fn main() {
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu",
                         "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu", "cu/moe_f16_grouped.cu",
-                        "cu/fp8_blk_dequant.cu"] {
+                        "cu/fp8_blk_dequant.cu", "cu/mmq_fp8_blk.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit MEMRA_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -177,6 +177,9 @@ fn main() {
                 // The W4A8/F8F4 launchers use .kind::f8f6f4 tile MMA (sm_100a+);
                 // sm_89 gets fail-closed ABI stubs.
                 "cu/mmq_nvfp4_w4a8_stub.cu"
+            } else if portable && mmq_src == "cu/mmq_fp8_blk.cu" {
+                // Per-block FP8 MMQ: same .kind::f8f6f4 gate as the W4A8/F8F4 launchers.
+                "cu/mmq_fp8_blk_stub.cu"
             } else {
                 mmq_src
             };
