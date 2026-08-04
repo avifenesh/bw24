@@ -1,0 +1,40 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+MEMRA_FP8_MMQ=1  MEMRA_PP_FP8=<unset>  MEMRA_FP8_BLK_GPU=<unset>  MEMRA_PP_FP8_BUDGET_MB=8192
+loaded dense: n_layer=28 n_embd=2048 n_ff=6144 n_vocab=151936  prompt=15 toks
+teacher-forced from research/fp8st-20260804/mmq-v2/sixdraw/d6-floor.log: 32 ids
+step   0 tok    279 logit 24.904486 top2    264 19.475632 margin 5.428854
+step   1 tok   5562 logit 23.788189 top2   8251 19.402300 margin 4.385889
+step   2 tok     13 logit 24.665480 top2    382 21.572014 margin 3.093466
+step   3 tok    576 logit 25.026300 top2    220 22.535141 margin 2.491159
+step   4 tok   4021 logit 26.088106 top2   4230 20.294832 margin 5.793274
+step   5 tok   4014 logit 30.370356 top2  96217 24.145063 margin 6.225292
+step   6 tok  39956 logit 22.836029 top2   3122 18.718060 margin 4.117970
+step   7 tok  34208 logit 25.175041 top2    374 20.345451 margin 4.829590
+step   8 tok   1975 logit 25.625505 top2    916 22.133951 margin 3.491554
+step   9 tok    279 logit 26.948515 top2   1782 17.453064 margin 9.495451
+step  10 tok   5562 logit 27.736479 top2 100737 19.420437 margin 8.316042
+step  11 tok     13 logit 25.623293 top2    382 22.878120 margin 2.745173
+step  12 tok    576 logit 26.158537 top2    220 22.729612 margin 3.428925
+step  13 tok   4021 logit 27.705833 top2   4230 20.804630 margin 6.901203
+step  14 tok   4014 logit 31.625631 top2  96217 24.650377 margin 6.975254
+step  15 tok  39956 logit 24.159317 top2   3122 19.156448 margin 5.002869
+step  16 tok  34208 logit 26.503208 top2    374 19.504782 margin 6.998426
+step  17 tok   1975 logit 27.574030 top2    916 22.001673 margin 5.572357
+step  18 tok    279 logit 28.041187 top2   1782 17.249319 margin 10.791868
+step  19 tok   5562 logit 29.296162 top2 100737 20.385265 margin 8.910896
+step  20 tok     13 logit 26.333652 top2    624 23.800730 margin 2.532923
+step  21 tok    576 logit 26.994225 top2    220 23.523523 margin 3.470701
+step  22 tok   4021 logit 28.524607 top2   4230 21.559307 margin 6.965300
+step  23 tok   4014 logit 31.634552 top2  96217 24.771635 margin 6.862917
+step  24 tok  39956 logit 24.467999 top2   3122 19.654833 margin 4.813166
+step  25 tok  34208 logit 27.115961 top2    374 19.609682 margin 7.506279
+step  26 tok   1975 logit 28.338709 top2    916 22.086533 margin 6.252176
+step  27 tok    279 logit 28.404474 top2    198 17.087784 margin 11.316690
+step  28 tok   5562 logit 30.308376 top2 100737 20.711880 margin 9.596497
+step  29 tok     13 logit 26.412054 top2    624 23.533875 margin 2.878180
+step  30 tok    576 logit 27.485060 top2    220 22.964598 margin 4.520462
+step  31 tok   4021 logit 29.129826 top2   4230 21.715612 margin 7.414213
+teacher-forced argmax disagreements: 0/32
+stream ids: [279, 5562, 13, 576, 4021, 4014, 39956, 34208, 1975, 279, 5562, 13, 576, 4021, 4014, 39956, 34208, 1975, 279, 5562, 13, 576, 4021, 4014, 39956, 34208, 1975, 279, 5562, 13, 576, 4021]
+stream digest: 0xea057c1ea35ec523  steps=32
+fp8-mmq dispatches: 6076  (hook entries=6107 gate_off=0 no_operand=31 bad_shape=0 bad_scale=0 nan=0)

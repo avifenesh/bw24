@@ -1,0 +1,9 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+MEMRA_FP8_MMQ=1  MEMRA_PP_FP8=<unset>  MEMRA_FP8_BLK_GPU=<unset>  MEMRA_PP_FP8_BUDGET_MB=8192
+loaded dense: n_layer=28 n_embd=2048 n_ff=6144 n_vocab=151936  prompt=24 toks
+pp-only: 6257 tokens, 3 timed reps (+1 warmup)
+pp-only rep 0: 6257 tok in 14.3225s = 436.9 tok/s
+pp-only rep 1: 6257 tok in 14.3575s = 435.8 tok/s
+pp-only rep 2: 6257 tok in 14.4139s = 434.1 tok/s
+pp-only MEDIAN: 6257 tok in 14.3575s = 435.8 tok/s
+fp8-mmq dispatches: 784  (hook entries=788 gate_off=0 no_operand=4 bad_shape=0 bad_scale=0 nan=0)

@@ -1,0 +1,12 @@
+tf-128: 3/128 disagreements; floor margin median 3.6871 mean 4.6930 sd 3.8392
+   step  23  floor tok     11 margin 0.023468 (0.0th pct, 0.0064x median, -1.22 sigma)  ->  mmq tok    323 margin 0.163862
+   step  29  floor tok    220 margin 0.128180 (2.3th pct, 0.0348x median, -1.19 sigma)  ->  mmq tok   3881 margin 0.091206
+   step  67  floor tok   3281 margin 0.171801 (6.2th pct, 0.0466x median, -1.18 sigma)  ->  mmq tok   1372 margin 0.171066
+draw1: 0/32 disagreements; floor margin median 5.6489 mean 4.8530 sd 1.7873
+draw2: 0/32 disagreements; floor margin median 9.1274 mean 8.1073 sd 3.0650
+draw3: 1/32 disagreements; floor margin median 4.3035 mean 4.4822 sd 2.2564
+   step  21  floor tok    600 margin 0.237541 (0.0th pct, 0.0552x median, -1.88 sigma)  ->  mmq tok   1887 margin 0.317654
+draw4: 0/32 disagreements; floor margin median 2.7122 mean 3.0531 sd 2.2454
+draw5: 1/32 disagreements; floor margin median 4.0458 mean 4.7452 sd 3.0303
+   step   0  floor tok    220 margin 0.002348 (0.0th pct, 0.0006x median, -1.57 sigma)  ->  mmq tok    608 margin 0.104000
+draw6: 0/32 disagreements; floor margin median 5.7224 mean 5.9439 sd 2.3446

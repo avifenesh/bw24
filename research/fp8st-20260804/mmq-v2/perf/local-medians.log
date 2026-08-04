@@ -1,0 +1,13 @@
+V2 LOCAL rig: RTX 5090 Laptop (sm_120a), qwen3-1.7B block-128 FP8 ckpt
+N=5 process reps x MEMRA_PP_REPS=3 in-process median, arms INTERLEAVED inside each rep, flock'd, GPU0 only
+kernel: lane/fp8-mmq-v2 @ 5b9e8d21 (wave-fill token-tile selection, margin 86%)
+floor = Q8_0 MMQ (MEMRA_PP_X=0), re-measured in THIS session; no cross-day denominator
+
+pp512:
+  floor  median   2282.0 tok/s  N=5 [2237.8, 2238.7, 2282.0, 2294.1, 2308.3]  1.0000x  temp 54-64C  sm 1635-2122 MHz
+  mmq    median   2258.9 tok/s  N=5 [2211.9, 2252.5, 2258.9, 2270.5, 2280.0]  0.9899x  temp 56-64C  sm 1980-2160 MHz
+
+pp6257:
+  floor  median    431.1 tok/s  N=5 [418.2, 430.9, 431.1, 433.9, 438.1]  1.0000x  temp 64-71C  sm 1582-2160 MHz
+  mmq    median    429.0 tok/s  N=5 [427.4, 427.5, 429.0, 431.1, 438.3]  0.9951x  temp 67-71C  sm 1582-1687 MHz
+

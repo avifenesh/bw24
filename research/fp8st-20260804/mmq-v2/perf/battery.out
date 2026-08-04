@@ -1,0 +1,41 @@
+[13:17:58Z] floor pp512 rep1 pre: 54, 1635 MHz, 28.84 W
+[13:19:08Z] floor pp512 rep1 post: 58, 2032 MHz, 94.30 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2287s = 2238.7 tok/s | oom=0
+[13:19:08Z] mmq pp512 rep1 pre: 58, 2032 MHz, 94.30 W
+[13:19:46Z] mmq pp512 rep1 post: 64, 2040 MHz, 83.42 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2255s = 2270.5 tok/s | oom=0
+[13:19:46Z] floor pp512 rep2 pre: 64, 2040 MHz, 83.42 W
+[13:20:23Z] floor pp512 rep2 post: 63, 1995 MHz, 80.75 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2244s = 2282.0 tok/s | oom=0
+[13:20:23Z] mmq pp512 rep2 pre: 63, 1995 MHz, 80.75 W
+[13:20:59Z] mmq pp512 rep2 post: 57, 2122 MHz, 83.45 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2315s = 2211.9 tok/s | oom=0
+[13:21:00Z] floor pp512 rep3 pre: 57, 2122 MHz, 83.45 W
+[13:21:36Z] floor pp512 rep3 post: 61, 1980 MHz, 91.97 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2218s = 2308.3 tok/s | oom=0
+[13:21:36Z] mmq pp512 rep3 pre: 61, 1980 MHz, 91.97 W
+[13:22:13Z] mmq pp512 rep3 post: 63, 2107 MHz, 81.50 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2246s = 2280.0 tok/s | oom=0
+[13:22:14Z] floor pp512 rep4 pre: 63, 2107 MHz, 81.50 W
+[13:22:51Z] floor pp512 rep4 post: 62, 2100 MHz, 81.56 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2232s = 2294.1 tok/s | oom=0
+[13:22:51Z] mmq pp512 rep4 pre: 62, 2100 MHz, 81.56 W
+[13:23:28Z] mmq pp512 rep4 post: 56, 2070 MHz, 84.37 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2267s = 2258.9 tok/s | oom=0
+[13:23:28Z] floor pp512 rep5 pre: 56, 2070 MHz, 84.37 W
+[13:24:05Z] floor pp512 rep5 post: 60, 2122 MHz, 82.64 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2288s = 2237.8 tok/s | oom=0
+[13:24:05Z] mmq pp512 rep5 pre: 60, 2122 MHz, 82.64 W
+[13:24:41Z] mmq pp512 rep5 post: 64, 2160 MHz, 87.26 W | rc=0 | pp-only MEDIAN: 512 tok in 0.2273s = 2252.5 tok/s | oom=0
+[13:24:41Z] floor pp6257 rep1 pre: 64, 2160 MHz, 87.26 W
+[13:26:15Z] floor pp6257 rep1 post: 67, 1590 MHz, 31.99 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.2810s = 438.1 tok/s | oom=0
+[13:26:15Z] mmq pp6257 rep1 pre: 67, 1590 MHz, 31.99 W
+[13:27:49Z] mmq pp6257 rep1 post: 68, 1582 MHz, 32.26 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.2771s = 438.3 tok/s | oom=0
+[13:27:49Z] floor pp6257 rep2 pre: 68, 1582 MHz, 32.26 W
+[13:30:33Z] floor pp6257 rep2 post: 68, 1612 MHz, 32.64 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.4207s = 433.9 tok/s | oom=0
+[13:30:33Z] mmq pp6257 rep2 pre: 68, 1612 MHz, 32.64 W
+[13:34:19Z] mmq pp6257 rep2 post: 70, 1635 MHz, 33.72 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.6366s = 427.5 tok/s | oom=0
+[13:34:20Z] floor pp6257 rep3 pre: 70, 1635 MHz, 33.72 W
+[13:40:30Z] floor pp6257 rep3 post: 71, 1650 MHz, 34.41 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.9609s = 418.2 tok/s | oom=0
+[13:40:30Z] mmq pp6257 rep3 pre: 71, 1687 MHz, 35.21 W
+[13:44:02Z] mmq pp6257 rep3 post: 70, 1597 MHz, 32.79 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.5856s = 429.0 tok/s | oom=0
+[13:44:02Z] floor pp6257 rep4 pre: 70, 1597 MHz, 32.79 W
+[13:46:11Z] floor pp6257 rep4 post: 69, 1605 MHz, 32.99 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.5206s = 430.9 tok/s | oom=0
+[13:46:11Z] mmq pp6257 rep4 pre: 69, 1605 MHz, 32.99 W
+[13:47:45Z] mmq pp6257 rep4 post: 70, 1605 MHz, 32.63 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.5128s = 431.1 tok/s | oom=0
+[13:47:46Z] floor pp6257 rep5 pre: 70, 1605 MHz, 32.63 W
+[13:50:00Z] floor pp6257 rep5 post: 70, 1612 MHz, 33.60 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.5138s = 431.1 tok/s | oom=0
+[13:50:00Z] mmq pp6257 rep5 pre: 70, 1612 MHz, 33.60 W
+[13:51:35Z] mmq pp6257 rep5 post: 70, 1605 MHz, 33.31 W | rc=0 | pp-only MEDIAN: 6257 tok in 14.6385s = 427.4 tok/s | oom=0
+[13:51:35Z] V2 PERF BATTERY DONE
