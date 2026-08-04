@@ -5,6 +5,20 @@
 //!   3. softmax_gather vs CPU softmax (rel < 1e-4 at temp 0.7/1.0; exact indicator at temp 0)
 //!   4. residual sampler: determinism, temp->0 argmax fallback, and empirical distribution vs the
 //!      CPU residual probabilities on a small vocab (10k draws, max abs freq error < 0.02)
+//!   5. filtered-spec kernels: filter_stats vs a CPU filtered-softmax reference (top_k/top_p/
+//!      min_p/no-filter) + the filtered residual's empirical distribution (8k draws)
+//!   6. COMPOSITION (the HANDOVER sampled-spec-arc gate (c)): the whole accept walk's OUTPUT
+//!      distribution == the target p. Arms 1-5 oracle primitives in ISOLATION; only this arm
+//!      catches a mis-composition (inverted accept test, residual off the wrong column, a
+//!      uniform reused across slots) that leaves every individual kernel correct. 20k draws,
+//!      L-inf + total-variation, with a non-degenerate-acceptance guard so it can't go vacuous.
+//!
+//! Why this binary matters: every token golden in the repo runs temp=0, which routes around
+//! the sampler chain entirely — a broken sampled-spec kernel is INVISIBLE to argmax goldens
+//! (demonstrated: research/fast-gate-20260802/break-sampling-*). Since the serve default
+//! became temperature=1.0 (dogfood F4), sampled spec is the DEFAULT decode path, so this is
+//! the oracle for the path the owner's daily driver actually takes.
+use cudarc::driver::CudaSlice;
 use memra_engine::Engine;
 
 fn cpu_softmax(x: &[f32], t: f32) -> Vec<f64> {
@@ -189,6 +203,129 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let maxerr = freq.iter().zip(&r).map(|(f, p)| (f - p).abs()).fold(0.0, f64::max);
         let ok = maxerr < 0.025;
         println!("filtered residual empirical (8k draws): maxerr={maxerr:.4} {}", if ok { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- 6. COMPOSITION: the accept walk's OUTPUT distribution == the target p ---
+    // This is the HANDOVER "SAMPLED-SPEC ARC" gate (c) — the one the per-kernel arms above
+    // cannot reach. Arms 1-5 oracle each primitive in isolation; a spec decode can pass all
+    // of them and still emit the wrong distribution if the primitives are COMPOSED wrong
+    // (accept test inverted, residual fed the wrong column, a uniform reused across slots).
+    //
+    // The Leviathan/Chen guarantee: for ONE draft slot, the composed step
+    //     x ~ q ; accept if u*q(x) < p(x) ; else x ~ norm(max(0, p - q))
+    // emits x ~ p EXACTLY, for ANY draft q. So we run the real device primitives in the same
+    // order and with the same host accept test spec.rs uses (`(u as f64)*(qj as f64) < pj`,
+    // host_u01's Philox stream), and check the empirical output against the CPU filtered
+    // softmax of p. A mis-composition shows up here as a distribution skew even though every
+    // kernel is individually correct.
+    //
+    // Deliberately mismatched q (different logits AND a different filter) so the accept rate
+    // is well below 1 — a walk that always accepts, or always rejects, would test nothing.
+    {
+        let t = 0.8f32;
+        let nv3 = 256usize;
+        let pl: Vec<f32> = (0..nv3).map(|i| ((i * 40503) % 811) as f32 / 47.0 - 5.0).collect();
+        let ql: Vec<f32> = (0..nv3).map(|i| ((i * 22695) % 811) as f32 / 61.0 - 4.0).collect();
+        let (pd3, qd3) = (e.htod(&pl)?, e.htod(&ql)?);
+        let rows0 = e.htod_i32(&[0])?;
+        let (tk, tp, mp) = (0i32, 1.0f32, 0.0f32); // pure temp: the DEFAULT serve regime
+        let stats1 = |v: &CudaSlice<f32>, n: usize|
+            -> Result<(f32, f32, f32), Box<dyn std::error::Error>> {
+            let (mut thd, mut zd, mut mxd) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+            e.filter_stats(v, n, &rows0, &mut thd, &mut zd, &mut mxd, n, 1, t, tk, tp, mp)?;
+            Ok((e.dtoh(&mxd)?[0], e.dtoh(&thd)?[0], e.dtoh(&zd)?[0]))
+        };
+        let ps = stats1(&pd3, nv3)?;
+        let qs = stats1(&qd3, nv3)?;
+        // host Philox uniform — byte-for-byte the closure in spec.rs (independent stream tag).
+        let host_u01 = |seed: u64, ctr: u32| -> f32 {
+            let (m0, m1) = (0xD2511F53u32, 0xCD9E8D57u32);
+            let (mut c0, mut c1, mut c2, mut c3) = (0xFFFF_FFFEu32, ctr, 0u32, 0u32);
+            let (mut k0, mut k1) = ((seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+            for _ in 0..10 {
+                let (h0, l0) = (((m0 as u64 * c0 as u64) >> 32) as u32, m0.wrapping_mul(c0));
+                let (h1, l1) = (((m1 as u64 * c2 as u64) >> 32) as u32, m1.wrapping_mul(c2));
+                let (n0, n1, n2, n3) = (h1 ^ c1 ^ k0, l1, h0 ^ c3 ^ k1, l0);
+                c0 = n0; c1 = n1; c2 = n2; c3 = n3;
+                k0 = k0.wrapping_add(0x9E3779B9);
+                k1 = k1.wrapping_add(0xBB67AE85);
+            }
+            (c0 as f32 + 1.0) * (1.0 / 4294967296.0)
+        };
+        // CPU reference: the filtered softmax of p (pure temp => plain softmax).
+        let refp = cpu_softmax(&pl, t);
+        let seed = 1234u64;
+        let draws = 20000usize;
+        let mut freq = vec![0f64; nv3];
+        let mut accepts = 0usize;
+        let mut perturb = e.zeros(nv3)?;
+        let mut tokd3 = e.alloc_u32_zeroed(1)?;
+        let (mut idbuf, mut zbuf) = (e.zeros(1)?, e.zeros(1)?);
+        for i in 0..draws {
+            let sp = i as u32;
+            // 1. draft proposes x ~ filtered q  (gumbel-max, the real draft primitive)
+            e.gumbel_perturb_filtered(&qd3, &mut perturb, nv3, seed, sp, t, qs.0, qs.1)?;
+            let xtok = e.dtoh_u32_one(&e.argmax_token_device(&perturb, nv3)?)?;
+            // 2. gather p(x) and q(x) with the real filtered gathers
+            let idsd = e.htod_u32_v(&[xtok])?;
+            let g = |src: &CudaSlice<f32>, st: (f32, f32, f32)|
+                -> Result<f32, Box<dyn std::error::Error>> {
+                let thp = e.htod(&[st.1])?; let zp = e.htod(&[st.2])?;
+                let mut o = e.zeros(1)?;
+                e.softmax_gather_filtered(src, nv3, &idsd, &rows0, &thp, &zp, &mut o, nv3, 1, t)?;
+                Ok(e.dtoh(&o)?[0])
+            };
+            let (pj, qj) = (g(&pd3, ps)?, g(&qd3, qs)?);
+            // 3. THE ACCEPT TEST, exactly as spec.rs writes it (u*q < p, division-free)
+            let u = host_u01(seed, sp);
+            let tok = if (u as f64) * (qj as f64) < pj as f64 {
+                accepts += 1;
+                xtok
+            } else {
+                // 4. reject -> residual sample from norm(max(0, fp - fq))
+                e.residual_sample_filtered(&pd3, Some(&qd3), nv3, t, seed, sp, ps, qs, &mut tokd3)?;
+                e.dtoh_u32(&tokd3)?[0]
+            };
+            let _ = (&mut idbuf, &mut zbuf);
+            freq[tok as usize] += 1.0 / draws as f64;
+        }
+        let acc_rate = accepts as f64 / draws as f64;
+        // L-infinity on the empirical PMF. 20k draws over nv=256: the binomial sd at the
+        // modal mass (~0.03) is ~1.2e-3, so 0.012 is ~10 sd of slack for MC noise while a
+        // real composition bug (accept test inverted, residual off the wrong column) moves
+        // the modal bins by 0.05-0.3 — far outside.
+        let maxerr = freq.iter().zip(&refp).map(|(f, p)| (f - p).abs()).fold(0.0, f64::max);
+        // total-variation distance: the aggregate view, catches diffuse skew L-inf can miss.
+        let tv: f64 = freq.iter().zip(&refp).map(|(f, p)| (f - p).abs()).sum::<f64>() / 2.0;
+        let ok = maxerr < 0.012 && tv < 0.05;
+        println!("composed accept-walk output ~ p (20k draws, acc={acc_rate:.3}): \
+                  maxabs={maxerr:.4} tv={tv:.4} {}",
+                 if ok { "OK" } else { fails += 1; "FAIL" });
+        // Guard the guard: a degenerate accept rate would make the arm vacuous.
+        let ok2 = acc_rate > 0.05 && acc_rate < 0.95;
+        println!("composed walk exercises BOTH branches (acc={acc_rate:.3} in 0.05..0.95): {}",
+                 if ok2 { "OK" } else { fails += 1; "FAIL" });
+
+        // 6b. q == p must accept ~always (the self-draft limit) and still emit p.
+        let mut acc2 = 0usize;
+        let n2 = 4000usize;
+        for i in 0..n2 {
+            let sp = 500_000u32 + i as u32;
+            e.gumbel_perturb_filtered(&pd3, &mut perturb, nv3, seed, sp, t, ps.0, ps.1)?;
+            let xtok = e.dtoh_u32_one(&e.argmax_token_device(&perturb, nv3)?)?;
+            let idsd = e.htod_u32_v(&[xtok])?;
+            let thp = e.htod(&[ps.1])?; let zp = e.htod(&[ps.2])?;
+            let mut o = e.zeros(1)?;
+            e.softmax_gather_filtered(&pd3, nv3, &idsd, &rows0, &thp, &zp, &mut o, nv3, 1, t)?;
+            let pv = e.dtoh(&o)?[0];
+            if (host_u01(seed, sp) as f64) * (pv as f64) < pv as f64 { acc2 += 1; }
+        }
+        let r2 = acc2 as f64 / n2 as f64;
+        // u < 1 always (host_u01 returns (c0+1)/2^32 <= 1.0, and p==q cancels), so this is
+        // an exactness statement about the test itself, not a statistical one.
+        let ok3 = r2 > 0.999;
+        println!("self-draft (q==p) accept rate == 1 (got {r2:.4}): {}",
+                 if ok3 { "OK" } else { fails += 1; "FAIL" });
     }
 
     println!("{}", if fails == 0 { "=== sample-check ALL GREEN ===" } else { "=== sample-check FAILURES ===" });

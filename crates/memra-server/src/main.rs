@@ -2264,10 +2264,12 @@ mod tests {
         assert_eq!(cfg.top_k, 0, "omitted top_k = disabled");
         assert_eq!(cfg.min_p, 0.0, "omitted min_p = disabled");
         assert_eq!(cfg.penalty_last_n, 0, "omitted penalties = window off");
-        // and it is SPEC-ELIGIBLE: the rejection-sampling verify covers temp+filters, so
-        // the default-shaped request keeps the spec speedup instead of falling to plain.
+        // and it lands in the PURE-TEMP sampled-spec regime — the one that keeps the
+        // in-graph sampled draft chain (spec.rs `pure_temp`). Filters/penalties would still
+        // be spec-eligible but would drop the draft to the eager chain, so the default
+        // request shape must stay in the fast regime.
         assert!(memra_engine::sampler::Sampler::new(cfg).is_spec_sampling(),
-                "the omitted-temperature default must ride sampled spec");
+                "the omitted-temperature default must ride sampled spec's pure-temp regime");
     }
 
     #[test]
