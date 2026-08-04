@@ -1,0 +1,2 @@
+sampled-spec   N=5 median=73.92 tok/s  min=72.39 max=77.12
+greedy-spec    N=5 median=88.28 tok/s  min=88.08 max=88.40

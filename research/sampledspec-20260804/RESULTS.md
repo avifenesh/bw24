@@ -1,8 +1,15 @@
-# Dogfood F4: temperature default + sampled-spec state — 2026-08-04
+# Dogfood F4: omitted temperature AND seed + sampled-spec state — 2026-08-04
 
 Lane `lane/sampled-spec` off `restructure/public-split` @ `8aa1eb1e`. Rig: RTX 5090 Laptop
 (sm_120a), GPU work serialized under `flock /tmp/gpu5090.lock` (shared with the v0.69 release
 wave and the specpool lane).
+
+**Verdict in one line:** F4 was TWO pinned defaults, not one — `temperature` (0.0 = greedy)
+*and* `seed` (0 = a fixed stream). Both fixed; the owner's exact serve config verifies
+no-loop, greedy byte-identity, and seed semantics all PASS on the new binary, with sampled
+sessions keeping **1.72x** over plain-sampled (73.92 vs 43.00 tok/s, N=5). The brief's Part 2
+premise was stale — rejection-sampling spec decode shipped 2026-07-09/10 — so Part 2 became
+the missing distribution gate (arc gate (c)) plus two negative controls that prove it catches.
 
 ## The bug (Part 1) — CONFIRMED, fixed
 
@@ -229,6 +236,74 @@ isn't sent down the same path:
   that keeps the in-graph sampled draft chain — and tightened it to match (added the
   top_k/top_p/min_p conditions), since filters force the eager draft. Only caller is the new
   unit test.
+
+## Part 3 — daily-driver verification on the NEW binary: ALL PASS
+
+Rig: RTX 5090 Laptop (sm_120a), GPU serialized under `flock /tmp/gpu5090.lock`. Server started
+from the owner's exact `serve-qwen36-27b-memra` config (same MEMRA_MODELS incl. the regime
+draft, MEMRA_CTX=131072, MEMRA_MAX_SESSIONS=1, MEMRA_REUSE_POOL=1, MEMRA_PRIME_CHUNK=2048,
+MEMRA_API_KEY) with `MEMRA_BIN`→the lane binary and `PORT=8102` so the owner's 8002 is
+untouched. Battery: `run-battery.sh`; raw per-run JSON in `raw/`; server log
+`server-8102.log`. Thermal regime: 68C at start, steady 83-85C under the perf arm at
+151 W, SM clock 1582-1665 MHz — i.e. warm/steady-state, not a cold-clock burst.
+
+| gate | request shape | runs | result | verdict |
+|---|---|---|---|---|
+| A. no loop | agentic tool-check prompt, **temp + seed omitted** (pi's exact shape) | 4 | 4 distinct sha16 | **PASS** — pre-fix this was 3/3 identical |
+| B. greedy unchanged | explicit `temperature: 0, seed: 0` | 3 | `fa1d69e4c568ca5e` x3 | **PASS** — byte-identical, gate contract intact |
+| C. seed semantics | `temperature: 1.0, seed: 4242` | 2 | `be86e4268547d039` x2 | **PASS** — explicit seed reproduces |
+| C. seed semantics | `temperature: 1.0`, seed omitted | 4 | 4 distinct sha16 | **PASS** — omitted seed varies |
+
+Gate A is the exact pattern from the transcript (repeated `npm view` tool-check turn with a
+"don't repeat a command you already ran" instruction) at 400 tokens — the shape that produced
+~10 identical cycles. Four runs, four different completions.
+
+Spec **does** engage on the sampled default: 266 `[spec-acc]` bursts in `server-8102.log`,
+cumulative acceptance settling at **0.59** (e.g. `ctx=526 burst=12/18 cum=327/552=0.592`).
+So the fix does not silently cost the owner spec decode.
+
+### Throughput (N=5 each, medians, 27B daily driver, same prompt, ngen=512)
+
+| arm | median tok/s | min–max | vs plain-sampled |
+|---|---|---|---|
+| **sampled-spec** (the new default) | **73.92** | 72.39–77.12 | **1.72x** |
+| greedy-spec (`temperature: 0`) | 88.28 | 88.08–88.40 | 2.05x |
+| plain-sampled (`MEMRA_SERVE_SPEC=0`) | 43.00 | 42.75–43.19 | 1.00x |
+
+Reading: an omitted-temperature session — what every OpenAI-SDK and pi/pill client sends —
+now gets **1.72x** the plain-sampled rate, i.e. sampled requests keep essentially the whole
+spec win. It sits **16% below greedy-spec** (0.84x), which is the expected cost of
+rejection-sampling verify vs argmax verify: acceptance is 0.59 sampled where greedy on this
+draft runs higher, and each round pays the extra gather/uniform/residual work. That gap is a
+*sampling* cost, not a regression — the pre-fix alternative wasn't "greedy-spec at 88 tok/s",
+it was greedy-spec output stuck in a loop.
+
+Protocol notes (so these numbers are usable):
+- The sampled-spec and greedy-spec arms are **interleaved within each repetition** on ONE
+  server process, so clock/thermal drift hits both equally. Their comparison is valid.
+- The plain-sampled arm required `MEMRA_SERVE_SPEC=0`, which is a **server restart**, so it
+  is a *separate process* (`server-8102-nospec.log`, `raw-nospec/`) and therefore a
+  cross-run comparison. Its clocks ran *higher* (1785-1852 MHz vs 1582-1665) at similar
+  power, so if anything it flatters the denominator — the 1.72x is conservative, not
+  inflated. Zero `[spec-acc]` lines in that log confirms spec was genuinely off.
+- Greedy-spec produced the identical hash `4ae03fff0e11f032` on all 5 perf reps at 512
+  tokens, which is an extra byte-identity data point beyond gate B.
+
+### First attempt died of a real OOM (recorded, not silently retried)
+
+The first launch failed with, quoted from `server-8102.log`:
+
+```
+[server] FATAL: worker init failed: load qwen36-27b: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+```
+
+Concurrent-GPU state at failure (`nvidia-smi --query-compute-apps`): PID 586229
+(`bw24-unified/target/release/memra-server`, the 8002 daily driver, **started 40 s after this
+lane took `/tmp/gpu5090.lock`**) holding 22498 MiB, plus llama-server 260 MiB and a colbert
+`mqar_loop.py` 1142 MiB, leaving 22 MiB free of 24463. Two 27B servers do not fit 24 GB —
+this is the documented `MEMRA_MAX_SESSIONS=1` VRAM math, not a new bug. No number was
+reported from that attempt; the battery was re-run after the box freed, and the medians above
+come entirely from the clean run.
 
 ## Known gaps (NOT closed by this lane — named, not hidden)
 
