@@ -1,0 +1,37 @@
+=== q9 n=400 r1 ===
+[q9 n=400 r1] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=400 r2 ===
+[q9 n=400 r2] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=400 r3 ===
+[q9 n=400 r3] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=800 r1 ===
+[q9 n=800 r1] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=800 r2 ===
+[q9 n=800 r2] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=800 r3 ===
+[q9 n=800 r3] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=1600 r1 ===
+[q9 n=1600 r1] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=1600 r2 ===
+[q9 n=1600 r2] MATCH over 208 tokens (cli 209 srv 208)
+=== q9 n=1600 r3 ===
+[q9 n=1600 r3] MATCH over 208 tokens (cli 209 srv 208)
+=== 9bst n=400 r1 ===
+[9bst n=400 r1] first_div=152 n_diff=226/400 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=400 r2 ===
+[9bst n=400 r2] first_div=152 n_diff=226/400 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=400 r3 ===
+[9bst n=400 r3] first_div=152 n_diff=226/400 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=800 r1 ===
+[9bst n=800 r1] first_div=152 n_diff=591/800 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=800 r2 ===
+[9bst n=800 r2] first_div=152 n_diff=591/800 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=800 r3 ===
+[9bst n=800 r3] first_div=152 n_diff=591/800 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=1600 r1 ===
+[9bst n=1600 r1] first_div=152 n_diff=1391/1600 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=1600 r2 ===
+[9bst n=1600 r2] first_div=152 n_diff=1391/1600 cli=[18959, 11, 264] srv=[4602, 11, 264]
+=== 9bst n=1600 r3 ===
+[9bst n=1600 r3] first_div=152 n_diff=1391/1600 cli=[18959, 11, 264] srv=[4602, 11, 264]
+battery done

@@ -1,0 +1,5 @@
+prompt 23 tok, served stream 1600 tok
+FLIP step 152: oracle greedy 18959 vs served 4602  gap=0.0300  top2=(18959:24.9007, 4602:24.8706)  step_margin=0.0300
+FLIP step 173: oracle greedy 357 vs served 1987  gap=0.0643  top2=(357:23.0625, 1987:22.9982)  step_margin=0.0643
+FLIP step 352: oracle greedy 4434 vs served 2400  gap=0.0043  top2=(4434:24.6074, 2400:24.6031)  step_margin=0.0043
+SUMMARY: 1600 steps, 3 independent flips (0.188/100tok)  step-margin median=10.632 p10=2.153 min=0.0043
