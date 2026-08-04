@@ -120,10 +120,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "pp-only MEDIAN: {t} tok in {med:.4}s = {:.1} tok/s",
             t as f64 / med
         );
-        println!(
-            "fp8-mmq dispatches: {}",
-            memra_engine::fp8_ffi::fp8_mmq_hits()
-        );
+        {
+            let (ent, gate, h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
+            println!(
+                "fp8-mmq dispatches: {h}  (hook entries={ent} gate_off={gate} no_operand={no_op} \
+                 bad_shape={shp} bad_scale={scl} nan={nan})"
+            );
+        }
         return Ok(());
     }
 
@@ -224,9 +227,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("stream ids: {emitted:?}");
     println!("stream digest: {digest:#018x}  steps={n_steps}");
-    println!(
-        "fp8-mmq dispatches: {}",
-        memra_engine::fp8_ffi::fp8_mmq_hits()
-    );
+    {
+        let (ent, gate, h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
+        println!(
+            "fp8-mmq dispatches: {h}  (hook entries={ent} gate_off={gate} no_operand={no_op} \
+             bad_shape={shp} bad_scale={scl} nan={nan})"
+        );
+    }
     Ok(())
 }
