@@ -227,7 +227,13 @@ impl crate::Engine {
             GpuTensor::Quant {
                 fp8: Some(f8), ne, ..
             } if f8.blk.is_some() => (f8, ne),
-            _ => return Ok(None),
+            // A zero dispatch count is ambiguous on its own: no block operand resident looks
+            // exactly like a shape refusal. Count the no-operand case separately so the receipt
+            // says WHICH, and never per-GEMM-log (this fires on every projection of every layer).
+            _ => {
+                FP8_MMQ_NO_OPERAND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(None);
+            }
         };
         if ne.len() != 2 {
             return Ok(None);
@@ -243,11 +249,13 @@ impl crate::Engine {
             || f8.bytes.len() < out_f * in_f
             || x.len() < m * in_f
         {
+            FP8_MMQ_BAD_SHAPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
         // The per-tensor scale must be the block class's identity (source.rs sets 1.0 alongside a
         // grid); anything else would mean a second, unapplied scale factor.
         if f8.scale != 1.0 {
+            FP8_MMQ_BAD_SCALE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
 
@@ -269,6 +277,7 @@ impl crate::Engine {
                 }
             };
             if !ok {
+                FP8_MMQ_NAN_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Ok(None);
             }
         }
@@ -286,9 +295,32 @@ impl crate::Engine {
 /// every such run carries its own proof of coverage.
 static FP8_MMQ_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Refusal counters, one per precondition. Without these a `dispatches: 0` receipt says only
+/// "the kernel did not run", which is the same string for "no block operand was ever made
+/// resident" (budget spent / loader arm not taken / not a block-128 checkpoint) and for "the
+/// operand was there but the shape or the NaN scan rejected it". Those demand opposite fixes, so
+/// the receipt has to distinguish them.
+static FP8_MMQ_NO_OPERAND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FP8_MMQ_BAD_SHAPE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FP8_MMQ_BAD_SCALE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FP8_MMQ_NAN_REFUSED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Number of prefill GEMMs that went through the per-block FP8 MMQ tile so far this process.
 pub fn fp8_mmq_hits() -> usize {
     FP8_MMQ_HITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `hits, no_operand, bad_shape, bad_scale, nan_refused` — the full dispatch ledger.
+pub fn fp8_mmq_ledger() -> (usize, usize, usize, usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        FP8_MMQ_HITS.load(Relaxed),
+        FP8_MMQ_NO_OPERAND.load(Relaxed),
+        FP8_MMQ_BAD_SHAPE.load(Relaxed),
+        FP8_MMQ_BAD_SCALE.load(Relaxed),
+        FP8_MMQ_NAN_REFUSED.load(Relaxed),
+    )
 }
 
 // ============================================================================================
