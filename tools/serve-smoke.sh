@@ -40,6 +40,20 @@ chat() {  # prompt max_tokens [stream] -> body to stdout
     -d "{\"model\":\"smoke\",\"messages\":[{\"role\":\"user\",\"content\":\"$prompt\"}],
          \"max_tokens\":$maxtok,\"temperature\":0,\"stream\":$stream}"
 }
+# THE EMITTED STREAM = reasoning + content (gate-rot fix, 2026-08-04). The default smoke model
+# (q9 Qwen3.5) is a REASONING model: at the small budgets this battery uses, every emitted token
+# is still inside the thinking block, so `message.content` is legitimately "" with
+# finish_reason=length. Asserting on `content` alone made checks 2/5/6/8 structurally
+# unpassable — measured identically red on the pre-lane binary at 0a7349f6 (v0.68.0), i.e. this
+# gate had been rotted in main, not broken by a lane. What the checks actually mean is "the
+# server emitted deterministic non-empty output" and "spec emits the same text as plain", and
+# that is the reasoning+content concatenation. Kept budget-independent on purpose: raising
+# max_tokens until the model happens to close its thinking block would make the gate a
+# model-verbosity coin flip.
+say() { python3 -c '
+import json,sys
+m = json.load(sys.stdin)["choices"][0]["message"]
+print((m.get("reasoning") or "") + (m.get("content") or ""))'; }
 
 echo "== serve-smoke: plain serving =="
 start_server "smoke=$MODEL" || exit 1
@@ -52,11 +66,12 @@ R=$(chat "Name three primary colors, comma-separated." 48)
 echo "$R" | python3 -c '
 import json,sys
 r = json.load(sys.stdin)
-c = r["choices"][0]["message"]["content"]
-assert c.strip(), "empty content"
+m = r["choices"][0]["message"]
+# reasoning OR content — a thinking model at a small budget emits only the former (see say()).
+assert ((m.get("reasoning") or "") + (m.get("content") or "")).strip(), "empty emitted text"
 assert r["usage"]["completion_tokens"] > 0, "no completion tokens"
 assert r["choices"][0]["finish_reason"] in ("stop","length"), "bad finish_reason"
-' && PASS "chat non-stream (content + usage + finish_reason)" || FAIL "chat non-stream"
+' && PASS "chat non-stream (text + usage + finish_reason)" || FAIL "chat non-stream"
 
 # 3. streaming: data: chunks then [DONE]
 S=$(chat "Count from one to five in words." 48 true)
@@ -70,8 +85,8 @@ curl -sf -m 300 $BASE/v1/completions -H 'Content-Type: application/json' \
   && PASS "/v1/completions" || FAIL "/v1/completions"
 
 # 5. greedy determinism: same prompt twice -> identical text
-A=$(chat "Explain what a mutex is in one sentence." 64 | python3 -c 'import json,sys;print(json.load(sys.stdin)["choices"][0]["message"]["content"])')
-B=$(chat "Explain what a mutex is in one sentence." 64 | python3 -c 'import json,sys;print(json.load(sys.stdin)["choices"][0]["message"]["content"])')
+A=$(chat "Explain what a mutex is in one sentence." 64 | say)
+B=$(chat "Explain what a mutex is in one sentence." 64 | say)
 [ -n "$A" ] && [ "$A" = "$B" ] && PASS "greedy determinism (2 runs identical)" || FAIL "greedy determinism"
 
 # 6. concurrency: 3 parallel chats all complete non-empty
@@ -84,7 +99,10 @@ done
 okc=0
 for i in 0 1 2; do
   wait "${pids[$i]}" 2>/dev/null
-  python3 -c "import json;assert json.load(open('${outs[$i]}'))['choices'][0]['message']['content'].strip()" 2>/dev/null && okc=$((okc+1))
+  python3 -c "
+import json
+m = json.load(open('${outs[$i]}'))['choices'][0]['message']
+assert ((m.get('reasoning') or '') + (m.get('content') or '')).strip()" 2>/dev/null && okc=$((okc+1))
 done
 [ $okc -eq 3 ] && PASS "3 concurrent chats" || FAIL "concurrency ($okc/3)"
 
@@ -100,7 +118,7 @@ stop_server
 if [ -f "$DRAFT" ]; then
   echo "== serve-smoke: spec serving (draft attached) =="
   start_server "smoke=$MODEL+$DRAFT" || exit 1
-  SA=$(chat "Explain what a mutex is in one sentence." 64 | python3 -c 'import json,sys;print(json.load(sys.stdin)["choices"][0]["message"]["content"])')
+  SA=$(chat "Explain what a mutex is in one sentence." 64 | say)
   [ -n "$SA" ] && [ "$SA" = "$PLAIN_MUTEX" ] && PASS "spec == plain greedy text (serving exactness)" \
     || FAIL "spec-vs-plain text mismatch"
   stop_server
