@@ -40,10 +40,15 @@ That's it. Two workflows fire on the tag:
   stable-name `memra-server-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` (the cargo-binstall /
   `tools/install.sh` target), and publishes the GitHub release. Edit notes on GitHub
   afterwards if the draft needs headline or context — draft is floor, not ceiling.
-- `publish` — `cargo publish --workspace --exclude memra-probe --locked` to crates.io
-  (cargo resolves dependency order and waits for index propagation between crates).
-  Dry-run first without tagging: Actions → publish → Run workflow (`workflow_dispatch`
-  runs the full package+verify with no upload and no token).
+- `publish` — per-crate `cargo publish -p <crate> --locked` to crates.io in dependency
+  order, skipping versions already live (registry API check) and waiting out crates.io's
+  new-crate burst limit on 429 (~1 new crate/10 min; learned on the v0.69.0 first publish,
+  which shipped 5/9 before a 429 and could not resume under the old all-or-nothing
+  `--workspace` form). The step is idempotent — rerunning a partly-published tag finishes
+  the remainder. Dry-run first without tagging: Actions → publish → Run workflow
+  (`workflow_dispatch` runs the full package+verify with no upload and no token); the
+  dispatch `publish=true` input is the recovery door that runs the REAL publish on a ref
+  when a tag's run needs finishing.
 
 ## Publishing to crates.io — one-time setup (owner)
 
