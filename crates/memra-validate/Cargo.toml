@@ -1,6 +1,10 @@
 [package]
 name = "memra-validate"
-version = "0.0.0"
+description = "Numeric validation helpers (reference comparisons, tolerance gates) for the memra inference engine"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition = "2021"
 
 [dependencies]

@@ -1,6 +1,10 @@
 [package]
 name = "memra-lanes"
-version = "0.0.0"
+description = "Serving-lane types, SLO admission policy, and engine-truth step stats for the memra inference engine"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition = "2021"
 # Shared lane machinery (ARCHITECTURE-H100.md B3/D): lane types, admission policy,
 # engine-truth step stats, metrics — consumed by memra-server natively and reusable by
