@@ -1,0 +1,78 @@
+I'll write this essay directly as a markdown file for you.
+
+---
+
+# The Evolution of Speculative Decoding in LLM Inference
+
+## Introduction
+
+Large language model inference is fundamentally bottlenecked by autoregressive generation. Each token must wait for the previous token to be produced, creating a sequential dependency chain that scales linearly with output length. For models with billions of parameters, this means every generated token requires a full forward pass through the network — a compute-intensive operation that dominates latency, especially at the decoding stage. Speculative decoding emerged as one of the most promising techniques to break this sequential barrier, enabling models to generate multiple tokens per forward pass while preserving the exact output distribution of the base model. This essay traces the evolution of speculative decoding from its foundational draft-model formulation through Medusa heads, Multi-Token Prediction (MTP), EAGLE, and rejection sampling refinements, analyzing the concrete tradeoffs at each stage.
+
+## Draft-Model Speculative Decoding: The Foundational Paradigm
+
+The original speculative decoding framework, introduced by Leviathan et al. (2023), reframed autoregressive generation as a two-phase process: speculation and verification. The core insight is elegant: if a smaller, faster "draft" model can propose candidate tokens that the larger "target" model would likely agree with, then the target model can verify multiple tokens in a single forward pass rather than generating them one at a time.
+
+The algorithm operates as follows. Given a prefix, the draft model generates k candidate tokens autoregressively. These candidates are then fed into the target model in a single forward pass, which computes the probability distribution over the next token at each position. Each draft token is accepted or rejected via rejection sampling: a token is accepted if a uniform random variable u is less than the ratio of the target probability to the draft probability at that token. The first rejected token triggers a resample from the target's distribution at that position, and generation resumes from there.
+
+The theoretical guarantee is critical: speculative decoding produces samples from the exact target distribution. No approximation is made to the output — only the computation is restructured. The expected speedup is approximately k × (1 - rejection_rate), where k is the number of draft tokens. In practice, speedups of 1.5× to 2× were observed, depending on draft-target alignment.
+
+The tradeoffs are clear. The draft model adds memory overhead (two models must be loaded), and the verification pass still requires a full forward pass through the target model. If the draft model is poorly aligned with the target, rejection rates climb and the overhead of running the draft model negates any gains. Furthermore, the draft model must be trained separately, typically by distillation from the target, adding training complexity.
+
+## Medusa Heads: Parallel Token Prediction Without a Separate Model
+
+Medusa (Cai et al., 2024) addressed the draft-model overhead by eliminating the need for a separate model entirely. Instead of training a distinct draft model, Medusa attaches multiple lightweight "heads" to the final layer of the base model. Each head predicts a token at a different future position: the first head predicts the next token (t+1), the second predicts t+2, the third predicts t+3, and so on. These heads are small linear projections trained via distillation on the model's own autoregressive outputs.
+
+During inference, all heads fire simultaneously in a single forward pass, producing k candidate tokens in parallel. These candidates are then verified using the same rejection sampling mechanism as original speculative decoding, but with the base model itself serving as both drafter and verifier.
+
+The advantages are substantial. No additional model weights need to be loaded — the heads add only a fraction of the base model's parameters. The single forward pass eliminates the sequential draft generation entirely. Medusa reported speedups of 2× to 2.5× on LLaMA-2 models, with minimal accuracy degradation.
+
+However, Medusa has notable limitations. The heads are shallow and cannot capture long-range dependencies well, limiting effective prediction depth to roughly 3–5 tokens. The heads must be fine-tuned for each base model, and the technique does not transfer across architectures. Additionally, because the heads predict future tokens conditioned only on the current hidden state (not on each other's outputs), the quality of predictions degrades rapidly with distance from the current position.
+
+## Multi-Token Prediction (MTP): Native Multi-Token Generation
+
+Multi-Token Prediction, popularized by Mistral AI in their Mistral Small and Nemo models, takes a different approach. Rather than adding heads or using a draft model, MTP modifies the model architecture itself to natively predict multiple future tokens. During training, the model is given access to future tokens and learns to predict them directly. At inference time, the model generates multiple tokens per forward pass, with each token's prediction conditioned on the previously generated tokens within the same step.
+
+The key architectural difference from Medusa is that MTP predictions are sequential within a step: the prediction for t+2 conditions on the generated token at t+1, rather than both conditioning independently on the hidden state at t. This allows MTP to capture longer-range dependencies more effectively.
+
+MTP offers the advantage of being a native capability — no post-hoc modification is needed. Models trained with MTP can fall back to single-token generation seamlessly. The technique also integrates naturally with the model's attention mechanism, as future tokens are treated as additional positions in the context window during training.
+
+The tradeoffs include increased training complexity and memory requirements. MTP training requires masking strategies to prevent information leakage, and the model must be trained from scratch or fine-tuned extensively. At inference time, the sequential nature of within-step predictions means the speedup is limited by the slowest prediction in the chain. Additionally, MTP increases the model's parameter count slightly, as additional output projections are needed for each future position.
+
+## EAGLE: Speculative Decoding with Enhanced Draft Quality
+
+EAGLE (Li et al., 2024) represents a significant refinement of the draft-model approach. The core observation is that draft model quality is the primary bottleneck in speculative decoding — better drafts mean fewer rejections and higher speedups. EAGLE addresses this by introducing a more sophisticated draft model architecture that uses the target model's hidden states as input, rather than generating drafts from scratch.
+
+EAGLE's draft model takes the hidden states from the target model's forward pass and processes them through a lightweight transformer to produce draft tokens. This gives the draft model access to rich contextual information that a standalone draft model would lack. The draft model is trained to predict tokens that the target model would generate, using the target's hidden states as features.
+
+The results are impressive: EAGLE achieves speedups of 2× to 3× on various models, significantly outperforming earlier draft-model approaches. The technique is also more generalizable across models, as the draft model learns to work with hidden states rather than being tied to a specific model's output distribution.
+
+The tradeoffs are nuanced. EAGLE requires access to the target model's hidden states, which means the target model must still perform a forward pass before drafting can begin. This creates a pipeline dependency that can limit parallelism. The draft model, while smaller than the target, still adds memory overhead. Furthermore, EAGLE's performance depends on the quality of the hidden state representations — models with less expressive hidden states may see diminished benefits.
+
+## Rejection Sampling: The Mathematical Backbone
+
+Throughout all these approaches, rejection sampling serves as the unifying mechanism that guarantees exact sampling from the target distribution. The standard rejection sampling procedure compares the target probability p(x) with the draft probability q(x) for each candidate token x. A token is accepted with probability min(1, p(x)/q(x)), ensuring that the accepted tokens follow the target distribution exactly.
+
+Recent refinements to rejection sampling have focused on reducing the variance of acceptance decisions and handling edge cases. One important refinement is the use of adaptive draft lengths: instead of generating a fixed number of draft tokens, the system can dynamically adjust the draft length based on historical acceptance rates. Another refinement involves importance weighting, where the draft model's confidence is used to prioritize verification of more uncertain tokens.
+
+The tradeoffs in rejection sampling are primarily computational. Each rejection decision requires computing the ratio of probabilities, which adds overhead. In practice, this overhead is negligible compared to the forward pass, but it becomes significant when draft lengths are very long and rejection rates are high. Additionally, rejection sampling requires both the target and draft models to produce probability distributions over the full vocabulary, which can be memory-intensive for large vocabularies.
+
+## Comparative Analysis and Tradeoffs
+
+| Approach | Speedup | Memory Overhead | Training Required | Generalizability |
+|----------|---------|-----------------|-------------------|------------------|
+| Draft Model | 1.5–2× | High (2 models) | Distillation | Moderate |
+| Medusa | 2–2.5× | Low (heads only) | Fine-tuning | Low (per-model) |
+| MTP | 1.5–2× | Moderate | From scratch/FT | High (native) |
+| EAGLE | 2–3× | Moderate | Distillation | High |
+
+The fundamental tradeoff across all approaches is between speedup and complexity. Draft-model approaches add the most complexity but offer the most flexibility. Medusa minimizes complexity but sacrifices prediction depth. MTP offers the cleanest integration but requires the most training investment. EAGLE strikes a balance, leveraging hidden states for better drafts while maintaining reasonable overhead.
+
+Another critical tradeoff is between exactness and speed. All speculative decoding approaches preserve exact sampling, but the verification step still requires a full forward pass through the target model. This means the theoretical maximum speedup is bounded by the ratio of draft generation cost to verification cost. In practice, this limits speedups to roughly 2–3× for current architectures.
+
+## Closing Summary
+
+The evolution of speculative decoding reflects a broader trend in LLM inference optimization: moving from post-hoc modifications to native architectural changes. Draft-model speculative decoding established the theoretical foundation, proving that exact sampling could be accelerated without approximation. Medusa demonstrated that lightweight modifications could achieve significant speedups without additional model loading. MTP showed that native multi-token prediction could be integrated into model training, offering seamless fallback capabilities. EAGLE refined the draft-model approach by leveraging hidden states for better draft quality.
+
+The common thread across all approaches is the rejection sampling mechanism, which guarantees exact sampling while enabling parallel token generation. The tradeoffs — memory overhead, training complexity, prediction depth, and generalizability — reflect different design priorities and use cases. For production systems, the choice depends on constraints: Medusa for minimal overhead, MTP for native integration, EAGLE for maximum speedup, and draft-model approaches for flexibility.
+
+As LLM inference continues to scale, speculative decoding will likely evolve further. Hybrid approaches combining multiple techniques, adaptive draft lengths, and learned rejection policies represent promising directions. The fundamental challenge remains: how to break the sequential barrier of autoregressive generation while preserving the exact output distribution that makes LLMs reliable. Speculative decoding has shown that this is possible, and its continued evolution will be critical for making LLM inference faster, cheaper, and more accessible.

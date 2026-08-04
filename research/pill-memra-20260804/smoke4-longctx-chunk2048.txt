@@ -1,0 +1,11 @@
+Long-ctx probe, MEMRA_PRIME_CHUNK=2048, fresh server
+TTFT 33.86s total 34.62s chunks 3
+usage {'prompt_tokens': 36524, 'completion_tokens': 65, 'total_tokens': 36589, 'prompt_tokens_details': {'cached_tokens': 0}, 'elapsed_s': 34.553007021}
+error None
+GPU at end: 22694 MiB, 1291 MiB
+
+<think>
+
+</think>
+
+The admission gate enforces per-lane concurrency limits and QoS policies by queuing interactive requests while immediately shedding judge or harvest requests if their latency budgets are exceeded. It also implements VRAM-aware admission, holding requests in the queue until sufficient free memory is available to safely allocate a new session cache.

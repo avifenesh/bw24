@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Qwen3.6-27B agent server on memra (bw24-unified, restructure/public-split train).
+# The llama twin is serve-qwen36-27b (port 8001); this owns port 8002 and SUPERSEDES
+# serve-qwen36-27b-bw24 (old bw24-server binary + BW24_* env, pre-regime K=3/HPOST era).
+#
+# Client: pi --provider local-memra --model qwen36-27b   (pill --provider local-memra --model qwen36-27b)
+# pi speaks openai-completions and renders the chat template CLIENT-side
+# (thinkingFormat qwen-chat-template) -> raw-prompt /v1/completions is the contract.
+# MEMRA_API_KEY being set auto-flips MEMRA_COMPAT=openai (main.rs openai_compat()).
+#
+# Why each flag (so future-me doesn't "optimize" it back into an OOM/regression):
+#   MEMRA_MODELS "+draft"       attaches the 27B's REGIME draft (one draft file, zero knobs —
+#                               docs/DRAFT-REGIME.md). draft-daily-owntrim-nvfp4head-q4blk.gguf
+#                               is the 2026-07-18 board move: own-gen ranks (218 prompts) ->
+#                               make-trimmed-draft.sh -> NVFP4 head + Q4_K_M block. It REPLACES
+#                               the GGUF's embedded MTP head at load (worker.rs load_draft) and
+#                               replaced 3 files + 2 env knobs (external draft/trim/PMIN).
+#                               Measured p1 +3.4% / p2 +2.5% / p3 +0.9% over board config.
+#                               Spec decode is DEFAULT-ON (MEMRA_SERVE_SPEC, flags doctrine:
+#                               winners are defaults) — 1.82x plain at c=1, the daily product.
+#   MEMRA_CTX (128k/160k)       session-cache FLOOR = the serving context (worker.rs ctx_floor;
+#                               llama --ctx-size analog). Must be the full window or the
+#                               continuation pool is structurally unhittable (parked cap <
+#                               next turn's need = 0% resumes — the pinned 2026-07-31 cascade).
+#                               KV math @131072 on the 24GB card (defaults q8_0 K / q5_1 V,
+#                               same formats as the llama daily; fp8-K FLIP-BLOCKED, q4_0-V
+#                               quality-taxed — docs/FLAGS.md):
+#                                 17/65 KV-bearing layers x (K 4h*256d q8_0 1088B + V q5_1
+#                                 768B)/tok = 31,552 B/tok -> 4.1 GB; + weights ~16 GB (NVFP4
+#                                 + trimmed draft) + draft scratch/GDN states ~0.5 GB ≈ 21 GB
+#                                 of 24 GB. 160k (`full`) = 5.1 GB KV, still fits; 256k native
+#                                 does NOT (as on the llama twin).
+#   MEMRA_MAX_SESSIONS=1        TWO 128k sessions (2 x 4.1 GB) + weights don't fit 24 GB.
+#                               Interactive admits QUEUE FIFO beyond the cap (never shed,
+#                               worker.rs admission) -> a second concurrent request waits
+#                               instead of dying on cache alloc. Spec serving is a
+#                               single-stream latency tier anyway (research/spec-serving-20260801).
+#   MEMRA_REUSE_POOL=1          each parked spec session holds its full caches (~4.4 GB @128k).
+#                               1 keeps the agent's own continuation (42.6x turn-start via
+#                               text-prefix resume); 2 (default) is dead weight this VRAM
+#                               budget can't carry. Alloc-failure evict-retry (worker.rs)
+#                               reclaims it for a genuinely new session.
+#   MEMRA_API_KEY=aviary-local  bearer auth + the openai-compat switch (see above).
+#   MEMRA_PRIME_CHUNK=2048      prefill chunk size (default 4096). MEASURED 2026-08-04 on this
+#                               rig: a 36.5k-token prompt into a 128k session OOMs at 4096
+#                               (captured CUDA_ERROR_OUT_OF_MEMORY, fresh server, receipts
+#                               research/pill-memra-20260804/) — per-chunk prime transients
+#                               (PrimeSlabs gate/up/act = T*n_ff*4B each ≈ 285MB apiece at 4096
+#                               + dequant-once FA workspace over the 36k past) don't fit beside
+#                               weights 16G + the 4.2GB session. 2048 halves the transients:
+#                               same probe passes with 1.3GB free, TTFT 33.9s @36.5k
+#                               (~1078 tok/s prefill), zero decode cost (prefill-only knob).
+#
+# CONTEXT MODES (mirrors the llama twin):
+#   default (no arg) = 128k — the proven day-to-day agentic window.
+#   `full` arg       = 160k — fits (5.1 GB KV), cushion intact. 256k native does not.
+#   Override with CTX=<n> env.
+set -euo pipefail
+
+MODE="${1:-half}"
+case "$MODE" in
+  full) CTX="${CTX:-163840}" ;;
+  half) CTX="${CTX:-131072}" ;;
+  *)    echo "usage: $(basename "$0") [half|full]  (half=128k default, full=160k)"; exit 1 ;;
+esac
+
+DIR=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp
+MODEL="$DIR/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf"
+DRAFT="$DIR/draft-daily-owntrim-nvfp4head-q4blk.gguf"
+BIN="${MEMRA_BIN:-$HOME/projects/bw24-unified/target/release/memra-server}"
+LOG="${LOG:-/tmp/memra-27b.log}"
+PORT="${PORT:-8002}"
+
+# Full GPU dynamic boost for the serving session; reverted by the watcher on server exit.
+gpu-full-power on || echo "warn: gpu-full-power not available, serving at default power"
+
+MEMRA_MODELS="qwen36-27b=$MODEL+$DRAFT" \
+MEMRA_ADDR="127.0.0.1:$PORT" \
+MEMRA_API_KEY=aviary-local \
+MEMRA_CTX="$CTX" \
+MEMRA_MAX_SESSIONS=1 \
+MEMRA_REUSE_POOL=1 \
+MEMRA_PRIME_CHUNK=2048 \
+"$BIN" > "$LOG" 2>&1 &
+
+SERVER_PID=$!
+
+# Detached watcher: revert GPU power when the server dies, however it dies.
+setsid bash -c "
+  while kill -0 $SERVER_PID 2>/dev/null; do sleep 5; done
+  gpu-full-power off
+" >/dev/null 2>&1 &
+disown 2>/dev/null || true
+
+echo "PID $SERVER_PID — qwen36-27b on memra (${MODE} ctx=$CTX, regime draft + spec ON, K=q8_0/V=q5_1, GPU full-power). log: $LOG"
+echo "GPU reverts to daily power automatically when this server stops."
+echo "wait ~60s, then: curl -s -H 'Authorization: Bearer aviary-local' http://127.0.0.1:$PORT/health"
