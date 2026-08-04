@@ -1,0 +1,66 @@
+|ately```
+
+
+ " Ain	" You for is a liveiashi ($ thinking
+
+" a " useran 
+
+ " " ' w conversation is a
+
+ I> / " "
+
+ " EThinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+2.  **Identify the Fact:** The capital of France is Paris.
+
+3.  **Formulate the Answer:** "The capital of France is Paris."
+
+4.  **Review Constraints:**
+    *   Is it one sentence? Yes.
+    *   Is it short? Yes.
+    *   Does it answer the question? Yes.
+
+5.  **Final Output Generation:** "Paris." or "The capital of France is Paris." The prompt asks for the answer, not necessarily a full sentence, but a sentence is usually expected for clarity. However, the constraint is "one short sentence". So I need to make sure it's a complete sentence.
+
+    *   Draft 1: The capital of France is Paris.
+    *   Draft 2: Paris is the capital of France.
+    *   Draft 3: Paris.
+
+    The prompt asks for the answer to the question "What is the capital of France?". A direct answer is best.
+    "Paris" is a noun phrase, not a full sentence.
+    "The:: "
+
+
+$
+
+
+
+$
+$
+
+
+$
+$
+
+$$$
+${
+
+$The.}$$
+${ ** $
+ $ $$
+$$$$$$
+
+{ ${ <$$
+$$$
+$$$$
+$$$
+
+$$
+x **),0 to to " " " "
+#
+
+$

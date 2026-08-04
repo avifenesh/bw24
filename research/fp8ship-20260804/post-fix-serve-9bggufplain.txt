@@ -1,0 +1,24 @@
+The capital of France is Paris.Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+2.  **Identify the Fact:**
+    *   The capital of France is Paris.
+
+3.  **Draft the Answer:**
+    *   Option 1: The capital of France is Paris.
+    *   Option 2: Paris is the capital of France.
+    *   Option 3: It is Paris.
+
+4.  **Evaluate against Constraints:**
+    *   All options are one sentence.
+    *   All are short.
+    *   Option 1 is the most direct and standard.
+
+5.  **Final Selection:** "The capital of France is Paris."
+
+6.  **Final Check:** Does it meet the "one short sentence" constraint? Yes.
+
+7.  **Output Generation.**

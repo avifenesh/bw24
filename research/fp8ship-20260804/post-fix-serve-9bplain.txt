@@ -1,0 +1,33 @@
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+2.  **Identify the Fact:** The capital of France is Paris.
+
+3.  **Draft the Response:**
+    *   Option 1: The capital of France is Paris.
+    *   Option 2: Paris is the capital of France.
+    *   Option 3: Paris.
+
+4.  **Select the Best Option:** The user asked for a short sentence. "Paris" is a noun phrase, but "Paris" is a noun. A sentence usually requires a verb. However, for simple factual questions, a noun phrase is often acceptable. However, the instruction says "Answer in one short sentence." So I need to make sure it's a sentence.
+    *   "The capital of France is Paris." (This is a sentence.)
+    *   "Paris is the capital of France." (Also a sentence.)
+    *   "Paris." (This is a fragment, though often accepted as an answer.)
+
+    Let's stick to the most direct answer that fits the constraint "one short sentence".
+    "The capital of France is Paris." is a complete sentence.
+    "Paris is the capital." is also a sentence.
+    "Paris." is a fragment.
+
+    Wait, the user asked "What is the capital of France?"
+    Answer: "Paris."
+    Is that a sentence? Technically, "Paris" is a noun phrase, not a full sentence.
+    "The capital of France is Paris." is a full sentence.
+    "Paris is the capital." is a sentence.
+
+    Let's go with the most direct answer.
+    "Paris."
+
+    Wait, I need to check the constraint again. "Answer in one short

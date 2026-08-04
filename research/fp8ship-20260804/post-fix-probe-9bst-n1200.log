@@ -1,0 +1,39 @@
+prompt 23 tok, n_new 1200, burst 32, k 3
+  burst 1: 32 tok, acc 22/27
+  burst 2: 35 tok, acc 24/33
+  burst 3: 35 tok, acc 26/27
+  burst 4: 32 tok, acc 21/33
+  burst 5: 34 tok, acc 21/39
+  burst 6: 33 tok, acc 19/42
+  burst 7: 34 tok, acc 23/33
+  burst 8: 32 tok, acc 20/36
+  burst 9: 33 tok, acc 22/33
+  burst 10: 33 tok, acc 23/30
+  burst 11: 34 tok, acc 25/27
+  burst 12: 32 tok, acc 23/27
+  burst 13: 35 tok, acc 25/30
+  burst 14: 35 tok, acc 25/30
+  burst 15: 33 tok, acc 24/27
+  burst 16: 35 tok, acc 26/27
+  burst 17: 34 tok, acc 25/27
+  burst 18: 35 tok, acc 26/27
+  burst 19: 34 tok, acc 22/36
+  burst 20: 34 tok, acc 23/33
+  burst 21: 35 tok, acc 26/27
+  burst 22: 32 tok, acc 24/24
+  burst 23: 33 tok, acc 21/36
+  burst 24: 34 tok, acc 24/30
+  burst 25: 33 tok, acc 22/33
+  burst 26: 32 tok, acc 22/30
+  burst 27: 32 tok, acc 22/30
+  burst 28: 32 tok, acc 24/24
+  burst 29: 32 tok, acc 24/24
+  burst 30: 32 tok, acc 24/24
+  burst 31: 32 tok, acc 24/24
+  burst 32: 32 tok, acc 24/24
+  burst 33: 32 tok, acc 24/24
+  burst 34: 32 tok, acc 24/24
+  burst 35: 32 tok, acc 24/24
+  burst 36: 32 tok, acc 24/24
+  burst 37: 8 tok, acc 6/6  <-- FIRST DIVERGENCE at burst-local tok 7 (global 1200)
+MATCH (1201 tok)
