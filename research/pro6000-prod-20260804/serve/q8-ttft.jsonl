@@ -1,0 +1,5 @@
+{"rep": "1", "ttft_s": 0.1589, "total_s": 1.4723, "stream_tokens": 64, "decode_tokps": 47.97}
+{"rep": "2", "ttft_s": 0.0032, "total_s": 1.3168, "stream_tokens": 64, "decode_tokps": 47.96}
+{"rep": "3", "ttft_s": 0.003, "total_s": 1.3163, "stream_tokens": 64, "decode_tokps": 47.97}
+{"rep": "4", "ttft_s": 0.0028, "total_s": 1.3163, "stream_tokens": 64, "decode_tokps": 47.96}
+{"rep": "5", "ttft_s": 0.0031, "total_s": 1.3168, "stream_tokens": 64, "decode_tokps": 47.95}

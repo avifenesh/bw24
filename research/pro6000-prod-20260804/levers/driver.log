@@ -1,0 +1,50 @@
+[19:41:33Z] C1 ctx=2048: starting server
+[19:41:40Z] C1 ctx=2048 up | 35, 2610 MHz, 82.13 W, 14740 MiB
+[19:41:59Z] C1 ctx=2048 p1: parse-fail | vram: 19444 MiB
+[19:42:19Z] C1 ctx=2048 p2: parse-fail | vram: 19444 MiB
+[19:42:39Z] C1 ctx=2048 p3: parse-fail | vram: 19444 MiB
+[19:42:41Z] C1 ctx=8192: starting server
+[19:42:47Z] C1 ctx=8192 up | 46, 2610 MHz, 88.81 W, 14740 MiB
+[19:43:07Z] C1 ctx=8192 p1: parse-fail | vram: 21172 MiB
+[19:43:26Z] C1 ctx=8192 p2: parse-fail | vram: 21172 MiB
+[19:43:46Z] C1 ctx=8192 p3: parse-fail | vram: 21172 MiB
+[19:43:48Z] C1 ctx=32768: starting server
+[19:43:54Z] C1 ctx=32768 up | 50, 2610 MHz, 90.14 W, 14740 MiB
+[19:44:14Z] C1 ctx=32768 p1: parse-fail | vram: 28148 MiB
+[19:44:34Z] C1 ctx=32768 p2: parse-fail | vram: 28148 MiB
+[19:44:53Z] C1 ctx=32768 p3: parse-fail | vram: 28148 MiB
+[19:44:55Z] C1 done
+[19:44:55Z] C2 pair 1 arm A (ST default) pre: 57, 2857 MHz, 119.48 W, 2 MiB
+[19:47:52Z] C2 pair 1 arm A post: 40, 2865 MHz, 373.69 W, 2 MiB | generated 128 tokens in 1.711s = 74.80 tok/s | maxdiff=0.000e0  MATCH
+[19:47:53Z] C2 pair 1 arm B (MEMRA_ST_E4M3=1) pre: 40, 2865 MHz, 373.69 W, 2 MiB
+[19:51:49Z] C2 pair 1 arm B post: 38, 2865 MHz, 339.29 W, 2 MiB | generated 128 tokens in 1.688s = 75.84 tok/s | maxdiff=0.000e0  MATCH
+[19:51:50Z] C2 pair 2 arm A (ST default) pre: 38, 2865 MHz, 339.29 W, 2 MiB
+[19:54:46Z] C2 pair 2 arm A post: 38, 2857 MHz, 349.49 W, 2 MiB | generated 128 tokens in 1.710s = 74.83 tok/s | maxdiff=0.000e0  MATCH
+[19:54:46Z] C2 pair 2 arm B (MEMRA_ST_E4M3=1) pre: 38, 2857 MHz, 349.49 W, 2 MiB
+[19:58:44Z] C2 pair 2 arm B post: 38, 2857 MHz, 361.44 W, 2 MiB | generated 128 tokens in 1.688s = 75.85 tok/s | maxdiff=0.000e0  MATCH
+[19:58:44Z] C2 pair 3 arm A (ST default) pre: 38, 2857 MHz, 361.44 W, 2 MiB
+[20:01:41Z] C2 pair 3 arm A post: 45, 2850 MHz, 471.31 W, 2 MiB | generated 128 tokens in 1.711s = 74.80 tok/s | maxdiff=0.000e0  MATCH
+[20:01:41Z] C2 pair 3 arm B (MEMRA_ST_E4M3=1) pre: 45, 2850 MHz, 471.31 W, 2 MiB
+[20:05:37Z] C2 pair 3 arm B post: 43, 2865 MHz, 456.38 W, 2 MiB | generated 128 tokens in 1.687s = 75.86 tok/s | maxdiff=0.000e0  MATCH
+[20:05:37Z] C2 done
+[20:05:37Z] C3: starting spec server (K=3, draft attached)
+[20:05:48Z] C3 spec c1 p1: parse-fail
+[20:05:58Z] C3 spec c2 p1: parse-fail
+[20:06:16Z] C3 spec c4 p1: parse-fail
+[20:06:21Z] C3 spec c1 p2: parse-fail
+[20:06:30Z] C3 spec c2 p2: parse-fail
+[20:06:48Z] C3 spec c4 p2: parse-fail
+[20:06:53Z] C3 spec c1 p3: parse-fail
+[20:07:02Z] C3 spec c2 p3: parse-fail
+[20:07:20Z] C3 spec c4 p3: parse-fail
+[20:07:23Z] C3: starting plain server
+[20:07:39Z] C3 plain c1 p1: parse-fail
+[20:07:50Z] C3 plain c2 p1: parse-fail
+[20:08:01Z] C3 plain c4 p1: parse-fail
+[20:08:12Z] C3 plain c1 p2: parse-fail
+[20:08:23Z] C3 plain c2 p2: parse-fail
+[20:08:34Z] C3 plain c4 p2: parse-fail
+[20:08:44Z] C3 plain c1 p3: parse-fail
+[20:08:55Z] C3 plain c2 p3: parse-fail
+[20:09:06Z] C3 plain c4 p3: parse-fail
+[20:09:09Z] BATTERY-C DONE

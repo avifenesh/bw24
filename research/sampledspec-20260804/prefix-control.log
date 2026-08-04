@@ -1,0 +1,12 @@
+=== PRE-FIX CONTROL (OLD binary on 8002) — agentic shape, temp+seed OMITTED ===
+old-loop1 ecb102d458e0bc04 300
+old-loop2 ecb102d458e0bc04 300
+old-loop3 ecb102d458e0bc04 300
+=== PRE-FIX: temp 1.0, seed OMITTED (isolates the seed pin) ===
+old-t1-omitseed1 98ce5c171213e4fe 61
+old-t1-omitseed2 98ce5c171213e4fe 61
+old-t1-omitseed3 98ce5c171213e4fe 61
+=== PRE-FIX: temp 1.0, seeds 1..3 explicit (sampler itself works) ===
+old-t1-seed1 bac60db73f70ab0a 61
+old-t1-seed2 df9687784f89f44b 63
+old-t1-seed3 0b50c59940e5da4f 61

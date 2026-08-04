@@ -147,6 +147,21 @@ gated by the official `openai` Python SDK against a live server
 - **`max_tokens` omitted** ⇒ context-bounded budget (session ctx − prompt, capped at the
   model's trained context) — the OpenAI default-when-omitted semantics, not a silent
   128-token truncation. Explicit `max_tokens`/`max_completion_tokens` honored exactly.
+- **`temperature` omitted ⇒ 1.0; `seed` omitted ⇒ fresh per request** (dogfood F4,
+  2026-08-04). Both were `#[serde(default)]`, which is `0.0` for `f32` and `0` for `u64` —
+  and both of those zeros are *meaningful values*, not "unset": temperature 0 is greedy
+  argmax and seed 0 is a valid fixed stream. An omitting client (the OpenAI SDK's
+  documented leave-it-out path, and this repo's own agentic driver) therefore got
+  deterministic decoding pinned twice over: same context in, same token out, identical
+  tool-call cycles forever. Now `temperature` omitted is OpenAI's documented 1.0 and an
+  omitted `seed` draws fresh entropy per request. **Explicit values are honored exactly,
+  including `temperature: 0` (greedy) and `seed: 0`** — every determinism gate in `tools/`
+  and `research/` sends both explicitly, so all of them keep their behavior. Supply a
+  `seed` whenever you want reproducibility; omit it to get variation.
+  Corollary worth knowing: an omitted-`temperature` request is *pure* temperature-1.0
+  sampling (`top_p` 1.0, `top_k`/`min_p` disabled, penalties off), which is exactly the
+  regime that keeps the in-graph sampled draft chain — so the OpenAI default lands on the
+  fast sampled-spec path, not a slow fallback.
 - **Disconnect abort:** a hung-up client's session retires at the next tick (all serve
   paths: batched, graph, spec, legacy) and is billed to the abort point (the `[abort]`
   log line records prompt/cached/generated); queued requests from dead clients never

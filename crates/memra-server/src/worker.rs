@@ -551,10 +551,15 @@ struct Session {
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
     /// double-alloc cost 2GB/128k-session and OOM'd the 27B serve — fixed 2026-07-05).
     cache: Option<Cache>,
-    /// SPEC-DECODE serving (2026-07-05): greedy sessions on MTP models decode in
+    /// SPEC-DECODE serving (2026-07-05): sessions on MTP models decode in
     /// generate_spec_session BURSTS (K-token draft chains + batched verify) instead of one
     /// decode_step per tick — the CLI-measured spec win (27B p3: 79 vs 40 tok/s) brought to the
-    /// serve path. `Some` only when: sampler greedy + model has an MTP head + MEMRA_SERVE_SPEC!=0.
+    /// serve path. `Some` when: model has an MTP head + MEMRA_SERVE_SPEC!=0 + the sampler is
+    /// EITHER greedy (argmax verify) OR sampled (temperature>0 -> the rejection-sampling
+    /// verify, filters and penalties applied symmetrically to draft q and target p; landed
+    /// 2026-07-09/10, feat/sampled-graph-draft + feat/filtered-spec). Greedy-with-penalties
+    /// is the one excluded class (`greedy_penalized`) — the argmax verify would ignore them.
+    /// See `spec_eligible` in step_admit for the authoritative predicate.
     /// The SpecSession owns its OWN cache/scratch; `cache` above stays as the (unused) admit
     /// allocation on this path (kept to avoid restructuring admit; ~small VRAM overhead until
     /// a follow-up drops it). committed == every token whose state the spec caches hold.
@@ -1006,6 +1011,13 @@ pub fn run(
                 // captured step bans the packed grammar mask on device before its argmax
                 // (stable mask pointer, contents re-uploaded per step). Host-oracle and
                 // fallback-sampler constrained sessions stay eager.
+                // SAMPLED sessions do NOT graph-promote (`is_greedy()` below) — a separate,
+                // untaken lever. It costs nothing today: this promotion only fires for
+                // `s.spec.is_none()` solo sessions, and on an MTP model every sampled
+                // session already rides the (faster) sampled spec burst path instead. It
+                // would only matter for sampled sessions on a NON-MTP model; capturing the
+                // seeded gumbel draw needs the in-graph RNG-counter bump the spec draft
+                // chain already has (spec.rs sctr_inc), so it is wiring, not new math.
                 let constr_graph_ok = s.constraint.is_none()
                     || (!constrain_host() && devsample_meta(s).is_some());
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
@@ -2292,11 +2304,16 @@ fn step_session(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let lm = &loaded[&s.model];
 
-    // ---- SPEC-BURST arm (2026-07-05): greedy MTP sessions decode in generate_spec_session
+    // ---- SPEC-BURST arm (2026-07-05): MTP sessions decode in generate_spec_session
     // bursts — turn 1 primes the prompt (suffix = the whole prefill queue), later ticks are
     // ZERO-prime continuation bursts (SpecSession.next_pred). Each burst emits up to
     // SPEC_BURST_T tokens; between bursts the scheduler round-robins other sessions. Exactness:
-    // the session-gate oracle (4 turns incl empty-suffix) pins burst output == fresh greedy.
+    // GREEDY bursts — the session-gate oracle (4 turns incl empty-suffix) pins burst output ==
+    // fresh greedy, byte-identical. SAMPLED bursts (temperature>0, `sampling` below) are
+    // DISTRIBUTIONALLY exact instead: the rejection-sampling verify draws from the same
+    // filtered/penalized target as plain sampled decode, but consumes its own Philox streams
+    // (sess.sctr/uctr), so the token stream is reproducible per (seed, session) rather than
+    // byte-equal to a plain-sampled run. That is the contract, not a gap.
     if let Some(spec) = s.spec.as_mut() {
         // Burst size trades round-robin latency (other sessions wait a whole burst) against
         // per-burst fixed cost. The dominant cost — the per-call draft-graph recapture,
