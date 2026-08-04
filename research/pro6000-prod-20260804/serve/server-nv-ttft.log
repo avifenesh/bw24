@@ -1,0 +1,25 @@
+[server] starting; models config = [("q27", "/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[worker]   loaded "q27": 65 layers, eos=248046
+[worker] q27: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q27: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8199
+[worker] observed session VRAM cost for "q27": 570MB (admission gate = 2x)
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 175.6MB / 268MB, model q27, ns "cold-nv-1-1785872465333134380")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model q27, ns "cold-nv-2-1785872466556230492")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model q27, ns "cold-nv-1-1785872465333134380")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model q27, ns "cold-nv-3-1785872467618683863")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model q27, ns "cold-nv-2-1785872466556230492")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model q27, ns "cold-nv-4-1785872468682879031")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model q27, ns "cold-nv-3-1785872467618683863")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model q27, ns "cold-nv-5-1785872469754669347")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model q27, ns "cold-nv-4-1785872468682879031")
+[prefix-cache] insert (seed): 521 tokens, 175.6MB (resident 351.3MB / 268MB, model q27, ns "warmshared")
+[prefix-cache] evict (LRU): 521 tokens, 175.6MB (model q27, ns "cold-nv-5-1785872469754669347")
+[prefix-cache] hit: 521 of 521 prompt tokens from cache (model q27)
+[prefix-cache] hit: 521 of 521 prompt tokens from cache (model q27)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

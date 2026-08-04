@@ -1,0 +1,33 @@
+[20:11:08Z] E pass1 mirror-off: starting server
+[20:11:14Z] E pass1 mirror-off up | 29, 2610 MHz, 79.54 W, 26580 MiB
+[20:12:09Z] E c1 off done: agg=48.8
+[20:12:36Z] E c8 off p1: agg=308.9 p50=3.31 err=0 | vram 33396 MiB
+[20:13:29Z] E c16 off p1: agg=309.7 p50=6.61 err=0 | vram 37620 MiB
+[20:15:15Z] E c32 off p1: agg=310.1 p50=13.20 err=0 | vram 46036 MiB
+[20:15:19Z] E pass1 mirror-on: starting server
+[20:15:23Z] E pass1 mirror-on up | 53, 2865 MHz, 156.46 W, 52532 MiB
+[20:16:17Z] E c1 on done: agg=48.6
+[20:16:43Z] E c8 on p1: agg=329.8 p50=3.10 err=0 | vram 59380 MiB
+[20:17:17Z] E c16 on p1: agg=486.2 p50=4.21 err=0 | vram 63668 MiB
+[20:18:24Z] E c32 on p1: agg=489.7 p50=8.35 err=0 | vram 72052 MiB
+[20:18:27Z] E pass2 mirror-off: starting server
+[20:18:31Z] E pass2 mirror-off up | 51, 2610 MHz, 91.00 W, 26580 MiB
+[20:18:59Z] E c8 off p2: agg=308.8 p50=3.31 err=0 | vram 33396 MiB
+[20:19:52Z] E c16 off p2: agg=309.7 p50=6.61 err=0 | vram 37620 MiB
+[20:21:38Z] E c32 off p2: agg=310.5 p50=13.18 err=0 | vram 46036 MiB
+[20:21:41Z] E pass2 mirror-on: starting server
+[20:21:45Z] E pass2 mirror-on up | 54, 2857 MHz, 126.96 W, 52532 MiB
+[20:22:11Z] E c8 on p2: agg=329.8 p50=3.10 err=0 | vram 59380 MiB
+[20:22:45Z] E c16 on p2: agg=486.3 p50=4.21 err=0 | vram 63668 MiB
+[20:23:52Z] E c32 on p2: agg=488.5 p50=8.39 err=0 | vram 72052 MiB
+[20:23:55Z] E pass3 mirror-off: starting server
+[20:24:00Z] E pass3 mirror-off up | 54, 2610 MHz, 93.32 W, 26580 MiB
+[20:24:27Z] E c8 off p3: agg=308.6 p50=3.32 err=0 | vram 33396 MiB
+[20:25:20Z] E c16 off p3: agg=309.6 p50=6.61 err=0 | vram 37620 MiB
+[20:27:06Z] E c32 off p3: agg=310.2 p50=13.18 err=0 | vram 46036 MiB
+[20:27:09Z] E pass3 mirror-on: starting server
+[20:27:15Z] E pass3 mirror-on up | 50, 2865 MHz, 108.14 W, 52532 MiB
+[20:27:41Z] E c8 on p3: agg=329.4 p50=3.11 err=0 | vram 59380 MiB
+[20:28:15Z] E c16 on p3: agg=486.0 p50=4.21 err=0 | vram 63668 MiB
+[20:29:23Z] E c32 on p3: agg=488.3 p50=8.40 err=0 | vram 72052 MiB
+[20:29:26Z] BATTERY-E DONE

@@ -1,0 +1,173 @@
+[18:38:50Z] plain-d512 nv r1 pre: 29, 180 MHz, 9.45 W
+[18:39:05Z] plain-d512 nv r1 post: 36, 2880 MHz, 296.47 W | generated 128 tokens in 1.475s = 86.77 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[18:39:05Z] plain-d512 q8 r1 pre: 36, 2880 MHz, 296.47 W
+[18:39:22Z] plain-d512 q8 r1 post: 40, 2880 MHz, 121.70 W | generated 128 tokens in 2.433s = 52.61 tok/s | argmax=198  decode argmax=198  logit maxdiff=5.902e-1  MATCH
+[18:39:22Z] plain-d512 nv r2 pre: 40, 2880 MHz, 121.70 W
+[18:39:37Z] plain-d512 nv r2 post: 42, 2872 MHz, 310.65 W | generated 128 tokens in 1.475s = 86.78 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[18:39:37Z] plain-d512 q8 r2 pre: 42, 2872 MHz, 310.65 W
+[18:39:55Z] plain-d512 q8 r2 post: 44, 2865 MHz, 146.64 W | generated 128 tokens in 2.433s = 52.61 tok/s | argmax=198  decode argmax=198  logit maxdiff=5.902e-1  MATCH
+[18:39:55Z] plain-d512 nv r3 pre: 44, 2865 MHz, 146.64 W
+[18:40:09Z] plain-d512 nv r3 post: 44, 2865 MHz, 207.74 W | generated 128 tokens in 1.475s = 86.77 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[18:40:09Z] plain-d512 q8 r3 pre: 44, 2865 MHz, 207.74 W
+[18:40:26Z] plain-d512 q8 r3 post: 46, 2865 MHz, 238.79 W | generated 128 tokens in 2.433s = 52.62 tok/s | argmax=198  decode argmax=198  logit maxdiff=5.902e-1  MATCH
+[18:40:26Z] plain-d512 nv r4 pre: 46, 2865 MHz, 238.79 W
+[18:40:40Z] plain-d512 nv r4 post: 46, 2865 MHz, 293.29 W | generated 128 tokens in 1.476s = 86.72 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[18:40:40Z] plain-d512 q8 r4 pre: 46, 2865 MHz, 293.29 W
+[18:40:58Z] plain-d512 q8 r4 post: 47, 2865 MHz, 179.50 W | generated 128 tokens in 2.433s = 52.60 tok/s | argmax=198  decode argmax=198  logit maxdiff=5.902e-1  MATCH
+[18:40:58Z] plain-d512 nv r5 pre: 47, 2865 MHz, 179.50 W
+[18:41:12Z] plain-d512 nv r5 post: 47, 2865 MHz, 210.24 W | generated 128 tokens in 1.476s = 86.73 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[18:41:12Z] plain-d512 q8 r5 pre: 47, 2865 MHz, 210.24 W
+[18:41:30Z] plain-d512 q8 r5 post: 47, 2865 MHz, 165.31 W | generated 128 tokens in 2.433s = 52.60 tok/s | argmax=198  decode argmax=198  logit maxdiff=5.902e-1  MATCH
+[18:41:30Z] pp512 nv r1 pre: 47, 2865 MHz, 165.31 W
+[18:41:37Z] pp512 nv r1 post: 46, 2865 MHz, 333.36 W | pp-only MEDIAN: 512 tok in 0.1247s = 4105.3 tok/s
+[18:41:37Z] pp512 q8 r1 pre: 46, 2865 MHz, 333.36 W
+[18:41:43Z] pp512 q8 r1 post: 44, 2880 MHz, 108.57 W | pp-only MEDIAN: 512 tok in 0.1118s = 4577.7 tok/s
+[18:41:43Z] pp512 nv r2 pre: 44, 2880 MHz, 108.57 W
+[18:41:49Z] pp512 nv r2 post: 43, 2880 MHz, 334.59 W | pp-only MEDIAN: 512 tok in 0.1245s = 4112.2 tok/s
+[18:41:50Z] pp512 q8 r2 pre: 43, 2880 MHz, 334.59 W
+[18:41:55Z] pp512 q8 r2 post: 42, 2880 MHz, 233.85 W | pp-only MEDIAN: 512 tok in 0.1116s = 4586.0 tok/s
+[18:41:55Z] pp512 nv r3 pre: 42, 2880 MHz, 233.85 W
+[18:42:02Z] pp512 nv r3 post: 42, 2880 MHz, 353.59 W | pp-only MEDIAN: 512 tok in 0.1243s = 4118.5 tok/s
+[18:42:02Z] pp512 q8 r3 pre: 41, 2880 MHz, 225.15 W
+[18:42:07Z] pp512 q8 r3 post: 40, 2880 MHz, 176.92 W | pp-only MEDIAN: 512 tok in 0.1115s = 4591.5 tok/s
+[18:42:07Z] pp512 nv r4 pre: 40, 2880 MHz, 176.92 W
+[18:42:14Z] pp512 nv r4 post: 40, 2880 MHz, 332.50 W | pp-only MEDIAN: 512 tok in 0.1241s = 4124.6 tok/s
+[18:42:14Z] pp512 q8 r4 pre: 40, 2880 MHz, 332.50 W
+[18:42:20Z] pp512 q8 r4 post: 39, 2880 MHz, 213.45 W | pp-only MEDIAN: 512 tok in 0.1114s = 4598.1 tok/s
+[18:42:20Z] pp512 nv r5 pre: 39, 2880 MHz, 213.45 W
+[18:42:26Z] pp512 nv r5 post: 39, 2880 MHz, 354.55 W | pp-only MEDIAN: 512 tok in 0.1241s = 4126.3 tok/s
+[18:42:26Z] pp512 q8 r5 pre: 39, 2880 MHz, 354.55 W
+[18:42:32Z] pp512 q8 r5 post: 39, 2880 MHz, 272.84 W | pp-only MEDIAN: 512 tok in 0.1113s = 4600.2 tok/s
+[18:42:32Z] pplong nv r1 pre: 39, 2880 MHz, 272.84 W
+[18:42:44Z] pplong nv r1 post: 43, 2880 MHz, 375.81 W | pp-only MEDIAN: 6257 tok in 1.5869s = 3942.9 tok/s
+[18:42:44Z] pplong q8 r1 pre: 43, 2880 MHz, 375.81 W
+[18:42:55Z] pplong q8 r1 post: 44, 2865 MHz, 149.19 W | pp-only MEDIAN: 6257 tok in 1.4137s = 4426.1 tok/s
+[18:42:55Z] pplong nv r2 pre: 44, 2865 MHz, 149.19 W
+[18:43:07Z] pplong nv r2 post: 46, 2865 MHz, 314.12 W | pp-only MEDIAN: 6257 tok in 1.5927s = 3928.6 tok/s
+[18:43:08Z] pplong q8 r2 pre: 46, 2865 MHz, 314.12 W
+[18:43:18Z] pplong q8 r2 post: 46, 2865 MHz, 110.54 W | pp-only MEDIAN: 6257 tok in 1.4187s = 4410.5 tok/s
+[18:43:18Z] pplong nv r3 pre: 46, 2865 MHz, 110.54 W
+[18:43:31Z] pplong nv r3 post: 47, 2865 MHz, 304.42 W | pp-only MEDIAN: 6257 tok in 1.5950s = 3922.8 tok/s
+[18:43:31Z] pplong q8 r3 pre: 47, 2865 MHz, 304.42 W
+[18:43:42Z] pplong q8 r3 post: 47, 2865 MHz, 111.12 W | pp-only MEDIAN: 6257 tok in 1.4202s = 4405.8 tok/s
+[18:43:42Z] pplong nv r4 pre: 47, 2865 MHz, 111.12 W
+[18:43:53Z] pplong nv r4 post: 48, 2865 MHz, 343.94 W | pp-only MEDIAN: 6257 tok in 1.5978s = 3916.1 tok/s
+[18:43:53Z] pplong q8 r4 pre: 48, 2865 MHz, 343.94 W
+[18:44:04Z] pplong q8 r4 post: 48, 2865 MHz, 252.70 W | pp-only MEDIAN: 6257 tok in 1.4230s = 4397.1 tok/s
+[18:44:04Z] pplong nv r5 pre: 48, 2865 MHz, 111.69 W
+[18:44:17Z] pplong nv r5 post: 48, 2865 MHz, 291.85 W | pp-only MEDIAN: 6257 tok in 1.5986s = 3914.1 tok/s
+[18:44:17Z] pplong q8 r5 pre: 48, 2865 MHz, 291.85 W
+[18:44:28Z] pplong q8 r5 post: 48, 2865 MHz, 172.87 W | pp-only MEDIAN: 6257 tok in 1.4230s = 4397.0 tok/s
+[18:44:28Z] plain-dlong nv r1 pre: 48, 2865 MHz, 172.87 W
+[18:45:57Z] plain-dlong nv r1 post: 53, 2865 MHz, 189.02 W | generated 128 tokens in 1.515s = 84.47 tok/s
+[18:45:57Z] plain-dlong q8 r1 pre: 53, 2865 MHz, 189.02 W
+[18:48:12Z] plain-dlong q8 r1 post: 54, 2857 MHz, 114.47 W | generated 128 tokens in 2.474s = 51.74 tok/s
+[18:48:12Z] plain-dlong nv r2 pre: 54, 2857 MHz, 114.47 W
+[18:49:41Z] plain-dlong nv r2 post: 57, 2857 MHz, 212.15 W | generated 128 tokens in 1.517s = 84.40 tok/s
+[18:49:41Z] plain-dlong q8 r2 pre: 57, 2857 MHz, 212.15 W
+[18:51:56Z] plain-dlong q8 r2 post: 56, 2857 MHz, 115.32 W | generated 128 tokens in 2.475s = 51.72 tok/s
+[18:51:56Z] plain-dlong nv r3 pre: 56, 2857 MHz, 115.32 W
+[18:53:25Z] plain-dlong nv r3 post: 55, 2857 MHz, 358.79 W | generated 128 tokens in 1.516s = 84.42 tok/s
+[18:53:25Z] plain-dlong q8 r3 pre: 55, 2857 MHz, 358.79 W
+[18:55:40Z] plain-dlong q8 r3 post: 55, 2857 MHz, 115.67 W | generated 128 tokens in 2.475s = 51.73 tok/s
+[18:55:40Z] plain-dlong nv r4 pre: 55, 2857 MHz, 115.67 W
+[18:57:09Z] plain-dlong nv r4 post: 56, 2857 MHz, 305.13 W | generated 128 tokens in 1.516s = 84.43 tok/s
+[18:57:09Z] plain-dlong q8 r4 pre: 56, 2857 MHz, 305.13 W
+[18:59:24Z] plain-dlong q8 r4 post: 56, 2857 MHz, 238.39 W | generated 128 tokens in 2.476s = 51.71 tok/s
+[18:59:24Z] plain-dlong nv r5 pre: 56, 2857 MHz, 238.39 W
+[19:00:53Z] plain-dlong nv r5 post: 56, 2857 MHz, 238.64 W | generated 128 tokens in 1.516s = 84.43 tok/s
+[19:00:53Z] plain-dlong q8 r5 pre: 56, 2857 MHz, 238.64 W
+[19:03:08Z] plain-dlong q8 r5 post: 56, 2857 MHz, 119.25 W | generated 128 tokens in 2.474s = 51.73 tok/s
+[19:03:08Z] spec-k2 nv r1 pre: 56, 2857 MHz, 119.25 W
+[19:03:16Z] spec-k2 nv r1 post: 53, 2865 MHz, 240.56 W | [generate_spec K=2] 128 tok in 0.737s = 172.43 tok/s | acceptance: 77/104 = 74.0% | self-consistency: PASS
+[19:03:17Z] spec-k2 q8 r1 pre: 53, 2865 MHz, 240.56 W
+[19:03:25Z] spec-k2 q8 r1 post: 51, 2865 MHz, 113.21 W | [generate_spec K=2] 128 tok in 1.120s = 113.41 tok/s | acceptance: 77/102 = 75.5% | self-consistency: PASS
+[19:03:26Z] spec-k3 nv r1 pre: 51, 2865 MHz, 113.21 W
+[19:03:34Z] spec-k3 nv r1 post: 49, 2865 MHz, 257.99 W | [generate_spec K=3] 128 tok in 0.681s = 186.38 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[19:03:34Z] spec-k3 q8 r1 pre: 49, 2865 MHz, 257.99 W
+[19:03:43Z] spec-k3 q8 r1 post: 49, 2865 MHz, 249.16 W | [generate_spec K=3] 128 tok in 0.916s = 138.63 tok/s | acceptance: 87/120 = 72.5% | self-consistency: PASS
+[19:03:43Z] spec-k4 nv r1 pre: 49, 2865 MHz, 249.16 W
+[19:03:52Z] spec-k4 nv r1 post: 47, 2842 MHz, 334.32 W | [generate_spec K=4] 128 tok in 0.686s = 185.24 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[19:03:52Z] spec-k4 q8 r1 pre: 47, 2842 MHz, 334.32 W
+[19:04:01Z] spec-k4 q8 r1 post: 46, 2865 MHz, 110.24 W | [generate_spec K=4] 128 tok in 0.887s = 143.24 tok/s | acceptance: 93/144 = 64.6% | self-consistency: PASS
+[19:04:01Z] spec-k5 nv r1 pre: 46, 2865 MHz, 110.24 W
+[19:04:09Z] spec-k5 nv r1 post: 46, 2865 MHz, 318.75 W | [generate_spec K=5] 128 tok in 0.712s = 178.36 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[19:04:09Z] spec-k5 q8 r1 pre: 46, 2865 MHz, 318.75 W
+[19:04:18Z] spec-k5 q8 r1 post: 45, 2865 MHz, 129.07 W | [generate_spec K=5] 128 tok in 0.923s = 137.55 tok/s | acceptance: 95/180 = 52.8% | self-consistency: PASS
+[19:04:18Z] spec-k2 nv r2 pre: 45, 2865 MHz, 129.07 W
+[19:04:27Z] spec-k2 nv r2 post: 44, 2865 MHz, 250.65 W | [generate_spec K=2] 128 tok in 0.736s = 172.59 tok/s | acceptance: 77/104 = 74.0% | self-consistency: PASS
+[19:04:27Z] spec-k2 q8 r2 pre: 44, 2865 MHz, 250.65 W
+[19:04:35Z] spec-k2 q8 r2 post: 44, 2880 MHz, 121.24 W | [generate_spec K=2] 128 tok in 1.119s = 113.50 tok/s | acceptance: 77/102 = 75.5% | self-consistency: PASS
+[19:04:35Z] spec-k3 nv r2 pre: 44, 2880 MHz, 121.24 W
+[19:04:44Z] spec-k3 nv r2 post: 43, 2880 MHz, 239.57 W | [generate_spec K=3] 128 tok in 0.681s = 186.54 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[19:04:44Z] spec-k3 q8 r2 pre: 43, 2880 MHz, 239.57 W
+[19:04:53Z] spec-k3 q8 r2 post: 43, 2880 MHz, 179.73 W | [generate_spec K=3] 128 tok in 0.916s = 138.70 tok/s | acceptance: 87/120 = 72.5% | self-consistency: PASS
+[19:04:53Z] spec-k4 nv r2 pre: 43, 2880 MHz, 179.73 W
+[19:05:01Z] spec-k4 nv r2 post: 43, 2872 MHz, 319.05 W | [generate_spec K=4] 128 tok in 0.685s = 185.52 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[19:05:01Z] spec-k4 q8 r2 pre: 43, 2872 MHz, 319.05 W
+[19:05:10Z] spec-k4 q8 r2 post: 42, 2880 MHz, 137.14 W | [generate_spec K=4] 128 tok in 0.886s = 143.38 tok/s | acceptance: 93/144 = 64.6% | self-consistency: PASS
+[19:05:10Z] spec-k5 nv r2 pre: 42, 2880 MHz, 137.14 W
+[19:05:19Z] spec-k5 nv r2 post: 42, 2880 MHz, 285.96 W | [generate_spec K=5] 128 tok in 0.711s = 178.50 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[19:05:19Z] spec-k5 q8 r2 pre: 42, 2880 MHz, 285.96 W
+[19:05:27Z] spec-k5 q8 r2 post: 42, 2880 MHz, 272.49 W | [generate_spec K=5] 128 tok in 0.923s = 137.63 tok/s | acceptance: 95/180 = 52.8% | self-consistency: PASS
+[19:05:27Z] spec-p1-k3 nv r1 pre: 42, 2880 MHz, 272.49 W
+[19:05:36Z] spec-p1-k3 nv r1 post: 42, 2880 MHz, 336.06 W | [generate_spec K=3] 128 tok in 0.695s = 182.70 tok/s | acceptance: 86/126 = 68.3% | self-consistency: PASS
+[19:05:36Z] spec-p1-k3 q8 r1 pre: 42, 2880 MHz, 336.06 W
+[19:05:45Z] spec-p1-k3 q8 r1 post: 42, 2880 MHz, 121.60 W | [generate_spec K=3] 128 tok in 0.965s = 131.59 tok/s | acceptance: 90/120 = 75.0% | self-consistency: PASS
+[19:05:45Z] spec-p2-k3 nv r1 pre: 42, 2880 MHz, 121.60 W
+[19:05:54Z] spec-p2-k3 nv r1 post: 43, 2880 MHz, 285.06 W | [generate_spec K=3] 128 tok in 0.665s = 191.11 tok/s | acceptance: 85/126 = 67.5% | self-consistency: PASS
+[19:05:54Z] spec-p2-k3 q8 r1 pre: 43, 2880 MHz, 285.06 W
+[19:06:03Z] spec-p2-k3 q8 r1 post: 43, 2872 MHz, 241.53 W | [generate_spec K=3] 128 tok in 1.104s = 115.00 tok/s | acceptance: 80/141 = 56.7% | self-consistency: PASS
+[19:06:03Z] spec-p3-k3 nv r1 pre: 43, 2872 MHz, 241.53 W
+[19:06:16Z] spec-p3-k3 nv r1 post: 45, 2865 MHz, 217.48 W | [generate_spec K=3] 128 tok in 0.768s = 165.33 tok/s | acceptance: 84/135 = 62.2% | self-consistency: PASS
+[19:06:17Z] spec-p3-k3 q8 r1 pre: 45, 2865 MHz, 217.48 W
+[19:06:30Z] spec-p3-k3 q8 r1 post: 46, 2865 MHz, 178.02 W | [generate_spec K=3] 128 tok in 1.235s = 102.84 tok/s | acceptance: 78/150 = 52.0% | self-consistency: PASS
+[19:06:30Z] spec-p1-k3 nv r2 pre: 46, 2865 MHz, 178.02 W
+[19:06:38Z] spec-p1-k3 nv r2 post: 44, 2865 MHz, 249.46 W | [generate_spec K=3] 128 tok in 0.695s = 182.70 tok/s | acceptance: 86/126 = 68.3% | self-consistency: PASS
+[19:06:38Z] spec-p1-k3 q8 r2 pre: 44, 2865 MHz, 249.46 W
+[19:06:47Z] spec-p1-k3 q8 r2 post: 44, 2872 MHz, 175.84 W | [generate_spec K=3] 128 tok in 0.965s = 131.58 tok/s | acceptance: 90/120 = 75.0% | self-consistency: PASS
+[19:06:47Z] spec-p2-k3 nv r2 pre: 44, 2872 MHz, 175.84 W
+[19:06:56Z] spec-p2-k3 nv r2 post: 45, 2865 MHz, 372.88 W | [generate_spec K=3] 128 tok in 0.664s = 191.14 tok/s | acceptance: 85/126 = 67.5% | self-consistency: PASS
+[19:06:56Z] spec-p2-k3 q8 r2 pre: 45, 2865 MHz, 372.88 W
+[19:07:06Z] spec-p2-k3 q8 r2 post: 44, 2865 MHz, 199.71 W | [generate_spec K=3] 128 tok in 1.106s = 114.80 tok/s | acceptance: 80/141 = 56.7% | self-consistency: PASS
+[19:07:06Z] spec-p3-k3 nv r2 pre: 44, 2865 MHz, 199.71 W
+[19:07:19Z] spec-p3-k3 nv r2 post: 47, 2865 MHz, 306.70 W | [generate_spec K=3] 128 tok in 0.764s = 166.28 tok/s | acceptance: 84/135 = 62.2% | self-consistency: PASS
+[19:07:19Z] spec-p3-k3 q8 r2 pre: 47, 2865 MHz, 306.70 W
+[19:07:32Z] spec-p3-k3 q8 r2 post: 47, 2865 MHz, 177.00 W | [generate_spec K=3] 128 tok in 1.235s = 102.83 tok/s | acceptance: 78/150 = 52.0% | self-consistency: PASS
+[19:07:32Z] spec-p1-k3 nv r3 pre: 47, 2865 MHz, 177.00 W
+[19:07:41Z] spec-p1-k3 nv r3 post: 45, 2865 MHz, 296.87 W | [generate_spec K=3] 128 tok in 0.695s = 182.68 tok/s | acceptance: 86/126 = 68.3% | self-consistency: PASS
+[19:07:41Z] spec-p1-k3 q8 r3 pre: 45, 2865 MHz, 296.87 W
+[19:07:49Z] spec-p1-k3 q8 r3 post: 45, 2865 MHz, 275.39 W | [generate_spec K=3] 128 tok in 0.965s = 131.56 tok/s | acceptance: 90/120 = 75.0% | self-consistency: PASS
+[19:07:49Z] spec-p2-k3 nv r3 pre: 45, 2865 MHz, 275.39 W
+[19:08:00Z] spec-p2-k3 nv r3 post: 44, 2865 MHz, 129.37 W | [generate_spec K=3] 128 tok in 0.665s = 190.90 tok/s | acceptance: 85/126 = 67.5% | self-consistency: PASS
+[19:08:00Z] spec-p2-k3 q8 r3 pre: 44, 2865 MHz, 129.37 W
+[19:08:10Z] spec-p2-k3 q8 r3 post: 45, 2865 MHz, 233.83 W | [generate_spec K=3] 128 tok in 1.106s = 114.83 tok/s | acceptance: 80/141 = 56.7% | self-consistency: PASS
+[19:08:10Z] spec-p3-k3 nv r3 pre: 45, 2865 MHz, 233.83 W
+[19:08:23Z] spec-p3-k3 nv r3 post: 47, 2865 MHz, 383.10 W | [generate_spec K=3] 128 tok in 0.768s = 165.28 tok/s | acceptance: 84/135 = 62.2% | self-consistency: PASS
+[19:08:24Z] spec-p3-k3 q8 r3 pre: 46, 2865 MHz, 173.99 W
+[19:08:37Z] spec-p3-k3 q8 r3 post: 47, 2865 MHz, 245.85 W | [generate_spec K=3] 128 tok in 1.235s = 102.86 tok/s | acceptance: 78/150 = 52.0% | self-consistency: PASS
+[19:08:37Z] spec-p1-k3 nv r4 pre: 47, 2865 MHz, 245.85 W
+[19:08:46Z] spec-p1-k3 nv r4 post: 45, 2865 MHz, 247.74 W | [generate_spec K=3] 128 tok in 0.695s = 182.65 tok/s | acceptance: 86/126 = 68.3% | self-consistency: PASS
+[19:08:46Z] spec-p1-k3 q8 r4 pre: 45, 2865 MHz, 247.74 W
+[19:08:54Z] spec-p1-k3 q8 r4 post: 44, 2865 MHz, 260.95 W | [generate_spec K=3] 128 tok in 0.968s = 131.22 tok/s | acceptance: 90/120 = 75.0% | self-consistency: PASS
+[19:08:54Z] spec-p2-k3 nv r4 pre: 44, 2865 MHz, 260.95 W
+[19:09:04Z] spec-p2-k3 nv r4 post: 45, 2865 MHz, 279.99 W | [generate_spec K=3] 128 tok in 0.665s = 190.95 tok/s | acceptance: 85/126 = 67.5% | self-consistency: PASS
+[19:09:04Z] spec-p2-k3 q8 r4 pre: 45, 2865 MHz, 279.99 W
+[19:09:14Z] spec-p2-k3 q8 r4 post: 45, 2865 MHz, 174.76 W | [generate_spec K=3] 128 tok in 1.107s = 114.75 tok/s | acceptance: 80/141 = 56.7% | self-consistency: PASS
+[19:09:14Z] spec-p3-k3 nv r4 pre: 45, 2865 MHz, 174.76 W
+[19:09:28Z] spec-p3-k3 nv r4 post: 46, 2865 MHz, 288.57 W | [generate_spec K=3] 128 tok in 0.769s = 165.24 tok/s | acceptance: 84/135 = 62.2% | self-consistency: PASS
+[19:09:28Z] spec-p3-k3 q8 r4 pre: 46, 2865 MHz, 288.57 W
+[19:09:41Z] spec-p3-k3 q8 r4 post: 47, 2865 MHz, 111.39 W | [generate_spec K=3] 128 tok in 1.235s = 102.83 tok/s | acceptance: 78/150 = 52.0% | self-consistency: PASS
+[19:09:41Z] spec-p1-k3 nv r5 pre: 47, 2865 MHz, 111.39 W
+[19:09:50Z] spec-p1-k3 nv r5 post: 46, 2865 MHz, 381.26 W | [generate_spec K=3] 128 tok in 0.695s = 182.61 tok/s | acceptance: 86/126 = 68.3% | self-consistency: PASS
+[19:09:50Z] spec-p1-k3 q8 r5 pre: 45, 2865 MHz, 228.99 W
+[19:09:58Z] spec-p1-k3 q8 r5 post: 45, 2865 MHz, 187.30 W | [generate_spec K=3] 128 tok in 0.966s = 131.53 tok/s | acceptance: 90/120 = 75.0% | self-consistency: PASS
+[19:09:58Z] spec-p2-k3 nv r5 pre: 45, 2865 MHz, 187.30 W
+[19:10:08Z] spec-p2-k3 nv r5 post: 45, 2865 MHz, 238.53 W | [generate_spec K=3] 128 tok in 0.667s = 190.54 tok/s | acceptance: 85/126 = 67.5% | self-consistency: PASS
+[19:10:08Z] spec-p2-k3 q8 r5 pre: 45, 2865 MHz, 238.53 W
+[19:10:18Z] spec-p2-k3 q8 r5 post: 45, 2865 MHz, 285.41 W | [generate_spec K=3] 128 tok in 1.106s = 114.78 tok/s | acceptance: 80/141 = 56.7% | self-consistency: PASS
+[19:10:18Z] spec-p3-k3 nv r5 pre: 45, 2865 MHz, 122.32 W
+[19:10:31Z] spec-p3-k3 nv r5 post: 47, 2865 MHz, 374.94 W | [generate_spec K=3] 128 tok in 0.768s = 165.27 tok/s | acceptance: 84/135 = 62.2% | self-consistency: PASS
+[19:10:31Z] spec-p3-k3 q8 r5 pre: 47, 2865 MHz, 374.94 W
+[19:10:45Z] spec-p3-k3 q8 r5 post: 47, 2865 MHz, 185.35 W | [generate_spec K=3] 128 tok in 1.236s = 102.79 tok/s | acceptance: 78/150 = 52.0% | self-consistency: PASS
+[19:10:45Z] BATTERY-A DONE

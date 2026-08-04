@@ -1,0 +1,108 @@
+[19:13:58Z] B1 nv: starting plain server
+[19:14:04Z] B1 nv: server up | 26, 2610 MHz, 80.26 W
+[19:14:12Z] B1 nv c1 r1 done: parse-fail
+[19:14:19Z] B1 nv c1 r2 done: parse-fail
+[19:14:26Z] B1 nv c1 r3 done: parse-fail
+[19:14:33Z] B1 nv c1 r4 done: parse-fail
+[19:14:40Z] B1 nv c1 r5 done: parse-fail
+[19:14:41Z] B3 nv ttft r1: {"rep": "1", "ttft_s": 0.1835, "total_s": 1.0293, "stream_tokens": 64, "decode_tokps": 74.49}
+[19:14:42Z] B3 nv ttft r2: {"rep": "2", "ttft_s": 0.0025, "total_s": 0.8483, "stream_tokens": 64, "decode_tokps": 74.48}
+[19:14:43Z] B3 nv ttft r3: {"rep": "3", "ttft_s": 0.0023, "total_s": 0.8483, "stream_tokens": 64, "decode_tokps": 74.47}
+[19:14:43Z] B3 nv ttft r4: {"rep": "4", "ttft_s": 0.0025, "total_s": 0.8481, "stream_tokens": 64, "decode_tokps": 74.5}
+[19:14:44Z] B3 nv ttft r5: {"rep": "5", "ttft_s": 0.0022, "total_s": 0.8481, "stream_tokens": 64, "decode_tokps": 74.48}
+[19:14:58Z] B4 nv c2 p1 done: parse-fail
+[19:15:14Z] B4 nv c4 p1 done: parse-fail
+[19:15:33Z] B4 nv c8 p1 done: parse-fail
+[19:16:12Z] B4 nv c16 p1 done: parse-fail
+[19:17:30Z] B4 nv c32 p1 done: parse-fail
+[19:17:44Z] B4 nv c2 p2 done: parse-fail
+[19:17:59Z] B4 nv c4 p2 done: parse-fail
+[19:18:19Z] B4 nv c8 p2 done: parse-fail
+[19:18:58Z] B4 nv c16 p2 done: parse-fail
+[19:20:16Z] B4 nv c32 p2 done: parse-fail
+[19:20:30Z] B4 nv c2 p3 done: parse-fail
+[19:20:45Z] B4 nv c4 p3 done: parse-fail
+[19:21:04Z] B4 nv c8 p3 done: parse-fail
+[19:21:43Z] B4 nv c16 p3 done: parse-fail
+[19:23:01Z] B4 nv c32 p3 done: parse-fail
+[19:23:03Z] B1/B3/B4 nv: server stopped
+[19:23:03Z] B2 nv K=2: starting spec server
+[19:23:13Z] B2 nv spec K=2 r1 done: parse-fail
+[19:23:17Z] B2 nv spec K=2 r2 done: parse-fail
+[19:23:19Z] B2 nv K=3: starting spec server
+[19:23:30Z] B2 nv spec K=3 r1 done: parse-fail
+[19:23:33Z] B2 nv spec K=3 r2 done: parse-fail
+[19:23:37Z] B2 nv spec K=3 r3 done: parse-fail
+[19:23:40Z] B2 nv spec K=3 r4 done: parse-fail
+[19:23:43Z] B2 nv spec K=3 r5 done: parse-fail
+[19:23:45Z] B2 nv K=4: starting spec server
+[19:23:57Z] B2 nv spec K=4 r1 done: parse-fail
+[19:24:00Z] B2 nv spec K=4 r2 done: parse-fail
+[19:24:02Z] B2 nv K=5: starting spec server
+[19:24:12Z] B2 nv spec K=5 r1 done: parse-fail
+[19:24:15Z] B2 nv spec K=5 r2 done: parse-fail
+[19:24:17Z] B2 nv done
+[19:24:17Z] B1 q8: starting plain server
+[19:24:21Z] B1 q8: server up | 44, 2610 MHz, 89.83 W
+[19:24:33Z] B1 q8 c1 r1 done: parse-fail
+[19:24:43Z] B1 q8 c1 r2 done: parse-fail
+[19:24:54Z] B1 q8 c1 r3 done: parse-fail
+[19:25:05Z] B1 q8 c1 r4 done: parse-fail
+[19:25:16Z] B1 q8 c1 r5 done: parse-fail
+[19:25:18Z] B3 q8 ttft r1: {"rep": "1", "ttft_s": 0.1589, "total_s": 1.4723, "stream_tokens": 64, "decode_tokps": 47.97}
+[19:25:19Z] B3 q8 ttft r2: {"rep": "2", "ttft_s": 0.0032, "total_s": 1.3168, "stream_tokens": 64, "decode_tokps": 47.96}
+[19:25:20Z] B3 q8 ttft r3: {"rep": "3", "ttft_s": 0.003, "total_s": 1.3163, "stream_tokens": 64, "decode_tokps": 47.97}
+[19:25:22Z] B3 q8 ttft r4: {"rep": "4", "ttft_s": 0.0028, "total_s": 1.3163, "stream_tokens": 64, "decode_tokps": 47.96}
+[19:25:23Z] B3 q8 ttft r5: {"rep": "5", "ttft_s": 0.0031, "total_s": 1.3168, "stream_tokens": 64, "decode_tokps": 47.95}
+[19:25:45Z] B4 q8 c2 p1 done: parse-fail
+[19:26:09Z] B4 q8 c4 p1 done: parse-fail
+[19:26:36Z] B4 q8 c8 p1 done: parse-fail
+[19:27:29Z] B4 q8 c16 p1 done: parse-fail
+[19:29:15Z] B4 q8 c32 p1 done: parse-fail
+[19:29:38Z] B4 q8 c2 p2 done: parse-fail
+[19:30:02Z] B4 q8 c4 p2 done: parse-fail
+[19:30:28Z] B4 q8 c8 p2 done: parse-fail
+[19:31:22Z] B4 q8 c16 p2 done: parse-fail
+[19:33:08Z] B4 q8 c32 p2 done: parse-fail
+[19:33:30Z] B4 q8 c2 p3 done: parse-fail
+[19:33:54Z] B4 q8 c4 p3 done: parse-fail
+[19:34:21Z] B4 q8 c8 p3 done: parse-fail
+[19:35:14Z] B4 q8 c16 p3 done: parse-fail
+[19:37:01Z] B4 q8 c32 p3 done: parse-fail
+[19:37:03Z] B1/B3/B4 q8: server stopped
+[19:37:03Z] B2 q8 K=2: starting spec server
+[19:37:12Z] B2 q8 spec K=2 r1 done: parse-fail
+[19:37:18Z] B2 q8 spec K=2 r2 done: parse-fail
+[19:37:20Z] B2 q8 K=3: starting spec server
+[19:37:29Z] B2 q8 spec K=3 r1 done: parse-fail
+[19:37:34Z] B2 q8 spec K=3 r2 done: parse-fail
+[19:37:38Z] B2 q8 spec K=3 r3 done: parse-fail
+[19:37:43Z] B2 q8 spec K=3 r4 done: parse-fail
+[19:37:47Z] B2 q8 spec K=3 r5 done: parse-fail
+[19:37:50Z] B2 q8 K=4: starting spec server
+[19:37:58Z] B2 q8 spec K=4 r1 done: parse-fail
+[19:38:03Z] B2 q8 spec K=4 r2 done: parse-fail
+[19:38:05Z] B2 q8 K=5: starting spec server
+[19:38:14Z] B2 q8 spec K=5 r1 done: parse-fail
+[19:38:19Z] B2 q8 spec K=5 r2 done: parse-fail
+[19:38:21Z] B2 q8 done
+[19:38:21Z] BATTERY-B DONE
+[19:40:59Z] D nv: starting plain server for cold-TTFT
+[19:41:06Z] D nv cold r1: {"rep": "1", "salt": "cold-nv-1-1785872465333134380", "ttft_s": 0.3403, "total_s": 1.1845, "stream_tokens": 64, "decode_tokps": 74.63}
+[19:41:07Z] D nv cold r2: {"rep": "2", "salt": "cold-nv-2-1785872466556230492", "ttft_s": 0.1821, "total_s": 1.0272, "stream_tokens": 64, "decode_tokps": 74.55}
+[19:41:08Z] D nv cold r3: {"rep": "3", "salt": "cold-nv-3-1785872467618683863", "ttft_s": 0.1822, "total_s": 1.0285, "stream_tokens": 64, "decode_tokps": 74.45}
+[19:41:09Z] D nv cold r4: {"rep": "4", "salt": "cold-nv-4-1785872468682879031", "ttft_s": 0.1831, "total_s": 1.0321, "stream_tokens": 64, "decode_tokps": 74.2}
+[19:41:10Z] D nv cold r5: {"rep": "5", "salt": "cold-nv-5-1785872469754669347", "ttft_s": 0.1827, "total_s": 1.0278, "stream_tokens": 64, "decode_tokps": 74.55}
+[19:41:11Z] D nv warm r1: {"rep": "warm1", "salt": "warmshared", "ttft_s": 0.1829, "total_s": 1.0277, "stream_tokens": 64, "decode_tokps": 74.57}
+[19:41:12Z] D nv warm r2: {"rep": "warm2", "salt": "warmshared", "ttft_s": 0.003, "total_s": 0.8504, "stream_tokens": 64, "decode_tokps": 74.34}
+[19:41:13Z] D nv warm r3: {"rep": "warm3", "salt": "warmshared", "ttft_s": 0.0067, "total_s": 0.8518, "stream_tokens": 64, "decode_tokps": 74.54}
+[19:41:15Z] D q8: starting plain server for cold-TTFT
+[19:41:21Z] D q8 cold r1: {"rep": "1", "salt": "cold-q8-1-1785872479893241112", "ttft_s": 0.3295, "total_s": 1.6409, "stream_tokens": 64, "decode_tokps": 48.04}
+[19:41:23Z] D q8 cold r2: {"rep": "2", "salt": "cold-q8-2-1785872481577498271", "ttft_s": 0.1564, "total_s": 1.4681, "stream_tokens": 64, "decode_tokps": 48.03}
+[19:41:24Z] D q8 cold r3: {"rep": "3", "salt": "cold-q8-3-1785872483079762540", "ttft_s": 0.1561, "total_s": 1.4694, "stream_tokens": 64, "decode_tokps": 47.97}
+[19:41:26Z] D q8 cold r4: {"rep": "4", "salt": "cold-q8-4-1785872484584390673", "ttft_s": 0.1564, "total_s": 1.468, "stream_tokens": 64, "decode_tokps": 48.03}
+[19:41:27Z] D q8 cold r5: {"rep": "5", "salt": "cold-q8-5-1785872486080227557", "ttft_s": 0.1563, "total_s": 1.4682, "stream_tokens": 64, "decode_tokps": 48.02}
+[19:41:29Z] D q8 warm r1: {"rep": "warm1", "salt": "warmshared", "ttft_s": 0.1562, "total_s": 1.4717, "stream_tokens": 64, "decode_tokps": 47.89}
+[19:41:30Z] D q8 warm r2: {"rep": "warm2", "salt": "warmshared", "ttft_s": 0.0038, "total_s": 1.316, "stream_tokens": 64, "decode_tokps": 48.01}
+[19:41:31Z] D q8 warm r3: {"rep": "warm3", "salt": "warmshared", "ttft_s": 0.0035, "total_s": 1.3154, "stream_tokens": 64, "decode_tokps": 48.02}
+[19:41:33Z] BATTERY-D DONE
