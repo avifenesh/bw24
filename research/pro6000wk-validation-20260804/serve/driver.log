@@ -1,0 +1,14 @@
+[16:26:05Z] PHASE bare-idle 60s begin
+[16:27:05Z] PHASE bare-idle end
+[16:27:07Z] PHASE loaded-idle 120s begin (model resident, zero traffic)
+[16:29:07Z] PHASE loaded-idle end
+[16:29:07Z] PHASE single-stream begin
+[16:29:09Z] req 1: 256 tok in 2.00s
+[16:29:11Z] req 2: 256 tok in 2.05s
+[16:29:13Z] req 3: 256 tok in 2.05s
+[16:29:15Z] req 4: 256 tok in 2.05s
+[16:29:17Z] req 5: 256 tok in 2.05s
+[16:29:17Z] PHASE single-stream end
+[16:29:17Z] PHASE post-load-idle 60s begin
+[16:30:17Z] PHASE post-load-idle end
+[16:30:23Z] SERVE POWER DONE

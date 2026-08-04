@@ -1,0 +1,101 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt text: "\n\n=== FILE: crates/bw24-engine/src/cache.rs ===\n//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-RESIDENT (Stage-2):\n//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).\n//! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).\n//! No host round-trips per step. Single sequence.\n\nuse cudarc::driver::CudaSlice;\nuse bw24_gguf::config::{ModelConfig, LayerKind};\nuse crate::Engine;\n\n/// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):\n/// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the\n/// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).\n/// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.\npub struct KvLayer {\n    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes\n    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes\n    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)\n    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)\n    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34\n    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24\n    pub len: usize,\n    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the\n    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new\n    /// len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].\n    pub len_d: CudaSl"
+prompt tokens: [271, 8442, 11498, 25, 78902, 3359, 86, 17, 19, 47953, 13050, 60002, 24822, 1981, 198, 13257, 32545, 6297, 364, 279, 24197, 5157, 318, 10525, 3930, 16, 10951, 56, 12717, 887, 20668, 16137, 18, 681, 21966, 12, 6794, 19206, 318, 18810, 12, 17, 1590, 198, 13257, 471, 57664, 81726, 6297, 364, 2400, 12, 51319, 13224, 318, 94542, 383, 21966, 11, 49465, 303, 1925, 553, 198, 13257, 471, 19536, 61911, 1528, 318, 11684, 9761, 478, 326, 9221, 1528, 8, 364, 13094, 12, 51319, 13224, 318, 94542, 383, 21966, 553, 198, 13257, 2233, 3357, 4625, 9885, 2978, 791, 2923, 13, 11000, 8240, 13, 271, 784, 75897, 7941, 476, 12161, 476, 34, 7800, 32133, 26, 198, 784, 33233, 17, 19, 1824, 70, 1644, 476, 1617, 22249, 1652, 2561, 11, 22028, 10314, 10738, 198, 784, 17189, 476, 4422, 26, 271, 2490, 3495, 22902, 27841, 1463, 45759, 7578, 81726, 6297, 11, 18394, 383, 21966, 13, 25168, 2731, 49801, 318, 79852, 5579, 2731, 12, 90833, 16137, 33, 1590, 198, 2490, 710, 9476, 2715, 23, 62, 15, 318, 18, 19, 417, 14, 18, 17, 11413, 681, 629, 9476, 2715, 20, 62, 16, 318, 17, 19, 417, 14, 18, 17, 11413, 553, 3495, 33686, 4763, 6576, 13205, 279, 198, 2490, 498, 5658, 11, 15702, 12756, 11, 4941, 60, 2315, 1906, 748, 264, 220, 18, 17, 9146, 2496, 592, 698, 624, 264, 1901, 318, 2138, 1901, 10474, 4, 18, 17, 410, 15, 553, 198, 2490, 8281, 25353, 258, 33686, 1857, 283, 15702, 12756, 9, 1916, 10474, 478, 293, 26, 2424, 283, 6961, 14, 18, 17, 26, 20619, 283, 6961, 4, 18, 17, 13, 198, 9299, 1968, 85279, 8915, 313, 198, 262, 6466, 580, 25, 351, 7800, 32133, 33682, 23, 7813, 285, 434, 2715, 23, 62, 15, 18788, 11, 8390, 1866, 14705, 41055, 73555, 12164, 198, 262, 6466, 343, 25, 351, 7800, 32133, 33682, 23, 7813, 285, 434, 2715, 20, 62, 16, 18788, 11, 8390, 1866, 14705, 47499, 73555, 12164, 198, 262, 6466, 15702, 10474, 4546, 25, 21609, 11, 260, 434, 1901, 10474, 4546, 348, 307, 12756, 93720, 220, 318, 42, 5255, 791, 3817, 8, 198, 262, 6466, 15702, 10474, 2200, 25, 21609, 11, 260, 434, 1901, 10474, 2200, 348, 307, 12756, 93720, 220, 318, 53, 5255, 791, 3817, 8, 198, 262, 6466, 580, 73555, 12164, 25, 21609, 11, 406, 434, 318, 41973, 10474, 4546, 14, 18, 17, 4653, 18, 19, 198, 262, 6466, 343, 73555, 12164, 25, 21609, 11, 406, 434, 318, 41973, 10474, 2200, 14, 18, 17, 4653, 17, 19, 198, 262, 6466, 2343, 25, 21609, 11, 198, 262, 1013, 13504, 11255, 1653, 17312, 314, 1510, 2798, 63, 318, 77517, 12, 38655, 12, 90833, 26679, 220, 17, 553, 63757, 279, 81726, 3165, 24675, 364, 279, 198, 262, 1013, 8472, 1676, 66, 9705, 318, 787, 2343, 11, 1518, 411, 2923, 579, 8472, 1174, 1238, 1510, 2747, 3343, 1417, 268, 63, 424, 9687, 279, 491, 198, 262, 1013, 2343, 606, 259, 93720, 364, 2148, 14783, 53974, 13, 6362, 409, 303, 5128, 28253, 440, 279, 3357, 1510, 2798, 27653, 585, 18, 17, 58, 16, 906, 198, 262, 6466, 2343, 788, 25, 351, 7800, 7207]
+prefill argmax=365  decode argmax=365  logit maxdiff=7.355e-1  MATCH
+batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=7.989e-1  MATCH
+prefill 512 tok in 0.1271s = 4027.8 tok/s (pp512)
+generated 1024 tokens in 11.275s = 90.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.129s) [stop: MaxNew]
+tokens: [365, 11, 198, 262, 1013, 13504, 11255, 1653, 17312, 314, 1510, 2798, 63, 318, 77517, 12, 38655, 12, 90833, 26679, 220, 17, 553, 63757, 279, 81726, 1301, 24675, 364, 279, 198, 262, 1013, 8472, 1676, 66, 9705, 318, 787, 2343, 11, 1518, 411, 2923, 579, 8472, 1174, 1238, 1510, 2747, 3343, 1417, 268, 63, 424, 9687, 279, 198, 262, 1013, 491, 2343, 606, 259, 93720, 364, 2148, 14783, 53974, 13, 6362, 409, 303, 5128, 28253, 440, 279, 3357, 1510, 2798, 27653, 585, 18, 17, 58, 16, 906, 198, 262, 6466, 2343, 1650, 25, 351, 7800, 7207, 365, 11, 198, 92, 271, 2490, 3495, 59229, 27841, 1463, 45759, 8097, 61911, 1528, 11, 18394, 383, 21966, 13, 198, 2490, 471, 5508, 9761, 25, 2715, 23, 62, 15, 18788, 11, 8390, 1866, 14705, 9, 11684, 33535, 12164, 318, 16, 21, 417, 14, 16, 21, 11413, 553, 198, 2490, 471, 326, 9221, 1528, 25, 2715, 23, 62, 15, 18788, 11, 8390, 1866, 14705, 9, 753, 76, 4244, 12164, 318, 16, 21, 417, 14, 16, 21, 11413, 553, 198, 2490, 2233, 7578, 26, 8097, 1331, 791, 6000, 13, 198, 9299, 1968, 3931, 8915, 313, 198, 262, 6466, 5508, 33535, 25, 351, 7800, 32133, 33682, 23, 7813, 198, 262, 6466, 5508, 33535, 12164, 25, 21609, 11, 198, 262, 6466, 274, 3445, 4244, 25, 351, 29748, 32133, 33682, 23, 7813, 198, 262, 6466, 274, 3445, 4244, 12164, 25, 21609, 11, 198, 262, 6466, 2343, 25, 21609, 11, 198, 92, 271, 6182, 7943, 313, 198, 262, 1013, 8736, 279, 18020, 6297, 364, 279, 24197, 5157, 318, 10525, 3930, 16, 10951, 56, 12717, 887, 20668, 16137, 18, 553, 198, 262, 1013, 471, 43146, 81726, 6297, 364, 2400, 12, 51319, 13224, 318, 48213, 11255, 1653, 11, 7578, 553, 198, 262, 1013, 471, 43146, 61911, 1528, 364, 13094, 12, 51319, 13224, 318, 48213, 11255, 1653, 11, 8097, 553, 198, 262, 1013, 471, 2233, 3357, 4625, 9885, 2978, 791, 2923, 13, 198, 262, 6466, 5003, 2836, 11198, 2031, 6767, 638, 8, 313, 198, 285, 1042, 12901, 283, 594, 701, 29487, 26, 198, 285, 1042, 1866, 14705, 283, 12901, 6469, 14705, 26, 198, 285, 1042, 307, 25257, 283, 12901, 1210, 25257, 26, 198, 285, 1042, 307, 73709, 283, 12901, 1210, 73709, 26, 198, 285, 1042, 307, 12756, 93720, 283, 12901, 1210, 12756, 93720, 26, 198, 285, 1042, 1901, 10474, 283, 12901, 15569, 10474, 26, 198, 285, 1042, 15702, 51556, 283, 12901, 5037, 85, 51556, 26, 198, 285, 1042, 5508, 33535, 283, 12901, 25131, 33535, 26, 198, 285, 1042, 274, 3445, 4244, 283, 12901, 503, 3445, 4244, 26, 271, 285, 434, 8363, 12, 51319, 13224, 318, 79852, 6297, 8, 198, 285, 1042, 5041, 15702, 25257, 283, 10985, 476, 4058, 34426, 1393, 25257, 1174, 198, 285, 364, 585, 303, 220, 15, 486, 77, 25257, 313, 198, 309, 1042, 6000, 283, 594, 13669, 20363, 957, 5098, 198, 309, 1042, 15702, 51556, 283, 6000, 35419, 606, 22028, 10314, 476, 9153, 1597, 1463, 26, 198, 309, 1042, 15702, 10474, 4546, 283, 6000, 1210, 12756, 93720, 348, 6000, 15569, 10474, 26, 198, 309, 1042, 15702, 10474, 2200, 283, 6000, 1210, 12756, 93720, 348, 6000, 15569, 10474, 26, 198, 309, 1042, 580, 73555, 12164, 283, 318, 41973, 10474, 4546, 593, 220, 18, 17, 8, 348, 220, 18, 19, 26, 198, 309, 1042, 343, 73555, 12164, 283, 318, 41973, 10474, 2200, 593, 220, 18, 17, 8, 348, 220, 17, 19, 26, 198, 309, 1042, 8390, 283, 1866, 14705, 348, 318, 74, 73555, 12164, 478, 343, 73555, 12164, 1174, 198, 309, 1042, 580, 283, 351, 7800, 32133, 476, 902, 49657, 3883, 11, 638, 20863, 1174, 198, 309, 1042, 343, 283, 351, 7800, 32133, 476, 902, 49657, 3883, 11, 638, 20863, 1174, 198, 309, 1042, 2343, 283, 351, 7800, 7207, 365, 476, 902, 7, 16, 11, 638, 20863, 1174, 198, 309, 1042, 2343, 788, 283, 351, 7800, 7207, 365, 476, 902, 7, 16, 11, 638, 20863, 1174, 198, 309, 1042, 2343, 1650, 283, 351, 7800, 7207, 640, 476, 902, 7, 16, 11, 638, 20863, 1174, 198, 309, 15702, 25257, 2470, 16247, 85, 8915, 313, 198, 388, 580, 11, 198, 388, 343, 11, 198, 388, 15702, 10474, 4546, 11, 198, 388, 15702, 10474, 2200, 11, 198, 388, 580, 73555, 12164, 11, 198, 388, 343, 73555, 12164, 11, 198, 388, 2343, 25, 220, 15, 11, 198, 388, 2343, 788, 11, 198, 388, 2343, 1650, 11, 198, 309, 17574, 198, 285, 333, 271, 285, 434, 27345, 12, 51319, 13224, 318, 2670, 921, 1528, 8, 198, 285, 1042, 5041, 1347, 25257, 283, 10985, 476, 4058, 34426, 1393, 25257, 1174, 198, 285, 364, 585, 303, 220, 15, 486, 77, 25257, 313, 198, 309, 1042, 6000, 283, 594, 13669, 20363, 957, 5098, 198, 309, 1042, 1347, 51556, 283, 6000, 35419, 606, 22028, 10314, 476, 30851, 1597, 1463, 26, 198, 309, 1042, 5508, 33535, 12164, 283, 6000, 25131, 33535, 348, 220, 16, 21, 26, 198, 309, 1042, 274, 3445, 4244, 12164, 283, 6000, 503, 3445, 4244, 348, 220, 16, 21, 26, 198, 309, 1042, 8390, 283, 1866, 14705, 348, 318, 11684, 33535, 12164, 478, 274, 3445, 4244, 12164, 1174, 198, 309, 1042, 5508, 33535, 283, 351, 7800, 32133, 476, 902, 49657, 3883, 11, 638, 20863, 1174, 198, 309, 1042, 274, 3445, 4244, 283, 351, 29748, 32133, 476, 902, 49657, 3883, 11, 638, 20863, 1174, 198, 309, 1042, 2343, 283, 351, 7800, 32133, 476, 902, 7, 16, 11, 638, 20863, 1174, 198, 309, 1347, 25257, 2470, 7, 3692, 8915, 313, 198, 388, 5508, 33535, 11, 198, 388, 5508, 33535, 12164, 11, 198, 388, 274, 3445, 4244, 11, 198, 388, 274, 3445, 4244, 12164, 11, 198, 388, 2343, 25, 220, 15, 11, 198, 309, 17574, 198, 285, 333, 271, 285, 638, 5037, 85, 25257, 283, 15702, 25257, 26, 198, 285, 638, 10873, 25257, 283, 1347, 25257, 26, 198, 262, 333, 271, 262, 1013, 28833, 264, 3817, 310, 279, 81726, 6297, 364, 2400, 12, 51319, 13224, 318, 48213, 11255, 1653, 553, 198, 262, 1013, 471, 2233, 3357, 4625, 9885, 2978, 791, 2923, 13, 198, 262, 1013, 471, 28833, 1676, 66, 9705, 318, 77517, 12, 38655, 12, 90833, 26679, 220, 17, 8, 13514, 310, 279, 3545, 11255, 1653, 1510, 2798, 788, 63, 321, 1510, 2798, 1650, 27653, 198]
+OUTPUT TEXT: "ab,\n    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV read SLOT for the\n    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the\n    /// new len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].\n    pub len_r: CudaSlab,\n}\n\n/// Per-linear-attn-layer fixed recurrent state, resident on GPU.\n/// - conv ring: q8_0 packed, capacity max_ctx*conv_ring_bytes (16 B/16 elem).\n/// - SSM state: q8_0 packed, capacity max_ctx*ssm_state_bytes (16 B/16 elem).\n/// No growing; fixed size per layer.\npub struct RecLayer {\n    pub conv_ring: CudaSlice<u8>,\n    pub conv_ring_bytes: usize,\n    pub ssm_state: CusaSlice<u8>,\n    pub ssm_state_bytes: usize,\n    pub len: usize,\n}\n\nimpl Engine {\n    /// Initialize the dual cache for the hybrid arch (PHASE1-HYBRID.md §3).\n    /// - Allocate KV cache for full-attention layers (GPU-resident, growing).\n    /// - Allocate recurrent state for linear-attention layers (GPU-resident, fixed).\n    /// - No host round-trips per step.\n    pub fn init_cache(&mut self) {\n        let cfg = &self.cfg;\n        let max_ctx = cfg.max_ctx;\n        let n_layers = cfg.n_layers;\n        let n_heads = cfg.n_heads;\n        let n_head_kv = cfg.n_head_kv;\n        let head_dim = cfg.head_dim;\n        let kv_quant = cfg.kv_quant;\n        let conv_ring = cfg.conv_ring;\n        let ssm_state = cfg.ssm_state;\n\n        // Full-attention layers (KV cache)\n        let mut kv_layers = Vec::with_capacity(n_layers);\n        for i in 0..n_layers {\n            let layer = &cfg.layers[i];\n            let kv_quant = layer.kind == LayerKind::FullAttn;\n            let kv_dim_k = layer.n_head_kv * layer.head_dim;\n            let kv_dim_v = layer.n_head_kv * layer.head_dim;\n            let k_tok_bytes = (kv_dim_k / 32) * 34;\n            let v_tok_bytes = (kv_dim_v / 32) * 24;\n            let capacity = max_ctx * (k_tok_bytes + v_tok_bytes);\n            let k = CudaSlice::new(capacity, self.dev);\n            let v = CudaSlice::new(capacity, self.dev);\n            let len = CudaSlab::new(1, self.dev);\n            let len_d = CudaSlab::new(1, self.dev);\n            let len_r = CudaSlary::new(1, self.dev);\n            kv_layers.push(KvLayer {\n                k,\n                v,\n                kv_dim_k,\n                kv_dim_v,\n                k_tok_bytes,\n                v_tok_bytes,\n                len: 0,\n                len_d,\n                len_r,\n            });\n        }\n\n        // Linear-attention layers (recurrent state)\n        let mut rec_layers = Vec::with_capacity(n_layers);\n        for i in 0..n_layers {\n            let layer = &cfg.layers[i];\n            let rec_quant = layer.kind == LayerKind::LinearAttn;\n            let conv_ring_bytes = layer.conv_ring * 16;\n            let ssm_state_bytes = layer.ssm_state * 16;\n            let capacity = max_ctx * (conv_ring_bytes + ssm_state_bytes);\n            let conv_ring = CudaSlice::new(capacity, self.dev);\n            let ssm_state = CusaSlice::new(capacity, self.dev);\n            let len = CudaSlice::new(1, self.dev);\n            rec_layers.push(RecLayer {\n                conv_ring,\n                conv_ring_bytes,\n                ssm_state,\n                ssm_state_bytes,\n                len: 0,\n            });\n        }\n\n        self.kv_layers = kv_layers;\n        self.rec_layers = rec_layers;\n    }\n\n    /// Append a token to the KV cache for full-attention layers (GPU-resident).\n    /// - No host round-trips per step.\n    /// - Append-dc kernel (CUDA-GRAPH-PLAN Phase 2) writes to the device-resident `len_d` and `len_r`.\n"
+--- generated text ---
+ab,
+    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV read SLOT for the
+    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the
+    /// new len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].
+    pub len_r: CudaSlab,
+}
+
+/// Per-linear-attn-layer fixed recurrent state, resident on GPU.
+/// - conv ring: q8_0 packed, capacity max_ctx*conv_ring_bytes (16 B/16 elem).
+/// - SSM state: q8_0 packed, capacity max_ctx*ssm_state_bytes (16 B/16 elem).
+/// No growing; fixed size per layer.
+pub struct RecLayer {
+    pub conv_ring: CudaSlice<u8>,
+    pub conv_ring_bytes: usize,
+    pub ssm_state: CusaSlice<u8>,
+    pub ssm_state_bytes: usize,
+    pub len: usize,
+}
+
+impl Engine {
+    /// Initialize the dual cache for the hybrid arch (PHASE1-HYBRID.md §3).
+    /// - Allocate KV cache for full-attention layers (GPU-resident, growing).
+    /// - Allocate recurrent state for linear-attention layers (GPU-resident, fixed).
+    /// - No host round-trips per step.
+    pub fn init_cache(&mut self) {
+        let cfg = &self.cfg;
+        let max_ctx = cfg.max_ctx;
+        let n_layers = cfg.n_layers;
+        let n_heads = cfg.n_heads;
+        let n_head_kv = cfg.n_head_kv;
+        let head_dim = cfg.head_dim;
+        let kv_quant = cfg.kv_quant;
+        let conv_ring = cfg.conv_ring;
+        let ssm_state = cfg.ssm_state;
+
+        // Full-attention layers (KV cache)
+        let mut kv_layers = Vec::with_capacity(n_layers);
+        for i in 0..n_layers {
+            let layer = &cfg.layers[i];
+            let kv_quant = layer.kind == LayerKind::FullAttn;
+            let kv_dim_k = layer.n_head_kv * layer.head_dim;
+            let kv_dim_v = layer.n_head_kv * layer.head_dim;
+            let k_tok_bytes = (kv_dim_k / 32) * 34;
+            let v_tok_bytes = (kv_dim_v / 32) * 24;
+            let capacity = max_ctx * (k_tok_bytes + v_tok_bytes);
+            let k = CudaSlice::new(capacity, self.dev);
+            let v = CudaSlice::new(capacity, self.dev);
+            let len = CudaSlab::new(1, self.dev);
+            let len_d = CudaSlab::new(1, self.dev);
+            let len_r = CudaSlary::new(1, self.dev);
+            kv_layers.push(KvLayer {
+                k,
+                v,
+                kv_dim_k,
+                kv_dim_v,
+                k_tok_bytes,
+                v_tok_bytes,
+                len: 0,
+                len_d,
+                len_r,
+            });
+        }
+
+        // Linear-attention layers (recurrent state)
+        let mut rec_layers = Vec::with_capacity(n_layers);
+        for i in 0..n_layers {
+            let layer = &cfg.layers[i];
+            let rec_quant = layer.kind == LayerKind::LinearAttn;
+            let conv_ring_bytes = layer.conv_ring * 16;
+            let ssm_state_bytes = layer.ssm_state * 16;
+            let capacity = max_ctx * (conv_ring_bytes + ssm_state_bytes);
+            let conv_ring = CudaSlice::new(capacity, self.dev);
+            let ssm_state = CusaSlice::new(capacity, self.dev);
+            let len = CudaSlice::new(1, self.dev);
+            rec_layers.push(RecLayer {
+                conv_ring,
+                conv_ring_bytes,
+                ssm_state,
+                ssm_state_bytes,
+                len: 0,
+            });
+        }
+
+        self.kv_layers = kv_layers;
+        self.rec_layers = rec_layers;
+    }
+
+    /// Append a token to the KV cache for full-attention layers (GPU-resident).
+    /// - No host round-trips per step.
+    /// - Append-dc kernel (CUDA-GRAPH-PLAN Phase 2) writes to the device-resident `len_d` and `len_r`.
+

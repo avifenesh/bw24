@@ -1,0 +1,83 @@
+[16:02:57Z] cap-attempt 600W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:02:57Z] q9-decode-600W-r1 pre: 26, 180 MHz, 54.64 W, 600.00 W
+[16:03:14Z] q9-decode-600W-r1 post: 31, 1440 MHz, 558.23 W, 600.00 W | generated 1024 tokens in 10.084s = 101.55 tok/s
+[16:03:14Z] q9-pp512-600W-r1 pre: 31, 1440 MHz, 558.23 W, 600.00 W
+[16:03:28Z] q9-pp512-600W-r1 post: 33, 2265 MHz, 525.48 W, 600.00 W | pp: 512 tok in 0.1180s = 4337.4 tok/s (pp512, 100 reps)
+[16:03:28Z] q27-decode-600W-r1 pre: 33, 2265 MHz, 525.48 W, 600.00 W
+[16:04:23Z] q27-decode-600W-r1 post: 36, 2610 MHz, 387.98 W, 600.00 W | generated 512 tokens in 25.271s = 20.26 tok/s
+[16:04:24Z] q27-pp512-600W-r1 pre: 36, 2610 MHz, 387.98 W, 600.00 W
+[16:04:45Z] q27-pp512-600W-r1 post: 37, 2610 MHz, 377.18 W, 600.00 W | pp: 512 tok in 0.4120s = 1242.6 tok/s (pp512, 40 reps)
+[16:04:45Z] cap-attempt 450W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:04:45Z] q9-decode-450W-r1 pre: 37, 2610 MHz, 377.18 W, 600.00 W
+[16:05:03Z] q9-decode-450W-r1 post: 38, 735 MHz, 583.99 W, 600.00 W | generated 1024 tokens in 10.926s = 93.72 tok/s
+[16:05:03Z] q9-pp512-450W-r1 pre: 38, 735 MHz, 583.99 W, 600.00 W
+[16:05:17Z] q9-pp512-450W-r1 post: 39, 937 MHz, 589.69 W, 600.00 W | pp: 512 tok in 0.1242s = 4122.9 tok/s (pp512, 100 reps)
+[16:05:17Z] q27-decode-450W-r1 pre: 39, 937 MHz, 589.69 W, 600.00 W
+[16:06:16Z] q27-decode-450W-r1 post: 39, 2610 MHz, 438.17 W, 600.00 W | generated 512 tokens in 26.559s = 19.28 tok/s
+[16:06:16Z] q27-pp512-450W-r1 pre: 40, 2617 MHz, 338.76 W, 600.00 W
+[16:06:37Z] q27-pp512-450W-r1 post: 40, 2610 MHz, 352.94 W, 600.00 W | pp: 512 tok in 0.4231s = 1210.3 tok/s (pp512, 40 reps)
+[16:06:37Z] cap-attempt 300W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:06:37Z] q9-decode-300W-r1 pre: 40, 2610 MHz, 352.94 W, 600.00 W
+[16:06:56Z] q9-decode-300W-r1 post: 41, 690 MHz, 600.01 W, 600.00 W | generated 1024 tokens in 11.214s = 91.31 tok/s
+[16:06:56Z] q9-pp512-300W-r1 pre: 40, 2617 MHz, 509.95 W, 600.00 W
+[16:07:10Z] q9-pp512-300W-r1 post: 41, 1252 MHz, 574.80 W, 600.00 W | pp: 512 tok in 0.1263s = 4053.9 tok/s (pp512, 100 reps)
+[16:07:10Z] q27-decode-300W-r1 pre: 41, 1252 MHz, 574.80 W, 600.00 W
+[16:08:10Z] q27-decode-300W-r1 post: 40, 2610 MHz, 406.46 W, 600.00 W | generated 512 tokens in 26.919s = 19.02 tok/s
+[16:08:10Z] q27-pp512-300W-r1 pre: 40, 2610 MHz, 406.46 W, 600.00 W
+[16:08:32Z] q27-pp512-300W-r1 post: 40, 2610 MHz, 346.69 W, 600.00 W | pp: 512 tok in 0.4259s = 1202.1 tok/s (pp512, 40 reps)
+[16:08:32Z] cap-attempt 600W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:08:32Z] q9-decode-600W-r2 pre: 40, 2610 MHz, 346.69 W, 600.00 W
+[16:08:51Z] q9-decode-600W-r2 post: 40, 2115 MHz, 539.74 W, 600.00 W | generated 1024 tokens in 11.274s = 90.83 tok/s
+[16:08:51Z] q9-pp512-600W-r2 pre: 40, 2115 MHz, 539.74 W, 600.00 W
+[16:09:05Z] q9-pp512-600W-r2 post: 43, 915 MHz, 600.00 W, 600.00 W | pp: 512 tok in 0.1268s = 4039.2 tok/s (pp512, 100 reps)
+[16:09:05Z] q27-decode-600W-r2 pre: 43, 915 MHz, 600.00 W, 600.00 W
+[16:10:05Z] q27-decode-600W-r2 post: 40, 2610 MHz, 413.39 W, 600.00 W | generated 512 tokens in 27.036s = 18.94 tok/s
+[16:10:05Z] q27-pp512-600W-r2 pre: 40, 2610 MHz, 413.39 W, 600.00 W
+[16:10:27Z] q27-pp512-600W-r2 post: 41, 2617 MHz, 331.79 W, 600.00 W | pp: 512 tok in 0.4264s = 1200.8 tok/s (pp512, 40 reps)
+[16:10:27Z] cap-attempt 450W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:10:27Z] q9-decode-450W-r2 pre: 41, 2617 MHz, 331.79 W, 600.00 W
+[16:10:46Z] q9-decode-450W-r2 post: 41, 2535 MHz, 521.01 W, 600.00 W | generated 1024 tokens in 11.269s = 90.87 tok/s
+[16:10:46Z] q9-pp512-450W-r2 pre: 41, 2535 MHz, 521.01 W, 600.00 W
+[16:11:00Z] q9-pp512-450W-r2 post: 42, 922 MHz, 599.99 W, 600.00 W | pp: 512 tok in 0.1267s = 4042.0 tok/s (pp512, 100 reps)
+[16:11:00Z] q27-decode-450W-r2 pre: 42, 922 MHz, 599.99 W, 600.00 W
+[16:12:00Z] q27-decode-450W-r2 post: 40, 2610 MHz, 381.63 W, 600.00 W | generated 512 tokens in 26.978s = 18.98 tok/s
+[16:12:00Z] q27-pp512-450W-r2 pre: 40, 2610 MHz, 381.63 W, 600.00 W
+[16:12:22Z] q27-pp512-450W-r2 post: 41, 2610 MHz, 450.67 W, 600.00 W | pp: 512 tok in 0.4260s = 1201.8 tok/s (pp512, 40 reps)
+[16:12:22Z] cap-attempt 300W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:12:22Z] q9-decode-300W-r2 pre: 41, 2617 MHz, 342.46 W, 600.00 W
+[16:12:41Z] q9-decode-300W-r2 post: 41, 660 MHz, 595.19 W, 600.00 W | generated 1024 tokens in 11.275s = 90.82 tok/s
+[16:12:41Z] q9-pp512-300W-r2 pre: 41, 2617 MHz, 506.70 W, 600.00 W
+[16:12:55Z] q9-pp512-300W-r2 post: 43, 922 MHz, 600.65 W, 600.00 W | pp: 512 tok in 0.1268s = 4036.7 tok/s (pp512, 100 reps)
+[16:12:55Z] q27-decode-300W-r2 pre: 43, 922 MHz, 600.65 W, 600.00 W
+[16:13:55Z] q27-decode-300W-r2 post: 40, 2610 MHz, 426.99 W, 600.00 W | generated 512 tokens in 26.989s = 18.97 tok/s
+[16:13:55Z] q27-pp512-300W-r2 pre: 40, 2610 MHz, 426.99 W, 600.00 W
+[16:14:17Z] q27-pp512-300W-r2 post: 41, 2610 MHz, 370.66 W, 600.00 W | pp: 512 tok in 0.4287s = 1194.4 tok/s (pp512, 40 reps)
+[16:14:17Z] cap-attempt 600W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:14:17Z] q9-decode-600W-r3 pre: 41, 2610 MHz, 370.66 W, 600.00 W
+[16:14:36Z] q9-decode-600W-r3 post: 41, 682 MHz, 605.77 W, 600.00 W | generated 1024 tokens in 11.325s = 90.42 tok/s
+[16:14:36Z] q9-pp512-600W-r3 pre: 41, 682 MHz, 605.77 W, 600.00 W
+[16:14:50Z] q9-pp512-600W-r3 post: 41, 915 MHz, 589.38 W, 600.00 W | pp: 512 tok in 0.1274s = 4019.5 tok/s (pp512, 100 reps)
+[16:14:51Z] q27-decode-600W-r3 pre: 41, 915 MHz, 589.38 W, 600.00 W
+[16:15:51Z] q27-decode-600W-r3 post: 40, 2610 MHz, 451.66 W, 600.00 W | generated 512 tokens in 27.198s = 18.82 tok/s
+[16:15:51Z] q27-pp512-600W-r3 pre: 40, 2610 MHz, 451.66 W, 600.00 W
+[16:16:12Z] q27-pp512-600W-r3 post: 41, 2580 MHz, 404.14 W, 600.00 W | pp: 512 tok in 0.4295s = 1192.1 tok/s (pp512, 40 reps)
+[16:16:13Z] cap-attempt 450W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:16:13Z] q9-decode-450W-r3 pre: 41, 2580 MHz, 404.14 W, 600.00 W
+[16:16:32Z] q9-decode-450W-r3 post: 41, 682 MHz, 599.96 W, 600.00 W | generated 1024 tokens in 11.393s = 89.88 tok/s
+[16:16:32Z] q9-pp512-450W-r3 pre: 41, 2467 MHz, 530.19 W, 600.00 W
+[16:16:46Z] q9-pp512-450W-r3 post: 43, 907 MHz, 599.95 W, 600.00 W | pp: 512 tok in 0.1278s = 4007.4 tok/s (pp512, 100 reps)
+[16:16:46Z] q27-decode-450W-r3 pre: 41, 2512 MHz, 529.72 W, 600.00 W
+[16:17:47Z] q27-decode-450W-r3 post: 40, 2610 MHz, 421.55 W, 600.00 W | generated 512 tokens in 27.384s = 18.70 tok/s
+[16:17:47Z] q27-pp512-450W-r3 pre: 40, 2610 MHz, 421.55 W, 600.00 W
+[16:18:09Z] q27-pp512-450W-r3 post: 41, 2580 MHz, 329.55 W, 600.00 W | pp: 512 tok in 0.4310s = 1187.8 tok/s (pp512, 40 reps)
+[16:18:09Z] cap-attempt 300W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:18:09Z] q9-decode-300W-r3 pre: 41, 2580 MHz, 329.55 W, 600.00 W
+[16:18:29Z] q9-decode-300W-r3 post: 41, 682 MHz, 599.97 W, 600.00 W | generated 1024 tokens in 11.451s = 89.42 tok/s
+[16:18:29Z] q9-pp512-300W-r3 pre: 41, 682 MHz, 599.97 W, 600.00 W
+[16:18:43Z] q9-pp512-300W-r3 post: 43, 907 MHz, 599.97 W, 600.00 W | pp: 512 tok in 0.1282s = 3992.9 tok/s (pp512, 100 reps)
+[16:18:43Z] q27-decode-300W-r3 pre: 43, 907 MHz, 599.97 W, 600.00 W
+[16:19:44Z] q27-decode-300W-r3 post: 40, 2587 MHz, 396.58 W, 600.00 W | generated 512 tokens in 27.438s = 18.66 tok/s
+[16:19:44Z] q27-pp512-300W-r3 pre: 40, 2587 MHz, 396.58 W, 600.00 W
+[16:20:06Z] q27-pp512-300W-r3 post: 41, 2610 MHz, 398.94 W, 600.00 W | pp: 512 tok in 0.4318s = 1185.7 tok/s (pp512, 40 reps)
+[16:20:06Z] cap-attempt 600W: 'Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions' -> effective 600.00W
+[16:20:06Z] POWER BATTERY DONE
