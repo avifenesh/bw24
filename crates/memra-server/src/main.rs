@@ -6,8 +6,10 @@
 //! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
 //!
 //! Endpoints:
-//!   GET  /health                 -> {"status":"ok","models":[...]}
+//!   GET  /health                 -> {"status":"ok"|"draining","models":[...]}
 //!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
+//!   GET  /v1/models              -> OR-schema model list (context_length, architecture,
+//!                                     pricing stub, top_provider; serve-tail 2026-08-04).
 //!   GET  /metrics                -> flat serving counters + step latency percentiles.
 //!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
 //!                                     seed?,stop?,chat?,stream?,cache_salt?}. stream=true => SSE
@@ -26,6 +28,11 @@
 //! (config.json + model.safetensors[.index.json] — the run-safetensors load path; serve-st
 //! lane 2026-08-04). Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset.
 //! MEMRA_ADDR sets the bind addr.
+//!
+//! LIFECYCLE: SIGTERM = graceful drain (gap-scan F11) — new completion requests 503 with
+//! Retry-After, /health reports "draining", in-flight requests (streams included) finish
+//! up to MEMRA_DRAIN_S (default 30s), then the process exits 0. Completion responses carry
+//! X-RateLimit-Limit/-Remaining/-Reset (concurrency-slot semantics; gap-scan F12).
 
 /// x-lane QoS (lane/dl-metering gate, QoS-only extraction 2026-08-02): lane types, SLO
 /// admission policy, engine-truth step stats live in the memra-lanes crate so out-of-process
@@ -61,6 +68,160 @@ struct AppState {
     models: Arc<Vec<String>>,
     caps: Arc<HashMap<String, ModelCaps>>,
     metrics: SharedMetrics,
+    /// unix seconds at worker-ready — the /v1/models `created` value (when this server
+    /// instance made the model available; the honest timestamp we actually know).
+    started: u64,
+    /// live per-lane in-flight request gauge (HTTP-layer view: submitted and not yet
+    /// finished, queued-at-worker included) — drives the X-RateLimit-* headers and the
+    /// graceful-drain completion barrier (serve-tail lane, gap-scan F11/F12).
+    inflight: InflightCounts,
+}
+
+// ---- rate-limit headers (serve-tail lane, 2026-08-04; gap-scan F12) ----
+//
+// X-RateLimit-Limit / -Remaining / -Reset on /v1/completions and /v1/chat/completions,
+// with CONCURRENCY-SLOT semantics (this server admission-caps concurrent sessions; it has
+// no request/min or token/min budget to report — inventing one would be dishonest):
+//   Limit     = the lane's configured admission cap — the same values the worker's own
+//               admission gate enforces (interactive: MEMRA_MAX_SESSIONS batched /
+//               MAX_ACTIVE legacy; judge/harvest: LanePolicy max_sessions).
+//   Remaining = free slots at submission time (cap minus in-flight, this request
+//               included). Interactive beyond the cap QUEUES (never shed), so Remaining 0
+//               means "you will wait", not "you will be rejected".
+//   Reset     = seconds until a slot is ESTIMATED free: 0 while slots are free; else the
+//               live meter's mean service time (tokens/request x p50 step latency) when
+//               it has signal, else MEMRA_RL_RESET_S (default 2). Honestly coarse — a
+//               hint, not a promise.
+// Dark-lane 429 sheds carry the same trio (Retry-After was already there).
+
+type InflightCounts = Arc<[std::sync::atomic::AtomicUsize; 3]>;
+
+/// RAII in-flight slot: increments the lane gauge at submission, decrements when the
+/// response is complete — dropped at handler exit (blocking) or when the SSE stream
+/// finishes/disconnects (moved into the stream).
+struct InflightGuard {
+    counts: InflightCounts,
+    idx: usize,
+}
+
+impl InflightGuard {
+    /// Returns the guard + the in-flight count INCLUDING this request.
+    fn acquire(counts: InflightCounts, lane: lanes::Lane) -> (Self, usize) {
+        let idx = lane.idx();
+        let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        (InflightGuard { counts, idx }, n)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.counts[self.idx].fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The lane's configured admission cap — mirrors the worker's admission gate exactly
+/// (worker.rs step 2): interactive = MEMRA_MAX_SESSIONS (64) batched / MAX_ACTIVE legacy;
+/// judge/harvest = LanePolicy::from_env().max_sessions. Read once.
+fn lane_cap(lane: lanes::Lane) -> usize {
+    static CAPS: std::sync::OnceLock<[usize; 3]> = std::sync::OnceLock::new();
+    CAPS.get_or_init(|| {
+        let batching = std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
+        let interactive = if batching {
+            std::env::var("MEMRA_MAX_SESSIONS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(64)
+        } else {
+            worker::MAX_ACTIVE
+        };
+        let p = lanes::LanePolicy::from_env();
+        [interactive, p.max_sessions[1], p.max_sessions[2]]
+    })[lane.idx()]
+}
+
+/// Coarse next-slot estimate (seconds): mean tokens/request x p50 step latency from the
+/// live meter when it has signal, else the MEMRA_RL_RESET_S static (default 2).
+fn reset_estimate_s(m: &worker::Metrics) -> u64 {
+    if m.completed > 0 && m.step_p50_ms > 0.0 {
+        let mean_toks = m.tokens_out as f64 / m.completed as f64;
+        return ((mean_toks * m.step_p50_ms as f64 / 1000.0).ceil() as u64).clamp(1, 600);
+    }
+    static D: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("MEMRA_RL_RESET_S").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(2))
+}
+
+// ---- graceful drain (serve-tail lane, 2026-08-04; gap-scan F11) ----
+//
+// SIGTERM flips the drain flag: new requests on the completion routes get an immediate
+// 503 + Retry-After (never queued), /health reports "draining" (the LB is_ready signal),
+// and the drain task waits on the in-flight gauge (the same HTTP-layer counts the
+// rate-limit headers use — streams hold their slot until fully written) up to
+// MEMRA_DRAIN_S (default 30s), then shuts the listener down and the process exits 0.
+// Fleet restarts stop being SIGKILL-class in-flight loss (the chaos-receipt gap).
+
+/// Process-wide drain flag (set by the SIGTERM task, read by every admission gate).
+static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn draining() -> bool {
+    DRAINING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// MEMRA_DRAIN_S (default 30): how long a draining server waits for in-flight requests.
+fn drain_deadline_s() -> u64 {
+    static D: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("MEMRA_DRAIN_S").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(30))
+}
+
+/// 503 for a request that arrived during drain: OpenAI error object + Retry-After
+/// (the drain window — by then this instance is gone and its replacement is up).
+fn drain_response() -> Response {
+    let mut resp = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "server is draining (shutdown in progress); retry",
+        "server_error", None);
+    if let Ok(v) = axum::http::HeaderValue::from_str(&drain_deadline_s().to_string()) {
+        resp.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+    }
+    resp
+}
+
+/// One request's header values, computed at submission time (the "at admit" snapshot).
+struct RateLimit {
+    limit: usize,
+    remaining: usize,
+    reset_s: u64,
+}
+
+impl RateLimit {
+    fn at_admit(lane: lanes::Lane, n_inflight: usize, metrics: &SharedMetrics) -> Self {
+        Self::compute(lane_cap(lane), n_inflight, metrics)
+    }
+
+    fn compute(limit: usize, n_inflight: usize, metrics: &SharedMetrics) -> Self {
+        let remaining = limit.saturating_sub(n_inflight);
+        let reset_s = if remaining > 0 {
+            0
+        } else {
+            let m = metrics.lock().map(|m| m.clone()).unwrap_or_default();
+            reset_estimate_s(&m)
+        };
+        RateLimit { limit, remaining, reset_s }
+    }
+
+    /// Stamp the X-RateLimit-* trio onto a response.
+    fn attach(&self, mut resp: Response) -> Response {
+        let h = resp.headers_mut();
+        for (k, v) in [
+            ("x-ratelimit-limit", self.limit as u64),
+            ("x-ratelimit-remaining", self.remaining as u64),
+            ("x-ratelimit-reset", self.reset_s),
+        ] {
+            if let Ok(v) = axum::http::HeaderValue::from_str(&v.to_string()) {
+                h.insert(axum::http::HeaderName::from_static(k), v);
+            }
+        }
+        resp
+    }
 }
 
 /// POST /v1/completions request body.
@@ -626,10 +787,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     eprintln!("[server] worker ready; serving models: {model_names:?}");
 
-    let state = AppState { cmd_tx, models: model_names, caps, metrics };
+    let state = AppState {
+        cmd_tx, models: model_names, caps, metrics,
+        started: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0),
+        inflight: Arc::new(Default::default()),
+    };
+    let inflight_handle = state.inflight.clone();
     let app = Router::new()
         .route("/health", get(health))
         .route("/models", get(list_models))
+        .route("/v1/models", get(list_models_v1))
         .route("/v1/completions", post(completions))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/metrics", get(get_metrics))
@@ -639,7 +808,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("MEMRA_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     eprintln!("[server] listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    // GRACEFUL DRAIN (gap-scan F11): SIGTERM flips the drain flag (new completion
+    // requests 503 immediately; /health reports "draining"), then the shutdown future
+    // resolves once every in-flight request finished (the HTTP-layer gauge — streams
+    // hold their slot until fully written) or the MEMRA_DRAIN_S deadline (default 30s)
+    // passed. axum's graceful shutdown stops accepting, lets tracked connections finish
+    // their current response, and returns — exit 0 (in-flight loss only past deadline).
+    let inflight = inflight_handle;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let mut sigterm = match tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!("[server] WARN: no SIGTERM handler ({err}); drain disabled");
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                }
+            };
+            sigterm.recv().await;
+            DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+            let n: usize = inflight.iter()
+                .map(|c| c.load(std::sync::atomic::Ordering::SeqCst)).sum();
+            eprintln!("[server] SIGTERM: draining ({n} in flight, deadline {}s)",
+                      drain_deadline_s());
+            let deadline = std::time::Duration::from_secs(drain_deadline_s());
+            let t0 = std::time::Instant::now();
+            loop {
+                let n: usize = inflight.iter()
+                    .map(|c| c.load(std::sync::atomic::Ordering::SeqCst)).sum();
+                if n == 0 {
+                    eprintln!("[server] drain complete in {:.1}s; exiting",
+                              t0.elapsed().as_secs_f64());
+                    break;
+                }
+                if t0.elapsed() >= deadline {
+                    eprintln!("[server] drain deadline ({}s) hit with {n} in flight; exiting",
+                              drain_deadline_s());
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await?;
     Ok(())
 }
 
@@ -715,7 +926,10 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
 }
 
 async fn health(State(st): State<AppState>) -> impl IntoResponse {
-    Json(json!({ "status": "ok", "models": *st.models }))
+    // "draining" = the LB/orchestrator not-ready signal (gap-scan F11): the process is
+    // finishing in-flight work and will exit; route new traffic elsewhere.
+    let status = if draining() { "draining" } else { "ok" };
+    Json(json!({ "status": status, "models": *st.models }))
 }
 
 /// Flat serving counters + engine-truth step latency percentiles.
@@ -738,6 +952,51 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
 
 async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
     let data: Vec<_> = st.models.iter().map(|m| json!({ "id": m, "object": "model" })).collect();
+    Json(json!({ "object": "list", "data": data }))
+}
+
+/// One /v1/models entry in the OpenRouter model schema (serve-tail lane, 2026-08-04).
+/// Values are worker truth from the loaded model plan (ModelCaps probed at spawn);
+/// anything the plan doesn't know is an honest null, never an invented value.
+/// Pricing is the self-hosted stub ("0" USD strings, the OR convention for an
+/// unpriced endpoint) — a marketplace listing overrides it on the OR side.
+fn model_entry_v1(name: &str, caps: Option<&ModelCaps>, created: u64) -> serde_json::Value {
+    let ctx = caps.map(|c| c.context_length).filter(|&c| c > 0);
+    let tokenizer = caps.map(|c| c.tokenizer.as_str()).filter(|t| !t.is_empty());
+    let instruct = caps.and_then(|c| c.instruct_type.as_deref());
+    json!({
+        "id": name,
+        "name": name,
+        "object": "model",
+        "created": created,
+        "context_length": ctx,
+        "architecture": {
+            // text-only serving surface (no image/audio inputs on this server).
+            "modality": "text->text",
+            "tokenizer": tokenizer,
+            "instruct_type": instruct,
+        },
+        "pricing": {
+            "prompt": "0",
+            "completion": "0",
+            "request": "0",
+            "image": "0",
+        },
+        "top_provider": {
+            "context_length": ctx,
+            // no static per-request completion cap: max_tokens is context-bounded
+            // (gap-scan F2), so the honest schema value is null.
+            "max_completion_tokens": serde_json::Value::Null,
+        },
+    })
+}
+
+/// GET /v1/models — the OpenAI/OpenRouter model listing, enriched with per-model
+/// metadata from the loaded plan (context length, tokenizer, instruct family).
+async fn list_models_v1(State(st): State<AppState>) -> impl IntoResponse {
+    let data: Vec<_> = st.models.iter()
+        .map(|m| model_entry_v1(m, st.caps.get(m), st.started))
+        .collect();
     Json(json!({ "object": "list", "data": data }))
 }
 
@@ -988,6 +1247,15 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
         Ok(l) => l,
         Err(resp) => return resp,
     };
+    // DRAIN GATE (gap-scan F11): a draining server admits nothing new — immediate
+    // 503 + Retry-After, before any slot/queue state is touched.
+    if draining() {
+        return with_request_id(&env.id, drain_response());
+    }
+    // RATE-LIMIT SNAPSHOT (gap-scan F12): take the in-flight slot at submission time;
+    // the guard rides the response (stream included) and frees the slot at completion.
+    let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
+    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
@@ -995,20 +1263,24 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     let stop_strings = request.stop_strings.clone();
 
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
-        return with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
+        return rl.attach(with_request_id(&env.id, error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
-        Err(resp) => return resp,
+        Err(resp) => return rl.attach(with_request_id(&env.id, resp)),
     };
 
     let resp = if stream {
-        sse_response(rx, model, false, None, env.clone(), stop_strings).into_response()
+        sse_response(rx, model, false, None, env.clone(), stop_strings, Some(guard))
+            .into_response()
     } else {
-        blocking_response(rx, model, false, stop_strings, None, env.clone()).await.into_response()
+        let resp = blocking_response(rx, model, false, stop_strings, None, env.clone()).await
+            .into_response();
+        drop(guard); // response complete — free the slot before stamping headers
+        resp
     };
-    with_request_id(&env.id, resp)
+    rl.attach(with_request_id(&env.id, resp))
 }
 
 async fn chat_completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
@@ -1050,22 +1322,34 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
             return with_request_id(&env.id, bad_request(&err, None));
         }
     };
+    // DRAIN GATE (gap-scan F11): a draining server admits nothing new — immediate
+    // 503 + Retry-After, before any slot/queue state is touched.
+    if draining() {
+        return with_request_id(&env.id, drain_response());
+    }
+    // RATE-LIMIT SNAPSHOT (gap-scan F12): slot taken at submission (post-validation —
+    // a 400 never held a slot); freed when the response completes (guard).
+    let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
+    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics);
     let stop_strings = plan.request.stop_strings.clone();
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
-        return with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None));
+        return rl.attach(with_request_id(&env.id, error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
-        Err(resp) => return resp,
+        Err(resp) => return rl.attach(with_request_id(&env.id, resp)),
     };
     let resp = if stream {
-        sse_response(rx, model, true, plan.parser, env.clone(), stop_strings).into_response()
-    } else {
-        blocking_response(rx, model, true, stop_strings, plan.parser, env.clone()).await
+        sse_response(rx, model, true, plan.parser, env.clone(), stop_strings, Some(guard))
             .into_response()
+    } else {
+        let resp = blocking_response(rx, model, true, stop_strings, plan.parser, env.clone())
+            .await.into_response();
+        drop(guard); // response complete — free the slot before stamping headers
+        resp
     };
-    with_request_id(&env.id, resp)
+    rl.attach(with_request_id(&env.id, resp))
 }
 
 /// Streaming (SSE): forward each Token as an SSE `data:` line; emit a final `done` event.
@@ -1078,7 +1362,7 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
 /// (OpenAI clients never parse named SSE events) followed by [DONE].
 fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: String, chat: bool,
                 mut parser: Option<ToolStreamParser>, env: Envelope,
-                stop_strings: Vec<String>)
+                stop_strings: Vec<String>, guard: Option<InflightGuard>)
     -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     // STOP-LEAK holdback (gap-scan F9), OpenAI shapes only: content deltas buffer until
     // they can't start a stop string; matched stop text is excluded exactly like the
@@ -1086,6 +1370,9 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
     let mut scrub = (!stop_strings.is_empty() && (chat || openai_compat()))
         .then(|| StopScrubber::new(stop_strings));
     let stream = async_stream::stream! {
+        // in-flight slot rides the stream: freed when the stream completes or the
+        // client disconnects (drop) — the rate-limit gauge + drain barrier source.
+        let _guard = guard;
         let mut call_index: usize = 0;
         // first chat delta carries the role (applied to whatever delta comes first —
         // content, reasoning, or the tool-call header).
@@ -1399,7 +1686,10 @@ mod tests {
     use super::*;
 
     fn tool_caps() -> ModelCaps {
-        ModelCaps { tools_branch: true, qwen_think: true, think_switch: true, chat_ok: true }
+        ModelCaps {
+            tools_branch: true, qwen_think: true, think_switch: true, chat_ok: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1607,7 +1897,8 @@ mod tests {
         // serve-st v1 honesty gate: a dir checkpoint whose tokenizer carries no chat
         // template probes chat_ok=false -> every chat request 400s BEFORE the worker.
         let caps = ModelCaps {
-            tools_branch: false, qwen_think: false, think_switch: false, chat_ok: false };
+            tools_branch: false, qwen_think: false, think_switch: false, chat_ok: false,
+            ..Default::default() };
         let payload = serde_json::json!({
             "model": "st_model",
             "messages": [{"role": "user", "content": "hello"}],
@@ -1625,8 +1916,7 @@ mod tests {
     #[test]
     fn tools_on_model_without_tools_branch_is_rejected() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let caps = ModelCaps {
-            tools_branch: false, qwen_think: false, think_switch: false, chat_ok: true };
+        let caps = ModelCaps { chat_ok: true, ..Default::default() };
         assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx, lanes::Lane::Interactive).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({})), None, tx, lanes::Lane::Interactive).is_err());
@@ -1769,7 +2059,7 @@ mod tests {
             stop_reason: "Eos".into(), n_tokens: 2, n_prompt: 10, n_cached: 0, elapsed_s: 0.1,
         }).unwrap();
         drop(tx);
-        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new())
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
             .into_response();
         let lines = sse_data_lines(resp).await;
         assert_eq!(lines.last().map(String::as_str), Some("[DONE]"));
@@ -1808,7 +2098,7 @@ mod tests {
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
-                                vec!["Problem:".into()]).into_response();
+                                vec!["Problem:".into()], None).into_response();
         let lines = sse_data_lines(resp).await;
         let content: String = lines.iter()
             .filter(|l| *l != "[DONE]")
@@ -1826,7 +2116,7 @@ mod tests {
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
-                                vec!["Problem:".into()]).into_response();
+                                vec!["Problem:".into()], None).into_response();
         let lines = sse_data_lines(resp).await;
         let content: String = lines.iter()
             .filter(|l| *l != "[DONE]")
@@ -1842,7 +2132,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Error("boom".into())).unwrap();
         drop(tx);
-        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new())
+        let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
             .into_response();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
@@ -1969,6 +2259,181 @@ mod tests {
             })).unwrap();
             assert_eq!(req.stop.into_vec(), expected);
         }
+    }
+
+    /// Fake GPU worker: consumes Generate commands and answers each with one Token +
+    /// Done — handler-level tests (headers, drain) without a GPU or a loaded model.
+    fn fake_worker_state() -> AppState {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        std::thread::spawn(move || {
+            while let Ok(Cmd::Generate(req)) = cmd_rx.recv() {
+                let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
+                let _ = req.tx.send(Event::Done {
+                    stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 1, n_cached: 0,
+                    elapsed_s: 0.01,
+                });
+            }
+        });
+        AppState {
+            cmd_tx,
+            models: Arc::new(vec!["m".into()]),
+            caps: Arc::new(HashMap::new()),
+            metrics: SharedMetrics::default(),
+            started: 1,
+            inflight: Arc::new(Default::default()),
+        }
+    }
+
+    #[test]
+    fn rate_limit_math_remaining_hits_zero_at_cap_and_reset_arms() {
+        let metrics = SharedMetrics::default();
+        // free slots: remaining counts down, reset stays 0.
+        let rl = RateLimit::compute(4, 1, &metrics);
+        assert_eq!((rl.limit, rl.remaining, rl.reset_s), (4, 3, 0));
+        let rl = RateLimit::compute(4, 3, &metrics);
+        assert_eq!(rl.remaining, 1);
+        // at cap: remaining 0, reset arms (static default — no meter signal here).
+        let rl = RateLimit::compute(4, 4, &metrics);
+        assert_eq!(rl.remaining, 0);
+        assert!(rl.reset_s > 0, "reset must arm when no slots are free");
+        // over cap (queued interactive): saturates at 0, never underflows.
+        assert_eq!(RateLimit::compute(4, 9, &metrics).remaining, 0);
+        // meter signal: reset = mean tokens/request x p50 step, ceil seconds.
+        let m = worker::Metrics {
+            completed: 2, tokens_out: 200, step_p50_ms: 20.0, ..Default::default()
+        };
+        assert_eq!(reset_estimate_s(&m), 2); // 100 tok x 20ms = 2.0s
+    }
+
+    #[test]
+    fn inflight_guard_counts_up_and_frees_on_drop() {
+        let counts: InflightCounts = Arc::new(Default::default());
+        let (g1, n1) = InflightGuard::acquire(counts.clone(), lanes::Lane::Interactive);
+        let (g2, n2) = InflightGuard::acquire(counts.clone(), lanes::Lane::Interactive);
+        assert_eq!((n1, n2), (1, 2));
+        // lanes are independent gauges.
+        let (gj, nj) = InflightGuard::acquire(counts.clone(), lanes::Lane::Judge);
+        assert_eq!(nj, 1);
+        drop(g1);
+        drop(gj);
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(counts[1].load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(g2);
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// Serializes tests that read or flip the process-global DRAINING flag (the drain
+    /// test must not 503 a concurrently-running handler test).
+    static DRAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn responses_carry_rate_limit_headers_and_slot_frees() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        let st = fake_worker_state();
+        // non-stream chat: headers present, remaining = cap - 1 (this request held
+        // the only slot), slot freed after completion.
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = resp.headers();
+        let limit: usize = h["x-ratelimit-limit"].to_str().unwrap().parse().unwrap();
+        let remaining: usize = h["x-ratelimit-remaining"].to_str().unwrap().parse().unwrap();
+        assert_eq!(remaining, limit - 1);
+        assert_eq!(h["x-ratelimit-reset"], "0");
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "slot must free at completion");
+        // streaming completions: headers on the SSE response too; slot freed once the
+        // body is drained (the guard rides the stream).
+        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "prompt": "t", "stream": true
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().contains_key("x-ratelimit-limit"));
+        assert!(resp.headers().contains_key("x-ratelimit-remaining"));
+        assert!(resp.headers().contains_key("x-ratelimit-reset"));
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 1,
+                   "stream in flight holds the slot");
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "slot must free when the stream completes");
+    }
+
+    #[tokio::test]
+    async fn draining_rejects_new_requests_with_503_and_retry_after() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        let st = fake_worker_state();
+        DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+        // both completion routes: immediate 503 + Retry-After, no slot held.
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key("retry-after"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["error"]["message"].as_str().unwrap().contains("draining"));
+        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "prompt": "t"
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key("retry-after"));
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
+                   "rejected requests must not hold slots");
+        // /health flips to "draining" (the LB not-ready signal).
+        let resp = health(State(st.clone())).await.into_response();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "draining");
+        DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
+        // flag cleared: requests admit again (the gate is the flag, nothing latent).
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "t"}]
+            })).unwrap())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn v1_models_entry_matches_or_schema_with_honest_nulls() {
+        // KNOWN plan metadata populates every OR-schema field from worker truth.
+        let caps = ModelCaps {
+            tools_branch: true, qwen_think: true, think_switch: true, chat_ok: true,
+            context_length: 262144,
+            tokenizer: "qwen2".into(),
+            instruct_type: Some("chatml".into()),
+        };
+        let e = model_entry_v1("main", Some(&caps), 1_754_000_000);
+        assert_eq!(e["id"], "main");
+        assert_eq!(e["name"], "main");
+        assert_eq!(e["object"], "model");
+        assert_eq!(e["created"], 1_754_000_000u64);
+        assert_eq!(e["context_length"], 262144);
+        assert_eq!(e["architecture"]["modality"], "text->text");
+        assert_eq!(e["architecture"]["tokenizer"], "qwen2");
+        assert_eq!(e["architecture"]["instruct_type"], "chatml");
+        // pricing stub: OR-convention USD strings, self-hosted zeros.
+        assert_eq!(e["pricing"]["prompt"], "0");
+        assert_eq!(e["pricing"]["completion"], "0");
+        assert_eq!(e["top_provider"]["context_length"], 262144);
+        // no static completion cap (context-bounded, gap-scan F2) -> honest null.
+        assert!(e["top_provider"]["max_completion_tokens"].is_null());
+
+        // UNKNOWN metadata (no caps / empty fields) -> honest nulls, never invented.
+        let e = model_entry_v1("m", None, 7);
+        assert!(e["context_length"].is_null());
+        assert!(e["architecture"]["tokenizer"].is_null());
+        assert!(e["architecture"]["instruct_type"].is_null());
+        assert!(e["top_provider"]["context_length"].is_null());
+        let bare = ModelCaps::default(); // caps present, fields unknown (0/""/None)
+        let e = model_entry_v1("m", Some(&bare), 7);
+        assert!(e["context_length"].is_null());
+        assert!(e["architecture"]["tokenizer"].is_null());
+        assert!(e["architecture"]["instruct_type"].is_null());
     }
 
     #[tokio::test]
