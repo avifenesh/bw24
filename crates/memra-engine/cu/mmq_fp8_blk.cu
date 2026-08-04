@@ -113,8 +113,18 @@
 #define FP8_MMQ_Y      128        // must DIVIDE FP8_BLK: that is what keeps the scale row uniform
 #endif
 #define FP8_MMQ_NWARPS (FP8_MMQ_Y / 16)
+// Token tile. v2 default 256 (experiment A: the slice-1 weight-tile halving made X=256 affordable,
+// and it beats X=128 on 5 of 6 real shapes at m=6257 and 4 of 6 at m=512). FP8_MMQ_X_SMALL is the
+// fallback the launcher picks for grid-starved out_f — see the selection rule there.
 #ifndef FP8_MMQ_X
-#define FP8_MMQ_X      128
+#define FP8_MMQ_X      256
+#endif
+#ifndef FP8_MMQ_X_SMALL
+#define FP8_MMQ_X_SMALL 128
+#endif
+// out_f below this many rows takes FP8_MMQ_X_SMALL. 2048 == 16 row tiles at Y=128.
+#ifndef FP8_MMQ_SMALL_OUT_F
+#define FP8_MMQ_SMALL_OUT_F 2048
 #endif
 // minBlocksPerMultiprocessor for __launch_bounds__ — the occupancy target (v2 slice 2).
 #ifndef FP8_MMQ_OCC
@@ -562,10 +572,14 @@ extern "C" {
 size_t memra_mmq_fp8_blk_act_bytes(int in_f, int n_tokens) {
     const int64_t ne10_padded = GGML_PAD((int64_t) in_f, MATRIX_ROW_PADDING);
     const int64_t nblocks = (int64_t) n_tokens * (ne10_padded / (4 * QK8_1));
-    // +128 blocks: the mul_mat_q y-tile loader always reads a FULL mmq_x-column tile; for the final
+    // Overread pad: the mul_mat_q y-tile loader always reads a FULL mmq_x-column tile; for the final
     // k-block with n_tokens % mmq_x != 0 that read runs past the last real column. Padding the
-    // scratch keeps the overread mapped (values are garbage; write-back drops j > j_max).
-    return (size_t) (nblocks + 128) * sizeof(block_e4m3_mmq);   // 128 = max mmq_x tile width
+    // scratch keeps the overread mapped (values are garbage; write-back drops j > j_max). The pad
+    // MUST be the widest tile the launcher can pick — v2 selects between FP8_MMQ_X (256) and
+    // FP8_MMQ_X_SMALL (128) per shape, so it is the max of the two, not a hardcoded 128.
+    constexpr int64_t max_tile_x =
+        FP8_MMQ_X > FP8_MMQ_X_SMALL ? FP8_MMQ_X : FP8_MMQ_X_SMALL;
+    return (size_t) (nblocks + max_tile_x) * sizeof(block_e4m3_mmq);
 }
 
 // Scale-grid dims for an [out_f x in_f] block-128 FP8 tensor.
@@ -597,30 +611,39 @@ int memra_mmq_fp8_blk(const void * W_e4m3, const float * blk_scales, const float
     { cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) { return 1000 + (int) e; } }
 
     const int scale_cols = (in_f + FP8_BLK - 1) / FP8_BLK;
-    const int nty = (out_f    + FP8_MMQ_Y - 1) / FP8_MMQ_Y;
-    const int ntx = (n_tokens + FP8_MMQ_X - 1) / FP8_MMQ_X;
-    const dim3 grid((unsigned) nty, (unsigned) ntx, 1);
-    const dim3 block(MMQ_WARP_SIZE, FP8_MMQ_NWARPS, 1);
-
-    const size_t nbs_ids = (size_t) FP8_MMQ_X * sizeof(int);
-    const size_t nbs_y   = (size_t) FP8_MMQ_X * sizeof(block_e4m3_mmq);
-    const size_t pad     = (size_t) FP8_MMQ_NWARPS * MMQ_WARP_SIZE * sizeof(int);
-    // x tile: 2 buffers when the cp.async pipeline is on (slice 3), 1 otherwise.
-    const size_t nbs_x   = (size_t) (FP8_MMQ_PIPE ? 2 : 1)
-                         * (size_t) FP8_MMQ_Y * MMQ_MMA_TILE_X_K_FP8 * sizeof(int);
-    const size_t smem    = nbs_ids + GGML_PAD(nbs_y, pad) + nbs_x;
-
     const bool need_check = (out_f % FP8_MMQ_Y) != 0;
     const int * y_q = (const int *) act_scratch;
 
-    #define MEMRA_FP8MMQ_LAUNCH(NC) do {                                                          \
-        cudaFuncSetAttribute(mul_mat_q_fp8_blk<FP8_MMQ_X, FP8_MMQ_Y, NC>,                         \
-                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem);                  \
-        mul_mat_q_fp8_blk<FP8_MMQ_X, FP8_MMQ_Y, NC><<<grid, block, smem, st>>>(                   \
+    // TOKEN-TILE SELECTION (measured, research/fp8st-20260804/mmq-v2/RESULTS.jsonl experiment A):
+    // X=256 wins on every projection with enough out_f to fill the grid, but a narrow out_f starves
+    // it — 5120->1024 is 8 row tiles at Y=128, so X=256 leaves 2 token tiles at m=512 = 16 CTAs on
+    // an 82-SM machine (0.522x floor), while X=128 gives that same shape 0.854x. The threshold is
+    // on out_f only, so the choice is a compile-time-shaped property of the weight, not of m.
+    #define MEMRA_FP8MMQ_LAUNCH(MX, NC) do {                                                      \
+        const int    nty  = (out_f    + FP8_MMQ_Y - 1) / FP8_MMQ_Y;                                \
+        const int    ntx  = (n_tokens + (MX) - 1) / (MX);                                          \
+        const dim3   grid((unsigned) nty, (unsigned) ntx, 1);                                      \
+        const dim3   blk3(MMQ_WARP_SIZE, FP8_MMQ_NWARPS, 1);                                       \
+        const size_t nbs_ids = (size_t) (MX) * sizeof(int);                                        \
+        const size_t nbs_y   = (size_t) (MX) * sizeof(block_e4m3_mmq);                             \
+        const size_t pad     = (size_t) FP8_MMQ_NWARPS * MMQ_WARP_SIZE * sizeof(int);              \
+        /* x tile: 2 buffers when the cp.async pipeline is on (slice 3), 1 otherwise. */           \
+        const size_t nbs_x   = (size_t) (FP8_MMQ_PIPE ? 2 : 1)                                    \
+                             * (size_t) FP8_MMQ_Y * MMQ_MMA_TILE_X_K_FP8 * sizeof(int);            \
+        const size_t smem    = nbs_ids + GGML_PAD(nbs_y, pad) + nbs_x;                             \
+        cudaFuncSetAttribute(mul_mat_q_fp8_blk<(MX), FP8_MMQ_Y, NC>,                              \
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem);                   \
+        mul_mat_q_fp8_blk<(MX), FP8_MMQ_Y, NC><<<grid, blk3, smem, st>>>(                          \
             (const uint8_t *) W_e4m3, blk_scales, y_q, y, out_f, n_tokens, in_f, n_tokens, out_f, \
-            in_f, scale_cols, out_scale);                                                         \
+            in_f, scale_cols, out_scale);                                                          \
     } while (0)
-    if (need_check) { MEMRA_FP8MMQ_LAUNCH(true); } else { MEMRA_FP8MMQ_LAUNCH(false); }
+    if (out_f < FP8_MMQ_SMALL_OUT_F) {
+        if (need_check) { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X_SMALL, true); }
+        else            { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X_SMALL, false); }
+    } else {
+        if (need_check) { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X, true); }
+        else            { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X, false); }
+    }
     #undef MEMRA_FP8MMQ_LAUNCH
 
     cudaError_t e = cudaGetLastError();
