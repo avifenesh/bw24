@@ -1,0 +1,15 @@
+prompt 33 tok, served stream 1600 tok
+FLIP step 161: oracle greedy 53113 vs served 56458  gap=0.0352  top2=(53113:21.6777, 56458:21.6425)  step_margin=0.0352
+FLIP step 244: oracle greedy 1577 vs served 14046  gap=0.1332  top2=(1577:17.0224, 14046:16.8891)  step_margin=0.1332
+FLIP step 522: oracle greedy 9333 vs served 41998  gap=0.0362  top2=(9333:24.9807, 41998:24.9445)  step_margin=0.0362
+FLIP step 543: oracle greedy 36593 vs served 41671  gap=0.0249  top2=(36593:22.2935, 41671:22.2687)  step_margin=0.0249
+FLIP step 588: oracle greedy 1382 vs served 46451  gap=0.0072  top2=(1382:20.8091, 46451:20.8019)  step_margin=0.0072
+FLIP step 631: oracle greedy 318 vs served 430  gap=0.0235  top2=(318:22.2957, 430:22.2722)  step_margin=0.0235
+FLIP step 739: oracle greedy 10168 vs served 47209  gap=0.0618  top2=(10168:21.2207, 47209:21.1589)  step_margin=0.0618
+FLIP step 879: oracle greedy 11748 vs served 17355  gap=0.0025  top2=(11748:23.7470, 17355:23.7445)  step_margin=0.0025
+FLIP step 1024: oracle greedy 9598 vs served 11988  gap=0.0137  top2=(9598:17.1675, 11988:17.1538)  step_margin=0.0137
+FLIP step 1111: oracle greedy 30931 vs served 8984  gap=0.0837  top2=(30931:27.8288, 8984:27.7452)  step_margin=0.0837
+FLIP step 1296: oracle greedy 17501 vs served 75887  gap=0.0067  top2=(17501:29.3370, 75887:29.3303)  step_margin=0.0067
+FLIP step 1370: oracle greedy 11148 vs served 458  gap=0.0120  top2=(11148:20.7966, 458:20.7846)  step_margin=0.0120
+FLIP step 1463: oracle greedy 57733 vs served 279  gap=0.0009  top2=(57733:22.4764, 279:22.4755)  step_margin=0.0009
+SUMMARY: 1600 steps, 13 independent flips (0.812/100tok)  step-margin median=3.736 p10=0.382 min=0.0003

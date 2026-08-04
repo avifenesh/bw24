@@ -1,0 +1,19 @@
+=== q9long n=400 r1 ===
+[q9long n=400 r1] first_div=161 n_diff=239/400 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=400 r2 ===
+[q9long n=400 r2] first_div=161 n_diff=239/400 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=400 r3 ===
+[q9long n=400 r3] first_div=161 n_diff=239/400 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=800 r1 ===
+[q9long n=800 r1] first_div=161 n_diff=638/800 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=800 r2 ===
+[q9long n=800 r2] first_div=161 n_diff=638/800 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=800 r3 ===
+[q9long n=800 r3] first_div=161 n_diff=638/800 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=1600 r1 ===
+[q9long n=1600 r1] first_div=161 n_diff=1424/1600 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=1600 r2 ===
+[q9long n=1600 r2] first_div=161 n_diff=1424/1600 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+=== q9long n=1600 r3 ===
+[q9long n=1600 r3] first_div=161 n_diff=1424/1600 cli=[53113, 13, 198] srv=[56458, 53113, 13]
+battery-q9long done

@@ -1,0 +1,44 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Write a detailed essay about the history of the Roman Empire, covering its founding, expansion, governance, and fall.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Write a detailed essay about the history of the Roman Empire, covering its founding, expansion, governance, and fall."
+prompt tokens: [248045, 846, 198, 7734, 264, 11346, 8627, 883, 279, 3712, 314, 279, 12386, 19825, 11, 17661, 1141, 34063, 11, 14046, 11, 32957, 11, 321, 4255, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=8160  decode argmax=8160  logit maxdiff=9.809e-1  MATCH
+batched-prime argmax=8160  tokenwise argmax=8160  logit maxdiff=1.010e0  MATCH
+prefill 33 tok in 0.0333s = 990.8 tok/s (pp33)
+generated 400 tokens in 2.945s = 135.84 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.034s) [stop: MaxNew]
+tokens: [8160, 579, 264, 7047, 1817, 421, 11177, 310, 279, 8627, 383, 279, 3712, 314, 279, 12386, 19825, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 2972, 25562, 64700, 10776, 314, 279, 12386, 19825, 13, 198, 262, 348, 256, 2972, 1536, 1577, 7722, 310, 17227, 64700, 11962, 286, 11, 52722, 11, 77808, 11, 14356, 13, 198, 262, 348, 256, 2972, 3925, 64700, 60552, 8627, 13, 198, 262, 348, 256, 2972, 51, 588, 64700, 29602, 1340, 11, 13842, 3482, 15156, 11, 31838, 13, 271, 17, 13, 220, 2972, 58235, 27662, 64700, 198, 262, 348, 256, 2972, 3723, 64700, 41717, 310, 381, 21870, 321, 51067, 13, 198, 262, 348, 256, 2972, 35924, 64700, 198, 285, 348, 256, 27256, 25, 561, 24556, 314, 21047, 303, 3712, 13, 198, 285, 348, 256, 71480, 21085, 25, 21047, 579, 11285, 494, 264, 2526, 3177, 20105, 310, 264, 12401, 30315, 321, 1141, 40357, 17177, 5891, 17820, 383, 2279, 11, 32957, 11, 321, 53113, 13, 198, 285, 348, 256, 9254, 2117, 25, 11962, 286, 1411, 5260, 1411, 19825, 1411, 14356, 13, 198, 262, 348, 256, 2972, 9333, 220, 16, 25, 561, 11962, 286, 321, 22044, 5260, 318, 22, 20, 18, 17501, 1317, 220, 17, 22, 17501, 188912, 198, 285, 348, 256, 44942, 5972, 13, 42324, 318, 42887, 18835, 321, 4767, 350, 553, 198, 285, 348, 256, 561, 14634, 4031, 318, 6449, 391, 553, 198, 285, 348, 256, 561, 5260, 25, 7065, 13885, 11, 9598, 11, 14046, 318, 47, 3409, 14534, 11, 3156, 337, 416, 553, 198, 285, 348, 256, 9492, 56264, 318, 6262, 565, 14183, 11, 46739, 92016, 553, 198, 262, 348, 256, 2972, 9333, 220, 17, 25, 561, 41262, 314, 279, 19825, 318, 17, 22, 17501, 1317, 220, 17, 23, 19, 9343, 188912, 198, 285, 348, 256, 5963, 350, 25, 5339, 33178, 11, 67941, 240398, 13, 198, 285, 348, 256, 561, 20285, 7441, 5570, 692, 1052, 318, 45, 44336, 310, 34503, 85176, 83432, 553, 198, 285, 348, 256, 561, 43643, 314, 279, 20226, 26230, 318, 6110, 2803, 553, 198, 285, 348, 256, 7521, 499, 1112, 1068, 321, 279, 345, 16855, 14828, 318, 265, 60077, 553, 198, 262, 348, 256, 2972, 9333, 220, 18, 25, 77808, 321, 16222, 64700, 198, 285, 348, 256, 23900, 1785, 318, 22106, 20559, 40755, 11, 21768, 1068, 553, 198, 285, 348, 256, 43009, 318, 55054, 82, 11, 22244, 77724, 82, 553, 198, 285, 348, 256, 26096, 7091]
+OUTPUT TEXT: "Here's a thinking process that leads to the essay on the history of the Roman Empire:\n\n1.  **Analyze the Request:**\n    *   **Topic:** History of the Roman Empire.\n    *   **Key Aspects to Cover:** Founding, Expansion, Governance, Fall.\n    *   **Format:** Detailed essay.\n    *   **Tone:** Informative, academic yet accessible, structured.\n\n2.  **Outline Structure:**\n    *   **Title:** Needs to be engaging and descriptive.\n    *   **Introduction:**\n        *   Hook: The significance of Rome in history.\n        *   Thesis Statement: Rome's journey from a small city-state to a vast empire and its eventual decline offers lessons on power, governance, and resilience.\n        *   Roadmap: Founding -> Republic -> Empire -> Fall.\n    *   **Section 1: The Founding and Early Republic (753 BC – 27 BC):**\n        *   Myth vs. Reality (Romulus and Remus).\n        *   The Kingdom period (briefly).\n        *   The Republic: Consuls, Senate, expansion (Punic Wars, Carthage).\n        *   Social unrest (Gracchi, Spartacus).\n    *   **Section 2: The Rise of the Empire (27 BC – 284 AD):**\n        *   Augustus: First Emperor, Pax Romana.\n        *   The Five Good Emperors (Nerva to Marcus Aurelius).\n        *   The Crisis of the Third Century (instability).\n        *   Diocletian and the Tetrarchy (restructuring).\n    *   **Section 3: Governance and Administration:**\n        *   Legal system (Twelve Tables, Justinian).\n        *   Infrastructure (Roads, Aqueducts).\n        *   Military organization"
+--- generated text ---
+Here's a thinking process that leads to the essay on the history of the Roman Empire:
+
+1.  **Analyze the Request:**
+    *   **Topic:** History of the Roman Empire.
+    *   **Key Aspects to Cover:** Founding, Expansion, Governance, Fall.
+    *   **Format:** Detailed essay.
+    *   **Tone:** Informative, academic yet accessible, structured.
+
+2.  **Outline Structure:**
+    *   **Title:** Needs to be engaging and descriptive.
+    *   **Introduction:**
+        *   Hook: The significance of Rome in history.
+        *   Thesis Statement: Rome's journey from a small city-state to a vast empire and its eventual decline offers lessons on power, governance, and resilience.
+        *   Roadmap: Founding -> Republic -> Empire -> Fall.
+    *   **Section 1: The Founding and Early Republic (753 BC – 27 BC):**
+        *   Myth vs. Reality (Romulus and Remus).
+        *   The Kingdom period (briefly).
+        *   The Republic: Consuls, Senate, expansion (Punic Wars, Carthage).
+        *   Social unrest (Gracchi, Spartacus).
+    *   **Section 2: The Rise of the Empire (27 BC – 284 AD):**
+        *   Augustus: First Emperor, Pax Romana.
+        *   The Five Good Emperors (Nerva to Marcus Aurelius).
+        *   The Crisis of the Third Century (instability).
+        *   Diocletian and the Tetrarchy (restructuring).
+    *   **Section 3: Governance and Administration:**
+        *   Legal system (Twelve Tables, Justinian).
+        *   Infrastructure (Roads, Aqueducts).
+        *   Military organization
