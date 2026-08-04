@@ -1,0 +1,48 @@
+=== v0.69.0 release battery — 5090 rig, git=4cfb4c738071526a2a10cdcc0b15cf51b0a9dbf9 (train HEAD, restructure/public-split), 2026-08-04 ===
+This battery IS the merge gate for lane/crates-release slice 3 (fatbin embed:
+include_bytes! + Ptx::from_binary/cuModuleLoadData replacing builder OUT_DIR file
+paths) and for the FP8-MMQ dead-seam deletion (81f4d536).
+
+Window: memra-server daily driver (21.6GB, port 8002) stopped after 15-min idle check
+(no live 8002 connections, log idle since 22:08), battery run under flock
+/tmp/gpu5090.lock, server RESTARTED after (health OK, /health {"status":"ok"}).
+llama-server --embedding co-resident (260MiB, allowlisted).
+
+[1] kernel-check FULL, naked env (kernel-check.log) — VALIDATES THE FATBIN EMBED:
+ALL GREEN: kernels match CPU reference.   (458 OK, 0 FAIL)
+
+[1b] fp8_mmq_check (fp8-mmq-check.log) — re-run required by the seam deletion
+(mmq_fp8_blk.cu: PIPE/OCC arms removed, Y fixed at 128):
+=== fp8-mmq-check ALL GREEN (EXACT arm bit-identical, RAND arm < 1e-5 of RMS, 254/254 codes) ===
+
+[2] run-gen argmax (NGEN=128, MEMRA_PROMPT_FILE=research/e2e/prompts/pp512.txt):
+  q9 (Qwen3.5-9B-NVFP4-MTP):
+    prefill argmax=365  decode argmax=365  logit maxdiff=8.366e-1  MATCH
+    batched-prime argmax=365  tokenwise argmax=365  logit maxdiff=7.100e-1  MATCH
+    prefill 512 tok in 0.1066s = 4802.2 tok/s (pp512)   [argmax identical to v0.68 battery]
+  q27 (Qwen3.6-27B-NVFP4-Q4_K_M-mtp):
+    prefill argmax=271  decode argmax=271  logit maxdiff=3.570e-1  MATCH
+    batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=3.927e-1  MATCH
+    prefill 512 tok in 0.3571s = 1433.6 tok/s (pp512)   [argmax identical to v0.68 battery]
+
+[3] run-spec K=1..8 self-consistency (q9 + owntrim drafter, board-2048 prompt, NGEN=64):
+  K=1..8 all: self-consistency PASS (identical to generate)
+  acceptance 80.0 / 62.5 / 52.0 / 41.7 / 35.7 / 29.7 / 25.5 / 22.3 %
+  === SELF-CONSISTENCY PASS ===
+
+[4] tools/serve-smoke.sh (q9 + draft, OpenAI compat surface):
+  serve-smoke: 0 failed — all 9 checks ok (/models, chat non-stream, chat stream,
+  /v1/completions, greedy determinism, 3-concurrent, long generation, spec==plain
+  greedy text). The v0.68-era 4-fail set is GONE post the draft-mask gate fix.
+
+[5] tools/serve-st-gate.sh (9B ST, qwen35-9b-nvfp4-st-modelopt):
+  serve-st-gate: 0 failed — /models lists ST model; chat coherent via ST template;
+  CLI-vs-server greedy streams identical 64/64 ids; no quarantine notice (dir
+  checkpoints spec-eligible, #68 closed); default (spec) text prefix-matches the
+  tokenwise serve oracle at the 400-tok window (1523/1518 chars).
+
+VERDICT: ALL GREEN — kernel-check 458 OK / 0 FAIL (fatbin embed validated);
+fp8_mmq_check ALL GREEN post seam-deletion; q9+q27 argmax MATCH (primary AND
+batched-prime, argmax values identical to the v0.68 battery); 8/8 K self-consistency
+PASS; serve-smoke 0 failed; serve-st-gate 0 failed. Merge gate for the crates-release
+fatbin change: PASSED.
