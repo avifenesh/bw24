@@ -1,0 +1,114 @@
+== fast-gate plan (diff vs 8aa1eb1e) ==
+  changed: crates/memra-engine/src/bin/sample_check.rs
+  changed: crates/memra-engine/src/spec.rs
+  changed: crates/memra-sampling/src/lib.rs
+  changed: crates/memra-server/src/main.rs
+  changed: crates/memra-server/src/worker.rs
+  changed: docs/SERVING.md
+  changed: research/sampledspec-20260804/greedy.txt
+  changed: research/sampledspec-20260804/loop.txt
+  changed: research/sampledspec-20260804/negctl1-inverted-accept.log
+  changed: research/sampledspec-20260804/negctl2-no-residual.log
+  changed: research/sampledspec-20260804/perf-medians.txt
+  changed: research/sampledspec-20260804/perf.txt
+  changed: research/sampledspec-20260804/prefix-control.log
+  changed: research/sampledspec-20260804/raw/greedy-1.err
+  changed: research/sampledspec-20260804/raw/greedy-1.json
+  changed: research/sampledspec-20260804/raw/greedy-2.err
+  changed: research/sampledspec-20260804/raw/greedy-2.json
+  changed: research/sampledspec-20260804/raw/greedy-3.err
+  changed: research/sampledspec-20260804/raw/greedy-3.json
+  changed: research/sampledspec-20260804/raw/health.json
+  changed: research/sampledspec-20260804/raw/loop-1.err
+  changed: research/sampledspec-20260804/raw/loop-1.json
+  changed: research/sampledspec-20260804/raw/loop-2.err
+  changed: research/sampledspec-20260804/raw/loop-2.json
+  changed: research/sampledspec-20260804/raw/loop-3.err
+  changed: research/sampledspec-20260804/raw/loop-3.json
+  changed: research/sampledspec-20260804/raw/loop-4.err
+  changed: research/sampledspec-20260804/raw/loop-4.json
+  changed: research/sampledspec-20260804/raw-nospec/rep1.err
+  changed: research/sampledspec-20260804/raw-nospec/rep1.json
+  changed: research/sampledspec-20260804/raw-nospec/rep2.err
+  changed: research/sampledspec-20260804/raw-nospec/rep2.json
+  changed: research/sampledspec-20260804/raw-nospec/rep3.err
+  changed: research/sampledspec-20260804/raw-nospec/rep3.json
+  changed: research/sampledspec-20260804/raw-nospec/rep4.err
+  changed: research/sampledspec-20260804/raw-nospec/rep4.json
+  changed: research/sampledspec-20260804/raw-nospec/rep5.err
+  changed: research/sampledspec-20260804/raw-nospec/rep5.json
+  changed: research/sampledspec-20260804/raw/perf-greedy-1.err
+  changed: research/sampledspec-20260804/raw/perf-greedy-1.json
+  changed: research/sampledspec-20260804/raw/perf-greedy-2.err
+  changed: research/sampledspec-20260804/raw/perf-greedy-2.json
+  changed: research/sampledspec-20260804/raw/perf-greedy-3.err
+  changed: research/sampledspec-20260804/raw/perf-greedy-3.json
+  changed: research/sampledspec-20260804/raw/perf-greedy-4.err
+  changed: research/sampledspec-20260804/raw/perf-greedy-4.json
+  changed: research/sampledspec-20260804/raw/perf-greedy-5.err
+  changed: research/sampledspec-20260804/raw/perf-greedy-5.json
+  changed: research/sampledspec-20260804/raw/perf-sampled-1.err
+  changed: research/sampledspec-20260804/raw/perf-sampled-1.json
+  changed: research/sampledspec-20260804/raw/perf-sampled-2.err
+  changed: research/sampledspec-20260804/raw/perf-sampled-2.json
+  changed: research/sampledspec-20260804/raw/perf-sampled-3.err
+  changed: research/sampledspec-20260804/raw/perf-sampled-3.json
+  changed: research/sampledspec-20260804/raw/perf-sampled-4.err
+  changed: research/sampledspec-20260804/raw/perf-sampled-4.json
+  changed: research/sampledspec-20260804/raw/perf-sampled-5.err
+  changed: research/sampledspec-20260804/raw/perf-sampled-5.json
+  changed: research/sampledspec-20260804/raw-prefix/old-loop1.err
+  changed: research/sampledspec-20260804/raw-prefix/old-loop1.json
+  changed: research/sampledspec-20260804/raw-prefix/old-loop2.err
+  changed: research/sampledspec-20260804/raw-prefix/old-loop2.json
+  changed: research/sampledspec-20260804/raw-prefix/old-loop3.err
+  changed: research/sampledspec-20260804/raw-prefix/old-loop3.json
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-omitseed1.err
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-omitseed1.json
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-omitseed2.err
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-omitseed2.json
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-omitseed3.err
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-omitseed3.json
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-seed1.err
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-seed1.json
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-seed2.err
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-seed2.json
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-seed3.err
+  changed: research/sampledspec-20260804/raw-prefix/old-t1-seed3.json
+  changed: research/sampledspec-20260804/raw/seed-fixed-1.err
+  changed: research/sampledspec-20260804/raw/seed-fixed-1.json
+  changed: research/sampledspec-20260804/raw/seed-fixed-2.err
+  changed: research/sampledspec-20260804/raw/seed-fixed-2.json
+  changed: research/sampledspec-20260804/raw/seed-omit-1.err
+  changed: research/sampledspec-20260804/raw/seed-omit-1.json
+  changed: research/sampledspec-20260804/raw/seed-omit-2.err
+  changed: research/sampledspec-20260804/raw/seed-omit-2.json
+  changed: research/sampledspec-20260804/raw/seed-omit-3.err
+  changed: research/sampledspec-20260804/raw/seed-omit-3.json
+  changed: research/sampledspec-20260804/raw/seed-omit-4.err
+  changed: research/sampledspec-20260804/raw/seed-omit-4.json
+  changed: research/sampledspec-20260804/RESULTS.md
+  changed: research/sampledspec-20260804/run-battery.sh
+  changed: research/sampledspec-20260804/sample-check.log
+  changed: research/sampledspec-20260804/seed.txt
+  changed: research/sampledspec-20260804/server-8102.log
+  changed: research/sampledspec-20260804/server-8102-nospec.log
+  kernel-check scope: synthetic
+  tier-1 argmax probes: samp,g12,sampt
+  tier-1 spec probes:   q35spec,g31spec
+  NOTE: memra-server touched — run tools/serve-smoke.sh (serving surface is not fast-gated)
+  logs: /tmp/fast-gate-20260805-000526
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check (synthetic arms): GREEN (2s)
+tier 0: GREEN (4s total)
+== fast-gate tier 1 ==
+  samp: PASS (self-gating check green, 2s)
+  g12: PASS (gates green + golden token-identical, 154s)
+  sampt: PASS (self-gating check green, 0s)
+  q35spec: PASS (gates green + golden token-identical, 12s)
+  g31spec: PASS (stream agreement 32/32, 8s)
+tier 1: 0 fail (180s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.

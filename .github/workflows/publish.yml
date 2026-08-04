@@ -17,6 +17,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "true = REAL publish of the workspace version on this ref (recovery door for a partial tag publish — v0.69.0 shipped 5/9 crates before the new-crate burst limit 429'd). Default false = dry-run."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,20 +55,55 @@ jobs:
           fi
 
       - name: Dry-run (manual dispatch — no upload)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish != true
         run: cargo publish --workspace --exclude memra-probe --locked --dry-run
         env:
           MEMRA_NVCC: /usr/local/cuda-13.1/bin/nvcc
           MEMRA_CUDA_ARCH: "120a"
 
-      - name: Publish to crates.io (tag runs)
-        if: github.event_name == 'push'
+      # Per-crate, dependency order, skip-if-live, 429-aware. `cargo publish --workspace`
+      # is all-or-nothing: when the v0.69.0 run 429'd on crates.io's new-crate burst limit
+      # mid-batch (5 crates live, 4 not), the rerun hard-failed on "crate already exists"
+      # instead of resuming. This loop is resumable: already-published versions skip via
+      # the registry API, and a 429 waits out the documented refill (1 new crate/10 min)
+      # instead of dying. Order = topological (cargo metadata), memra-probe excluded
+      # (publish=false).
+      - name: Publish to crates.io (tag runs + dispatch with publish=true)
+        if: github.event_name == 'push' || inputs.publish == true
         run: |
+          set -o pipefail
           if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
             echo "::error::CARGO_REGISTRY_TOKEN secret is not set — add a crates.io API token in repo Settings > Secrets (docs/RELEASING.md)"
             exit 1
           fi
-          cargo publish --workspace --exclude memra-probe --locked
+          version=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c "import json,sys; m=json.load(sys.stdin); print(next(p['version'] for p in m['packages'] if p['name']=='memra-server'))")
+          echo "publishing workspace version $version"
+          for crate in memra-gguf memra-kv memra-runtime memra-sampling memra-tokenizer \
+                       memra-validate memra-engine memra-lanes memra-server; do
+            if curl -sf "https://crates.io/api/v1/crates/$crate/$version" \
+                 -A "memra-publish-workflow (github.com/avifenesh/memra)" | grep -q '"version"'; then
+              echo "$crate@$version already on crates.io — skipping"
+              continue
+            fi
+            ok=0
+            for attempt in 1 2 3 4 5 6; do
+              if cargo publish -p "$crate" --locked 2>&1 | tee "/tmp/publish-$crate.log"; then
+                ok=1; break
+              fi
+              if grep -q "429 Too Many Requests" "/tmp/publish-$crate.log"; then
+                echo "::warning::$crate rate-limited (attempt $attempt/6) — waiting 620s for the new-crate window"
+                sleep 620
+              else
+                echo "::error::$crate failed for a non-rate-limit reason — see log above"
+                exit 1
+              fi
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::error::$crate still rate-limited after 6 attempts"
+              exit 1
+            fi
+          done
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           MEMRA_NVCC: /usr/local/cuda-13.1/bin/nvcc

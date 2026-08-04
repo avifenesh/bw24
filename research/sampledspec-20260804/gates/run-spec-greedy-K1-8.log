@@ -1,0 +1,43 @@
+=== run-spec K=1..8 self-consistency gate — lane/sampled-spec ===
+model: Qwen3.5-9B-NVFP4-MTP (MTP head; run-spec drafts from the MTP head, not MEMRA_DRAFT)
+NOTE: box SHARED with the live 8002 server (see gpustate-before). tok/s here is NOT perf evidence.
+gpu-before:
+15176 MiB, 24463 MiB
+pid, used_gpu_memory [MiB], process_name
+476415, 332 MiB, /home/avifenesh/projects/llama.cpp/build/bin/llama-server
+739917, 14786 MiB, /home/avifenesh/projects/bw24-unified/target/release/memra-server
+loaded qwen35 (33 layers, nextn=1)
+text prompt (58 chars, chat-templated) -> 20 tokens
+prompt tokens: [248045, 846, 198, 814, 20139, 303, 2250, 22157, 1204, 63520, 45543, 4138, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+
+[generate]   47 tok in 0.346s = 135.84 tok/s (gen-only; this run's prime 0.032s)
+  tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 31819, 25, 10636, 21473, 3588, 3574, 13, 198, 262, 348, 256, 42794, 25, 79091, 303, 6681, 2250, 22157, 13, 271, 17, 13, 220, 2972, 15771, 2598, 10636, 21473, 3588, 3574, 64700]
+
+[generate_spec K=1] 48 tok in 0.283s = 166.08 tok/s (1.22x vs generate; this run's prime 0.034s)
+  acceptance: 22/25 = 88.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 48 tok in 0.234s = 201.19 tok/s (1.48x vs generate; this run's prime 0.035s)
+  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 48 tok in 0.201s = 234.19 tok/s (1.72x vs generate; this run's prime 0.035s)
+  acceptance: 34/39 = 87.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 48 tok in 0.224s = 209.73 tok/s (1.54x vs generate; this run's prime 0.035s)
+  acceptance: 36/48 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 48 tok in 0.237s = 198.10 tok/s (1.46x vs generate; this run's prime 0.034s)
+  acceptance: 38/55 = 69.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 48 tok in 0.268s = 175.37 tok/s (1.29x vs generate; this run's prime 0.034s)
+  acceptance: 38/66 = 57.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 48 tok in 0.302s = 155.67 tok/s (1.15x vs generate; this run's prime 0.034s)
+  acceptance: 38/77 = 49.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 48 tok in 0.431s = 109.16 tok/s (0.80x vs generate; this run's prime 0.034s)
+  acceptance: 39/80 = 48.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+run-spec exit rc=0
+gpu-after:
+15176 MiB
