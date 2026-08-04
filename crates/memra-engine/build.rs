@@ -169,7 +169,9 @@ fn main() {
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_OCC_FP8");
         let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
         let fp8_y = std::env::var("MEMRA_MMQ_Y_FP8").ok();
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_PIPE_FP8");
         let fp8_occ = std::env::var("MEMRA_MMQ_OCC_FP8").ok();
+        let fp8_pipe = std::env::var("MEMRA_MMQ_PIPE_FP8").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -223,6 +225,7 @@ fn main() {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
                 if let Some(y) = &fp8_y { args.push(format!("-DFP8_MMQ_Y={y}")); }
                 if let Some(o) = &fp8_occ { args.push(format!("-DFP8_MMQ_OCC={o}")); }
+                if let Some(p) = &fp8_pipe { args.push(format!("-DFP8_MMQ_PIPE={p}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());
