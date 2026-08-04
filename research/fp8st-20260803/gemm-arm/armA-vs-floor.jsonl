@@ -1,0 +1,17 @@
+{"lane":"fp8-gemm-arm","box":"vast-2x5090","gpu":"RTX5090 idx0","ckpt":"/root/models/qwen36-27b-fp8 (block-128 FP8 ST)","commit":"1bbe8151","date":"2026-08-03/04","protocol":"pp: MEMRA_PP_ONLY=1 MEMRA_PP_REPS=3 in-process median, N=5 process reps interleaved FLOOR,ARMA; tg: MEMRA_NGEN=128 pp512 prompt; flock'd, GPU0 only","note":"schema row: arm, rep, pp_tok_s, tg_tok_s, argmax_match(vs floor 128-tok greedy stream), maxdiff(verify-prefill logit)"}
+{"arm":"floor","rep":1,"pp_tok_s":null,"tg_tok_s":52.75,"argmax_match":true,"maxdiff":"0.000e0","kind":"accuracy","log":"probe-floor.log"}
+{"arm":"floor","rep":2,"pp_tok_s":null,"tg_tok_s":52.96,"argmax_match":true,"maxdiff":"0.000e0","kind":"accuracy","log":"floor-accuracy-r2.log"}
+{"arm":"armA_fold","rep":1,"pp_tok_s":null,"tg_tok_s":55.20,"argmax_match":false,"first_divergence_pos":20,"n_diverged":102,"maxdiff":"3.815e-6","kind":"accuracy","log":"armA-accuracy-r1.log"}
+{"arm":"armA_fold","rep":2,"pp_tok_s":null,"tg_tok_s":54.97,"argmax_match":false,"first_divergence_pos":20,"n_diverged":102,"maxdiff":"3.815e-6","kind":"accuracy","log":"armA-accuracy-r2.log"}
+{"arm":"e4m3_nofold_control","rep":1,"pp_tok_s":null,"tg_tok_s":52.73,"argmax_match":true,"maxdiff":"0.000e0","kind":"accuracy","log":"armA-nofold-control-r1.log","note":"MEMRA_ST_E4M3=1 without fold == floor bit-exact: blk-reject sends block-128 grid to Q8_0 arm; divergence is the FOLD's"}
+{"arm":"floor","rep":1,"pp_tok_s":4066.7,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-floor-r1.log"}
+{"arm":"armA_fold","rep":1,"pp_tok_s":4807.5,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-armA-r1.log"}
+{"arm":"floor","rep":2,"pp_tok_s":4063.4,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-floor-r2.log"}
+{"arm":"armA_fold","rep":2,"pp_tok_s":4816.6,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-armA-r2.log"}
+{"arm":"floor","rep":3,"pp_tok_s":4068.3,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-floor-r3.log"}
+{"arm":"armA_fold","rep":3,"pp_tok_s":4816.3,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-armA-r3.log"}
+{"arm":"floor","rep":4,"pp_tok_s":4078.2,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-floor-r4.log"}
+{"arm":"armA_fold","rep":4,"pp_tok_s":4819.2,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-armA-r4.log"}
+{"arm":"floor","rep":5,"pp_tok_s":4066.0,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-floor-r5.log"}
+{"arm":"armA_fold","rep":5,"pp_tok_s":4808.4,"tg_tok_s":null,"argmax_match":null,"maxdiff":null,"kind":"pp512","log":"pp-armA-r5.log"}
+{"summary":"medians","floor_pp_median":4066.7,"armA_pp_median":4816.3,"pp_delta":"+18.4%","floor_tg":[52.75,52.96],"armA_tg":[55.20,54.97],"tg_delta":"+4.1% (N=2 each)","accuracy_verdict":"ARGMAX MISMATCH — fold precision loss","detail":"verify-prefill (first token + prefill/decode self-consistency) MATCH both arms (floor maxdiff 0.000e0, armA 3.815e-6) but the 128-tok greedy stream diverges at generated pos 20 (102/128 differ). Bit-repro N=2 per arm (armA r1==r2, floor r1==r2). e4m3-nofold control == floor exactly, attributing divergence to the per-tensor scale-fold, not the e4m3 config.","thermal":"interleaved same-session, temps 34-40C, 1Hz CSV battery-gpu0-1hz.csv"}

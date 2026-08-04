@@ -905,6 +905,14 @@ fn f8_deq_f32(bytes: &[u8], out_f: usize, in_f: usize, scales: &F8Scales) -> Vec
     data
 }
 
+/// `MEMRA_FP8_FOLD=1` (default OFF; ARM A, lane fp8-gemm-arm): fold a block-128 scale grid
+/// into ONE per-tensor scale at load (global-amax re-encode) so the per-tensor e4m3
+/// consumers (QT_F8_E4M3 resident arm + try_fp8_gemm) take block-128 checkpoints unchanged.
+fn fp8_fold_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_FP8_FOLD").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Parse an FP8 `weight_scale` / `weight_scale_inv` sibling into its granularity.
 /// F32 and BF16 payloads accepted for every granularity. None = unrecognized encoding
 /// (element count matches neither 1, out_f, nor the ceil-128 block grid) — the caller
@@ -996,6 +1004,32 @@ impl TensorSource for SafetensorsSource {
         let (out_hf, in_hf) = (info.shape[0] as usize, info.shape[1] as usize);
         let (scale, blk) = match f8_scales(sinfo, sbytes, out_hf, in_hf)? {
             F8Scales::PerTensor(s) => (s, None),
+            // ARM A scale-fold (MEMRA_FP8_FOLD=1, lane fp8-gemm-arm 2026-08-03): collapse the
+            // 128x128 grid to ONE per-tensor scale at load — dequant each block by its own scale,
+            // take the global amax, re-encode nearest-e4m3 with s = amax/448 (e4m3 max normal).
+            // The result is a plain per-tensor operand: the existing QT_F8_E4M3 resident arm and
+            // try_fp8_gemm consume it UNCHANGED (their blk-reject gates never see a grid). This is
+            // LOSSY where the grid's dynamic range varies across blocks (that's the arm's whole
+            // question — argmax + logit-maxdiff vs the Q8_0 floor arbitrate). Plain targets only:
+            // a Transform (V-reorder) still falls to the Q8_0 arm below.
+            F8Scales::Block128 { scales, cols } if kind.is_none() && fp8_fold_enabled() => {
+                if in_hf % 16 != 0 || out_hf % 16 != 0 { return None; }
+                let grid = F8Scales::Block128 { scales, cols };
+                let data = f8_deq_f32(bytes, out_hf, in_hf, &grid);
+                let amax = data.iter().fold(0f32, |a, &v| a.max(v.abs()));
+                let s = if amax > 0.0 && amax.is_finite() { amax / 448.0 } else { 1.0 };
+                let enc: Vec<u8> = data
+                    .iter()
+                    .map(|&v| crate::nvfp4_repack::f32_to_fp8_e4m3(v / s))
+                    .collect();
+                return Some(Fp8Native {
+                    bytes: Cow::Owned(enc),
+                    scale: s,
+                    blk: None,
+                    out_f: out_hf,
+                    in_f: in_hf,
+                });
+            }
             F8Scales::Block128 { scales, cols } => {
                 let rows = scales.len() / cols;
                 (1.0, Some(F8BlockGrid { scales, rows, cols }))

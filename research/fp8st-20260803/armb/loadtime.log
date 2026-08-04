@@ -1,0 +1,6 @@
+iter1 cpu_reencode_wall_s 35.652007536
+iter1 gpu_pass_wall_s   9.217599897
+iter2 cpu_reencode_wall_s 35.750668312
+iter2 gpu_pass_wall_s   9.217797652
+iter3 cpu_reencode_wall_s 35.149202665
+iter3 gpu_pass_wall_s   9.318162347
