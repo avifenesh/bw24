@@ -1,10 +1,22 @@
 # Qwen 3.8 27B — day-one bring-up runbook
 
-Written 2026-08-03 (lane/qwen38-prep), before the release. Target: HF repo appears →
+Written 2026-08-03 (lane/qwen38-prep), before the release; revised 2026-08-04 on the
+train (FP8-ST leg added, dry-run fixes — see
+`research/qwen38-prep-20260803/DRYRUN-20260804.md`). Target: HF repo appears →
 "published as supported" in one day, IF the arch-diff is clean. Companion files:
 `research/qwen38-prep-20260803/AUDIT.md` (what we know about 3.6-27B),
 `baseline-36-27b.jsonl` (the frozen numbers every 3.8 cell diffs against),
 `WATCH.md` (where the release lands).
+
+Two serving legs run in parallel after the arch-diff (owner direction 2026-08-04:
+FP8-ST serving on the exact arm is the prod direction):
+
+- **Leg A — FP8-ST** (§3b): the official FP8 block-128 checkpoint served as a
+  safetensors DIR by memra-server. Exact by construction (block-128 → Q8_0 host
+  dequant, or the byte-identical `MEMRA_FP8_BLK_GPU` device dequant). No spec
+  day-one — dir checkpoints are spec-QUARANTINED (research/serve-st-20260803).
+- **Leg B — GGUF** (§3): the house NVFP4+MTP conversion, parallel/fallback leg and
+  the ONLY leg with spec/drafter rows day-one.
 
 Ground rules that apply to every step:
 
@@ -32,19 +44,34 @@ Grab safetensors + config FIRST (arch-diff needs only config.json + tokenizer, ~
 D=/data/ai-ml/hf-models/qwen38-27b
 huggingface-cli download Qwen/Qwen3.8-27B config.json generation_config.json \
     tokenizer.json tokenizer_config.json chat_template.jinja --local-dir $D-hf-min
-# full weights in the background while the arch-diff runs:
+# full BF16 weights in the background while the arch-diff runs:
 nohup huggingface-cli download Qwen/Qwen3.8-27B --local-dir $D > $D-dl.log 2>&1 &
+# FP8-ST leg artifact: the official FP8 sibling (3.6 precedent: Qwen/Qwen3.6-27B-FP8
+# was created the same day as the BF16 repo, block-128 e4m3, dynamic activations,
+# vision tower excluded). This DIR is what memra-server serves in leg A:
+nohup huggingface-cli download Qwen/Qwen3.8-27B-FP8 --local-dir $D-fp8 \
+    > $D-fp8-dl.log 2>&1 &
 ```
 
-If Qwen ships an official GGUF repo (they did not for 3.6; unsloth/NVIDIA filled that gap —
-see WATCH.md), download it too but treat it as a cross-check, not the artifact: our shipped
-3.6 artifact is a house conversion (NVFP4 trunk + Q4_K_M/Q5_K head + baked MTP).
+If the FP8 sibling does NOT appear day-one, leg A waits (do not substitute a community
+FP8 requant — official checkpoint only, it is the "exact arm" premise) and leg B carries
+the day. If Qwen ships an official GGUF repo (they did not for 3.6; unsloth/NVIDIA filled
+that gap — see WATCH.md), download it too but treat it as a cross-check, not the artifact:
+our shipped 3.6 artifact is a house conversion (NVFP4 trunk + Q4_K_M/Q5_K head + baked MTP).
 
 ## 2. Arch-diff checklist (minutes; blocks everything downstream)
 
-Reference = `/data/ai-ml/hf-models/qwen36-27b-hf-min/config.json`. Diff every field below
-(`python3 -m json.tool` both, or field-by-field). 3.6-27B values listed so a diff is
-readable without the reference file open:
+Reference = `/data/ai-ml/hf-models/qwen36-27b-hf-min/config.json`. Mechanized:
+
+```bash
+python3 research/qwen38-prep-20260803/arch-diff-fields.py \
+    $D-hf-min/config.json /data/ai-ml/hf-models/qwen36-27b-hf-min/config.json
+# exit 0 = fast-path (numeric-only diffs), exit 1 = STOP-CLASS diff or missing field.
+# Self-tested 2026-08-04 on the 3.6 config (0 diffs) and the 3.6-FP8 sibling (4
+# quantization_config diffs only): research/qwen38-prep-20260803/arch-diff-selftest-36.txt
+```
+
+3.6-27B values listed so a diff is readable without the reference file open:
 
 | Field | 3.6-27B value | Divergence class |
 |---|---|---|
@@ -61,6 +88,7 @@ readable without the reference file open:
 | `mtp_num_hidden_layers` / `mtp_use_dedicated_embeddings` | 1 / false | more MTP layers or dedicated embeds = drafter pipeline change, STOP on drafter step only |
 | `max_position_embeddings` | 262144 | shrink/grow = fine |
 | vision tower present | yes (we serve text-only) | ignored, same as 3.6 |
+| FP8 repo `quantization_config` | 3.6-FP8: `quant_method fp8`, `fmt e4m3`, `weight_block_size [128,128]`, `activation_scheme dynamic` | block-128 = the merged loader's class, leg A proceeds; per-tensor scalar = also fine (`MEMRA_ST_E4M3` class); any OTHER block size or a non-e4m3 fmt = leg A STOP (loader assumes 128×128), leg B unaffected |
 
 **Same-arch fast path** = every diff is numeric-only (sizes, counts, theta) with the same
 `model_type`, same layer_types pattern, same tokenizer class, same rope type, MTP >= 1 layer.
@@ -95,21 +123,74 @@ daily-equivalent unsloth artifact (convert.log/mtp-convert.log in
 `/data/ai-ml/hf-models/unsloth-qwen36-27b-nvfp4-gguf/`):
 
 ```bash
-cd ~/projects/llama.cpp
+cd ~/projects/llama.cpp    # interpreter = .venv/bin/python3 — system python3 has no
+                           # torch (dry-run finding 2026-08-04; venv now carries torch
+                           # 2.13 cpu + numpy + transformers + safetensors)
+# free pre-flight, before any weights write (validated on the 3.6 NVFP4 source:
+# 1252 tensors / 28.2G main, 18 tensors / 2.5G mtp):
+.venv/bin/python3 convert_hf_to_gguf.py $D --dry-run --outfile /tmp/dryrun-q38.gguf
 # main model: NVFP4 experts/trunk repack straight from the modelopt/NVFP4 checkpoint if
 # Qwen or NVIDIA publish one; from BF16 source, quantize via llama-quantize after an
 # f16/bf16 convert. Embed/head land Q5_K (the "q5h" in the artifact name), imatrix-guided:
-python3 convert_hf_to_gguf.py $D --outfile $OUT/qwen38-27b-trunk.gguf [--outtype ...]
+.venv/bin/python3 convert_hf_to_gguf.py $D --outfile $OUT/qwen38-27b-trunk.gguf [--outtype ...]
 # MTP block sidecar (bf16 in the checkpoint -> q8_0; the acceptance-proven form):
-python3 convert_hf_to_gguf.py $D --mtp --outtype q8_0 --outfile $OUT/mtp-qwen38-27b-q8_0.gguf
+.venv/bin/python3 convert_hf_to_gguf.py $D --mtp --outtype q8_0 --outfile $OUT/mtp-qwen38-27b-q8_0.gguf
 ```
 
 Exact flags: mirror the 3.6 logs (they are the receipts — `convert.log` line 1 onward).
 If only BF16 ships day-one, convert + quantize BF16→NVFP4 with the 3.6 imatrix procedure
 (new imatrix from the new model, NOT the 3.6 one) and note the artifact is house-quantized.
 
-Sanity gate before GPU: `python3 gguf-py` header dump — n_layers/vocab/head counts match
-config.json; MTP block present as `blk.<n_layers>.nextn.*` (3.6: blk.64, rig5090.jsonl:185).
+Sanity gate before GPU: header dump via
+`~/projects/llama.cpp/.venv/bin/python3 ~/projects/llama.cpp/gguf-py/gguf/scripts/gguf_dump.py --no-tensors $OUT/qwen38-27b.gguf`
+— n_layers/vocab/head counts match config.json; MTP block present as
+`blk.<n_layers>.nextn.*` (3.6: blk.64, rig5090.jsonl:185).
+
+## 3b. FP8-ST leg — the prod direction (parallel to §3, no conversion)
+
+The official FP8 block-128 DIR is served as-is; "conversion" is zero steps. What gates it:
+
+1. **Config check** (part of §2): `quantization_config` must be
+   `fp8 / e4m3 / weight_block_size [128,128]` (the 3.6-FP8 shape). Anything else = leg A
+   STOP, note it in arch-diff.md, continue leg B.
+2. **Loader gates, block-128 class** — already merged and green on synthetic + real
+   block-128 checkpoints (v0.68 lanes), re-run in-config on the new model:
+   ```bash
+   # kernel-check carries the fp8-blk-gpu bit-parity section (ARM B' device dequant
+   # byte-equal to host, kernel_check.rs:3415) — runs in the §4 full kernel-check, no
+   # separate invocation. Load default = host block-128 -> Q8_0 exact dequant;
+   # MEMRA_FP8_BLK_GPU=1 is the byte-identical 3.87x load-wall option (FLAGS.md).
+   ```
+   Do NOT reach for the perf doors day-one: `MEMRA_FP8_FOLD` is LOSSY (greedy MISMATCH
+   pos 20, research/fp8st receipts), `MEMRA_FP8_MMQ` is exact but measured 0.81-0.94x
+   the floor (lane/fp8-mmq verdict) — both stay OFF.
+3. **First light, CLI arm** (same §4 step-2 form, ST dir instead of GGUF):
+   ```bash
+   flock /tmp/gpu5090.lock env MEMRA_NGEN=20 MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt \
+       target/release/run-gen $D-fp8 2>&1 | tee research/qwen38-bringup-*/first-light-fp8st.log
+   ```
+   Expected: argmax MATCH lines, coherent text.
+4. **ST serving battery**:
+   ```bash
+   flock /tmp/gpu5090.lock tools/serve-st-gate.sh $D-fp8 \
+       2>&1 | tee research/qwen38-bringup-*/serve-st-gate-fp8.log
+   ```
+   Green = 4 gates: /models lists it, chat coherent through the checkpoint's own
+   template, CLI-vs-server greedy token streams IDENTICAL, spec quarantine holds.
+   (Dry-run 2026-08-04 on the merged state, qwen35-4b BF16 ckpt: 0 failed —
+   research/qwen38-prep-20260803/serve-st-gate-dryrun-20260804.log.)
+5. **ST serving cells** (perf record, self-competition protocol per §7): decode tok/s
+   N=5 medians on pp512.txt / p3-agentic-long.txt via run-gen on the DIR, interleaved
+   against the NV-27B-ST 3.6 standing config re-measured same-session (rig5090.jsonl
+   lines 180-289 lineage; every historical 27B ST pairing carries a correction row —
+   keep the same-session law). Serve-side smoke: `tools/serve-smoke.sh` with
+   `MEMRA_MODELS="q38fp8=$D-fp8"`.
+6. **Known limits day-one**: spec/drafter rows are leg-B-only (dir ckpts
+   spec-quarantined until the ST serve-spec exactness gate goes green — root cause open,
+   research/serve-st-20260803/RESULTS.md); `MEMRA_PP_FP8` prefill GEMM on this class
+   rides per-tensor scalar only (cuBLASLt refuses block-128 on sm_120,
+   research/fp8st-20260803/P1-VERDICT.md) — prefill stays on the exact Q8_0-resident
+   floor unless a leg-specific lane says otherwise.
 
 ## 4. Gate battery (order matters: cheap first)
 
@@ -134,9 +215,11 @@ All commands from repo root, binaries in `target/release/` (rebuild first: `carg
    ```bash
    flock /tmp/gpu5090.lock target/release/kernel-check 2>&1 | tee .../kernel-check.log
    ```
-   Note: the `nvfp4-27b-shape` section pins the 3.6 file path (kernel_check.rs:1616) — it
-   keeps gating 3.6 regardless. If 3.8 introduces a new weight shape class, add a section;
-   same-arch same-shapes needs nothing.
+   Note: the `nvfp4-27b-shape` section pins the 3.6 file path (kernel_check.rs:1877 at
+   2026-08-04 HEAD; grep the section name, the line drifts) — it keeps gating 3.6
+   regardless. If 3.8 introduces a new weight shape class, add a section; same-arch
+   same-shapes needs nothing. The FP8-ST leg's `fp8-blk-gpu` bit-parity section
+   (kernel_check.rs:3415) rides the same full run.
 4. **run-gen argmax at depth** (the deep-fa arms): repeat step 2 with
    `MEMRA_PROMPT_FILE=research/e2e/prompts/p3-agentic-long.txt` (or the board 6257-tok
    prompt). Expected: MATCH.
@@ -151,6 +234,20 @@ All commands from repo root, binaries in `target/release/` (rebuild first: `carg
    Expected green: `SELF-CONSISTENCY PASS` every K, acceptance > 0.
 6. **prime-gate + serve-smoke** (serving surface): `tools/serve-smoke.sh` with the model, and
    a prime-gate run mirroring tools/local-ci.sh:79-84 form. Expected: PASS lines, exit 0.
+   Day-one serve-feature smokes on the NEW model (features merged post-runbook, v0.68/0.69
+   train — each is model-load-sensitive, so smoke them on the bring-up model, not just the
+   models they were gated on):
+   - **Constrained decoding**: one `/v1/chat/completions` with
+     `response_format {"type":"json_schema", ...}` → valid JSON matching the schema, and
+     one `{"type":"json_object"}` → valid JSON (docs/SERVING.md constrained section;
+     plain constrained-greedy gated at 99.4% of unconstrained on q9). Draft-side grammar
+     masking is default-on — spec+constrained needs no flag (leg B only; leg A has no spec).
+   - **/v1/models OR-schema**: `curl $BASE/v1/models` → the model listed with the
+     OR-schema enrichment fields (serve-tail lane form,
+     research/serve-tail-20260804/v1-models.json is the reference shape).
+   - **Graceful drain**: SIGTERM mid-stream → in-flight stream completes, new request
+     503s, exit 0 (research/serve-tail-20260804/run-battery.sh item 3 is the ready-made
+     probe — run it with the new model path as $1).
 7. **Full battery on the final tree** (the merge/tag gate, unchanged):
    ```bash
    tools/local-ci.sh 2>&1 | tee .../local-ci.log
@@ -166,7 +263,10 @@ All commands from repo root, binaries in `target/release/` (rebuild first: `carg
 - Consider a q38 cell in `research/tune-data/perf-cells.json` — NOTE: 3.6-27B never got one
   (audit §3), which is a standing gap; adding both q27 and q38 plain cells closes it.
 
-## 6. Drafter build — REQUIRED before publish, not optional
+## 6. Drafter build — REQUIRED before publish, not optional (leg B / GGUF only)
+
+Leg A note: the drafter and every spec row belong to the GGUF leg — dir checkpoints are
+spec-quarantined in serve (§3b item 6). Leg A publishes plain serving cells only.
 
 Own-gen trimmed drafter per docs/DRAFT-REGIME.md (laws 1-3). ~30-60 min GPU for ranks; use
 the bounded-chunk mode on the shared rig:
@@ -235,8 +335,9 @@ Tag only after the full battery is green on the tagged commit on the rig
 
 | Step | Wall | GPU-holding |
 |---|---|---|
-| download (22 GB safetensors, config first) | 0.5-1.5 h (bg) | none |
+| download (~55 GB BF16 safetensors — 3.6 precedent is 15 shards — + ~28 GB FP8 sibling; config first) | 0.5-2 h (bg) | none |
 | arch-diff | 15 min | none |
+| FP8-ST leg (first light + serve-st-gate + serving cells + serve smokes) | ~1.5 h, overlaps leg B's conversion window | short bursts |
 | conversion + quant + header sanity | 1-2 h | none/negligible |
 | gates 1-6 (first light → spec smoke) | ~1 h | short bursts |
 | drafter (ranks + trim + validate) | 1.5-2.5 h | chunked bursts |
