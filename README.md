@@ -153,8 +153,14 @@ speculative serving — at 99.4% of unconstrained speed. Cross-request prompt ca
 repeated prompt prefixes without recomputing
 them, reports the split as `usage.prompt_tokens_details.cached_tokens` on every response,
 and namespaces all reuse per tenant via the request-level `cache_salt` field (vLLM-style).
+The gateway-facing surface is complete for OpenRouter-style listing: `/v1/models` with
+per-model metadata, `X-RateLimit-*` headers on every response, and graceful drain on
+SIGTERM (in-flight requests finish, new ones get a 503 + `Retry-After`). Official FP8
+safetensors checkpoints serve directly — block-128 weights load bit-exact and speculative
+decoding runs out of the box on the checkpoint's own MTP head, no GGUF conversion step.
 The contract: greedy serving is isolated-identical under concurrent load — a request's
-tokens never depend on its co-arrivals. Multi-GPU boxes serve as a replica fleet:
+tokens never depend on its co-arrivals, and spec-decode serving is gated token-identical
+against the plain-decode oracle. Multi-GPU boxes serve as a replica fleet:
 **1,477 tok/s** managed on 3×H100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
 
 ## What's inside

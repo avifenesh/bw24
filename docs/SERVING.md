@@ -1,8 +1,10 @@
 # Serving — the OpenAI surface and the replica fleet
 
 This is the serve-surface doc: fleet topology and measured throughput, the isolation
-contract, the OpenAI tools surface, cross-request prompt caching with per-tenant
-`cache_salt` isolation, and the honestly-stated numeric edges of batched serving.
+contract, the OpenAI tools surface, the gateway listing surface (`/v1/models` schema,
+rate-limit headers, graceful drain), safetensors/FP8 checkpoint serving, cross-request
+prompt caching with per-tenant `cache_salt` isolation, and the honestly-stated numeric
+edges of batched serving.
 
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
@@ -157,6 +159,46 @@ gated by the official `openai` Python SDK against a live server
   unknown `response_format` types); cosmetic fields (`user`, `stream_options`) are
   accepted and ignored. Streams exclude stop-sequence text exactly like non-stream
   responses (holdback buffer).
+
+## Gateway listing surface (serve-tail lane, 2026-08-04)
+
+The OR-listing tail — the last three surface gaps between memra and a marketplace
+gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`):
+
+- **`/v1/models` OR-schema:** each entry carries `context_length` (from the loaded
+  plan's config), `architecture` (`modality`, `tokenizer`, `instruct_type` — probed at
+  spawn from the model itself, not hardcoded), and an OR-convention `pricing` stub.
+  Unknowns are honest `null`s, never guesses.
+- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` on both
+  completion routes with concurrency-slot semantics — a per-lane atomic gauge whose
+  RAII slot rides the SSE stream to completion, so `Remaining` is truthful for the
+  whole life of a stream. Sheds carry `429 + Retry-After`; `MEMRA_RL_RESET_S` is the
+  no-signal fallback for `Reset` (with traffic, Reset = mean tokens/request x p50 step
+  latency).
+- **Graceful drain:** SIGTERM flips `/health` to `"draining"`, new completion requests
+  get `503 + Retry-After`, in-flight requests — streams included — run to `[DONE]`
+  within the `MEMRA_DRAIN_S` deadline (default 30s), then the process exits 0. Live
+  receipt: a 1024-token stream completed mid-drain.
+
+## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
+
+`MEMRA_MODELS` accepts safetensors checkpoint directories (`config.json` +
+`model.safetensors[.index.json]`) and repack dirs alongside GGUF paths — validated at
+parse time (a bogus dir fails naming the missing file). Chat templates come from the
+checkpoint's own tokenizer config (`from_hf_dir`); template-less dirs 400 with a pointer
+to `/v1/completions`. Official Qwen FP8 block-128 checkpoints load bit-exact (GPU
+dequant, 2.89x faster load) and **spec decode runs out of the box on the checkpoint's
+embedded MTP head** — 128-137 tok/s on the first official-FP8 e2e, 2.6-2.8x plain
+(`research/fp8ship-20260804/`).
+
+The ST-spec exactness scare (#68) was root-caused to a serve-side bug that was never
+ST-specific: the per-session persistent draft graph replayed with dangling pool
+addresses (capture transients not retained + the fa-partials pool freeing grown-past
+buffers the capture baked) — reproducible on GGUF session bursts at n>=600 too. Fixed
+via capture-retain keepers on `DraftGraphCtx` + retire-on-grow for the fa partials pool;
+the quarantine is lifted and dir checkpoints are spec-eligible by default
+(`MEMRA_SERVE_SPEC=0` is the rollback door). Gate: `tools/serve-st-gate.sh` pins
+default-serve text token-identical to the run-gen CLI oracle.
 
 ## Constrained decoding (`response_format`) — lanes constrained + constrained-full, 2026-08-03
 
