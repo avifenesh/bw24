@@ -130,7 +130,7 @@ fn main() {
 
     // ---- KV-format fatbin variants of flash_attn.cu (kvbytes lane, 2026-07-08) ----
     // Same kernels/entry names, compile-time K/V cache format via -D. Engine::new picks the
-    // fatbin at runtime from env MEMRA_KV_K / MEMRA_KV_V (lib.rs flash_fatbin_path); the default
+    // fatbin at runtime from env MEMRA_KV_K / MEMRA_KV_V (lib.rs flash_fatbin_bytes); the default
     // (no env) loads the plain flash_attn.fatbin built above — bit-identical daily config.
     for (suffix, kfmt, vfmt) in [("VQ4", 0, 1), ("VF8", 0, 2), ("KF8", 1, 0),
                                  ("KF8VQ4", 1, 1), ("KF8VF8", 1, 2)] {
