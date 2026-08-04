@@ -1,0 +1,5 @@
+turn 1: 25 tok generated, committed=152 -> MATCH
+turn 2: 24 tok generated, committed=241 -> MATCH
+turn 3: 25 tok generated, committed=300 -> MATCH
+turn 4: 25 tok generated, committed=325 -> MATCH
+SESSION GATE: ALL TURNS MATCH

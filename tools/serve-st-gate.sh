@@ -12,12 +12,18 @@
 #      the response `tokens` array is not the per-token stream (worker contract, not a
 #      bug). The only tolerated difference is the trailing EOS id (the CLI stream
 #      includes it, server Token events stop before it).
-#   4. ST-SPEC QUARANTINE holds: the DEFAULT server must produce IDENTICAL greedy text
-#      to the MEMRA_SERVE_SPEC=0 server — dir checkpoints are spec-ineligible by default
-#      (research/serve-st-20260803/RESULTS.md: generate_spec_session diverges from plain
-#      greedy on ST models while run-spec CLI self-consistency passes K=1..8; the graph
-#      draft arm corrupts outright on the 4B BF16 ckpt). MEMRA_SERVE_SPEC=1 is the
-#      experimental door and is NOT gated green here.
+#   4. ST SERVE-SPEC exactness (#68 closed 2026-08-04, quarantine LIFTED): the DEFAULT
+#      server (spec bursts ON for MTP dir checkpoints) must produce greedy text that
+#      PREFIX-matches the TOKENWISE serve oracle (MEMRA_SERVE_SPEC=0 MEMRA_SERVE_BATCH=0
+#      — same worker, plain decode_step) at a 400-token window, past the pre-fix
+#      corruption onset (~250 tok). Tolerance: burst overshoot only (the spec arm may
+#      emit up to K extra tokens past max_tokens; the shorter text must be a prefix of
+#      the longer). Comparator choice is deliberate: the BATCHED plain arm carries the
+#      accepted decode-config near-tie FP class (decode-batch-gate's jurisdiction) and
+#      the run-gen CLI carries its own near-tie gap vs serve decode at long windows —
+#      the tokenwise serve arm is spec-verify's exactness twin inside the same worker.
+#      Root cause + receipts: research/fp8ship-20260804/RESULTS.md (the persistent
+#      draft graph replayed with dangling pool addresses; was never ST-specific).
 #
 # Usage: tools/serve-st-gate.sh [st_dir]   (defaults to the local qwen3.5-4B BF16 ckpt)
 # GPU: callers wrap in `flock /tmp/gpu5090.lock` per the box convention.
@@ -47,6 +53,7 @@ MEMRA_CHAT=1 MEMRA_NGEN=$NGEN target/release/run-gen "$ST" --prompt "$PROMPT" \
   || { echo "run-gen failed; log tail:"; tail -5 "$CLI_LOG"; exit 1; }
 CLI_TOKENS=$(grep '^tokens: ' "$CLI_LOG" | tail -1 | sed 's/^tokens: //')
 [ -n "$CLI_TOKENS" ] || { echo "run-gen printed no token stream"; exit 1; }
+
 
 # ---- server arm: native shape (no MEMRA_COMPAT) so /v1/completions returns raw ids.
 # MEMRA_SERVE_SPEC=0 for the token-exactness arm: spec bursts emit ONE Token event id
@@ -104,21 +111,45 @@ EOF
 [ $? -eq 0 ] && PASS "CLI-vs-server greedy token streams identical" \
              || FAIL "CLI-vs-server exactness"
 
-PLAIN_TEXT=$(python3 -c 'import json; m=json.load(open("/tmp/serve-st-chat.json"))["choices"][0]["message"]; print((m.get("content") or "")+(m.get("reasoning") or ""))')
 stop_server
 
-# 4. quarantine holds: the DEFAULT server (no env) must match the MEMRA_SERVE_SPEC=0
-#    text — dir checkpoints default spec-OFF until the ST serve-spec gate goes green.
+# 4. ST serve-spec exactness (#68 closed, quarantine lifted): DEFAULT server (spec
+#    bursts ON) vs the TOKENWISE serve oracle (SERVE_SPEC=0 SERVE_BATCH=0 — plain
+#    decode_step in the same worker), 400-token window (pre-fix corruption onset ~250).
+#    Tolerance: burst overshoot only — the shorter text must be a prefix of the longer.
+grab_chat_text() {  # $1 = outfile
+  curl -sf -m 300 $BASE/v1/chat/completions -H 'Content-Type: application/json' \
+    -d "{\"model\":\"st\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],
+         \"max_tokens\":400,\"temperature\":0}" \
+    | python3 -c 'import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; sys.stdout.write((m.get("content") or "")+(m.get("reasoning") or ""))' > "$1"
+}
+start_server "MEMRA_SERVE_SPEC=0 MEMRA_SERVE_BATCH=0" || exit 1
+grab_chat_text /tmp/serve-st-tokenwise.txt
+stop_server
 start_server "" || exit 1
-grep -q "spec-decode is QUARANTINED" /tmp/serve-st-server.log \
-  && PASS "quarantine notice logged at load" || FAIL "quarantine notice missing"
-R2=$(curl -sf -m 300 $BASE/v1/chat/completions -H 'Content-Type: application/json' \
-  -d "{\"model\":\"st\",\"messages\":[{\"role\":\"user\",\"content\":\"$PROMPT\"}],
-       \"max_tokens\":400,\"temperature\":0}")
-SPEC_TEXT=$(echo "$R2" | python3 -c 'import json,sys; m=json.load(sys.stdin)["choices"][0]["message"]; print((m.get("content") or "")+(m.get("reasoning") or ""))')
-[ -n "$SPEC_TEXT" ] && [ "$SPEC_TEXT" = "$PLAIN_TEXT" ] \
-  && PASS "default server == plain greedy text (quarantine holds)" \
-  || FAIL "default-vs-plain ST text mismatch (quarantine broken)"
+if grep -q "QUARANTINED" /tmp/serve-st-server.log; then
+  FAIL "stale quarantine notice at load (#68 is closed; lift regressed)"
+else
+  PASS "no quarantine notice (dir checkpoints spec-eligible)"
+fi
+grab_chat_text /tmp/serve-st-specdefault.txt
+python3 - <<'EOF'
+srv = open("/tmp/serve-st-specdefault.txt").read()
+tok = open("/tmp/serve-st-tokenwise.txt").read()
+assert srv.strip(), "empty default-server text"
+assert tok.strip(), "empty tokenwise-oracle text"
+short, long_ = (srv, tok) if len(srv) <= len(tok) else (tok, srv)
+if not long_.startswith(short):
+    n = len(short)
+    d = next((j for j in range(n) if srv[j] != tok[j]), n)
+    print(f"DIVERGE at char {d}: spec={srv[d:d+40]!r} tokenwise={tok[d:d+40]!r} "
+          f"(lens {len(srv)}/{len(tok)})")
+    raise SystemExit(1)
+print(f"default (spec) text prefix-matches the tokenwise serve oracle "
+      f"({len(srv)}/{len(tok)} chars)")
+EOF
+[ $? -eq 0 ] && PASS "default (spec) server == tokenwise serve oracle (400-tok window)" \
+             || FAIL "default (spec) server diverged from the tokenwise oracle"
 stop_server
 trap - EXIT
 
