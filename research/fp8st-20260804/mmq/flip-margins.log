@@ -1,0 +1,8 @@
+floor 128-step tape margin distribution: n=128 min=0.0235 p10=0.2314 median=3.6871 max=12.1490
+  flip at floor margin 0.263948 -> 10.9th percentile of the tape's margins
+  flip at floor margin 0.023468 -> 0.8th percentile of the tape's margins
+  flip at floor margin 0.171801 -> 7.0th percentile of the tape's margins
+  flip at floor margin 0.098108 -> 2.3th percentile of the tape's margins
+
+largest flip margin 0.263948 vs tape median 3.6871 = 0.072x median
+MMQ step-0 logit rms(diff) 1.6531e-01; every flip margin <= 0.2639 is within 1.60 sigma of that drift -> flip class is FP-composition, not mis-ranking

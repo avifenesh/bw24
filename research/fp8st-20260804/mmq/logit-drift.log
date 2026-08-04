@@ -1,0 +1,13 @@
+step0 armbprime vs floor: n=151936 max_abs=0.000000e+00 rms(ref)=5.794532e+00 rms_rel=0.000e+00 differing_f32=0/151936
+step0 mmq       vs floor: n=151936 max_abs=6.507413e-01 rms(ref)=5.794532e+00 rms_rel=1.123e-01 differing_f32=151936/151936
+  floor top3 [(91, 19.838057), (271, 19.644911), (25, 18.5492)]
+  armb top3 [(91, 19.838057), (271, 19.644911), (25, 18.5492)]
+  mmq top3 [(91, 19.91116), (271, 19.632416), (25, 18.589565)]
+
+proper drift stats (step-0 logits, n=151936):
+  rms(diff)=1.653061e-01  rms(floor)=5.794532e+00  rms(diff)/rms(floor)=2.8528e-02
+  max_abs(diff)=6.507413e-01 = 3.94 sigma of the diff distribution
+  top-1 set agreement: 1/1
+  top-5 set agreement: 5/5
+  top-10 set agreement: 10/10
+  top-50 set agreement: 50/50
