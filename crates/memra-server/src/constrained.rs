@@ -153,11 +153,18 @@ pub struct SessionConstraint {
     m: Matcher,
     pub steps: u64,
     pub mask_ns: u128,
+    /// draft-side masking receipt (lane/draft-mask): speculative clones + their wall, and the
+    /// draft-position masks computed on the cloned state.
+    pub spec_clones: u64,
+    pub spec_ns: u128,
+    pub draft_masks: u64,
+    pub draft_mask_ns: u128,
 }
 
 impl SessionConstraint {
     pub fn new(m: Matcher) -> Self {
-        Self { m, steps: 0, mask_ns: 0 }
+        Self { m, steps: 0, mask_ns: 0,
+               spec_clones: 0, spec_ns: 0, draft_masks: 0, draft_mask_ns: 0 }
     }
 
     /// Grammar-compile / parser error (checked once at admit).
@@ -189,6 +196,18 @@ impl SessionConstraint {
     pub fn consume(&mut self, tok: u32) -> Result<(), String> {
         self.m.consume_token(tok).map_err(|e| e.to_string())
     }
+
+    /// SPECULATIVE CLONE of the committed grammar state (draft-side masking): llguidance's
+    /// Matcher is Clone, so a draft chain walks a throwaway copy and the real state stays
+    /// pinned at the last EMITTED token. Cost is metered separately (`spec_ns`) — one clone
+    /// per spec round, never on the plain path.
+    pub fn clone_matcher(&mut self) -> Matcher {
+        let t0 = std::time::Instant::now();
+        let m = self.m.clone();
+        self.spec_clones += 1;
+        self.spec_ns += t0.elapsed().as_nanos();
+        m
+    }
 }
 
 /// SpecConstraint adapter (constrained x spec-decode, 2026-08-03): SessionConstraint behind
@@ -197,15 +216,31 @@ impl SessionConstraint {
 /// grammar state computes its mask exactly once (the same 0.02-0.06 ms/step cost as plain
 /// constrained decode). EOS is never consumed (the plain path's EOS-before-consume ordering):
 /// a finished grammar collapses its mask to EOS-only, so post-EOS drafts truncate naturally.
+///
+/// DRAFT-SIDE MASKING (lane/draft-mask, 2026-08-04, default ON — MEMRA_DRAFT_MASK=0 reverts):
+/// `draft_begin` clones the matcher into `spec` and each draft position's mask is computed on
+/// that CLONE, advanced by the PROPOSED token. The real matcher is untouched until `consume`
+/// (an emitted token), so verify-side truncation remains the correctness backstop and the
+/// emitted stream is byte-identical with masking on or off — masking only changes which
+/// tokens get proposed. The clone is dropped at the next `draft_begin`/`consume`.
 pub struct SpecGrammar<'a> {
     c: &'a mut SessionConstraint,
     eos: u32,
     cur: Option<SimpleVob>,
+    /// speculative (draft-chain) matcher: a clone of `c`'s state at chain start.
+    spec: Option<Matcher>,
+    on: bool,
+}
+
+/// MEMRA_DRAFT_MASK=0 turns draft-side grammar masking off (the rollback seam / A-B arm).
+pub fn draft_mask_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_DRAFT_MASK").map(|v| v != "0").unwrap_or(true))
 }
 
 impl<'a> SpecGrammar<'a> {
     pub fn new(c: &'a mut SessionConstraint, eos: u32) -> Self {
-        Self { c, eos, cur: None }
+        Self { c, eos, cur: None, spec: None, on: draft_mask_on() }
     }
     fn cur_mask(&mut self) -> Result<&SimpleVob, String> {
         if self.cur.is_none() {
@@ -231,12 +266,58 @@ impl memra_engine::spec::SpecConstraint for SpecGrammar<'_> {
         Ok((tok as usize) < mask.len() && mask.is_allowed(tok))
     }
     fn consume(&mut self, tok: u32) -> Result<(), String> {
+        // the speculative chain is dead as soon as the real state moves.
+        self.spec = None;
         if tok == self.eos {
             return Ok(()); // EOS ends the stream — never fed to the grammar (plain-path order)
         }
         self.c.consume(tok)?;
         self.cur = None;
         Ok(())
+    }
+
+    fn draft_mask_enabled(&self) -> bool {
+        self.on
+    }
+
+    fn draft_begin(&mut self) -> Result<(), String> {
+        if !self.on {
+            self.spec = None;
+            return Ok(());
+        }
+        self.spec = Some(self.c.clone_matcher());
+        Ok(())
+    }
+
+    fn draft_mask_words(&mut self) -> Result<Option<Vec<u32>>, String> {
+        if !self.on {
+            return Ok(None);
+        }
+        // position 0 of the chain shares the committed state's mask — reuse the cached one
+        // (`cur`) instead of recomputing on the clone; identical set, zero mask cost.
+        let Some(spec) = self.spec.as_mut() else { return Ok(None) };
+        let t0 = std::time::Instant::now();
+        let mask = spec.compute_mask_or_eos().map_err(|e| e.to_string())?;
+        self.c.draft_masks += 1;
+        self.c.draft_mask_ns += t0.elapsed().as_nanos();
+        Ok(Some(mask.as_slice().to_vec()))
+    }
+
+    fn draft_advance(&mut self, tok: u32) -> Result<bool, String> {
+        if !self.on {
+            return Ok(false);
+        }
+        let Some(spec) = self.spec.as_mut() else { return Ok(false) };
+        if tok == self.eos {
+            return Ok(false); // EOS proposed: the chain ends here (plain-path EOS order)
+        }
+        // A masked draft is legal by construction; a token from a slot the mask could not
+        // reach (p-min break, trimmed-vocab miss) simply ends the speculative chain — the
+        // proposal still rides verify, where truncation arbitrates.
+        match spec.consume_token(tok) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
     }
 }
 
@@ -344,6 +425,65 @@ mod tests {
         let a = v.get("a").unwrap_or_else(|| panic!("required key missing: {text:?}"));
         assert!(a.as_f64().is_some_and(|f| f.fract() == 0.0),
                 "required integer key not an integer: {text:?}");
+    }
+
+    /// DRAFT-SIDE MASKING (lane/draft-mask): the speculative clone must (a) hand out the same
+    /// legal set as the committed state at chain position 0, (b) advance INDEPENDENTLY of the
+    /// real matcher across the chain, (c) mask out a token the grammar cannot take at that
+    /// position, and (d) leave the real state exactly where it was (the byte-identity
+    /// precondition — only `consume` may move it).
+    #[test]
+    fn speculative_clone_masks_illegal_draft_and_leaves_real_state() {
+        use memra_engine::spec::SpecConstraint;
+        let env = ApproximateTokEnv::single_byte_env();
+        let factory = ParserFactory::new_simple(&env).unwrap();
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"a": {"type": "integer"}},
+            "required": ["a"],
+            "additionalProperties": false
+        });
+        let mut sc = SessionConstraint::new(Matcher::new(
+            factory.create_parser(TopLevelGrammar::from_json_schema(schema))));
+        assert!(sc.error().is_none());
+        let eos = env.tok_trie().eos_token();
+        let mut g = SpecGrammar::new(&mut sc, eos);
+        assert!(g.on, "draft masking must default ON");
+
+        // chain start: clone. Position 0 of this grammar can only take '{' (or whitespace).
+        g.draft_begin().unwrap();
+        let w0 = g.draft_mask_words().unwrap().expect("draft mask must be present when ON");
+        let allowed = |words: &[u32], t: u32| -> bool {
+            let w = (t >> 5) as usize;
+            w < words.len() && (words[w] >> (t & 31)) & 1 == 1
+        };
+        assert!(allowed(&w0, b'{' as u32), "'{{' must be legal at draft pos 0");
+        assert!(!allowed(&w0, b'x' as u32), "'x' must be MASKED at draft pos 0");
+        assert!(!allowed(&w0, b'a' as u32), "bare 'a' (unquoted key) must be masked at pos 0");
+
+        // propose the legal token: the clone advances, the REAL state must not.
+        assert!(g.draft_advance(b'{' as u32).unwrap(), "legal draft must extend the chain");
+        let w1 = g.draft_mask_words().unwrap().unwrap();
+        assert!(allowed(&w1, b'"' as u32), "after '{{' a quoted key must be legal");
+        assert!(!allowed(&w1, b'{' as u32), "a second '{{' must be masked at draft pos 1");
+        // (d) the real (committed) state is still at position 0 — its own mask is unchanged.
+        let real: Vec<u32> = SpecConstraint::mask_words(&mut g).unwrap();
+        assert_eq!(real, w0, "real matcher moved during a draft chain (byte-identity break)");
+
+        // an illegal proposal ends the speculative chain instead of erroring out.
+        assert!(!g.draft_advance(b'{' as u32).unwrap(),
+                "illegal draft token must end the chain, not error");
+        // and the real state STILL has not moved.
+        let real2: Vec<u32> = SpecConstraint::mask_words(&mut g).unwrap();
+        assert_eq!(real2, w0, "real matcher moved after a dead speculative chain");
+
+        // emitted token -> real state advances; a new chain clones from there.
+        SpecConstraint::consume(&mut g, b'{' as u32).unwrap();
+        g.draft_begin().unwrap();
+        let w2 = g.draft_mask_words().unwrap().unwrap();
+        assert_eq!(w2, w1, "a fresh chain after emitting '{{' must match the pos-1 mask");
+        assert!(sc.spec_clones >= 2, "clone meter must count each chain start");
+        assert!(sc.draft_masks >= 3, "draft-mask meter must count each masked position");
     }
 
     /// A token sampled OUTSIDE the mask must be rejected by consume — the guard the

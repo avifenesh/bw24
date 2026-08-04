@@ -112,6 +112,86 @@ pub trait SpecConstraint {
     fn is_allowed(&mut self, tok: u32) -> Result<bool, String>;
     /// Advance the state with an emitted token.
     fn consume(&mut self, tok: u32) -> Result<(), String>;
+
+    // --- DRAFT-SIDE MASKING (lane/draft-mask, 2026-08-04) ---
+    // The drafter proposed grammar-illegal tokens under tight schemas, so verify-side
+    // truncation cut nearly every round (measured acceptance 0.467-0.513 tight vs 0.62-0.82
+    // loose, research/constrained-full-20260803). These three methods let the engine mask the
+    // DRAFT model's own sampling with the grammar's legal set, so proposals are legal by
+    // construction. The state they walk is a SPECULATIVE CLONE of the session matcher — the
+    // real state is advanced only by `consume` (emitted tokens), so verify-side truncation
+    // stays the correctness backstop and the emitted stream is unchanged by construction
+    // (an accepted draft is the target's unmasked argmax AND grammar-legal, hence the masked
+    // argmax; a cut slot is recomputed as the masked argmax either way).
+    // Default impls = feature OFF (pre-lane behaviour: unmasked drafts).
+
+    /// Is draft-side masking available on this hook? Probed ONCE per burst, before the draft
+    /// graph is captured (the mask is an in-graph node — its presence is a capture-time shape).
+    fn draft_mask_enabled(&self) -> bool {
+        false
+    }
+    /// Start a draft chain: clone the CURRENT (committed) grammar state into the speculative
+    /// slot. Called once per spec round, before the first draft position.
+    fn draft_begin(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// Packed 32-bit bitset words of the SPECULATIVE state's allowed set (target-vocab ids),
+    /// for the draft position about to be sampled. `None` = draft masking off (no-op).
+    fn draft_mask_words(&mut self) -> Result<Option<Vec<u32>>, String> {
+        Ok(None)
+    }
+    /// Advance the SPECULATIVE state with a PROPOSED draft token. `false` = the chain cannot
+    /// continue (EOS proposed, or an unmasked position proposed something illegal) — the
+    /// engine stops drafting; the token already pushed still goes through verify.
+    fn draft_advance(&mut self, _tok: u32) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+/// DRAFT-MASK UPLOAD (lane/draft-mask): pull the speculative state's allowed set (TARGET-id
+/// space) from the hook, project it into the DRAFT head's vocab space, and upload it into the
+/// stable device buffer the draft chain reads. Returns false when the chain must stop drafting:
+/// the hook handed out no mask, or NO draft-vocab row is grammar-legal at this position (a
+/// trimmed FR-Spec head genuinely cannot propose a legal token there — masking it would leave
+/// a fully-banned row whose argmax is meaningless, so the round drafts fewer tokens and the
+/// verify emits the masked argmax as usual).
+fn upload_draft_mask(
+    e: &Engine,
+    c: &mut dyn SpecConstraint,
+    dst: &mut CudaSlice<u32>,
+    d2t: Option<&Vec<u32>>,
+    d_vocab: usize,
+    words: usize,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(tw) = c.draft_mask_words().map_err(|e2| format!("constraint: {e2}"))? else {
+        return Ok(false);
+    };
+    let bit = |t: usize| -> bool {
+        let w = t >> 5;
+        w < tw.len() && (tw[w] >> (t & 31)) & 1 == 1
+    };
+    let mut buf = vec![0u32; words];
+    match d2t {
+        // TRIMMED draft head: row i proposes target id d2t[i] — permute the mask accordingly.
+        Some(map) => {
+            for (i, &t) in map.iter().enumerate().take(d_vocab) {
+                if bit(t as usize) {
+                    buf[i >> 5] |= 1u32 << (i & 31);
+                }
+            }
+        }
+        // UNTRIMMED: draft ids ARE target ids; the packed words transfer verbatim (a short
+        // mask leaves the padded tail zeroed == banned, same rule as constrained::apply_mask).
+        None => {
+            let n = tw.len().min(words);
+            buf[..n].copy_from_slice(&tw[..n]);
+        }
+    }
+    if buf.iter().all(|w| *w == 0) {
+        return Ok(false);
+    }
+    e.htod_u32_into(dst, &buf)?;
+    Ok(true)
 }
 
 /// Keep the full token-embedding table in host memory and upload only the rows needed by each
@@ -246,6 +326,13 @@ pub(crate) struct DraftGraphCtx {
     g_q: CudaSlice<f32>,
     g_perturb: CudaSlice<f32>,
     q_slots: Vec<CudaSlice<f32>>,
+    /// DRAFT-SIDE GRAMMAR MASK (lane/draft-mask): packed allowed-set words over the DRAFT
+    /// head's vocab, at a STABLE address so the captured draft graph's mask node reads the
+    /// per-position contents the host re-uploads before each replay (the graph-promote
+    /// pattern from decode.rs). Empty unless the session drafts under a grammar.
+    g_dmask: CudaSlice<u32>,
+    /// was `graph` captured WITH the mask node? A parked graph of the wrong shape is dropped.
+    graph_masked: bool,
     graph: Option<cudarc::driver::CudaGraph>,
     graph_failed: bool,
     graph_s: Option<cudarc::driver::CudaGraph>,
@@ -264,6 +351,8 @@ impl DraftGraphCtx {
             g_q: e.zeros(qlen)?,
             g_perturb: e.zeros(qlen)?,
             q_slots: Vec::new(),
+            g_dmask: e.alloc_u32_zeroed(1)?,
+            graph_masked: false,
             graph: None,
             graph_failed: false,
             graph_s: None,
@@ -384,6 +473,10 @@ impl HybridModel {
         scratch: &mut MtpScratch,
         mtp_pos: usize,
         embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+        // DRAFT-SIDE GRAMMAR MASK (lane/draft-mask): (packed draft-vocab allowed set, words).
+        // Applied to the head logits BEFORE they are returned, so every consumer (argmax,
+        // gumbel draw, p-min prob) sees the grammar-legal row. None = unmasked (pre-lane).
+        mask: Option<(&CudaSlice<u32>, usize)>,
     ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -494,7 +587,13 @@ impl HybridModel {
 
         // op 12: draft_logits = (shared_head_head OR output) @ final — stays ON DEVICE.
         let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
-        let logits = e.matmul(head, &final_h, 1)?;
+        let mut logits = e.matmul(head, &final_h, 1)?;
+        // op 12b (lane/draft-mask): grammar mask over the DRAFT vocab, applied here so the
+        // caller's argmax / gumbel draw / p-min prob all read the grammar-legal row.
+        if let Some((mask_d, mw)) = mask {
+            let d_vocab = head.out_features();
+            e.mask_logits_col(&mut logits, mask_d, 0, d_vocab, mw)?;
+        }
         // Chain recurrence hand-over: pre-norm h_nextn (default) or post-norm final_h
         // (MEMRA_SPEC_HPOST — llama.cpp #24025's t_h_nextn is taken AFTER the head norm).
         Ok((logits, if spec_hpost() { final_h } else { h_nextn }))
@@ -789,6 +888,12 @@ impl HybridModel {
             f32,
         )>,
         stream_pack: Option<(&mut CudaSlice<u32>, usize, Option<&CudaSlice<u32>>)>,
+        // DRAFT-SIDE GRAMMAR MASK (lane/draft-mask): (packed draft-vocab allowed-set buffer,
+        // word count). Captured as ONE mask_logits_f32 node between the head matmul and the
+        // in-graph argmax; the buffer address is baked, its CONTENTS are re-uploaded by the
+        // host before every replay (the decode.rs graph-mask pattern). All-ones contents = a
+        // no-op ban, so a position the grammar cannot constrain costs one pass over the row.
+        mask_cap: Option<(&CudaSlice<u32>, usize)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -875,7 +980,13 @@ impl HybridModel {
         };
         if with_head {
             let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
-            let logits = e.matmul(head, final_h.as_ref().unwrap(), 1)?;
+            let mut logits = e.matmul(head, final_h.as_ref().unwrap(), 1)?;
+            // DRAFT-SIDE GRAMMAR MASK: ban the grammar-illegal draft ids IN the captured chain,
+            // before the argmax — proposals become legal by construction. Contents-only
+            // per-replay upload keeps the capture valid.
+            if let Some((mask_d, mw)) = mask_cap {
+                e.mask_logits_col(&mut logits, mask_d, 0, d_vocab, mw)?;
+            }
             if let Some((ctr_d, perturb_d, q_out_d, seed, temp)) = sampled_cap {
                 // SAMPLED chain: retain q (raw head logits -> persistent q_out_d; the matmul's
                 // own buffer is pool-recycled after the capture body returns, so it can't be the
@@ -893,6 +1004,10 @@ impl HybridModel {
             } else {
                 // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
                 e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
+                // p-min under a draft mask reads the MASKED row: confidence relative to the
+                // grammar-LEGAL alternatives (illegal ids leave the softmax denominator), which
+                // is the right semantics for "does the drafter know what comes next here" and
+                // the same row the pick came from. Draft-quality only — verify arbitrates.
                 if with_prob {
                     e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?;
                 }
@@ -2843,8 +2958,30 @@ impl HybridModel {
             dctx.g_q = e.zeros(d_vocab)?;
             dctx.g_perturb = e.zeros(d_vocab)?;
         }
+        // DRAFT-SIDE GRAMMAR MASK (lane/draft-mask, 2026-08-04): the drafter samples the
+        // grammar's legal set, so proposals are legal BY CONSTRUCTION and the verify-side
+        // truncation (the correctness backstop) stops cutting every tight-schema round.
+        // The mask is one node inside the captured draft chain — presence is a CAPTURE-TIME
+        // shape, so a parked graph of the other shape is dropped and recaptured.
+        let dmask_on = constraint.as_deref().is_some_and(|c| c.draft_mask_enabled());
+        let dmask_words = if dmask_on { d_vocab.div_ceil(32) } else { 0 };
+        if dmask_on && dctx.g_dmask.len() < dmask_words {
+            dctx.g_dmask = e.alloc_u32_zeroed(dmask_words)?;
+            dctx.graph = None; // the old capture baked the old (or no) mask pointer
+            dctx.graph_failed = false;
+        }
+        if dctx.graph.is_some() && dctx.graph_masked != dmask_on {
+            dctx.graph = None;
+            dctx.graph_failed = false;
+        }
         if graph_draft && !sampled && dctx.graph.is_none() && !dctx.graph_failed {
-            let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, .. } = &mut dctx;
+            let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, g_dmask, .. } = &mut dctx;
+            // capture-time contents: ALL-ONES (ban nothing). A replay only ever runs after the
+            // host uploads the position's real words, so the warmups stay grammar-free.
+            if dmask_on {
+                e.htod_u32_into(g_dmask, &vec![u32::MAX; dmask_words])?;
+            }
+            let g_dmask_ro: &CudaSlice<u32> = &*g_dmask;
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(
                     e,
@@ -2862,12 +2999,14 @@ impl HybridModel {
                     d_vocab,
                     None,
                     None,
+                    if dmask_on { Some((g_dmask_ro, dmask_words)) } else { None },
                 )
             });
             match cap_res {
                 Ok(g) => {
                     scratch.set_len(e, base)?;
                     dctx.graph = Some(g);
+                    dctx.graph_masked = dmask_on;
                 }
                 Err(err) => {
                     scratch.set_len(e, base)?;
@@ -2918,6 +3057,7 @@ impl HybridModel {
                     d_vocab,
                     Some((g_ctr, g_perturb, g_q, sp_seed, sp_temp)),
                     None,
+                    None, // constrained spec is greedy-only — sampled never carries a hook
                 )
             });
             match cap_res {
@@ -3056,6 +3196,7 @@ impl HybridModel {
                         d_vocab,
                         None,
                         Some((&mut g_tokp2k, j, d2t_dev.as_ref())),
+                        None, // round-stream requires constraint.is_none() (see stream_on)
                     )?;
                 }
                 Ok(())
@@ -3194,6 +3335,12 @@ impl HybridModel {
                                              // no tracing, no extra syncs (each phase is naturally sync-bounded: draft readbacks,
                                              // the verify accept readback). Printed once at loop end via spec-stats.
         let phase_on = std::env::var("MEMRA_SPEC_PHASE").as_deref() == Ok("1");
+        // DRAFT-MASK receipt (lane/draft-mask): speculative-clone wall + rounds, printed with
+        // spec-stats. The clone is the one cost the design adds per round — measured, not assumed.
+        let (mut dm_clone_ns, mut dm_rounds) = (0u128, 0usize);
+        // grammar-truncation counters: how many rounds the verify-side cut fired and how many
+        // already-verified tokens it threw away. THIS is the quantity draft masking targets.
+        let (mut dm_cuts, mut dm_cut_tokens) = (0usize, 0usize);
         let (mut ph_draft, mut ph_verify, mut ph_rest) = (0f64, 0f64, 0f64);
         let mut ph_wait = 0f64;
         let mut ph_t = std::time::Instant::now();
@@ -3330,6 +3477,21 @@ impl HybridModel {
                 draft_logits.clear();
                 draft_stats.clear();
             }
+            // DRAFT-SIDE GRAMMAR MASK: clone the committed grammar state ONCE per round; each
+            // position's mask is computed on that clone and advanced by the PROPOSED token. The
+            // real state moves only on emission (verify's job), so the emitted stream is
+            // unchanged — the mask only removes tokens the verify would have truncated anyway.
+            let mut dmask_live = dmask_on;
+            if dmask_live {
+                let t_c = std::time::Instant::now();
+                constraint
+                    .as_deref_mut()
+                    .unwrap()
+                    .draft_begin()
+                    .map_err(|e2| format!("constraint: {e2}"))?;
+                dm_clone_ns += t_c.elapsed().as_nanos();
+                dm_rounds += 1;
+            }
             if let (false, Some(gr)) = (sampled || pen_on, &dctx.graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
@@ -3338,6 +3500,25 @@ impl HybridModel {
                 e.set_u32_one(&mut dctx.g_tok, last_token)?;
                 e.copy_into(&mut dctx.g_seed, 0, &h_seed_buf, n_embd)?;
                 for j in 0..k_this {
+                    // per-position mask upload (contents only — the graph's baked pointer is
+                    // dctx.g_dmask). All-ones once masking goes dead mid-chain, so the captured
+                    // mask node degrades to a no-op ban instead of needing a second graph.
+                    if dmask_live
+                        && !upload_draft_mask(
+                            e,
+                            constraint.as_deref_mut().unwrap(),
+                            &mut dctx.g_dmask,
+                            mtp.d2t.as_ref(),
+                            d_vocab,
+                            dmask_words,
+                        )?
+                    {
+                        // no draft-vocab row is grammar-legal here (a trimmed FR-Spec head can
+                        // genuinely miss the legal set): neutralize the captured mask node and
+                        // finish the chain UNMASKED — exactly pre-lane behaviour, never worse.
+                        e.htod_u32_into(&mut dctx.g_dmask, &vec![u32::MAX; dmask_words])?;
+                        dmask_live = false;
+                    }
                     gr.launch()?;
                     scratch.kv.len += 1; // host mirror (len_d advanced in-graph)
                     let idx = e.dtoh_u32_one(&dctx.g_tok)?;
@@ -3357,6 +3538,21 @@ impl HybridModel {
                     // index the argmax wrote — patch the persistent token buffer (4B htod).
                     if d != idx {
                         e.set_u32_one(&mut dctx.g_tok, d)?;
+                    }
+                    // advance the SPECULATIVE state with the proposal; a dead chain drops to
+                    // unmasked drafting for the remaining positions (verify still arbitrates).
+                    // speculative advance; a chain the grammar can no longer follow (EOS
+                    // proposed) ends here. The captured mask node always runs, so a dead chain
+                    // leaves the buffer NEUTRAL (all-ones = ban nothing) before it exits.
+                    if dmask_live
+                        && !constraint
+                            .as_deref_mut()
+                            .unwrap()
+                            .draft_advance(d)
+                            .map_err(|e2| format!("constraint: {e2}"))?
+                    {
+                        e.htod_u32_into(&mut dctx.g_dmask, &vec![u32::MAX; dmask_words])?;
+                        break;
                     }
                 }
             } else if let (true, Some(gr)) = (sampled, &dctx.graph_s) {
@@ -3425,6 +3621,19 @@ impl HybridModel {
                     // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token
                     // read instead of the ~600KB full-vocab dtoh + host argmax per draft token.
                     let mtp_pos = pos + base0 + j;
+                    // draft-side grammar mask (eager twin of the graph arm's in-graph node).
+                    // A position with no legal draft-vocab row drops to unmasked drafting for
+                    // the rest of the chain (pre-lane behaviour; verify still arbitrates).
+                    if dmask_live {
+                        dmask_live = upload_draft_mask(
+                            e,
+                            constraint.as_deref_mut().unwrap(),
+                            &mut dctx.g_dmask,
+                            mtp.d2t.as_ref(),
+                            d_vocab,
+                            dmask_words,
+                        )?;
+                    }
                     let (dl_d, h_nextn) = self.mtp_head_forward_dev(
                         e,
                         mtp,
@@ -3433,6 +3642,7 @@ impl HybridModel {
                         &mut *scratch,
                         mtp_pos,
                         embd_dev,
+                        if dmask_live { Some((&dctx.g_dmask, dmask_words)) } else { None },
                     )?;
                     let tok_d = if sampled {
                         // FILTERED Gumbel-max: stats -> masked perturb -> argmax = one draw from
@@ -3490,6 +3700,17 @@ impl HybridModel {
                     draft.push(d);
                     e_tok = d;
                     d_seed = h_nextn;
+                    // speculative advance; a chain the grammar can no longer follow (EOS
+                    // proposed) ends here — the prefix already proposed still rides verify.
+                    if dmask_live
+                        && !constraint
+                            .as_deref_mut()
+                            .unwrap()
+                            .draft_advance(d)
+                            .map_err(|e2| format!("constraint: {e2}"))?
+                    {
+                        break;
+                    }
                 }
             }
             let k_round = draft.len();
@@ -3911,8 +4132,12 @@ impl HybridModel {
                         } else {
                             na = j;
                             cut = true;
+                            dm_cut_tokens += n_acc - j;
                             break;
                         }
+                    }
+                    if cut {
+                        dm_cuts += 1;
                     }
                     let mut bo = bonus;
                     if cut || !c.is_allowed(bo).map_err(ce)? {
@@ -4243,6 +4468,14 @@ impl HybridModel {
                 (total_accepted + round) as f64 / round.max(1) as f64
             );
         }
+        if constraint.is_some() {
+            eprintln!(
+                "[draft-mask] mask_rounds={dm_rounds} clone_total={:.3}ms \
+                 clone_per_round={:.4}ms gram_cuts={dm_cuts}/{round} cut_tokens={dm_cut_tokens}",
+                dm_clone_ns as f64 / 1e6,
+                dm_clone_ns as f64 / 1e6 / dm_rounds.max(1) as f64
+            );
+        }
         if phase_on {
             let tot = ph_draft + ph_verify + ph_wait + ph_rest;
             eprintln!("[spec-phase] draft={:.1}ms ({:.1}%) verify-issue={:.1}ms ({:.1}%) verify-wait={:.1}ms ({:.1}%) commit-host={:.1}ms ({:.1}%) rounds={round}",
@@ -4514,6 +4747,7 @@ impl HybridModel {
                         &mut scratch,
                         p + 1 + j,
                         embd_dev,
+                        None, // acceptance-oracle walk: no grammar
                     )?;
                     let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
                     let idx = e.dtoh_u32_one(&tok_d)?;

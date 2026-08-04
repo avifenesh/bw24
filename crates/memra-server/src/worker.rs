@@ -2575,6 +2575,16 @@ fn finish(s: &Session, reason: StopReason) {
                       s.model, c.steps, c.mask_ns as f64 / 1e6,
                       c.mask_ns as f64 / 1e6 / c.steps as f64);
         }
+        // DRAFT-SIDE MASKING receipt (lane/draft-mask): the speculative Matcher clone (one per
+        // spec round) and the draft-position masks computed on it — the two costs the lane adds.
+        if c.spec_clones > 0 {
+            eprintln!("[draft-mask] {}: {} clones {:.2} ms ({:.3} ms/clone), \
+                       {} draft masks {:.2} ms ({:.3} ms/mask)",
+                      s.model, c.spec_clones, c.spec_ns as f64 / 1e6,
+                      c.spec_ns as f64 / 1e6 / c.spec_clones as f64,
+                      c.draft_masks, c.draft_mask_ns as f64 / 1e6,
+                      c.draft_mask_ns as f64 / 1e6 / c.draft_masks.max(1) as f64);
+        }
     }
     let reason = format!("{reason:?}");
     let _ = s.tx.send(Event::Done {

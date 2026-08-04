@@ -1,0 +1,39 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8198
+[draft-mask] mask_rounds=18 clone_total=0.040ms clone_per_round=0.0022ms gram_cuts=0/18 cut_tokens=0
+[spec-acc] ctx=28 burst=13/18 cum=13/18=0.722
+[draft-mask] mask_rounds=18 clone_total=0.046ms clone_per_round=0.0026ms gram_cuts=0/18 cut_tokens=0
+[spec-acc] ctx=60 burst=14/18 cum=27/36=0.750
+[draft-mask] mask_rounds=17 clone_total=0.047ms clone_per_round=0.0028ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=92 burst=16/17 cum=43/53=0.811
+[draft-mask] mask_rounds=17 clone_total=0.055ms clone_per_round=0.0033ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=125 burst=16/17 cum=59/70=0.843
+[draft-mask] mask_rounds=17 clone_total=0.066ms clone_per_round=0.0039ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=158 burst=16/17 cum=75/87=0.862
+[draft-mask] mask_rounds=17 clone_total=0.069ms clone_per_round=0.0040ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=191 burst=15/17 cum=90/104=0.865
+[draft-mask] mask_rounds=17 clone_total=0.078ms clone_per_round=0.0046ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=223 burst=15/17 cum=105/121=0.868
+[draft-mask] mask_rounds=17 clone_total=0.083ms clone_per_round=0.0049ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=255 burst=15/17 cum=120/138=0.870
+[draft-mask] mask_rounds=18 clone_total=0.100ms clone_per_round=0.0056ms gram_cuts=0/18 cut_tokens=0
+[spec-acc] ctx=287 burst=15/18 cum=135/156=0.865
+[draft-mask] mask_rounds=16 clone_total=0.094ms clone_per_round=0.0059ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=320 burst=16/16 cum=151/172=0.878
+[draft-mask] mask_rounds=17 clone_total=0.108ms clone_per_round=0.0063ms gram_cuts=0/17 cut_tokens=0
+[spec-acc] ctx=352 burst=15/17 cum=166/189=0.878
+[draft-mask] mask_rounds=16 clone_total=0.106ms clone_per_round=0.0066ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=384 burst=16/16 cum=182/205=0.888
+[draft-mask] mask_rounds=7 clone_total=0.050ms clone_per_round=0.0071ms gram_cuts=0/7 cut_tokens=0
+[spec-acc] ctx=416 burst=6/7 cum=188/212=0.887
+[constrained] q9: 401 masked steps, mask total 2.20 ms (0.005 ms/step)
+[draft-mask] q9: 212 clones 0.93 ms (0.004 ms/clone), 212 draft masks 1.39 ms (0.007 ms/mask)

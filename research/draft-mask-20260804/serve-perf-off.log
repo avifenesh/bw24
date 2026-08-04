@@ -1,0 +1,234 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8197
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/12 cut_tokens=5
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/15 cut_tokens=8
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/10 cut_tokens=2
+[spec-acc] ctx=94 burst=25/30 cum=63/111=0.568
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=129 burst=23/30 cum=86/141=0.610
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=162 burst=23/30 cum=109/171=0.637
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=195 burst=22/33 cum=131/204=0.642
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=228 burst=22/30 cum=153/234=0.654
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/17 cut_tokens=2
+[spec-acc] ctx=260 burst=7/51 cum=160/285=0.561
+[constrained] q9: 241 masked steps, mask total 1.77 ms (0.007 ms/step)
+[worker] observed session VRAM cost for "q9": 201MB (admission gate = 2x)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/12 cut_tokens=5
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/15 cut_tokens=8
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/10 cut_tokens=2
+[spec-acc] ctx=94 burst=25/30 cum=63/111=0.568
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=129 burst=23/30 cum=86/141=0.610
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=162 burst=23/30 cum=109/171=0.637
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=195 burst=22/33 cum=131/204=0.642
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=228 burst=22/30 cum=153/234=0.654
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=15/17 cut_tokens=20
+[spec-acc] ctx=260 burst=7/51 cum=160/285=0.561
+[constrained] q9: 241 masked steps, mask total 1.94 ms (0.008 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/12 cut_tokens=5
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/15 cut_tokens=8
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/10 cut_tokens=2
+[spec-acc] ctx=94 burst=25/30 cum=63/111=0.568
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=129 burst=23/30 cum=86/141=0.610
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=162 burst=23/30 cum=109/171=0.637
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=195 burst=22/33 cum=131/204=0.642
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=228 burst=22/30 cum=153/234=0.654
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=15/17 cut_tokens=20
+[spec-acc] ctx=260 burst=7/51 cum=160/285=0.561
+[constrained] q9: 241 masked steps, mask total 2.03 ms (0.008 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=2/12 cut_tokens=4
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=4/15 cut_tokens=10
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=94 burst=23/30 cum=61/111=0.550
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=127 burst=24/30 cum=85/141=0.603
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=161 burst=23/30 cum=108/171=0.632
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/11 cut_tokens=3
+[spec-acc] ctx=194 burst=24/33 cum=132/204=0.647
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=229 burst=23/30 cum=155/234=0.662
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/7 cut_tokens=0
+[spec-acc] ctx=262 burst=18/21 cum=173/255=0.678
+[constrained] q9: 259 masked steps, mask total 2.09 ms (0.008 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=2/12 cut_tokens=4
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=4/15 cut_tokens=10
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=94 burst=23/30 cum=61/111=0.550
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=127 burst=24/30 cum=85/141=0.603
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=161 burst=23/30 cum=108/171=0.632
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/11 cut_tokens=3
+[spec-acc] ctx=194 burst=24/33 cum=132/204=0.647
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=229 burst=23/30 cum=155/234=0.662
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/7 cut_tokens=0
+[spec-acc] ctx=262 burst=18/21 cum=173/255=0.678
+[constrained] q9: 259 masked steps, mask total 2.09 ms (0.008 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=2/12 cut_tokens=4
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=4/15 cut_tokens=10
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=94 burst=23/30 cum=61/111=0.550
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=127 burst=24/30 cum=85/141=0.603
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=161 burst=23/30 cum=108/171=0.632
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/11 cut_tokens=3
+[spec-acc] ctx=194 burst=24/33 cum=132/204=0.647
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=229 burst=23/30 cum=155/234=0.662
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/7 cut_tokens=0
+[spec-acc] ctx=262 burst=18/21 cum=173/255=0.678
+[constrained] q9: 259 masked steps, mask total 2.00 ms (0.008 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=26 burst=17/48 cum=17/48=0.354
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=60 burst=18/42 cum=35/90=0.389
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=92 burst=19/42 cum=54/132=0.409
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=125 burst=19/39 cum=73/171=0.427
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/15 cut_tokens=0
+[spec-acc] ctx=157 burst=18/45 cum=91/216=0.421
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=190 burst=19/39 cum=110/255=0.431
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=2/15 cut_tokens=6
+[spec-acc] ctx=222 burst=17/45 cum=127/300=0.423
+[constrained] q9: 226 masked steps, mask total 1.62 ms (0.007 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=26 burst=17/48 cum=17/48=0.354
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=60 burst=18/42 cum=35/90=0.389
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=92 burst=19/42 cum=54/132=0.409
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=125 burst=19/39 cum=73/171=0.427
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/15 cut_tokens=0
+[spec-acc] ctx=157 burst=18/45 cum=91/216=0.421
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=190 burst=19/39 cum=110/255=0.431
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=2/15 cut_tokens=6
+[spec-acc] ctx=222 burst=17/45 cum=127/300=0.423
+[constrained] q9: 226 masked steps, mask total 1.58 ms (0.007 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=26 burst=17/48 cum=17/48=0.354
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=60 burst=18/42 cum=35/90=0.389
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=92 burst=19/42 cum=54/132=0.409
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=125 burst=19/39 cum=73/171=0.427
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/15 cut_tokens=0
+[spec-acc] ctx=157 burst=18/45 cum=91/216=0.421
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=190 burst=19/39 cum=110/255=0.431
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=2/15 cut_tokens=6
+[spec-acc] ctx=222 burst=17/45 cum=127/300=0.423
+[constrained] q9: 226 masked steps, mask total 1.58 ms (0.007 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=27 burst=18/39 cum=18/39=0.462
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/12 cut_tokens=0
+[spec-acc] ctx=59 burst=20/36 cum=38/75=0.507
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=91 burst=22/33 cum=60/108=0.556
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=124 burst=21/39 cum=81/147=0.551
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=158 burst=17/48 cum=98/195=0.503
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=191 burst=19/42 cum=117/237=0.494
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=224 burst=21/33 cum=138/270=0.511
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=256 burst=14/39 cum=152/309=0.492
+[constrained] q9: 256 masked steps, mask total 0.51 ms (0.002 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=27 burst=18/39 cum=18/39=0.462
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/12 cut_tokens=0
+[spec-acc] ctx=59 burst=20/36 cum=38/75=0.507
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=91 burst=22/33 cum=60/108=0.556
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=124 burst=21/39 cum=81/147=0.551
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=158 burst=17/48 cum=98/195=0.503
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=191 burst=19/42 cum=117/237=0.494
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=224 burst=21/33 cum=138/270=0.511
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=256 burst=14/39 cum=152/309=0.492
+[constrained] q9: 256 masked steps, mask total 0.48 ms (0.002 ms/step)
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=27 burst=18/39 cum=18/39=0.462
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/12 cut_tokens=0
+[spec-acc] ctx=59 burst=20/36 cum=38/75=0.507
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=91 burst=22/33 cum=60/108=0.556
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=124 burst=21/39 cum=81/147=0.551
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/16 cut_tokens=0
+[spec-acc] ctx=158 burst=17/48 cum=98/195=0.503
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/14 cut_tokens=0
+[spec-acc] ctx=191 burst=19/42 cum=117/237=0.494
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=224 burst=21/33 cum=138/270=0.511
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/13 cut_tokens=0
+[spec-acc] ctx=256 burst=14/39 cum=152/309=0.492
+[constrained] q9: 256 masked steps, mask total 0.47 ms (0.002 ms/step)
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=22/30 cum=68/87=0.782
+[spec-acc] ctx=122 burst=20/36 cum=88/123=0.715
+[spec-acc] ctx=154 burst=19/39 cum=107/162=0.660
+[spec-acc] ctx=186 burst=21/33 cum=128/195=0.656
+[spec-acc] ctx=218 burst=23/30 cum=151/225=0.671
+[spec-acc] ctx=251 burst=19/33 cum=170/258=0.659
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=22/30 cum=68/87=0.782
+[spec-acc] ctx=122 burst=20/36 cum=88/123=0.715
+[spec-acc] ctx=154 burst=19/39 cum=107/162=0.660
+[spec-acc] ctx=186 burst=21/33 cum=128/195=0.656
+[spec-acc] ctx=218 burst=23/30 cum=151/225=0.671
+[spec-acc] ctx=251 burst=19/33 cum=170/258=0.659
+[spec-acc] ctx=24 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=24/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=22/30 cum=68/87=0.782
+[spec-acc] ctx=122 burst=20/36 cum=88/123=0.715
+[spec-acc] ctx=154 burst=19/39 cum=107/162=0.660
+[spec-acc] ctx=186 burst=21/33 cum=128/195=0.656
+[spec-acc] ctx=218 burst=23/30 cum=151/225=0.671
+[spec-acc] ctx=251 burst=19/33 cum=170/258=0.659
