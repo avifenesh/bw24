@@ -70,6 +70,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         model.cfg.n_layer, model.cfg.n_embd, model.cfg.n_ff, model.cfg.n_vocab, toks.len()
     );
 
+    // --- PERF: pp-only prefill throughput (slice 4) ---------------------------------------------
+    // MEMRA_PP_ONLY=1 + MEMRA_PP_REPS=<n>: warmup forward, then n timed prefills over a prompt of
+    // MEMRA_PP_TOKENS tokens (from MEMRA_PROMPT_FILE if set, else the synthetic ramp), printing the
+    // per-rep and MEDIAN tok/s in run-gen's line format so the same parsers work. Exits before any
+    // generation, so the number is PURE prefill — the stage this kernel lives in.
+    if std::env::var("MEMRA_PP_ONLY").is_ok() {
+        let reps: usize = std::env::var("MEMRA_PP_REPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        let want: usize = std::env::var("MEMRA_PP_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(512);
+        let ids: Vec<u32> = match std::env::var("MEMRA_PROMPT_FILE") {
+            Ok(f) => {
+                let text = std::fs::read_to_string(&f)?;
+                let tok = memra_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
+                    .map_err(|err| format!("HF tokenizer init failed: {err}"))?;
+                let mut v = tok.encode(&text, true);
+                if v.len() < want {
+                    return Err(format!(
+                        "MEMRA_PROMPT_FILE {f} tokenizes to {} tokens, need {want}",
+                        v.len()
+                    )
+                    .into());
+                }
+                v.truncate(want);
+                v
+            }
+            // Synthetic ramp: deterministic, in-vocab, and long enough for any pp length.
+            Err(_) => (0..want).map(|i| (1000 + (i * 7919) % 90000) as u32).collect(),
+        };
+        let t = ids.len();
+        println!("pp-only: {t} tokens, {reps} timed reps (+1 warmup)");
+        let _ = model.forward_last(&e, &ids)?; // warmup: allocations, NaN scan, autotune
+        let mut secs: Vec<f64> = Vec::with_capacity(reps);
+        for r in 0..reps {
+            let t0 = std::time::Instant::now();
+            let _ = model.forward_last(&e, &ids)?;
+            let dt = t0.elapsed().as_secs_f64();
+            secs.push(dt);
+            println!("pp-only rep {r}: {t} tok in {dt:.4}s = {:.1} tok/s", t as f64 / dt);
+        }
+        secs.sort_by(f64::total_cmp);
+        let med = secs[secs.len() / 2];
+        println!(
+            "pp-only MEDIAN: {t} tok in {med:.4}s = {:.1} tok/s",
+            t as f64 / med
+        );
+        return Ok(());
+    }
+
     // --- QUALITY SANITY: mean token NLL over a real text window (one prefill) ------------------
     if let Ok(txt_file) = std::env::var("MEMRA_FP8_MMQ_NLL") {
         let text = std::fs::read_to_string(&txt_file)?;
