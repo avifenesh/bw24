@@ -1,0 +1,21 @@
+== local-ci: correctness stage ==
+kernel-check: GREEN
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=1.1182e0 min flip margin=-
+prime-gate: ALL GREEN
+run-gen argmax: MATCH (31B)
+VERIFY-GATE K=7 depth: PASS (31B)
+spec self-consistency 64/64: PASS (31B)
+run-gen argmax depth: MATCH (12B)
+VERIFY-GATE K=7 depth: PASS (12B)
+correctness stage: GREEN
+== local-ci: perf stage (--perf) ==
+  31b-plain-short: 41.39 tok/s [OK]
+  31b-plain-d1736: 39.27 tok/s [OK]
+  31b-spec-short: 107.71 tok/s accept=0.798 [OK]
+  31b-spec-d1736: 102.44 tok/s accept=0.817 [OK]
+  26b-plain-short: 208.14 tok/s [OK]
+  26b-spec-d1736: 339.57 tok/s accept=0.880 [OK]
+  e4b-plain-short: 205.59 tok/s [OK]
+  e4b-spec-short: 268.54 tok/s accept=0.429 [WARN] — tok/s -2.22% vs median 274.64
+  qwen9b-plain-short: 137.95 tok/s [OK]
+perf stage: 0 fail, 1 warn
