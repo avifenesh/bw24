@@ -165,7 +165,11 @@ fn main() {
         // both arms land at 105-127 TFLOP against f8f6f4's 381-TF class — i.e. neither is MMA
         // bound, so the tile geometry is the thing under test, not the MMA.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_FP8");
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_OCC_FP8");
         let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
+        let fp8_y = std::env::var("MEMRA_MMQ_Y_FP8").ok();
+        let fp8_occ = std::env::var("MEMRA_MMQ_OCC_FP8").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -210,12 +214,15 @@ fn main() {
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
             }
-            // Per-block FP8 MMQ token-tile sweep. Only X is tunable: FP8_MMQ_Y is pinned to 128 by
-            // a static_assert, because mmq_y == the scale block edge is what makes the scale row
-            // equal blockIdx.x and reduces the whole scale fetch to two scalar loads per 256-k
-            // iteration. Changing Y would reintroduce a per-row scale lookup.
+            // Per-block FP8 MMQ tile geometry. v2 opens Y (and its paired occupancy target)
+            // alongside X: the scale-row hoist only needs FP8_MMQ_Y to DIVIDE the 128 block edge
+            // (a static_assert enforces that), not to equal it, so halving Y and nwarps together
+            // is legal and is the occupancy lever the v1 profile asked for. FP8_MMQ_OCC is the
+            // __launch_bounds__ minBlocksPerMultiprocessor.
             if mmq_src.ends_with("mmq_fp8_blk.cu") {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
+                if let Some(y) = &fp8_y { args.push(format!("-DFP8_MMQ_Y={y}")); }
+                if let Some(o) = &fp8_occ { args.push(format!("-DFP8_MMQ_OCC={o}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());
