@@ -206,7 +206,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // FP8 MMQ tile. A refused precondition (no block operand resident, stash budget spent
             // before the tensor, a NaN code) reads exactly like "no perf change", so a pp number
             // for that arm is only evidence alongside a nonzero count.
-            println!("fp8-mmq dispatches: {}", memra_engine::fp8_ffi::fp8_mmq_hits());
+            let (ent, gate, h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
+            println!(
+                "fp8-mmq dispatches: {h}  (hook entries={ent} gate_off={gate} \
+                 no_operand={no_op} bad_shape={shp} bad_scale={scl} nan={nan})"
+            );
             return Ok(());
         }
         // GATE REFERENCE = the batched VERIFY path (decode_step_t: quantized-KV attend, the same
