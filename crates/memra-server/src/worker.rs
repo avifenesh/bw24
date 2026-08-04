@@ -49,6 +49,11 @@ struct LoadedModel {
     model: HybridModel,
     tok: Tokenizer,
     eos_id: u32,
+    /// Loaded from a checkpoint DIRECTORY (safetensors/repack) rather than a GGUF file.
+    /// Feeds ModelCaps::chat_ok: a dir checkpoint with no chat template 400s on chat
+    /// requests (serve-st v1 honesty gate) instead of silently rendering fallback ChatML;
+    /// GGUF models keep the historical ChatML fallback.
+    from_dir: bool,
     /// Constrained-decoding grammar factory (llguidance TokTrie over this vocab). Built
     /// LAZILY on the first `response_format` request against this model — unconstrained
     /// serving never pays the vocab-trie build. `Err` = vocab unusable (kept, so every
@@ -106,7 +111,10 @@ pub struct Request {
 /// Chat-template capabilities probed from a loaded model's template at spawn time — the
 /// HTTP layer rejects `tools` on models whose template has no tools branch BEFORE the
 /// request reaches the worker, and arms the tool-call parser's think gate.
-#[derive(Debug, Clone, Copy, Default)]
+/// Plus the /v1/models metadata surface (serve-tail lane, 2026-08-04): trained context,
+/// tokenizer family, chat-template family — worker truth captured once at spawn so the
+/// HTTP layer never invents values (unknown = 0/""/None -> honest nulls in the route).
+#[derive(Debug, Clone, Default)]
 pub struct ModelCaps {
     /// template carries the qwen-class `<tools>` branch (tools + tool_response rendering).
     pub tools_branch: bool,
@@ -114,6 +122,17 @@ pub struct ModelCaps {
     pub qwen_think: bool,
     /// template has the `enable_thinking` switch (ThinkMode::NoThink is honored).
     pub think_switch: bool,
+    /// chat requests are honest against this model: it has a chat template, OR it is a
+    /// GGUF (which keeps the historical plain-ChatML fallback). A safetensors/repack DIR
+    /// checkpoint without a template 400s on /v1/chat/completions (serve-st v1 honesty
+    /// gate) instead of silently rendering a format the model was never trained on.
+    pub chat_ok: bool,
+    /// model's trained context length (config; 0 = unknown) — /v1/models `context_length`.
+    pub context_length: usize,
+    /// tokenizer family (the GGUF/HF pre-tokenizer name, e.g. "qwen2"; "" = unknown).
+    pub tokenizer: String,
+    /// chat-template family ("chatml" / "gemma"); None = no template or unrecognized.
+    pub instruct_type: Option<String>,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -632,7 +651,8 @@ pub fn run(
         eprintln!("[worker] loading model {name:?} <- {path}");
         // DIRECTORY path = safetensors HF checkpoint or a manifest-backed memra repack/overlay;
         // file = GGUF. Repack tokenizers live in the manifest's source_dir.
-        let (model, tok) = if std::path::Path::new(path).is_dir() {
+        let from_dir = std::path::Path::new(path).is_dir();
+        let (model, tok) = if from_dir {
             let dir = std::path::Path::new(path);
             let (src, tok_dir): (Box<dyn memra_gguf::source::TensorSource>, std::path::PathBuf) =
                 if dir.join("manifest.json").exists() {
@@ -698,12 +718,17 @@ pub fn run(
 
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
+        // (#68 closed 2026-08-04: the former ST-spec quarantine notice lived here — dir
+        // checkpoints are spec-eligible again, research/fp8ship-20260804/RESULTS.md.)
         loaded.insert(name.clone(), LoadedModel {
-            model, tok, eos_id, constraints: std::cell::OnceCell::new(),
+            model, tok, eos_id, from_dir, constraints: std::cell::OnceCell::new(),
         });
         order.push(name.clone());
     }
     // Template capability probe (serve-tools lane): same substring laws the renderer uses.
+    // + /v1/models metadata (serve-tail lane): context length from the model config,
+    // tokenizer family from the pre-tokenizer name, instruct family from the template's
+    // turn markers. Unknown stays 0/""/None — the route reports honest nulls.
     let caps: HashMap<String, ModelCaps> = loaded.iter().map(|(n, lm)| {
         let t = lm.tok.chat_template();
         let caps = ModelCaps {
@@ -711,9 +736,22 @@ pub fn run(
                 && !t.contains("hy_User") && !t.contains("<|turn>")),
             qwen_think: t.is_some_and(|t| t.contains("<think>") && t.contains("add_generation_prompt")),
             think_switch: t.is_some_and(|t| t.contains("enable_thinking")),
+            // GGUF keeps the historical ChatML fallback for template-less models; a dir
+            // checkpoint (safetensors/repack) must CARRY its template (tokenizer_config
+            // chat_template or chat_template.jinja) or chat requests 400 (serve-st v1).
+            chat_ok: t.is_some() || !lm.from_dir,
+            context_length: lm.model.cfg.context_length as usize,
+            tokenizer: lm.tok.pre().to_string(),
+            instruct_type: t.and_then(|t| {
+                if t.contains("<|im_start|>") { Some("chatml".to_string()) }
+                else if t.contains("<start_of_turn>") { Some("gemma".to_string()) }
+                else { None }
+            }),
         };
-        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={}",
-                  caps.tools_branch, caps.qwen_think, caps.think_switch);
+        eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={} \
+                   ctx={} tok={:?} instruct={:?}",
+                  caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok,
+                  caps.context_length, caps.tokenizer, caps.instruct_type);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
@@ -1644,6 +1682,13 @@ fn admit(
     // cross-request prefix cache entirely (SpecSession owns trunk + draft caches; restoring a
     // trunk-only prefix would leave draft state unprimed — the spec tier keeps its own
     // continuation pool below). Mirrors the spec-branch condition exactly.
+    // ST-SPEC QUARANTINE LIFTED (#68 closed, 2026-08-04): the serve-spec divergence on
+    // dir-loaded checkpoints was never ST-specific — the per-session persistent draft
+    // graph replayed with dangling pool addresses (capture transients not retained +
+    // fa_part_pool freeing grown-past buffers the capture baked; fixed in spec.rs/lib.rs,
+    // receipts research/fp8ship-20260804/RESULTS.md — the same corruption reproduced on
+    // GGUF session bursts at n>=600). Dir checkpoints are spec-eligible again; the
+    // serve-st gate pins default-serve text == the run-gen CLI tokenwise oracle.
     let serve_spec = !confidence_trace_enabled()
         && std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut sampler = Sampler::new(req.sampler_cfg);
@@ -2518,6 +2563,16 @@ fn finish(s: &Session, reason: StopReason) {
             eprintln!("[constrained] {}: {} masked steps, mask total {:.2} ms ({:.3} ms/step)",
                       s.model, c.steps, c.mask_ns as f64 / 1e6,
                       c.mask_ns as f64 / 1e6 / c.steps as f64);
+        }
+        // DRAFT-SIDE MASKING receipt (lane/draft-mask): the speculative Matcher clone (one per
+        // spec round) and the draft-position masks computed on it — the two costs the lane adds.
+        if c.spec_clones > 0 {
+            eprintln!("[draft-mask] {}: {} clones {:.2} ms ({:.3} ms/clone), \
+                       {} draft masks {:.2} ms ({:.3} ms/mask)",
+                      s.model, c.spec_clones, c.spec_ns as f64 / 1e6,
+                      c.spec_ns as f64 / 1e6 / c.spec_clones as f64,
+                      c.draft_masks, c.draft_mask_ns as f64 / 1e6,
+                      c.draft_mask_ns as f64 / 1e6 / c.draft_masks.max(1) as f64);
         }
     }
     let reason = format!("{reason:?}");

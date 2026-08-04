@@ -1,0 +1,24 @@
+# .crate artifact sizes (dry-run output, tmp-registry)
+memra-engine-0.69.0.crate            1.1M
+memra-gguf-0.69.0.crate              100K
+memra-kv-0.69.0.crate                12K
+memra-lanes-0.69.0.crate             8.0K
+memra-runtime-0.69.0.crate           8.0K
+memra-sampling-0.69.0.crate          8.0K
+memra-server-0.69.0.crate            92K
+memra-tokenizer-0.69.0.crate         44K
+memra-validate-0.69.0.crate          4.0K
+
+# memra-engine .crate contents (top-level dirs)
+      1 build.rs
+      1 Cargo.lock
+      1 Cargo.toml
+      1 Cargo.toml.orig
+      1 .cargo_vcs_info.json
+     27 cu
+     96 src
+      2 tests
+      1 THIRD-PARTY.md
+
+# leak scan across all .crates
+clean

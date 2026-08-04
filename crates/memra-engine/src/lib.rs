@@ -220,24 +220,34 @@ pub mod f16_ffi;
 pub mod prime_graph;
 pub mod fp8_ffi;
 
-const FATBIN_PATH: &str = env!("MEMRA_ENGINE_FATBIN");
-const HYBRID_FATBIN_PATH: &str = env!("MEMRA_HYBRID_FATBIN");
-const QMATVEC_FATBIN_PATH: &str = env!("MEMRA_QMATVEC_FATBIN");
-const FLASH_FATBIN_PATH: &str = env!("MEMRA_FLASH_FATBIN");
-const GEMM_FATBIN_PATH: &str = env!("MEMRA_GEMM_FATBIN");
-const ROUTER_FATBIN_PATH: &str = env!("MEMRA_ROUTER_FATBIN");
+// Fatbins are EMBEDDED (crates-release lane, 2026-08-04): build.rs still writes them to
+// OUT_DIR, but the bytes ship inside the binary via include_bytes! and load through
+// cuModuleLoadData. Distribution contract: a prebuilt or cargo-installed binary must be
+// self-contained — the old baked OUT_DIR *paths* pointed at the builder's temp dir and
+// broke every machine that wasn't the build machine. Same bytes, same module image;
+// the runtime MEMRA_GEMM_FATBIN tune-seam override below is preserved.
+const FATBIN: &[u8] = include_bytes!(env!("MEMRA_ENGINE_FATBIN"));
+const HYBRID_FATBIN: &[u8] = include_bytes!(env!("MEMRA_HYBRID_FATBIN"));
+const QMATVEC_FATBIN: &[u8] = include_bytes!(env!("MEMRA_QMATVEC_FATBIN"));
+const FLASH_FATBIN: &[u8] = include_bytes!(env!("MEMRA_FLASH_FATBIN"));
+const GEMM_FATBIN: &[u8] = include_bytes!(env!("MEMRA_GEMM_FATBIN"));
+const ROUTER_FATBIN: &[u8] = include_bytes!(env!("MEMRA_ROUTER_FATBIN"));
 /// spec_sample.cu: sampled-spec primitives (Philox Gumbel-max / softmax gather / residual sampler).
-const SAMPLE_FATBIN_PATH: &str = env!("MEMRA_SAMPLE_FATBIN");
+const SAMPLE_FATBIN: &[u8] = include_bytes!(env!("MEMRA_SAMPLE_FATBIN"));
 
 /// TUNE SEAM (tools/sweep): a RUNTIME `MEMRA_GEMM_FATBIN=<path>` overrides the baked-in
 /// qmatvec_gemm.cu fatbin path (build.rs bakes the same name at COMPILE time via
 /// cargo:rustc-env — that constant is the default). Lets the sweep harness swap in a
 /// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
 /// compile-time default (zero behavior change).
-fn gemm_fatbin_path() -> String {
+fn gemm_fatbin_bytes() -> std::borrow::Cow<'static, [u8]> {
     assert!(!(portable_mma_gated() && std::env::var_os("MEMRA_GEMM_FATBIN").is_some()),
             "MEMRA_GEMM_FATBIN overrides are not allowed in the portable CUDA lane");
-    std::env::var("MEMRA_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
+    match std::env::var("MEMRA_GEMM_FATBIN") {
+        Ok(path) => std::borrow::Cow::Owned(
+            std::fs::read(&path).unwrap_or_else(|e| panic!("MEMRA_GEMM_FATBIN read {path}: {e}"))),
+        Err(_) => std::borrow::Cow::Borrowed(GEMM_FATBIN),
+    }
 }
 
 /// Phase A (ARCHITECTURE-H100.md): sm_90a re-enables the portable-PTX tensor-core paths
@@ -265,20 +275,20 @@ const fn legacy_quant_gemm_allowed(portable_cuda: bool, hopper_mma: bool, no_gem
 // but the gate battery (kernel-check, run-spec self-consistency) must pass WITHIN it and
 // the choice is explicit env, never silent. flash_attn.cu is compiled once per format pair
 // (build.rs); the kernels keep their names — Engine::new just loads the matching fatbin.
-const FLASH_FATBIN_VQ4: &str = env!("MEMRA_FLASH_FATBIN_VQ4");
-const FLASH_FATBIN_VF8: &str = env!("MEMRA_FLASH_FATBIN_VF8");
-const FLASH_FATBIN_KF8: &str = env!("MEMRA_FLASH_FATBIN_KF8");
-const FLASH_FATBIN_KF8VQ4: &str = env!("MEMRA_FLASH_FATBIN_KF8VQ4");
-const FLASH_FATBIN_KF8VF8: &str = env!("MEMRA_FLASH_FATBIN_KF8VF8");
+const FLASH_FATBIN_VQ4: &[u8] = include_bytes!(env!("MEMRA_FLASH_FATBIN_VQ4"));
+const FLASH_FATBIN_VF8: &[u8] = include_bytes!(env!("MEMRA_FLASH_FATBIN_VF8"));
+const FLASH_FATBIN_KF8: &[u8] = include_bytes!(env!("MEMRA_FLASH_FATBIN_KF8"));
+const FLASH_FATBIN_KF8VQ4: &[u8] = include_bytes!(env!("MEMRA_FLASH_FATBIN_KF8VQ4"));
+const FLASH_FATBIN_KF8VF8: &[u8] = include_bytes!(env!("MEMRA_FLASH_FATBIN_KF8VF8"));
 
 /// KV format policy moved to the shared `memra-kv` crate (Phase D); re-exported so the
 /// fatbin router below and every existing `crate::kv_blk_bytes()` call site is unchanged.
 pub use memra_kv::{kv_blk_bytes, kv_cache_formats};
 
 /// The flash_attn fatbin matching the selected KV formats.
-fn flash_fatbin_path() -> &'static str {
+fn flash_fatbin_bytes() -> &'static [u8] {
     match kv_cache_formats() {
-        ("q8_0", "q5_1") => FLASH_FATBIN_PATH,
+        ("q8_0", "q5_1") => FLASH_FATBIN,
         ("q8_0", "q4_0") => FLASH_FATBIN_VQ4,
         ("q8_0", "fp8")  => FLASH_FATBIN_VF8,
         ("fp8",  "q5_1") => FLASH_FATBIN_KF8,
@@ -603,6 +613,10 @@ pub struct Engine {
     /// alloc+memset pairs per fa launch (~144 mem nodes per decode token — the graph door's
     /// residual launch tax) — lazy-grow, memset-prefix per use, stream-ordered reuse.
     fa_part_pool: Mutex<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
+    /// Retired fa-part pool generations (#68): old buffers whose addresses captured graphs may
+    /// have baked — kept alive for the Engine's lifetime instead of returning to the async pool
+    /// (see the RETIRE-ON-GROW comment at the realloc sites). Doubling growth bounds the total.
+    fa_part_retired: Mutex<Vec<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
     /// name -> resolved CudaFunction (capture-safe lookups; see `func`).
     fn_cache: Mutex<std::collections::HashMap<String, CudaFunction>>,
     f16_scratch: Mutex<Option<crate::f16_ffi::F16Scratch>>,
@@ -927,13 +941,13 @@ impl Engine {
                 );
             }
         }
-        let module = gpu.ctx.load_module(Ptx::from_file(FATBIN_PATH))?;
-        let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
-        let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
-        let flash = gpu.ctx.load_module(Ptx::from_file(flash_fatbin_path()))?;
-        let gemm = gpu.ctx.load_module(Ptx::from_file(gemm_fatbin_path()))?;
-        let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
-        let sample = gpu.ctx.load_module(Ptx::from_file(SAMPLE_FATBIN_PATH))?;
+        let module = gpu.ctx.load_module(Ptx::from_binary(FATBIN.to_vec()))?;
+        let hybrid = gpu.ctx.load_module(Ptx::from_binary(HYBRID_FATBIN.to_vec()))?;
+        let qmatvec = gpu.ctx.load_module(Ptx::from_binary(QMATVEC_FATBIN.to_vec()))?;
+        let flash = gpu.ctx.load_module(Ptx::from_binary(flash_fatbin_bytes().to_vec()))?;
+        let gemm = gpu.ctx.load_module(Ptx::from_binary(gemm_fatbin_bytes().into_owned()))?;
+        let router = gpu.ctx.load_module(Ptx::from_binary(ROUTER_FATBIN.to_vec()))?;
+        let sample = gpu.ctx.load_module(Ptx::from_binary(SAMPLE_FATBIN.to_vec()))?;
         let copy_stream = gpu.ctx.new_stream()?;
         // DECODE EVENT-TRACKING ELISION — DEFAULT ON (2026-07-05; MEMRA_EVT=1 = escape hatch).
         // cudarc is in multi-stream mode (main stream +
@@ -968,6 +982,7 @@ impl Engine {
                   fp8_scratch: Mutex::new(None),
                   fa_vf16_scratch: Mutex::new(None),
                   fa_part_pool: Mutex::new(None),
+                  fa_part_retired: Mutex::new(Vec::new()),
                   fn_cache: Mutex::new(Default::default()),
                   f16_scratch: Mutex::new(None),
                   #[cfg(memra_cutlass)]
@@ -1019,7 +1034,7 @@ impl Engine {
     /// per-format fatbins; fall back to the base modules for those.
     fn func_g(&self, name: &str) -> CudaFunction {
         let m = self.flash_g.get_or_init(|| {
-            self.gpu.ctx.load_module(cudarc::nvrtc::Ptx::from_file(FLASH_FATBIN_KF8VF8))
+            self.gpu.ctx.load_module(cudarc::nvrtc::Ptx::from_binary(FLASH_FATBIN_KF8VF8.to_vec()))
                 .expect("load kf8vf8 flash fatbin (fp8-globals arm)")
         });
         let key = format!("g:{name}");
@@ -1277,7 +1292,7 @@ impl Engine {
                 Some(&m) => m,
                 None => {
                     let m = self.pdl_load_module_in_ctx(
-                        if g { FLASH_FATBIN_KF8VF8 } else { FLASH_FATBIN_PATH })?;
+                        if g { FLASH_FATBIN_KF8VF8 } else { FLASH_FATBIN })?;
                     map.insert((ctx_key, g), m);
                     m
                 }
@@ -1296,10 +1311,8 @@ impl Engine {
     /// the module to the thread's CURRENT context — a remote-stage engine must not
     /// inherit the primary's (the INVALID_HANDLE class above). Restores the caller's
     /// current context before returning.
-    fn pdl_load_module_in_ctx(&self, path: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    fn pdl_load_module_in_ctx(&self, bytes: &[u8]) -> Result<usize, Box<dyn std::error::Error>> {
         use cudarc::driver::sys as cu;
-        let bytes = std::fs::read(path)
-            .map_err(|e| format!("pdl fatbin read {path}: {e}"))?;
         let mut prev: cu::CUcontext = std::ptr::null_mut();
         unsafe { cu::cuCtxGetCurrent(&mut prev).result()?; }
         self.ctx().bind_to_thread()?;
@@ -1308,10 +1321,10 @@ impl Engine {
         let restore = if prev.is_null() { cu::CUresult::CUDA_SUCCESS }
                       else { unsafe { cu::cuCtxSetCurrent(prev) } };
         if r != cu::CUresult::CUDA_SUCCESS {
-            return Err(format!("pdl module load {path}: {r:?}").into());
+            return Err(format!("pdl module load: {r:?}").into());
         }
         if restore != cu::CUresult::CUDA_SUCCESS {
-            return Err(format!("pdl module load {path}: ctx restore {restore:?}").into());
+            return Err(format!("pdl module load: ctx restore {restore:?}").into());
         }
         Ok(m as usize)
     }
@@ -1337,7 +1350,7 @@ impl Engine {
             match map.get(&ctx_key) {
                 Some(&m) => m,
                 None => {
-                    let m = self.pdl_load_module_in_ctx(env!("MEMRA_ENGINE_FATBIN"))?;
+                    let m = self.pdl_load_module_in_ctx(FATBIN)?;
                     map.insert(ctx_key, m);
                     m
                 }
@@ -1353,7 +1366,7 @@ impl Engine {
                 match map.get(&ctx_key) {
                     Some(&m) => m,
                     None => {
-                        let m = self.pdl_load_module_in_ctx(env!("MEMRA_QMATVEC_FATBIN"))?;
+                        let m = self.pdl_load_module_in_ctx(QMATVEC_FATBIN)?;
                         map.insert(ctx_key, m);
                         m
                     }
@@ -5393,6 +5406,10 @@ impl Engine {
         // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
+            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1, default OFF; lane/fp8-mmq): the block-128 class
+            // try_fp8_gemm skips (cuBLASLt takes no block grid on sm_120). Exact per block — the
+            // checkpoint's e4m3 bytes and its f32 grid go into the tile unchanged.
+            if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(y); }
             // FP16-mirror prefill (MEMRA_PP_F16=1, probe 2026-07-26: 3.2-3.7x the MMQ class).
             // Mirror presence IS the gate (only built under the env). Decode never reaches here.
             if let Some(y) = self.try_f16_gemm(w, x, m)? { return Ok(y); }
@@ -5555,6 +5572,9 @@ impl Engine {
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
         if m >= 16 && x_raw_ok && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
+            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1) — same arm as `matmul`; its own quantizer wants
+            // the RAW f32 activation, so x_fallback not aq/ad.
+            if let Some(y) = self.try_fp8_blk_mmq(w, x_fallback, m)? { return Ok(y); }
             // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
             if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
         }
@@ -8794,10 +8814,27 @@ impl Engine {
         let ml_len = n_head * n_splits;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -8950,10 +8987,27 @@ impl Engine {
         let ml_len = b_n * n_head * n_splits_max;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9180,10 +9234,27 @@ impl Engine {
             let ml_len = t_g * n_head * n_splits_g;
             let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9350,10 +9421,27 @@ impl Engine {
         let ml_len = t * n_head * n_splits_max;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9541,10 +9629,27 @@ impl Engine {
             let ml_len = t * n_head * n_splits_max;
             let mut part_guard = self.fa_part_pool.lock().unwrap();
             if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-                let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-                *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                    self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                    self.alloc_uninit::<f32>(cm.max(ml_len))?));
+                // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+                let old = part_guard.take();
+                let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+                if let Some(old) = old {
+                    self.fa_part_retired.lock().unwrap().push(old);
+                }
+                if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                    eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+                }
+                *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                    self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                    self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
             }
             let pg = part_guard.as_mut().unwrap();
             self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9584,10 +9689,27 @@ impl Engine {
         let ml_len = t * n_head * n_splits_max;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9663,10 +9785,27 @@ impl Engine {
         let ml_len = n_head * n_splits;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;

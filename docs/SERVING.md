@@ -1,8 +1,10 @@
 # Serving — the OpenAI surface and the replica fleet
 
 This is the serve-surface doc: fleet topology and measured throughput, the isolation
-contract, the OpenAI tools surface, cross-request prompt caching with per-tenant
-`cache_salt` isolation, and the honestly-stated numeric edges of batched serving.
+contract, the OpenAI tools surface, the gateway listing surface (`/v1/models` schema,
+rate-limit headers, graceful drain), safetensors/FP8 checkpoint serving, cross-request
+prompt caching with per-tenant `cache_salt` isolation, and the honestly-stated numeric
+edges of batched serving.
 
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
@@ -158,6 +160,46 @@ gated by the official `openai` Python SDK against a live server
   accepted and ignored. Streams exclude stop-sequence text exactly like non-stream
   responses (holdback buffer).
 
+## Gateway listing surface (serve-tail lane, 2026-08-04)
+
+The OR-listing tail — the last three surface gaps between memra and a marketplace
+gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`):
+
+- **`/v1/models` OR-schema:** each entry carries `context_length` (from the loaded
+  plan's config), `architecture` (`modality`, `tokenizer`, `instruct_type` — probed at
+  spawn from the model itself, not hardcoded), and an OR-convention `pricing` stub.
+  Unknowns are honest `null`s, never guesses.
+- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` on both
+  completion routes with concurrency-slot semantics — a per-lane atomic gauge whose
+  RAII slot rides the SSE stream to completion, so `Remaining` is truthful for the
+  whole life of a stream. Sheds carry `429 + Retry-After`; `MEMRA_RL_RESET_S` is the
+  no-signal fallback for `Reset` (with traffic, Reset = mean tokens/request x p50 step
+  latency).
+- **Graceful drain:** SIGTERM flips `/health` to `"draining"`, new completion requests
+  get `503 + Retry-After`, in-flight requests — streams included — run to `[DONE]`
+  within the `MEMRA_DRAIN_S` deadline (default 30s), then the process exits 0. Live
+  receipt: a 1024-token stream completed mid-drain.
+
+## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
+
+`MEMRA_MODELS` accepts safetensors checkpoint directories (`config.json` +
+`model.safetensors[.index.json]`) and repack dirs alongside GGUF paths — validated at
+parse time (a bogus dir fails naming the missing file). Chat templates come from the
+checkpoint's own tokenizer config (`from_hf_dir`); template-less dirs 400 with a pointer
+to `/v1/completions`. Official Qwen FP8 block-128 checkpoints load bit-exact (GPU
+dequant, 2.89x faster load) and **spec decode runs out of the box on the checkpoint's
+embedded MTP head** — 128-137 tok/s on the first official-FP8 e2e, 2.6-2.8x plain
+(`research/fp8ship-20260804/`).
+
+The ST-spec exactness scare (#68) was root-caused to a serve-side bug that was never
+ST-specific: the per-session persistent draft graph replayed with dangling pool
+addresses (capture transients not retained + the fa-partials pool freeing grown-past
+buffers the capture baked) — reproducible on GGUF session bursts at n>=600 too. Fixed
+via capture-retain keepers on `DraftGraphCtx` + retire-on-grow for the fa partials pool;
+the quarantine is lifted and dir checkpoints are spec-eligible by default
+(`MEMRA_SERVE_SPEC=0` is the rollback door). Gate: `tools/serve-st-gate.sh` pins
+default-serve text token-identical to the run-gen CLI oracle.
+
 ## Constrained decoding (`response_format`) — lanes constrained + constrained-full, 2026-08-03
 
 `/v1/chat/completions` honors `response_format` `{"type":"json_object"}` and
@@ -169,14 +211,31 @@ device-sample / lean-logits / CUDA-graph / speculative paths unconstrained sessi
 No path is lost to being constrained.
 
 - **Cost:** plain constrained-greedy = **99.4% of unconstrained** (123.7 vs 124.4 tok/s,
-  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. Spec-constrained runs
-  153.4 vs 194.4 unconstrained — the gap is draft acceptance under a tight grammar (the
-  drafter proposes tokens the grammar rejects at verify), not mask overhead.
+  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. The remaining
+  constrained-vs-unconstrained gap is draft acceptance under a tight grammar, not mask
+  overhead.
+- **Draft-side masking (lane/draft-mask, 2026-08-04):** the drafter is masked too. A
+  constrained spec session clones the session's grammar matcher once per spec round
+  (0.002 ms), advances the clone with each proposed token, and bans the illegal ids in the
+  draft head's own logits — in-graph on the captured draft chain, permuted through `d2t`
+  for trimmed draft heads. Proposals are legal by construction, so the verify-side
+  truncation backstop (which stays, as the correctness backstop) stops firing:
+  `gram_cuts` went 3/12, 3/15, 1/10, 28/30, 18/25 -> **0/N on every cell measured**.
+  Bounded tight schema: acceptance 0.561 -> 0.651, 216.6 -> 227.5 tok/s (+5.0%, N=3 warm).
+  Cells whose drafter already proposed legal tokens (json_object, loose prose) move inside
+  noise; unconstrained traffic is inert. Rollback seam `MEMRA_DRAFT_MASK=0`. Receipts
+  `research/draft-mask-20260804/`.
 - **Exactness:** device-mask greedy is byte-identical to the host -inf oracle
   (`MEMRA_CONSTRAIN_HOST=1`), spec-constrained is byte-identical to plain-constrained,
-  graphed is byte-identical to eager, and unconstrained requests are byte-identical to the
-  pre-lane binary (the isolation contract). Kernel-check pins `mask_logits_col`
-  bit-identity.
+  graphed is byte-identical to eager, draft-masking ON is byte-identical to OFF (greedy and
+  seeded-sampled, 7 cells), and unconstrained requests are byte-identical to the pre-lane
+  binary (the isolation contract). Kernel-check pins `mask_logits_col` bit-identity.
+  One measured exception, documented because it is NOT a masking property: an unbounded
+  schema that lets the model degenerate into arbitrary whitespace against a token cap has a
+  draft-chain-SHAPE-dependent tail (verify batch shape T changes FP summation order, which
+  flips argmax at the near-ties in that tail). The pre-lane binary shows the same
+  divergence across `MEMRA_SPEC_K=3/2/1` on that cell with no draft-mask code present;
+  with shape held fixed the arms are byte-identical. Bound the schema and it goes away.
 - **Think interaction:** constrained requests force the template's no-think switch (a
   grammar masking from token 0 can never close an open `<think>` tail); a think-tail
   template without an `enable_thinking` switch is a loud 400.

@@ -1,0 +1,24 @@
+== toks: 9419 11 1814 0
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [9419, 11, 1814, 0]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+argmax token = 220  logit = 18.8825  non-finite=0/151936
+top-5: [(220, 18.882505), (715, 18.417122), (323, 17.663525), (198, 17.493122), (320, 17.47818)]
+== toks: 1 2 3 4
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [1, 2, 3, 4]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+argmax token = 5  logit = 22.5813  non-finite=0/151936
+top-5: [(5, 22.581259), (9, 18.555246), (15, 17.84557), (609, 17.377455), (18, 17.331072)]
+== toks: 151643 9707 11 1879 30 33464
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [151643, 9707, 11, 1879, 30, 33464]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+argmax token = 6832  logit = 19.3140  non-finite=0/151936
+top-5: [(6832, 19.313988), (20909, 18.31659), (11, 18.145948), (304, 17.961445), (69638, 17.687355)]
+== toks: 40 264 3766 315
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [40, 264, 3766, 315]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+argmax token = 279  logit = 21.1706  non-finite=0/151936
+top-5: [(279, 21.170586), (264, 20.314781), (13482, 18.808702), (419, 18.596111), (37596, 18.527016)]

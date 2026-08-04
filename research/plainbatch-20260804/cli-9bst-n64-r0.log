@@ -1,0 +1,26 @@
+loaded Qwen35 from safetensors (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+What is the capital of France? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "What is the capital of France? Answer in one short sentence."
+prompt tokens: [248045, 846, 198, 3710, 369, 279, 6511, 314, 9338, 30, 21134, 303, 799, 2716, 11316, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+fp8-mmq dispatches after prefill: 0  (hook entries=0 gate_off=0 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+verify-prefill argmax=90700  decode argmax=90700  logit maxdiff=0.000e0  MATCH
+generated 64 tokens in 0.520s = 123.10 tok/s (ST greedy decode)
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 15380, 25, 328, 3710, 369, 279, 6511, 314, 9338, 7285, 198, 262, 348, 256, 42794, 25, 328, 15666, 303, 799, 2716, 11316, 1149, 271, 17, 13, 220, 2972, 27382, 1386, 279, 35495, 64700, 561, 6511, 314, 9338, 369, 11751, 13, 271, 18, 13, 220, 2972, 48401, 279]
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Question: \"What is the capital of France?\"\n    *   Constraint: \"Answer in one short sentence.\"\n\n2.  **Identify the Fact:** The capital of France is Paris.\n\n3.  **Draft the"
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+2.  **Identify the Fact:** The capital of France is Paris.
+
+3.  **Draft the
+fp8-mmq dispatches: 0

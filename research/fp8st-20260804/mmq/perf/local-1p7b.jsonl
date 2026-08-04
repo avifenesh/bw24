@@ -1,0 +1,34 @@
+{"lane":"fp8-mmq","box":"local-5090-laptop","gpu":"RTX 5090 Laptop sm_120a","ckpt":"/data/ai-ml/hf-models/qwen3-1.7b-blk128fp8-synth (block-128 FP8 ST, dense Qwen3-1.7B)","commit":"2e36987b","date":"2026-08-04","protocol":"pp: MEMRA_PP_ONLY=1 MEMRA_PP_REPS=3 in-process median, N=5 process reps interleaved floor,mmq,arma within each rep; flock /tmp/gpu5090.lock; fp8_mmq_stream bin (run-gen is hybrid-only, panics on a dense ckpt)","note":"pp6257 uses p4-16k.txt truncated to exactly 6257 tokens: p3-agentic-long.txt is 6257 under the 27B/35B tokenizer but only 5882 under the 1.7B's ('tokenizes to 5882 tokens, need 6257'), so the length is matched with the checkpoint's own tokenizer","thermal":"pp512 54-61C sm 1957-2145 MHz; pp6257 65-79C sm 1582-1980 MHz (sustained-clock regime), 1 Hz CSV gpu0-1hz.csv"}
+{"arm":"floor","len":512,"rep":1,"pp_tok_s":2256.2,"temp_c":56,"sm_mhz":2070,"oom":0,"log":"pp512-floor-r1.log"}
+{"arm":"mmq","len":512,"rep":1,"pp_tok_s":2274.5,"temp_c":54,"sm_mhz":1995,"oom":0,"log":"pp512-mmq-r1.log"}
+{"arm":"arma","len":512,"rep":1,"pp_tok_s":2356.2,"temp_c":59,"sm_mhz":1965,"oom":0,"log":"pp512-arma-r1.log"}
+{"arm":"floor","len":512,"rep":2,"pp_tok_s":2300.8,"temp_c":55,"sm_mhz":2025,"oom":0,"log":"pp512-floor-r2.log"}
+{"arm":"mmq","len":512,"rep":2,"pp_tok_s":2328.4,"temp_c":51,"sm_mhz":2010,"oom":0,"log":"pp512-mmq-r2.log"}
+{"arm":"arma","len":512,"rep":2,"pp_tok_s":2348.4,"temp_c":51,"sm_mhz":1957,"oom":0,"log":"pp512-arma-r2.log"}
+{"arm":"floor","len":512,"rep":3,"pp_tok_s":2344.4,"temp_c":56,"sm_mhz":2122,"oom":0,"log":"pp512-floor-r3.log"}
+{"arm":"mmq","len":512,"rep":3,"pp_tok_s":2347.2,"temp_c":54,"sm_mhz":2145,"oom":0,"log":"pp512-mmq-r3.log"}
+{"arm":"arma","len":512,"rep":3,"pp_tok_s":2393.0,"temp_c":59,"sm_mhz":1965,"oom":0,"log":"pp512-arma-r3.log"}
+{"arm":"floor","len":512,"rep":4,"pp_tok_s":2377.3,"temp_c":54,"sm_mhz":2025,"oom":0,"log":"pp512-floor-r4.log"}
+{"arm":"mmq","len":512,"rep":4,"pp_tok_s":2341.8,"temp_c":61,"sm_mhz":2002,"oom":0,"log":"pp512-mmq-r4.log"}
+{"arm":"arma","len":512,"rep":4,"pp_tok_s":2374.1,"temp_c":57,"sm_mhz":1972,"oom":0,"log":"pp512-arma-r4.log"}
+{"arm":"floor","len":512,"rep":5,"pp_tok_s":2235.8,"temp_c":55,"sm_mhz":1987,"oom":0,"log":"pp512-floor-r5.log"}
+{"arm":"mmq","len":512,"rep":5,"pp_tok_s":2303.0,"temp_c":56,"sm_mhz":2017,"oom":0,"log":"pp512-mmq-r5.log"}
+{"arm":"arma","len":512,"rep":5,"pp_tok_s":2321.2,"temp_c":55,"sm_mhz":1965,"oom":0,"log":"pp512-arma-r5.log"}
+{"arm":"floor","len":6257,"rep":1,"pp_tok_s":437.7,"temp_c":66,"sm_mhz":1582,"oom":0,"log":"pp6257-floor-r1.log"}
+{"arm":"mmq","len":6257,"rep":1,"pp_tok_s":435.8,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-mmq-r1.log"}
+{"arm":"arma","len":6257,"rep":1,"pp_tok_s":439.0,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-arma-r1.log"}
+{"arm":"floor","len":6257,"rep":2,"pp_tok_s":437.9,"temp_c":66,"sm_mhz":1590,"oom":0,"log":"pp6257-floor-r2.log"}
+{"arm":"mmq","len":6257,"rep":2,"pp_tok_s":437.7,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-mmq-r2.log"}
+{"arm":"arma","len":6257,"rep":2,"pp_tok_s":439.0,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-arma-r2.log"}
+{"arm":"floor","len":6257,"rep":3,"pp_tok_s":438.5,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-floor-r3.log"}
+{"arm":"mmq","len":6257,"rep":3,"pp_tok_s":437.9,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-mmq-r3.log"}
+{"arm":"arma","len":6257,"rep":3,"pp_tok_s":438.8,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-arma-r3.log"}
+{"arm":"floor","len":6257,"rep":4,"pp_tok_s":437.2,"temp_c":67,"sm_mhz":1582,"oom":0,"log":"pp6257-floor-r4.log"}
+{"arm":"mmq","len":6257,"rep":4,"pp_tok_s":438.2,"temp_c":68,"sm_mhz":1582,"oom":0,"log":"pp6257-mmq-r4.log"}
+{"arm":"arma","len":6257,"rep":4,"pp_tok_s":438.6,"temp_c":66,"sm_mhz":1582,"oom":0,"log":"pp6257-arma-r4.log"}
+{"arm":"floor","len":6257,"rep":5,"pp_tok_s":438.5,"temp_c":65,"sm_mhz":1582,"oom":0,"log":"pp6257-floor-r5.log"}
+{"arm":"mmq","len":6257,"rep":5,"pp_tok_s":438.5,"temp_c":65,"sm_mhz":1582,"oom":0,"log":"pp6257-mmq-r5.log"}
+{"arm":"arma","len":6257,"rep":5,"pp_tok_s":438.2,"temp_c":79,"sm_mhz":1980,"oom":0,"log":"pp6257-arma-r5.log"}
+{"summary":"medians","len":512,"floor":2300.8,"mmq":2328.4,"arma":2356.2,"mmq_vs_floor":"+1.20%","arma_vs_floor":"+2.41%","n":5}
+{"summary":"medians","len":6257,"floor":437.9,"mmq":437.9,"arma":438.8,"mmq_vs_floor":"+0.00%","arma_vs_floor":"+0.21%","n":5}
+{"summary":"interpretation","note":"the 1.7B is NOT the shape this kernel is for: ARM A, which scored +18.4% pp512 on the 27B on the vast box, only reaches +2.41% here, so the FP8 projection GEMMs are not the dominant prefill cost at n_embd=2048/n_ff=6144. Both FP8 arms sit inside a few percent of the floor and the spread between reps (floor 2235.8-2377.3) is comparable to the deltas. This leg is reported as a same-session, same-protocol reference point and a no-regression check, NOT as the kernel's throughput verdict; the 27B leg on the vast box is the throughput measurement (same box and checkpoint as the ARM A row)."}

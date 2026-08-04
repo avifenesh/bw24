@@ -1,0 +1,14 @@
+    Updating crates.io index
+warning: manifest has no description, license, license-file, documentation, homepage or repository
+  |
+  = note: see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
+   Packaging memra-gguf v0.0.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-gguf)
+    Updating crates.io index
+    Packaged 19 files, 361.6KiB (97.0KiB compressed)
+   Verifying memra-gguf v0.0.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-gguf)
+   Compiling libc v0.2.186
+   Compiling memmap2 v0.9.11
+   Compiling memra-gguf v0.0.0 (/home/avifenesh/projects/wt-cratesio/target/package/memra-gguf-0.0.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.48s
+   Uploading memra-gguf v0.0.0 (/home/avifenesh/projects/wt-cratesio/crates/memra-gguf)
+warning: aborting upload due to dry run

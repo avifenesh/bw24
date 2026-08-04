@@ -4,7 +4,11 @@ name: release
 # conventional commits, publish the GitHub release with prebuilt binaries attached.
 # The exactness battery already ran on the rig before the tag (docs/RELEASING.md) —
 # CI here is the build check + the paperwork. Matrix: glibc floor (ubuntu-22.04 = 2.35,
-# ubuntu-24.04 = 2.39) x CUDA arch (sm_120a primary, sm_89 portable Ada build).
+# ubuntu-24.04 = 2.39) x CUDA arch (sm_120a primary, sm_90a Hopper, sm_89 portable Ada).
+# Binaries are self-contained (fatbins embedded, crates-release lane 2026-08-04); users
+# need the NVIDIA driver + CUDA 13 runtime libs, not the toolkit. The ubuntu-22.04
+# sm_120a cell additionally uploads under a stable name (no glibc in the filename) —
+# that's the cargo-binstall / install.sh target. crates.io publishing: publish.yml.
 
 on:
   push:
@@ -18,7 +22,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
-        cuda_arch: ["120a", "89"]
+        cuda_arch: ["120a", "90a", "89"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -49,12 +53,12 @@ jobs:
           mkdir -p "/tmp/$pkg"
           cp target/release/{run-gen,run-spec,memra-server,kernel-check} "/tmp/$pkg/"
           {
-            echo "memra $GITHUB_REF_NAME — prebuilt Linux x86_64 binaries (sm_${{ matrix.cuda_arch }} fatbin)"
+            echo "memra $GITHUB_REF_NAME — prebuilt Linux x86_64 binaries (sm_${{ matrix.cuda_arch }} fatbin, embedded)"
             echo ""
-            echo "Requirements: NVIDIA driver with CUDA 13.x runtime support, the CUDA 13.1"
-            echo "runtime libraries (cudart, cublas), and glibc >= $glibc."
-            echo "sm_120a = RTX 50-series (the tuned target); sm_89 = portable Ada build"
-            echo "(compiles and runs, NOT performance-tuned — see README Limitations)."
+            echo "Requirements: NVIDIA driver with CUDA 13.x runtime support (>= 580), the CUDA 13"
+            echo "runtime libraries (cudart, cublas, cublasLt), and glibc >= $glibc."
+            echo "sm_120a = RTX 50-series (the tuned target); sm_90a = Hopper/H100 lane;"
+            echo "sm_89 = portable Ada build (runs, NOT performance-tuned — see README)."
             echo ""
             echo "Quick start: ./kernel-check   # expect: ALL GREEN: kernels match CPU reference."
             echo "Docs: https://github.com/avifenesh/memra"
@@ -62,11 +66,27 @@ jobs:
           tar -C /tmp -czf "/tmp/$pkg.tar.gz" "$pkg"
           echo "PKG_NAME=$pkg" >> "$GITHUB_ENV"
           cp "/tmp/$pkg.tar.gz" .
+          # The glibc-floor sm_120a build doubles as the STABLE-NAME artifact that
+          # cargo-binstall's pkg-url template and tools/install.sh point at.
+          if [ "${{ matrix.os }}" = "ubuntu-22.04" ] && [ "${{ matrix.cuda_arch }}" = "120a" ]; then
+            stable="memra-server-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu"
+            cp -r "/tmp/$pkg" "/tmp/$stable"
+            rm "/tmp/$stable/README.txt" && cp "/tmp/$pkg/README.txt" "/tmp/$stable/README.txt"
+            tar -C /tmp -czf "$stable.tar.gz" "$stable"
+            echo "STABLE_NAME=$stable" >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PKG_NAME }}
           path: ${{ env.PKG_NAME }}.tar.gz
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: env.STABLE_NAME != ''
+        with:
+          name: ${{ env.STABLE_NAME }}
+          path: ${{ env.STABLE_NAME }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -85,6 +105,9 @@ jobs:
           path: /tmp/pkgs
           merge-multiple: true
 
+      - name: Checksums
+        run: cd /tmp/pkgs && sha256sum *.tar.gz > SHA256SUMS
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,4 +116,4 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/notes.md \
             --verify-tag \
-            /tmp/pkgs/*.tar.gz
+            /tmp/pkgs/*.tar.gz /tmp/pkgs/SHA256SUMS

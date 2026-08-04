@@ -1,3 +1,25 @@
 [workspace]
 resolver = "2"
 members = ["crates/memra-probe", "crates/memra-gguf", "crates/memra-runtime", "crates/memra-engine", "crates/memra-tokenizer", "crates/memra-sampling", "crates/memra-validate", "crates/memra-kv", "crates/memra-lanes", "crates/memra-server"]
+
+# Shared crates.io metadata (docs/RELEASING.md "Publishing to crates.io"): every member
+# inherits via `<field>.workspace = true`. The version is the release tag — bump it as
+# part of cutting vX.Y.Z (publish.yml refuses a tag/version mismatch).
+[workspace.package]
+version = "0.69.0"
+license = "MIT"
+repository = "https://github.com/avifenesh/memra"
+rust-version = "1.85"
+
+# Intra-workspace deps carry BOTH path (local builds) and a pinned `=` version: crates.io
+# strips the path on publish, and the memra crates evolve in lockstep — mixed versions
+# across the workspace are never a supported configuration.
+[workspace.dependencies]
+memra-gguf = { path = "crates/memra-gguf", version = "=0.69.0" }
+memra-sampling = { path = "crates/memra-sampling", version = "=0.69.0" }
+memra-validate = { path = "crates/memra-validate", version = "=0.69.0" }
+memra-kv = { path = "crates/memra-kv", version = "=0.69.0" }
+memra-lanes = { path = "crates/memra-lanes", version = "=0.69.0" }
+memra-tokenizer = { path = "crates/memra-tokenizer", version = "=0.69.0" }
+memra-runtime = { path = "crates/memra-runtime", version = "=0.69.0" }
+memra-engine = { path = "crates/memra-engine", version = "=0.69.0" }

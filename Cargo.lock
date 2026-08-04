@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "memra-engine"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "cudarc",
  "libc",
@@ -487,14 +487,14 @@ dependencies = [
 
 [[package]]
 name = "memra-gguf"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "memmap2",
 ]
 
 [[package]]
 name = "memra-kv"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "cudarc",
  "memra-gguf",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "memra-lanes"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "serde",
 ]
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "memra-runtime"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "cudarc",
  "memra-gguf",
@@ -524,11 +524,11 @@ dependencies = [
 
 [[package]]
 name = "memra-sampling"
-version = "0.0.0"
+version = "0.69.0"
 
 [[package]]
 name = "memra-server"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -546,14 +546,14 @@ dependencies = [
 
 [[package]]
 name = "memra-tokenizer"
-version = "0.0.0"
+version = "0.69.0"
 dependencies = [
  "memra-gguf",
 ]
 
 [[package]]
 name = "memra-validate"
-version = "0.0.0"
+version = "0.69.0"
 
 [[package]]
 name = "mime"

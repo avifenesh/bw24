@@ -1,0 +1,20 @@
+loaded Qwen35 from safetensors (64 trunk layers; optional MTP skipped)
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.\n"
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13, 198]
+prefill logits -> research/fp8ship-20260804/official/logits-p1-blkgpu-r1.bin (248320 f32)
+fp8-mmq dispatches after prefill: 0  (hook entries=0 gate_off=0 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+verify-prefill argmax=760  decode argmax=760  logit maxdiff=0.000e0  MATCH
+generated 32 tokens in 0.624s = 51.31 tok/s (ST greedy decode)
+tokens: [760, 709, 1220, 381, 6725, 1510, 67, 5309, 391, 73538, 1951, 63, 321, 1220, 4054, 264, 1103, 314, 24959, 430, 1879, 13, 271, 248068, 271, 248069, 271, 71093, 12305, 198, 1445, 18904]
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: "The function should be named `doubly_linked_list` and should accept a list of integers as input.\n\n<think>\n\n</think>\n\n```python\nfrom typing"
+--- generated text ---
+The function should be named `doubly_linked_list` and should accept a list of integers as input.
+
+<think>
+
+</think>
+
+```python
+from typing
+fp8-mmq dispatches: 0

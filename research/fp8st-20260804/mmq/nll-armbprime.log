@@ -1,0 +1,4 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+MEMRA_FP8_MMQ=<unset>  MEMRA_PP_FP8=<unset>  MEMRA_FP8_BLK_GPU=1  MEMRA_PP_FP8_BUDGET_MB=<unset>
+loaded dense: n_layer=28 n_embd=2048 n_ff=6144 n_vocab=151936  prompt=24 toks
+NLL window: file=research/fp8st-20260804/mmq/nll-window.txt tokens=1024 mean_nll=1.280530 ppl=3.598545

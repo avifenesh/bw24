@@ -1,0 +1,53 @@
+loaded Qwen35 from safetensors (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+What is the capital of France? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "What is the capital of France? Answer in one short sentence."
+prompt tokens: [248045, 846, 198, 3710, 369, 279, 6511, 314, 9338, 30, 21134, 303, 799, 2716, 11316, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+fp8-mmq dispatches after prefill: 0  (hook entries=0 gate_off=0 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+verify-prefill argmax=90700  decode argmax=90700  logit maxdiff=0.000e0  MATCH
+generated 400 tokens in 3.151s = 126.94 tok/s (ST greedy decode)
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 15380, 25, 328, 3710, 369, 279, 6511, 314, 9338, 7285, 198, 262, 348, 256, 42794, 25, 328, 15666, 303, 799, 2716, 11316, 1149, 271, 17, 13, 220, 2972, 27382, 1386, 279, 35495, 64700, 561, 6511, 314, 9338, 369, 11751, 13, 271, 18, 13, 220, 2972, 48401, 279, 5764, 64700, 198, 262, 348, 256, 6743, 220, 16, 25, 561, 6511, 314, 9338, 369, 11751, 13, 198, 262, 348, 256, 6743, 220, 17, 25, 11751, 369, 279, 6511, 314, 9338, 13, 198, 262, 348, 256, 6743, 220, 18, 25, 11751, 13, 271, 19, 13, 220, 2972, 3270, 279, 6886, 6743, 64700, 561, 1156, 4439, 364, 264, 2716, 11316, 13, 328, 57590, 1, 369, 264, 35697, 16629, 11, 694, 328, 57590, 1, 369, 264, 35697, 13, 357, 11316, 5802, 7225, 264, 18046, 13, 4213, 11, 364, 4145, 57879, 18959, 11, 264, 35697, 16629, 369, 3428, 20895, 13, 4213, 11, 279, 7359, 2640, 328, 15666, 303, 799, 2716, 11316, 1149, 357, 3074, 35697, 16629, 369, 30515, 264, 11937, 11, 524, 264, 11316, 13, 1946, 381, 5902, 321, 65826, 6804, 4252, 11, 353, 1220, 958, 264, 2400, 11316, 13, 198, 262, 348, 256, 328, 760, 6511, 314, 9338, 369, 11751, 1149, 198, 262, 348, 256, 328, 760, 6511, 314, 9338, 369, 11751, 1149, 271, 262, 13428, 11, 279, 7359, 2640, 328, 15666, 303, 799, 2716, 11316, 1149, 198, 262, 1987, 353, 1144, 310, 2468, 1066, 421, 13, 271, 262, 6558, 579, 1716, 279, 20908, 1495, 25, 328, 15666, 303, 799, 2716, 11316, 1149, 198, 262, 34267, 11, 353, 668, 2468, 1066, 279, 4087, 13, 271, 262, 13428, 11, 353, 1144, 310, 1236, 2617, 353, 1459, 914, 884, 866, 4799, 1414, 13, 198, 262, 34267, 11, 353, 668, 2468, 279, 4087, 13, 271, 262, 13428, 11, 353, 1144, 310, 1236, 2617, 353, 1459, 914, 884, 866, 4799, 1414, 13, 198, 262, 34267, 11, 353, 668, 2468, 279, 4087, 13, 271, 262, 13428, 11, 353, 1144, 310, 1236, 2617, 353, 1459, 914, 884, 866, 4799, 1414, 13, 198, 262, 34267, 11, 353, 668, 2468, 279, 4087, 13, 271, 262, 13428, 11, 353, 1144, 310, 1236, 2617, 353, 1459, 914, 884, 866, 4799, 1414, 13, 198, 262, 34267, 11, 353, 668, 2468, 279, 4087, 13, 271, 262, 13428, 11, 353, 1144, 310, 1236, 2617, 353, 1459, 914, 884, 866, 4799, 1414]
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Question: \"What is the capital of France?\"\n    *   Constraint: \"Answer in one short sentence.\"\n\n2.  **Identify the Fact:** The capital of France is Paris.\n\n3.  **Draft the Response:**\n    *   Option 1: The capital of France is Paris.\n    *   Option 2: Paris is the capital of France.\n    *   Option 3: Paris.\n\n4.  **Select the Best Option:** The user asked for a short sentence. \"Paris\" is a noun phrase, but \"Paris\" is a noun. A sentence usually requires a verb. However, for simple factual queries, a noun phrase is often acceptable. However, the instruction says \"Answer in one short sentence.\" A single noun phrase is technically a fragment, not a sentence. To be safe and grammatically correct, I should use a full sentence.\n    *   \"The capital of France is Paris.\"\n    *   \"The capital of France is Paris.\"\n\n    Wait, the instruction says \"Answer in one short sentence.\"\n    So I need to output just that.\n\n    Let's check the constraint again: \"Answer in one short sentence.\"\n    Okay, I will output just the answer.\n\n    Wait, I need to make sure I don't add any extra text.\n    Okay, I will output the answer.\n\n    Wait, I need to make sure I don't add any extra text.\n    Okay, I will output the answer.\n\n    Wait, I need to make sure I don't add any extra text.\n    Okay, I will output the answer.\n\n    Wait, I need to make sure I don't add any extra text.\n    Okay, I will output the answer.\n\n    Wait, I need to make sure I don't add any extra text"
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+2.  **Identify the Fact:** The capital of France is Paris.
+
+3.  **Draft the Response:**
+    *   Option 1: The capital of France is Paris.
+    *   Option 2: Paris is the capital of France.
+    *   Option 3: Paris.
+
+4.  **Select the Best Option:** The user asked for a short sentence. "Paris" is a noun phrase, but "Paris" is a noun. A sentence usually requires a verb. However, for simple factual queries, a noun phrase is often acceptable. However, the instruction says "Answer in one short sentence." A single noun phrase is technically a fragment, not a sentence. To be safe and grammatically correct, I should use a full sentence.
+    *   "The capital of France is Paris."
+    *   "The capital of France is Paris."
+
+    Wait, the instruction says "Answer in one short sentence."
+    So I need to output just that.
+
+    Let's check the constraint again: "Answer in one short sentence."
+    Okay, I will output just the answer.
+
+    Wait, I need to make sure I don't add any extra text.
+    Okay, I will output the answer.
+
+    Wait, I need to make sure I don't add any extra text.
+    Okay, I will output the answer.
+
+    Wait, I need to make sure I don't add any extra text.
+    Okay, I will output the answer.
+
+    Wait, I need to make sure I don't add any extra text.
+    Okay, I will output the answer.
+
+    Wait, I need to make sure I don't add any extra text
+fp8-mmq dispatches: 0

@@ -1,0 +1,17 @@
+{
+  "vessel_id": "X-99-ALPHA",
+  "designation": "Interstellar Scout",
+  "manufacturer": "Aether Dynamics Corp.",
+  "launch_date": "2042-06-15",
+  "primary_mission": "Deep space exploration and sample return",
+  "propulsion_system": "Antimatter-Catalyzed Fusion Drive",
+  "max_velocity": "0.05c",
+  "crew_capacity": 4,
+  "cargo_bay_volume": "12,500 cubic meters",
+  "shielding_type": "Active Magnetic Deflector Array",
+  "life_support_duration": "15 Earth years",
+  "communication_delay_max": "4.2 hours",
+  "power_generation": "Helium-3 Fusion Reactor",
+  "landing_legs": "Retractable Carbon-Nanotube Struts",
+  "hull_material": "Titanium-Alloy Composite with Self-Healing Polymer"
+}

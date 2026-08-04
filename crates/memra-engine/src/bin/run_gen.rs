@@ -202,6 +202,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 prompt.len(),
                 reps
             );
+            // Coverage receipt (lane/fp8-mmq): how many prefill GEMMs went through the per-block
+            // FP8 MMQ tile. A refused precondition (no block operand resident, stash budget spent
+            // before the tensor, a NaN code) reads exactly like "no perf change", so a pp number
+            // for that arm is only evidence alongside a nonzero count.
+            let (ent, gate, h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
+            println!(
+                "fp8-mmq dispatches: {h}  (hook entries={ent} gate_off={gate} \
+                 no_operand={no_op} bad_shape={shp} bad_scale={scl} nan={nan})"
+            );
             return Ok(());
         }
         // GATE REFERENCE = the batched VERIFY path (decode_step_t: quantized-KV attend, the same
@@ -269,6 +278,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prefill = model.decode_step_t(&e, &prompt, 0, &mut vcache)?;
             prefill[(prompt.len() - 1) * n_vocab..prompt.len() * n_vocab].to_vec()
         };
+        // MEMRA_PREFILL_LOGITS=<file>: dump this batched-prefill logit row as raw LE f32. The
+        // gate line below compares prefill vs THIS RUN's own decode, so it cannot see a
+        // cross-ARM difference; a prefill-only kernel (lane/fp8-mmq) changes only this vector,
+        // and the 128-token stream that follows is pure m=1 decode where the kernel never
+        // dispatches. This dump is the only cross-arm exactness instrument for such a kernel.
+        if let Ok(f) = std::env::var("MEMRA_PREFILL_LOGITS") {
+            let mut raw = Vec::with_capacity(prefill_last.len() * 4);
+            for v in &prefill_last {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+            std::fs::write(&f, &raw)?;
+            println!("prefill logits -> {f} ({} f32)", prefill_last.len());
+        }
+        {
+            let (ent, gate, h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
+            println!(
+                "fp8-mmq dispatches after prefill: {h}  (hook entries={ent} gate_off={gate} \
+                 no_operand={no_op} bad_shape={shp} bad_scale={scl} nan={nan})"
+            );
+        }
         let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
         let mut dec = Vec::new();
         for &token in &prompt {
@@ -590,6 +619,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("OUTPUT TEXT: {text:?}");
             println!("--- generated text ---\n{text}");
         }
+        // Coverage receipt — see the PP_ONLY arm above. A greedy stream that matches the floor
+        // because the kernel never dispatched is not an exactness result.
+        println!("fp8-mmq dispatches: {}", memra_engine::fp8_ffi::fp8_mmq_hits());
         return Ok(());
     }
     let g = GgufFile::open(&path)?;

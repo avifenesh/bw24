@@ -1,5 +1,39 @@
 # Qwen 3.8 27B — release watch note (2026-08-03)
 
+## 2026-08-04 re-check — NOT OUT, no new arch info
+
+Checked 2026-08-04 (all fetched live):
+
+- **HF org `Qwen`: no 3.8 repo, no stub.** Newest org creations remain the 2026-06-26
+  ASR/ForcedAligner drops (`/api/models?author=Qwen&sort=createdAt` — nothing after
+  June). HF-wide `search=Qwen3.8` returns only two unrelated community finetunes of
+  Qwen3-4B ("Ma7ee7/Qwen3.8_4B_Distilled*", July 30 — NOT the release). unsloth org: no
+  Qwen3.8 repos either.
+- **Upstream code: zero signal.** GitHub search `qwen3.8` in `ggml-org/llama.cpp`
+  issues/PRs: 0 hits. `qwen3_8`/`qwen3.8` in `huggingface/transformers` PRs: 0 hits.
+  No converter/arch intel available yet.
+- **Timeline consolidates on "week of 2026-08-10"**: TechTimes 2026-08-03 states both
+  open-weight releases "expected the week of August 10 via Alibaba Cloud Model Studio";
+  MarkTechPost 2026-08-03 repeats "next week" and confirms **no benchmark table, no
+  license, no activated-parameter count published**. AINews/latent.space 2026-08-04
+  coverage adds no arch facts. Qwen blog page (qwen.ai/blog?id=qwen3.8) renders empty
+  to non-JS fetch — no arch summary grabbed yet.
+- **Qwen3.8-Max is MoE (2.4T total, active count unpublished)** per all coverage — that
+  is the *Max*, not the 27B; no source claims the 27B changed class. Pre-announcement
+  preview coverage (aireiter, July 19 "Kaleb" LMArena codename) is Max-only, nothing
+  on 27B arch.
+- **FP8 precedent sharpened** (for the FP8-ST leg): `Qwen/Qwen3.6-27B-FP8` (created
+  2026-04-21, same-day sibling of the BF16 repo) carries `quantization_config`:
+  `quant_method fp8`, `fmt e4m3`, `activation_scheme dynamic`,
+  `weight_block_size [128,128]`, vision tower excluded (`modules_to_not_convert`), MTP
+  1 layer + vocab 248320 + 64 layers unchanged from BF16. Expected 3.8 repo pair:
+  `Qwen/Qwen3.8-27B` + `Qwen/Qwen3.8-27B-FP8` same-day — the FP8 sibling is the
+  FP8-ST-leg artifact and it is block-128, exactly the class the merged loader gates
+  (`MEMRA_FP8_BLK_GPU` byte-exact dequant; cuBLASLt refuses block-scaled FP8 on sm_120
+  per research/fp8st-20260803/P1-VERDICT.md).
+- GDN / MTP-head / vocab for 3.8-27B: **still unknown, nothing leaked** — the "What is
+  NOT known" section below stands unchanged.
+
 ## Confirmed public signals (fetched 2026-08-03, receipts below)
 
 - **Official announcement exists**: @Alibaba_Qwen on X, 2026-08-03 (~7h before this note):

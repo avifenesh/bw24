@@ -1,0 +1,6 @@
+== serve-st-gate: checkpoint /data/ai-ml/hf-models/qwen35-4b-hf ==
+  ok: /models lists the ST model
+  ok: chat completion coherent (Paris) via ST template
+DIVERGE at token 0: cli=[90700, 8340, 25, 271, 16] srv=[42794, 64700] (lens 64/2)
+  FAIL: CLI-vs-server exactness
+serve-st-gate: 1 failed

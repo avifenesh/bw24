@@ -1,0 +1,18 @@
+=== memra-gguf ===
+    Packaged 19 files, 362.1KiB (97.1KiB compressed)
+warning: aborting upload due to dry run
+=== memra-sampling ===
+    Packaged 5 files, 13.2KiB (4.6KiB compressed)
+warning: aborting upload due to dry run
+=== memra-validate ===
+    Packaged 5 files, 5.3KiB (2.7KiB compressed)
+warning: aborting upload due to dry run
+=== memra-lanes ===
+    Packaged 5 files, 10.2KiB (4.3KiB compressed)
+warning: aborting upload due to dry run
+=== memra-kv ===
+error: failed to prepare local package for uploading
+=== memra-tokenizer ===
+error: failed to prepare local package for uploading
+=== memra-runtime ===
+error: failed to prepare local package for uploading

@@ -1,6 +1,10 @@
 [package]
 name = "memra-gguf"
-version = "0.0.0"
+description = "GGUF and HF-safetensors model loading, quant-format decode, and tensor inventory for the memra inference engine"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition = "2024"
 
 [dependencies]

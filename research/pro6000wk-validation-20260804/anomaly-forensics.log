@@ -1,0 +1,35 @@
+=== FORENSICS: power-sensor/throttle anomaly 2026-08-04T16:25:28Z ===
+--- ID ---
+    Product Name                                       : NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+    Serial Number                                      : 1791625023906
+    VBIOS Version                                      : 98.02.52.00.02
+    Board Part Number                                  : 900-5G144-2200-000
+        Chassis Serial Number                          : 
+580.173.02
+
+--- host uptime vs cumulative SW-power-cap engagement ---
+uptime_s: 1674097.98
+            HW Thermal Slowdown                        : Not Active
+        SW Power Capping                               : 908937633230 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+
+--- graded-duty tiny-kernel probe (1 block x 256 threads spin-FMA; a healthy card sits ~100-150W at max memclk) ---
+duty=5pct: 179.06 W, 297.72 W, 2617 MHz, 0 %, 29, 30 %
+duty=50pct: 299.62 W, 298.22 W, 2602 MHz, 3 %, 30, 30 %
+duty=95pct: 318.66 W, 298.73 W, 2610 MHz, 0 %, 30, 30 %
+
+--- D2D bandwidth decay under sustained copy (4GiB x4 copies/rep, x5 reps, twice) ---
+rep 0: 1403.7 GB/s
+rep 1: 1407.4 GB/s
+rep 2: 1403.6 GB/s
+rep 3: 1103.9 GB/s
+rep 4: 848.1 GB/s
+rep 0: 1407.6 GB/s
+rep 1: 1391.9 GB/s
+rep 2: 1365.7 GB/s
+rep 3: 1094.8 GB/s
+rep 4: 845.9 GB/s
+
+--- 30s settle -> idle state ---
+58.89 W, 180 MHz, 405 MHz, 28, 30 %, P8

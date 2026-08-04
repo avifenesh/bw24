@@ -2,6 +2,36 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
 
+## CURRENT STATE (2026-08-04, v0.69.0)
+
+- **First crates.io publish** — the crates-release lane made the workspace publishable:
+  workspace-inherited version 0.69.0 with `=0.69.0`-pinned intra-workspace deps, per-crate
+  metadata, fatbins **embedded in the binary** (`include_bytes!` + `Ptx::from_binary` /
+  `cuModuleLoadData` — distributed and cargo-installed binaries were unbootable before,
+  loading the builder's OUT_DIR paths at runtime; the v0.69 release battery is the gate
+  that validated the embed, kernel-check 458 OK / 0 FAIL). Distribution pipeline:
+  `publish.yml` (tag-triggered `cargo publish --workspace`, tag==version guard),
+  `release.yml` (prebuilt binaries + SHA256SUMS + binstall artifact), `tools/install.sh`
+  (curl|sh, checksum-verified). README Installation rewritten prebuilt-first.
+- **OR-listing surface complete** (serve-tail): `/v1/models` OR-schema (context_length,
+  architecture probe, honest nulls), `X-RateLimit-Limit/-Remaining/-Reset` with
+  concurrency-slot semantics, graceful drain on SIGTERM (503 new + Retry-After,
+  in-flight streams finish, exit 0; `MEMRA_DRAIN_S`).
+- **ST-checkpoint serving with spec** (serve-st + fp8-ship): `MEMRA_MODELS` accepts
+  safetensors dirs; official Qwen FP8 block-128 checkpoints load bit-exact (GPU dequant
+  2.89x load) and spec-decode runs out of the box on the embedded MTP head — 128-137
+  tok/s first official-FP8 e2e, 2.6-2.8x plain. The serve-spec exactness bug (#68) was
+  root-caused (persistent draft graph replaying dangling pool addresses — never
+  ST-specific, latent GGUF corruption at n>=600) and FIXED; quarantine lifted,
+  `tools/serve-st-gate.sh` pins serve == CLI oracle.
+- **FP8-MMQ v2 verdict recorded, dead seams deleted** per flags doctrine:
+  `MEMRA_MMQ_Y_FP8`/`OCC_FP8`/`PIPE_FP8` build knobs + the cp.async double-buffer arm
+  removed (concluded negative, research/fp8st-20260804/mmq-v2); `MEMRA_FP8_MMQ` itself
+  stays an off-by-default door (parity-class, below the 1.1x bar).
+- Battery receipts: `research/release-v0690-battery/` (ALL GREEN, incl. serve-smoke
+  0-failed — the v0.68-era 4-fail set is gone post the draft-mask gate fix — and
+  serve-st-gate 0-failed on the 9B ST modelopt checkpoint).
+
 ## CURRENT STATE (2026-08-02, v0.64.0)
 
 - **Ornith-1.0-35B DEPLOYS as supported model #9** — the #44 -> residency -> AUTO-KQUANT

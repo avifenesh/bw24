@@ -1,0 +1,6 @@
+Thinking Process:
+1.  **Analyze User Input:** The user asks "What is the capital of France?" and specifies "Answer in one short sentence."
+2.  **Identify Key Information:** The capital of France is Paris.
+3.  **Formulate Response:** Keep it concise and within the constraint of one short sentence. "The capital of France is Paris."
+4.  **Check Constraints:** One short sentence. "The capital of France is Paris." -> "The capital of France is Paris." (Wait, let's count words: 6. Perfect.
+5.  **Final Output Generation

@@ -1,0 +1,29 @@
+[server] starting; models config = [("fp8", "/root/models/qwen36-27b-fp8-official", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "fp8" <- /root/models/qwen36-27b-fp8-official
+[worker]   loaded "fp8": 65 layers, eos=248046
+[worker] fp8: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="default" instruct=Some("chatml")
+[worker] fp8: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["fp8"]
+[server] listening on http://127.0.0.1:8199
+[worker] observed session VRAM cost for "fp8": 570MB (admission gate = 2x)
+[spec-acc] ctx=23 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=58 burst=19/39 cum=42/72=0.583
+[spec-acc] ctx=90 burst=23/30 cum=65/102=0.637
+[spec-acc] ctx=123 burst=19/42 cum=84/144=0.583
+[spec-acc] ctx=156 burst=22/30 cum=106/174=0.609
+[spec-acc] ctx=23 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=58 burst=19/39 cum=42/72=0.583
+[spec-acc] ctx=90 burst=23/30 cum=65/102=0.637
+[spec-acc] ctx=123 burst=16/39 cum=81/141=0.574
+[spec-acc] ctx=23 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=58 burst=19/39 cum=42/72=0.583
+[spec-acc] ctx=90 burst=23/30 cum=65/102=0.637
+[spec-acc] ctx=123 burst=16/39 cum=81/141=0.574
+[spec-acc] ctx=23 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=58 burst=19/39 cum=42/72=0.583
+[spec-acc] ctx=90 burst=23/30 cum=65/102=0.637
+[spec-acc] ctx=123 burst=16/39 cum=81/141=0.574
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

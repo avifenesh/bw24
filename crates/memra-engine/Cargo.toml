@@ -1,15 +1,19 @@
 [package]
 name = "memra-engine"
-version = "0.0.0"
+description = "From-scratch CUDA LLM inference engine for NVIDIA RTX 50-series (sm_120a) and Hopper (sm_90a) - custom kernels, no frameworks"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 edition = "2024"
 
 [dependencies]
-memra-sampling = { path = "../memra-sampling" }
-memra-validate = { path = "../memra-validate" }
-memra-kv = { path = "../memra-kv" }
-memra-gguf = { path = "../memra-gguf" }
-memra-runtime = { path = "../memra-runtime" }
-memra-tokenizer = { path = "../memra-tokenizer" }
+memra-sampling = { workspace = true }
+memra-validate = { workspace = true }
+memra-kv = { workspace = true }
+memra-gguf = { workspace = true }
+memra-runtime = { workspace = true }
+memra-tokenizer = { workspace = true }
 cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
 memmap2 = "0.9"
 libc = "0.2"
@@ -202,3 +206,11 @@ path = "src/bin/ppn_bench.rs"
 [[bin]]
 name = "clc-mmq-bench"
 path = "src/bin/clc_mmq_bench.rs"
+
+[[bin]]
+name = "spec-st-probe"
+path = "src/bin/spec_st_probe.rs"
+
+[[bin]]
+name = "plainbatch-margin-probe"
+path = "src/bin/plainbatch_margin_probe.rs"

@@ -1,0 +1,24 @@
+=== power/clock/MIG control attempts (RunPod secure container, 2026-08-04T14:41:31Z) ===
+$ nvidia-smi -pl 300
+Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions
+Terminating early due to previous errors.
+$ nvidia-smi -pl 450
+Failed to set power management limit for GPU 00000000:C5:00.0: Insufficient Permissions
+Terminating early due to previous errors.
+$ nvidia-smi -lgc 300,1500
+The current user does not have permission to change clocks for GPU 00000000:C5:00.0.
+Terminating early due to previous errors.
+$ nvidia-smi -i 0 -mig 1
+Unable to enable MIG Mode for GPU 00000000:C5:00.0: Insufficient Permissions
+Terminating early due to previous errors.
+$ nvidia-smi mig -lgip
+No MIG-supported devices found.
+$ capsh caps:
+CapEff:	00000000a80425fb
+$ nvidia-smi -q virtualization:
+    GPU Virtualization Mode
+        Virtualization Mode                            : None
+        Host VGPU Mode                                 : N/A
+        vGPU Heterogeneous Mode                        : N/A
+    GPU Recovery Action                                : None
+    GSP Firmware Version                               : 580.173.02

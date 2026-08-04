@@ -1,0 +1,30 @@
+[16:00:07Z] == PHASE 1: official block-128 FP8 ckpt (/root/models/qwen36-27b-fp8-official) load gates, default vs MEMRA_FP8_BLK_GPU=1, interleaved pairs, GPU0 ==
+[16:00:07Z] default pp512 rep1 pre: 28, 180 MHz, 22.48 W, 2 MiB
+[16:14:11Z] default pp512 rep1 post: wall=843.876s rc=0 | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH  | oom=0
+[16:14:11Z] blkgpu pp512 rep1 pre: 38, 2400 MHz, 85.19 W, 2 MiB
+[16:19:03Z] blkgpu pp512 rep1 post: wall=291.556s rc=0 | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH  | oom=0
+[16:19:03Z] default pp512 rep2 pre: 38, 2400 MHz, 79.12 W, 2 MiB
+[16:33:07Z] default pp512 rep2 post: wall=843.539s rc=0 | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH  | oom=0
+[16:33:07Z] blkgpu pp512 rep2 pre: 38, 2752 MHz, 90.40 W, 2 MiB
+[16:38:02Z] blkgpu pp512 rep2 post: wall=294.961s rc=0 | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH  | oom=0
+[16:38:02Z] default pp512 rep3 pre: 38, 2400 MHz, 82.27 W, 2 MiB
+[16:52:06Z] default pp512 rep3 post: wall=844.090s rc=0 | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH  | oom=0
+[16:52:06Z] blkgpu pp512 rep3 pre: 38, 2400 MHz, 71.52 W, 2 MiB
+[16:56:53Z] blkgpu pp512 rep3 post: wall=287.022s rc=0 | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH  | oom=0
+[16:56:53Z] default p1 rep1 pre: 39, 2542 MHz, 87.86 W, 2 MiB
+[17:10:36Z] default p1 rep1 post: wall=822.738s rc=0 | verify-prefill argmax=760  decode argmax=760  logit maxdiff=0.000e0  MATCH  | oom=0
+[17:10:36Z] blkgpu p1 rep1 pre: 34, 2400 MHz, 84.61 W, 2 MiB
+[17:15:17Z] blkgpu p1 rep1 post: wall=281.292s rc=0 | verify-prefill argmax=760  decode argmax=760  logit maxdiff=0.000e0  MATCH  | oom=0
+[17:15:17Z] == BIT-IDENTITY: default vs blkgpu (token streams + argmax lines + prefill logit vectors) ==
+[17:15:18Z] IDENT pp512 r1: token stream + argmax lines IDENTICAL
+[17:15:18Z] IDENT pp512 r1: prefill logit vectors BIT-IDENTICAL (993280 bytes)
+[17:15:18Z] IDENT pp512 r2: token stream + argmax lines IDENTICAL
+[17:15:18Z] IDENT pp512 r2: prefill logit vectors BIT-IDENTICAL (993280 bytes)
+[17:15:18Z] IDENT pp512 r3: token stream + argmax lines IDENTICAL
+[17:15:18Z] IDENT pp512 r3: prefill logit vectors BIT-IDENTICAL (993280 bytes)
+[17:15:18Z] IDENT p1 r1: token stream + argmax lines IDENTICAL
+[17:15:18Z] IDENT p1 r1: prefill logit vectors BIT-IDENTICAL (993280 bytes)
+[17:15:18Z] == within-arm rep stability (default r1 vs r2 vs r3 token lines) ==
+[17:15:18Z] STABLE default: identical token stream across 3 reps
+[17:15:18Z] STABLE blkgpu: identical token stream across 3 reps
+[17:15:18Z] PHASE 1 DONE

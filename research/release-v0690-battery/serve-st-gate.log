@@ -1,0 +1,9 @@
+== serve-st-gate: checkpoint /data/ai-ml/hf-models/qwen35-9b-nvfp4-st-modelopt ==
+  ok: /models lists the ST model
+  ok: chat completion coherent (Paris) via ST template
+identical 64 ids
+  ok: CLI-vs-server greedy token streams identical
+  ok: no quarantine notice (dir checkpoints spec-eligible)
+default (spec) text prefix-matches the tokenwise serve oracle (1523/1518 chars)
+  ok: default (spec) server == tokenwise serve oracle (400-tok window)
+serve-st-gate: 0 failed

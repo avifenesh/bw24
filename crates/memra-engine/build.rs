@@ -29,6 +29,35 @@ fn detect_arch() -> String {
 
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
+    // docs.rs builders have no nvcc and no CUDA libs: emit empty placeholder fatbins so
+    // the include_bytes!/env! consts compile, skip every nvcc/ar/link step. The resulting
+    // rlib is documentation-only — Engine::new would fail to load a zero-byte module, but
+    // docs.rs never runs code. Normal builds (CI included) never set DOCS_RS.
+    if std::env::var_os("DOCS_RS").is_some() {
+        for stem in ["kernels", "hybrid", "qmatvec", "flash_attn", "qmatvec_gemm",
+                     "moe_router", "spec_sample", "flash_attn_vq4", "flash_attn_vf8",
+                     "flash_attn_kf8", "flash_attn_kf8vq4", "flash_attn_kf8vf8"] {
+            std::fs::write(out.join(format!("{stem}.fatbin")), []).unwrap();
+        }
+        for (env, stem) in [("MEMRA_ENGINE_FATBIN", "kernels"), ("MEMRA_HYBRID_FATBIN", "hybrid"),
+                            ("MEMRA_QMATVEC_FATBIN", "qmatvec"), ("MEMRA_FLASH_FATBIN", "flash_attn"),
+                            ("MEMRA_GEMM_FATBIN", "qmatvec_gemm"), ("MEMRA_ROUTER_FATBIN", "moe_router"),
+                            ("MEMRA_SAMPLE_FATBIN", "spec_sample"),
+                            ("MEMRA_FLASH_FATBIN_VQ4", "flash_attn_vq4"),
+                            ("MEMRA_FLASH_FATBIN_VF8", "flash_attn_vf8"),
+                            ("MEMRA_FLASH_FATBIN_KF8", "flash_attn_kf8"),
+                            ("MEMRA_FLASH_FATBIN_KF8VQ4", "flash_attn_kf8vq4"),
+                            ("MEMRA_FLASH_FATBIN_KF8VF8", "flash_attn_kf8vf8")] {
+            println!("cargo:rustc-env={env}={}", out.join(format!("{stem}.fatbin")).display());
+        }
+        println!("cargo:rustc-check-cfg=cfg(memra_portable_cuda)");
+        println!("cargo:rustc-check-cfg=cfg(memra_hopper_mma)");
+        println!("cargo:rustc-check-cfg=cfg(memra_cutlass)");
+        println!("cargo:rustc-env=MEMRA_BUILT_CUDA_ARCH=120a");
+        return;
+    }
+
     let nvcc = std::env::var("MEMRA_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
     println!("cargo:rerun-if-env-changed=MEMRA_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MEMRA_CUTLASS");
@@ -101,7 +130,7 @@ fn main() {
 
     // ---- KV-format fatbin variants of flash_attn.cu (kvbytes lane, 2026-07-08) ----
     // Same kernels/entry names, compile-time K/V cache format via -D. Engine::new picks the
-    // fatbin at runtime from env MEMRA_KV_K / MEMRA_KV_V (lib.rs flash_fatbin_path); the default
+    // fatbin at runtime from env MEMRA_KV_K / MEMRA_KV_V (lib.rs flash_fatbin_bytes); the default
     // (no env) loads the plain flash_attn.fatbin built above — bit-identical daily config.
     for (suffix, kfmt, vfmt) in [("VQ4", 0, 1), ("VF8", 0, 2), ("KF8", 1, 0),
                                  ("KF8VQ4", 1, 1), ("KF8VF8", 1, 2)] {
@@ -159,12 +188,27 @@ fn main() {
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_W4A8");
         let w4a8_y = std::env::var("MEMRA_MMQ_Y_W4A8").ok();
+        // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
+        // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
+        // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
+        // floor at every 27B shape; v2's restructure made X=256 affordable and it is now the
+        // default. Neither arm is MMA-bound at any width measured (110-130 TF against f8f6f4's
+        // 381-TF class), so geometry, not the MMA, is what this seam moves.
+        //
+        // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 (v2 slice-2/slice-3 seams)
+        // CONCLUDED NEGATIVE and were DELETED per the flags doctrine (v0.69.0): halving Y splits
+        // the same 8 warps across two CTAs, Y=128 with OCC=2 spills the accumulator, and cp.async
+        // on the weight tile cannot pay while the activation tile stays a synchronous copy. The
+        // record is research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and experiment B.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
+        let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu",
-                        "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu", "cu/moe_f16_grouped.cu"] {
+                        "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu", "cu/moe_f16_grouped.cu",
+                        "cu/fp8_blk_dequant.cu", "cu/mmq_fp8_blk.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit MEMRA_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -176,6 +220,9 @@ fn main() {
                 // The W4A8/F8F4 launchers use .kind::f8f6f4 tile MMA (sm_100a+);
                 // sm_89 gets fail-closed ABI stubs.
                 "cu/mmq_nvfp4_w4a8_stub.cu"
+            } else if portable && mmq_src == "cu/mmq_fp8_blk.cu" {
+                // Per-block FP8 MMQ: same .kind::f8f6f4 gate as the W4A8/F8F4 launchers.
+                "cu/mmq_fp8_blk_stub.cu"
             } else {
                 mmq_src
             };
@@ -198,6 +245,11 @@ fn main() {
             }
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
+            }
+            // Per-block FP8 MMQ token-tile geometry (X only — the Y/OCC/PIPE seams concluded
+            // negative and were deleted; see the TUNE SEAM note above).
+            if mmq_src.ends_with("mmq_fp8_blk.cu") {
+                if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());

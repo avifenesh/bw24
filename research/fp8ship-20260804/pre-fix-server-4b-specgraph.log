@@ -1,0 +1,26 @@
+[server] starting; models config = [("st", "/data/ai-ml/hf-models/qwen35-4b-hf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "st" <- /data/ai-ml/hf-models/qwen35-4b-hf
+[worker]   loaded "st": 33 layers, eos=248046
+[worker] st: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="default" instruct=Some("chatml")
+[worker] st: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["st"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "st": 235MB (admission gate = 2x)
+[spec-acc] ctx=23 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=55 burst=24/33 cum=45/63=0.714
+[spec-acc] ctx=90 burst=22/33 cum=67/96=0.698
+[spec-acc] ctx=123 burst=18/42 cum=85/138=0.616
+[spec-acc] ctx=155 burst=19/39 cum=104/177=0.588
+[spec-acc] ctx=187 burst=21/39 cum=125/216=0.579
+[spec-acc] ctx=221 burst=22/36 cum=147/252=0.583
+[spec-acc] ctx=255 burst=16/48 cum=163/300=0.543
+[spec-acc] ctx=287 burst=9/69 cum=172/369=0.466
+[spec-acc] ctx=319 burst=16/48 cum=188/417=0.451
+[spec-acc] ctx=351 burst=5/87 cum=193/504=0.383
+[spec-acc] ctx=385 burst=10/66 cum=203/570=0.356
+[spec-acc] ctx=417 burst=0/18 cum=203/588=0.345
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

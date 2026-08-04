@@ -1,0 +1,16 @@
+# crates.io name availability — sparse index HTTP probe, 2026-08-04
+# 404 = name unregistered/available; 200 = taken
+memra  https://index.crates.io/me/mr/memra  HTTP 404
+memra-engine  https://index.crates.io/me/mr/memra-engine  HTTP 404
+memra-server  https://index.crates.io/me/mr/memra-server  HTTP 404
+memra-gguf  https://index.crates.io/me/mr/memra-gguf  HTTP 404
+memra-tokenizer  https://index.crates.io/me/mr/memra-tokenizer  HTTP 404
+memra-lanes  https://index.crates.io/me/mr/memra-lanes  HTTP 404
+memra-probe  https://index.crates.io/me/mr/memra-probe  HTTP 404
+memra-runtime  https://index.crates.io/me/mr/memra-runtime  HTTP 404
+memra-sampling  https://index.crates.io/me/mr/memra-sampling  HTTP 404
+memra-validate  https://index.crates.io/me/mr/memra-validate  HTTP 404
+memra-kv  https://index.crates.io/me/mr/memra-kv  HTTP 404
+
+# probe sanity: a known-taken name must return 200
+serde  https://index.crates.io/se/rd/serde  HTTP 200

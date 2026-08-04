@@ -1,0 +1,12 @@
+LOCAL rig: RTX 5090 Laptop (sm_120a), 1.7B block-128 FP8 ckpt, N=5 process reps x 3 in-process, interleaved
+
+pp512:
+  floor  median  2300.8 tok/s  N=5 [2235.8, 2256.2, 2300.8, 2344.4, 2377.3]  1.0000x (ref)  temp 54-56C  sm 1987-2122 MHz
+  mmq    median  2328.4 tok/s  N=5 [2274.5, 2303.0, 2328.4, 2341.8, 2347.2]  1.0120x  temp 51-61C  sm 1995-2145 MHz
+  arma   median  2356.2 tok/s  N=5 [2321.2, 2348.4, 2356.2, 2374.1, 2393.0]  1.0241x  temp 51-59C  sm 1957-1972 MHz
+
+pp6257:
+  floor  median   437.9 tok/s  N=5 [437.2, 437.7, 437.9, 438.5, 438.5]  1.0000x (ref)  temp 65-67C  sm 1582-1590 MHz
+  mmq    median   437.9 tok/s  N=5 [435.8, 437.7, 437.9, 438.2, 438.5]  1.0000x  temp 65-68C  sm 1582-1582 MHz
+  arma   median   438.8 tok/s  N=5 [438.2, 438.6, 438.8, 439.0, 439.0]  1.0021x  temp 66-79C  sm 1582-1980 MHz
+
