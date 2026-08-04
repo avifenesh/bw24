@@ -56,14 +56,23 @@ impl Sampler {
     pub fn is_greedy(&self) -> bool {
         self.cfg.temperature <= 0.0
     }
-    /// Spec-eligible sampling: temperature (+ optional top-k/top-p/min-p — the filtered
-    /// rejection-sampling verify applies the SAME transform to p and q, distribution-exact).
-    /// Penalties are NOT yet wired into the spec verify: penalized requests take the legacy path.
+    /// Sampled spec in its FASTEST regime: pure temperature, no truncation filters, no
+    /// penalties. Filters and penalties are also distribution-exact under the rejection
+    /// verify (spec.rs applies both symmetrically to draft q and target p), so they remain
+    /// spec-ELIGIBLE — see `spec_eligible` in memra-server's worker, the authoritative
+    /// predicate. What they cost is the in-graph draft chain: the captured sampled draft
+    /// samples from the RAW softmax and can hold neither per-row filter stats nor a varying
+    /// penalty history, so `spec.rs` engages `graph_s` only in this pure-temp regime
+    /// (`pure_temp`) and otherwise falls back to the eager draft chain. This predicate names
+    /// that regime; it is NOT an eligibility test.
     pub fn is_spec_sampling(&self) -> bool {
         self.cfg.temperature > 0.0
             && self.cfg.penalty_repeat == 1.0
             && self.cfg.penalty_freq == 0.0
             && self.cfg.penalty_present == 0.0
+            && self.cfg.top_k == 0
+            && self.cfg.top_p >= 1.0
+            && self.cfg.min_p <= 0.0
     }
     pub fn top_k(&self) -> usize {
         self.cfg.top_k
