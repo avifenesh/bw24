@@ -1,0 +1,25 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8198
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[spec-acc] ctx=94 burst=23/30 cum=61/111=0.550
+[spec-acc] ctx=127 burst=24/30 cum=85/141=0.603
+[spec-acc] ctx=161 burst=23/30 cum=108/171=0.632
+[spec-acc] ctx=194 burst=24/33 cum=132/204=0.647
+[spec-acc] ctx=229 burst=23/30 cum=155/234=0.662
+[spec-acc] ctx=262 burst=8/72 cum=163/306=0.533
+[spec-acc] ctx=294 burst=2/90 cum=165/396=0.417
+[spec-acc] ctx=326 burst=3/87 cum=168/483=0.348
+[spec-acc] ctx=358 burst=0/96 cum=168/579=0.290
+[spec-acc] ctx=390 burst=0/96 cum=168/675=0.249
+[spec-acc] ctx=422 burst=0/18 cum=168/693=0.242
+[constrained] q9: 400 masked steps, mask total 3.04 ms (0.008 ms/step)

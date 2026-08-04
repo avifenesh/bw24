@@ -8,8 +8,10 @@
 #             standard protocol from research/constrained-full-20260803).
 #   Phase C — CONSTRAINED CORRECTNESS: schema/object outputs still parse+validate with
 #             masking on (the mask must never produce illegal JSON).
-#   Phase D — PERF: tight schema (the "spacecraft, ten keys" json_object cell) + loose
-#             control, ON vs OFF, N=3 interleaved same-session per arm; acceptance + tok/s.
+#   Phase D — PERF: bounded tight schema (the GATE cell) + unbounded tight + json_object +
+#             loose control, ON vs OFF, N=3 same-session per arm; acceptance + tok/s.
+# Not gated: the UNBOUNDED tight cell's byte identity — its degenerate whitespace tail is
+# draft-chain-SHAPE dependent in the PRE-LANE binary as well (probe-shape.sh). Reported as info.
 # GPU serialized via flock /tmp/gpu5090.lock (call site), shared rig.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -51,10 +53,33 @@ content() { python3 -c 'import sys,json; print(json.load(sys.stdin)["choices"][0
 SCHEMA='{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer","minimum":0},"tags":{"type":"array","items":{"type":"string"},"minItems":2}},"required":["name","age","tags"],"additionalProperties":false}'
 RF_SCHEMA="\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"person\",\"schema\":$SCHEMA}}"
 RF_OBJ='"response_format":{"type":"json_object"}'
-# TIGHT cell: the merged battery's perf prompt (json_object, long output).
+# OBJ cell: the merged battery's perf prompt (json_object, long output). NOTE (measured
+# 2026-08-04): json_object is NOT a tight grammar for this drafter — masking OFF logs
+# gram_cuts=0/13, i.e. the drafter already proposes legal tokens. Kept as the merged-battery
+# comparison point, not as the tight cell.
 TIGHT="Write a long JSON object describing a spacecraft with at least ten keys."
-# LOOSE control: the Rex cell — free-form prose, no grammar.
+# LOOSE control: the Rex cell — free-form prose under json_object.
 LOOSE="Explain in three sentences how a Rex-class rocket engine gimbal works."
+# TIGHT SCHEMA cell (the exactness GATE cell): the regime where verify-side truncation actually
+# fires — masking OFF logs gram_cuts 3/12, 3/15, 1/10, 1/25 on this cell; masking ON logs 0/N in
+# every round. An array of fully-required objects keeps the legal set near-singleton.
+# BOUNDED ON PURPOSE (minItems==maxItems, tags maxItems): the model closes the JSON and the
+# request ends at finish_reason=stop, ~241 tokens inside the 320 budget, so the run never enters
+# the degenerate unbounded-whitespace tail. See the UNBOUNDED cell below for why that matters.
+F3_SCHEMA='{"type":"object","properties":{"fleet":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"object","properties":{"id":{"type":"string"},"class":{"type":"string","enum":["scout","hauler","interceptor"]},"crew":{"type":"integer","minimum":1},"mass_t":{"type":"integer","minimum":1},"active":{"type":"boolean"},"tags":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"}}},"required":["id","class","crew","mass_t","active","tags"],"additionalProperties":false}}},"required":["fleet"],"additionalProperties":false}'
+RF_F3="\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"fleet3\",\"schema\":$F3_SCHEMA}}"
+F3S="List three spacecraft in a fleet with their class, crew, mass and tags."
+# UNBOUNDED TIGHT cell — INFORMATIONAL, NOT A GATE. minItems=6 with no maxItems anywhere: the
+# 9B runs out of distinct fleet entries around char 600, then degenerates into unbounded
+# whitespace (the JSON grammar permits arbitrary whitespace between tokens) and rides the 400-tok
+# cap. That tail sits in a near-tie logit regime, and spec.rs:2151 documents that the verify batch
+# shape T "changes FP summation order and can flip argmax at tight logit margins" — so the tail is
+# draft-CHAIN-SHAPE dependent, not draft-MASK dependent. probe-shape.sh proves it on the PRE-LANE
+# binary (no draft-mask code at all): K3 != K2 != K1 on this cell, all three diverging at the SAME
+# char 603, while at fixed K=1 pre-lane == mask-ON byte-identical. Reported here, never gated.
+FLEET_SCHEMA='{"type":"object","properties":{"fleet":{"type":"array","minItems":6,"items":{"type":"object","properties":{"id":{"type":"string"},"class":{"type":"string","enum":["scout","hauler","interceptor"]},"crew":{"type":"integer","minimum":1},"mass_t":{"type":"integer","minimum":1},"active":{"type":"boolean"},"tags":{"type":"array","minItems":2,"items":{"type":"string"}}},"required":["id","class","crew","mass_t","active","tags"],"additionalProperties":false}}},"required":["fleet"],"additionalProperties":false}'
+RF_FLEET="\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"fleet\",\"schema\":$FLEET_SCHEMA}}"
+TIGHTS="List six spacecraft in a fleet with their class, crew, mass and tags."
 
 check_json_obj() { # $1=file $2=label
   if python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert isinstance(v,dict)' "$1"
@@ -79,15 +104,32 @@ for arm in on off; do
   req "Give me a person record." 128 0.8 42 "$RF_SCHEMA" | fullmsg > "$OUT/dm-$arm-schema-temp.txt"
   # constrained on the LOOSE prompt (json_object over a prose-ish request)
   req "$LOOSE" 192 0 0 "$RF_OBJ"        | fullmsg > "$OUT/dm-$arm-loose-obj.txt"
+  # TIGHT SCHEMA (GATE) — the cell where truncation actually fires and the JSON still closes.
+  req "$F3S" 320 0 0 "$RF_F3"           | fullmsg > "$OUT/dm-$arm-tight3.txt"
+  req "$F3S" 320 0.8 42 "$RF_F3"        | fullmsg > "$OUT/dm-$arm-tight3-temp.txt"
+  # UNBOUNDED TIGHT (INFO only — degenerate whitespace tail, verify-shape dependent, see above).
+  req "$TIGHTS" 400 0 0 "$RF_FLEET"     | fullmsg > "$OUT/dm-$arm-tightschema.txt"
+  req "$TIGHTS" 400 0.8 42 "$RF_FLEET"  | fullmsg > "$OUT/dm-$arm-tightschema-temp.txt"
   cp "/tmp/dm-$arm.log" "$OUT/serve-dm-$arm.log"
   stop_server
 done
-for cell in obj-greedy schema-greedy schema-temp loose-obj; do
+for cell in obj-greedy schema-greedy schema-temp loose-obj tight3 tight3-temp tightschema-temp; do
   if cmp -s "$OUT/dm-on-$cell.txt" "$OUT/dm-off-$cell.txt"; then
     PASS "draft-mask ON == OFF: $cell (byte-identical emitted stream)"
   else
     FAIL "draft-mask ON != OFF: $cell"
   fi
+done
+# INFO cell: report, never gate (draft-chain-shape dependent in the PRE-LANE binary too).
+if cmp -s "$OUT/dm-on-tightschema.txt" "$OUT/dm-off-tightschema.txt"; then
+  echo "  info: tightschema (unbounded) ON == OFF"
+else
+  echo "  info: tightschema (unbounded) ON != OFF — degenerate whitespace tail, expected;"
+  echo "        probe-shape.sh shows pre-lane K3!=K2!=K1 on this same cell (no mask code)."
+fi
+echo "  -- gram_cuts per session, ON vs OFF (the mechanism receipt) --"
+for a in on off; do
+  echo -n "  $a: "; grep -o 'gram_cuts=[0-9]*/[0-9]*' "$OUT/serve-dm-$a.log" | tr '\n' ' '; echo
 done
 
 # ---------- Phase B: unconstrained 6/6 vs the pre-lane binary ----------
@@ -147,17 +189,31 @@ open('$OUT/perf.jsonl','a').write(json.dumps(row)+'\n')
 for arm in on off; do
   ENVX=(); [ $arm = off ] && ENVX=(MEMRA_DRAFT_MASK=0)
   start_server target/release/memra-server "/tmp/dm-perf-$arm.log" "${ENVX[@]}" || exit 1
-  perf_arm "tight-constr-mask$arm" "$TIGHT" "$RF_OBJ"
+  perf_arm "tight3-constr-mask$arm" "$F3S" "$RF_F3"
+  perf_arm "tightschema-constr-mask$arm" "$TIGHTS" "$RF_FLEET"
+  perf_arm "obj-constr-mask$arm" "$TIGHT" "$RF_OBJ"
   perf_arm "loose-constr-mask$arm" "$LOOSE" "$RF_OBJ"
   perf_arm "unconstrained-mask$arm" "$TIGHT" ""
   cp "/tmp/dm-perf-$arm.log" "$OUT/serve-perf-$arm.log"
   stop_server
 done
-echo "-- acceptance --"
-grep 'spec-acc' "$OUT/serve-perf-on.log"  | tail -6
-grep 'spec-acc' "$OUT/serve-perf-off.log" | tail -6
+echo "-- acceptance (last spec-acc cum per arm; per-request rows are in the serve logs) --"
+for a in on off; do echo -n "  $a: "; grep 'spec-acc' "$OUT/serve-perf-$a.log" | tail -1; done
+echo "-- gram_cuts per request, in Phase D arm order (tight3, tightschema, obj, loose, unconstr) --"
+for a in on off; do
+  echo -n "  $a: "; grep -o 'gram_cuts=[0-9]*/[0-9]*' "$OUT/serve-perf-$a.log" | tr '\n' ' '; echo
+done
 echo "-- clone cost --"
-grep 'draft-mask' "$OUT/serve-perf-on.log" | tail -6
+grep 'clone_per_round' "$OUT/serve-perf-on.log" | tail -3
+grep '^\[draft-mask\] [a-z]' "$OUT/serve-perf-on.log" | tail -3
+echo "-- tok/s medians --"
+python3 -c "
+import json,statistics,collections
+rows=[json.loads(l) for l in open('$OUT/perf.jsonl')]
+by=collections.defaultdict(list)
+for r in rows: by[r['arm']].append(r['tok_s'])
+for a in sorted(by): print(f'  {a:34s} N={len(by[a])} med={statistics.median(by[a]):7.1f} tok/s  {by[a]}')
+"
 
 echo; echo "battery: $FAILS failure(s)"
 exit $((FAILS > 0))

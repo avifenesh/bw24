@@ -1,0 +1,80 @@
+== Phase A: draft-mask ON vs OFF byte-identity (constrained, spec path) ==
+  ok: draft-mask ON == OFF: obj-greedy (byte-identical emitted stream)
+  ok: draft-mask ON == OFF: schema-greedy (byte-identical emitted stream)
+  ok: draft-mask ON == OFF: schema-temp (byte-identical emitted stream)
+  ok: draft-mask ON == OFF: loose-obj (byte-identical emitted stream)
+  ok: draft-mask ON == OFF: tight3 (byte-identical emitted stream)
+  ok: draft-mask ON == OFF: tight3-temp (byte-identical emitted stream)
+  ok: draft-mask ON == OFF: tightschema-temp (byte-identical emitted stream)
+  info: tightschema (unbounded) ON != OFF — degenerate whitespace tail, expected;
+        probe-shape.sh shows pre-lane K3!=K2!=K1 on this same cell (no mask code).
+  -- gram_cuts per session, ON vs OFF (the mechanism receipt) --
+  on: gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/10 gram_cuts=0/30 gram_cuts=0/12 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/12 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/16 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/9 gram_cuts=0/9 gram_cuts=0/25 gram_cuts=0/22 gram_cuts=0/8 gram_cuts=0/8 
+  off: gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=2/15 gram_cuts=1/11 gram_cuts=28/30 gram_cuts=0/13 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/12 gram_cuts=3/12 gram_cuts=3/15 gram_cuts=1/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=18/25 gram_cuts=2/12 gram_cuts=4/15 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=1/11 gram_cuts=0/10 gram_cuts=0/9 gram_cuts=1/11 gram_cuts=0/26 gram_cuts=0/32 gram_cuts=1/32 gram_cuts=0/4 
+== Phase B: unconstrained byte-identity vs pre-lane binary ==
+  ok: unconstrained greedy-0 byte-identical
+  ok: unconstrained temp-0 byte-identical
+  ok: unconstrained greedy-1 byte-identical
+  ok: unconstrained temp-1 byte-identical
+  ok: unconstrained greedy-2 byte-identical
+  ok: unconstrained temp-2 byte-identical
+== Phase C: constrained correctness (masking ON) ==
+  ok: json_object (mask ON, spec) parses as object
+  ok: json_schema (mask ON, spec) parses AND validates
+== Phase D: perf (N=3 interleaved same-session per arm) ==
+  tight3-constr-maskon run1: 241 tok in 1.45s = 166.0 tok/s
+  tight3-constr-maskon run2: 241 tok in 1.06s = 228.2 tok/s
+  tight3-constr-maskon run3: 241 tok in 1.06s = 227.5 tok/s
+  tightschema-constr-maskon run1: 259 tok in 0.98s = 265.5 tok/s
+  tightschema-constr-maskon run2: 259 tok in 0.98s = 265.4 tok/s
+  tightschema-constr-maskon run3: 259 tok in 0.98s = 264.9 tok/s
+  obj-constr-maskon run1: 226 tok in 1.16s = 194.5 tok/s
+  obj-constr-maskon run2: 226 tok in 1.16s = 194.4 tok/s
+  obj-constr-maskon run3: 226 tok in 1.16s = 194.6 tok/s
+  loose-constr-maskon run1: 256 tok in 1.18s = 216.5 tok/s
+  loose-constr-maskon run2: 256 tok in 1.18s = 216.8 tok/s
+  loose-constr-maskon run3: 256 tok in 1.18s = 216.7 tok/s
+  unconstrained-maskon run1: 257 tok in 1.00s = 258.1 tok/s
+  unconstrained-maskon run2: 257 tok in 1.00s = 257.9 tok/s
+  unconstrained-maskon run3: 257 tok in 1.00s = 258.0 tok/s
+  tight3-constr-maskoff run1: 241 tok in 1.56s = 154.7 tok/s
+  tight3-constr-maskoff run2: 241 tok in 1.11s = 216.6 tok/s
+  tight3-constr-maskoff run3: 241 tok in 1.11s = 216.6 tok/s
+  tightschema-constr-maskoff run1: 259 tok in 1.00s = 258.3 tok/s
+  tightschema-constr-maskoff run2: 259 tok in 1.00s = 258.6 tok/s
+  tightschema-constr-maskoff run3: 259 tok in 1.00s = 258.8 tok/s
+  obj-constr-maskoff run1: 226 tok in 1.16s = 194.2 tok/s
+  obj-constr-maskoff run2: 226 tok in 1.16s = 194.6 tok/s
+  obj-constr-maskoff run3: 226 tok in 1.16s = 194.2 tok/s
+  loose-constr-maskoff run1: 256 tok in 1.19s = 214.9 tok/s
+  loose-constr-maskoff run2: 256 tok in 1.19s = 215.0 tok/s
+  loose-constr-maskoff run3: 256 tok in 1.19s = 215.2 tok/s
+  unconstrained-maskoff run1: 257 tok in 1.00s = 257.4 tok/s
+  unconstrained-maskoff run2: 257 tok in 1.00s = 257.6 tok/s
+  unconstrained-maskoff run3: 257 tok in 1.00s = 256.9 tok/s
+-- acceptance (last spec-acc cum per arm; per-request rows are in the serve logs) --
+  on: [spec-acc] ctx=251 burst=19/33 cum=170/258=0.659
+  off: [spec-acc] ctx=251 burst=19/33 cum=170/258=0.659
+-- gram_cuts per request, in Phase D arm order (tight3, tightschema, obj, loose, unconstr) --
+  on: gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/16 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/16 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/9 gram_cuts=0/6 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/9 gram_cuts=0/6 gram_cuts=0/12 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=0/9 gram_cuts=0/6 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/12 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/12 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/12 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/13 
+  off: gram_cuts=3/12 gram_cuts=3/15 gram_cuts=1/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=1/17 gram_cuts=3/12 gram_cuts=3/15 gram_cuts=1/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=15/17 gram_cuts=3/12 gram_cuts=3/15 gram_cuts=1/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/11 gram_cuts=0/10 gram_cuts=15/17 gram_cuts=2/12 gram_cuts=4/15 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=1/11 gram_cuts=0/10 gram_cuts=0/7 gram_cuts=2/12 gram_cuts=4/15 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=1/11 gram_cuts=0/10 gram_cuts=0/7 gram_cuts=2/12 gram_cuts=4/15 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=0/10 gram_cuts=1/11 gram_cuts=0/10 gram_cuts=0/7 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=2/15 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=2/15 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/14 gram_cuts=0/13 gram_cuts=0/15 gram_cuts=0/13 gram_cuts=2/15 gram_cuts=0/13 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/13 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/13 gram_cuts=0/12 gram_cuts=0/11 gram_cuts=0/13 gram_cuts=0/16 gram_cuts=0/14 gram_cuts=0/11 gram_cuts=0/13 
+-- clone cost --
+[draft-mask] mask_rounds=14 clone_total=0.029ms clone_per_round=0.0021ms gram_cuts=0/14 cut_tokens=0
+[draft-mask] mask_rounds=11 clone_total=0.024ms clone_per_round=0.0022ms gram_cuts=0/11 cut_tokens=0
+[draft-mask] mask_rounds=13 clone_total=0.028ms clone_per_round=0.0022ms gram_cuts=0/13 cut_tokens=0
+[draft-mask] mask_rounds=11 clone_total=0.024ms clone_per_round=0.0022ms gram_cuts=0/11 cut_tokens=0
+[draft-mask] mask_rounds=13 clone_total=0.028ms clone_per_round=0.0022ms gram_cuts=0/13 cut_tokens=0
+[draft-mask] q9: 102 clones 0.20 ms (0.002 ms/clone), 306 draft masks 0.45 ms (0.001 ms/mask)
+-- tok/s medians --
+  loose-constr-maskoff               N=3 med=  215.0 tok/s  [214.9, 215.0, 215.2]
+  loose-constr-maskon                N=3 med=  216.7 tok/s  [216.5, 216.8, 216.7]
+  obj-constr-maskoff                 N=3 med=  194.2 tok/s  [194.2, 194.6, 194.2]
+  obj-constr-maskon                  N=3 med=  194.5 tok/s  [194.5, 194.4, 194.6]
+  tight3-constr-maskoff              N=3 med=  216.6 tok/s  [154.7, 216.6, 216.6]
+  tight3-constr-maskon               N=3 med=  227.5 tok/s  [166.0, 228.2, 227.5]
+  tightschema-constr-maskoff         N=3 med=  258.6 tok/s  [258.3, 258.6, 258.8]
+  tightschema-constr-maskon          N=3 med=  265.4 tok/s  [265.5, 265.4, 264.9]
+  unconstrained-maskoff              N=3 med=  257.4 tok/s  [257.4, 257.6, 256.9]
+  unconstrained-maskon               N=3 med=  258.0 tok/s  [258.1, 257.9, 258.0]
+
+battery: 0 failure(s)

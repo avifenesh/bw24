@@ -1,0 +1,30 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8199
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/12 cut_tokens=5
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=3/15 cut_tokens=8
+[spec-acc] ctx=62 burst=17/45 cum=38/81=0.469
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/10 cut_tokens=2
+[spec-acc] ctx=94 burst=25/30 cum=63/111=0.568
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=129 burst=23/30 cum=86/141=0.610
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=162 burst=23/30 cum=109/171=0.637
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/11 cut_tokens=0
+[spec-acc] ctx=195 burst=22/33 cum=131/204=0.642
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=0/10 cut_tokens=0
+[spec-acc] ctx=228 burst=22/30 cum=153/234=0.654
+[draft-mask] mask_rounds=0 clone_total=0.000ms clone_per_round=0.0000ms gram_cuts=1/25 cut_tokens=2
+[spec-acc] ctx=260 burst=7/75 cum=160/309=0.518
+[constrained] q9: 241 masked steps, mask total 1.80 ms (0.007 ms/step)
+[worker] observed session VRAM cost for "q9": 168MB (admission gate = 2x)
+[constrained] q9: 246 masked steps, mask total 1.66 ms (0.007 ms/step)

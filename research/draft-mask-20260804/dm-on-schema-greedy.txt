@@ -1,0 +1,1 @@
+{"content": "{\n  \"name\": \"Alex Johnson\",\n  \"age\": 28,\n  \"tags\": [\"developer\", \"hiker\", \"coffee enthusiast\"]\n}", "n": 38, "reasoning": null}
