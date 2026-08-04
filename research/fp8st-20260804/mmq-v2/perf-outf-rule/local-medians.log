@@ -1,0 +1,11 @@
+V2 LOCAL rig: RTX 5090 Laptop (sm_120a), 1.7B block-128 FP8 ckpt, N=5 process reps x 3 in-process, arms INTERLEAVED
+kernel: lane/fp8-mmq-v2 @ 2ca4c8fb (X=256 default, out_f<2048 -> X=128, Y=128, PIPE=0)
+
+pp512:
+  floor  median   2284.0 tok/s  N=5 [2250.4, 2253.1, 2284.0, 2285.2, 2292.2]  1.0000x  temp 46-63C  sm 180-2130 MHz
+  mmq    median   2240.1 tok/s  N=5 [2219.1, 2228.1, 2240.1, 2242.9, 2243.5]  0.9808x  temp 52-63C  sm 1987-2130 MHz
+
+pp6257:
+  floor  median    436.3 tok/s  N=5 [435.5, 435.8, 436.3, 436.7, 436.9]  1.0000x  temp 52-70C  sm 1582-2055 MHz
+  mmq    median    436.1 tok/s  N=5 [433.1, 435.8, 436.1, 436.5, 437.5]  0.9995x  temp 63-70C  sm 1582-1597 MHz
+

@@ -160,12 +160,27 @@ fn main() {
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_W4A8");
         let w4a8_y = std::env::var("MEMRA_MMQ_Y_W4A8").ok();
         // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
-        // tile. Needed because the GEMM-only bench (research/fp8st-20260804/mmq/gemmbench) put the
-        // 128-token default BELOW the Q8_0 floor it replaces at every 27B shape (0.81x-0.94x), and
-        // both arms land at 105-127 TFLOP against f8f6f4's 381-TF class — i.e. neither is MMA
-        // bound, so the tile geometry is the thing under test, not the MMA.
+        // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
+        // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
+        // floor at every 27B shape; v2's restructure made X=256 affordable and it is now the
+        // default. Neither arm is MMA-bound at any width measured (110-130 TF against f8f6f4's
+        // 381-TF class), so geometry, not the MMA, is what this seam moves.
+        //
+        // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 are v2 slice-2 and slice-3 seams
+        // that CONCLUDED NEGATIVE (research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and
+        // experiment B): halving Y splits the same 8 warps across two CTAs rather than raising
+        // warps/SM, Y=128 with OCC=2 spills the 64-float accumulator, and cp.async on the weight
+        // tile cannot pay while the equally-large activation tile is still a synchronous copy
+        // between the issue and the wait. They are kept only as the reproduction path for those
+        // rows — per the flags doctrine they are deletion candidates, which is an owner call.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_FP8");
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_OCC_FP8");
         let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
+        let fp8_y = std::env::var("MEMRA_MMQ_Y_FP8").ok();
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_PIPE_FP8");
+        let fp8_occ = std::env::var("MEMRA_MMQ_OCC_FP8").ok();
+        let fp8_pipe = std::env::var("MEMRA_MMQ_PIPE_FP8").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -210,12 +225,16 @@ fn main() {
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
             }
-            // Per-block FP8 MMQ token-tile sweep. Only X is tunable: FP8_MMQ_Y is pinned to 128 by
-            // a static_assert, because mmq_y == the scale block edge is what makes the scale row
-            // equal blockIdx.x and reduces the whole scale fetch to two scalar loads per 256-k
-            // iteration. Changing Y would reintroduce a per-row scale lookup.
+            // Per-block FP8 MMQ tile geometry. v2 opens Y (and its paired occupancy target)
+            // alongside X: the scale-row hoist only needs FP8_MMQ_Y to DIVIDE the 128 block edge
+            // (a static_assert enforces that), not to equal it, so halving Y and nwarps together
+            // is legal and is the occupancy lever the v1 profile asked for. FP8_MMQ_OCC is the
+            // __launch_bounds__ minBlocksPerMultiprocessor.
             if mmq_src.ends_with("mmq_fp8_blk.cu") {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
+                if let Some(y) = &fp8_y { args.push(format!("-DFP8_MMQ_Y={y}")); }
+                if let Some(o) = &fp8_occ { args.push(format!("-DFP8_MMQ_OCC={o}")); }
+                if let Some(p) = &fp8_pipe { args.push(format!("-DFP8_MMQ_PIPE={p}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());

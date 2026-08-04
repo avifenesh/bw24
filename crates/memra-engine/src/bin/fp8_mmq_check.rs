@@ -1,5 +1,5 @@
 //! fp8-mmq-check — the REAL exactness gate for the per-block FP8 MMQ prefill kernel
-//! (cu/mmq_fp8_blk.cu, lane/fp8-mmq).
+//! (cu/mmq_fp8_blk.cu, lane/fp8-mmq-v2).
 //!
 //! WHY A SYNTHETIC GATE IS THE GATE (not a model stream compare): per-block-FP8 arithmetic is a
 //! DIFFERENT arithmetic path than the ARM B' Q8_0-requant floor, so their model logits may
@@ -11,10 +11,11 @@
 //!   Weights and activations are drawn from e4m3 codes whose decoded values are small integers, and
 //!   all block scales are powers of two. Every product and partial sum is then an exactly
 //!   representable f32 integer (|partial| < 2^24 by construction), so f32 addition is exact and
-//!   ORDER-INDEPENDENT. That removes the one thing the kernel does not define (the 32-product
-//!   reduction inside a single MMA is hardware-internal) and turns the comparison into a true
-//!   BIT-IDENTITY test: kernel bits must equal host bits, 0 ULP, no tolerance.
-//!   The activation quantizer is exercised honestly: its per-32 amax/448 scale is a power of two by
+//!   ORDER-INDEPENDENT. That removes the two things the kernel does not define (the 32-product
+//!   reduction inside a single MMA, and v2's chaining of the four MMAs of a scale block into one
+//!   accumulator — both hardware-internal) and turns the comparison into a true BIT-IDENTITY test:
+//!   kernel bits must equal host bits, 0 ULP, no tolerance.
+//!   The activation quantizer is exercised honestly: its per-128 amax/448 scale is a power of two by
 //!   construction (amax is a power of two), so cvt.rn.satfinite.e4m3x2 re-codes x/d exactly.
 //!
 //! ARM 2 — RANDOM (bounded): real e4m3 codes and real f32 scales, so f32 add order does matter.
@@ -23,8 +24,16 @@
 //!   would produce O(1) relative error, not 1e-7.
 //!
 //! RAGGED SHAPES are the point: n (out_f) not a multiple of 128 exercises need_check + the scale
-//! grid's partial last row; in_f not a multiple of 128/256 exercises the k tail (zero-fill) and the
+//! grid's partial last row; in_f not a multiple of 128 exercises the k tail (zero-fill) and the
 //! clamped scale column.
+//!
+//! CODE COVERAGE is gated too, not asserted: the run counts the distinct e4m3 byte values actually
+//! present in the weight and quantized-activation operands and FAILS below 254 — all 256 codes
+//! minus the two NaN magnitudes (0x7F/0xFF) the dispatch precondition refuses.
+//!
+//! V2 NOTE: the host reference below implements v2's grouping (scale block as the outer k loop, one
+//! chained accumulator per block, one fold, per-128 activation scale). It is deliberately NOT v1's
+//! arithmetic — the reference DEFINES the arithmetic and this gate proves the kernel implements it.
 //!
 //! usage: fp8-mmq-check            (default shape battery)
 //!        fp8-mmq-check <in_f> <out_f> <m>   (single shape)
@@ -88,58 +97,61 @@ fn f32_to_e4m3(v: f32) -> u8 {
 }
 
 /// Host reference for the kernel's arithmetic, in the kernel's ORDER (see the ARITHMETIC CONTRACT
-/// block in cu/mmq_fp8_blk.cu): per 128-k half, per 32-k step, accumulate (s_blk * dB) * C where C
-/// is the integer-ish sum of 32 e4m3 x e4m3 products.
+/// block in cu/mmq_fp8_blk.cu).
+///
+/// V2 GROUPING — this is the reference the v2 kernel must implement, and it is deliberately NOT
+/// v1's: the 128-wide scale block is the outer k loop, the four 32-k MMAs of a block CHAIN into one
+/// unscaled f32 accumulator, and (s_blk * dB) folds ONCE per block. dB is now the per-128
+/// activation scale (v2's quantize_mmq_e4m3_d128_kernel), which is what makes it hoistable out of
+/// the 128-k run at all. The gate's job is to prove the kernel implements THIS arithmetic exactly;
+/// the reference defines it.
 #[allow(clippy::too_many_arguments)]
 fn host_ref(
     w: &[u8],           // [out_f x in_f] e4m3
     scales: &[f32],     // [srows x scols]
     act_q: &[u8],       // [m x in_f_pad] e4m3 quantized activation
-    act_d: &[f32],      // [m x (in_f_pad/32)] per-32 activation scale
+    act_d: &[f32],      // [m x (in_f_pad/128)] per-128 activation scale
     in_f: usize,
     out_f: usize,
     m: usize,
     in_f_pad: usize,
 ) -> Vec<f32> {
-    let scols = (in_f + 127) / 128;
+    let scols = in_f.div_ceil(128);
     let mut y = vec![0f32; m * out_f];
-    let k_iter_end = ((in_f + 255) / 256) * 256;
+    let k_iter_end = in_f.div_ceil(128) * 128;
     for i in 0..out_f {
         let srow = i / 128;
         for j in 0..m {
             let mut sum = 0f32;
-            let mut kv0 = 0usize;
-            while kv0 < k_iter_end {
-                for h in 0..2usize {
-                    let kbase = kv0 + 128 * h;
-                    let s_blk = scales[srow * scols + (kbase / 128).min(scols - 1)];
-                    for k01q in 0..4usize {
-                        // 4 steps of 32 k-values
-                        let g0 = kbase + 32 * k01q;
-                        let mut c = 0f32;
-                        for t in 0..32usize {
-                            let g = g0 + t;
-                            let wv = if g < in_f {
-                                e4m3_to_f32(w[i * in_f + g])
-                            } else {
-                                0.0
-                            };
-                            let av = if g < in_f_pad {
-                                e4m3_to_f32(act_q[j * in_f_pad + g])
-                            } else {
-                                0.0
-                            };
-                            c += wv * av;
-                        }
-                        let db = if g0 < in_f_pad {
-                            act_d[j * (in_f_pad / 32) + g0 / 32]
+            let mut kb = 0usize;
+            while kb < k_iter_end {
+                let s_blk = scales[srow * scols + (kb / 128).min(scols - 1)];
+                let db = if kb < in_f_pad {
+                    act_d[j * (in_f_pad / 128) + kb / 128]
+                } else {
+                    0.0
+                };
+                // ONE chained accumulator for the whole 128-k block, no intermediate scaling.
+                let mut c = 0f32;
+                for k01q in 0..4usize {
+                    let g0 = kb + 32 * k01q;
+                    for t in 0..32usize {
+                        let g = g0 + t;
+                        let wv = if g < in_f {
+                            e4m3_to_f32(w[i * in_f + g])
                         } else {
                             0.0
                         };
-                        sum += (s_blk * db) * c;
+                        let av = if g < in_f_pad {
+                            e4m3_to_f32(act_q[j * in_f_pad + g])
+                        } else {
+                            0.0
+                        };
+                        c += wv * av;
                     }
                 }
-                kv0 += 256;
+                sum += (s_blk * db) * c;
+                kb += 128;
             }
             y[j * out_f + i] = sum;
         }
@@ -147,17 +159,18 @@ fn host_ref(
     y
 }
 
-/// Model the activation quantizer (cu/mmq_nvfp4_f8f4.cu quantize_mmq_e4m3_d4_kernel): per 32
-/// values, d = amax/448, q = cvt_e4m3(x * 448/amax). Zero-pads to MATRIX_ROW_PADDING (512).
+/// Model the v2 activation quantizer (cu/mmq_fp8_blk.cu quantize_mmq_e4m3_d128_kernel): per **128**
+/// values, d = amax/448, q = cvt_e4m3(x * 448/amax). Zero-pads to MATRIX_ROW_PADDING (512), which
+/// is a multiple of 128 so blocks never straddle the pad boundary.
 fn quantize_act_ref(x: &[f32], in_f: usize, m: usize) -> (usize, Vec<u8>, Vec<f32>) {
-    let in_f_pad = ((in_f + 511) / 512) * 512;
+    let in_f_pad = in_f.div_ceil(512) * 512;
     let mut q = vec![0u8; m * in_f_pad];
-    let mut d = vec![0f32; m * (in_f_pad / 32)];
+    let mut d = vec![0f32; m * (in_f_pad / 128)];
     for j in 0..m {
-        for b in 0..(in_f_pad / 32) {
+        for b in 0..(in_f_pad / 128) {
             let mut amax = 0f32;
-            for t in 0..32 {
-                let g = b * 32 + t;
+            for t in 0..128 {
+                let g = b * 128 + t;
                 let v = if g < in_f { x[j * in_f + g] } else { 0.0 };
                 amax = amax.max(v.abs());
             }
@@ -166,9 +179,9 @@ fn quantize_act_ref(x: &[f32], in_f: usize, m: usize) -> (usize, Vec<u8>, Vec<f3
             } else {
                 (amax / 448.0, 448.0 / amax)
             };
-            d[j * (in_f_pad / 32) + b] = dv;
-            for t in 0..32 {
-                let g = b * 32 + t;
+            d[j * (in_f_pad / 128) + b] = dv;
+            for t in 0..128 {
+                let g = b * 128 + t;
                 let v = if g < in_f { x[j * in_f + g] } else { 0.0 };
                 q[j * in_f_pad + g] = f32_to_e4m3(v * dinv);
             }
@@ -245,7 +258,7 @@ fn run_shape(
     m: usize,
     exact_arm: bool,
     seed: u64,
-) -> Result<(ArmResult, u32), Box<dyn std::error::Error>> {
+) -> Result<(ArmResult, u32, usize), Box<dyn std::error::Error>> {
     let srows = (out_f + 127) / 128;
     let scols = (in_f + 127) / 128;
     let mut rng = Rng(seed);
@@ -281,26 +294,30 @@ fn run_shape(
     // ---- activations ----
     let mut x = vec![0f32; m * in_f];
     if exact_arm {
-        // EXACT-arm activation construction. The quantizer computes d = amax/448 and
-        // q = cvt_e4m3(x * 448/amax) per 32 values, so pinning amax to EXACTLY 448 makes d == 1.0
-        // and q == x bit-for-bit — the activation side is not re-quantized at all. With x
-        // restricted to small integers, every MMA product and partial sum is an exact f32 integer
-        // (|sum| bounded well below 2^24, see the budget), so f32 addition is exact AND
-        // associative. That is what licenses a 0-ULP bit-identity comparison against a host
-        // reference whose in-MMA summation order differs from the hardware's.
-        //   budget: per 32-step |C| <= 8*448 + 31*8*4 = 4576; * s_blk (<= 8) = 36608;
-        //           * (in_f/32 <= 160 steps) = 5.9e6 << 2^24 = 1.6e7.
+        // EXACT-arm activation construction. The v2 quantizer computes d = amax/448 and
+        // q = cvt_e4m3(x * 448/amax) per **128** values, so pinning amax to EXACTLY 448 in every
+        // 128-block makes d == 1.0 and q == x bit-for-bit — the activation side is not
+        // re-quantized at all. With x restricted to small integers, every MMA product and partial
+        // sum is an exact f32 integer (|sum| well below 2^24, see the budget), so f32 addition is
+        // exact AND associative. That is what licenses a 0-ULP bit-identity comparison against a
+        // host reference whose in-MMA summation order (and now also whose MMA-chaining order)
+        // differs from the hardware's.
+        //   budget: per 128-k block |C| <= 8*448 + 127*8*4 = 7648; * s_blk (<= 8) = 61184;
+        //           * (in_f/128 <= 40 blocks here) = 2.4e6 << 2^24 = 1.6e7.
+        // A 128-block that is only PARTIALLY inside in_f is left all-zero on purpose: amax == 0
+        // then gives d == 0 and the block contributes exact zeros on both sides, which keeps the
+        // k-tail shapes inside the bit-identity arm instead of excusing them from it.
         for j in 0..m {
-            let nb = in_f / 32;
+            let nb = in_f / 128;
             for b in 0..nb {
-                for t in 0..32 {
+                for t in 0..128 {
                     let v = (rng.u8() % 5) as f32; // 0..4
                     let sgn = if rng.u8() & 1 == 0 { 1.0 } else { -1.0 };
-                    x[j * in_f + b * 32 + t] = sgn * v;
+                    x[j * in_f + b * 128 + t] = sgn * v;
                 }
                 // Pin amax = 448 (e4m3 max finite) at a rotating slot so the planted value does
                 // not sit at the same k offset in every block.
-                x[j * in_f + b * 32 + (b + j) % 32] = 448.0;
+                x[j * in_f + b * 128 + (b * 37 + j) % 128] = 448.0;
             }
         }
     } else {
@@ -313,6 +330,17 @@ fn run_shape(
     let (in_f_pad, aq, ad) = quantize_act_ref(&x, in_f, m);
     let want = host_ref(&w, &scales, &aq, &ad, in_f, out_f, m, in_f_pad);
 
+    // ---- code coverage, MEASURED not assumed ----
+    // The claim "every e4m3 code the kernel can legally see is exercised" is only evidence if it is
+    // counted. 255 = all 256 minus the single NaN magnitude the dispatch refuses (0x7F/0xFF are
+    // excluded by construction above, because hardware reads them as NaN and the host convention
+    // reads 0.0 — that disagreement is the reason for the refusal, not something to test through).
+    let mut seen = [false; 256];
+    for b in w.iter().chain(aq.iter()) {
+        seen[*b as usize] = true;
+    }
+    let codes = seen.iter().filter(|s| **s).count();
+
     // ---- kernel ----
     let wd = e.htod_bytes(&w)?;
     let sd = e.htod(&scales)?;
@@ -320,7 +348,7 @@ fn run_shape(
     let nan = e.fp8_blk_nan_count(&wd)?;
     let got = e.dtoh(&e.qmatvec_mmq_fp8_blk(&wd, &sd, &xd, m, in_f, out_f)?)?;
 
-    Ok((compare(&got, &want), nan))
+    Ok((compare(&got, &want), nan, codes))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -345,16 +373,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut fails = 0usize;
+    let mut codes_max = 0usize;
     println!(
-        "{:<22} {:>6} {:>12} {:>12} {:>15} {:>5}",
-        "shape(in,out,m)", "arm", "max_abs", "rms_rel", "bit_mismatch", "nan"
+        "{:<22} {:>6} {:>12} {:>12} {:>15} {:>5} {:>6}",
+        "shape(in,out,m)", "arm", "max_abs", "rms_rel", "bit_mismatch", "nan", "codes"
     );
     for (in_f, out_f, m) in shapes {
         // ARM 1: exact / bit-identity. NO tolerance — 0 differing bits or FAIL.
-        let (r, nan) = run_shape(&e, in_f, out_f, m, true, 0xC0FFEE_u64 ^ (in_f * 7919) as u64)?;
+        let (r, nan, c1) = run_shape(&e, in_f, out_f, m, true, 0xC0FFEE_u64 ^ (in_f * 7919) as u64)?;
         let ok1 = r.ulp_mismatch == 0 && nan == 0;
         println!(
-            "{:<22} {:>6} {:>12.3e} {:>12.3e} {:>9}/{:<5} {:>5}  {}",
+            "{:<22} {:>6} {:>12.3e} {:>12.3e} {:>9}/{:<5} {:>5} {:>6}  {}",
             format!("{in_f},{out_f},{m}"),
             "EXACT",
             r.max_abs,
@@ -362,6 +391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r.ulp_mismatch,
             r.n,
             nan,
+            c1,
             if ok1 { "PASS" } else { "FAIL" }
         );
         if !ok1 {
@@ -371,10 +401,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ARM 2: random e4m3 + real f32 scales. f32 add order differs from the host reference, so
         // bit-identity is not expected; 1e-5 of the output RMS is ~2 orders above the observed
         // reorder noise and ~5 below any indexing bug (which lands at O(1) on this measure).
-        let (r2, nan2) = run_shape(&e, in_f, out_f, m, false, 0xBADC0DE_u64 ^ (out_f * 104729) as u64)?;
+        let (r2, nan2, c2) =
+            run_shape(&e, in_f, out_f, m, false, 0xBADC0DE_u64 ^ (out_f * 104729) as u64)?;
         let ok2 = r2.rms_rel < 1e-5 && nan2 == 0;
         println!(
-            "{:<22} {:>6} {:>12.3e} {:>12.3e} {:>9}/{:<5} {:>5}  {}",
+            "{:<22} {:>6} {:>12.3e} {:>12.3e} {:>9}/{:<5} {:>5} {:>6}  {}",
             format!("{in_f},{out_f},{m}"),
             "RAND",
             r2.max_abs,
@@ -382,16 +413,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r2.ulp_mismatch,
             r2.n,
             nan2,
+            c2,
             if ok2 { "PASS" } else { "FAIL" }
         );
         if !ok2 {
             fails += 1;
         }
+        codes_max = codes_max.max(c1).max(c2);
+    }
+
+    println!();
+    // Code coverage is a GATE, not a footnote: all 254 legal e4m3 codes must actually appear in an
+    // operand, or the "all codes" claim is unearned. 254 == 256 minus BOTH NaN magnitudes (0x7F and
+    // 0xFF) — the two the dispatch precondition refuses, because hardware reads them as NaN while
+    // the host / ARM B' convention reads 0.0.
+    let codes_ok = codes_max >= 254;
+    println!("e4m3 code coverage: {codes_max}/254 legal codes exercised (both NaN magnitudes 0x7F/0xFF excluded by the dispatch precondition)  {}",
+             if codes_ok { "PASS" } else { "FAIL" });
+    if !codes_ok {
+        fails += 1;
     }
 
     println!();
     if fails == 0 {
-        println!("=== fp8-mmq-check ALL GREEN (EXACT arm bit-identical, RAND arm < 1e-5 of RMS) ===");
+        println!("=== fp8-mmq-check ALL GREEN (EXACT arm bit-identical, RAND arm < 1e-5 of RMS, 254/254 codes) ===");
         Ok(())
     } else {
         println!("=== fp8-mmq-check {fails} FAILURES ===");

@@ -1,0 +1,8 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9 (interleaved fp8blk,q8_0 per rep; median of reps)
+shape in->out                   fp8blk_ms      q8_0_ms      ratio fp8blk_TFLOP   q8_0_TFLOP
+q_proj 5120->12288                 0.5995       0.5462     0.911x        107.5        117.9
+k/v_proj 5120->1024                0.1110       0.0925     0.834x         48.4         58.1
+o_proj 6144->5120                  0.2859       0.2505     0.876x        112.7        128.6
+gate/up_proj 5120->17408           0.8735       0.8018     0.918x        104.5        113.8
+down_proj 17408->5120              0.8501       0.7588     0.893x        107.4        120.3
+square-ref 5120->5120              0.2440       0.2128     0.872x        110.0        126.1
