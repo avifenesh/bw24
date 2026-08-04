@@ -109,9 +109,10 @@
 
 #define MMQ_WARP_SIZE  32
 #define FP8_BLK        128        // scale block edge (both axes) — the checkpoint's grid
-#ifndef FP8_MMQ_Y
-#define FP8_MMQ_Y      128        // must DIVIDE FP8_BLK: that is what keeps the scale row uniform
-#endif
+// Row tile == the scale block edge, so every row in a CTA's tile shares one scale-grid row (the
+// hoist the vec_dot relies on). The v2 slice-2 Y/OCC seams (halved Y, minBlocks=2) concluded
+// negative and were deleted (research/fp8st-20260804/mmq-v2/RESULTS.jsonl) — Y is fixed here.
+#define FP8_MMQ_Y      128
 #define FP8_MMQ_NWARPS (FP8_MMQ_Y / 16)
 // Token tile. v2 default 256 (experiment A: the slice-1 weight-tile halving made X=256 affordable,
 // and it beats X=128 on 5 of 6 real shapes at m=6257 and 4 of 6 at m=512). FP8_MMQ_X_SMALL is the
@@ -127,15 +128,6 @@
 // SELECTION note at the launcher for the cells it was fit against.
 #ifndef FP8_MMQ_FILL_MARGIN_PCT
 #define FP8_MMQ_FILL_MARGIN_PCT 86
-#endif
-// minBlocksPerMultiprocessor for __launch_bounds__ — the occupancy target (v2 slice 2).
-#ifndef FP8_MMQ_OCC
-#define FP8_MMQ_OCC    1
-#endif
-// 1 = cp.async double-buffer the weight tile against the MMA work (v2 slice 3). Costs one extra
-// x-tile buffer in smem (mmq_y * 36 ints).
-#ifndef FP8_MMQ_PIPE
-#define FP8_MMQ_PIPE   0
 #endif
 static_assert(FP8_BLK % FP8_MMQ_Y == 0, "scale-row hoist requires mmq_y to divide the block edge");
 
@@ -248,42 +240,6 @@ static __device__ __forceinline__ void load_tiles_fp8_blk(
             v = *(const int4 *) (x + (size_t) row * (size_t) stride_row + (size_t) kv);
         }
         *(int4 *) (x_tile + r * MMQ_MMA_TILE_X_K_FP8 + line * 4) = v;
-    }
-}
-
-// ---- slice 3: cp.async double buffer (MEMRA_FP8_MMQ_PIPE build knob) ----
-// 16B async global->smem copy; the register file is bypassed entirely, which is the point: the
-// weight tile for block k+1 lands while block k's MMAs run. Caller commits + waits the group.
-static __device__ __forceinline__ void memra_fp8_cp_async16(void * smem, const void * g) {
-    uint32_t s = (uint32_t) __cvta_generic_to_shared(smem);
-    asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s), "l"(g));
-}
-// Zero-fill has to be a plain store: cp.async has no immediate source. Only the tail block takes
-// this path (kv >= k_valid), so it never sits on the steady-state critical path.
-template <int mmq_y, bool need_check>
-static __device__ __forceinline__ void load_tiles_fp8_blk_async(
-        const uint8_t * __restrict__ x, int * __restrict__ x_tile,
-        const int kv0, const int i_max, const int stride_row, const int k_valid) {
-    constexpr int nwarps        = mmq_y / 16;
-    constexpr int nthreads      = nwarps * MMQ_WARP_SIZE;
-    constexpr int lines_per_row = MMQ_ITER_K / 16;
-    constexpr int nlines        = mmq_y * lines_per_row;
-    const int t = threadIdx.y * MMQ_WARP_SIZE + threadIdx.x;
-
-#pragma unroll
-    for (int l0 = 0; l0 < nlines; l0 += nthreads) {
-        const int L = l0 + t;
-        if (nlines % nthreads != 0 && L >= nlines) { break; }
-        const int r    = L / lines_per_row;
-        const int line = L % lines_per_row;
-        const int row  = need_check ? min(r, i_max) : r;
-        const int kv   = kv0 + line * 16;
-        int * dst = x_tile + r * MMQ_MMA_TILE_X_K_FP8 + line * 4;
-        if (kv < k_valid) {
-            memra_fp8_cp_async16(dst, x + (size_t) row * (size_t) stride_row + (size_t) kv);
-        } else {
-            *(int4 *) dst = make_int4(0, 0, 0, 0);
-        }
     }
 }
 
@@ -405,9 +361,6 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_fp8_blk(
     extern __shared__ int data_mul_mat_q[];
     int * tile_y = data_mul_mat_q + mmq_x;
     int * tile_x = tile_y + GGML_PAD(mmq_x * MMQ_TILE_Y_K, nwarps * warp_size);
-    // Weight-tile buffer count: 2 when the cp.async pipeline is on (slice 3), else 1.
-    constexpr int nbuf     = FP8_MMQ_PIPE ? 2 : 1;
-    constexpr int x_buf_sz = mmq_y * MMQ_MMA_TILE_X_K_FP8;
 
     float sum[mmq_x * mmq_y / (nwarps * warp_size)] = {0.0f};
 
@@ -415,61 +368,27 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_fp8_blk(
     const int k_iter_end = GGML_PAD(k_valid, MMQ_ITER_K);
 
     // OUTER LOOP == THE SCALE BLOCK (v2): one weight tile, one y chunk, one scalar scale load, one
-    // chained-accumulator pass, one fold, two barriers.
-    if constexpr (FP8_MMQ_PIPE) {
-        // SLICE 3: cp.async double buffer. Block 0's tile is issued in a prologue; every iteration
-        // then issues block k+1's copy BEFORE computing block k, so the global->smem latency sits
-        // under the MMA/ldmatrix work instead of in front of it. wait_group 1 leaves the just-issued
-        // group in flight and only drains the previous one.
-        load_tiles_fp8_blk_async<mmq_y, need_check>(
-            x, tile_x, 0, tile_x_max_i, stride_row_x, k_valid);
-        asm volatile("cp.async.commit_group;");
+    // chained-accumulator pass, one fold, two barriers. (The slice-3 cp.async double-buffer arm was
+    // measured REFUTED and deleted — research/fp8st-20260804/mmq-v2/RESULTS.jsonl experiment B.)
+    for (int kv0 = 0; kv0 < k_iter_end; kv0 += MMQ_ITER_K) {
+        load_tiles_fp8_blk<mmq_y, need_check>(x, tile_x, kv0, tile_x_max_i, stride_row_x, k_valid);
 
-        for (int kv0 = 0, buf = 0; kv0 < k_iter_end; kv0 += MMQ_ITER_K, buf ^= 1) {
-            const int kv_next = kv0 + MMQ_ITER_K;
-            if (kv_next < k_iter_end) {
-                load_tiles_fp8_blk_async<mmq_y, need_check>(
-                    x, tile_x + (buf ^ 1) * x_buf_sz, kv_next, tile_x_max_i, stride_row_x, k_valid);
-            }
-            asm volatile("cp.async.commit_group;");   // keep the group cadence even when empty
+        const int c0 = kv0 >> 7;                                  // y chunk == scale column
+        // The clamp only guards a fully-padded tail chunk (its weight bytes are all 0x00, so
+        // the scale value is irrelevant — the clamp keeps the grid read in bounds).
+        const float sc0 = s_row[min(c0, scale_cols - 1)];
 
-            const int   c0  = kv0 >> 7;
-            const float sc0 = s_row[min(c0, scale_cols - 1)];
-            {
-                const int * by0 = y + ncols_y * c0 * sz;
+        {
+            const int * by0 = y + ncols_y * c0 * sz;
 #pragma unroll
-                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
-                    const int l = l0 + threadIdx.y * warp_size + threadIdx.x;
-                    tile_y[l] = by0[l];
-                }
+            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                const int l = l0 + threadIdx.y * warp_size + threadIdx.x;
+                tile_y[l] = by0[l];
             }
-            asm volatile("cp.async.wait_group 1;");   // block kv0's tile resident; kv_next in flight
-            __syncthreads();
-            vec_dot_fp8_blk_mma<mmq_x, mmq_y>(tile_x + buf * x_buf_sz, tile_y, sum, sc0);
-            __syncthreads();
         }
-        asm volatile("cp.async.wait_group 0;");       // no copy may outlive the tile buffers
-    } else {
-        for (int kv0 = 0; kv0 < k_iter_end; kv0 += MMQ_ITER_K) {
-            load_tiles_fp8_blk<mmq_y, need_check>(x, tile_x, kv0, tile_x_max_i, stride_row_x, k_valid);
-
-            const int c0 = kv0 >> 7;                                  // y chunk == scale column
-            // The clamp only guards a fully-padded tail chunk (its weight bytes are all 0x00, so
-            // the scale value is irrelevant — the clamp keeps the grid read in bounds).
-            const float sc0 = s_row[min(c0, scale_cols - 1)];
-
-            {
-                const int * by0 = y + ncols_y * c0 * sz;
-#pragma unroll
-                for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
-                    const int l = l0 + threadIdx.y * warp_size + threadIdx.x;
-                    tile_y[l] = by0[l];
-                }
-            }
-            __syncthreads();
-            vec_dot_fp8_blk_mma<mmq_x, mmq_y>(tile_x, tile_y, sum, sc0);
-            __syncthreads();
-        }
+        __syncthreads();
+        vec_dot_fp8_blk_mma<mmq_x, mmq_y>(tile_x, tile_y, sum, sc0);
+        __syncthreads();
     }
 
     mmq_write_back_fp8_blk<mmq_x, mmq_y, need_check>(
@@ -478,7 +397,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_fp8_blk(
 
 // ======================= mul_mat_q (xy-tiling) =======================
 template <int mmq_x, int mmq_y, bool need_check>
-__launch_bounds__(MMQ_WARP_SIZE * (mmq_y / 16), FP8_MMQ_OCC)
+__launch_bounds__(MMQ_WARP_SIZE * (mmq_y / 16), 1)
 static __global__ void mul_mat_q_fp8_blk(
         const uint8_t * __restrict__ x, const float * __restrict__ blk_scales,
         const int * __restrict__ y, float * __restrict__ dst,
@@ -690,9 +609,7 @@ int memra_mmq_fp8_blk(const void * W_e4m3, const float * blk_scales, const float
         const size_t nbs_ids = (size_t) (MX) * sizeof(int);                                        \
         const size_t nbs_y   = (size_t) (MX) * sizeof(block_e4m3_mmq);                             \
         const size_t pad     = (size_t) FP8_MMQ_NWARPS * MMQ_WARP_SIZE * sizeof(int);              \
-        /* x tile: 2 buffers when the cp.async pipeline is on (slice 3), 1 otherwise. */           \
-        const size_t nbs_x   = (size_t) (FP8_MMQ_PIPE ? 2 : 1)                                    \
-                             * (size_t) FP8_MMQ_Y * MMQ_MMA_TILE_X_K_FP8 * sizeof(int);            \
+        const size_t nbs_x   = (size_t) FP8_MMQ_Y * MMQ_MMA_TILE_X_K_FP8 * sizeof(int);            \
         const size_t smem    = nbs_ids + GGML_PAD(nbs_y, pad) + nbs_x;                             \
         cudaFuncSetAttribute(mul_mat_q_fp8_blk<(MX), FP8_MMQ_Y, NC>,                              \
                              cudaFuncAttributeMaxDynamicSharedMemorySize, smem);                   \

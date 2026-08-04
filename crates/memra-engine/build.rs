@@ -195,21 +195,13 @@ fn main() {
         // default. Neither arm is MMA-bound at any width measured (110-130 TF against f8f6f4's
         // 381-TF class), so geometry, not the MMA, is what this seam moves.
         //
-        // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 are v2 slice-2 and slice-3 seams
-        // that CONCLUDED NEGATIVE (research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and
-        // experiment B): halving Y splits the same 8 warps across two CTAs rather than raising
-        // warps/SM, Y=128 with OCC=2 spills the 64-float accumulator, and cp.async on the weight
-        // tile cannot pay while the equally-large activation tile is still a synchronous copy
-        // between the issue and the wait. They are kept only as the reproduction path for those
-        // rows — per the flags doctrine they are deletion candidates, which is an owner call.
+        // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 (v2 slice-2/slice-3 seams)
+        // CONCLUDED NEGATIVE and were DELETED per the flags doctrine (v0.69.0): halving Y splits
+        // the same 8 warps across two CTAs, Y=128 with OCC=2 spills the accumulator, and cp.async
+        // on the weight tile cannot pay while the activation tile stays a synchronous copy. The
+        // record is research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and experiment B.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
-        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_FP8");
-        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_OCC_FP8");
         let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
-        let fp8_y = std::env::var("MEMRA_MMQ_Y_FP8").ok();
-        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_PIPE_FP8");
-        let fp8_occ = std::env::var("MEMRA_MMQ_OCC_FP8").ok();
-        let fp8_pipe = std::env::var("MEMRA_MMQ_PIPE_FP8").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -254,16 +246,10 @@ fn main() {
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
             }
-            // Per-block FP8 MMQ tile geometry. v2 opens Y (and its paired occupancy target)
-            // alongside X: the scale-row hoist only needs FP8_MMQ_Y to DIVIDE the 128 block edge
-            // (a static_assert enforces that), not to equal it, so halving Y and nwarps together
-            // is legal and is the occupancy lever the v1 profile asked for. FP8_MMQ_OCC is the
-            // __launch_bounds__ minBlocksPerMultiprocessor.
+            // Per-block FP8 MMQ token-tile geometry (X only — the Y/OCC/PIPE seams concluded
+            // negative and were deleted; see the TUNE SEAM note above).
             if mmq_src.ends_with("mmq_fp8_blk.cu") {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
-                if let Some(y) = &fp8_y { args.push(format!("-DFP8_MMQ_Y={y}")); }
-                if let Some(o) = &fp8_occ { args.push(format!("-DFP8_MMQ_OCC={o}")); }
-                if let Some(p) = &fp8_pipe { args.push(format!("-DFP8_MMQ_PIPE={p}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());
