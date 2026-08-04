@@ -260,8 +260,13 @@ struct CompletionReq {
     /// OpenRouter/HF-convention multiplicative penalty (1.0 = off).
     #[serde(default = "one")]
     repetition_penalty: f32,
+    /// Omitted (dogfood F4, second half) => a FRESH RANDOM seed per request. `Option`, not
+    /// `u64`: `serde(default)` gave 0, which is a perfectly valid FIXED seed, so every
+    /// seed-omitting client replayed one single sampled stream — the same loop the
+    /// temperature default caused, surviving the temperature fix. OpenAI's `seed` is
+    /// explicitly best-effort determinism WHEN SUPPLIED; omitting it must not pin the RNG.
     #[serde(default)]
-    seed: u64,
+    seed: Option<u64>,
     #[serde(default)]
     stop: StopSequences,
     /// Unsupported-but-semantic fields (gap-scan F4): captured so they 400 loudly instead
@@ -375,8 +380,9 @@ struct ChatCompletionReq {
     /// OpenRouter/HF-convention multiplicative penalty (1.0 = off).
     #[serde(default = "one")]
     repetition_penalty: f32,
+    /// Omitted (dogfood F4, second half) => a FRESH RANDOM seed per request. See CompletionReq.
     #[serde(default)]
-    seed: u64,
+    seed: Option<u64>,
     #[serde(default)]
     stop: StopSequences,
     #[serde(default)]
@@ -654,7 +660,7 @@ fn pyjson_str(v: &serde_json::Value) -> String {
 /// whole-history window (usize::MAX — `saturating_sub` makes it the full history).
 fn sampler_config(temperature: f32, top_k: usize, top_p: f32, min_p: f32,
                   frequency_penalty: f32, presence_penalty: f32, repetition_penalty: f32,
-                  seed: u64) -> SamplerConfig {
+                  seed: Option<u64>) -> SamplerConfig {
     let penalties_on = frequency_penalty != 0.0 || presence_penalty != 0.0
         || repetition_penalty != 1.0;
     SamplerConfig {
@@ -666,8 +672,33 @@ fn sampler_config(temperature: f32, top_k: usize, top_p: f32, min_p: f32,
         penalty_repeat: repetition_penalty,
         penalty_freq: frequency_penalty,
         penalty_present: presence_penalty,
-        seed,
+        // Omitted seed => fresh entropy per request (dogfood F4). An explicit seed — including
+        // an explicit 0 — is honored exactly, so every determinism gate keeps its behavior.
+        seed: seed.unwrap_or_else(fresh_seed),
     }
+}
+
+/// Non-zero per-request entropy for seed-omitting clients. Nanosecond clock mixed with a
+/// process-lifetime counter through SplitMix64's finalizer: two requests in the same
+/// nanosecond tick (batched arrivals) still get distinct streams, which a bare clock read
+/// would not guarantee. Not crypto — this only has to avoid replaying one stream forever.
+fn fresh_seed() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut z = nanos
+        .wrapping_add(n.wrapping_mul(0x9E3779B97F4A7C15))
+        .wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^= z >> 31;
+    // seed 0 is a legal explicit value but a poor accidental one; keep it reachable only
+    // when the caller asks for it.
+    if z == 0 { 0x9E3779B97F4A7C15 } else { z }
 }
 
 /// Honesty gate (gap-scan F4): semantic params we cannot honor are explicit 400s with the
@@ -2245,8 +2276,10 @@ mod tests {
             "model": "m", "prompt": "t", "temperature": 0})), 0.0,
             "explicit temperature 0 must stay greedy");
         // and the greedy predicate agrees (this is what gates the spec/graph arms).
-        assert!(memra_engine::sampler::Sampler::new(sampler_config(0.0, 0, 1.0, 0.0, 0.0, 0.0, 1.0, 0)).is_greedy());
-        assert!(!memra_engine::sampler::Sampler::new(sampler_config(1.0, 0, 1.0, 0.0, 0.0, 0.0, 1.0, 0)).is_greedy());
+        assert!(memra_engine::sampler::Sampler::new(
+            sampler_config(0.0, 0, 1.0, 0.0, 0.0, 0.0, 1.0, Some(0))).is_greedy());
+        assert!(!memra_engine::sampler::Sampler::new(
+            sampler_config(1.0, 0, 1.0, 0.0, 0.0, 0.0, 1.0, Some(0))).is_greedy());
 
         // explicit non-default values still pass through untouched.
         assert_eq!(chat_temp(serde_json::json!({
@@ -2270,6 +2303,59 @@ mod tests {
         // request shape must stay in the fast regime.
         assert!(memra_engine::sampler::Sampler::new(cfg).is_spec_sampling(),
                 "the omitted-temperature default must ride sampled spec's pure-temp regime");
+    }
+
+    #[test]
+    fn omitted_seed_is_fresh_entropy_not_a_pinned_zero() {
+        // dogfood F4, SECOND HALF — found only by driving the live server. Fixing the
+        // temperature default is NOT sufficient: `#[serde(default)] seed: u64` gave 0, a
+        // perfectly valid FIXED seed, so a temp-1.0 request with seed omitted still replayed
+        // one single sampled stream. Measured on the pre-fix binary: 4/4 byte-identical
+        // completions at temperature 1.0 with seed omitted (receipts in
+        // research/sampledspec-20260804/). The loop survives the temperature fix alone.
+        let comp_seed = |body: serde_json::Value| {
+            let req: CompletionReq = serde_json::from_value(body).unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg.seed
+        };
+        let chat_seed = |body: serde_json::Value| {
+            let req: ChatCompletionReq = serde_json::from_value(body).unwrap();
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            build_chat_request(req, None, tx, lanes::Lane::Interactive)
+                .unwrap().request.sampler_cfg.seed
+        };
+
+        // OMITTED seed: successive requests must NOT share a seed (that was the loop), and
+        // must not be the old pinned 0.
+        let a = comp_seed(serde_json::json!({"model": "m", "prompt": "t"}));
+        let b = comp_seed(serde_json::json!({"model": "m", "prompt": "t"}));
+        let c = chat_seed(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}]}));
+        assert_ne!(a, 0, "omitted seed must not be the pinned 0 that caused the loop");
+        assert_ne!(b, 0);
+        assert_ne!(c, 0);
+        assert_ne!(a, b, "two seed-omitting requests must get DIFFERENT streams");
+        assert_ne!(a, c);
+
+        // EXPLICIT seed is honored exactly — including an explicit 0, which every
+        // determinism gate in tools/ and research/ relies on.
+        assert_eq!(comp_seed(serde_json::json!({
+            "model": "m", "prompt": "t", "seed": 0})), 0,
+            "explicit seed 0 must stay 0 — the determinism gates depend on it");
+        assert_eq!(comp_seed(serde_json::json!({
+            "model": "m", "prompt": "t", "seed": 12345})), 12345);
+        assert_eq!(chat_seed(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "t"}],
+            "seed": 777})), 777);
+        // explicit seed is reproducible across calls (the gate contract).
+        assert_eq!(comp_seed(serde_json::json!({"model": "m", "prompt": "t", "seed": 42})),
+                   comp_seed(serde_json::json!({"model": "m", "prompt": "t", "seed": 42})));
+
+        // fresh_seed itself: never 0, and distinct across rapid successive calls (the
+        // same-nanosecond batched-arrival case the counter mix exists for).
+        let seeds: std::collections::HashSet<u64> = (0..256).map(|_| fresh_seed()).collect();
+        assert_eq!(seeds.len(), 256, "fresh_seed must not collide across rapid calls");
+        assert!(!seeds.contains(&0));
     }
 
     #[test]
