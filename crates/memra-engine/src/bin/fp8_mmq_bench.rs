@@ -19,7 +19,12 @@
 //!   q_proj 5120->12288, k/v_proj 5120->1024, o_proj 6144->5120,
 //!   gate/up_proj 5120->17408, down_proj 17408->5120.
 //!
-//! usage: fp8-mmq-bench [m] [reps]     (default m=512, reps=9)
+//! The 1.7B block-128 checkpoint's shapes are ALSO available (`1p7b`), because that is the model the
+//! local pp battery runs: its projections are much narrower (out_f 1024-6144 vs the 27B's
+//! 1024-17408), so the token-tile selection rule that the 27B shapes calibrate is not automatically
+//! right there. A pp ratio measured on the 1.7B has to be explainable by the 1.7B's own GEMM ratios.
+//!
+//! usage: fp8-mmq-bench [m] [reps] [27b|1p7b]     (default m=512, reps=9, 27b)
 
 use memra_engine::Engine;
 
@@ -32,15 +37,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(9);
+    let set = std::env::args().nth(3).unwrap_or_else(|| "27b".to_string());
     let e = Engine::new(0)?;
-    println!("GPU: {}  m={m}  reps={reps} (interleaved fp8blk,q8_0 per rep; median of reps)", e.ctx().name()?);
+    println!("GPU: {}  m={m}  reps={reps}  shapes={set} (interleaved fp8blk,q8_0 per rep; median of reps)", e.ctx().name()?);
     println!(
         "{:<28} {:>12} {:>12} {:>10} {:>12} {:>12}",
         "shape in->out", "fp8blk_ms", "q8_0_ms", "ratio", "fp8blk_TFLOP", "q8_0_TFLOP"
     );
 
     // (in_f, out_f, label)
-    let shapes: [(usize, usize, &str); 6] = [
+    let shapes_27b: [(usize, usize, &str); 6] = [
         (5120, 12288, "q_proj"),
         (5120, 1024, "k/v_proj"),
         (6144, 5120, "o_proj"),
@@ -48,6 +54,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (17408, 5120, "down_proj"),
         (5120, 5120, "square-ref"),
     ];
+    // qwen3-1.7B: hidden 2048, 16 q heads x 128, 8 kv heads x 128, ffn 6144.
+    let shapes_1p7b: [(usize, usize, &str); 5] = [
+        (2048, 2048, "q_proj"),
+        (2048, 1024, "k/v_proj"),
+        (2048, 2048, "o_proj"),
+        (2048, 6144, "gate/up_proj"),
+        (6144, 2048, "down_proj"),
+    ];
+    let shapes: Vec<(usize, usize, &str)> = if set == "1p7b" {
+        shapes_1p7b.to_vec()
+    } else {
+        shapes_27b.to_vec()
+    };
 
     for (in_f, out_f, label) in shapes {
         // Weight operands. Both arms get the SAME logical weight: the e4m3 codes are the source of

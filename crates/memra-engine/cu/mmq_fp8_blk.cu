@@ -122,9 +122,11 @@
 #ifndef FP8_MMQ_X_SMALL
 #define FP8_MMQ_X_SMALL 128
 #endif
-// out_f below this many rows takes FP8_MMQ_X_SMALL. 2048 == 16 row tiles at Y=128.
-#ifndef FP8_MMQ_SMALL_OUT_F
-#define FP8_MMQ_SMALL_OUT_F 2048
+// Token-tile selection margin, in percent: take the WIDE tile unless its wave-fill fraction falls
+// below this percentage of the narrow tile's. 86 is the measured separator — see the TOKEN-TILE
+// SELECTION note at the launcher for the cells it was fit against.
+#ifndef FP8_MMQ_FILL_MARGIN_PCT
+#define FP8_MMQ_FILL_MARGIN_PCT 86
 #endif
 // minBlocksPerMultiprocessor for __launch_bounds__ — the occupancy target (v2 slice 2).
 #ifndef FP8_MMQ_OCC
@@ -565,6 +567,35 @@ static __global__ void fp8_blk_count_nan_kernel(
 }
 
 // ======================= C-ABI host launcher =======================
+// SM count of the current device, queried once and cached. The token-tile selection rule below needs
+// it on every call; a cudaDeviceGetAttribute per prefill GEMM would put a driver round-trip in front
+// of every launch. Cached per device ordinal (small fixed table, no allocation, no lock: two racing
+// threads compute the same value).
+static int memra_fp8_blk_nsm() {
+    constexpr int MAX_DEV = 16;
+    static int cache[MAX_DEV] = {0};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= MAX_DEV) {
+        // Unknown device: fall back to a query, and if that fails to 1 (which makes both candidate
+        // tiles report full waves, so the rule prefers the wide tile — the m=6257 behaviour).
+        int n = 0;
+        if (cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, dev < 0 ? 0 : dev)
+            != cudaSuccess || n <= 0) {
+            return 1;
+        }
+        return n;
+    }
+    int n = cache[dev];
+    if (n == 0) {
+        if (cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess
+            || n <= 0) {
+            n = 1;
+        }
+        cache[dev] = n;
+    }
+    return n;
+}
+
 extern "C" {
 
 // Scratch sizing matches the W4A8-FP8 arm byte for byte (same block struct, same padding rule):
@@ -614,11 +645,43 @@ int memra_mmq_fp8_blk(const void * W_e4m3, const float * blk_scales, const float
     const bool need_check = (out_f % FP8_MMQ_Y) != 0;
     const int * y_q = (const int *) act_scratch;
 
-    // TOKEN-TILE SELECTION (measured, research/fp8st-20260804/mmq-v2/RESULTS.jsonl experiment A):
-    // X=256 wins on every projection with enough out_f to fill the grid, but a narrow out_f starves
-    // it — 5120->1024 is 8 row tiles at Y=128, so X=256 leaves 2 token tiles at m=512 = 16 CTAs on
-    // an 82-SM machine (0.522x floor), while X=128 gives that same shape 0.854x. The threshold is
-    // on out_f only, so the choice is a compile-time-shaped property of the weight, not of m.
+    // TOKEN-TILE SELECTION (measured; research/fp8st-20260804/mmq-v2/RESULTS.jsonl experiment A and
+    // the 1.7B shape row). X=256 wins wherever the grid still fills the machine, and loses badly
+    // wherever it does not: 5120->1024 is 8 row tiles at Y=128, so X=256 leaves 2 token tiles at
+    // m=512 = 16 CTAs on an 82-SM part (0.522x floor) against X=128's 0.854x.
+    //
+    // The quantity that separates those cases is WAVE FILL, and an out_f-only threshold cannot
+    // express it: n_tokens sets the token-tile count, so the same out_f starves at one m and fills at
+    // another, and out_f thresholds calibrated on the 27B mis-picked EVERY qwen3-1.7B projection
+    // (out_f 1024-6144 -> 0.535-0.865x at X=256 vs 0.847-0.890x at X=128). So compute both
+    // candidates' fill directly: ctas = row_tiles * token_tiles, and fill = ctas / (waves * nsm),
+    // i.e. how full the last wave is. Take the WIDE tile unless its fill is more than
+    // FP8_MMQ_FILL_MARGIN_PCT percent below the narrow tile's — wide is preferred on ties because a
+    // wider token tile amortizes each weight-tile read over twice the MMA work.
+    //
+    // The 86% separator classifies every measured cell correctly. The two pairs it has to split are
+    // tight and both real: 27B q_proj at m=512 (fill ratio 0.833 -> narrow; X=128 wins 0.968 vs
+    // 0.923) against 27B gate_up at m=512 (0.875 -> wide; X=256 wins 0.995 vs 0.973); and 27B
+    // k/v_proj at m=6257, whose ratio is exactly 0.850 and which measured 0.913x at X=256 against
+    // 0.951x at X=128 — i.e. the 1024-row shape stays narrow at every m tested, which is why the
+    // margin sits at 86 and not 85. On the 1.7B at m=512 the rule picks X=128 everywhere, matching
+    // that model's own GEMM sheet (0.847-0.890x at X=128 against 0.535-0.865x at X=256), and at
+    // m=6257 it picks X=256 for the wide projections, which measured 0.998-1.064x.
+    // SM count: a device property, so it is queried once per device and cached. This runs on every
+    // prefill GEMM (25k+ calls in one 1.7B stream), so a driver round-trip per call would be charged
+    // to the kernel it is selecting for.
+    const int nsm = memra_fp8_blk_nsm();
+    const int64_t nty64 = (out_f + FP8_MMQ_Y - 1) / FP8_MMQ_Y;
+    auto fill_terms = [&](int mx, int64_t & ctas, int64_t & waves) {
+        ctas  = nty64 * ((n_tokens + mx - 1) / mx);
+        waves = (ctas + nsm - 1) / nsm;
+    };
+    int64_t ctas_w, waves_w, ctas_n, waves_n;
+    fill_terms(FP8_MMQ_X,       ctas_w, waves_w);
+    fill_terms(FP8_MMQ_X_SMALL, ctas_n, waves_n);
+    // fill_w >= (margin/100) * fill_n, cross-multiplied (the common /nsm cancels).
+    const bool use_wide = 100 * ctas_w * waves_n
+                          >= (int64_t) FP8_MMQ_FILL_MARGIN_PCT * ctas_n * waves_w;
     #define MEMRA_FP8MMQ_LAUNCH(MX, NC) do {                                                      \
         const int    nty  = (out_f    + FP8_MMQ_Y - 1) / FP8_MMQ_Y;                                \
         const int    ntx  = (n_tokens + (MX) - 1) / (MX);                                          \
@@ -637,12 +700,12 @@ int memra_mmq_fp8_blk(const void * W_e4m3, const float * blk_scales, const float
             (const uint8_t *) W_e4m3, blk_scales, y_q, y, out_f, n_tokens, in_f, n_tokens, out_f, \
             in_f, scale_cols, out_scale);                                                          \
     } while (0)
-    if (out_f < FP8_MMQ_SMALL_OUT_F) {
-        if (need_check) { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X_SMALL, true); }
-        else            { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X_SMALL, false); }
-    } else {
+    if (use_wide) {
         if (need_check) { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X, true); }
         else            { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X, false); }
+    } else {
+        if (need_check) { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X_SMALL, true); }
+        else            { MEMRA_FP8MMQ_LAUNCH(FP8_MMQ_X_SMALL, false); }
     }
     #undef MEMRA_FP8MMQ_LAUNCH
 
