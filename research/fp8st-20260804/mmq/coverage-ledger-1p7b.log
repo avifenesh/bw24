@@ -1,0 +1,14 @@
+stream digest: 0x0992e0acf95ddc83  steps=8
+fp8-mmq dispatches: 1568  (hook entries=1576 gate_off=0 no_operand=8 bad_shape=0 bad_scale=0 nan=0)
+# floor control (same binary, MEMRA_FP8_MMQ unset), same 8-step prompt:
+stream digest: 0x6c12bcda56f90921  steps=8
+fp8-mmq dispatches: 0  (hook entries=1576 gate_off=1576 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+#
+# READING. 1568/1576 = 99.5% of prefill GEMM hook entries dispatched through the per-block FP8
+# MMQ tile on the 1.7B block-128 checkpoint (8 no_operand = the tied-embedding lm_head, which has
+# no F8 source tensor). So the SLICE-3 model-level exactness verdict (SLICE3-MODEL-VERDICT.md) is
+# a FULL-COVERAGE result — unlike the 27B pp row, which the vast27b ledger measured at 8.7%.
+# The floor control pins the gate itself: identical hook entries, all 1576 refused at the env
+# gate, zero dispatches, and a different stream digest — i.e. the digest difference in slice 3 is
+# the kernel, not run-to-run noise.
+# Box: local RTX 5090 Laptop, flock /tmp/gpu5090.lock. 2026-08-04.

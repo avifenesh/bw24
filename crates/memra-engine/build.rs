@@ -159,13 +159,20 @@ fn main() {
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_W4A8");
         let w4a8_y = std::env::var("MEMRA_MMQ_Y_W4A8").ok();
+        // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
+        // tile. Needed because the GEMM-only bench (research/fp8st-20260804/mmq/gemmbench) put the
+        // 128-token default BELOW the Q8_0 floor it replaces at every 27B shape (0.81x-0.94x), and
+        // both arms land at 105-127 TFLOP against f8f6f4's 381-TF class — i.e. neither is MMA
+        // bound, so the tile geometry is the thing under test, not the MMA.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
+        let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu",
                         "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu", "cu/moe_f16_grouped.cu",
-                        "cu/fp8_blk_dequant.cu"] {
+                        "cu/fp8_blk_dequant.cu", "cu/mmq_fp8_blk.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit MEMRA_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
@@ -177,6 +184,9 @@ fn main() {
                 // The W4A8/F8F4 launchers use .kind::f8f6f4 tile MMA (sm_100a+);
                 // sm_89 gets fail-closed ABI stubs.
                 "cu/mmq_nvfp4_w4a8_stub.cu"
+            } else if portable && mmq_src == "cu/mmq_fp8_blk.cu" {
+                // Per-block FP8 MMQ: same .kind::f8f6f4 gate as the W4A8/F8F4 launchers.
+                "cu/mmq_fp8_blk_stub.cu"
             } else {
                 mmq_src
             };
@@ -199,6 +209,13 @@ fn main() {
             }
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
+            }
+            // Per-block FP8 MMQ token-tile sweep. Only X is tunable: FP8_MMQ_Y is pinned to 128 by
+            // a static_assert, because mmq_y == the scale block edge is what makes the scale row
+            // equal blockIdx.x and reduces the whole scale fetch to two scalar loads per 256-k
+            // iteration. Changing Y would reintroduce a per-row scale lookup.
+            if mmq_src.ends_with("mmq_fp8_blk.cu") {
+                if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());

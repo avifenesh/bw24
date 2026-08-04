@@ -1,0 +1,6 @@
+step-0 logit drift vs the Q8_0 floor reference (n=151936, rms(ref)=5.7945)
+
+arm                            max_abs   rms(diff)    rms_rel       diff f32  top1  top10
+ARM B' (MEMRA_FP8_BLK_GPU)  0.0000e+00  0.0000e+00  0.000e+00       0/151936  same   10/10
+MMQ (MEMRA_FP8_MMQ)         6.5074e-01  1.6531e-01  2.853e-02  151936/151936  same   10/10
+ARM A (MEMRA_FP8_FOLD)      1.0573e+00  2.3956e-01  4.134e-02  151936/151936  271!    9/10
