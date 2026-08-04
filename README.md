@@ -13,12 +13,13 @@ and batched serving output is gated token-identical to plain decode — speed ne
 what the model says.
 
 ```bash
-cargo build --release                                        # arch auto-detected (120a / 90a / 100a / 89)
-./target/release/run-gen hf:owner/repo:Q4_K_M --prompt "hi"  # auto-downloads from Hugging Face
+curl -fsSL https://raw.githubusercontent.com/avifenesh/memra/main/tools/install.sh | sh  # prebuilt, checksum-verified
+run-gen hf:owner/repo:Q4_K_M --prompt "hi"                   # auto-downloads from Hugging Face
 ```
 
-Prebuilt Linux x86_64 binaries (sm_120a) ship with each
-[release](https://github.com/avifenesh/memra/releases) — full [quick start](#quick-start) below.
+Also on crates.io (`cargo install memra-server` — compiles the CUDA kernels locally) and
+as tarballs on each [release](https://github.com/avifenesh/memra/releases) — full
+[installation](#installation) and [quick start](#quick-start) below.
 
 ## Why memra
 
@@ -34,14 +35,55 @@ Prebuilt Linux x86_64 binaries (sm_120a) ship with each
   [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU
   tensor-parallel serving (vLLM, SGLang).
 
-## Quick start
+## Installation
+
+**Prebuilt binaries** (recommended — self-contained, kernels embedded, no CUDA toolkit
+needed):
 
 ```bash
-cargo build --release
-./target/release/kernel-check                     # every kernel vs CPU reference — must end ALL GREEN
-MEMRA_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches."
-MEMRA_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP speculative
-./target/release/memra-server                     # OpenAI-compatible /v1
+curl -fsSL https://raw.githubusercontent.com/avifenesh/memra/main/tools/install.sh | sh
+```
+
+The script picks your GPU arch via `nvidia-smi`, verifies the sha256 against the
+release's `SHA256SUMS`, and installs `memra-server`, `run-gen`, `run-spec`, and
+`kernel-check` to `~/.local/bin` (`MEMRA_INSTALL_DIR` overrides). Same binaries, other
+routes: `cargo binstall memra-server`, or grab a tarball from
+[releases](https://github.com/avifenesh/memra/releases).
+
+**From source / crates.io** (requires the CUDA 13.1 toolkit — build.rs compiles the
+kernels with nvcc, arch auto-detected from your GPU):
+
+```bash
+cargo install memra-server        # or: git clone && cargo build --release
+```
+
+Requirements table:
+
+| | Prebuilt binaries | `cargo install` / source |
+|---|---|---|
+| GPU | RTX 50-series (sm_120a, tuned target), H100 (sm_90a), Ada (sm_89, untuned) | + B200 (sm_100a, compile-gated) |
+| NVIDIA driver | >= 580 (CUDA 13 runtime support) | same |
+| CUDA | runtime libraries only (cudart, cublas, cublasLt) | full CUDA 13.1 toolkit (nvcc) |
+| OS / libc | Linux x86_64, glibc >= 2.35 | Linux x86_64 |
+| Rust | not needed | stable, edition 2024 (rust-version 1.85) |
+
+Model weights are not bundled — they pull from Hugging Face on first use (below).
+
+## Quick start
+
+Three commands from install to an OpenAI-compatible endpoint:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/avifenesh/memra/main/tools/install.sh | sh
+kernel-check                                        # every kernel vs CPU reference — must end ALL GREEN
+MEMRA_MODELS="chat=hf:owner/repo:Q4_K_M" memra-server   # downloads the GGUF, serves /v1 on :8080
+```
+
+Or generate directly without the server:
+
+```bash
+MEMRA_CHAT=1 run-gen hf:owner/repo:Q4_K_M --prompt "Explain KV caches."
+MEMRA_SPEC_K=3 run-spec /path/to/qwen36-27b.gguf    # MTP speculative decoding
 ```
 
 `run-gen` prints its argmax gate (`... MATCH`) before generating — a MISMATCH voids every
