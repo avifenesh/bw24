@@ -288,10 +288,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("prefill logits -> {f} ({} f32)", prefill_last.len());
         }
         {
-            let (h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
+            let (ent, gate, h, no_op, shp, scl, nan) = memra_engine::fp8_ffi::fp8_mmq_ledger();
             println!(
-                "fp8-mmq dispatches after prefill: {h}  (refused: no_operand={no_op} \
-                 bad_shape={shp} bad_scale={scl} nan={nan})"
+                "fp8-mmq dispatches after prefill: {h}  (hook entries={ent} gate_off={gate} \
+                 no_operand={no_op} bad_shape={shp} bad_scale={scl} nan={nan})"
             );
         }
         let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;

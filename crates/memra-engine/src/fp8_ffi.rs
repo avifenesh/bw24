@@ -220,7 +220,11 @@ impl crate::Engine {
         m: usize,
     ) -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // Entry counter BEFORE the env gate: a ledger of all zeros is otherwise ambiguous between
+        // "the flag was not seen" and "no prefill GEMM ever reached this hook".
+        FP8_MMQ_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if !fp8_mmq_enabled() || crate::portable_mma_gated() {
+            FP8_MMQ_GATE_OFF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
         let (f8, ne) = match w {
@@ -236,6 +240,7 @@ impl crate::Engine {
             }
         };
         if ne.len() != 2 {
+            FP8_MMQ_BAD_SHAPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
@@ -305,16 +310,22 @@ static FP8_MMQ_BAD_SHAPE: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 static FP8_MMQ_BAD_SCALE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static FP8_MMQ_NAN_REFUSED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+static FP8_MMQ_ENTRIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FP8_MMQ_GATE_OFF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Number of prefill GEMMs that went through the per-block FP8 MMQ tile so far this process.
 pub fn fp8_mmq_hits() -> usize {
     FP8_MMQ_HITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// `hits, no_operand, bad_shape, bad_scale, nan_refused` — the full dispatch ledger.
-pub fn fp8_mmq_ledger() -> (usize, usize, usize, usize, usize) {
+/// `entries, gate_off, hits, no_operand, bad_shape, bad_scale, nan_refused` — the full ledger.
+/// `entries` is incremented before any guard, so `entries == 0` means no prefill GEMM reached the
+/// hook at all (a dispatch-wiring fact), while `gate_off == entries` means the flag was not seen.
+pub fn fp8_mmq_ledger() -> (usize, usize, usize, usize, usize, usize, usize) {
     use std::sync::atomic::Ordering::Relaxed;
     (
+        FP8_MMQ_ENTRIES.load(Relaxed),
+        FP8_MMQ_GATE_OFF.load(Relaxed),
         FP8_MMQ_HITS.load(Relaxed),
         FP8_MMQ_NO_OPERAND.load(Relaxed),
         FP8_MMQ_BAD_SHAPE.load(Relaxed),
