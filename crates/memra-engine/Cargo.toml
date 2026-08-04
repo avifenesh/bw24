@@ -202,3 +202,7 @@ path = "src/bin/ppn_bench.rs"
 [[bin]]
 name = "clc-mmq-bench"
 path = "src/bin/clc_mmq_bench.rs"
+
+[[bin]]
+name = "spec-st-probe"
+path = "src/bin/spec_st_probe.rs"

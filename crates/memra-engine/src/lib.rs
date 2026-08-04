@@ -603,6 +603,10 @@ pub struct Engine {
     /// alloc+memset pairs per fa launch (~144 mem nodes per decode token — the graph door's
     /// residual launch tax) — lazy-grow, memset-prefix per use, stream-ordered reuse.
     fa_part_pool: Mutex<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
+    /// Retired fa-part pool generations (#68): old buffers whose addresses captured graphs may
+    /// have baked — kept alive for the Engine's lifetime instead of returning to the async pool
+    /// (see the RETIRE-ON-GROW comment at the realloc sites). Doubling growth bounds the total.
+    fa_part_retired: Mutex<Vec<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
     /// name -> resolved CudaFunction (capture-safe lookups; see `func`).
     fn_cache: Mutex<std::collections::HashMap<String, CudaFunction>>,
     f16_scratch: Mutex<Option<crate::f16_ffi::F16Scratch>>,
@@ -968,6 +972,7 @@ impl Engine {
                   fp8_scratch: Mutex::new(None),
                   fa_vf16_scratch: Mutex::new(None),
                   fa_part_pool: Mutex::new(None),
+                  fa_part_retired: Mutex::new(Vec::new()),
                   fn_cache: Mutex::new(Default::default()),
                   f16_scratch: Mutex::new(None),
                   #[cfg(memra_cutlass)]
@@ -8801,10 +8806,27 @@ impl Engine {
         let ml_len = n_head * n_splits;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -8957,10 +8979,27 @@ impl Engine {
         let ml_len = b_n * n_head * n_splits_max;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9187,10 +9226,27 @@ impl Engine {
             let ml_len = t_g * n_head * n_splits_g;
             let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9357,10 +9413,27 @@ impl Engine {
         let ml_len = t * n_head * n_splits_max;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9548,10 +9621,27 @@ impl Engine {
             let ml_len = t * n_head * n_splits_max;
             let mut part_guard = self.fa_part_pool.lock().unwrap();
             if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-                let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-                *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                    self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                    self.alloc_uninit::<f32>(cm.max(ml_len))?));
+                // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+                let old = part_guard.take();
+                let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+                if let Some(old) = old {
+                    self.fa_part_retired.lock().unwrap().push(old);
+                }
+                if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                    eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+                }
+                *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                    self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                    self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
             }
             let pg = part_guard.as_mut().unwrap();
             self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9591,10 +9681,27 @@ impl Engine {
         let ml_len = t * n_head * n_splits_max;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
@@ -9670,10 +9777,27 @@ impl Engine {
         let ml_len = n_head * n_splits;
         let mut part_guard = self.fa_part_pool.lock().unwrap();
         if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
-            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
-            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
-                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            // RETIRE-ON-GROW, never free (#68 root cause, 2026-08-04): captured graphs (the
+            // per-session persistent draft graph, the decode/prime graph doors) BAKE these pool
+            // buffer addresses. Dropping the old buffers on grow returns them to the async pool,
+            // later live allocations land at those addresses, and the next graph REPLAY writes
+            // its fa partials over them — the ST serve-spec corruption (acceptance collapse +
+            // output corruption began the burst after the trunk's t_kv growth first realloc'd
+            // this pool past the draft-capture size; research/fp8ship-20260804). Retiring keeps
+            // the baked addresses alive (single-stream: eager writes the new buffers, replays
+            // touch only the old — never concurrently). Doubling growth bounds retired VRAM
+            // (total retired < final size).
+            let old = part_guard.take();
+            let (co, cm) = old.as_ref().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            if let Some(old) = old {
+                self.fa_part_retired.lock().unwrap().push(old);
+            }
+            if std::env::var("MEMRA_DEBUG_FAPOOL").is_ok() {
+                eprintln!("[fa-pool] REALLOC o {} -> {} ml {} -> {} (old retired)", co, o_len, cm, ml_len);
+            }
+            *part_guard = Some((self.alloc_uninit::<f32>(o_len.max(2 * co))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?,
+                                self.alloc_uninit::<f32>(ml_len.max(2 * cm))?));
         }
         let pg = part_guard.as_mut().unwrap();
         self.gpu.stream().memset_zeros(&mut pg.0.slice_mut(0..o_len))?;

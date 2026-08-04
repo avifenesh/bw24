@@ -75,3 +75,16 @@ routing at small max_tokens condition). See `serve-smoke-post.log`.
 - `model_plan_accepts_st_dir_and_rejects_bogus_dir` (accept single/sharded/repack/
   gguf-file; reject empty dir / missing config.json / nonexistent, message content pinned)
 - `chat_on_templateless_dir_checkpoint_is_rejected_with_clear_message` (400 wording pinned)
+
+## CLOSURE (2026-08-04, lane/fp8-ship): quarantine LIFTED — #68 root-caused and fixed
+
+The fault was never ST-specific: the per-session persistent draft graph (2026-08-01)
+replayed with dangling pool addresses (capture transients not retained on the session +
+`fa_part_pool` freeing grown-past buffers the capture baked). Reproduced on GGUF session
+bursts at n>=600 with the new `spec-st-probe` harness; the GGUF "MATCH" control above was
+a 400-token window under the corruption onset. The 9B "near-tie flip" was reclassified:
+the serve-spec arm matches the CLI tokenwise oracle — the batched PLAIN serve arm is the
+outlier (the accepted decode-config near-tie class). Full root cause, elimination table,
+fix, and post-fix gates: `research/fp8ship-20260804/RESULTS.md`. serve-st-gate item 4 now
+pins default-serve (spec ON) text against the tokenwise serve oracle; both checkpoints
+0 failed post-lift.

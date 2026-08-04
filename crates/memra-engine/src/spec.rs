@@ -339,6 +339,16 @@ pub(crate) struct DraftGraphCtx {
     graph_s_failed: bool,
     /// (seed, temp.to_bits(), k) baked into graph_s at its capture.
     s_key: Option<(u64, u32, usize)>,
+    /// CAPTURE-RETAIN keepers (#68 root cause, 2026-08-04): the warmup-run transients whose
+    /// pool addresses the captured graph(s) bake. Without these, the transients return to the
+    /// pool at capture-body exit and later work (burst-boundary prime/fill/commit passes, or a
+    /// co-served session in the worker) reuses those addresses — the persisted graph's replay
+    /// then reads/writes live unrelated buffers (exactness corruption, first seen as the ST
+    /// serve-spec 4B graph-arm corruption; one-shot CLI calls never re-shuffled the pool, which
+    /// is why run-spec K=1..8 passed on the same checkpoint). Same fix class as
+    /// capture_graph_retained's gemma/decode.rs sites — hold as long as the graph replays.
+    keeper: Vec<Box<dyn std::any::Any + Send>>,
+    keeper_s: Vec<Box<dyn std::any::Any + Send>>,
 }
 impl DraftGraphCtx {
     fn new(e: &Engine, n_embd: usize, qlen: usize) -> Result<Self, Box<dyn std::error::Error>> {
@@ -358,6 +368,8 @@ impl DraftGraphCtx {
             graph_s: None,
             graph_s_failed: false,
             s_key: None,
+            keeper: Vec::new(),
+            keeper_s: Vec::new(),
         })
     }
 }
@@ -2969,10 +2981,12 @@ impl HybridModel {
             dctx.g_dmask = e.alloc_u32_zeroed(dmask_words)?;
             dctx.graph = None; // the old capture baked the old (or no) mask pointer
             dctx.graph_failed = false;
+            dctx.keeper.clear();
         }
         if dctx.graph.is_some() && dctx.graph_masked != dmask_on {
             dctx.graph = None;
             dctx.graph_failed = false;
+            dctx.keeper.clear();
         }
         if graph_draft && !sampled && dctx.graph.is_none() && !dctx.graph_failed {
             let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, g_dmask, .. } = &mut dctx;
@@ -2982,7 +2996,13 @@ impl HybridModel {
                 e.htod_u32_into(g_dmask, &vec![u32::MAX; dmask_words])?;
             }
             let g_dmask_ro: &CudaSlice<u32> = &*g_dmask;
-            let cap_res = e.capture_graph(|e| {
+            // CAPTURE-RETAIN (#68 fix): the warmup transients' pool addresses are baked into the
+            // captured graph; the keeper pins them for the graph's lifetime. capture_graph (non-
+            // retained) freed them at exit — safe for one-shot generate_spec (nothing else touches
+            // the pool between replays) but WRONG for sessions: burst-boundary prime/fill/commit
+            // passes (and, in serve, other sessions) recycle those addresses and the replay then
+            // clobbers live buffers — the ST serve-spec corruption (research/serve-st-20260803).
+            let cap_res = e.capture_graph_retained(|e| {
                 self.mtp_head_forward_cap(
                     e,
                     mtp,
@@ -3003,10 +3023,11 @@ impl HybridModel {
                 )
             });
             match cap_res {
-                Ok(g) => {
+                Ok((g, keep)) => {
                     scratch.set_len(e, base)?;
                     dctx.graph = Some(g);
                     dctx.graph_masked = dmask_on;
+                    dctx.keeper = keep;
                 }
                 Err(err) => {
                     scratch.set_len(e, base)?;
@@ -3037,10 +3058,12 @@ impl HybridModel {
             dctx.graph_s_failed = false;
             dctx.s_key = None;
             dctx.q_slots.clear();
+            dctx.keeper_s.clear();
         }
         if graph_draft && sampled && pure_temp && dctx.graph_s.is_none() && !dctx.graph_s_failed {
             let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, g_ctr, g_perturb, g_q, .. } = &mut dctx;
-            let cap_res = e.capture_graph(|e| {
+            // CAPTURE-RETAIN (#68 fix): same keeper contract as the greedy capture above.
+            let cap_res = e.capture_graph_retained(|e| {
                 self.mtp_head_forward_cap(
                     e,
                     mtp,
@@ -3061,13 +3084,14 @@ impl HybridModel {
                 )
             });
             match cap_res {
-                Ok(g) => {
+                Ok((g, keep)) => {
                     scratch.set_len(e, base)?;
                     for _ in 0..k {
                         dctx.q_slots.push(e.zeros(d_vocab)?);
                     }
                     dctx.graph_s = Some(g);
                     dctx.s_key = Some(s_key);
+                    dctx.keeper_s = keep;
                 }
                 Err(err) => {
                     scratch.set_len(e, base)?;
