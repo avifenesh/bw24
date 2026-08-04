@@ -1,0 +1,13 @@
+weight blk.1.ssm_out.weight [NVFP4] in_f=6144 out_f=5120 row_bytes=3456 copies=8 variant=auto
+--- grid.y=m (current, no weight reuse) ---
+  m=1: 12.33 us/call  (12.33 us/token)
+  m=2: 14.27 us/call  (7.13 us/token)
+  m=4: 20.59 us/call  (5.15 us/token)
+  m=8: 34.89 us/call  (4.36 us/token)
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=2 (b2): 12.31 us/call  (6.16 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 14.32 us/call  (4.77 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 15.89 us/call  (3.97 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 16.42 us/call  (3.28 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 18.43 us/call  (3.07 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 20.49 us/call  (2.56 us/token)  bit-bad=0 bit-exact-bad=0

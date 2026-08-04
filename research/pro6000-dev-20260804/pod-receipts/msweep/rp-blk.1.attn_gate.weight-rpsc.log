@@ -1,0 +1,10 @@
+repack roundtrip: 0 mismatched bytes of 17694720
+weight blk.1.attn_gate.weight [NVFP4] in_f=5120 out_f=6144 row_bytes=2880 copies=8 variant=rpsc
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=1 (b2): 14.34 us/call  (14.34 us/token)  bit-bad=0 bit-exact-bad=0
+  m=2 (b2): 14.37 us/call  (7.18 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 15.28 us/call  (5.09 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 16.37 us/call  (4.09 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 16.43 us/call  (3.29 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 18.13 us/call  (3.02 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 20.32 us/call  (2.54 us/token)  bit-bad=0 bit-exact-bad=0

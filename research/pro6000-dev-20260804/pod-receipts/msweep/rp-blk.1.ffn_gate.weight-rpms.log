@@ -1,0 +1,10 @@
+repack roundtrip: 0 mismatched bytes of 50135040
+weight blk.1.ffn_gate.weight [NVFP4] in_f=5120 out_f=17408 row_bytes=2880 copies=8 variant=rpms
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=1 (b2): 36.36 us/call  (36.36 us/token)  bit-bad=0 bit-exact-bad=0
+  m=2 (b2): 36.86 us/call  (18.43 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 36.84 us/call  (12.28 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 36.86 us/call  (9.22 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 43.54 us/call  (8.71 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 47.40 us/call  (7.90 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 55.29 us/call  (6.91 us/token)  bit-bad=0 bit-exact-bad=0

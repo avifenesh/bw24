@@ -1,0 +1,10 @@
+repack roundtrip: 0 mismatched bytes of 50135040
+weight blk.1.ffn_down.weight [NVFP4] in_f=17408 out_f=5120 row_bytes=9792 copies=8 variant=rpr2w8
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=1 (b2): 36.60 us/call  (36.60 us/token)  bit-bad=0 bit-exact-bad=0
+  m=2 (b2): 36.79 us/call  (18.40 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 36.86 us/call  (12.29 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 39.55 us/call  (9.89 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 43.02 us/call  (8.60 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 45.05 us/call  (7.51 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 53.25 us/call  (6.66 us/token)  bit-bad=0 bit-exact-bad=0

@@ -1,0 +1,57 @@
+--- /root/pristine/crates/memra-engine/src/lib.rs	2026-08-04 20:40:32.000000000 +0000
++++ /root/bw24/crates/memra-engine/src/lib.rs	2026-08-04 21:42:44.552842875 +0000
+@@ -5928,6 +5928,13 @@
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize)
+         -> Result<Option<((CudaSlice<f32>, f32), (CudaSlice<f32>, f32))>, Box<dyn std::error::Error>> {
+         use crate::model::GpuTensor;
++        // [pro6000-dev seam] MEMRA_NV_DUAL=0 skips the dual gate+up fusion (falls to two
++        // single mmvq launches, which respect MEMRA_NV_MR) — isolates dual-vs-mr in the A/B.
++        {
++            static DUAL_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++            let on = *DUAL_ON.get_or_init(|| std::env::var("MEMRA_NV_DUAL").as_deref() != Ok("0"));
++            if !on { return Ok(None); }
++        }
+         if m != 1 || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) { return Ok(None); }
+         let (in_f, out_f) = (w0.in_features(), w0.out_features());
+         if w1.in_features() != in_f || w1.out_features() != out_f { return Ok(None); }
+@@ -6708,6 +6715,14 @@
+         //     of the 27B p3 spec wall; latency-bound like the other k-quants pre-fix).
+         //   Q4_K/Q6_K m=1 -> single-row (mr2 measured +0.7% / flat — weight-bandwidth-bound).
+         let mut mr: u32 = if m == 1 && (qtype == QT_NVFP4 || qtype == QT_Q5_K) { 2 } else { 1 };
++        // [pro6000-dev 20260805 MEASUREMENT SEAM — not for merge as-is] MEMRA_NV_MR=1 forces the
++        // NVFP4 m=1 mr1 twins (qmatvec_nvfp4_mmvq[_rp]). The mr2 default was swept on the 82-SM
++        // laptop; on 188 SMs the halved grid leaves ffn_down/qkv/ssm_out/attn_gate sub-wave.
++        if m == 1 && qtype == QT_NVFP4 {
++            static NVMR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
++            mr = *NVMR.get_or_init(|| std::env::var("MEMRA_NV_MR").ok()
++                .and_then(|v| v.parse().ok()).unwrap_or(2));
++        }
+         // Q4_0 mr (gemma trunk): DEFAULT 1 since 2026-07-13 (MEMRA_Q40_MR=2 reverts) — the
+         // mr1 rp twin doubles the block count and wins the tail-quantization/latency battle
+         // on every gemma model (E4B +3.75%: 198.9 vs 191.7; 26B +0.7%; 31B +0.9%; N=2-3
+--- /root/pristine/crates/memra-engine/src/bin/mvq_msweep.rs	2026-08-04 20:40:32.000000000 +0000
++++ /root/bw24/crates/memra-engine/src/bin/mvq_msweep.rs	2026-08-04 21:59:53.921938005 +0000
+@@ -79,6 +79,23 @@
+     println!("weight {tname} [{:?}] in_f={in_f} out_f={out_f} row_bytes={row_bytes} \
+               copies={copies} variant={bv}", t.ggml_type);
+     let iters = if copies > 1 { 800 } else { 2000 };
++    // [pro6000-dev] MSWEEP_M1_RP=1: time the m=1 MMVQ decode path on the RP layout buffers
++    // (what e2e decode actually runs; respects MEMRA_NV_MR). Requires MSWEEP_RP=1.
++    if rp && std::env::var("MSWEEP_M1_RP").is_ok() {
++        let x: Vec<f32> = (0..in_f).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();
++        let xd = e.htod(&x)?;
++        // exactness: rp m=1 vs original-layout m=1 (bit-identical law per row)
++        let r_ref = e.dtoh(&e.qmatvec_mmvq_raw(wd_orig.as_ref().unwrap(), &xd, 1, in_f, out_f, qtype, row_bytes, false)?)?;
++        let r_rp  = e.dtoh(&e.qmatvec_mmvq_raw(&wds[0], &xd, 1, in_f, out_f, qtype, row_bytes, true)?)?;
++        let bad = r_ref.iter().zip(&r_rp).filter(|(a, b)| (*a - *b).abs() > 1e-3).count();
++        for _ in 0..50 { let _ = e.qmatvec_mmvq_raw(&wds[0], &xd, 1, in_f, out_f, qtype, row_bytes, true)?; }
++        e.stream().synchronize()?;
++        let t0 = Instant::now();
++        for i in 0..iters { let _ = e.qmatvec_mmvq_raw(&wds[i % copies], &xd, 1, in_f, out_f, qtype, row_bytes, true)?; }
++        e.stream().synchronize()?;
++        let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
++        println!("  m=1 RP-MMVQ: {us:.2} us/call  rel-bad={bad}");
++    }
+     if std::env::var("MSWEEP_BATCHED_ONLY").is_err() {
+         println!("--- grid.y=m (current, no weight reuse) ---");
+         for m in [1usize, 2, 4, 8] {

@@ -1,0 +1,28 @@
+[22:37:20Z] ctrl-d512 head r1 pre: 37, 22 MHz, 19.07 W
+[22:37:37Z] ctrl-d512 head r1 post rc=0: 48, 2872 MHz, 225.06 W | generated 128 tokens in 1.623s = 78.86 tok/s | MATCH
+[22:37:37Z] ctrl-d512 ctrl r1 pre: 48, 2872 MHz, 225.06 W
+[22:37:55Z] ctrl-d512 ctrl r1 post rc=0: 52, 2872 MHz, 233.21 W | generated 128 tokens in 1.624s = 78.81 tok/s | MATCH
+[22:37:55Z] ctrl-d512 head r2 pre: 52, 2872 MHz, 233.21 W
+[22:38:13Z] ctrl-d512 head r2 post rc=0: 55, 2857 MHz, 345.76 W | generated 128 tokens in 1.623s = 78.84 tok/s | MATCH
+[22:38:13Z] ctrl-d512 ctrl r2 pre: 55, 2857 MHz, 345.76 W
+[22:38:30Z] ctrl-d512 ctrl r2 post rc=0: 57, 2865 MHz, 124.13 W | generated 128 tokens in 1.626s = 78.73 tok/s | MATCH
+[22:38:30Z] ctrl-d512 head r3 pre: 57, 2865 MHz, 124.13 W
+[22:38:48Z] ctrl-d512 head r3 post rc=0: 59, 2865 MHz, 120.28 W | generated 128 tokens in 1.625s = 78.79 tok/s | MATCH
+[22:38:48Z] ctrl-d512 ctrl r3 pre: 59, 2865 MHz, 120.28 W
+[22:39:06Z] ctrl-d512 ctrl r3 post rc=0: 61, 2865 MHz, 264.17 W | generated 128 tokens in 1.626s = 78.72 tok/s | MATCH
+[22:39:06Z] serve-spec K=3: starting
+[22:39:19Z] serve-spec K=3 r1: parse-fail
+[22:39:23Z] serve-spec K=3 r2: parse-fail
+[22:39:25Z] serve-spec K=4: starting
+[22:39:39Z] serve-spec K=4 r1: parse-fail
+[22:39:42Z] serve-spec K=4 r2: parse-fail
+[22:39:44Z] serve-spec K=5: starting
+[22:39:58Z] serve-spec K=5 r1: parse-fail
+[22:40:01Z] serve-spec K=5 r2: parse-fail
+[22:40:04Z] serve-spec K=6: starting
+[22:40:17Z] serve-spec K=6 r1: parse-fail
+[22:40:21Z] serve-spec K=6 r2: parse-fail
+[22:40:23Z] serve-spec K=7: starting
+[22:40:37Z] serve-spec K=7 r1: parse-fail
+[22:40:41Z] serve-spec K=7 r2: parse-fail
+[22:40:43Z] SWEEP_E_DONE

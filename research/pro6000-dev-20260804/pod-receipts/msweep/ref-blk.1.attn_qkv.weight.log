@@ -1,0 +1,13 @@
+weight blk.1.attn_qkv.weight [NVFP4] in_f=5120 out_f=10240 row_bytes=2880 copies=8 variant=auto
+--- grid.y=m (current, no weight reuse) ---
+  m=1: 17.35 us/call  (17.35 us/token)
+  m=2: 24.53 us/call  (12.27 us/token)
+  m=4: 34.89 us/call  (8.72 us/token)
+  m=8: 61.30 us/call  (7.66 us/token)
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=2 (b2): 26.39 us/call  (13.19 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 22.54 us/call  (7.51 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 22.91 us/call  (5.73 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 24.60 us/call  (4.92 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 26.14 us/call  (4.36 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 28.42 us/call  (3.55 us/token)  bit-bad=0 bit-exact-bad=0

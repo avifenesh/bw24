@@ -1,0 +1,13 @@
+weight blk.1.attn_gate.weight [NVFP4] in_f=5120 out_f=6144 row_bytes=2880 copies=8 variant=auto
+--- grid.y=m (current, no weight reuse) ---
+  m=1: 12.31 us/call  (12.31 us/token)
+  m=2: 14.35 us/call  (7.17 us/token)
+  m=4: 20.49 us/call  (5.12 us/token)
+  m=8: 34.81 us/call  (4.35 us/token)
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=2 (b2): 14.45 us/call  (7.23 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 12.33 us/call  (4.11 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 13.44 us/call  (3.36 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 15.25 us/call  (3.05 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 16.40 us/call  (2.73 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 18.45 us/call  (2.31 us/token)  bit-bad=0 bit-exact-bad=0
