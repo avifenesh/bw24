@@ -9,12 +9,12 @@
 #                native shape -> "tokens" array (per-token ids on the plain path)
 # Server restarts per rep (no prefix-cache carryover between reps).
 #
-# Usage: probe.sh <tag> <model-path> <chat:0|1> <prompt> <n> <rep>
+# Usage: probe.sh <tag> <model-path> <chat:0|1> <prompt> <n> <rep> [extra-server-env]
 # GPU work runs under flock /tmp/gpu5090.lock (caller may hold it already via -o).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
-TAG=$1; MODEL=$2; CHAT=$3; PROMPT=$4; NGEN=$5; REP=$6
+TAG=$1; MODEL=$2; CHAT=$3; PROMPT=$4; NGEN=$5; REP=$6; EXTRA_ENV=${7:-}
 OUT=research/plainbatch-20260804
 ADDR=127.0.0.1:8179
 BASE=http://$ADDR
@@ -34,7 +34,7 @@ CLI_TOKENS=$(grep '^tokens: ' "$CLI_LOG" | tail -1 | sed 's/^tokens: //')
 
 # ---- serve plain arm (batched tick default, spec off) ----
 SRV_LOG=$OUT/server-$TAG-n$NGEN-r$REP.log
-env MEMRA_SERVE_SPEC=0 MEMRA_MODELS="m=$MODEL" MEMRA_ADDR=$ADDR $BIN/memra-server \
+env $EXTRA_ENV MEMRA_SERVE_SPEC=0 MEMRA_MODELS="m=$MODEL" MEMRA_ADDR=$ADDR $BIN/memra-server \
   > "$SRV_LOG" 2>&1 &
 SPID=$!
 trap 'kill $SPID 2>/dev/null; wait $SPID 2>/dev/null' EXIT

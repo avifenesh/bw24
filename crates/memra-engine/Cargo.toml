@@ -206,3 +206,7 @@ path = "src/bin/clc_mmq_bench.rs"
 [[bin]]
 name = "spec-st-probe"
 path = "src/bin/spec_st_probe.rs"
+
+[[bin]]
+name = "plainbatch-margin-probe"
+path = "src/bin/plainbatch_margin_probe.rs"

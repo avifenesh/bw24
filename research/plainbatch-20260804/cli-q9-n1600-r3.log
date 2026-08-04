@@ -1,0 +1,43 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+What is the capital of France? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "What is the capital of France? Answer in one short sentence."
+prompt tokens: [248045, 846, 198, 3710, 369, 279, 6511, 314, 9338, 30, 21134, 303, 799, 2716, 11316, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=90700  decode argmax=90700  logit maxdiff=2.108e0  MATCH
+batched-prime argmax=90700  tokenwise argmax=90700  logit maxdiff=2.228e0  MATCH
+prefill 23 tok in 0.0340s = 676.9 tok/s (pp23)
+generated 209 tokens in 1.583s = 132.04 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.034s) [stop: Eos]
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 15380, 25, 328, 3710, 369, 279, 6511, 314, 9338, 7285, 198, 262, 348, 256, 42794, 25, 328, 15666, 303, 799, 2716, 11316, 1149, 271, 17, 13, 220, 2972, 27382, 1386, 279, 35495, 64700, 198, 262, 348, 256, 561, 6511, 314, 9338, 369, 11751, 13, 271, 18, 13, 220, 2972, 48401, 279, 21134, 64700, 198, 262, 348, 256, 6743, 220, 16, 25, 561, 6511, 314, 9338, 369, 11751, 13, 198, 262, 348, 256, 6743, 220, 17, 25, 11751, 369, 279, 6511, 314, 9338, 13, 198, 262, 348, 256, 6743, 220, 18, 25, 1049, 369, 11751, 13, 271, 19, 13, 220, 2972, 79503, 2272, 84457, 64700, 198, 262, 348, 256, 1942, 2519, 513, 799, 11316, 13, 198, 262, 348, 256, 1942, 513, 2716, 13, 198, 262, 348, 256, 6743, 220, 16, 369, 279, 1379, 2050, 321, 5129, 13, 271, 20, 13, 220, 2972, 18770, 23389, 64700, 328, 760, 6511, 314, 9338, 369, 11751, 1149, 271, 21, 13, 220, 2972, 18770, 4109, 64700, 12193, 424, 3258, 279, 328, 588, 2716, 11316, 1, 20908, 30, 7179, 13, 271, 22, 13, 220, 2972, 4935, 22738, 159029, 198, 248069, 271, 760, 6511, 314, 9338, 369, 11751, 13, 248046]
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Question: \"What is the capital of France?\"\n    *   Constraint: \"Answer in one short sentence.\"\n\n2.  **Identify the Fact:**\n    *   The capital of France is Paris.\n\n3.  **Draft the Answer:**\n    *   Option 1: The capital of France is Paris.\n    *   Option 2: Paris is the capital of France.\n    *   Option 3: It is Paris.\n\n4.  **Evaluate against Constraints:**\n    *   All options are one sentence.\n    *   All are short.\n    *   Option 1 is the most direct and standard.\n\n5.  **Final Selection:** \"The capital of France is Paris.\"\n\n6.  **Final Check:** Does it meet the \"one short sentence\" constraint? Yes.\n\n7.  **Output Generation.**\n</think>\n\nThe capital of France is Paris."
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Question: "What is the capital of France?"
+    *   Constraint: "Answer in one short sentence."
+
+2.  **Identify the Fact:**
+    *   The capital of France is Paris.
+
+3.  **Draft the Answer:**
+    *   Option 1: The capital of France is Paris.
+    *   Option 2: Paris is the capital of France.
+    *   Option 3: It is Paris.
+
+4.  **Evaluate against Constraints:**
+    *   All options are one sentence.
+    *   All are short.
+    *   Option 1 is the most direct and standard.
+
+5.  **Final Selection:** "The capital of France is Paris."
+
+6.  **Final Check:** Does it meet the "one short sentence" constraint? Yes.
+
+7.  **Output Generation.**
+</think>
+
+The capital of France is Paris.
