@@ -276,6 +276,10 @@ impl memra_engine::spec::SpecConstraint for SpecGrammar<'_> {
         Ok(())
     }
 
+    fn draft_mask_enabled(&self) -> bool {
+        self.on
+    }
+
     fn draft_begin(&mut self) -> Result<(), String> {
         if !self.on {
             self.spec = None;
