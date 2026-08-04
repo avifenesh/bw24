@@ -112,6 +112,35 @@ pub trait SpecConstraint {
     fn is_allowed(&mut self, tok: u32) -> Result<bool, String>;
     /// Advance the state with an emitted token.
     fn consume(&mut self, tok: u32) -> Result<(), String>;
+
+    // --- DRAFT-SIDE MASKING (lane/draft-mask, 2026-08-04) ---
+    // The drafter proposed grammar-illegal tokens under tight schemas, so verify-side
+    // truncation cut nearly every round (measured acceptance 0.467-0.513 tight vs 0.62-0.82
+    // loose, research/constrained-full-20260803). These three methods let the engine mask the
+    // DRAFT model's own sampling with the grammar's legal set, so proposals are legal by
+    // construction. The state they walk is a SPECULATIVE CLONE of the session matcher — the
+    // real state is advanced only by `consume` (emitted tokens), so verify-side truncation
+    // stays the correctness backstop and the emitted stream is unchanged by construction
+    // (an accepted draft is the target's unmasked argmax AND grammar-legal, hence the masked
+    // argmax; a cut slot is recomputed as the masked argmax either way).
+    // Default impls = feature OFF (pre-lane behaviour: unmasked drafts).
+
+    /// Start a draft chain: clone the CURRENT (committed) grammar state into the speculative
+    /// slot. Called once per spec round, before the first draft position.
+    fn draft_begin(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// Packed 32-bit bitset words of the SPECULATIVE state's allowed set (target-vocab ids),
+    /// for the draft position about to be sampled. `None` = draft masking off (no-op).
+    fn draft_mask_words(&mut self) -> Result<Option<Vec<u32>>, String> {
+        Ok(None)
+    }
+    /// Advance the SPECULATIVE state with a PROPOSED draft token. `false` = the chain cannot
+    /// continue (EOS proposed, or an unmasked position proposed something illegal) — the
+    /// engine stops drafting; the token already pushed still goes through verify.
+    fn draft_advance(&mut self, _tok: u32) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 /// Keep the full token-embedding table in host memory and upload only the rows needed by each
