@@ -1,0 +1,35 @@
+device: NVIDIA GeForce RTX 5090 (sm_120)  cublasLt 130002  mode: heuristic-only
+
+== heuristic matrix: q_gate n=12288 k=5120 (A=W e4m3 [kxn] OP_T, B=act e4m3 [kxm]) ==
+combo     A_mode      B_mode      D       m      status nh
+1 ctrl    SCALAR      SCALAR      R_32F   512    0      4 SUPPORTED
+1 ctrl    SCALAR      SCALAR      R_32F   2048   0      4 SUPPORTED
+1 ctrl    SCALAR      SCALAR      R_32F   4096   0      4 SUPPORTED
+1 ctrl    SCALAR      SCALAR      R_16BF  512    0      4 SUPPORTED
+1 ctrl    SCALAR      SCALAR      R_16BF  2048   0      4 SUPPORTED
+1 ctrl    SCALAR      SCALAR      R_16BF  4096   0      4 SUPPORTED
+2 blkW    BLK128x128  SCALAR      R_32F   512    7      0 NOT_SUPPORTED
+2 blkW    BLK128x128  SCALAR      R_32F   2048   7      0 NOT_SUPPORTED
+2 blkW    BLK128x128  SCALAR      R_32F   4096   7      0 NOT_SUPPORTED
+2 blkW    BLK128x128  SCALAR      R_16BF  512    7      0 NOT_SUPPORTED
+2 blkW    BLK128x128  SCALAR      R_16BF  2048   7      0 NOT_SUPPORTED
+2 blkW    BLK128x128  SCALAR      R_16BF  4096   7      0 NOT_SUPPORTED
+3 dseek   BLK128x128  VEC128      R_32F   512    15     0 NOT_SUPPORTED
+3 dseek   BLK128x128  VEC128      R_32F   2048   15     0 NOT_SUPPORTED
+3 dseek   BLK128x128  VEC128      R_32F   4096   15     0 NOT_SUPPORTED
+3 dseek   BLK128x128  VEC128      R_16BF  512    15     0 NOT_SUPPORTED
+3 dseek   BLK128x128  VEC128      R_16BF  2048   15     0 NOT_SUPPORTED
+3 dseek   BLK128x128  VEC128      R_16BF  4096   15     0 NOT_SUPPORTED
+4 outer   BLK128x128  OUTER_VEC   R_32F   512    15     0 NOT_SUPPORTED
+4 outer   BLK128x128  OUTER_VEC   R_32F   2048   15     0 NOT_SUPPORTED
+4 outer   BLK128x128  OUTER_VEC   R_32F   4096   15     0 NOT_SUPPORTED
+4 outer   BLK128x128  OUTER_VEC   R_16BF  512    15     0 NOT_SUPPORTED
+4 outer   BLK128x128  OUTER_VEC   R_16BF  2048   15     0 NOT_SUPPORTED
+4 outer   BLK128x128  OUTER_VEC   R_16BF  4096   15     0 NOT_SUPPORTED
+5 vecs    VEC128      VEC128      R_32F   512    15     0 NOT_SUPPORTED
+5 vecs    VEC128      VEC128      R_32F   2048   15     0 NOT_SUPPORTED
+5 vecs    VEC128      VEC128      R_32F   4096   15     0 NOT_SUPPORTED
+5 vecs    VEC128      VEC128      R_16BF  512    15     0 NOT_SUPPORTED
+5 vecs    VEC128      VEC128      R_16BF  2048   15     0 NOT_SUPPORTED
+5 vecs    VEC128      VEC128      R_16BF  4096   15     0 NOT_SUPPORTED
+done

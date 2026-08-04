@@ -1,0 +1,29 @@
+[20:44:32Z] == PHASE 1: accuracy repro + control ==
+[20:44:32Z] floor-accuracy-r2 pre: 30, 180 MHz, 23.79 W
+[20:58:29Z] floor-accuracy-r2 post: 39, 2400 MHz, 78.75 W | generated 128 tokens in 2.417s = 52.96 tok/s | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH
+[20:58:29Z] armA-accuracy-r2 pre: 39, 2407 MHz, 71.54 W
+[21:23:03Z] armA-accuracy-r2 post: 39, 2542 MHz, 83.07 W | generated 128 tokens in 2.328s = 54.97 tok/s | verify-prefill argmax=365  decode argmax=365  logit maxdiff=3.815e-6  MATCH
+[21:23:03Z] armA-nofold-control-r1 pre: 39, 2542 MHz, 83.07 W
+[21:36:59Z] armA-nofold-control-r1 post: 40, 2400 MHz, 85.68 W | generated 128 tokens in 2.427s = 52.73 tok/s | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH
+[21:36:59Z] == PHASE 2: pp512 battery, N=5 interleaved ==
+[21:36:59Z] FLOOR pp rep 1 pre: 40, 2400 MHz, 78.20 W
+[21:50:38Z] FLOOR pp rep 1 post: 35, 2400 MHz, 75.41 W | pp-only MEDIAN: 512 tok in 0.1259s = 4066.7 tok/s | oom=0
+[21:50:38Z] ARMA pp rep 1 pre: 35, 2400 MHz, 75.41 W
+[22:14:51Z] ARMA pp rep 1 post: 35, 2400 MHz, 78.17 W | pp-only MEDIAN: 512 tok in 0.1065s = 4807.5 tok/s | oom=0
+[22:14:51Z] FLOOR pp rep 2 pre: 35, 2400 MHz, 78.17 W
+[22:28:32Z] FLOOR pp rep 2 post: 35, 2400 MHz, 79.50 W | pp-only MEDIAN: 512 tok in 0.1260s = 4063.4 tok/s | oom=0
+[22:28:32Z] ARMA pp rep 2 pre: 35, 2400 MHz, 79.50 W
+[22:52:48Z] ARMA pp rep 2 post: 34, 2850 MHz, 85.82 W | pp-only MEDIAN: 512 tok in 0.1063s = 4816.6 tok/s | oom=0
+[22:52:48Z] FLOOR pp rep 3 pre: 34, 2407 MHz, 77.51 W
+[23:06:42Z] FLOOR pp rep 3 post: 35, 2400 MHz, 76.55 W | pp-only MEDIAN: 512 tok in 0.1259s = 4068.3 tok/s | oom=0
+[23:06:42Z] ARMA pp rep 3 pre: 35, 2400 MHz, 76.55 W
+[23:31:05Z] ARMA pp rep 3 post: 34, 2407 MHz, 74.86 W | pp-only MEDIAN: 512 tok in 0.1063s = 4816.3 tok/s | oom=0
+[23:31:05Z] FLOOR pp rep 4 pre: 34, 2407 MHz, 74.86 W
+[23:45:01Z] FLOOR pp rep 4 post: 35, 2407 MHz, 76.72 W | pp-only MEDIAN: 512 tok in 0.1255s = 4078.2 tok/s | oom=0
+[23:45:01Z] ARMA pp rep 4 pre: 35, 2407 MHz, 76.72 W
+[00:09:24Z] ARMA pp rep 4 post: 34, 2542 MHz, 82.89 W | pp-only MEDIAN: 512 tok in 0.1062s = 4819.2 tok/s | oom=0
+[00:09:24Z] FLOOR pp rep 5 pre: 34, 2542 MHz, 76.10 W
+[00:23:04Z] FLOOR pp rep 5 post: 35, 2542 MHz, 81.16 W | pp-only MEDIAN: 512 tok in 0.1259s = 4066.0 tok/s | oom=0
+[00:23:04Z] ARMA pp rep 5 pre: 35, 2407 MHz, 72.74 W
+[00:47:11Z] ARMA pp rep 5 post: 35, 2400 MHz, 78.54 W | pp-only MEDIAN: 512 tok in 0.1065s = 4808.4 tok/s | oom=0
+[00:47:11Z] GEMM-ARM BATTERY DONE
