@@ -274,6 +274,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prefill = model.decode_step_t(&e, &prompt, 0, &mut vcache)?;
             prefill[(prompt.len() - 1) * n_vocab..prompt.len() * n_vocab].to_vec()
         };
+        // MEMRA_PREFILL_LOGITS=<file>: dump this batched-prefill logit row as raw LE f32. The
+        // gate line below compares prefill vs THIS RUN's own decode, so it cannot see a
+        // cross-ARM difference; a prefill-only kernel (lane/fp8-mmq) changes only this vector,
+        // and the 128-token stream that follows is pure m=1 decode where the kernel never
+        // dispatches. This dump is the only cross-arm exactness instrument for such a kernel.
+        if let Ok(f) = std::env::var("MEMRA_PREFILL_LOGITS") {
+            let mut raw = Vec::with_capacity(prefill_last.len() * 4);
+            for v in &prefill_last {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+            std::fs::write(&f, &raw)?;
+            println!("prefill logits -> {f} ({} f32)", prefill_last.len());
+        }
+        println!(
+            "fp8-mmq dispatches after prefill: {}",
+            memra_engine::fp8_ffi::fp8_mmq_hits()
+        );
         let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
         let mut dec = Vec::new();
         for &token in &prompt {
