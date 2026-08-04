@@ -202,6 +202,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 prompt.len(),
                 reps
             );
+            // Coverage receipt (lane/fp8-mmq): how many prefill GEMMs went through the per-block
+            // FP8 MMQ tile. A refused precondition (no block operand resident, stash budget spent
+            // before the tensor, a NaN code) reads exactly like "no perf change", so a pp number
+            // for that arm is only evidence alongside a nonzero count.
+            println!("fp8-mmq dispatches: {}", memra_engine::fp8_ffi::fp8_mmq_hits());
             return Ok(());
         }
         // GATE REFERENCE = the batched VERIFY path (decode_step_t: quantized-KV attend, the same
@@ -590,6 +595,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("OUTPUT TEXT: {text:?}");
             println!("--- generated text ---\n{text}");
         }
+        // Coverage receipt — see the PP_ONLY arm above. A greedy stream that matches the floor
+        // because the kernel never dispatched is not an exactness result.
+        println!("fp8-mmq dispatches: {}", memra_engine::fp8_ffi::fp8_mmq_hits());
         return Ok(());
     }
     let g = GgufFile::open(&path)?;

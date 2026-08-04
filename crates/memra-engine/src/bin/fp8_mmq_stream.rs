@@ -120,6 +120,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "pp-only MEDIAN: {t} tok in {med:.4}s = {:.1} tok/s",
             t as f64 / med
         );
+        println!(
+            "fp8-mmq dispatches: {}",
+            memra_engine::fp8_ffi::fp8_mmq_hits()
+        );
         return Ok(());
     }
 
@@ -220,5 +224,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("stream ids: {emitted:?}");
     println!("stream digest: {digest:#018x}  steps={n_steps}");
+    println!(
+        "fp8-mmq dispatches: {}",
+        memra_engine::fp8_ffi::fp8_mmq_hits()
+    );
     Ok(())
 }

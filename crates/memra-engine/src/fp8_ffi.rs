@@ -274,8 +274,21 @@ impl crate::Engine {
         }
 
         let y = self.qmatvec_mmq_fp8_blk(&f8.bytes, &blk.scales, x, m, in_f, out_f)?;
+        FP8_MMQ_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(y))
     }
+}
+
+/// Dispatch counter for this kernel. A model-level exactness or perf result is only evidence if
+/// the kernel actually RAN — a silently-refused precondition (no block operand made resident, the
+/// stash budget spent before the tensor, a NaN code present) looks exactly like "bit-identical to
+/// the floor" and "no perf change". `MEMRA_FP8_MMQ_STATS=1` prints the count at process exit so
+/// every such run carries its own proof of coverage.
+static FP8_MMQ_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Number of prefill GEMMs that went through the per-block FP8 MMQ tile so far this process.
+pub fn fp8_mmq_hits() -> usize {
+    FP8_MMQ_HITS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ============================================================================================

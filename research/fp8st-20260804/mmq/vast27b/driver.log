@@ -1,0 +1,7 @@
+[02:53:55Z] == 27B ACCURACY: 128-tok greedy stream, floor vs MMQ (same protocol as the ARM A row) ==
+[02:53:55Z] floor accuracy pre: 35, 2400 MHz, 66.20 W
+[03:17:39Z] floor accuracy post: 40, 2400 MHz, 86.07 W | rc=0 | generated 128 tokens in 2.429s = 52.70 tok/s | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH
+[03:17:39Z] mmq accuracy pre: 40, 2400 MHz, 86.07 W
+[03:31:29Z] mmq accuracy post: 41, 2400 MHz, 82.41 W | rc=0 | generated 128 tokens in 2.426s = 52.76 tok/s | verify-prefill argmax=365  decode argmax=365  logit maxdiff=0.000e0  MATCH
+[03:31:29Z] == 27B PERF: pp512 + pp6257, N=5 interleaved floor,mmq,arma ==
+[03:31:29Z] floor pp512 rep1 pre: 40, 2400 MHz, 73.08 W
