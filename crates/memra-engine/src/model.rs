@@ -482,7 +482,13 @@ impl GpuTensor {
                 // spends from MEMRA_PP_FP8_BUDGET_MB (default 1536); once spent, remaining
                 // tensors ride the old path. Load order is layer order, so the budget covers a
                 // PREFIX of layers — coverage (and the prefill win) scales with the budget.
-                let fp8 = if qt == QT_Q8_0 && crate::fp8_ffi::pp_fp8_enabled() {
+                // MEMRA_FP8_MMQ=1 (lane/fp8-mmq) admits the SAME stash for the block-128 class:
+                // the per-block MMQ prefill kernel is that class's consumer, and it needs exactly
+                // what this arm makes resident (raw e4m3 bytes + the verbatim f32 grid). It shares
+                // the budget accounting below, so a 24GB rig still caps the duplicate.
+                let fp8 = if qt == QT_Q8_0
+                    && (crate::fp8_ffi::pp_fp8_enabled() || crate::fp8_ffi::fp8_mmq_enabled())
+                {
                     match src.find_fp8_native(name) {
                         Some(f8)
                             if v.ne.len() == 2
@@ -503,8 +509,9 @@ impl GpuTensor {
                             let sz = f8.bytes.len();
                             if FP8_SPENT.fetch_add(sz, Ordering::Relaxed) + sz <= budget {
                                 // Block-128 grid rides along resident (checkpoint order,
-                                // Fp8BlockScales layout contract). try_fp8_gemm skips blk
-                                // operands until the block-scaled GEMM (P1) lands.
+                                // Fp8BlockScales layout contract). try_fp8_gemm still skips blk
+                                // operands (cuBLASLt takes no block grid on sm_120, P1-VERDICT);
+                                // try_fp8_blk_mmq is their consumer under MEMRA_FP8_MMQ=1.
                                 let blk = match f8.blk {
                                     Some(g) => Some(Fp8BlockScales {
                                         scales: e.htod(&g.scales)?,

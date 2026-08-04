@@ -5393,6 +5393,10 @@ impl Engine {
         // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
+            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1, default OFF; lane/fp8-mmq): the block-128 class
+            // try_fp8_gemm skips (cuBLASLt takes no block grid on sm_120). Exact per block — the
+            // checkpoint's e4m3 bytes and its f32 grid go into the tile unchanged.
+            if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(y); }
             // FP16-mirror prefill (MEMRA_PP_F16=1, probe 2026-07-26: 3.2-3.7x the MMQ class).
             // Mirror presence IS the gate (only built under the env). Decode never reaches here.
             if let Some(y) = self.try_f16_gemm(w, x, m)? { return Ok(y); }
@@ -5555,6 +5559,9 @@ impl Engine {
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
         if m >= 16 && x_raw_ok && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
+            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1) — same arm as `matmul`; its own quantizer wants
+            // the RAW f32 activation, so x_fallback not aq/ad.
+            if let Some(y) = self.try_fp8_blk_mmq(w, x_fallback, m)? { return Ok(y); }
             // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
             if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
         }
