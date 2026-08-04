@@ -160,10 +160,19 @@ fn main() {
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_W4A8");
         let w4a8_y = std::env::var("MEMRA_MMQ_Y_W4A8").ok();
         // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
-        // tile. Needed because the GEMM-only bench (research/fp8st-20260804/mmq/gemmbench) put the
-        // 128-token default BELOW the Q8_0 floor it replaces at every 27B shape (0.81x-0.94x), and
-        // both arms land at 105-127 TFLOP against f8f6f4's 381-TF class — i.e. neither is MMA
-        // bound, so the tile geometry is the thing under test, not the MMA.
+        // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
+        // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
+        // floor at every 27B shape; v2's restructure made X=256 affordable and it is now the
+        // default. Neither arm is MMA-bound at any width measured (110-130 TF against f8f6f4's
+        // 381-TF class), so geometry, not the MMA, is what this seam moves.
+        //
+        // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 are v2 slice-2 and slice-3 seams
+        // that CONCLUDED NEGATIVE (research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and
+        // experiment B): halving Y splits the same 8 warps across two CTAs rather than raising
+        // warps/SM, Y=128 with OCC=2 spills the 64-float accumulator, and cp.async on the weight
+        // tile cannot pay while the equally-large activation tile is still a synchronous copy
+        // between the issue and the wait. They are kept only as the reproduction path for those
+        // rows — per the flags doctrine they are deletion candidates, which is an owner call.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_FP8");
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_OCC_FP8");
