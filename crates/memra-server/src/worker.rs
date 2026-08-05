@@ -211,6 +211,13 @@ struct SpecReuseEntry {
     /// as llama serve's cache_prompt: the suffix's boundary tokenization may differ from a cold
     /// full-retok — committed tokens stay authoritative, spec==greedy exactness is untouched.
     committed_text: String,
+    /// SESSION AFFINITY (lane/session-affinity): the conversation this session belongs to, as
+    /// the admitting request declared it — `Some(id)` from the explicit tier
+    /// (`session_id`/`user`/`x-session-id`), else None. Nomination only; see `affinity`.
+    affinity: Option<String>,
+    /// Implicit-tier identity: the fingerprint chain of the session's COMMITTED tokens (no
+    /// live tail to drop). Nominated by a shared leading run with a request's own chain.
+    fingerprint: Vec<u64>,
 }
 /// Parked-cache pool cap per model (MEMRA_REUSE_POOL, default 2 — each parked cache holds
 /// its full KV, ~119MB at ctx 8192 on the 9B, so the cap is a VRAM budget knob).
@@ -775,6 +782,9 @@ struct Session {
     model: String,
     /// PC-ISO cache namespace this session admits, hits, and parks under (see PoolKey).
     cache_ns: String,
+    /// SESSION AFFINITY explicit tier: the conversation id the admitting request declared
+    /// (`Request::affinity`), carried so park-at-retire can label the parked session with it.
+    affinity: Option<String>,
     /// yield lane — admission class + prefill budget bucket + batch priority.
     lane: crate::lanes::Lane,
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
@@ -1734,9 +1744,18 @@ pub fn run(
                     let skip = loaded[&s.model].tok.bos_id()
                         .map(|b| toks.first() == Some(&b)).unwrap_or(false) as usize;
                     let committed_text = loaded[&s.model].tok.decode_special(&toks[skip..], true);
+                    // SESSION AFFINITY: identity of the conversation this session served, so a
+                    // later turn that REWRITES history can still recognize and rewind it. The
+                    // fingerprint chain is taken over the COMMITTED tokens (no live tail to
+                    // drop — a parked session's stream is all history).
+                    let tok = &loaded[&s.model].tok;
+                    let fingerprint = conversation_fingerprint(
+                        toks, &|t| tok.token_is_control(t), false);
                     let pool = spec_reuse.entry(pool_key).or_default();
                     if pool.len() >= reuse_pool_per_model() { pool.remove(0); }
-                    pool.push(SpecReuseEntry { sess, committed_text });
+                    pool.push(SpecReuseEntry {
+                        sess, committed_text, affinity: s.affinity, fingerprint,
+                    });
                 }
             } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
                 if let Some(cache) = s.cache {
@@ -1904,6 +1923,11 @@ fn admit(
     }
     let room = ctx_cap - prompt.len();
     let budget = req.params.max_new.min(room);
+    // The EXACT cap this request's emission needs (F5's `need`, hoisted: the spec-pool probes
+    // below use it as their room test). MaxNew preempts the burst loop's ContextFull guard by
+    // construction, so a session with at least this much ctx emits exactly the tokens a
+    // full-size one would — F5's own exactness argument for the right-size ladder.
+    let need = prompt.len().saturating_add(budget).saturating_add(SPEC_SHRINK_SLACK);
 
     // KV PREFIX REUSE probe: a parked session whose fed sequence is an EXACT PREFIX of this
     // prompt (and whose cache has room) resumes — only the suffix gets primed. The sampler's
@@ -2074,6 +2098,7 @@ fn admit(
         // CONSTRAINED requests never resume parked spec sessions: the park's stashed
         // next_pred/pending is unconstrained state, and the grammar must own generation
         // from token 1. Cold spec session instead (still spec — just no pool hit).
+        let mut affinity_rewound: Option<(usize, &'static str)> = None;
         let resumed = if constraint.is_some() { None } else {
             spec_reuse.get_mut(&pool_key).and_then(|pool| {
             if let Some(idx) = pool.iter().rposition(|e|
@@ -2093,23 +2118,92 @@ fn admit(
                     return Some(e.sess);
                 }
             }
+            // ---- SESSION AFFINITY (lane/session-affinity, 2026-08-05) ----
+            // Both probes above require the new prompt to EXTEND the parked session. A client
+            // that rewrites conversation history (the owner's: `<think>` blocks stripped out of
+            // prior assistant turns) fails both on every turn, and the parked multi-GB session
+            // is discarded while the whole growing conversation re-primes (~3s TTFT at 11k-14k
+            // tokens vs llama's 0.19s — research/specpool-20260804/RESULTS.md).
+            //
+            // Affinity asks the other question: is this the SAME CONVERSATION? Nomination is by
+            // identity (explicit client id, else the structural fingerprint chain); the resume
+            // decision is then made on BYTES against the session's REWIND BOUNDARY — the
+            // prompt-end checkpoint its last turn retained. A history rewrite mutates what the
+            // session GENERATED, so the new prompt still agrees with the session's committed
+            // tokens up to that boundary, and only this turn's delta (rewritten answer + new
+            // user turn) needs priming.
+            //
+            // Requires: a retained checkpoint, cache room, the prompt matching
+            // committed[..rewind_pos] EXACTLY, and a non-empty remaining suffix (a rewound
+            // session has no next_pred/pending — nothing to continue from).
+            let req_fp = conversation_fingerprint(
+                &prompt, &|t| lm.tok.token_is_control(t), true);
+            // F5 INTERACTION (evict-first + right-size ladder, research/specpool-20260804):
+            // on a VRAM-tight rig the ladder lands sessions at ctx BELOW the request's ctx_cap
+            // (e.g. 16k of a 128k cap), and those are exactly the rigs where every turn is a
+            // miss. Gating the probe on `>= ctx_cap` would reject every laddered session
+            // forever, so affinity tests the room this request actually NEEDS — the same
+            // `need` bound whose sufficiency F5 already argues (MaxNew preempts ContextFull,
+            // so a session with `need` ctx emits identical tokens). A resumed session that no
+            // longer fits its next turn simply misses then and follows the ladder as a new one.
+            let cand = pool.iter().enumerate().rev().find(|(_, e)| {
+                if e.sess.cache_max_ctx() < need { return false; }
+                let Some(pos) = e.sess.rewind_pos() else { return false };
+                if pos == 0 { return false; }
+                // BYTES DECIDE: the prompt must reproduce the session's committed tokens up to
+                // the rewind boundary EXACTLY, and leave a non-empty suffix to prime (a rewound
+                // session has no next_pred/pending, so there is nothing to continue from).
+                if affinity_match(&prompt, &e.sess.committed[..pos])
+                    != (AffinityMatch::Exact { suffix_from: pos }) { return false; }
+                if prompt.len() == pos { return false; }
+                // IDENTITY NOMINATES: explicit id when the client named one on BOTH sides, else
+                // the implicit fingerprint chain's shared leading run.
+                match (&req.affinity, &e.affinity) {
+                    (Some(a), Some(b)) if a == b => true,
+                    (Some(_), _) | (_, Some(_)) => false,
+                    _ => fingerprint_affinity(&req_fp, &e.fingerprint) >= FP_MIN_SEGMENTS,
+                }
+            }).map(|(i, e)| (i, e.affinity.is_some()));
+            if let Some((idx, explicit)) = cand {
+                let mut e = pool.remove(idx);
+                match lm.model.spec_rewind_to_checkpoint(engine, &mut e.sess) {
+                    Ok(Some(pos)) => {
+                        affinity_rewound =
+                            Some((pos, if explicit { "explicit" } else { "fingerprint" }));
+                        return Some(e.sess);
+                    }
+                    // The checkpoint vanished between probe and rewind (cannot happen — the
+                    // pool is worker-owned and single-threaded) or the rollback failed. Either
+                    // way the session's state is no longer trustworthy: drop it, cold-prime.
+                    Ok(None) => {}
+                    Err(err) => eprintln!("[worker] affinity rewind failed ({err}); \
+                                           dropping session, full prime"),
+                }
+                return None;
+            }
             None
         })};
         match resumed {
             Some(sess) => {
                 spec_resumed = sess.committed.len();
-                eprintln!("[worker] spec-reuse: {} committed tokens resumed{} (model {})",
-                          spec_resumed,
-                          if text_suffix.is_some() { " [text-prefix]" } else { "" }, req.model);
+                match affinity_rewound {
+                    Some((pos, tier)) => eprintln!(
+                        "[worker] spec-affinity: rewound to {pos} of {} prompt tokens \
+                         ({tier}; priming {} suffix; model {})",
+                        prompt.len(), prompt.len() - pos, req.model),
+                    None => eprintln!(
+                        "[worker] spec-reuse: {} committed tokens resumed{} (model {})",
+                        spec_resumed,
+                        if text_suffix.is_some() { " [text-prefix]" } else { "" }, req.model),
+                }
                 Some(sess)
             }
             None => {
                 // POOL MISS: a parked session's caches (~4GB at 128k: 17-layer trunk KV + draft
                 // scratch) can starve the NEW allocation — 2 x 128k sessions + weights don't fit
-                // 24GB. Misses happen when the text->token roundtrip diverges at a turn boundary
-                // (detok+retok isn't prefix-stable), so the parked session is DEAD WEIGHT for
-                // this conversation: evict the pool, then allocate. (Session-id affinity API is
-                // the structural fix — follow-up.)
+                // 24GB. Misses survive affinity when the client rewrote history BELOW the
+                // session's rewind boundary (or the session never captured one), so the parked
+                // session is DEAD WEIGHT for this conversation: evict the pool, then allocate.
                 //
                 // F5 (spec-pool thrash, 2026-08-05 — research/specpool-20260804): on a
                 // VRAM-tight rig EVERY turn of the daily driver is a miss (the client
@@ -2135,7 +2229,6 @@ fn admit(
                                    (learned VRAM-tight; model {})", req.model);
                     }
                 }
-                let need = prompt.len().saturating_add(budget).saturating_add(SPEC_SHRINK_SLACK);
                 match lm.model.new_session(engine, ctx_cap) {
                     Ok(sess) => Some(sess),
                     Err(first_err) => {
@@ -2258,6 +2351,7 @@ fn admit(
     Ok(Session {
         model: req.model,
         cache_ns: req.cache_ns,
+        affinity: req.affinity,
         lane: req.lane,
         cache,
         sampler,
@@ -3188,6 +3282,22 @@ mod tests {
             affinity_match(&toks(40), &toks(60)),
             AffinityMatch::Diverged { at: 40 }
         );
+    }
+
+    #[test]
+    fn affinity_room_test_accepts_f5_right_sized_sessions() {
+        // F5 INTERACTION. On a VRAM-tight rig the right-size ladder lands sessions BELOW the
+        // request's ctx_cap — and those are exactly the rigs where every turn is a miss. The
+        // affinity probe therefore tests `need` (prompt + budget + slack), not ctx_cap; this
+        // pins the arithmetic that makes a laddered session eligible.
+        let (prompt_len, budget, ctx_cap) = (12_000usize, 512usize, 131_072usize);
+        let need = prompt_len + budget + super::SPEC_SHRINK_SLACK;
+        let laddered = 16_384usize; // a plausible ladder landing
+        assert!(laddered < ctx_cap, "the ladder lands below the cap (else no interaction)");
+        assert!(laddered >= need, "and still covers what this request needs -> eligible");
+        // a session too small for this turn's emission is correctly rejected (it misses and
+        // follows the ladder as a new session, per F5).
+        assert!(8_192 < need);
     }
 
     #[test]
