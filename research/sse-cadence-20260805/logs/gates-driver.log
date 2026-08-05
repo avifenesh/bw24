@@ -1,0 +1,4 @@
+[20:04:08Z] run-spec nv-draft B128 rc=0 PASS=9
+[20:08:44Z] serve-smoke rc=0 failed=0
+[20:12:27Z] serve-st-gate rc=0 FAIL=0
+[20:12:27Z] GATES_DONE

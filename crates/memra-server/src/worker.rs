@@ -2925,7 +2925,8 @@ fn step_session(
             s.fed.push(tok);
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
-        // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
+        // Post-burst TAIL emission: with round-cadence flushes above, this covers only the
+        // remainder (held multi-byte UTF-8, or the whole burst under MEMRA_SSE_PER_BURST=1).
         // EOS text is never streamed (serve-compat, 2026-08-03): the tokenwise path stops
         // BEFORE emitting the EOS token's text, but the burst used to detokenize the whole
         // tail — clients saw a literal `<|im_end|>` in content (caught by the SDK gate's G4

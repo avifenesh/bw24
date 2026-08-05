@@ -1,0 +1,4 @@
+[20:13:34Z] contention hold acquired
+[20:13:53Z] contended B32: {"label": "nv-K3-B32-contended", "n": 3, "ttft_first_chunk_s": 0.5655078509953455, "chunk_gap_p50_s": 0.027267512497928692, "chunks_per_resp": 37}
+[20:14:11Z] contended B128: {"label": "nv-K3-B128-contended", "n": 3, "ttft_first_chunk_s": 1.6685611180000706, "chunk_gap_p50_s": 0.02741976100151078, "chunks_per_resp": 37}
+[20:14:11Z] CONTENTION_DONE
