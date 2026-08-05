@@ -176,6 +176,15 @@ elif [ -n "${MEMRA_CI_DBG_Q8:-}" ]; then
 else
     echo "decode-batch-gate Q8_0: SKIP (no model at $DBG_Q8)"
 fi
+# GRAPH-WARMUP STRESS (lane/graph-warmups, 2026-08-05): the pool-growth adversarial gate
+# behind the MEMRA_GRAPH_WARMUPS=1 default. Large<->small session cycles + overlap arm force
+# captures over freed async-pool blocks; every stream must be bit-identical to eager (the #68
+# stale-baked-address class corrupts WITHOUT faulting) and the canary arm proves the
+# comparator can catch injected graph-memory corruption. In-battery per the H100 lane law:
+# gates outside the battery rot silently. MEMRA_CI_GWSTRESS=0 skips.
+if [ "${MEMRA_CI_GWSTRESS:-1}" = "1" ] && [ -x tools/graph-warmup-stress-gate.sh ]; then
+    tools/graph-warmup-stress-gate.sh || { echo "graph-warmup-stress FAIL"; exit 1; }
+fi
 echo "correctness stage: GREEN"
 
 # normal-usage serving battery (2026-07-30): OpenAI surface, streaming, determinism,

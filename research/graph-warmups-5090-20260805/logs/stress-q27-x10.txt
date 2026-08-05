@@ -1,0 +1,20 @@
+model /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf arch qwen35 (64 layers) cycles=10 large=160tok/@4096 small=90tok/@96 MEMRA_GRAPH_WARMUPS=1 canary=false
+[pool] post-load: reserved 13952 MB used 13938 MB
+[pool] post-eager-ref: reserved 14272 MB used 13940 MB
+cycle 1: OK  [pool after L-drop: 15360/13943 MB, after S: 15360/13943 MB rsv/used]
+cycle 2: OK  [pool after L-drop: 15360/13943 MB, after S: 15360/13943 MB rsv/used]
+cycle 3: OK  [pool after L-drop: 15360/13943 MB, after S: 15360/13943 MB rsv/used]
+cycle 4: OK  [pool after L-drop: 15360/13943 MB, after S: 15360/13943 MB rsv/used]
+cycle 5: OK  [pool after L-drop: 15360/13943 MB, after S: 15360/13943 MB rsv/used]
+cycle 6: OK  [pool after L-drop: 15360/13943 MB, after S: 15360/13943 MB rsv/used]
+cycle 7: OK  [pool after L-drop: 15392/13943 MB, after S: 15392/13943 MB rsv/used]
+cycle 8: OK  [pool after L-drop: 15392/13943 MB, after S: 15392/13943 MB rsv/used]
+cycle 9: OK  [pool after L-drop: 15392/13943 MB, after S: 15392/13943 MB rsv/used]
+cycle 10: OK  [pool after L-drop: 15392/13943 MB, after S: 15392/13943 MB rsv/used]
+overlap arm: OK (A survived B's pool growth; B survived A's free + recapture)
+[pool] end: reserved 16544 MB used 13943 MB
+ALL GREEN: graph-warmup-stress (10 cycles x 4 arms + overlap, bit-identical, no fault)
+
+real	2m52.852s
+user	2m48.977s
+sys	0m3.736s

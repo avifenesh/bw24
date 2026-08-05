@@ -1,0 +1,7 @@
+[gate] eager prime start
+[gate] eager prime done
+[gate] eager gen done; graph path start
+[gate] graph path done
+buckets crossed (fa_vec, n_splits): [(false, 1), (true, 12), (true, 13), (true, 14), (true, 15), (true, 16), (true, 17), (true, 18), (true, 19), (true, 20), (true, 21), (true, 22), (true, 23), (true, 24), (true, 25), (true, 26), (true, 27), (true, 28), (true, 29), (true, 30), (true, 31), (true, 32), (true, 33), (true, 34), (true, 35), (true, 36), (true, 37), (true, 38), (true, 39), (true, 40)]
+graph (re)captures: 2
+Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=30 captures=2

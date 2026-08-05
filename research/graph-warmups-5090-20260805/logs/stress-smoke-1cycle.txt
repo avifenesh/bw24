@@ -1,0 +1,7 @@
+model /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf arch qwen35 (32 layers) cycles=1 large=160tok/@4096 small=90tok/@96 MEMRA_GRAPH_WARMUPS=1 canary=false
+[pool] post-load: reserved 4640 MB used 4624 MB
+[pool] post-eager-ref: reserved 4736 MB used 4625 MB
+cycle 1: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+overlap arm: OK (A survived B's pool growth; B survived A's free + recapture)
+[pool] end: reserved 6048 MB used 4627 MB
+ALL GREEN: graph-warmup-stress (1 cycles x 4 arms + overlap, bit-identical, no fault)

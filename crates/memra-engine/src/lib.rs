@@ -10566,18 +10566,32 @@ impl Engine {
             static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *T.get_or_init(|| std::env::var("MEMRA_GRAPH_CAPTIME").as_deref() == Ok("1"))
         };
-        // MEMRA_GRAPH_WARMUPS (Q1 lane, default 2 = unchanged): the phase split showed the two
-        // eager warmups are 80% of recapture cost (q27 27.4 of 34.4 ms) — 3x larger than the
-        // ENTIRE mem-node ceiling the audit chased, and node-count-invariant, so no capture-body
-        // refactor can touch it. Warmup 1 primes the async pool (its allocs may grow/map);
-        // warmup 2 re-walks the same sequence over the now-freed blocks so the captured third
-        // run sees identical addresses and kernel attrs. Whether run 2 is load-bearing is an
-        // EXACTNESS question, not a taste question: the door exists so graph-decode-gate
-        // (256-step bit-identity) and run-spec can arbitrate. Default stays 2 until they do.
+        // MEMRA_GRAPH_WARMUPS (Q1 lane; DEFAULT 1 since lane/graph-warmups 2026-08-05): the
+        // phase split showed the eager warmups are 80% of recapture cost (q27 27.4 of 34.4 ms
+        // pod / 42% of 52.6 ms 5090) — 3x larger than the ENTIRE mem-node ceiling the audit
+        // chased, and node-count-invariant, so no capture-body refactor could touch it.
+        // Warmup 2's theorized job was async-pool ADDRESS STABILITY: warmup 1's allocs may
+        // grow/map the pool, warmup 2 re-walks the same sequence over the freed blocks so the
+        // captured third run bakes settled addresses. That hazard is the #68 stale-baked-
+        // address class — which the engine now guards STRUCTURALLY rather than by re-walking:
+        // in-body transients are captured as BALANCED in-graph alloc/free node pairs (census
+        // 1589/1589 — replays allocate for themselves; no baked transient pointers), every
+        // externally-referenced buffer is stable-pointer by design (fa_part_pool retires-on-
+        // grow and never frees, resident counters/scratch, cache set in place), and the
+        // draft-graph path additionally rides capture_graph_retained (capture_keep holds all
+        // warmup+capture allocs alive). One warmup therefore suffices for kernel-attr
+        // settling and pool mapping. Arbitrated adversarially, not by taste:
+        // graph-warmup-stress (pool-growth cycles large<->small x10, overlap arm, forced
+        // recaptures over freed blocks — bit-identity vs eager + canary teeth) is GREEN at
+        // warmups=1 on the deployment rig, plus graph-decode-gate 256-step bit-identity,
+        // graph-session-gate, run-spec K=1..8 (receipts research/graph-warmups-5090-20260805/
+        // + the pod's research/graph-allocfree-20260805/). Measured: recapture -38..-42% q27 /
+        // -41% q9, decode +~1%, capture+prime -13ms. MEMRA_GRAPH_WARMUPS=2 = the rollback
+        // seam; tools/graph-warmup-stress-gate.sh = the gate any regression re-runs.
         let warmups = {
             static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             *W.get_or_init(|| std::env::var("MEMRA_GRAPH_WARMUPS").ok()
-                .and_then(|v| v.parse().ok()).filter(|n| *n >= 1).unwrap_or(2))
+                .and_then(|v| v.parse().ok()).filter(|n| *n >= 1).unwrap_or(1))
         };
         let mut run = || -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>> {
             let t_w = std::time::Instant::now();

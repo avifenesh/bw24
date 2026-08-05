@@ -1,0 +1,146 @@
+# re-mint: MEMRA_GRAPH_WARMUPS 2(default) vs 1, N=5 ADJACENT pairs (lock held per
+# pair, arm order alternates per rep), 5090 laptop (82 SM). probe medians are N=5
+# inside each invocation (--reps 5).
+# start: 2026-08-06T00:38:36+03:00  commit: 00716d26540fb0774cbb377e9ced6daee300501f
+NVIDIA GeForce RTX 5090 Laptop GPU, 58, 172 MHz
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep1 warmups=2 ===
+58, 172 MHz
+capture+prime wall: median 1127.4 ms over 5 (min 1109.1 max 1131.1)
+recapture (capture+instantiate, no prime): median 52.2 ms  (raw ["60.5", "51.8", "52.2", "51.9", "52.6"])
+launch(async) per step: median 53.7 us  (raw ["53.7", "53.1", "54.1", "53.2", "55.8"])
+decode tok/s (session step): median 46.66  (raw ["46.62", "46.77", "46.68", "46.66", "46.60"])
+SUMMARY iflag=auto_free launch_us=53.7 tps=46.66 cap_ms=1127.4
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep1 warmups=1 ===
+74, 1807 MHz
+capture+prime wall: median 1111.3 ms over 5 (min 1092.5 max 1113.3)
+recapture (capture+instantiate, no prime): median 31.1 ms  (raw ["39.9", "32.9", "31.1", "30.4", "30.9"])
+launch(async) per step: median 54.0 us  (raw ["54.0", "52.2", "56.5", "51.8", "54.2"])
+decode tok/s (session step): median 47.02  (raw ["46.89", "47.06", "47.04", "47.02", "46.98"])
+SUMMARY iflag=auto_free launch_us=54.0 tps=47.02 cap_ms=1111.3
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep2 warmups=1 ===
+66, 1927 MHz
+capture+prime wall: median 1107.0 ms over 5 (min 1086.5 max 1108.3)
+recapture (capture+instantiate, no prime): median 30.6 ms  (raw ["39.3", "30.4", "30.6", "30.3", "31.6"])
+launch(async) per step: median 52.0 us  (raw ["51.0", "52.5", "49.8", "52.0", "56.2"])
+decode tok/s (session step): median 47.14  (raw ["47.14", "47.26", "47.24", "47.11", "47.12"])
+SUMMARY iflag=auto_free launch_us=52.0 tps=47.14 cap_ms=1107.0
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep2 warmups=2 ===
+78, 1965 MHz
+capture+prime wall: median 1133.2 ms over 5 (min 1122.0 max 1134.3)
+recapture (capture+instantiate, no prime): median 52.6 ms  (raw ["61.3", "52.4", "53.1", "52.1", "52.6"])
+launch(async) per step: median 54.8 us  (raw ["55.1", "52.5", "56.1", "54.1", "54.8"])
+decode tok/s (session step): median 46.55  (raw ["46.40", "46.62", "46.58", "46.55", "46.54"])
+SUMMARY iflag=auto_free launch_us=54.8 tps=46.55 cap_ms=1133.2
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep3 warmups=2 ===
+77, 1770 MHz
+capture+prime wall: median 1135.6 ms over 5 (min 1122.5 max 1148.4)
+recapture (capture+instantiate, no prime): median 54.4 ms  (raw ["61.3", "52.3", "54.4", "52.4", "55.9"])
+launch(async) per step: median 54.3 us  (raw ["55.1", "54.3", "52.7", "54.4", "53.0"])
+decode tok/s (session step): median 46.49  (raw ["46.33", "46.54", "46.51", "46.49", "46.46"])
+SUMMARY iflag=auto_free launch_us=54.3 tps=46.49 cap_ms=1135.6
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep3 warmups=1 ===
+82, 1845 MHz
+capture+prime wall: median 1114.2 ms over 5 (min 1094.6 max 1115.3)
+recapture (capture+instantiate, no prime): median 30.8 ms  (raw ["39.2", "30.3", "32.8", "30.4", "30.8"])
+launch(async) per step: median 53.5 us  (raw ["51.8", "53.5", "53.9", "53.2", "54.3"])
+decode tok/s (session step): median 46.88  (raw ["46.80", "46.98", "46.92", "46.88", "46.88"])
+SUMMARY iflag=auto_free launch_us=53.5 tps=46.88 cap_ms=1114.2
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep4 warmups=1 ===
+54, 172 MHz
+capture+prime wall: median 1105.6 ms over 5 (min 1087.6 max 1107.5)
+recapture (capture+instantiate, no prime): median 31.7 ms  (raw ["42.1", "32.4", "31.4", "31.7", "31.0"])
+launch(async) per step: median 53.5 us  (raw ["53.5", "54.4", "53.6", "52.4", "53.4"])
+decode tok/s (session step): median 47.19  (raw ["47.20", "47.29", "47.19", "47.19", "47.14"])
+SUMMARY iflag=auto_free launch_us=53.5 tps=47.19 cap_ms=1105.6
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep4 warmups=2 ===
+78, 1822 MHz
+capture+prime wall: median 1130.9 ms over 5 (min 1111.0 max 1133.5)
+recapture (capture+instantiate, no prime): median 53.3 ms  (raw ["60.6", "51.9", "53.3", "52.1", "53.9"])
+launch(async) per step: median 52.7 us  (raw ["52.5", "52.7", "52.6", "53.2", "55.0"])
+decode tok/s (session step): median 46.56  (raw ["46.51", "46.62", "46.58", "46.56", "46.55"])
+SUMMARY iflag=auto_free launch_us=52.7 tps=46.56 cap_ms=1130.9
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep5 warmups=2 ===
+57, 1620 MHz
+capture+prime wall: median 1125.4 ms over 5 (min 1105.6 max 1127.3)
+recapture (capture+instantiate, no prime): median 52.4 ms  (raw ["60.6", "52.8", "52.2", "52.1", "52.4"])
+launch(async) per step: median 54.3 us  (raw ["55.4", "53.0", "54.3", "53.1", "56.2"])
+decode tok/s (session step): median 46.75  (raw ["46.66", "46.81", "46.75", "46.77", "46.73"])
+SUMMARY iflag=auto_free launch_us=54.3 tps=46.75 cap_ms=1125.4
+=== Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf rep5 warmups=1 ===
+71, 1830 MHz
+capture+prime wall: median 1110.5 ms over 5 (min 1090.4 max 1111.4)
+recapture (capture+instantiate, no prime): median 30.7 ms  (raw ["39.3", "30.5", "30.7", "30.5", "31.0"])
+launch(async) per step: median 52.9 us  (raw ["56.7", "54.5", "51.8", "52.9", "52.8"])
+decode tok/s (session step): median 47.06  (raw ["46.90", "47.15", "47.09", "47.06", "46.99"])
+SUMMARY iflag=auto_free launch_us=52.9 tps=47.06 cap_ms=1110.5
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep1 warmups=2 ===
+80, 2047 MHz
+capture+prime wall: median 427.3 ms over 5 (min 414.2 max 430.1)
+recapture (capture+instantiate, no prime): median 20.0 ms  (raw ["20.6", "19.9", "20.4", "19.9", "20.0"])
+launch(async) per step: median 25.9 us  (raw ["26.1", "25.8", "25.9", "25.7", "26.0"])
+decode tok/s (session step): median 132.36  (raw ["132.51", "132.25", "132.47", "132.25", "132.36"])
+SUMMARY iflag=auto_free launch_us=25.9 tps=132.36 cap_ms=427.3
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep1 warmups=1 ===
+80, 2100 MHz
+capture+prime wall: median 418.6 ms over 5 (min 410.1 max 420.2)
+recapture (capture+instantiate, no prime): median 12.4 ms  (raw ["12.9", "12.3", "12.5", "12.3", "12.4"])
+launch(async) per step: median 26.5 us  (raw ["26.0", "26.6", "26.5", "28.5", "26.2"])
+decode tok/s (session step): median 133.87  (raw ["133.87", "134.35", "134.23", "128.50", "118.90"])
+SUMMARY iflag=auto_free launch_us=26.5 tps=133.87 cap_ms=418.6
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep2 warmups=1 ===
+83, 1815 MHz
+capture+prime wall: median 409.9 ms over 5 (min 402.6 max 410.6)
+recapture (capture+instantiate, no prime): median 12.1 ms  (raw ["15.3", "12.1", "12.5", "11.9", "11.9"])
+launch(async) per step: median 28.9 us  (raw ["28.4", "29.8", "29.7", "28.9", "27.9"])
+decode tok/s (session step): median 132.84  (raw ["132.74", "133.05", "132.99", "132.84", "132.80"])
+SUMMARY iflag=auto_free launch_us=28.9 tps=132.84 cap_ms=409.9
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep2 warmups=2 ===
+86, 1972 MHz
+capture+prime wall: median 416.4 ms over 5 (min 408.1 max 417.1)
+recapture (capture+instantiate, no prime): median 19.4 ms  (raw ["20.3", "19.5", "19.4", "19.4", "19.4"])
+launch(async) per step: median 27.5 us  (raw ["28.2", "26.8", "27.5", "27.3", "29.3"])
+decode tok/s (session step): median 131.71  (raw ["131.81", "131.83", "131.63", "131.46", "131.71"])
+SUMMARY iflag=auto_free launch_us=27.5 tps=131.71 cap_ms=416.4
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep3 warmups=2 ===
+72, 1590 MHz
+capture+prime wall: median 412.9 ms over 5 (min 401.3 max 413.8)
+recapture (capture+instantiate, no prime): median 19.2 ms  (raw ["20.2", "19.3", "19.2", "19.1", "19.2"])
+launch(async) per step: median 27.3 us  (raw ["28.4", "26.7", "27.4", "27.3", "26.1"])
+decode tok/s (session step): median 132.75  (raw ["132.80", "132.75", "132.83", "132.59", "132.59"])
+SUMMARY iflag=auto_free launch_us=27.3 tps=132.75 cap_ms=412.9
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep3 warmups=1 ===
+81, 1965 MHz
+capture+prime wall: median 406.7 ms over 5 (min 396.4 max 407.7)
+recapture (capture+instantiate, no prime): median 11.7 ms  (raw ["12.4", "11.8", "11.7", "11.6", "11.6"])
+launch(async) per step: median 28.5 us  (raw ["27.8", "28.5", "27.7", "30.0", "28.7"])
+decode tok/s (session step): median 133.72  (raw ["134.00", "133.74", "133.72", "133.54", "133.16"])
+SUMMARY iflag=auto_free launch_us=28.5 tps=133.72 cap_ms=406.7
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep4 warmups=1 ===
+76, 1687 MHz
+capture+prime wall: median 407.0 ms over 5 (min 396.0 max 409.7)
+recapture (capture+instantiate, no prime): median 11.8 ms  (raw ["12.3", "11.8", "11.8", "11.7", "11.6"])
+launch(async) per step: median 28.1 us  (raw ["28.1", "25.7", "29.7", "28.7", "28.0"])
+decode tok/s (session step): median 133.91  (raw ["134.14", "133.91", "133.99", "133.78", "133.68"])
+SUMMARY iflag=auto_free launch_us=28.1 tps=133.91 cap_ms=407.0
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep4 warmups=2 ===
+79, 1792 MHz
+capture+prime wall: median 413.4 ms over 5 (min 401.9 max 414.4)
+recapture (capture+instantiate, no prime): median 19.2 ms  (raw ["20.0", "19.4", "19.2", "19.2", "19.2"])
+launch(async) per step: median 27.5 us  (raw ["27.5", "28.9", "27.1", "29.0", "27.1"])
+decode tok/s (session step): median 132.40  (raw ["132.60", "132.35", "132.65", "132.40", "132.04"])
+SUMMARY iflag=auto_free launch_us=27.5 tps=132.40 cap_ms=413.4
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep5 warmups=2 ===
+70, 1590 MHz
+capture+prime wall: median 412.8 ms over 5 (min 402.0 max 413.3)
+recapture (capture+instantiate, no prime): median 19.7 ms  (raw ["19.8", "20.9", "19.5", "19.2", "19.7"])
+launch(async) per step: median 27.1 us  (raw ["27.4", "27.1", "27.7", "25.4", "27.0"])
+decode tok/s (session step): median 133.02  (raw ["133.13", "133.02", "132.63", "132.69", "133.09"])
+SUMMARY iflag=auto_free launch_us=27.1 tps=133.02 cap_ms=412.8
+=== Qwen3.5-9B-NVFP4-MTP-GGUF.gguf rep5 warmups=1 ===
+80, 1942 MHz
+capture+prime wall: median 406.2 ms over 5 (min 396.8 max 406.8)
+recapture (capture+instantiate, no prime): median 11.5 ms  (raw ["12.2", "11.5", "11.5", "11.4", "11.4"])
+launch(async) per step: median 27.4 us  (raw ["27.4", "29.3", "27.2", "26.6", "28.4"])
+decode tok/s (session step): median 134.04  (raw ["134.04", "134.09", "133.91", "133.74", "134.05"])
+SUMMARY iflag=auto_free launch_us=27.4 tps=134.04 cap_ms=406.2
+# end: 2026-08-06T01:16:03+03:00
