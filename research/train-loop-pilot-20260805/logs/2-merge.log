@@ -1,0 +1,12 @@
+[stage:2-merge] start 2026-08-05T07:23:27Z
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+[merge-lora] base=/root/hf-models/qwen35-9b class=Qwen3_5ForConditionalGeneration
+Loading weights:   0%|          | 0/760 [00:00<?, ?it/s]Loading weights: 100%|██████████| 760/760 [00:00<00:00, 9849.04it/s]
+[merge-lora] adapter=/root/pilot/adapter
+[merge-lora] carryover: 15 base tensors not in the model class (prefixes: ['mtp']) — copying verbatim
+[merge-lora] wrote model-00001-of-00004.safetensors (397 tensors, 4.6 GiB)
+[merge-lora] wrote model-00002-of-00004.safetensors (154 tensors, 4.6 GiB)
+[merge-lora] wrote model-00003-of-00004.safetensors (150 tensors, 4.6 GiB)
+[merge-lora] wrote model-00004-of-00004.safetensors (74 tensors, 4.1 GiB)
+[merge-lora] DONE: /root/pilot/merged-hf (775 tensors, key-set == base)
+[stage:2-merge] end rc=0 wall=24s

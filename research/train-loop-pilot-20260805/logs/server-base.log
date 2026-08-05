@@ -1,0 +1,108 @@
+[server] starting; models config = [("pilot", "/root/pilot/q9base-Q8_0.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "pilot" <- /root/pilot/q9base-Q8_0.gguf
+[worker]   loaded "pilot": 33 layers, eos=248046
+[worker] pilot: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] pilot: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["pilot"]
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=chatcmpl-ecff97dde4d99a5822c26992a9bbb3d0 tenant=default lane=interactive model="pilot"
+[worker] observed session VRAM cost for "pilot": 235MB (admission gate = 2x)
+[spec-acc] ctx=19 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=53 burst=19/39 cum=41/72=0.569
+[meter] admit id=chatcmpl-a884056ef3167cc9d95bafe9fbca97fc tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=20 burst=19/39 cum=19/39=0.487
+[meter] admit id=chatcmpl-896f6ba93b42acc76b4e4b30d3a7ed01 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=25 burst=20/39 cum=20/39=0.513
+[spec-acc] ctx=59 burst=21/39 cum=41/78=0.526
+[spec-acc] ctx=93 burst=23/33 cum=64/111=0.577
+[spec-acc] ctx=127 burst=23/36 cum=87/147=0.592
+[spec-acc] ctx=162 burst=22/33 cum=109/180=0.606
+[spec-acc] ctx=195 burst=24/27 cum=133/207=0.643
+[spec-acc] ctx=228 burst=21/33 cum=154/240=0.642
+[spec-acc] ctx=260 burst=23/33 cum=177/273=0.648
+[spec-acc] ctx=294 burst=23/30 cum=200/303=0.660
+[spec-acc] ctx=327 burst=13/21 cum=213/324=0.657
+[meter] admit id=chatcmpl-eacc9119f8f20f3f7a79e6c4cec284d8 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=21 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=54 burst=23/27 cum=45/57=0.789
+[spec-acc] ctx=86 burst=23/33 cum=68/90=0.756
+[spec-acc] ctx=120 burst=22/33 cum=90/123=0.732
+[spec-acc] ctx=153 burst=21/36 cum=111/159=0.698
+[spec-acc] ctx=186 burst=22/33 cum=133/192=0.693
+[spec-acc] ctx=219 burst=21/33 cum=154/225=0.684
+[spec-acc] ctx=251 burst=21/33 cum=175/258=0.678
+[meter] admit id=chatcmpl-8943418d11dbb47f7ce1779a64b53afb tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=23 burst=21/36 cum=21/36=0.583
+[spec-acc] ctx=57 burst=22/36 cum=43/72=0.597
+[spec-acc] ctx=91 burst=21/33 cum=64/105=0.610
+[spec-acc] ctx=123 burst=20/39 cum=84/144=0.583
+[meter] admit id=chatcmpl-0742e9548999c35636af1ea023d360b7 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=30 burst=22/36 cum=22/36=0.611
+[spec-acc] ctx=65 burst=20/36 cum=42/72=0.583
+[spec-acc] ctx=97 burst=23/30 cum=65/102=0.637
+[meter] admit id=chatcmpl-02cd74ab02a70154f40437309c51b1c2 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=17 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=50 burst=23/27 cum=46/54=0.852
+[spec-acc] ctx=82 burst=20/36 cum=66/90=0.733
+[spec-acc] ctx=114 burst=20/39 cum=86/129=0.667
+[spec-acc] ctx=147 burst=22/33 cum=108/162=0.667
+[spec-acc] ctx=180 burst=22/33 cum=130/195=0.667
+[meter] admit id=chatcmpl-981a4abf3b69487fa3b2cbe769cea502 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=18 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=50 burst=21/33 cum=43/60=0.717
+[spec-acc] ctx=82 burst=22/39 cum=65/99=0.657
+[spec-acc] ctx=117 burst=24/33 cum=89/132=0.674
+[spec-acc] ctx=152 burst=19/42 cum=108/174=0.621
+[spec-acc] ctx=185 burst=16/57 cum=124/231=0.537
+[spec-acc] ctx=220 burst=22/33 cum=146/264=0.553
+[spec-acc] ctx=253 burst=18/42 cum=164/306=0.536
+[spec-acc] ctx=285 burst=19/39 cum=183/345=0.530
+[spec-acc] ctx=317 burst=17/21 cum=200/366=0.546
+[meter] admit id=chatcmpl-29b689b8b46460ae56b47fdda9687b72 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=23 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=58 burst=25/27 cum=48/60=0.800
+[spec-acc] ctx=92 burst=21/36 cum=69/96=0.719
+[spec-acc] ctx=125 burst=22/33 cum=91/129=0.705
+[spec-acc] ctx=158 burst=25/30 cum=116/159=0.730
+[spec-acc] ctx=193 burst=22/30 cum=138/189=0.730
+[spec-acc] ctx=225 burst=22/33 cum=160/222=0.721
+[spec-acc] ctx=258 burst=24/24 cum=184/246=0.748
+[spec-acc] ctx=290 burst=19/39 cum=203/285=0.712
+[spec-acc] ctx=322 burst=12/30 cum=215/315=0.683
+[meter] admit id=chatcmpl-28581b890d43620bcc7d10958dcc4189 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=19 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=52 burst=23/30 cum=46/57=0.807
+[spec-acc] ctx=85 burst=20/36 cum=66/93=0.710
+[spec-acc] ctx=117 burst=25/30 cum=91/123=0.740
+[spec-acc] ctx=152 burst=22/33 cum=113/156=0.724
+[spec-acc] ctx=185 burst=23/36 cum=136/192=0.708
+[spec-acc] ctx=220 burst=20/39 cum=156/231=0.675
+[spec-acc] ctx=253 burst=20/36 cum=176/267=0.659
+[spec-acc] ctx=285 burst=23/30 cum=199/297=0.670
+[spec-acc] ctx=318 burst=13/24 cum=212/321=0.660
+[meter] admit id=chatcmpl-25f7af9fb06d0641b53ac1f4aacc4e96 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=21 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=55 burst=25/27 cum=49/54=0.907
+[spec-acc] ctx=89 burst=22/30 cum=71/84=0.845
+[spec-acc] ctx=121 burst=23/27 cum=94/111=0.847
+[spec-acc] ctx=153 burst=24/33 cum=118/144=0.819
+[spec-acc] ctx=188 burst=22/33 cum=140/177=0.791
+[spec-acc] ctx=221 burst=22/30 cum=162/207=0.783
+[spec-acc] ctx=253 burst=22/33 cum=184/240=0.767
+[spec-acc] ctx=286 burst=21/36 cum=205/276=0.743
+[spec-acc] ctx=319 burst=16/24 cum=221/300=0.737
+[meter] admit id=chatcmpl-13470bb5596752cb692f518a73c858a0 tenant=default lane=interactive model="pilot"
+[spec-acc] ctx=28 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=60 burst=21/36 cum=43/63=0.683
+[spec-acc] ctx=93 burst=21/36 cum=64/99=0.646
+[spec-acc] ctx=126 burst=22/30 cum=86/129=0.667
+[spec-acc] ctx=158 burst=22/30 cum=108/159=0.679
+[spec-acc] ctx=190 burst=20/36 cum=128/195=0.656
+[spec-acc] ctx=222 burst=21/36 cum=149/231=0.645
+[spec-acc] ctx=255 burst=22/33 cum=171/264=0.648
+[spec-acc] ctx=288 burst=23/27 cum=194/291=0.667
+[spec-acc] ctx=320 burst=22/27 cum=216/318=0.679
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
