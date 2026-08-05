@@ -29,7 +29,15 @@ g31	argmax	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	re
 e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 q9	argmax	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	@tools/fast-gate/prompts/probe.txt	20	-
-k27	argmax	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+# k27 pins MEMRA_FA_SPLIT=8 (lane/k27-divergence, research/k27-divergence-20260805/VERDICT.md):
+# goldens are minted on the 82-SM 5090 whose fa_split_keys ladder gives split 8 at this probe's
+# t_kv (96-110); any rig with fa_sm_count()>=128 defaults to split 16 = different FA-decode
+# split-K reduction segmentation, and generated index 6 sits at t_kv=96 (the vec floor) on a
+# near-tie (margin 0.04 vs step-median ~9.4) that the split size flips — the v0.70.0 release
+# battery's pod red. The pin is a NO-OP on the 5090 (default already 8 here, md5-verified) and
+# makes the probe test the same arithmetic the golden was minted under on every rig. Cross-rig
+# TF logs at matched split are byte-identical to every printed digit — no silicon/toolkit gap.
+k27	argmax	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	@tools/fast-gate/prompts/probe.txt	20	MEMRA_FA_SPLIT=8
 # q35 chat-wrapped: the raw continuation hits EOS after 1 token (a 1-id golden is no net).
 q35	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	MEMRA_CHAT=1
 # q35slru: SAME model FORCED into the spill regime — MEMRA_MOE_RESIDENT=0 kills the resident
