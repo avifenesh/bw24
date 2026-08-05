@@ -31,6 +31,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 async-stream = "0.3"
 futures-core = "0.3"
 llguidance = "1.7.6"
+# API-key auth (lane/api-keys): keys are stored as SHA-256 hex, never plaintext.
+sha2 = "0.10"
+# keyring file format (MEMRA_API_KEYS=/path/keys.toml)
+toml = "0.8"
 
 [[bin]]
 name = "memra-server"
