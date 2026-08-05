@@ -134,6 +134,10 @@ mismatch; replay keeps every turn's prompt byte-identical across arms.
 chars deep). The affinity arm itself is DETERMINISTIC — `g25-resume` vs `g25-resume2`,
 same flag, same prompts, **25/25 identical `text_sha`**.
 
+The streamed TTFT sweep is an independent re-run of the same comparison, 3x: **22/25 in every
+rep, with the SAME three mismatch turns (2, 3, 24) each time**, and the ON arm 25/25
+identical across all three reps. The verdict and its exceptions are reproducible, not noise.
+
 ### Those three are a PRE-EXISTING class, not affinity
 
 Four independent receipts, each one able to falsify the claim on its own:
@@ -156,47 +160,116 @@ Verdict: **resumed-vs-cold divergence at long generation windows is pre-existing
 prefix-resume tier and is NOT introduced by affinity.** Affinity inherits it; it does not
 create it. Naming it as a separate open item rather than folding it into this lane's result.
 
+### ROOT CAUSE of that class: chunked prefill is not reduction-order-stable
+
+Found while building serve-smoke check 10, which failed at turn 2 on the 9B — a 149-token
+window, far too short for a "long window" explanation. Isolating it produced a stronger
+statement than the attribution above: **resumed == cold is not a property this engine has, on
+any reuse tier, and no reuse is required to break it.**
+
+Arms: the SAME 4 recorded prompts, per-turn `cache_salt` (so no tier can hit — every request
+primes cold), `MEMRA_AFFINITY=0`, varying ONLY `MEMRA_PRIME_CHUNK`:
+
+| turn | prompt tokens | chunk 2048 vs 64 | chunk 2048 vs 32 |
+|---|---|---|---|
+| 0 | 48 | identical | identical |
+| 1 | 97 | identical | **differs @ char 45** |
+| 2 | 149 | **differs @ char 172** | **differs @ char 52** |
+| 3 | 195 | identical | identical |
+
+Chunk boundaries alone change greedy output: a different split changes the reduction order in
+the prefill GEMMs, which perturbs logits in the last bits and flips a near-tie argmax. Turn 2
+is the same turn check 10 failed on, and it is chunk-sensitive with zero reuse involved.
+
+Every resume necessarily RE-CHUNKS the prefill — it primes `[rewind boundary .. end]` as its
+own chunk sequence instead of one full prime — so every resume tier inherits this. That is why
+the pre-lane BASE binary already diverged pool-vs-cold (receipt 3), and why the `lx` arm
+diverged with 0 affinity rewinds (receipt 2).
+
+Consequences taken here:
+- The 22/25 result stands as reported, and its 3 exceptions are now explained by mechanism, not
+  just correlated with a pre-existing arm.
+- serve-smoke check 10 does NOT assert resumed == cold. It asserts what affinity owns:
+  determinism of the resume path across servers, plus liveness. Wiring the naive assertion
+  would have put a permanently-red gate in the battery and blamed affinity for chunked
+  prefill's reduction order.
+- OPEN ITEM, not this lane's: whether chunked prefill should be made reduction-order-stable
+  (fixed accumulation order independent of chunk split). Until it is, no gate anywhere in the
+  repo may assert byte-equality between two prefills of the same prompt at different chunk
+  boundaries. Worth noting `MEMRA_PRIME_CHUNK` is a documented machine-config knob, so two rigs
+  with different values already produce different greedy text on the same prompt.
+- Reproducer + raw rows: `chunk-order-probe.py` and `chunk-order.jsonl` (12 rows = 3 chunk
+  sizes x 4 prompts, each with its text; under two minutes on the 9B). Boot the 9B+draft with
+  `MEMRA_PRIME_CHUNK=<n> MEMRA_AFFINITY=0` and run the probe once per value.
+
 ## The number that matters — TTFT/turn, owner regime
 
-N=3 interleaved reps per arm (on, off, on, off, on, off — never all of one arm then the
-other), same recorded transcript replayed by both, `flock /tmp/gpu5090.lock` held for the whole
-sweep, no other GPU tenant. Thermal regime: warm steady-state, GPU 61 C / 180 MHz idle at
-sweep start, cards otherwise unloaded (the daily driver was down). Per-turn MEDIAN over the 3
-reps — never a mean over turns: turn 0 is a cold prime in both arms and the rewrite turns are
-the interesting ones, so a single aggregate would hide the shape.
+Measurement regime for both sweeps below: N=3 INTERLEAVED reps per arm (on, off, on, off, on,
+off — never all of one arm then the other, per the H100 lane's law 1), the same recorded
+transcript replayed by both arms so every turn's prompt is byte-identical across them,
+`flock /tmp/gpu5090.lock` held for the whole sweep with no other GPU tenant (the daily driver
+was down). Thermal: cold start at 61 C / 180 MHz idle, ending 85 C / 1717 MHz — i.e. the sweep
+warms into steady state, and each arm's replicates are spread across that ramp by the
+interleave rather than one arm owning the cold end. Per-turn MEDIAN over the 3 reps, never a
+mean over turns: turn 0 is a cold prime in both arms and the rewrite turns are the interesting
+ones, so a single aggregate would hide the shape.
 
-Rows: `ttft-{on,off}-r{1,2,3}.jsonl` + `.server.log`. Table via
-`drive-affinity.py --curve wall_s ...`.
+### TTFT (the lane's number)
+
+Streamed (`--stream`): the clock stops on the first SSE chunk carrying text, so this is
+prefill + one decode step — exactly the quantity the resume path shortcuts. Rows:
+`st-{on,off}-r{1,2,3}.jsonl` + `.server.log`. Table via `drive-affinity.py --curve ttft_s ...`.
 
 | turn | affinity ON | OFF | speedup | note |
 |---|---|---|---|---|
-| 0 | 16.283 | 16.347 | 1.00x | cold prime, both arms — nothing to resume |
-| 1 | 4.012 | 4.036 | 1.01x | pure extension: the PREFIX probe serves both arms |
-| 2 | 6.625 | 17.118 | 2.58x | first rewritten history — OFF re-primes 12.3k |
-| 3 | 3.518 | 15.460 | 4.39x | |
-| 4 | 3.496 | 14.445 | 4.13x | |
-| 5-21 | 0.866-0.884 | 11.8-13.3 | **13.7-15.0x** | the steady-state agent regime |
-| 22 | 6.334 | 18.699 | 2.95x | long answer (601 tok) |
-| 23 | 0.884 | 0.883 | 1.00x | extension turn: prefix probe hits in both arms |
-| 24 | 3.809 | 16.291 | 4.28x | |
+| 0 | 9.882 | 9.962 | 1.01x | cold prime, both arms — nothing to resume |
+| 1 | 0.590 | 0.591 | 1.00x | pure extension: the PREFIX probe serves both arms |
+| 2 | 0.562 | 11.283 | **20.1x** | first rewritten history — OFF re-primes 12.3k |
+| 3 | 0.600 | 11.896 | 19.8x | |
+| 4 | 0.573 | 11.899 | 20.8x | |
+| 5-22 | 0.525-0.548 | 11.89-13.36 | **22.4-24.5x** | the steady-state agent regime |
+| 23 | 0.544 | 0.541 | 0.99x | extension turn: prefix probe hits in both arms |
+| 24 | 0.645 | 14.031 | 21.8x | |
 
-Sum-of-medians over the 25 turns: **59.8 s ON vs 317.2 s OFF = 5.30x**.
+Sum-of-medians over the 25 turns: **23.1 s ON vs 287.2 s OFF = 12.4x**.
 
-Read the steady-state block, not the total: at turns 5-21 the conversation is 13k-14.4k tokens
-and each turn's answer is ~63 tokens. `MEMRA_AFFINITY=0` spends ~12-13 s re-priming that whole
-window before emitting a token; affinity primes the ~85-token delta and answers in 0.87 s. The
-brief's target — turn-N drops from the full-re-prime class to the prefill-of-delta class — is
-met: **~12.3 s -> 0.87 s, and the ON arm's per-turn cost is FLAT in conversation length**
-(0.866 s at turn 5 / 13.0k tokens, 0.884 s at turn 21 / 14.4k) while the OFF arm's grows
-monotonically with it (11.82 -> 13.30 s). That flatness is the actual result: TTFT stops
-scaling with history.
+The brief's target was turn-N TTFT dropping from the ~3 s full-re-prime class to the
+prefill-of-delta class (~0.2-0.4 s). Measured on the owner's real conversation shape the
+control is far worse than 3 s (11-14 s at 12-15k tokens) and the resumed arm lands at
+**0.53-0.65 s** — just above the target band, and the residual is not prefill: at turn 5 the
+delta is ~85 tokens, so ~0.53 s is the fixed per-turn floor (rewind + delta prime + first
+decode step), not work that scales.
 
-`wall_s` bundles prefill with generation, so it is only a fair per-turn comparison where both
-arms emit the same token count — which the replay harness enforces prompt-side, and the
-`completion_tokens` columns confirm on 22 of 25 turns (the 3 exceptions are the pre-existing
-divergence turns above). For the isolated first-token number the harness gained `--stream`,
-which stops the clock on the first SSE chunk carrying text; streamed rows are
-`st-{on,off}-r{1,2,3}.jsonl` with a populated `ttft_s` column.
+**The result is the FLATNESS, not the ratio.** ON: 0.525 s at 13.1k prompt tokens, 0.548 s at
+14.6k. OFF: 11.89 s -> 13.36 s across the same span. TTFT stops scaling with conversation
+length — which is the property a daily driver needs, and the ratio only grows as the
+conversation does. Per-rep, at the extremes of the steady block: rep1 0.525 -> 0.541,
+rep2 0.534 -> 0.548, rep3 0.521 -> 0.566.
+
+### Total wall (the earlier sweep, kept as the corroborating arm)
+
+`wall_s` bundles prefill with generation, so it is only a fair comparison where both arms emit
+the same token count — the replay harness enforces the prompt side, and `completion_tokens`
+confirms it on 22 of 25 turns (the 3 exceptions are the pre-existing divergence turns above).
+Rows: `ttft-{on,off}-r{1,2,3}.jsonl` (named before the streamed mode existed; they carry
+`wall_s` only).
+
+| turn | ON | OFF | speedup |
+|---|---|---|---|
+| 0 | 16.283 | 16.347 | 1.00x |
+| 1 | 4.012 | 4.036 | 1.01x |
+| 2 | 6.625 | 17.118 | 2.58x |
+| 5-21 | 0.866-0.884 | 11.8-13.3 | 13.7-15.0x |
+| 22 | 6.334 | 18.699 | 2.95x |
+| 24 | 3.809 | 16.291 | 4.28x |
+
+Sum-of-medians: 59.8 s ON vs 317.2 s OFF = 5.30x. The end-to-end ratio is necessarily smaller
+than the TTFT ratio because decode time is identical in both arms — affinity removes prefill,
+not generation.
+
+Resume counts (from the server logs, not the HTTP responses): every ON rep 21 affinity rewinds
++ 3 prefix resumes, every OFF rep 0 rewinds + 2 prefix resumes — identical across all 3 reps
+of both sweeps.
 
 ## Gates
 
@@ -207,13 +280,22 @@ which stops the clock on the first SSE chunk carrying text; streamed rows are
 | `tools/serve-st-gate.sh` | 0 failed |
 | `cargo test -p memra-server --release` | 60 passed, 0 failed |
 
-New permanent gate: **serve-smoke check 10** — session-affinity resume exactness. Records a
-4-turn rewritten-history conversation with `MEMRA_AFFINITY=1`, replays the SAME prompts with
-`MEMRA_AFFINITY=0`, and requires the texts to match (burst-overshoot prefix tolerance, same as
-serve-st-gate check 4). Plus a LIVENESS assertion: the affinity arm's log must show a rewind,
-because a binary where affinity never fires passes the identity half trivially — measured, it
-did exactly that before `96beb3a6`. Check 10 lives INSIDE the battery on purpose (the H100
-lane's law 3: a gate outside the battery rots silently).
+New permanent gate: **serve-smoke check 10** — session-affinity resume. Records a 4-turn
+rewritten-history conversation, replays the SAME prompts against a FRESH resuming server, and
+asserts four things: (a) the two arms' texts match (burst-overshoot prefix tolerance, same as
+serve-st-gate check 4) — determinism of the resume path across servers; (b) the recording arm
+logged a rewind; (c) the replay arm logged one too; (d) no `affinity rewind failed` line, which
+is the one message meaning state was accepted and then could not be restored. Liveness is not
+optional: a binary where affinity never fires passes (a) trivially, and that is measurably what
+the pre-`96beb3a6` binary did.
+
+Check 10 deliberately does NOT assert resumed == cold. That assertion was written first, failed
+at turn 2, and isolation showed it is not a property of the engine (chunked prefill, above).
+Check 10 lives INSIDE the battery on purpose (the H100 lane's law 3: a gate outside the battery
+rots silently) — and no reuse-exactness gate existed anywhere in `tools/` before it.
+
+Measured on the 9B NVFP4 + regime draft: `serve-smoke: 0 failed`, check 10 all four green with
+3 rewinds per arm.
 
 ## Fixed in passing
 

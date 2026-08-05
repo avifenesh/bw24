@@ -199,12 +199,31 @@ if [ -f "$DRAFT" ]; then
   # own root-cause bug (checkpoint one token PAST the prompt end) made affinity decline
   # 100% of the time while every other check stayed green.
   #
-  # The assertion is the exactness contract itself, not a golden: for the SAME request,
-  # a resumed session's text must equal a full cold prime's text. Both arms replay prompts
-  # rebuilt from ONE recorded history, so a divergence at turn N cannot cascade into turn
-  # N+1 (two independently-driven conversations would diverge into uninterpretable rows).
-  # Plus a liveness assertion — the affinity arm's log must show a rewind. Without it a
-  # binary where affinity never fires passes trivially (measured: it did).
+  # WHAT IS ASSERTED, AND WHY IT IS NOT "resumed == cold". The lane's obvious gate — resume
+  # the session, then compare against a full cold prime of the same request — was written
+  # first and FAILED on this model at turn 2. Isolation (receipts in
+  # research/session-affinity-20260805/RESULTS.md, "prefill chunking") showed that assertion
+  # is not a property this engine has, on ANY reuse tier: with a per-turn cache_salt and
+  # MEMRA_AFFINITY=0 — no reuse of any kind — the SAME prompt primed at MEMRA_PRIME_CHUNK
+  # 2048 vs 32 produces DIFFERENT greedy text (that same turn 2, diverging at char 52).
+  # Chunk boundaries alone flip a near-tie argmax, and every resume necessarily re-chunks the
+  # prefill (rewind boundary + delta, instead of one full prime), so "resumed == cold" would
+  # be gating chunked prefill's reduction order, not affinity. Asserting it here would have
+  # wired a permanently-red gate into the battery and blamed affinity for it.
+  #
+  # What affinity DOES own, and what this checks:
+  #   (a) DETERMINISM of the resume path: the same conversation replayed twice against
+  #       resuming servers must produce identical text. A resume that mixed in state from
+  #       tokens the request does not contain could not be stable — the 25-turn lane run
+  #       confirms this at scale (25/25 across 3 independent reps).
+  #   (b) LIVENESS: the affinity arm's log must show a rewind. Without it a binary where
+  #       affinity never fires passes (a) trivially — measured, that is exactly what the
+  #       pre-96beb3a6 binary did.
+  #   (c) The DECLINE path is silent: no "affinity rewind failed" in the log. That is the
+  #       one line that means state was accepted and then could not be restored.
+  # Both arms replay prompts rebuilt from ONE recorded history, so a divergence at turn N
+  # cannot cascade into turn N+1 (two independently-driven conversations would diverge into
+  # uninterpretable rows).
   # Full 25-turn version + TTFT curve: research/session-affinity-20260805/.
   echo "== serve-smoke: session-affinity resume exactness =="
   AFFPY=/tmp/serve-smoke-affinity.py
@@ -270,25 +289,41 @@ else:  # replay: same prompts, rebuilt from the RECORDED history
             bad.append(i // 2)
     print("MISMATCH " + ",".join(map(str, bad)) if bad else "IDENTICAL")
 PY
+  # Both arms resume (MEMRA_AFFINITY=1): this is a REPEATABILITY test of the resume path,
+  # not a resume-vs-cold test (see above for why the latter is not a property of the engine).
   export MEMRA_AFFINITY=1
   if start_server "smoke=$MODEL+$DRAFT"; then
     python3 $AFFPY 8177 record /tmp/serve-smoke-affinity.json 2>/dev/null
-    REWINDS=$(grep -c 'spec-affinity: rewound' /tmp/serve-smoke.log 2>/dev/null || echo 0)
+    # NB: `grep -c` already prints 0 on no-match (and exits 1), so a `|| echo 0` fallback
+    # would append a SECOND line and break the integer test. Default only if the file is gone.
+    REWINDS=$(grep -c 'spec-affinity: rewound' /tmp/serve-smoke.log 2>/dev/null)
+    FAILED_REWIND=$(grep -c 'affinity rewind failed' /tmp/serve-smoke.log 2>/dev/null)
+    REWINDS=${REWINDS:-0}; FAILED_REWIND=${FAILED_REWIND:-0}
     stop_server
-    export MEMRA_AFFINITY=0
+    # a FRESH server, so the second arm re-primes and re-parks from scratch: the replay
+    # cannot be served by state the recording arm left behind.
     if start_server "smoke=$MODEL+$DRAFT"; then
       VERDICT=$(python3 $AFFPY 8177 replay /tmp/serve-smoke-affinity.json 2>/dev/null)
+      REWINDS2=$(grep -c 'spec-affinity: rewound' /tmp/serve-smoke.log 2>/dev/null)
+      REWINDS2=${REWINDS2:-0}
       stop_server
       [ "$VERDICT" = IDENTICAL ] \
-        && PASS "affinity resume == cold prime (4 rewritten turns)" \
-        || FAIL "affinity resume text differs from cold prime (turns $VERDICT)"
+        && PASS "affinity resume is deterministic across servers (4 rewritten turns)" \
+        || FAIL "affinity resume not reproducible (turns $VERDICT)"
+      [ "${REWINDS2:-0}" -gt 0 ] \
+        && PASS "replay arm resumed too ($REWINDS2 rewind(s))" \
+        || FAIL "replay arm never rewound — only one arm exercised the resume path"
     else
-      FAIL "affinity control arm (MEMRA_AFFINITY=0) did not start"
+      FAIL "affinity replay arm did not start"
     fi
     # LIVENESS: no rewind means the arms agreed because affinity never ran.
     [ "${REWINDS:-0}" -gt 0 ] \
       && PASS "affinity fired ($REWINDS rewind(s) on a rewritten history)" \
       || FAIL "affinity never rewound — the resume path was not exercised"
+    # A rewind that FAILED means state was accepted and then could not be restored.
+    [ "${FAILED_REWIND:-0}" -eq 0 ] \
+      && PASS "no failed rewinds" \
+      || FAIL "$FAILED_REWIND affinity rewind(s) failed after being accepted"
   else
     FAIL "affinity arm did not start"
   fi
