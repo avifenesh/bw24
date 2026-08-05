@@ -1,5 +1,13 @@
 # q27 Q8_0 extreme-perf deep dive — PHASE 1 verdict
 
+> **5090-ARBITER ADDENDUM (2026-08-05, `local5090/VERDICT.md`).** The shipping arbiter changed
+> lever 2's final form: the 48 graph key **does not transfer** to the 82-SM local rig (q27
+> graph arm −1.61% at n=128, still negative through n=512), so the shipped default is
+> **SM-gated** — `budget >= 48` at `sm_count() >= 180`, `budget >= 256` everywhere else.
+> References to "landed at 48" below describe the pod-lane tree, not the final shipped form.
+> Lever 1 measured flat (order-paired −0.04%) on 82 SM and ships default-ON everywhere
+> (bit-identical, big-rig +0.94%). Full local gate battery ALL GREEN; receipts in `local5090/`.
+
 Rig: **pro6000wk-runpod-community** (RTX PRO 6000 Blackwell WK 96GB, 188 SM, driver 570.211.01,
 510W cap, mem clock droops 13365/14001 → ~1711 GB/s effective, 89C under spin).
 
