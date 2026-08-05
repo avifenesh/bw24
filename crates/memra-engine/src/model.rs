@@ -640,6 +640,12 @@ impl GpuTensor {
                 // the per-block MMQ prefill kernel is that class's consumer, and it needs exactly
                 // what this arm makes resident (raw e4m3 bytes + the verbatim f32 grid). It shares
                 // the budget accounting below, so a 24GB rig still caps the duplicate.
+                // NOTE the gate here is `fp8_mmq_enabled` (the STASH gate, still opt-in) and NOT
+                // `fp8_blk_mmq_native_enabled` (default ON since 2026-08-05). That is deliberate:
+                // this arm's whole product is a DUPLICATE weight copy, and the native-resident route
+                // exists precisely to avoid one. A QT_F8_E4M3_BLK tensor already carries its own
+                // e4m3 bytes + grid, so it needs nothing from here; wiring the default-ON gate into
+                // this condition would spend the budget on copies no kernel reads.
                 let fp8 = if qt == QT_Q8_0
                     && (crate::fp8_ffi::pp_fp8_enabled() || crate::fp8_ffi::fp8_mmq_enabled())
                 {

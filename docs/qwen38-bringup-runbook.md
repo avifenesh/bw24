@@ -158,12 +158,24 @@ The official FP8 block-128 DIR is served as-is; "conversion" is zero steps. What
    ```bash
    # kernel-check carries the fp8-blk-gpu bit-parity section (ARM B' device dequant
    # byte-equal to host, kernel_check.rs:3415) — runs in the §4 full kernel-check, no
-   # separate invocation. Load default = host block-128 -> Q8_0 exact dequant;
-   # MEMRA_FP8_BLK_GPU=1 is the byte-identical 3.87x load-wall option (FLAGS.md).
+   # separate invocation. The load-time dequant path this section gates is now the
+   # FALLBACK, not the default (see below), but it must still be green: it is where every
+   # native-residency precondition falls through.
    ```
-   Do NOT reach for the perf doors day-one: `MEMRA_FP8_FOLD` is LOSSY (greedy MISMATCH
-   pos 20, research/fp8st receipts), `MEMRA_FP8_MMQ` is exact but measured 0.81-0.94x
-   the floor (lane/fp8-mmq verdict) — both stay OFF.
+   **NAKED IS THE FAST PATH ON THIS CLASS since lane/fp8-blk128-decode (2026-08-05) —
+   day-one needs NO flags to get it.** If 3.8-FP8 ships `weight_block_size [128,128]`
+   like 3.6, the checkpoint's e4m3 bytes are the ONE resident copy (decode dequants
+   per-k128 in `qmatvec_e4m3_blk_mmvq`) and prefill rides the per-block MMQ tile
+   directly. Measured on the 3.6-27B block-128 artifact: decode +1.69%, VRAM −430 MiB,
+   pp512 +0.83% over the Q8_0-slab floor. Rollback seams if the new model misbehaves:
+   `MEMRA_FP8_MMQ=0` (prefill route only), `MEMRA_ST_E4M3_BLK=0` (this class's residency),
+   `MEMRA_ST_E4M3=0` (all native e4m3 residency).
+   Still do NOT reach for the other perf doors day-one: `MEMRA_FP8_FOLD` is LOSSY (greedy
+   MISMATCH pos 20, research/fp8st receipts) and `MEMRA_FP8_MMQ=1`'s extra meaning — the
+   duplicate-copy STASH source — buys nothing on a natively-resident checkpoint. Both stay
+   off. (The old "MEMRA_FP8_MMQ measured 0.81-0.94x the floor, stays OFF" line was correct
+   for the stash denominator and wrong for this one; `research/fp8blk-20260805/VERDICT.md`
+   has the arithmetic.)
 3. **First light, CLI arm** (same §4 step-2 form, ST dir instead of GGUF):
    ```bash
    flock /tmp/gpu5090.lock env MEMRA_NGEN=20 MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt \

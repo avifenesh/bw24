@@ -222,16 +222,20 @@ impl crate::Engine {
 // P1 option (b) — PER-BLOCK FP8 MMQ prefill (cu/mmq_fp8_blk.cu, lane/fp8-mmq)
 // ============================================================================================
 
-/// `MEMRA_FP8_MMQ=1` gate (default OFF; lane/fp8-mmq 2026-08-04): block-128 FP8 prefill GEMMs run
-/// through memra's OWN per-block MMQ tile instead of falling to the Q8_0 floor.
+/// `MEMRA_FP8_MMQ=1` gate for the per-block MMQ tile's **STASH** operand source (default OFF;
+/// lane/fp8-mmq 2026-08-04): a SECOND e4m3 copy uploaded next to an already-resident Q8_0 slab,
+/// spending from `MEMRA_PP_FP8_BUDGET_MB`.
 ///
 /// This is the third and only exact-AND-fast option from P1-VERDICT.md. cuBLASLt cannot take the
 /// grid at all on sm_120; ARM A's per-tensor fold is fast but diverges at greedy pos 20; ARM B' is
 /// exact but lands on the Q8_0 MMQ. This arm consumes the checkpoint's e4m3 bytes and the
 /// per-[128x128] f32 grid directly, with no re-quantization on either operand's weight side.
 ///
-/// Default OFF until the model-level battery is green on the target rig — same posture the
-/// W4A8/F8F4 seams shipped with.
+/// STAYS DEFAULT OFF for the stash source, and the reason is the v2 verdict, not inertia: against a
+/// floor whose Q8_0 slab is ALREADY RESIDENT the tile is 0.85-1.09x GEMM-only, so paying a full
+/// duplicate weight copy to reach it is not a win (`lane/fp8-mmq-v2` LANE-VERDICT.jsonl). This
+/// function is ALSO what admits the stash at load (`model.rs`), so it must stay an explicit opt-in:
+/// the native-resident flip below must not silently start duplicating Q8_0 tensors.
 pub fn fp8_mmq_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -239,6 +243,36 @@ pub fn fp8_mmq_enabled() -> bool {
             .map(|v| v == "1")
             .unwrap_or(false)
     })
+}
+
+/// Same tile, **NATIVE-RESIDENT** operand source: a `QT_F8_E4M3_BLK` tensor's own `blk` grid, the
+/// checkpoint's single copy with no slab and no stash. DEFAULT ON since lane/fp8-blk128-decode
+/// (2026-08-05); `MEMRA_FP8_MMQ=0` is the narrow seam back to dequant-per-call.
+///
+/// WHY THE SAME TILE DEFAULTS DIFFERENTLY BY SOURCE — the denominator differs, so the sign does.
+/// With a stash the floor already has its Q8_0 slab resident and the comparison is tile vs tile
+/// (v2: 0.85-1.09x, i.e. not worth a duplicate copy). On the native-resident class the floor must
+/// also CREATE that slab on every prefill call — 27.9 ms/pass of dequant after the vector rewrite,
+/// 14.19 GB of extra weight traffic — so the tile only has to not be 27.9 ms worse than a kernel it
+/// trails by at most ~15% on a subset of shapes. Measured 3-arm interleaved on the 27B block-128
+/// checkpoint (research/fp8blk-20260805/, N=3, one lock hold, one md5-pinned binary):
+/// slab 1540.5 / dequant-per-call 1449.1 / **this tile 1553.3** tok/s, min(C) 1552.4 > max(A) 1541.1
+/// (non-overlapping) = +0.83% pp512 AHEAD of the Q8_0 floor instead of -5.8% behind it.
+///
+/// EXACTNESS, the condition the flip was deferred on (6b741068: "the default flip waits on this
+/// arm's own exactness cells ... rather than inheriting the dequant arm's"). Branch-(b): per-block
+/// f8f6f4 MMA is not the Q8_0 re-encode's arithmetic, so bit-identity is the wrong bar. Measured on
+/// `prime_cache` — the class that actually dispatches this kernel — with a dispatch ledger on every
+/// arm (624 = 208 projections x 3 passes, full coverage) and an A==B bit-identical control proving
+/// the instrument can see zero where zero is: argmax UNCHANGED and the top-10 order identical to the
+/// floor's, rms_rel 2.5e-2 on an rms-2.7155 logit vector, and teacher-forced NLL on the prompt's own
+/// continuation LOWER than the floor's (2.764722 vs 2.787267) on a tape neither arm produced.
+/// `MEMRA_ST_E4M3_BLK=0` / `MEMRA_ST_E4M3=0` also disable this route, by removing the native operand
+/// it consumes — this seam exists for the narrower question (keep native decode residency, revert
+/// only the prefill route).
+pub fn fp8_blk_mmq_native_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_FP8_MMQ").as_deref() != Ok("0"))
 }
 
 /// Per-tensor e4m3-NaN verdicts, keyed by the weight's device pointer. The hardware MMA reads
@@ -263,18 +297,28 @@ impl crate::Engine {
         // Entry counter BEFORE the env gate: a ledger of all zeros is otherwise ambiguous between
         // "the flag was not seen" and "no prefill GEMM ever reached this hook".
         FP8_MMQ_ENTRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if !fp8_mmq_enabled() || crate::portable_mma_gated() {
+        if crate::portable_mma_gated() {
             FP8_MMQ_GATE_OFF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
-        // TWO OPERAND SOURCES, in this order:
+        // TWO OPERAND SOURCES, in this order, EACH WITH ITS OWN DEFAULT (2026-08-05):
         //
         //  (1) the `fp8` STASH — a SECOND e4m3 copy uploaded alongside a resident Q8_0 slab under
-        //      `MEMRA_PP_FP8` / `MEMRA_PP_FP8_BUDGET_MB`. This is what the v1/v2 MMQ lanes measured.
+        //      `MEMRA_PP_FP8` / `MEMRA_PP_FP8_BUDGET_MB`. This is what the v1/v2 MMQ lanes measured,
+        //      and it stays behind `MEMRA_FP8_MMQ=1` (`fp8_mmq_enabled`): against a floor whose slab
+        //      is already resident the tile is 0.85-1.09x, which does not pay for a duplicate copy.
         //
         //  (2) the `blk` RESIDENCY field on a `QT_F8_E4M3_BLK` tensor (lane/fp8-blk128-decode) —
         //      the checkpoint-native single copy, no slab and no stash. Same bytes, same grid, same
-        //      layout contract, so the kernel cannot tell them apart; only the owner differs.
+        //      layout contract, so the kernel cannot tell them apart; only the owner differs. This
+        //      source is DEFAULT ON (`fp8_blk_mmq_native_enabled`), because its floor must build the
+        //      Q8_0 slab every call (27.9 ms/pass) and the tile measured +0.83% pp512 ahead of it
+        //      with non-overlapping distributions.
+        //
+        // The gate is therefore checked PER SOURCE, after the operand is known — not once up front.
+        // Checking it before the match would make the native flip also flip the stash, and
+        // `fp8_mmq_enabled` is what admits that stash at LOAD time (model.rs), so a shared gate
+        // would silently start duplicating every Q8_0 tensor with an fp8 sibling.
         //
         // Why (1) first: when a stash exists the tensor is ALSO a Q8_0 slab, and the stash is the
         // operand that arm's budget accounting owns. A `QT_F8_E4M3_BLK` tensor never has a stash
@@ -283,10 +327,22 @@ impl crate::Engine {
         let (f8_bytes, f8_scale, blk, ne) = match w {
             GpuTensor::Quant {
                 fp8: Some(f8), ne, ..
-            } if f8.blk.is_some() => (&f8.bytes, f8.scale, f8.blk.as_ref().unwrap(), ne),
+            } if f8.blk.is_some() => {
+                if !fp8_mmq_enabled() {
+                    FP8_MMQ_GATE_OFF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(None);
+                }
+                (&f8.bytes, f8.scale, f8.blk.as_ref().unwrap(), ne)
+            }
             GpuTensor::Quant {
                 bytes, qtype, scale, blk: Some(g), ne, ..
-            } if *qtype == crate::QT_F8_E4M3_BLK => (bytes, *scale, g, ne),
+            } if *qtype == crate::QT_F8_E4M3_BLK => {
+                if !fp8_blk_mmq_native_enabled() {
+                    FP8_MMQ_GATE_OFF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(None);
+                }
+                (bytes, *scale, g, ne)
+            }
             // A zero dispatch count is ambiguous on its own: no block operand resident looks
             // exactly like a shape refusal. Count the no-operand case separately so the receipt
             // says WHICH, and never per-GEMM-log (this fires on every projection of every layer).

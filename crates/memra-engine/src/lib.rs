@@ -5422,9 +5422,12 @@ impl Engine {
         // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
-            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1, default OFF; lane/fp8-mmq): the block-128 class
-            // try_fp8_gemm skips (cuBLASLt takes no block grid on sm_120). Exact per block — the
-            // checkpoint's e4m3 bytes and its f32 grid go into the tile unchanged.
+            // PER-BLOCK FP8 MMQ (lane/fp8-mmq): the block-128 class try_fp8_gemm skips (cuBLASLt
+            // takes no block grid on sm_120). Exact per block — the checkpoint's e4m3 bytes and its
+            // f32 grid go into the tile unchanged. TWO SOURCES, TWO DEFAULTS: the load-time stash is
+            // opt-in (MEMRA_FP8_MMQ=1), the native-resident QT_F8_E4M3_BLK grid is DEFAULT ON
+            // (MEMRA_FP8_MMQ=0 reverts it to dequant-per-call) — see fp8_ffi.rs for why the same
+            // tile defaults differently by operand source.
             if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(y); }
             // FP16-mirror prefill (MEMRA_PP_F16=1, probe 2026-07-26: 3.2-3.7x the MMQ class).
             // Mirror presence IS the gate (only built under the env). Decode never reaches here.
@@ -5618,8 +5621,8 @@ impl Engine {
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
         if m >= 16 && x_raw_ok && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
-            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1) — same arm as `matmul`; its own quantizer wants
-            // the RAW f32 activation, so x_fallback not aq/ad.
+            // PER-BLOCK FP8 MMQ — same arm as `matmul` (stash opt-in, native-resident default ON);
+            // its own quantizer wants the RAW f32 activation, so x_fallback not aq/ad.
             if let Some(y) = self.try_fp8_blk_mmq(w, x_fallback, m)? { return Ok(y); }
             // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
             if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
@@ -7050,22 +7053,30 @@ impl Engine {
     /// 1451.4 vs the slab arm's 1541.6 tok/s = -5.8% (N=3 interleaved pairs). So ~1.3pp of the
     /// -5.8% is residual kernel inefficiency and ~4.5pp is the extra traffic itself.
     ///
-    /// The per-block FP8 MMQ tile (`try_fp8_blk_mmq`, `MEMRA_FP8_MMQ=1`) is the *other* candidate for
-    /// this slot: it consumes the resident e4m3 bytes + grid DIRECTLY, so it deletes both extra
-    /// passes. It is wired below but stays behind its own default-OFF flag, because lane/fp8-mmq-v2
-    /// measured that tile at 0.85-1.09x the Q8_0 MMQ floor GEMM-only (geomean ~1.00x on wide shapes
-    /// at large m; 0.85-0.99x at m=512) — so on paper it trades a -4.5% traffic cost for a
-    /// 0-to-15% GEMM cost and the sign is shape-dependent, not assumable. This lane measures both
-    /// on the 27B and the receipt decides; the flag is the seam that makes it one variable.
+    /// SO THE DEQUANT IS NO LONGER THE DEFAULT ROUTE — it is the FALLBACK. The per-block FP8 MMQ
+    /// tile (`try_fp8_blk_mmq`) consumes the resident e4m3 bytes + grid DIRECTLY, deleting both extra
+    /// passes, and since 2026-08-05 it runs FIRST and by default for the native-resident source
+    /// (`fp8_blk_mmq_native_enabled`; `MEMRA_FP8_MMQ=0` is the seam back to this dequant). On paper
+    /// the trade was unassumable — lane/fp8-mmq-v2 measured that tile at 0.85-1.09x the Q8_0 MMQ
+    /// floor GEMM-only, so it swapped a -4.5% traffic cost for a 0-to-15% GEMM cost of unknown sign.
+    /// Measured on the 27B (3 arms interleaved, N=3, research/fp8blk-20260805/VERDICT.md): slab
+    /// 1540.5 / this dequant 1449.1 / the tile 1553.3 tok/s, min(tile) > max(slab). The tile wins
+    /// because v2's denominator had its slab already resident while this class's floor must build it
+    /// every call; same tile, opposite sign, because the question changed.
+    ///
+    /// THIS ARM STILL RUNS, and is not dead code: every `try_fp8_blk_mmq` precondition (in_f % 16,
+    /// grid dims vs shape, per-tensor scale == 1.0, the e4m3-NaN scan) refuses by falling through to
+    /// here, so a checkpoint the tile cannot take keeps exact prefill on the floor's own bits rather
+    /// than losing the class. It is also what `MEMRA_FP8_MMQ=0` reverts to.
     fn try_e4m3_blk_prefill(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
         -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
         let GpuTensor::Quant { bytes, qtype, blk: Some(g), .. } = w else { return Ok(None) };
         if *qtype != QT_F8_E4M3_BLK { return Ok(None) }
-        // NO-DEQUANT ROUTE (MEMRA_FP8_MMQ=1): the per-block MMQ tile eats the resident e4m3 bytes
-        // and grid as-is, so neither extra weight pass happens. Its own preconditions (in_f % 16,
-        // grid dims, scale == 1.0, no e4m3 NaN code) can refuse — fall through to the dequant below
-        // when they do, never silently produce nothing.
+        // NO-DEQUANT ROUTE, THE DEFAULT (MEMRA_FP8_MMQ=0 reverts): the per-block MMQ tile eats the
+        // resident e4m3 bytes and grid as-is, so neither extra weight pass happens. Its own
+        // preconditions (in_f % 16, grid dims, scale == 1.0, no e4m3 NaN code) can refuse — fall
+        // through to the dequant below when they do, never silently produce nothing.
         if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(Some(y)); }
         let (in_f, out_f) = (w.in_features(), w.out_features());
         let slab = self.fp8_blk_dequant_q8_0_dev(bytes, &g.scales, out_f, in_f)?;

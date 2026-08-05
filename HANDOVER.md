@@ -33,8 +33,12 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
   `tools/serve-st-gate.sh` pins serve == CLI oracle.
 - **FP8-MMQ v2 verdict recorded, dead seams deleted** per flags doctrine:
   `MEMRA_MMQ_Y_FP8`/`OCC_FP8`/`PIPE_FP8` build knobs + the cp.async double-buffer arm
-  removed (concluded negative, research/fp8st-20260804/mmq-v2); `MEMRA_FP8_MMQ` itself
-  stays an off-by-default door (parity-class, below the 1.1x bar).
+  removed (concluded negative, research/fp8st-20260804/mmq-v2); `MEMRA_FP8_MMQ`'s STASH
+  source stays an off-by-default door (parity-class against a floor whose Q8_0 slab is
+  already resident, so it cannot pay for a duplicate weight copy). Its NATIVE-RESIDENT
+  source is a different question and was flipped DEFAULT ON by lane/fp8-blk128-decode
+  (2026-08-05): there the floor must build that slab on every prefill call, so the same
+  tile lands +0.83% pp512 ahead of it — `research/fp8blk-20260805/VERDICT.md`.
 - Battery receipts: `research/release-v0690-battery/` (ALL GREEN, incl. serve-smoke
   0-failed — the v0.68-era 4-fail set is gone post the draft-mask gate fix — and
   serve-st-gate 0-failed on the 9B ST modelopt checkpoint).
