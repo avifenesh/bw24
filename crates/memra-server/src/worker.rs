@@ -97,6 +97,13 @@ pub struct Request {
     /// the vLLM `cache_salt` design. Derived by the HTTP layer (request `cache_salt`
     /// field; "" = the default single-tenant namespace, byte-identical to pre-PC-ISO).
     pub cache_ns: String,
+    /// SESSION AFFINITY explicit tier (lane/session-affinity, 2026-08-05): the client's own
+    /// name for this conversation (`session_id`/`user` body field, or the `x-session-id`
+    /// header — see `crate::affinity_key`). Some(id) nominates that conversation's parked
+    /// session directly; None falls back to the implicit structural fingerprint. Either way
+    /// the resume decision is the exact token diff (`affinity_match`), scoped to this
+    /// request's own (model, cache_ns) pool.
+    pub affinity: Option<String>,
     /// yield lane (x-lane header; default interactive). Drives admission + prefill budgets
     /// (lane/dl-metering QoS gate, ported 2026-08-02 — the metering half stayed behind).
     pub lane: crate::lanes::Lane,
