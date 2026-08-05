@@ -3193,6 +3193,18 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_fused2_b4(
         int in_f, int out0, int out1, int m, long row_bytes) {
     q8_0_mmvq_fused2_b<4>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
 }
+// b8 wrapper (lane/q27-deepdive, 2026-08-05): the SERVING tier. The m=1 fuse2 lever landed
+// +0.94% on q27-Q8_0 single-stream, but the batched serve tick (decode_step_batch, c=5..8 ->
+// mcols 8) ran the dense-FFN gate+up as two `matmul_pre` -> two _b8 launches. Same template,
+// same q8_0_mmvq_batched_row body, MCOLS=8 -> BIT-IDENTICAL per (tensor,token,row) to the two
+// qmatvec_q8_0_mmvq_b8 launches, one shared q8_1 activation instead of two re-quantizes.
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused2_b8(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q8_0_mmvq_fused2_b<8>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
 template<int MCOLS>
 __device__ __forceinline__ void q8_0_mmvq_fused3_b(
         const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,

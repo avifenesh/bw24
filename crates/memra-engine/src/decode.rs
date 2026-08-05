@@ -2441,10 +2441,45 @@ impl HybridModel {
             // stale 2026-07-15 "-11%" verdict, which predates main's promotion — the
             // rig-divergence law protects main's SHIPPED default, so the gate came off.
             // MEMRA_GEN_GRAPH=1 opts in anywhere; =0 reverts anywhere.
+            //
+            // KEY LOWERED 256 -> 48 (q27 deep dive, 2026-08-05, pro6000wk-runpod-community).
+            // The 256 key was set by the E4B amortization rule, never by a measured crossover,
+            // so every <=128-token generation — including the whole published board, which runs
+            // --max-tokens 128 — was silently EAGER. Swept the actual crossover on TWO models
+            // (the key is a cross-model default, so one artifact is not enough), interleaved
+            // arms with the order alternated per rep, N=3, all runs argmax MATCH:
+            //   Qwen3.6-27B-Q8_0     : n=16 -7.47% | n=32 -1.35% | n=48 +0.90% | n=64 +1.93%
+            //                          n=128 +3.80% | n=512 +5.50%
+            //   Qwen3.6-27B-NVFP4-MTP: n=16 -15.27% | n=32 +0.22% | n=48 +3.45%
+            //                          n=64 +5.09% | n=128 +7.72%
+            // Both models: clearly negative at 16, no reliable gain at 32, positive from 48 up,
+            // monotone in budget from 48 on. 48 is the first budget where BOTH are positive, so
+            // it is the key — the capture cost needs ~32 steps to amortize, not ~256. The n=32
+            // nvfp4 cell is NOISY, not flat (graph arm 79.02/78.91/77.09, spread 1.93 vs an
+            // eager spread of 0.04): it is not evidence of a win, and it is why the key sits at
+            // 48 rather than 32. Exactness at the new key:
+            // graph-decode-gate 256 steps BIT-IDENTICAL (buckets=16, captures=2),
+            // graph-session-gate 96 tokens PASS, kernel-check ALL GREEN, run-spec K=1..8
+            // self-consistency PASS. Board caveat: community board, RELATIVE deltas only.
+            //
+            // SM-GATED (5090-arbiter gate, 2026-08-05, research/q27-deepdive-20260805/local5090/):
+            // the 48 key does NOT transfer to the 82-SM local rig. Same A/B protocol there
+            // (tg128 d512, N=3 interleaved, order alternated, warmup discarded): q27-NVFP4-MTP
+            // graph arm at n=128 = -1.61% (eager 45.86 / graph 45.12 median, 3/3 pairs lose),
+            // and the crossover sweep stays negative through n=256 (-1.07%) and n=512 (-0.59%)
+            // — on few-SM silicon the replay's fixed kernel forms lag the tuned eager lanes and
+            // the launch-gap tax the graph amortizes is proportionally smaller. Key on SM count
+            // (the fa_split_keys big_rig pattern, lib.rs fa_sm_count), threshold 180: the 48
+            // crossover is MEASURED only at 188 SM (PRO 6000) and refuted at 82 SM; the 132-SM
+            // H100 board and the 170-SM desktop 5090 are UNMEASURED at sub-256 budgets, so they
+            // keep the shipped 256 key their board rows were measured with (rig-divergence +
+            // stale-verdict laws). Widening the gate below 180 requires an on-box crossover
+            // sweep on that silicon, not an inference from this comment.
+            let big_rig = e.sm_count() >= 180;
             let gen_graph = match std::env::var("MEMRA_GEN_GRAPH").as_deref() {
                 Ok("1") => true,
                 Ok("0") => false,
-                _ => budget >= 256,
+                _ => budget >= if big_rig { 48 } else { 256 },
             };
             // SLRU expert cache is capture-ILLEGAL: a cache miss drains/H2Ds on the compute
             // stream mid-decode, which CUDA forbids while capturing (Ornith-35B Q4_K_M on the

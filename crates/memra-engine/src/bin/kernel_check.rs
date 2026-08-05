@@ -2079,10 +2079,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Q8-FUSED2 {n0}+{n1} [Q8_0] out=({},{}): rel={d:.2e} bits={} {}",
                      t0.1, t1.1, bits_ok,
                      if bits_ok { "OK" } else { fails += 1; "FAIL" });
-            // BATCHED twin (verify t=2-4 tier, MEMRA_SPEC_FUSED_T): fused2_b vs the per-tensor
-            // _b2/_b4 launches matmul_decode_exact dispatches — body verbatim, must be
-            // BIT-IDENTICAL per (tensor,token,row).
-            for mm in [2usize, 3, 4] {
+            // BATCHED twin (verify t=2-4 tier, MEMRA_SPEC_FUSED_T; m=5..8 = the SERVING tier,
+            // lane/q27-deepdive 2026-08-05): fused2_b vs the per-tensor _b2/_b4/_b8 launches
+            // matmul_decode_exact / decode_step_batch dispatch — body verbatim, must be
+            // BIT-IDENTICAL per (tensor,token,row). m=8 pins the fused2_b8 wrapper the batched
+            // dense-FFN gate+up fusion rides at serve concurrency c=5..8.
+            for mm in [2usize, 3, 4, 5, 8] {
                 let xm: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151 + mm) * 0.1).collect();
                 let xmd = e.htod(&xm)?;
                 let (aq, ad) = e.quantize_q8_1(&xmd, mm, in_f)?;

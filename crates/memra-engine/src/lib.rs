@@ -5931,6 +5931,28 @@ impl Engine {
         if m != 1 || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) { return Ok(None); }
         let (in_f, out_f) = (w0.in_features(), w0.out_features());
         if w1.in_features() != in_f || w1.out_features() != out_f { return Ok(None); }
+        // Q8_0 ARM (lane/q27-deepdive, 2026-08-05): the dense-FFN gate+up pair on a Q8_0 trunk fell
+        // through this NVFP4-only gate to two `matmul_pre_noscale` launches — measured 128 of the
+        // 1015 launches/token on q27-Q8_0 decode, the single largest un-fused class in the tick
+        // (nsys `research/q27-deepdive-20260805/nsys/`). `q8_fused2_core` already serves the same
+        // pair shape for the shared-expert gate/up, and its kernel body is `qmatvec_q8_0_mmvq`
+        // VERBATIM per (tensor,row) -> BIT-IDENTICAL to the two separate launches. Q8_0 carries no
+        // macro-scale (q8_fused_params requires scale==1.0), so the noscale contract is satisfied
+        // by returning 1.0 for both: the SwiGLU epilogue's fold becomes the identity it already is
+        // on this dtype today. Seam: MEMRA_Q8_FFN_FUSE2=0 rolls back to the two-launch pair.
+        // rp4 guard: with MEMRA_Q8RP the singles route to the `_rp` split-plane twin over the
+        // mirror buffer; the fused2 kernel has no `_rp` form, so fusing there would swap
+        // dispatch families mid-model. Bail and let the two singles run (mirror lane unchanged).
+        let no_mirror = |w: &crate::model::GpuTensor| {
+            !matches!(w, GpuTensor::Quant { rp4: Some(_), .. })
+        };
+        if self.q8_ffn_fuse2_on()
+            && no_mirror(w0) && no_mirror(w1)
+            && let Some([p0, p1]) = self.q8_fused_params(&[w0, w1])
+        {
+            let (y0, y1) = self.q8_fused2_core(p0.0, p1.0, aq, ad, in_f, p0.1, p1.1, p0.2)?;
+            return Ok(Some(((y0, 1.0), (y1, 1.0))));
+        }
         let (b0, q0, rb0, s0, rp0) = match w0 {
             GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => return Ok(None),
@@ -6488,7 +6510,10 @@ impl Engine {
     pub fn matmul_q8_fused2_t(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
                               aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize)
         -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
-        if !(2..=4).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok() { return Ok(None); }
+        // m<=8 (lane/q27-deepdive, 2026-08-05): was 2..=4 (the verify tier's mcols 2/4). The
+        // serving tick's mcols-8 tier now has its fused2_b8 wrapper, so c=5..8 batched decode
+        // fuses too — same template body, still bit-identical to the two _b8 launches.
+        if !(2..=8).contains(&m) || std::env::var("MEMRA_NO_BATCHED").is_ok() { return Ok(None); }
         let Some([p0, p1]) = self.q8_fused_params(&[w0, w1]) else { return Ok(None) };
         Ok(Some(self.q8_fused2_t_core(p0.0, p1.0, aq, ad, m, w0.in_features(), p0.1, p1.1, p0.2)?))
     }
@@ -6501,8 +6526,12 @@ impl Engine {
         const ROWS_PER_BLOCK: u32 = 4;   // matches MEMRA_MMVQ_ROWS in qmatvec.cu
         let nb0 = (out0 as u32).div_ceil(ROWS_PER_BLOCK);
         let nb1 = (out1 as u32).div_ceil(ROWS_PER_BLOCK);
-        let f = self.func(if Self::batched_mcols(m) == 2 { "qmatvec_q8_0_mmvq_fused2_b2" }
-                          else { "qmatvec_q8_0_mmvq_fused2_b4" });
+        let f = self.func(match Self::batched_mcols(m) {
+            2 => "qmatvec_q8_0_mmvq_fused2_b2",
+            4 => "qmatvec_q8_0_mmvq_fused2_b4",
+            // b8 = the SERVING tier (lane/q27-deepdive): c=5..8 batched decode.
+            _ => "qmatvec_q8_0_mmvq_fused2_b8",
+        });
         let mut y0 = self.alloc_uninit::<f32>(m * out0)?;
         let mut y1 = self.alloc_uninit::<f32>(m * out1)?;
         let cfg = LaunchConfig { grid_dim: (nb0 + nb1, 1, 1), block_dim: (32, ROWS_PER_BLOCK, 1),
@@ -6574,6 +6603,14 @@ impl Engine {
         -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         self.q8_fused3_t_core(b0, b1, b2, &aq, &ad, m, in_f, out0, out1, out2, row_bytes)
+    }
+
+    /// Rollback seam for the Q8_0 dense-FFN gate+up fusion arm in `matmul_pre_dual_noscale`
+    /// (lane/q27-deepdive, 2026-08-05). Default ON; `MEMRA_Q8_FFN_FUSE2=0` restores the
+    /// two-`matmul_pre_noscale` pair. Read once — the dispatch must not vary within a run.
+    pub fn q8_ffn_fuse2_on(&self) -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("MEMRA_Q8_FFN_FUSE2").as_deref() != Ok("0"))
     }
 
     /// Eligibility + param extraction for the fused q8_0 launches: every tensor must be Quant Q8_0
