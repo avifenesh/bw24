@@ -267,10 +267,26 @@ impl crate::Engine {
             FP8_MMQ_GATE_OFF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
-        let (f8, ne) = match w {
+        // TWO OPERAND SOURCES, in this order:
+        //
+        //  (1) the `fp8` STASH — a SECOND e4m3 copy uploaded alongside a resident Q8_0 slab under
+        //      `MEMRA_PP_FP8` / `MEMRA_PP_FP8_BUDGET_MB`. This is what the v1/v2 MMQ lanes measured.
+        //
+        //  (2) the `blk` RESIDENCY field on a `QT_F8_E4M3_BLK` tensor (lane/fp8-blk128-decode) —
+        //      the checkpoint-native single copy, no slab and no stash. Same bytes, same grid, same
+        //      layout contract, so the kernel cannot tell them apart; only the owner differs.
+        //
+        // Why (1) first: when a stash exists the tensor is ALSO a Q8_0 slab, and the stash is the
+        // operand that arm's budget accounting owns. A `QT_F8_E4M3_BLK` tensor never has a stash
+        // (its residency arm sets `fp8: None`), so the two cases are disjoint in practice and the
+        // order only fixes a hypothetical.
+        let (f8_bytes, f8_scale, blk, ne) = match w {
             GpuTensor::Quant {
                 fp8: Some(f8), ne, ..
-            } if f8.blk.is_some() => (f8, ne),
+            } if f8.blk.is_some() => (&f8.bytes, f8.scale, f8.blk.as_ref().unwrap(), ne),
+            GpuTensor::Quant {
+                bytes, qtype, scale, blk: Some(g), ne, ..
+            } if *qtype == crate::QT_F8_E4M3_BLK => (bytes, *scale, g, ne),
             // A zero dispatch count is ambiguous on its own: no block operand resident looks
             // exactly like a shape refusal. Count the no-operand case separately so the receipt
             // says WHICH, and never per-GEMM-log (this fires on every projection of every layer).
@@ -287,11 +303,10 @@ impl crate::Engine {
         // in_f % 16: the kernel's 16B tile-copy line. blk grid dims must match the shape — a
         // mismatch means the operand and the grid came from different tensors; refuse rather than
         // index a wrong block.
-        let blk = f8.blk.as_ref().unwrap();
         if in_f % 16 != 0
             || blk.rows != out_f.div_ceil(128)
             || blk.cols != in_f.div_ceil(128)
-            || f8.bytes.len() < out_f * in_f
+            || f8_bytes.len() < out_f * in_f
             || x.len() < m * in_f
         {
             FP8_MMQ_BAD_SHAPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -299,7 +314,7 @@ impl crate::Engine {
         }
         // The per-tensor scale must be the block class's identity (source.rs sets 1.0 alongside a
         // grid); anything else would mean a second, unapplied scale factor.
-        if f8.scale != 1.0 {
+        if f8_scale != 1.0 {
             FP8_MMQ_BAD_SCALE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         }
@@ -308,7 +323,7 @@ impl crate::Engine {
         {
             let key = {
                 let stream = self.gpu.stream();
-                let (p, _g) = f8.bytes.device_ptr(&stream);
+                let (p, _g) = f8_bytes.device_ptr(&stream);
                 p as u64
             };
             let mut guard = FP8_MMQ_NAN_OK.lock().unwrap();
@@ -316,7 +331,7 @@ impl crate::Engine {
             let ok = match map.get(&key) {
                 Some(v) => *v,
                 None => {
-                    let v = self.fp8_blk_nan_count(&f8.bytes)? == 0;
+                    let v = self.fp8_blk_nan_count(f8_bytes)? == 0;
                     map.insert(key, v);
                     v
                 }
@@ -327,7 +342,7 @@ impl crate::Engine {
             }
         }
 
-        let y = self.qmatvec_mmq_fp8_blk(&f8.bytes, &blk.scales, x, m, in_f, out_f)?;
+        let y = self.qmatvec_mmq_fp8_blk(f8_bytes, &blk.scales, x, m, in_f, out_f)?;
         FP8_MMQ_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(y))
     }

@@ -7040,16 +7040,33 @@ impl Engine {
     /// bit-identical to prefill logits under the floor, which is what makes the decode A/B a clean
     /// single-variable comparison instead of a two-variable one.
     ///
+    /// WHAT IT COSTS, MEASURED, AND WHY THAT COST IS MOSTLY STRUCTURAL (27B block-128 ckpt, pp512,
+    /// this rig = RTX 5090 Laptop, ~896 GB/s GDDR7). This arm makes prefill move the weight THREE
+    /// times instead of once: read 6.88 GB of e4m3, write 7.31 GB of Q8_0, then the MMQ reads that
+    /// 7.31 GB back. The two extra passes are 14.19 GB = 15.8 ms at this card's roofline against a
+    /// ~332 ms pp512, i.e. **~-4.5% pp is a floor no kernel tuning can remove** — only deleting the
+    /// dequant can. Measured: the dequant kernel costs 27.9 ms/pass (nsys, 208 projections) after
+    /// the 2026-08-05 vector rewrite (was 66.5 ms at one byte per thread), and e2e pp512 is
+    /// 1451.4 vs the slab arm's 1541.6 tok/s = -5.8% (N=3 interleaved pairs). So ~1.3pp of the
+    /// -5.8% is residual kernel inefficiency and ~4.5pp is the extra traffic itself.
+    ///
     /// The per-block FP8 MMQ tile (`try_fp8_blk_mmq`, `MEMRA_FP8_MMQ=1`) is the *other* candidate for
-    /// this slot and is deliberately NOT wired here: lane/fp8-mmq-v2 measured it at 0.85-1.09x the
-    /// Q8_0 MMQ floor (geomean ~1.00x only on wide shapes at large m) and left it default OFF, so
-    /// routing prefill through it would trade a measured-neutral-to-negative prefill for this lane's
-    /// decode win. It reads the `fp8` stash operand, not this `blk` field, so the two stay disjoint.
+    /// this slot: it consumes the resident e4m3 bytes + grid DIRECTLY, so it deletes both extra
+    /// passes. It is wired below but stays behind its own default-OFF flag, because lane/fp8-mmq-v2
+    /// measured that tile at 0.85-1.09x the Q8_0 MMQ floor GEMM-only (geomean ~1.00x on wide shapes
+    /// at large m; 0.85-0.99x at m=512) — so on paper it trades a -4.5% traffic cost for a
+    /// 0-to-15% GEMM cost and the sign is shape-dependent, not assumable. This lane measures both
+    /// on the 27B and the receipt decides; the flag is the seam that makes it one variable.
     fn try_e4m3_blk_prefill(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
         -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
         let GpuTensor::Quant { bytes, qtype, blk: Some(g), .. } = w else { return Ok(None) };
         if *qtype != QT_F8_E4M3_BLK { return Ok(None) }
+        // NO-DEQUANT ROUTE (MEMRA_FP8_MMQ=1): the per-block MMQ tile eats the resident e4m3 bytes
+        // and grid as-is, so neither extra weight pass happens. Its own preconditions (in_f % 16,
+        // grid dims, scale == 1.0, no e4m3 NaN code) can refuse — fall through to the dequant below
+        // when they do, never silently produce nothing.
+        if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(Some(y)); }
         let (in_f, out_f) = (w.in_features(), w.out_features());
         let slab = self.fp8_blk_dequant_q8_0_dev(bytes, &g.scales, out_f, in_f)?;
         let tmp = GpuTensor::Quant {
