@@ -8,7 +8,8 @@
 #   3. EXACTNESS: the SAME checkpoint, SAME prompt through the SAME template, greedy —
 #      run-gen's ST dir branch (tokenwise decode) and the server (batched prime +
 #      serving decode) must produce IDENTICAL token id streams. The server arm runs
-#      MEMRA_SERVE_SPEC=0: with spec on, burst Token events carry ONE id per burst so
+#      MEMRA_SERVE_SPEC=0: with spec on, Token events carry ONE id per flush (per spec
+#      round since sse-cadence 2026-08-05; per burst before) so
 #      the response `tokens` array is not the per-token stream (worker contract, not a
 #      bug). The only tolerated difference is the trailing EOS id (the CLI stream
 #      includes it, server Token events stop before it).

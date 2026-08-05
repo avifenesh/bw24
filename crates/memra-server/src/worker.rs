@@ -2941,14 +2941,56 @@ fn step_session(
         // the delta is this burst's contribution, merged per-model for /metrics and summed
         // per-request for usage.spec.
         let telem_before = spec.telem;
+        // SSE CADENCE (lane/sse-cadence, 2026-08-05): stream text at ROUND cadence, not burst
+        // cadence. The spec-levers sweep measured B128 = +7% throughput but 2.8x felt-TTFT
+        // (1.15s vs 0.41s first text) purely because ONE Event::Token covered the whole burst.
+        // The engine's on_commit hook hands each round's committed tokens as they land; this
+        // closure mirrors the post-burst emission EXACTLY (same detokenize-tail + utf8_delta
+        // cursor, same EOS-text-never-streamed rule) so content is byte-identical — only the
+        // chunk boundaries change. finish_reason/usage still ride Event::Done, unchanged.
+        // MEMRA_SSE_PER_BURST=1 = rollback seam (restores one-event-per-burst emission).
+        let per_burst_emit = std::env::var("MEMRA_SSE_PER_BURST").as_deref() == Ok("1");
+        let mut vis: Vec<u32> = s.generated.clone();
+        let mut cursor = s.emitted_bytes;
+        let mut eos_seen = false;
+        let mut send_ok = true;
+        let flush_tx = s.tx.clone();
+        let eos_ids = s.params.eos.clone();
+        let tok_ref = &lm.tok;
+        let mut flush_cb = |slice: &[u32]| {
+            if eos_seen {
+                return; // post-EOS tokens are never visible (accounting happens post-burst)
+            }
+            let mut last_id = 0u32;
+            for &t in slice {
+                if eos_ids.contains(&t) {
+                    eos_seen = true;
+                    break;
+                }
+                vis.push(t);
+                last_id = t;
+            }
+            if !send_ok {
+                return; // client already gone — keep the cursor honest, stop sending
+            }
+            let decoded = tok_ref.decode_bytes_special(&vis, true);
+            let delta = utf8_delta(&decoded, &mut cursor);
+            if !delta.is_empty()
+                && flush_tx.send(Event::Token { id: last_id, text: delta }).is_err()
+            {
+                send_ok = false;
+            }
+        };
+        let on_commit: Option<&mut dyn FnMut(&[u32])> =
+            if per_burst_emit { None } else { Some(&mut flush_cb) };
         let (burst, d, a) = match s.constraint.as_mut() {
             Some(c) => {
                 let mut g = crate::constrained::SpecGrammar::new(c, lm.eos_id);
                 lm.model.generate_spec_session_constrained(
-                    engine, spec, &suffix, room, k, sampling, Some(&mut g))?
+                    engine, spec, &suffix, room, k, sampling, Some(&mut g), on_commit)?
             }
             None => lm.model.generate_spec_session_sampled(
-                engine, spec, &suffix, room, k, sampling)?,
+                engine, spec, &suffix, room, k, sampling, on_commit)?,
         };
         let telem_delta = spec.telem.delta_since(&telem_before);
         spec_telem.entry(s.model.clone()).or_default().merge(&telem_delta);
@@ -2968,7 +3010,8 @@ fn step_session(
             s.fed.push(tok);
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
-        // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
+        // Post-burst TAIL emission: with round-cadence flushes above, this covers only the
+        // remainder (held multi-byte UTF-8, or the whole burst under MEMRA_SSE_PER_BURST=1).
         // EOS text is never streamed (serve-compat, 2026-08-03): the tokenwise path stops
         // BEFORE emitting the EOS token's text, but the burst used to detokenize the whole
         // tail — clients saw a literal `<|im_end|>` in content (caught by the SDK gate's G4
@@ -2977,6 +3020,17 @@ fn step_session(
             Some(StopReason::Eos) => &s.generated[..s.generated.len() - 1],
             _ => &s.generated[..],
         };
+        // SSE CADENCE: the round-cadence flushes above already advanced the local cursor past
+        // the text they sent — adopt it so the tail send below covers ONLY the remainder
+        // (held UTF-8 bytes, if any). Under MEMRA_SSE_PER_BURST=1 cursor == emitted_bytes
+        // untouched and this is a no-op (the whole burst emits here, pre-lane behavior).
+        s.emitted_bytes = cursor;
+        if !send_ok {
+            // DISCONNECT ABORT (gap-scan F8): an in-burst flush hit a closed channel —
+            // client gone, retire at the abort point (state consistent post-burst).
+            abort_log(s);
+            return Ok(false);
+        }
         let decoded = lm.tok.decode_bytes_special(visible, true);
         let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
         let full = String::from_utf8_lossy(&decoded);

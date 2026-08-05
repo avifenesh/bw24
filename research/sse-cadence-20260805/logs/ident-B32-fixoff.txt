@@ -1,0 +1,11 @@
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Topic:** CUDA graphs
+   - **Specific Question:** How do they reduce kernel launch overhead?
+   - **Constraint:** About 200 words
+
+2.  **Identify Key Concepts:**
+   - What is kernel launch overhead? (CPU-to-GPU communication, driver API calls, context switching, serialization, validation)
+   - What is a CUDA graph? (A pre-compiled, static representation of a sequence of GPU operations)
+   - How does it reduce overhead? (Captures operations once, eliminates
