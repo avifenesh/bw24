@@ -569,6 +569,17 @@ impl HybridModel {
                             "decode_step_batch v1: M3 swigluoai FFN not yet batched");
                     let n_ff = ffn_gate.out_features();
                     let (zq, zd) = e.quantize_q8_1(&z, b_n, n_embd)?;
+                    // REFUTED ARM (lane/q27-deepdive, 2026-08-05): fusing this gate+up pair
+                    // into `matmul_q8_fused2_t` (the fused2_b8 tier) measured FLAT-TO-NEGATIVE
+                    // at the serving tick — bench c=8 213.1/213.8, 213.9/214.4, 214.4/213.5
+                    // (sign flips) and serve c=8 paired mean −0.20% over 3 passes. Mechanism:
+                    // unlike m=1 (where the pair is 128 of 1015 launches in a 7.67%-gap tick),
+                    // the c=8 tick is 73.2% one weight-bound kernel class with launch cost
+                    // already hidden — halving 128 launches of ~28k buys nothing. The m=1 arm
+                    // in `matmul_pre_dual_noscale` (+0.94%) stays; this call site keeps the two
+                    // launches. Kernel + fused2_b8 wrapper retained: kernel-check gates it at
+                    // m=5/8 and matmul_q8_fused2_t serves the verify tier. Receipts:
+                    // research/q27-deepdive-20260805/ (lever3-bench-*, serve-points.jsonl).
                     let g = e.matmul_pre(ffn_gate, &zq, &zd, &z, b_n)?;
                     let u = e.matmul_pre(ffn_up, &zq, &zd, &z, b_n)?;
                     let mut act = e.uninit(b_n * n_ff)?;

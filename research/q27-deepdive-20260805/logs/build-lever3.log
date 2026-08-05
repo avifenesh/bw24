@@ -1,0 +1,4 @@
+   Compiling memra-engine v0.69.0 (/root/bw24/crates/memra-engine)
+warning: memra-engine@0.69.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-server v0.69.0 (/root/bw24/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 3m 38s

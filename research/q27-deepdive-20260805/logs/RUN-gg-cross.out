@@ -1,0 +1,19 @@
+gengraph n=16 eager r1 rc=0 generated 16 tokens in 0.319s = 50.19 tok/s | MATCH MATCH 
+gengraph n=16 graph r1 rc=0 generated 16 tokens in 0.344s = 46.46 tok/s | MATCH MATCH 
+gengraph n=16 graph r2 rc=0 generated 16 tokens in 0.345s = 46.43 tok/s | MATCH MATCH 
+gengraph n=16 eager r2 rc=0 generated 16 tokens in 0.319s = 50.18 tok/s | MATCH MATCH 
+gengraph n=16 eager r3 rc=0 generated 16 tokens in 0.319s = 50.17 tok/s | MATCH MATCH 
+gengraph n=16 graph r3 rc=0 generated 16 tokens in 0.345s = 46.40 tok/s | MATCH MATCH 
+gengraph n=32 eager r1 rc=0 generated 32 tokens in 0.637s = 50.25 tok/s | MATCH MATCH 
+gengraph n=32 graph r1 rc=0 generated 32 tokens in 0.646s = 49.57 tok/s | MATCH MATCH 
+gengraph n=32 graph r2 rc=0 generated 32 tokens in 0.646s = 49.57 tok/s | MATCH MATCH 
+gengraph n=32 eager r2 rc=0 generated 32 tokens in 0.637s = 50.25 tok/s | MATCH MATCH 
+gengraph n=32 eager r3 rc=0 generated 32 tokens in 0.637s = 50.26 tok/s | MATCH MATCH 
+gengraph n=32 graph r3 rc=0 generated 32 tokens in 0.646s = 49.57 tok/s | MATCH MATCH 
+gengraph n=64 eager r1 rc=0 generated 64 tokens in 1.272s = 50.31 tok/s | MATCH MATCH 
+gengraph n=64 graph r1 rc=0 generated 64 tokens in 1.248s = 51.29 tok/s | MATCH MATCH 
+gengraph n=64 graph r2 rc=0 generated 64 tokens in 1.248s = 51.28 tok/s | MATCH MATCH 
+gengraph n=64 eager r2 rc=0 generated 64 tokens in 1.272s = 50.31 tok/s | MATCH MATCH 
+gengraph n=64 eager r3 rc=0 generated 64 tokens in 1.272s = 50.32 tok/s | MATCH MATCH 
+gengraph n=64 graph r3 rc=0 generated 64 tokens in 1.249s = 51.25 tok/s | MATCH MATCH 
+GG-CROSS-DONE

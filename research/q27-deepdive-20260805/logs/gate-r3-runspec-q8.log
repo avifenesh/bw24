@@ -1,0 +1,4 @@
+49, 405 MHz
+loaded qwen35 (64 layers, nextn=0)
+ERROR: model has no MTP/NextN head (nextn_predict_layers=0, no blk.N.nextn.eh_proj). generate_spec is unavailable for this file.
+RUNSPEC-Q8 rc=2

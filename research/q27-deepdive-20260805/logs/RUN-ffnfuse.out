@@ -1,0 +1,15 @@
+ffnfuse off r1 rc=0 generated 128 tokens in 2.569s = 49.83 tok/s | MATCH MATCH 
+ffnfuse on r1 rc=0 generated 128 tokens in 2.545s = 50.30 tok/s | MATCH MATCH 
+DD-lever-ffnfuse-DONE 2026-08-04T23:45:02Z
+ffnfuse on r2 rc=0 generated 128 tokens in 2.545s = 50.29 tok/s | MATCH MATCH 
+ffnfuse off r2 rc=0 generated 128 tokens in 2.570s = 49.81 tok/s | MATCH MATCH 
+DD-lever-ffnfuse-DONE 2026-08-04T23:45:39Z
+ffnfuse off r3 rc=0 generated 128 tokens in 2.570s = 49.81 tok/s | MATCH MATCH 
+ffnfuse on r3 rc=0 generated 128 tokens in 2.546s = 50.28 tok/s | MATCH MATCH 
+DD-lever-ffnfuse-DONE 2026-08-04T23:46:16Z
+ffnfuse on r4 rc=0 generated 128 tokens in 2.546s = 50.27 tok/s | MATCH MATCH 
+ffnfuse off r4 rc=0 generated 128 tokens in 2.571s = 49.78 tok/s | MATCH MATCH 
+DD-lever-ffnfuse-DONE 2026-08-04T23:46:53Z
+ffnfuse off r5 rc=0 generated 128 tokens in 2.571s = 49.78 tok/s | MATCH MATCH 
+ffnfuse on r5 rc=0 generated 128 tokens in 2.547s = 50.26 tok/s | MATCH MATCH 
+DD-lever-ffnfuse-DONE 2026-08-04T23:47:30Z

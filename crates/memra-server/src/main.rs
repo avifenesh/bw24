@@ -37,6 +37,7 @@
 /// x-lane QoS (lane/dl-metering gate, QoS-only extraction 2026-08-02): lane types, SLO
 /// admission policy, engine-truth step stats live in the memra-lanes crate so out-of-process
 /// controllers (the sidecar shape) can share them.
+pub(crate) mod auth;
 pub(crate) mod constrained;
 pub(crate) mod lanes { pub use memra_lanes::*; }
 mod toolcall;
@@ -75,6 +76,9 @@ struct AppState {
     /// finished, queued-at-worker included) — drives the X-RateLimit-* headers and the
     /// graceful-drain completion barrier (serve-tail lane, gap-scan F11/F12).
     inflight: InflightCounts,
+    /// per-tenant in-flight gauge (lane/api-keys): keyed by tenant id, same RAII life as
+    /// the lane gauge — drives per-key rate-limit overrides + their headers.
+    tenant_inflight: TenantGauge,
 }
 
 // ---- rate-limit headers (serve-tail lane, 2026-08-04; gap-scan F12) ----
@@ -96,26 +100,46 @@ struct AppState {
 
 type InflightCounts = Arc<[std::sync::atomic::AtomicUsize; 3]>;
 
-/// RAII in-flight slot: increments the lane gauge at submission, decrements when the
-/// response is complete — dropped at handler exit (blocking) or when the SSE stream
-/// finishes/disconnects (moved into the stream).
+/// Per-tenant in-flight gauge (lane/api-keys): tenant id -> live request count. Entries
+/// are removed at zero so the map stays bounded by concurrent tenants, not tenant history.
+type TenantGauge = Arc<std::sync::Mutex<HashMap<String, usize>>>;
+
+/// RAII in-flight slot: increments the lane + tenant gauges at submission, decrements
+/// both when the response is complete — dropped at handler exit (blocking) or when the
+/// SSE stream finishes/disconnects (moved into the stream).
 struct InflightGuard {
     counts: InflightCounts,
     idx: usize,
+    tenants: TenantGauge,
+    tenant: String,
 }
 
 impl InflightGuard {
-    /// Returns the guard + the in-flight count INCLUDING this request.
-    fn acquire(counts: InflightCounts, lane: lanes::Lane) -> (Self, usize) {
+    /// Returns the guard + the (lane, tenant) in-flight counts INCLUDING this request.
+    fn acquire(counts: InflightCounts, lane: lanes::Lane, tenants: TenantGauge,
+               tenant: &str) -> (Self, usize, usize) {
         let idx = lane.idx();
         let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        (InflightGuard { counts, idx }, n)
+        let nt = {
+            let mut m = tenants.lock().unwrap();
+            let e = m.entry(tenant.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        (InflightGuard { counts, idx, tenants, tenant: tenant.to_string() }, n, nt)
     }
 }
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         self.counts[self.idx].fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        let mut m = self.tenants.lock().unwrap();
+        if let Some(e) = m.get_mut(&self.tenant) {
+            *e -= 1;
+            if *e == 0 {
+                m.remove(&self.tenant);
+            }
+        }
     }
 }
 
@@ -193,8 +217,20 @@ struct RateLimit {
 }
 
 impl RateLimit {
-    fn at_admit(lane: lanes::Lane, n_inflight: usize, metrics: &SharedMetrics) -> Self {
-        Self::compute(lane_cap(lane), n_inflight, metrics)
+    /// Per-tenant override law (lane/api-keys): the effective cap is
+    /// min(tenant_override, global lane cap) — the GLOBAL cap stays authoritative (an
+    /// override can only narrow, never widen). Remaining is the tighter of the two
+    /// headrooms (tenant cap minus tenant in-flight vs lane cap minus lane in-flight).
+    fn at_admit(lane: lanes::Lane, n_inflight: usize, metrics: &SharedMetrics,
+                tenant: &auth::TenantCtx, n_tenant: usize) -> Self {
+        let global = lane_cap(lane);
+        let Some(t) = tenant.rate_limit.filter(|&t| t < global) else {
+            return Self::compute(global, n_inflight, metrics);
+        };
+        let headroom = t.saturating_sub(n_tenant)
+            .min(global.saturating_sub(n_inflight));
+        // compute() derives remaining as limit - n; feed it the effective occupancy.
+        Self::compute(t, t - headroom, metrics)
     }
 
     fn compute(limit: usize, n_inflight: usize, metrics: &SharedMetrics) -> Self {
@@ -550,13 +586,14 @@ fn openai_compat() -> bool {
     })
 }
 
-/// PC-ISO (lane/pc-iso, 2026-08-02): derive the cache namespace for a request — the vLLM
-/// `cache_salt` design (research/cache-tools-20260802/REPORT.md §4). Priority order:
-/// (a) the explicit `cache_salt` body field (OpenAI-compatible extension); (b) a per-API-key
-/// namespace would slot in here IF the auth layer ever distinguished keys — today
-/// MEMRA_API_KEY is one shared bearer, a single trust domain, so there is no per-key
-/// identity to fold in; (c) "" — the default single-tenant namespace, byte-identical to
-/// pre-PC-ISO behavior. Cross-request KV reuse (prefix cache, continuation pool, spec pool)
+/// PC-ISO (lane/pc-iso, 2026-08-02): the RAW cache namespace for a request — the vLLM
+/// `cache_salt` design (research/cache-tools-20260802/REPORT.md §4): the explicit
+/// `cache_salt` body field (OpenAI-compatible extension), else "" — the default
+/// single-tenant namespace, byte-identical to pre-PC-ISO behavior. When a keyring is
+/// configured (MEMRA_API_KEYS) the handlers wrap this in the tenant scope —
+/// `tenant_namespace` -> `t:<tenant>\x1f<salt>` (lane/api-keys) — so per-key identity
+/// DOES fold in now; without a keyring the raw form passes through unchanged.
+/// Cross-request KV reuse (prefix cache, continuation pool, spec pool)
 /// only ever matches entries with an IDENTICAL namespace, so the `cached_tokens` hit oracle
 /// can only reveal the caller's own namespace's history (CacheProbe/PROMPTPEEK mitigation).
 fn cache_namespace(cache_salt: &Option<String>) -> String {
@@ -822,6 +859,16 @@ fn tool_call_json(c: &ParsedToolCall) -> serde_json::Value {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Key lifecycle CLI (lane/api-keys): `--gen-key <tenant>` / `--revoke-key <prefix>`
+    // manage the keyring and exit — no engine, no GPU, no model load.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = auth::run_cli(&args) {
+        std::process::exit(code);
+    }
+    // Keyring (MEMRA_API_KEYS): parsed once here so a bad config is a startup FATAL,
+    // not a per-request surprise. Absent = single-key/open behavior, unchanged.
+    auth::init_from_env();
+
     let models = parse_models_config();
     eprintln!("[server] starting; models config = {models:?}");
 
@@ -838,6 +885,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(0),
         inflight: Arc::new(Default::default()),
+        tenant_inflight: Arc::new(Default::default()),
     };
     let inflight_handle = state.inflight.clone();
     let app = Router::new()
@@ -1062,17 +1110,6 @@ async fn yield_metrics(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-/// Extract the yield lane from `x-lane` (default interactive; unknown value = 400).
-fn lane_from_headers(headers: &axum::http::HeaderMap) -> Result<lanes::Lane, Response> {
-    match headers.get("x-lane").map(|v| v.to_str().unwrap_or("?")) {
-        None => Ok(lanes::Lane::Interactive),
-        Some(v) => lanes::Lane::parse(v).ok_or_else(|| {
-            (StatusCode::BAD_REQUEST,
-             Json(json!({ "error": format!("unknown x-lane {v:?}") }))).into_response()
-        }),
-    }
-}
-
 /// Dark lanes (judge/harvest) can be SHED at admission — surface that as HTTP 429 +
 /// Retry-After before committing to a streaming response. Interactive never sheds, so it
 /// skips the peek (its first token may be legitimately far away; don't hold headers).
@@ -1262,22 +1299,87 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
     })
 }
 
-fn authorized(headers: &axum::http::HeaderMap) -> bool {
-    let Ok(key) = std::env::var("MEMRA_API_KEY") else { return true };
-    headers.get("authorization")
+/// Resolve the request's tenant identity (lane/api-keys, 2026-08-05). The law lives in
+/// `auth::authenticate_with`; this wraps it with the process env:
+///   MEMRA_API_KEYS keyring match -> that key's tenant/lane-class/rate-limit;
+///   MEMRA_API_KEY single-key match -> tenant "default" (back-compat: the daily driver
+///     and every serve script keep working unchanged, keyring configured or not);
+///   neither configured -> open, tenant "default";
+///   otherwise Err: Unknown -> 401 (OpenAI authentication_error), Disabled -> 403.
+fn authenticate(headers: &axum::http::HeaderMap) -> Result<auth::TenantCtx, Response> {
+    static SINGLE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let single = SINGLE.get_or_init(|| std::env::var("MEMRA_API_KEY").ok());
+    let bearer = headers.get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|candidate| candidate == key)
+        .and_then(|value| value.strip_prefix("Bearer "));
+    auth::authenticate_with(auth::global(), single.as_deref(), bearer).map_err(|why| {
+        match why {
+            auth::AuthDenied::Unknown => error_response(
+                StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", None),
+            auth::AuthDenied::Disabled => error_response(
+                StatusCode::FORBIDDEN, "api key is disabled", "authentication_error", None),
+        }
+    })
+}
+
+/// Lane resolution with the tenant's lane class applied: interactive-class keys keep the
+/// legacy behavior exactly (default interactive, any x-lane honored); batch-class keys
+/// DEFAULT to harvest and are refused the protected interactive lane (403, loud — the
+/// QoS gate exists to protect interactive from bulk traffic, so a bulk key cannot claim
+/// the protected class by omission or by header).
+fn lane_for_tenant(headers: &axum::http::HeaderMap, tenant: &auth::TenantCtx)
+    -> Result<lanes::Lane, Response> {
+    let requested = match headers.get("x-lane").map(|v| v.to_str().unwrap_or("?")) {
+        None => None,
+        Some(v) => Some(lanes::Lane::parse(v).ok_or_else(|| {
+            (StatusCode::BAD_REQUEST,
+             Json(json!({ "error": format!("unknown x-lane {v:?}") }))).into_response()
+        })?),
+    };
+    match tenant.lane_class {
+        auth::LaneClass::Interactive => Ok(requested.unwrap_or(lanes::Lane::Interactive)),
+        auth::LaneClass::Batch => match requested {
+            None => Ok(lanes::Lane::Harvest),
+            Some(lanes::Lane::Interactive) => Err(error_response(
+                StatusCode::FORBIDDEN,
+                "this api key is batch-class: x-lane interactive is not permitted \
+                 (use judge or harvest)",
+                "authentication_error", Some("x-lane"))),
+            Some(l) => Ok(l),
+        },
+    }
+}
+
+/// The tenant-scoped PC-ISO namespace: keyring configured -> `t:<tenant>\x1f<salt>`
+/// (a tenant's keys share cache, different tenants never — auth::scope_namespace);
+/// no keyring -> the raw salt, byte-identical to pre-lane PC-ISO behavior.
+fn tenant_namespace(tenant: &auth::TenantCtx, cache_salt: &Option<String>) -> String {
+    let raw = cache_namespace(cache_salt);
+    if auth::global().is_some() {
+        auth::scope_namespace(&tenant.tenant, &raw)
+    } else {
+        raw
+    }
+}
+
+/// METER SEAM (public-repo half): one flat log line per admitted request with the tenant
+/// identity — the private fork's metering layer parses these for per-tenant usage/billing;
+/// the public repo only emits. Completion accounting stays on the existing worker-truth
+/// usage/abort lines; this line binds request-id -> tenant -> model/lane at admission.
+fn meter_admit(env: &Envelope, tenant: &auth::TenantCtx, model: &str, lane: lanes::Lane) {
+    eprintln!("[meter] admit id={} tenant={} lane={} model={:?}",
+              env.id, tenant.tenant, lane.as_str(), model);
 }
 
 async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
                      Json(req): Json<CompletionReq>) -> Response {
-    // API key (MEMRA_API_KEY): OpenAI-style `Authorization: Bearer <key>`. Absent env = open.
+    // API key: OpenAI-style `Authorization: Bearer <key>` -> tenant identity
+    // (MEMRA_API_KEYS keyring and/or the MEMRA_API_KEY single key; nothing set = open).
     let env = Envelope::new(false);
-    if !authorized(&headers) {
-        return with_request_id(&env.id, error_response(
-            StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", None));
-    }
+    let tenant = match authenticate(&headers) {
+        Ok(t) => t,
+        Err(resp) => return with_request_id(&env.id, resp),
+    };
     // HONESTY GATE (gap-scan F4): semantic params we can't honor 400 loudly.
     if let Err((msg, param)) = reject_unsupported(&[
         ("logit_bias", req.logit_bias.is_some(),
@@ -1288,7 +1390,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     ]) {
         return with_request_id(&env.id, bad_request(&msg, Some(&param)));
     }
-    let lane = match lane_from_headers(&headers) {
+    let lane = match lane_for_tenant(&headers, &tenant) {
         Ok(l) => l,
         Err(resp) => return resp,
     };
@@ -1299,12 +1401,15 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): take the in-flight slot at submission time;
     // the guard rides the response (stream included) and frees the slot at completion.
-    let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
-    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics);
+    let (guard, n_inflight, n_tenant) = InflightGuard::acquire(
+        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant);
+    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
-    let request = build_request(&req, tx, lane);
+    let mut request = build_request(&req, tx, lane);
+    request.cache_ns = tenant_namespace(&tenant, &req.cache_salt);
+    meter_admit(&env, &tenant, &model, lane);
     let stop_strings = request.stop_strings.clone();
 
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
@@ -1331,10 +1436,10 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
 async fn chat_completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
                           Json(req): Json<ChatCompletionReq>) -> Response {
     let env = Envelope::new(true);
-    if !authorized(&headers) {
-        return with_request_id(&env.id, error_response(
-            StatusCode::UNAUTHORIZED, "invalid api key", "authentication_error", None));
-    }
+    let tenant = match authenticate(&headers) {
+        Ok(t) => t,
+        Err(resp) => return with_request_id(&env.id, resp),
+    };
     if req.messages.is_empty() || req.messages.iter().any(|message| {
         !matches!(message.role.as_str(), "system" | "user" | "assistant" | "tool")
     }) {
@@ -1354,19 +1459,21 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     ]) {
         return with_request_id(&env.id, bad_request(&msg, Some(&param)));
     }
-    let lane = match lane_from_headers(&headers) {
+    let lane = match lane_for_tenant(&headers, &tenant) {
         Ok(l) => l,
         Err(resp) => return resp,
     };
     let model = req.model.clone();
     let stream = req.stream;
+    let cache_salt = req.cache_salt.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    let plan = match build_chat_request(req, st.caps.get(&model), tx, lane) {
+    let mut plan = match build_chat_request(req, st.caps.get(&model), tx, lane) {
         Ok(plan) => plan,
         Err(err) => {
             return with_request_id(&env.id, bad_request(&err, None));
         }
     };
+    plan.request.cache_ns = tenant_namespace(&tenant, &cache_salt);
     // DRAIN GATE (gap-scan F11): a draining server admits nothing new — immediate
     // 503 + Retry-After, before any slot/queue state is touched.
     if draining() {
@@ -1374,8 +1481,10 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): slot taken at submission (post-validation —
     // a 400 never held a slot); freed when the response completes (guard).
-    let (guard, n_inflight) = InflightGuard::acquire(st.inflight.clone(), lane);
-    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics);
+    let (guard, n_inflight, n_tenant) = InflightGuard::acquire(
+        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant);
+    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
+    meter_admit(&env, &tenant, &model, lane);
     let stop_strings = plan.request.stop_strings.clone();
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
         return rl.attach(with_request_id(&env.id, error_response(
@@ -2443,6 +2552,7 @@ mod tests {
             metrics: SharedMetrics::default(),
             started: 1,
             inflight: Arc::new(Default::default()),
+            tenant_inflight: Arc::new(Default::default()),
         }
     }
 
@@ -2470,18 +2580,88 @@ mod tests {
     #[test]
     fn inflight_guard_counts_up_and_frees_on_drop() {
         let counts: InflightCounts = Arc::new(Default::default());
-        let (g1, n1) = InflightGuard::acquire(counts.clone(), lanes::Lane::Interactive);
-        let (g2, n2) = InflightGuard::acquire(counts.clone(), lanes::Lane::Interactive);
+        let tenants: TenantGauge = Arc::new(Default::default());
+        let (g1, n1, t1) = InflightGuard::acquire(
+            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme");
+        let (g2, n2, t2) = InflightGuard::acquire(
+            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme");
         assert_eq!((n1, n2), (1, 2));
-        // lanes are independent gauges.
-        let (gj, nj) = InflightGuard::acquire(counts.clone(), lanes::Lane::Judge);
-        assert_eq!(nj, 1);
+        // tenant gauge counts per tenant, across lanes.
+        assert_eq!((t1, t2), (1, 2));
+        // lanes are independent gauges; a different tenant starts at 1.
+        let (gj, nj, tj) = InflightGuard::acquire(
+            counts.clone(), lanes::Lane::Judge, tenants.clone(), "blue");
+        assert_eq!((nj, tj), (1, 1));
         drop(g1);
         drop(gj);
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(counts[1].load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(tenants.lock().unwrap().get("acme"), Some(&1));
+        // tenant entries are removed at zero (bounded by CONCURRENT tenants).
+        assert!(tenants.lock().unwrap().get("blue").is_none());
         drop(g2);
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(tenants.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tenant_rate_limit_override_is_min_with_global_cap() {
+        let metrics = SharedMetrics::default();
+        let unlimited = auth::TenantCtx::default_tenant();
+        let capped = auth::TenantCtx {
+            tenant: "acme".into(),
+            lane_class: auth::LaneClass::Interactive,
+            rate_limit: Some(2),
+        };
+        let global = lane_cap(lanes::Lane::Interactive);
+        // no override: the global lane cap reports as before.
+        let rl = RateLimit::at_admit(lanes::Lane::Interactive, 1, &metrics, &unlimited, 1);
+        assert_eq!((rl.limit, rl.remaining), (global, global - 1));
+        // override binds: limit = the tenant cap, remaining counts the TENANT gauge.
+        let rl = RateLimit::at_admit(lanes::Lane::Interactive, 5, &metrics, &capped, 1);
+        assert_eq!((rl.limit, rl.remaining), (2, 1));
+        let rl = RateLimit::at_admit(lanes::Lane::Interactive, 5, &metrics, &capped, 2);
+        assert_eq!(rl.remaining, 0);
+        assert!(rl.reset_s > 0, "reset must arm at the tenant cap too");
+        // the GLOBAL cap stays authoritative: a saturated lane zeroes the tenant's
+        // remaining even below its own cap, and an override above the global cap is
+        // ignored (min(t, global) — a key cannot widen the lane).
+        let rl = RateLimit::at_admit(lanes::Lane::Interactive, global, &metrics, &capped, 0);
+        assert_eq!(rl.remaining, 0);
+        let wide = auth::TenantCtx { rate_limit: Some(global + 100), ..capped.clone() };
+        let rl = RateLimit::at_admit(lanes::Lane::Interactive, 1, &metrics, &wide, 1);
+        assert_eq!((rl.limit, rl.remaining), (global, global - 1));
+    }
+
+    #[test]
+    fn batch_class_keys_default_to_harvest_and_cannot_claim_interactive() {
+        let batch = auth::TenantCtx {
+            tenant: "bulk".into(),
+            lane_class: auth::LaneClass::Batch,
+            rate_limit: None,
+        };
+        let interactive = auth::TenantCtx::default_tenant();
+        let hdr = |v: Option<&str>| {
+            let mut h = axum::http::HeaderMap::new();
+            if let Some(v) = v {
+                h.insert("x-lane", axum::http::HeaderValue::from_str(v).unwrap());
+            }
+            h
+        };
+        // interactive-class: legacy behavior exactly (default interactive, header honored).
+        assert_eq!(lane_for_tenant(&hdr(None), &interactive).unwrap(),
+                   lanes::Lane::Interactive);
+        assert_eq!(lane_for_tenant(&hdr(Some("judge")), &interactive).unwrap(),
+                   lanes::Lane::Judge);
+        // batch-class: defaults to harvest; judge ok; interactive is a loud 403.
+        assert_eq!(lane_for_tenant(&hdr(None), &batch).unwrap(), lanes::Lane::Harvest);
+        assert_eq!(lane_for_tenant(&hdr(Some("judge")), &batch).unwrap(),
+                   lanes::Lane::Judge);
+        let resp = lane_for_tenant(&hdr(Some("interactive")), &batch).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // unknown lane still 400s for everyone.
+        let resp = lane_for_tenant(&hdr(Some("turbo")), &interactive).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     /// Serializes tests that read or flip the process-global DRAINING flag (the drain

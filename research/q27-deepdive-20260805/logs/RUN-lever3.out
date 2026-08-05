@@ -1,0 +1,9 @@
+gate decode-batch fuse=off rc=0 : 1 FAILs | ALL GREEN
+gate decode-batch fuse=on rc=0 : 1 FAILs | ALL GREEN
+lever3 bench off p1 rc=0 B=8: aggregate 213.1 tok/s, per-seq 26.6 tok/s (median of 3)
+lever3 bench on p1 rc=0 B=8: aggregate 213.8 tok/s, per-seq 26.7 tok/s (median of 3)
+lever3 bench on p2 rc=0 B=8: aggregate 214.4 tok/s, per-seq 26.8 tok/s (median of 3)
+lever3 bench off p2 rc=0 B=8: aggregate 213.9 tok/s, per-seq 26.7 tok/s (median of 3)
+lever3 bench off p3 rc=0 B=8: aggregate 214.4 tok/s, per-seq 26.8 tok/s (median of 3)
+lever3 bench on p3 rc=0 B=8: aggregate 213.5 tok/s, per-seq 26.7 tok/s (median of 3)
+LEVER3-DONE

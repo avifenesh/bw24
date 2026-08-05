@@ -1,0 +1,4 @@
+== arm=off
+/root/engage.sh: line 19: TAG_cuda_gpu_kern_sum: unbound variable
+== arm=on
+/root/engage.sh: line 19: TAG_cuda_gpu_kern_sum: unbound variable

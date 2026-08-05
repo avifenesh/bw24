@@ -1,0 +1,42 @@
+//! Batched decode step — B sequences share one fused pass (ARCHITECTURE-H100.md §3 B2').
+//!
+//! The bandwidth thesis: decode is weight-stream-bound, so every projection at m=B rows
+//! amortizes one weight read across B sequences. Row-parallel ops (norm/rope/quantize/
+//! activation) batch trivially — they are the SAME kernels prefill already runs at T rows.
+//! Only truly per-sequence state stays in a loop: KV append + fa_decode over each cache,
+//! and the GDN/conv recurrent step (v1: per-seq loop via the existing single-seq path;
+//! a blockIdx.z-batched GDN state kernel is the v2 fusion).
+//!
+//! EXACTNESS CONTRACT (the law this module lives under):
+//! - B == 1 must be BIT-IDENTICAL to `decode_step_h` (gate: decode-batch-gate).
+//! - 2 <= B <= 8: each row rides the m=2..9 verify-tier mmvq kernels, which are per-row
+//!   bit-identical to m=1 (the spec-exactness machinery decode_step_t relies on). Each
+//!   sequence's token stream must equal its isolated single-seq run (worker.rs contract:
+//!   "byte-identical to isolated").
+//! - 9 <= B <= 16 (the EXACT-16 tier, inc3 2026-08-01): admitted iff
+//!   `decode_batch_exact16_ok` — every matmul rides the b16 batched-mmvq class
+//!   (bit-identical per (token,row) to m=1; Q8_0 needs the q8rp mirror) under a
+//!   verify_exact scope that disables the m>=16 GEMM/MMQ arms. gate2 bit-strength
+//!   PASS at B=12/16 (research/batched-tick-inc3-20260801). Refused otherwise.
+//! - B > 16 crosses into GEMM/dp4a-tail numeric configs with NO exact kernel class —
+//!   refused (MEMRA_DECODE_BATCH_CAP stays a measurement door).
+//!
+//! v1 scope: the hybrid (Qwen3.5-class) non-gemma4 trunk. Fused m=1 micro-launches
+//! (fused3 QKV, cross-layer add+norm+q8 chain) are NOT used — the unfused sequence is
+//! bit-identical (kernel_check: add_rms_norm == add;rms_norm; _q8_1 == +quantize_q8_1)
+//! and keeps the batched path simple. Batched fusions are tuning work, not correctness.
+
+use crate::cache::Cache;
+use crate::hybrid::{HybridModel, Mixer};
+use crate::Engine;
+use cudarc::driver::CudaSlice;
+
+// ---- MEMRA_BATCH_PHASE=1 (diagnostics): sync-bounded per-phase accumulators for the batched
+// tick. Each boundary syncs the stream, so the TOTAL inflates (launch pipelining is destroyed);
+// the value is the RANKING/shares, not absolute ms. Read via `batch_phase_report()`.
+pub(crate) static BATCH_PHASE: std::sync::Mutex<[f64; 12]> = std::sync::Mutex::new([0.0; 12]);
+pub const BATCH_PHASE_NAMES: [&str; 12] = [
+    "setup(ptrs+embed H2D)",
+    "attn batched pre (norm/qkv/rope)",
+    "attn per-seq: kv append",
+    "att
