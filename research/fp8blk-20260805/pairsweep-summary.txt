@@ -1,0 +1,6 @@
+N: n=6 medians=[1548.7, 1552.3, 1552.5, 1553.4, 1556.9, 1553.6] median=1553.0 min=1548.7 max=1556.9
+A: n=6 medians=[1541.2, 1538.0, 1540.0, 1540.6, 1540.6, 1540.7] median=1540.6 min=1538.0 max=1541.2
+ratio of medians N/A = 1.0080
+overlap: min(N)=1548.7 vs max(A)=1541.2 -> DISJOINT
+per-pair wins for N: 6/6  pairwise deltas=[7.5, 14.3, 12.5, 12.8, 16.3, 12.9]
+pairwise mean delta = 12.72 tok/s (0.83%)

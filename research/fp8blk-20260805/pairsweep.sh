@@ -39,7 +39,11 @@ for p in 1 2 3 4 5 6; do
   if (( p % 2 )); then one N "N-p$p"; one A "A-p$p"; else one A "A-p$p"; one N "N-p$p"; fi
 done
 say "final gpu $(G)"
-python3 - "$R" 2>&1 | tee -a "$R/pairsweep-driver.log" <<'PY'
+# Heredoc goes to python, NOT to a tee at the end of a pipe -- `python3 - | tee <<EOF` attaches the
+# heredoc to TEE, so python reads EOF and the analysis silently never runs while tee appends the
+# python SOURCE to the log. That happened on this script's first run (and on postflip.sh's); the
+# receipt is the log itself. Redirect to a file, then cat the file.
+python3 - "$R" > "$R/pairsweep-summary.txt" 2>&1 <<'PY'
 import pathlib, re, statistics, sys
 r = pathlib.Path(sys.argv[1])
 med = {}
@@ -58,3 +62,4 @@ wins = sum(1 for x, y in zip(n, a) if x > y)
 print(f"per-pair wins for N: {wins}/{min(len(n), len(a))}  pairwise deltas="
       f"{[round(x - y, 1) for x, y in zip(n, a)]}")
 PY
+cat "$R/pairsweep-summary.txt" | tee -a "$R/pairsweep-driver.log"
