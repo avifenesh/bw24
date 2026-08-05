@@ -1,0 +1,11 @@
+loaded qwen35 (32 layers); steps=16 batch=4
+gate1 step 1: BIT-DIFF (maxdiff 1.434e1) FAIL
+gate1 step 2: BIT-DIFF (maxdiff 9.977e0) FAIL
+gate1 step 3: BIT-DIFF (maxdiff 3.296e0) FAIL
+gate1 step 4: BIT-DIFF (maxdiff 2.977e0) FAIL
+gate1 seed 0: agreement all 16 steps
+gate1 (B=1 bit-identity vs decode_step_h, 16 steps, 1 seed(s)): FAIL
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated decode_step_h, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+Error: "decode-batch-gate FAILED"
