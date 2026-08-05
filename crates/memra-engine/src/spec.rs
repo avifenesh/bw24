@@ -377,6 +377,19 @@ impl SpecSession {
     pub fn rewind_pos(&self) -> Option<usize> {
         self.turn_ckpt.as_ref().map(|c| c.pos)
     }
+    /// Pool-resume hook (audit Q2): clear the parked draft-graph failure memoization so a
+    /// NEW request resuming this session gets one fresh capture chance — a transient-pressure
+    /// capture failure must not persist for the pool's whole lifetime (the TRT #16072 class).
+    /// Logs once iff a flag was actually set; a no-fallback resume is silent and free.
+    pub fn reset_graph_fallback_on_resume(&mut self) {
+        if let Some(line) = self
+            .draft_ctx
+            .as_mut()
+            .and_then(|c| c.failed.reset_on_resume())
+        {
+            eprintln!("{line}");
+        }
+    }
 }
 
 /// A session's PROMPT-END boundary state, the rewind target for session-affinity resume.
@@ -431,9 +444,10 @@ pub(crate) struct DraftGraphCtx {
     /// was `graph` captured WITH the mask node? A parked graph of the wrong shape is dropped.
     graph_masked: bool,
     graph: Option<cudarc::driver::CudaGraph>,
-    graph_failed: bool,
     graph_s: Option<cudarc::driver::CudaGraph>,
-    graph_s_failed: bool,
+    /// Failed-capture memoization for both graphs — LOUD on flip, cleared on pool resume
+    /// (audit Q2, the TRT #16072 silent-permanent-coverage-loss class).
+    failed: DraftGraphFallback,
     /// (seed, temp.to_bits(), k) baked into graph_s at its capture.
     s_key: Option<(u64, u32, usize)>,
     /// CAPTURE-RETAIN keepers (#68 root cause, 2026-08-04): the warmup-run transients whose
@@ -447,6 +461,77 @@ pub(crate) struct DraftGraphCtx {
     keeper: Vec<Box<dyn std::any::Any + Send>>,
     keeper_s: Vec<Box<dyn std::any::Any + Send>>,
 }
+
+/// Failed-capture memoization for the two draft graphs (audit Q2, 2026-08-05 — the
+/// TRT #16072 trap class: pressure-triggered, silent, long-lived coverage loss).
+///
+/// Three contracts:
+/// - LOUD FLIP: `mark_*` returns the warn line exactly on the false→true transition
+///   (returned, not printed, so the once-per-flip contract is unit-testable); the caller
+///   `eprintln!`s it UNCONDITIONALLY — a dropped draft graph is never silent. Re-marking
+///   an already-failed graph returns None (the per-burst memoization that keeps the eager
+///   fallback from paying a doomed capture attempt every burst).
+/// - RESET ON RESUME: `reset_on_resume` clears both flags — a parked session resumed by a
+///   NEW request gets one fresh capture chance instead of carrying a transient-pressure
+///   failure for the pool's whole lifetime. Returns the note line only when a flag was
+///   actually set (quiet on the common clean-resume path).
+/// - Shape-change clears (`clear_*`) stay silent, exactly as before: they precede a fresh
+///   capture attempt whose own failure would re-flip loudly.
+#[derive(Default)]
+pub(crate) struct DraftGraphFallback {
+    greedy: bool,
+    sampled: bool,
+}
+impl DraftGraphFallback {
+    fn mark_greedy(&mut self, reason: &str) -> Option<String> {
+        if self.greedy {
+            return None;
+        }
+        self.greedy = true;
+        Some(format!(
+            "[spec] WARN: draft-graph capture failed ({reason}); eager fallback until session resume"
+        ))
+    }
+    fn mark_sampled(&mut self, reason: &str) -> Option<String> {
+        if self.sampled {
+            return None;
+        }
+        self.sampled = true;
+        Some(format!(
+            "[spec] WARN: sampled draft-graph capture failed ({reason}); eager fallback until session resume"
+        ))
+    }
+    fn greedy_failed(&self) -> bool {
+        self.greedy
+    }
+    fn sampled_failed(&self) -> bool {
+        self.sampled
+    }
+    fn clear_greedy(&mut self) {
+        self.greedy = false;
+    }
+    fn clear_sampled(&mut self) {
+        self.sampled = false;
+    }
+    /// Pool-resume reset: both graphs get a fresh capture chance. Some(note) iff any flag
+    /// was set (so clean resumes stay quiet).
+    pub(crate) fn reset_on_resume(&mut self) -> Option<String> {
+        if !self.greedy && !self.sampled {
+            return None;
+        }
+        let which = match (self.greedy, self.sampled) {
+            (true, true) => "greedy+sampled",
+            (true, false) => "greedy",
+            _ => "sampled",
+        };
+        self.greedy = false;
+        self.sampled = false;
+        Some(format!(
+            "[spec] draft-graph fallback reset on session resume ({which}); recapture eligible"
+        ))
+    }
+}
+
 impl DraftGraphCtx {
     fn new(e: &Engine, n_embd: usize, qlen: usize) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(DraftGraphCtx {
@@ -461,9 +546,8 @@ impl DraftGraphCtx {
             g_dmask: e.alloc_u32_zeroed(1)?,
             graph_masked: false,
             graph: None,
-            graph_failed: false,
             graph_s: None,
-            graph_s_failed: false,
+            failed: DraftGraphFallback::default(),
             s_key: None,
             keeper: Vec::new(),
             keeper_s: Vec::new(),
@@ -3216,15 +3300,15 @@ impl HybridModel {
         if dmask_on && dctx.g_dmask.len() < dmask_words {
             dctx.g_dmask = e.alloc_u32_zeroed(dmask_words)?;
             dctx.graph = None; // the old capture baked the old (or no) mask pointer
-            dctx.graph_failed = false;
+            dctx.failed.clear_greedy();
             dctx.keeper.clear();
         }
         if dctx.graph.is_some() && dctx.graph_masked != dmask_on {
             dctx.graph = None;
-            dctx.graph_failed = false;
+            dctx.failed.clear_greedy();
             dctx.keeper.clear();
         }
-        if graph_draft && !sampled && dctx.graph.is_none() && !dctx.graph_failed {
+        if graph_draft && !sampled && dctx.graph.is_none() && !dctx.failed.greedy_failed() {
             let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, g_dmask, .. } = &mut dctx;
             // capture-time contents: ALL-ONES (ban nothing). A replay only ever runs after the
             // host uploads the position's real words, so the warmups stay grammar-free.
@@ -3267,9 +3351,10 @@ impl HybridModel {
                 }
                 Err(err) => {
                     scratch.set_len(e, base)?;
-                    dctx.graph_failed = true;
-                    if debug_spec {
-                        eprintln!("[spec] draft-graph capture failed ({err}); eager fallback");
+                    // LOUD flip (audit Q2): a dropped draft graph is a coverage loss, never
+                    // silent. Once per flip — mark returns None on an already-failed ctx.
+                    if let Some(line) = dctx.failed.mark_greedy(&err.to_string()) {
+                        eprintln!("{line}");
                     }
                 }
             }
@@ -3301,12 +3386,14 @@ impl HybridModel {
         let s_key = (sp_seed, sp_temp.to_bits(), k);
         if sampled && dctx.s_key.is_some_and(|old| old != s_key) {
             dctx.graph_s = None;
-            dctx.graph_s_failed = false;
+            dctx.failed.clear_sampled();
             dctx.s_key = None;
             dctx.q_slots.clear();
             dctx.keeper_s.clear();
         }
-        if graph_draft && sampled && pure_temp && dctx.graph_s.is_none() && !dctx.graph_s_failed {
+        if graph_draft && sampled && pure_temp && dctx.graph_s.is_none()
+            && !dctx.failed.sampled_failed()
+        {
             let DraftGraphCtx { g_tok, g_pos, g_seed, g_p, g_ctr, g_perturb, g_q, .. } = &mut dctx;
             // CAPTURE-RETAIN (#68 fix): same keeper contract as the greedy capture above.
             let cap_res = e.capture_graph_retained(|e| {
@@ -3341,11 +3428,9 @@ impl HybridModel {
                 }
                 Err(err) => {
                     scratch.set_len(e, base)?;
-                    dctx.graph_s_failed = true;
-                    if debug_spec {
-                        eprintln!(
-                            "[spec] sampled draft-graph capture failed ({err}); eager fallback"
-                        );
+                    // LOUD flip (audit Q2): same contract as the greedy capture above.
+                    if let Some(line) = dctx.failed.mark_sampled(&err.to_string()) {
+                        eprintln!("{line}");
                     }
                 }
             }
@@ -5157,5 +5242,61 @@ mod telem_tests {
         let big = SpecTelemetry { rounds: 5, drafted: 15, accepted: 9, ..Default::default() };
         let d = small.delta_since(&big);
         assert_eq!((d.rounds, d.drafted, d.accepted), (0, 0, 0));
+    }
+}
+
+#[cfg(test)]
+mod draft_graph_fallback_tests {
+    use super::DraftGraphFallback;
+
+    /// The Q2 contract, part (a): a fallback flip is LOUD — exactly once per flip.
+    #[test]
+    fn flip_is_loud_once_and_memoized_after() {
+        let mut f = DraftGraphFallback::default();
+        let line = f.mark_greedy("out of memory").expect("first flip must return the warn line");
+        assert!(line.contains("WARN"), "flip line must be warn-level: {line}");
+        assert!(line.contains("out of memory"), "flip line must carry the reason: {line}");
+        assert!(f.greedy_failed());
+        // re-marking an already-failed graph is the memoization: quiet, still failed.
+        assert!(f.mark_greedy("out of memory").is_none());
+        assert!(f.greedy_failed());
+        // the two graphs' flags are independent (greedy flip leaves sampled capturable).
+        assert!(!f.sampled_failed());
+        let line_s = f.mark_sampled("capture unsupported").expect("sampled flip is its own flip");
+        assert!(line_s.contains("sampled"), "sampled flip names itself: {line_s}");
+        assert!(f.mark_sampled("capture unsupported").is_none());
+    }
+
+    /// The Q2 contract, part (b): resume-from-pool RESETS both flags (fresh capture chance),
+    /// and says so exactly when there was something to reset.
+    #[test]
+    fn reset_on_resume_clears_flags_and_logs_once() {
+        let mut f = DraftGraphFallback::default();
+        // clean session: resume is silent, nothing to reset.
+        assert!(f.reset_on_resume().is_none());
+        f.mark_greedy("oom").unwrap();
+        f.mark_sampled("oom").unwrap();
+        let note = f.reset_on_resume().expect("a set flag must produce the reset note");
+        assert!(note.contains("greedy+sampled"), "note names what was reset: {note}");
+        assert!(!f.greedy_failed() && !f.sampled_failed(), "both flags cleared");
+        // and the NEXT failure after a reset is a fresh flip — loud again.
+        assert!(f.mark_greedy("oom again").is_some());
+        let note2 = f.reset_on_resume().expect("greedy-only reset");
+        assert!(note2.contains("(greedy)"), "single-flag note: {note2}");
+    }
+
+    /// Shape-change clears (dmask realloc / mask-shape mismatch / s_key change) stay silent —
+    /// they precede a fresh capture attempt whose own failure re-flips loudly.
+    #[test]
+    fn shape_change_clears_are_silent() {
+        let mut f = DraftGraphFallback::default();
+        f.mark_greedy("oom").unwrap();
+        f.clear_greedy();
+        assert!(!f.greedy_failed());
+        f.mark_sampled("oom").unwrap();
+        f.clear_sampled();
+        assert!(!f.sampled_failed());
+        // after a silent clear there is nothing left for resume to report.
+        assert!(f.reset_on_resume().is_none());
     }
 }

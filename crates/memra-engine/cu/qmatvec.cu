@@ -478,12 +478,14 @@ __device__ __forceinline__ int dp4a(int a, int b, int c) {
 extern "C" __global__ void quantize_q8_1(const float* __restrict__ x, signed char* __restrict__ out_q,
                                          float* __restrict__ out_d, int in_f, int m) {
     MEMRA_PDL_ENTRY();
-    int blk = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;   // global block-of-32 index
+    // 64-bit thread-id math (audit Q7 defense-in-depth): m*in_f >= 2^31 needs M >= ~52k tokens
+    // at the largest in_f — out of today's chunked range, but the widening is free.
+    long long blk = ((long long) blockIdx.x * blockDim.x + threadIdx.x) >> 5; // global 32-block idx
     int lane = threadIdx.x & 31;
     int nblk_row = in_f / 32;
-    if (blk >= m * nblk_row) return;
-    int t = blk / nblk_row;
-    int b = blk % nblk_row;
+    if (blk >= (long long) m * nblk_row) return;
+    int t = (int)(blk / nblk_row);
+    int b = (int)(blk % nblk_row);
     size_t off = (size_t)t * in_f + b * 32 + lane;
     float v = x[off];
     float amax = fabsf(v);
@@ -543,11 +545,12 @@ __device__ __forceinline__ unsigned char ue4m3_encode_hw(float s) {
 // One CTA-thread per (token, 16-block). amax over 16 -> UE4M3 d (so amax/d ~ 6) -> e2m1 encode.
 extern "C" __global__ void quantize_fp4_act(const float* __restrict__ x, unsigned* __restrict__ aq4,
                                             unsigned char* __restrict__ ad4, int in_f, int m) {
-    int b16 = blockIdx.x * blockDim.x + threadIdx.x;  // global 16-block index
+    // 64-bit thread-id math (audit Q7 defense-in-depth) — see quantize_q8_1.
+    long long b16 = (long long) blockIdx.x * blockDim.x + threadIdx.x; // global 16-block index
     int nb16_row = in_f / 16;
-    if (b16 >= m * nb16_row) return;
-    int t = b16 / nb16_row;
-    int blk = b16 % nb16_row;
+    if (b16 >= (long long) m * nb16_row) return;
+    int t = (int)(b16 / nb16_row);
+    int blk = (int)(b16 % nb16_row);
     const float* xr = x + (size_t)t * in_f + blk * 16;
     float amax = 0.0f;
     #pragma unroll

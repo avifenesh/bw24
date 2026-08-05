@@ -384,7 +384,10 @@ static __global__ void mul_mat_q_q8_0(
 
     const int col_diff = ncols_dst;
     const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-    const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+    // 64-bit (audit Q7, 2026-08-05 — FlashInfer #4263 class): jt*mmq_x*stride_col_dst is a
+    // pure-int product that wraps at n_tokens*out_f >= 2^31 (T >= 8193 at 256k vocab on the
+    // full-T logits path) and feeds a pointer add. Same fix at every MMQ launcher.
+    const int64_t offset_dst = (int64_t) jt * mmq_x * stride_col_dst + (int64_t) it * mmq_y;
 
     const int tile_x_max_i = nrows_x  - it * mmq_y - 1;
     const int tile_y_max_j = col_diff - jt * mmq_x - 1;

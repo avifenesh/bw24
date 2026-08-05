@@ -442,7 +442,8 @@ static __global__ void mul_mat_q_q4_0(
 
     const int col_diff = ncols_dst;
     const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-    const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+    // 64-bit offset_dst (audit Q7, 2026-08-05): wraps at n_tokens*out_f >= 2^31 — see mmq_q8_0.cu.
+    const int64_t offset_dst = (int64_t) jt * mmq_x * stride_col_dst + (int64_t) it * mmq_y;
 
     const int tile_x_max_i = nrows_x  - it * mmq_y - 1;
     const int tile_y_max_j = col_diff - jt * mmq_x - 1;
@@ -511,7 +512,8 @@ static __global__ void mul_mat_q_q4_0_clc(
 
         // ---- the tile: IDENTICAL body + offsets to mul_mat_q_q4_0 ----
         const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-        const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+        // 64-bit offset_dst (audit Q7): same wrap as the static kernel above.
+        const int64_t offset_dst = (int64_t) jt * mmq_x * stride_col_dst + (int64_t) it * mmq_y;
         const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
         const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
         const int offset_x = it * mmq_y * stride_row_x;
@@ -578,7 +580,8 @@ static __global__ void mul_mat_q_q4_0_sk(
         const int jt = tile % ntx;
         const int it = tile / ntx;
         const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-        const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+        // 64-bit offset_dst (audit Q7): same wrap as the static kernel above.
+        const int64_t offset_dst = (int64_t) jt * mmq_x * stride_col_dst + (int64_t) it * mmq_y;
         const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
         const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
         const int offset_x = it * mmq_y * stride_row_x;
@@ -601,7 +604,8 @@ static __global__ void mul_mat_q_q4_0_sk(
     const int jt = tile % ntx;
     const int it = tile / ntx;
     const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-    const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+    // 64-bit offset_dst (audit Q7): same wrap as the static kernel above.
+    const int64_t offset_dst = (int64_t) jt * mmq_x * stride_col_dst + (int64_t) it * mmq_y;
     const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
     const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
     const int offset_x = it * mmq_y * stride_row_x;

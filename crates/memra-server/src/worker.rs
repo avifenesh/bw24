@@ -582,6 +582,9 @@ struct PrefixEntry {
     last_logits: Vec<f32>,
     bytes: usize,
     last_use: Instant,
+    /// Recency-index identity (Q3, audit 2026-08-05): unique per insert (monotonic counter,
+    /// assigned by `insert`), disambiguating equal `last_use` Instants in the LRU BTreeMap key.
+    id: u64,
 }
 
 #[derive(Default)]
@@ -590,6 +593,20 @@ struct PrefixCache {
     /// is the PC-ISO trust boundary — the equality check is part of the map key, so the
     /// default path pays nothing beyond hashing "" alongside the model id).
     entries: HashMap<PoolKey, Vec<PrefixEntry>>,
+    /// EVICTION INDEX (Q3, audit 2026-08-05 — the vLLM #50992 rescan-from-head shape):
+    /// recency-ordered view of every entry, so victim selection is `first_key_value()`
+    /// O(log E) instead of the old per-victim full rescan (O(E) per victim, O(k·E) per
+    /// insert, O(E²) on a flush — unbounded via MEMRA_PREFIX_CACHE_MB). POLICY UNCHANGED:
+    /// the old scan chose the global strict-< `last_use` minimum, i.e. timestamp-LRU —
+    /// the BTreeMap's first key is that same minimum. Ties on equal Instants: the old
+    /// scan broke them by HashMap-iteration order (nondeterministic across pools,
+    /// insertion order within one pool); the `id` component breaks them by insertion
+    /// order globally — a strict determinization, never a different policy.
+    /// Value = (pool key, index into that pool's Vec), kept exact on removal by
+    /// swap_remove + moved-entry index fixup. Every `last_use` write goes through
+    /// `touch`/`insert` so index and entries never drift.
+    lru: std::collections::BTreeMap<(Instant, u64), (PoolKey, usize)>,
+    next_id: u64,
     total_bytes: usize,
     hits: u64,
     misses: u64,
@@ -643,11 +660,57 @@ impl PrefixCache {
         self.entries.get(key).is_some_and(|pool| pool.iter().any(|e| e.toks[..] == *toks))
     }
 
+    fn lru_key(e: &PrefixEntry) -> (Instant, u64) {
+        (e.last_use, e.id)
+    }
+
+    /// Refresh recency for pool[i] (a lookup hit) — the ONLY legal `last_use` write after
+    /// insert, so the recency index never drifts from the entries.
+    fn touch(&mut self, key: &PoolKey, i: usize) {
+        if let Some(e) = self.entries.get_mut(key).and_then(|p| p.get_mut(i)) {
+            self.lru.remove(&(e.last_use, e.id));
+            e.last_use = Instant::now();
+            self.lru.insert((e.last_use, e.id), (key.clone(), i));
+        }
+    }
+
+    /// Remove pool[i] under `key`, keeping the recency index exact: swap_remove moves the
+    /// pool's LAST entry into slot i, so exactly one surviving entry needs its index
+    /// re-pointed (pool order is free — every probe is order-independent: lookup's
+    /// longest-match tie is impossible under exact-key dedupe, best_lcp is a max,
+    /// has_covering/has_key are `any`).
+    fn remove_at(&mut self, key: &PoolKey, i: usize) -> Option<PrefixEntry> {
+        let pool = self.entries.get_mut(key)?;
+        if i >= pool.len() {
+            return None;
+        }
+        let dead = pool.swap_remove(i);
+        self.lru.remove(&Self::lru_key(&dead));
+        if let Some(moved) = pool.get(i) {
+            self.lru.insert(Self::lru_key(moved), (key.clone(), i));
+        }
+        if pool.is_empty() {
+            self.entries.remove(key);
+        }
+        Some(dead)
+    }
+
     /// Insert (exact-key deduped per namespace) + LRU-evict back under MEMRA_PREFIX_CACHE_MB.
     /// The LRU budget stays GLOBAL across namespaces (VRAM is one resource); only visibility
     /// is namespaced.
+    ///
+    /// EVICTION (Q3, audit 2026-08-05): victims pop off the recency index — O(log E)
+    /// amortized per victim. The OLD loop re-scanned every entry in every pool per victim
+    /// (O(E) per victim, O(E²) flushing a pool of small entries — the vLLM #50992 shape).
+    /// POLICY IDENTICAL: both pick the global minimum `last_use` (timestamp-LRU); see the
+    /// `lru` field doc for the tie determinization.
     fn insert(&mut self, key: &PoolKey, e: PrefixEntry, why: &str) {
-        let budget = prefix_cache_budget_bytes();
+        self.insert_with_budget(key, e, why, prefix_cache_budget_bytes());
+    }
+
+    /// `insert` with the budget as a parameter (the env-independent seam the eviction
+    /// unit tests drive; production always passes `prefix_cache_budget_bytes()`).
+    fn insert_with_budget(&mut self, key: &PoolKey, mut e: PrefixEntry, why: &str, budget: usize) {
         if e.bytes > budget {
             eprintln!("[prefix-cache] skip {why} insert: entry {:.1}MB > budget {:.0}MB",
                       e.bytes as f64 / 1e6, budget as f64 / 1e6);
@@ -662,24 +725,22 @@ impl PrefixCache {
                   e.toks.len(), e.bytes as f64 / 1e6,
                   self.total_bytes as f64 / 1e6, budget as f64 / 1e6,
                   key.0, ns_suffix(&key.1));
-        self.entries.entry(key.clone()).or_default().push(e);
+        e.id = self.next_id;
+        self.next_id += 1;
+        let lk = Self::lru_key(&e);
+        let idx = {
+            let pool = self.entries.entry(key.clone()).or_default();
+            pool.push(e);
+            pool.len() - 1
+        };
+        self.lru.insert(lk, (key.clone(), idx));
         while self.total_bytes > budget {
-            let mut victim: Option<(PoolKey, usize, Instant)> = None;
-            for (k, pool) in &self.entries {
-                for (i, e) in pool.iter().enumerate() {
-                    if victim.as_ref().is_none_or(|&(_, _, t)| e.last_use < t) {
-                        victim = Some((k.clone(), i, e.last_use));
-                    }
-                }
-            }
-            let Some((k, i, _)) = victim else { break };
-            let dead = self.entries.get_mut(&k).map(|p| p.remove(i));
-            if let Some(dead) = dead {
-                self.total_bytes = self.total_bytes.saturating_sub(dead.bytes);
-                self.evictions += 1;
-                eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {}{})",
-                          dead.toks.len(), dead.bytes as f64 / 1e6, k.0, ns_suffix(&k.1));
-            }
+            let Some((k, i)) = self.lru.values().next().cloned() else { break };
+            let Some(dead) = self.remove_at(&k, i) else { break };
+            self.total_bytes = self.total_bytes.saturating_sub(dead.bytes);
+            self.evictions += 1;
+            eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {}{})",
+                      dead.toks.len(), dead.bytes as f64 / 1e6, k.0, ns_suffix(&k.1));
         }
     }
 
@@ -687,6 +748,7 @@ impl PrefixCache {
     fn evict_all(&mut self) -> usize {
         let n = self.n_entries();
         self.entries.clear();
+        self.lru.clear();
         self.total_bytes = 0;
         self.evictions += n as u64;
         n
@@ -742,6 +804,7 @@ fn prefix_snapshot(
         last_logits: last_logits.to_vec(),
         bytes,
         last_use: Instant::now(),
+        id: 0, // recency identity assigned by PrefixCache::insert
     })
 }
 
@@ -1375,10 +1438,29 @@ pub fn run(
                             finished.push(0);
                         } else {
                         let lm = &loaded[&s.model];
+                        // Q2 (audit 2026-08-05): step() errors for REAL causes (recapture
+                        // OOM at a kernel-class boundary, fa exec-update failure) besides
+                        // budget exhaustion — those must surface as errors, never as a
+                        // clean MaxNew. Budget exhaustion (the one benign cause, checked
+                        // here against the same bound step() uses) keeps the honest MaxNew.
+                        let at_budget = s.graph.as_ref()
+                            .is_some_and(|g| g.cache.pos + 1 >= g.bucket_max);
                         let g = s.graph.as_mut().unwrap();
                         match g.step(&engine, &lm.model) {
                             Ok(next) => { s.graph_pending = Some(next); }
-                            Err(_) => { finish(s, StopReason::MaxNew); finished.push(0); }
+                            Err(err) if at_budget => {
+                                eprintln!("[worker] graph session capture budget reached \
+                                           (model {}): {err}", s.model);
+                                finish(s, StopReason::MaxNew);
+                                finished.push(0);
+                            }
+                            Err(err) => {
+                                eprintln!("[worker] graph session step FAILED \
+                                           (model {}): {err}", s.model);
+                                let _ = s.tx.send(Event::Error(
+                                    format!("graph step failed: {err}")));
+                                finished.push(0);
+                            }
                         }
                         n_tokens_out += 1;
                         lane_tokens[0] += 1;
@@ -2082,8 +2164,7 @@ fn admit(
             };
             match restored {
                 Ok(entry) => {
-                    let pool = px.entries.get_mut(&pool_key).unwrap();
-                    pool[i].last_use = Instant::now();
+                    px.touch(&pool_key, i); // recency-index-aware last_use refresh (Q3)
                     px.hits += 1;
                     px.hit_tokens += entry.fed.len() as u64;
                     prefix_hit = true;
@@ -2273,7 +2354,11 @@ fn admit(
             None
         })};
         match resumed {
-            Some(sess) => {
+            Some(mut sess) => {
+                // Q2 (audit 2026-08-05): a parked session carries its draft-graph failure
+                // memoization; a NEW request gets a fresh capture chance (transient VRAM
+                // pressure at park time must not become permanent coverage loss).
+                sess.reset_graph_fallback_on_resume();
                 spec_resumed = sess.committed.len();
                 match affinity_rewound {
                     Some((pos, tier)) => eprintln!(
@@ -3161,6 +3246,7 @@ mod tests {
             last_logits: vec![0.0],
             bytes: 1,
             last_use: std::time::Instant::now(),
+            id: 0,
         }
     }
 
@@ -3220,6 +3306,178 @@ mod tests {
         let hit = px.lookup(&key(""), &toks(PREFIX_CACHE_MIN_TOKENS + 64)).unwrap();
         assert_eq!(px.entries[&key("")][hit].toks.len(), long.len());
         assert!(px.lookup(&key(""), &toks(PREFIX_CACHE_MIN_TOKENS - 1)).is_none());
+    }
+
+    // ---------------- Q3 EVICTION (audit 2026-08-05): recency-index LRU ----------------
+    //
+    // The insert-time eviction loop moved from a per-victim full rescan (O(E) per victim —
+    // the vLLM #50992 shape) to a BTreeMap recency index (O(log E)). POLICY must be
+    // IDENTICAL: global minimum `last_use` (timestamp-LRU). These tests drive the real
+    // cache and an in-test reimplementation of the OLD algorithm with the same recorded
+    // access pattern and require the same victim sequence, plus a large-E flush smoke the
+    // old quadratic loop could not pass.
+
+    /// Entry with an explicit identity + byte size (identity = the single token, so the
+    /// exact-key dedupe never collides and survivors are readable back out of the pools).
+    fn entry_b(ident: u32, bytes: usize) -> PrefixEntry {
+        PrefixEntry {
+            toks: vec![ident],
+            kv: Vec::new(),
+            conv: Vec::new(),
+            ssm: Vec::new(),
+            pos: 0,
+            last_logits: vec![0.0],
+            bytes,
+            last_use: next_instant(),
+            id: 0,
+        }
+    }
+
+    /// Strictly-monotonic clock step: spins (ns-resolution CLOCK_MONOTONIC — exits on the
+    /// first or second read) until `Instant::now()` has advanced, so every recorded
+    /// timestamp in the property test is distinct and the old algorithm's strict-<
+    /// comparison has one unambiguous global minimum (the old tie-break was HashMap-order
+    /// nondeterminism — distinct timestamps are the only pattern where its victim choice
+    /// was even well-defined to compare against).
+    fn next_instant() -> std::time::Instant {
+        let t = std::time::Instant::now();
+        loop {
+            let u = std::time::Instant::now();
+            if u > t {
+                return u;
+            }
+        }
+    }
+
+    /// Old-algorithm reference model: (ident, bytes, logical last-use order) per entry;
+    /// eviction re-picks the global minimum order until under budget — verbatim the
+    /// pre-Q3 loop's semantics.
+    struct OldModel {
+        entries: Vec<(u32, usize, u64)>,
+        total: usize,
+        clock: u64,
+        victims: Vec<u32>,
+    }
+    impl OldModel {
+        fn insert(&mut self, ident: u32, bytes: usize, budget: usize) {
+            if bytes > budget {
+                return;
+            }
+            self.clock += 1;
+            self.entries.push((ident, bytes, self.clock));
+            self.total += bytes;
+            while self.total > budget {
+                let Some(&(v, b, _)) = self.entries.iter().min_by_key(|&&(_, _, o)| o) else {
+                    break;
+                };
+                self.entries.retain(|&(i, _, _)| i != v);
+                self.total -= b;
+                self.victims.push(v);
+            }
+        }
+        fn touch(&mut self, ident: u32) {
+            self.clock += 1;
+            if let Some(e) = self.entries.iter_mut().find(|e| e.0 == ident) {
+                e.2 = self.clock;
+            }
+        }
+        fn survivors(&self) -> Vec<u32> {
+            let mut v: Vec<u32> = self.entries.iter().map(|e| e.0).collect();
+            v.sort_unstable();
+            v
+        }
+    }
+
+    fn px_survivors(px: &PrefixCache) -> Vec<u32> {
+        let mut v: Vec<u32> = px.entries.values().flatten().map(|e| e.toks[0]).collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn prefix_cache_eviction_matches_old_policy_on_recorded_pattern() {
+        const BUDGET: usize = 24;
+        let mut px = PrefixCache::default();
+        let mut old = OldModel { entries: Vec::new(), total: 0, clock: 0, victims: Vec::new() };
+        // Deterministic LCG-driven pattern over 3 namespaces: inserts of varying sizes
+        // (forcing multi-victim evictions) interleaved with recency touches.
+        let mut rng: u64 = 0x9E3779B97F4A7C15;
+        let mut step = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng >> 33) as usize
+        };
+        let namespaces = ["", "tenant-a", "tenant-b"];
+        let mut ident: u32 = 0;
+        let mut placed: Vec<(u32, PoolKey)> = Vec::new(); // insert-ordered identities
+        for _ in 0..400 {
+            let survivors = px_survivors(&px);
+            if step() % 3 == 2 && !survivors.is_empty() {
+                // TOUCH a surviving entry (the lookup-hit recency refresh).
+                let tgt = survivors[step() % survivors.len()];
+                let k = placed.iter().find(|(i, _)| *i == tgt).unwrap().1.clone();
+                let idx = px.entries[&k].iter().position(|e| e.toks[0] == tgt).unwrap();
+                next_instant(); // keep every recorded timestamp distinct
+                px.touch(&k, idx);
+                old.touch(tgt);
+            } else {
+                // INSERT: 1..=8 bytes into one of the namespaces.
+                let k = key(namespaces[step() % namespaces.len()]);
+                let bytes = 1 + step() % 8;
+                px.insert_with_budget(&k, entry_b(ident, bytes), "test", BUDGET);
+                old.insert(ident, bytes, BUDGET);
+                placed.push((ident, k));
+                ident += 1;
+            }
+            // SAME-VICTIM PROPERTY: after every operation the surviving sets (and the
+            // byte accounting) agree — evictions only happen inside insert, so equal
+            // survivors at every step means the exact same victim sequence.
+            assert_eq!(px_survivors(&px), old.survivors());
+            assert_eq!(px.total_bytes, old.total);
+        }
+        assert_eq!(px.evictions as usize, old.victims.len());
+        assert!(old.victims.len() > 50, "pattern too tame to prove anything: {} evictions",
+                old.victims.len());
+    }
+
+    #[test]
+    fn prefix_cache_touch_rescues_the_would_be_victim() {
+        // Recency semantics end-to-end: the oldest entry, once touched, survives an
+        // eviction that takes the second-oldest instead.
+        let mut px = PrefixCache::default();
+        px.insert_with_budget(&key(""), entry_b(0, 4), "test", 8);
+        px.insert_with_budget(&key(""), entry_b(1, 4), "test", 8);
+        let idx = px.entries[&key("")].iter().position(|e| e.toks[0] == 0).unwrap();
+        next_instant();
+        px.touch(&key(""), idx);
+        px.insert_with_budget(&key(""), entry_b(2, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 2], "touched 0 must survive, untouched 1 evicts");
+    }
+
+    #[test]
+    fn prefix_cache_eviction_large_pool_flush_smoke() {
+        // The old loop was O(E) per victim (O(E^2) on a flush) — at E = 10k victims that
+        // is ~5e7 scanned entries with a PoolKey clone per candidate. The index makes the
+        // same flush O(k log E); the bound below is generous CI headroom, not a benchmark.
+        const E: usize = 10_000;
+        let mut px = PrefixCache::default();
+        for i in 0..E {
+            px.insert_with_budget(&key(""), entry_b(i as u32, 1), "test", E);
+        }
+        assert_eq!(px.n_entries(), E);
+        let t0 = std::time::Instant::now();
+        px.insert_with_budget(&key(""), entry_b(u32::MAX, E / 2), "test", E);
+        let dt = t0.elapsed();
+        // half the pool evicted in ONE insert, oldest-first
+        assert_eq!(px.n_entries(), E / 2 + 1);
+        assert_eq!(px.evictions as usize, E / 2);
+        assert_eq!(px.total_bytes, E);
+        let survivors = px_survivors(&px);
+        assert!(survivors.contains(&u32::MAX));
+        assert!(!survivors.contains(&0) && !survivors.contains(&((E / 2 - 1) as u32)),
+                "victims must be the oldest half");
+        assert!(survivors.contains(&((E / 2) as u32)), "newest half survives");
+        assert!(dt < std::time::Duration::from_secs(2),
+                "large-E flush took {dt:?} — eviction is scaling with pool size again");
     }
 
     // ---------------- SESSION AFFINITY (lane/session-affinity, 2026-08-05) ----------------
