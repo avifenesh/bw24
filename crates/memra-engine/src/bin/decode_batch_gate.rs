@@ -8,15 +8,20 @@
 //! (MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1, both paths on dp4a + unfused norms) the battery is
 //! BIT-IDENTICAL at B=1 and B=N-vs-isolated (verified 2026-07-26 on H100).
 //!
-//! STRICT-MODE EQUALIZATION IS Q8/dp4a-SHAPED — it does NOT equalize NVFP4 (2026-08-05,
-//! serve-path phase 2). MEMRA_MMVQ=0 / MEMRA_NO_FUSE_NORMQ=1 steer the Q8_0-class arms; on
-//! an NVFP4 model the fused arms survive, so `--mode strict` FAILS on the q9 NVFP4-MTP
-//! checkpoint at the TRAIN HEAD with no lane changes applied (gate1 bit-diff maxdiff
-//! 1.639e-1 @ step 2; gate2 seq 3 token divergence @ step 8 — identical signature before
-//! and after this lane's B=1 fast path). Receipts:
-//! research/servepath-p2-20260805/logs/dbg-strict-b4-TRAINHEAD.log. Do NOT read a strict
-//! FAIL on an NVFP4 model as a regression; the load-bearing NVFP4 gate is `--mode config`
-//! (ALL GREEN) plus strict on a Q8_0 model. Equalizing the NVFP4 arms is open work.
+//! STRICT-MODE EQUALIZATION NOW COVERS NVFP4 (lane/nvfp4-strict, 2026-08-05). History: the
+//! equalizing env was Q8/dp4a-shaped — MEMRA_MMVQ=0 steered the Q8_0-class arms (their
+//! fused launches all sit behind `q8_fused_params`, which refuses under MMVQ=0 by the
+//! FP-order law) but the NVFP4 gate+up/beta+alpha pair door (`matmul_pre_dual_noscale`)
+//! had no such check: the oracle kept dispatching `qmatvec_nvfp4_mmvq_dual_mr2` (MMVQ
+//! 32-thread warp-reduce family) while the batched side fell to dp4a (128-thread
+//! two-level reduce) — a mixed-family comparison, so `--mode strict` FAILED on ANY NVFP4
+//! model at pristine trees (train-HEAD receipts: gate1 maxdiff 1.639e-1 @ step 2 on q9,
+//! research/servepath-p2-20260805/logs/dbg-strict-b4-TRAINHEAD.log; gate2 step-6 token
+//! divergence on q27 at 93420980, research/nvfp4-strict-20260805/repro.log). The fix
+//! applies the SAME law to the NVFP4 arm: `matmul_pre_dual_noscale` returns None when
+//! `mmvq_supports(QT_NVFP4)` is false, so under the equalized env BOTH sides ride dp4a
+//! and strict bit-identity holds (default env is dispatch-unchanged). A strict FAIL on an
+//! NVFP4 model is a REAL failure again.
 //!
 //! Modes (--mode, default "config"):
 //!   strict — bit-identity gates; run under the EQUALIZED env or expect gate1 bit-diffs:

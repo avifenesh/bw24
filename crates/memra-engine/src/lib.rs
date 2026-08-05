@@ -5799,6 +5799,11 @@ impl Engine {
             || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) {
             return Ok(None);
         }
+        // DECODE-PARITY GATE (lane/nvfp4-strict, 2026-08-05): batched iff MMVQ — the dual
+        // kernels are the MMVQ warp-reduce family, and without MEMRA_MMVQ the m=1 decode
+        // chain this verify must match bit-for-bit rides dp4a (see matmul_decode_exact's
+        // note). The singles enforce this via `mmvq_supports`; the dual door skipped it.
+        if !self.mmvq_supports(QT_NVFP4) { return Ok(None); }
         let (in_f, out_f) = (w0.in_features(), w0.out_features());
         if w1.in_features() != in_f || w1.out_features() != out_f {
             return Ok(None);
@@ -5847,6 +5852,11 @@ impl Engine {
             || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) {
             return Ok(None);
         }
+        // DECODE-PARITY GATE (lane/nvfp4-strict, 2026-08-05): batched iff MMVQ — same law as
+        // the singles' `batched_supports && mmvq_supports` check in matmul_decode_exact,
+        // which this dual door bypassed. Without MEMRA_MMVQ the m=1 decode is dp4a; the
+        // verify must ride the per-column dp4a class, not the MMVQ-family dual.
+        if !self.mmvq_supports(QT_NVFP4) { return Ok(None); }
         let (in_f, out_f) = (w0.in_features(), w0.out_features());
         if w1.in_features() != in_f || w1.out_features() != out_f {
             return Ok(None);
@@ -5929,6 +5939,16 @@ impl Engine {
         -> Result<Option<((CudaSlice<f32>, f32), (CudaSlice<f32>, f32))>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
         if m != 1 || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) { return Ok(None); }
+        // FP-ORDER LAW (lane/nvfp4-strict, 2026-08-05): every kernel this door can dispatch
+        // (q8_0 fused2, nvfp4 dual_mr2) is the MMVQ family — 32-thread warp reduce. Without
+        // MEMRA_MMVQ the m=1 singles ride dp4a (128-thread two-level reduce), so fusing here
+        // would mix dispatch families across the pair — the exact class `q8_fused_params`
+        // already refuses for Q8_0. The NVFP4 arm lacked this check, which is why
+        // decode-batch-gate `--mode strict`'s equalizing env (MEMRA_MMVQ=0) never pinned
+        // NVFP4 models: decode_step_h kept riding dual_mr2 while the batched body fell to
+        // dp4a (gate1 maxdiff 1.639e-1 / gate2 step-8 divergence at the 2026-08-05 train
+        // HEAD, research/nvfp4-strict-20260805/). Default env (MMVQ on) is dispatch-unchanged.
+        if !self.mmvq_supports(QT_NVFP4) { return Ok(None); }
         let (in_f, out_f) = (w0.in_features(), w0.out_features());
         if w1.in_features() != in_f || w1.out_features() != out_f { return Ok(None); }
         // Q8_0 ARM (lane/q27-deepdive, 2026-08-05): the dense-FFN gate+up pair on a Q8_0 trunk fell
