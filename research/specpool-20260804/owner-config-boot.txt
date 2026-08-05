@@ -1,0 +1,2 @@
+{"status":"ok","models":["qwen36-27b"]}
+{"object":"text_completion","model":"qwen36-27b","choices":[{"index":0,"text":" Paris.\n\n<think>\n\n</think>\n\nThat","finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":8,"total_tokens":13,"prompt_tokens_details":{"cached_tokens":0},"elapsed_s":0.288896642},"id":"cmpl-837f71f42a2bb1ec4b8b82ea0af74214","created":1785899212,"system_fingerprint":"memra-86518927c2e1"}

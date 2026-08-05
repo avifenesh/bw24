@@ -1539,6 +1539,26 @@ impl HybridModel {
         Ok(model)
     }
 
+    /// Force the device embed table resident, FALLIBLY (F5 right-size ladder,
+    /// 2026-08-05). The lazy `embd_gpu.get_or_init(.. expect ..)` sites panic the
+    /// GPU worker on OOM; on a VRAM-tight rig a right-sized spec session that
+    /// "fits" can leave too little for this ~hundreds-of-MB upload and die on its
+    /// first prefill (observed: research/specpool-20260804/server-ladder-miss.log).
+    /// The server calls this after each ladder landing so the biggest lazy
+    /// transient surfaces as a catchable Err (shrink further / fall back) instead
+    /// of a panic. No-op when the host-gather door (MEMRA_EMBED_DEV=0) is open or
+    /// the table is already resident.
+    pub fn ensure_embed_resident(&self, e: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("MEMRA_EMBED_DEV").as_deref() == Ok("0") {
+            return Ok(());
+        }
+        if self.embd_gpu.get().is_none() {
+            let buf = e.upload_u8(&self.embd.raw)?;
+            let _ = self.embd_gpu.set(buf); // racing set = already resident; fine
+        }
+        Ok(())
+    }
+
     pub fn embed(
         &self,
         e: &Engine,

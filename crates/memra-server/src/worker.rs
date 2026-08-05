@@ -220,6 +220,52 @@ fn reuse_pool_per_model() -> usize {
 /// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
 const REUSE_MIN_PREFIX: usize = 16;
 
+/// F5 (spec-pool thrash, 2026-08-05 — research/specpool-20260804): learned per-model
+/// spec-session sizing, process-lifetime (VRAM geometry is static per server run;
+/// a restart re-probes). Two lessons the worker remembers so pool misses stop
+/// re-paying doomed multi-GB cudaMalloc walks every turn:
+#[derive(Default)]
+struct SpecSizing {
+    /// Models OBSERVED VRAM-tight: a spec-session alloc failed while a parked pool
+    /// entry existed. Later misses on these models evict the (dead-weight) pool
+    /// BEFORE allocating — the same eviction the failure path forced anyway, minus
+    /// the failed alloc + full realloc churn (the owner's live thrash: "spec pool
+    /// evicted (1) after alloc failure" once per request, every turn a miss).
+    /// Rigs where ghost + new session both fit never set the flag and keep the
+    /// parked entry's resume value.
+    evict_first: std::collections::HashSet<String>,
+    /// model -> largest ctx ask known to fit after a GENUINE (empty-pool) alloc
+    /// failure — the right-size ladder's landing point. Later asks start here
+    /// instead of re-laddering; never exceeds the request's own ctx_cap.
+    learned_ctx: HashMap<String, usize>,
+}
+/// Right-size ladder slack: a shrunken spec session's cap must cover
+/// prompt + budget + this, so the burst-loop ContextFull guard
+/// (`committed + k + 3 >= cache_max_ctx`) can NEVER fire before MaxNew — a
+/// shrunken session emits exactly the tokens a full-size one would (the F5
+/// exactness contract: pool sizing is pure perf). Worst case per burst:
+/// committed reaches prompt + budget + overshoot (up to k accepted drafts past
+/// max_new) + a carried pending, and the guard adds k + 3; k = MEMRA_SPEC_K <= 8
+/// in practice — 64 covers it with margin at ~2MB of KV. Requests whose budget
+/// already spans the whole ctx_cap (max_tokens omitted) cannot shrink and keep
+/// the legacy tokenwise fallback on failure.
+const SPEC_SHRINK_SLACK: usize = 64;
+/// Ladder transient reserve: after a landing, this much VRAM must still be
+/// PROBE-allocatable for forward-pass transients — prime chunk slabs (~140MB
+/// apiece at MEMRA_PRIME_CHUNK=2048; the serve-script's measured 36.5k probe
+/// passed with 1.3GB free) and the FA dequant workspace. Some transients live
+/// on PANICKING lazy paths (expect()), so a session that "fits" with zero
+/// headroom kills the worker on its first prefill (observed: ladder landed
+/// 65536, embed-table upload OOM panic — research/specpool-20260804/
+/// server-ladder-miss.log; the embed table is made resident fallibly at landing
+/// for that reason). The probe is alloc-and-drop, not a mem_get_info read: the
+/// async pool's pinned release threshold keeps freed blocks cached and
+/// invisible to free-VRAM queries. A landing that can't clear the probe is
+/// DROPPED and the ladder keeps shrinking; if even `need` can't, the request
+/// takes the legacy tokenwise fallback (whose own alloc failure is a clean
+/// quoted error — the pre-fix behavior, never a panic).
+const SPEC_SHRINK_RESERVE: usize = 1536 << 20; // 1.5 GiB
+
 /// PC-ISO pool key (lane/pc-iso, 2026-08-02): every cross-request reuse pool — the prefix
 /// cache, the continuation pool, and the spec pool — keys on (model, cache namespace), not
 /// model alone. The namespace is the request's `cache_salt` (vLLM cache_salt design, PR
@@ -777,6 +823,8 @@ pub fn run(
     // (model, namespace) — cross-request continuation state is tenant-scoped too (PC-ISO).
     let mut reuse: HashMap<PoolKey, Vec<ReuseEntry>> = HashMap::new();
     let mut spec_reuse: HashMap<PoolKey, Vec<SpecReuseEntry>> = HashMap::new();
+    // F5: learned spec-session sizing (evict-first models + right-sized ctx asks).
+    let mut spec_sizing = SpecSizing::default();
     // Cross-request prefix cache (token-prefix keyed, budget-bound; see the module doc above).
     let mut px = PrefixCache::default();
     if prefix_cache_budget_bytes() > 0 && serve_batching() {
@@ -908,7 +956,8 @@ pub fn run(
             }
             let model_key = req.model.clone();
             let free_before = engine.ctx().mem_get_info().map(|(f, _)| f).ok();
-            match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, &mut px, *req) {
+            match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, &mut spec_sizing,
+                        &mut px, *req) {
                 Ok(s) => {
                     n_admitted += 1;
                     lane_admitted[lane.idx()] += 1;
@@ -1599,6 +1648,7 @@ fn admit(
     loaded: &HashMap<String, LoadedModel>,
     reuse: &mut HashMap<PoolKey, Vec<ReuseEntry>>,
     spec_reuse: &mut HashMap<PoolKey, Vec<SpecReuseEntry>>,
+    spec_sizing: &mut SpecSizing,
     px: &mut PrefixCache,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
@@ -1877,18 +1927,105 @@ fn admit(
                 // (detok+retok isn't prefix-stable), so the parked session is DEAD WEIGHT for
                 // this conversation: evict the pool, then allocate. (Session-id affinity API is
                 // the structural fix — follow-up.)
+                //
+                // F5 (spec-pool thrash, 2026-08-05 — research/specpool-20260804): on a
+                // VRAM-tight rig EVERY turn of the daily driver is a miss (the client
+                // rewrites history), so the old fail->evict->realloc walk ran once per
+                // request, progressively slower as the doomed full-size ask grew the churn.
+                // Two learned behaviors replace it:
+                //   1. EVICT-FIRST: once a model has observed "parked ghost + new session
+                //      don't fit" (evict_first), later misses evict the dead-weight pool
+                //      BEFORE allocating — same eviction the failure forced anyway, minus
+                //      the failed alloc. Roomy rigs never set the flag and keep the pool.
+                //   2. RIGHT-SIZE LADDER: a post-evict (genuine) failure no longer dumps
+                //      the whole burst to the tokenwise path. Shrink the ask toward
+                //      `need` = prompt + budget + SPEC_SHRINK_SLACK — the exact cap this
+                //      request's emission needs (MaxNew preempts ContextFull by
+                //      construction, so a shrunken session emits identical tokens).
+                //      The landing size is memoized (learned_ctx) so later misses ladder
+                //      from it instead of re-walking. Below `need` = tokenwise fallback.
+                if spec_sizing.evict_first.contains(&req.model) {
+                    if let Some(n) = spec_reuse.get_mut(&pool_key)
+                        .map(|p| { let n = p.len(); p.clear(); n }).filter(|&n| n > 0)
+                    {
+                        eprintln!("[worker] spec pool evicted ({n}) pre-alloc \
+                                   (learned VRAM-tight; model {})", req.model);
+                    }
+                }
+                let need = prompt.len().saturating_add(budget).saturating_add(SPEC_SHRINK_SLACK);
                 match lm.model.new_session(engine, ctx_cap) {
                     Ok(sess) => Some(sess),
                     Err(first_err) => {
-                        let evicted = spec_reuse.get_mut(&pool_key).map(|p| { let n = p.len(); p.clear(); n }).unwrap_or(0);
+                        let evicted = spec_reuse.get_mut(&pool_key)
+                            .map(|p| { let n = p.len(); p.clear(); n }).unwrap_or(0);
                         if evicted > 0 {
-                            eprintln!("[worker] spec pool evicted ({evicted}) after alloc failure; retrying");
-                            match lm.model.new_session(engine, ctx_cap) {
-                                Ok(sess) => Some(sess),
-                                Err(err) => { eprintln!("[worker] spec session alloc failed after evict ({err}); tokenwise path"); None }
+                            spec_sizing.evict_first.insert(req.model.clone());
+                            eprintln!("[worker] spec pool evicted ({evicted}) after alloc \
+                                       failure; retrying (evict-first learned)");
+                        }
+                        let retried = if evicted > 0 {
+                            lm.model.new_session(engine, ctx_cap).ok()
+                        } else { None };
+                        match retried {
+                            Some(sess) => Some(sess),
+                            None => {
+                                // Genuine capacity failure (pool empty). Right-size:
+                                // ladder down from the learned/half ask toward `need`.
+                                let mut sess = None;
+                                if need <= ctx_cap {
+                                    let mut ask = spec_sizing.learned_ctx.get(&req.model)
+                                        .copied().unwrap_or(ctx_cap / 2)
+                                        .clamp(need, ctx_cap);
+                                    loop {
+                                        let landed = match lm.model.new_session(engine, ask) {
+                                            Ok(s) => {
+                                                // transient reserve (see SPEC_SHRINK_RESERVE):
+                                                // a fit that leaves no headroom panics later on
+                                                // a lazy upload — treat as a miss, shrink on.
+                                                // (a) the embed table is the biggest lazy
+                                                // transient: make it resident FALLIBLY now;
+                                                // (b) on a NEW landing size only (ask > learned
+                                                // — a size that already served a burst has
+                                                // proven its transients resident), PROBE-
+                                                // allocate the reserve and drop it. A probe,
+                                                // not a mem_get_info read, is the fit signal:
+                                                // the async pool's pinned release threshold
+                                                // keeps freed blocks cached and invisible to
+                                                // free-VRAM queries — and re-probing after the
+                                                // transients are resident double-counts them
+                                                // (observed: turn-1 ladder walked to need and
+                                                // still failed while a 16k session + resident
+                                                // transients served fine on turn 0).
+                                                let proven = spec_sizing.learned_ctx.get(&req.model)
+                                                    .is_some_and(|&l| ask <= l);
+                                                let ok = lm.model.ensure_embed_resident(engine).is_ok()
+                                                    && (proven
+                                                        || engine.alloc_u8_uninit(SPEC_SHRINK_RESERVE).is_ok());
+                                                if ok { Some(s) } else { drop(s); None }
+                                            }
+                                            Err(_) => None,
+                                        };
+                                        match landed {
+                                            Some(s) => {
+                                                eprintln!("[worker] spec session right-sized: \
+                                                           ctx {ask} of {ctx_cap} (prompt {} + \
+                                                           budget {budget}; model {})",
+                                                          prompt.len(), req.model);
+                                                spec_sizing.learned_ctx.insert(req.model.clone(), ask);
+                                                sess = Some(s);
+                                                break;
+                                            }
+                                            None if ask > need => { ask = (ask / 2).max(need); }
+                                            None => break,
+                                        }
+                                    }
+                                }
+                                if sess.is_none() {
+                                    eprintln!("[worker] spec session alloc failed ({first_err}); \
+                                               tokenwise path");
+                                }
+                                sess
                             }
-                        } else {
-                            eprintln!("[worker] spec session alloc failed ({first_err}); tokenwise path"); None
                         }
                     }
                 }
