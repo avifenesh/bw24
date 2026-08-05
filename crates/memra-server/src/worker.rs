@@ -2170,24 +2170,56 @@ fn admit(
             // `need` bound whose sufficiency F5 already argues (MaxNew preempts ContextFull,
             // so a session with `need` ctx emits identical tokens). A resumed session that no
             // longer fits its next turn simply misses then and follows the ladder as a new one.
+            // WHY A DECLINE IS LOGGED: every requirement below is invisible from outside the
+            // worker, so a silent decline is indistinguishable from "affinity is broken" — and
+            // the whole lane's evidence is per-turn resume counts read out of this log. The
+            // reason is recorded for the LAST candidate examined (pool depth here is 1-2).
+            let mut why: String = "empty pool".into();
             let cand = pool.iter().enumerate().rev().find(|(_, e)| {
-                if e.sess.cache_max_ctx() < need { return false; }
-                let Some(pos) = e.sess.rewind_pos() else { return false };
-                if pos == 0 { return false; }
+                if e.sess.cache_max_ctx() < need {
+                    why = format!("no room (session ctx {} < need {need})",
+                                  e.sess.cache_max_ctx());
+                    return false;
+                }
+                let Some(pos) = e.sess.rewind_pos() else {
+                    why = "no turn checkpoint retained".into(); return false;
+                };
+                if pos == 0 { why = "checkpoint at 0".into(); return false; }
                 // BYTES DECIDE: the prompt must reproduce the session's committed tokens up to
                 // the rewind boundary EXACTLY, and leave a non-empty suffix to prime (a rewound
                 // session has no next_pred/pending, so there is nothing to continue from).
-                if affinity_match(&prompt, &e.sess.committed[..pos])
-                    != (AffinityMatch::Exact { suffix_from: pos }) { return false; }
-                if prompt.len() == pos { return false; }
+                match affinity_match(&prompt, &e.sess.committed[..pos]) {
+                    AffinityMatch::Exact { suffix_from } if suffix_from == pos => {}
+                    AffinityMatch::Diverged { at } => {
+                        // The rewrite reached BELOW the rewind boundary: correctness first,
+                        // full re-prime. This is the one decline that is expected by design.
+                        // The OFFSET is the diagnostic that matters: `at` far below `pos` is a
+                        // real history rewrite, `at` a few tokens below `pos` is a
+                        // RE-TOKENIZATION SEAM (a text-prefix resume built `committed` by
+                        // concatenating independently-encoded pieces, so it no longer equals a
+                        // single full encode of the same text — the two reuse tiers do not
+                        // compose, and affinity correctly declines rather than resume a session
+                        // whose KV holds different token ids than the client's prompt).
+                        why = format!("history diverged at {at} of checkpoint {pos}");
+                        return false;
+                    }
+                    _ => { why = "diff did not land on the checkpoint".into(); return false; }
+                }
+                if prompt.len() == pos { why = "empty suffix".into(); return false; }
                 // IDENTITY NOMINATES: explicit id when the client named one on BOTH sides, else
                 // the implicit fingerprint chain's shared leading run.
-                match (&req.affinity, &e.affinity) {
+                let ok = match (&req.affinity, &e.affinity) {
                     (Some(a), Some(b)) if a == b => true,
                     (Some(_), _) | (_, Some(_)) => false,
                     _ => fingerprint_affinity(&req_fp, &e.fingerprint) >= FP_MIN_SEGMENTS,
-                }
+                };
+                if !ok { why = "identity did not nominate".into(); }
+                ok
             }).map(|(i, e)| (i, e.affinity.is_some()));
+            if cand.is_none() && !pool.is_empty() {
+                eprintln!("[worker] spec-affinity: declined ({why}; {} parked, {} prompt \
+                           tokens; model {})", pool.len(), prompt.len(), req.model);
+            }
             if let Some((idx, explicit)) = cand {
                 let mut e = pool.remove(idx);
                 match lm.model.spec_rewind_to_checkpoint(engine, &mut e.sess) {

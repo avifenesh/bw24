@@ -2952,6 +2952,81 @@ impl HybridModel {
         // built to pin the serve per-burst fixed cost (research/spec-serving-20260801).
         let setup_trace = std::env::var("MEMRA_SPEC_SETUP_TRACE").as_deref() == Ok("1");
         let t_ent = std::time::Instant::now();
+
+        // SESSION-AFFINITY TURN CHECKPOINT (lane/session-affinity, 2026-08-05): capture the
+        // PROMPT-END boundary state so a LATER turn can rewind here and re-prime only its own
+        // delta instead of the whole conversation. See `SpecCheckpoint` for why this boundary is
+        // the one that matters (a history-rewriting client mutates what the session GENERATED,
+        // so the next turn's prompt agrees with this one up to exactly here).
+        //
+        // WHERE — AND WHY THIS EXACT LINE. Right after the trunk prime, BEFORE the init feed
+        // (`decode_step_h(last_token)`) and before round 0: the last instant at which the caches
+        // hold exactly `base + prompt.len()` rows and nothing generated.
+        //
+        // This was WRONG in the first cut of this lane: the capture sat after the draft-KV fill,
+        // which is also after the init feed, so `cache.pos` was `base + prompt.len() + 1` — the
+        // boundary included the FIRST GENERATED TOKEN. That token is the first thing inside the
+        // `<think>` block the client strips, so every later turn's diff diverged exactly one
+        // token below the checkpoint and affinity declined 100% of the time. Measured on the
+        // owner regime: "history diverged at 12233 of checkpoint 12234". The off-by-one made the
+        // whole mechanism inert while looking, from the outside, like a working
+        // correctness-declines-safely path — hence the decline log carries the offsets.
+        //
+        // The full-attn planes are `len`-truncatable so the snapshot copies only the GDN conv/ssm
+        // state (the reason a spec session could not rewind before). The draft scratch needs no
+        // copy: rows below the boundary are rewritten by the next turn's own fill.
+        //
+        // WHEN: non-empty prime only. An empty-suffix continuation burst adds no prompt boundary
+        // (its "prompt end" IS the previous checkpoint's, already held), so it keeps the existing
+        // checkpoint rather than replacing it with a strictly worse one.
+        //
+        // FAILURE IS SILENT BY DESIGN: on a VRAM-tight rig the snapshot alloc can fail. That
+        // costs the NEXT turn its rewind (it re-primes fully, today's behavior) and must never
+        // fail the burst that is already running — so the error is swallowed, loud only under
+        // MEMRA_DEBUG_SPEC.
+        if let Some(slot) = sess_ckpt_slot {
+            if !continuation {
+                let pos = cache.pos;
+                debug_assert_eq!(
+                    pos,
+                    base + prompt.len(),
+                    "turn checkpoint must sit at the prompt end, before the init feed"
+                );
+                let anchor: Result<CudaSlice<f32>, Box<dyn std::error::Error>> =
+                    if let Some(ph) = &prompt_h {
+                        // hidden of the LAST primed row = the predecessor anchor at this
+                        // boundary (exactly what a fresh prime of committed[..pos] leaves in
+                        // last_h, and what the next prime's fill reads for its first row).
+                        let np = prompt.len();
+                        e.uninit(n_embd).and_then(|mut a| {
+                            e.copy_view_into(
+                                &mut a,
+                                0,
+                                &ph.slice((np - 1) * n_embd..np * n_embd),
+                                n_embd,
+                            )?;
+                            Ok(a)
+                        })
+                    } else {
+                        Err("no prompt hiddens".into())
+                    };
+                match (cache.snapshot(e), anchor) {
+                    (Ok(snap), Ok(last_h)) => {
+                        *slot = Some(SpecCheckpoint { snap, pos, last_h });
+                    }
+                    (s, a) => {
+                        *slot = None; // a stale checkpoint would rewind to the WRONG boundary
+                        if std::env::var("MEMRA_DEBUG_SPEC").is_ok() {
+                            let err = s.err().map(|e| e.to_string())
+                                .or_else(|| a.err().map(|e| e.to_string()))
+                                .unwrap_or_default();
+                            eprintln!("[spec] turn checkpoint skipped ({err}); \
+                                       next turn re-primes in full");
+                        }
+                    }
+                }
+            }
+        }
         // INIT FEED — skipped on a pending carry: last_token (the carried bonus) is NOT in the
         // caches and must NOT be fed solo; round 0's batched verify commits it as col 0. Its
         // seed/anchor hidden is the carried last_h (copied below); last_pred is dead in the
@@ -3376,63 +3451,6 @@ impl HybridModel {
             None
         };
 
-        // SESSION-AFFINITY TURN CHECKPOINT (lane/session-affinity, 2026-08-05): capture the
-        // PROMPT-END boundary state so a LATER turn can rewind here and re-prime only its own
-        // delta instead of the whole conversation. See `SpecCheckpoint` for why this boundary is
-        // the one that matters (a history-rewriting client mutates what the session GENERATED,
-        // so the next turn's prompt agrees with this one up to almost exactly here).
-        //
-        // WHERE: after the trunk prime AND the draft-KV fill, before round 0 — the last instant
-        // at which the caches hold exactly `base + prompt` rows and nothing speculative. The
-        // full-attn planes are `len`-truncatable so the snapshot copies only the GDN conv/ssm
-        // state (the reason a spec session could not rewind before).
-        //
-        // WHEN: non-empty prime only. An empty-suffix continuation burst adds no prompt boundary
-        // (its "prompt end" IS the previous checkpoint's, already held), so it keeps the existing
-        // checkpoint rather than replacing it with a strictly worse one.
-        //
-        // FAILURE IS SILENT BY DESIGN: on a VRAM-tight rig the snapshot alloc can fail. That
-        // costs the NEXT turn its rewind (it re-primes fully, today's behavior) and must never
-        // fail the burst that is already running — so the error is swallowed, loud only under
-        // MEMRA_DEBUG_SPEC.
-        if let Some(slot) = sess_ckpt_slot {
-            if !continuation {
-                let pos = cache.pos;
-                let anchor: Result<CudaSlice<f32>, Box<dyn std::error::Error>> =
-                    if let Some(ph) = &prompt_h {
-                        // hidden of the LAST primed row = the predecessor anchor at this
-                        // boundary (exactly what a fresh prime of committed[..pos] leaves in
-                        // last_h, and what the next prime's fill reads for its first row).
-                        let np = prompt.len();
-                        e.uninit(n_embd).and_then(|mut a| {
-                            e.copy_view_into(
-                                &mut a,
-                                0,
-                                &ph.slice((np - 1) * n_embd..np * n_embd),
-                                n_embd,
-                            )?;
-                            Ok(a)
-                        })
-                    } else {
-                        Err("no prompt hiddens".into())
-                    };
-                match (cache.snapshot(e), anchor) {
-                    (Ok(snap), Ok(last_h)) => {
-                        *slot = Some(SpecCheckpoint { snap, pos, last_h });
-                    }
-                    (s, a) => {
-                        *slot = None; // a stale checkpoint would rewind to the WRONG boundary
-                        if debug_spec {
-                            let err = s.err().map(|e| e.to_string())
-                                .or_else(|| a.err().map(|e| e.to_string()))
-                                .unwrap_or_default();
-                            eprintln!("[spec] turn checkpoint skipped ({err}); \
-                                       next turn re-primes in full");
-                        }
-                    }
-                }
-            }
-        }
         let t_fill = t_ent.elapsed();
         let mut round = 0usize;
         // ADAPTIVE DRAFT LENGTH (MEMRA_SPEC_ADAPT=1, opt-in — the gemma_spec accepted-run law,
