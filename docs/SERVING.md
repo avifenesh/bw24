@@ -49,6 +49,16 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   c=16 median **494.5 tok/s vs 416.4** at chunk 8, same mirror, interleaved N=4
   (**+18.8%**; +33.8% vs the mirror-less baseline); c=32 at `MEMRA_CTX=2048` runs
   **502.1** with 128/128 ok (single run; `research/batched-tick-inc3-20260801/`).
+- **Solo (c=1) decode rides the naked m=1 program** (serve-path phase 2, 2026-08-05): a lone
+  session's tick runs `decode_layers_eager` verbatim instead of the batched body, inheriting
+  the whole m=1 fusion chain. Order-paired N=5 on the 5090 (82 SM), decode-only `step_p50`:
+  **+8.33%** on the 9B (123.7 → 134.1 tok/s, 5/5 wins) and **+5.19%** on the 27B (43.6 → 45.8,
+  5/5); c=8 saturation flat (−0.00% / −0.18%). This closes the class of c=1 gap phase 1
+  measured against naked decode — serve c=1 now sits level with the same-board `run-gen`
+  denominator (134.8/134.5/134.0). Notably it also **retires the solo graph door as a win**:
+  `GraphSession` replay amortized the same launch overhead this removes outright, so with the
+  fast path in place the door is a net loss at every length measured out to mt=1024 and
+  `MEMRA_GS_MIN=384` must NOT be lowered (FLAGS §serve; `research/servepath-p2-20260805/`).
 - **Spec fast lane:** MTP speculative serving is a single-stream latency tier — 1.82x plain
   serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
   c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
@@ -69,7 +79,20 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 Greedy serving is **isolated-identical under concurrent load at defaults**: a request's
 output tokens are byte-identical whether it arrives alone or inside a full batch. This is
 gated, not assumed — the serve gate replays the same prompts at c=1 and c=16 and
-byte-compares every stream. It is also a fixed defect, not a freebie: the batched
+byte-compares every stream.
+
+The contract is over **tokens**, not over the FP program that produces them, and since
+2026-08-05 (`MEMRA_SERVE_B1FAST`, serve-path phase 2) a solo tick deliberately runs a
+*different* program from a batched one: at `b_n==1` the tick uses the m=1 fused trunk
+(`decode_layers_eager` — the same code `run-gen` runs), while `b_n>=2` uses the batched
+body. Those two carry the long-accepted decode-config FP-composition gap
+(`decode-batch-gate`'s jurisdiction), so the guarantee is exactly as stated — token
+streams match — and is not a claim of bit-identical logits between a solo and a batched
+tick. The direction is deliberate: a c=1 request now computes what the CLI computes
+(strict bit-identity to `decode_step_h`, gated), which is why `serve-st-gate`'s
+CLI-vs-server greedy token-stream check is a *stronger* assertion than before. Verified at
+the stream level on q9 NVFP4-MTP: greedy 150 ids and seeded-sampled identical to the
+`run-gen` oracle and across both arms (`research/servepath-p2-20260805/`). It is also a fixed defect, not a freebie: the batched
 cuBLASLt prefill router and shared-expert-gate GEMMs were m-dependent, so under
 cross-request prefill batching a MoE request's own expert selection changed with its
 co-arrivals (the supported Qwen3.6-35B had the same defect as the onboards whose serve

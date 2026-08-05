@@ -1,0 +1,2 @@
+buckets crossed (ceil(t_kv/64)): [2, 3, 4, 5]
+Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=4 (n_vocab=248320)

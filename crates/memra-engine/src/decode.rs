@@ -732,8 +732,11 @@ impl HybridModel {
     /// boundary has to move is the [n_embd] hidden state. Bit-identity of the cut relies on
     /// the kernel-check-pinned `add_rms_norm_q8_1 == add then rms_norm_q8_1` identity
     /// (`pp2-gate` verifies end-to-end on real weights).
+    /// `pub(crate)`: also the B=1 serve fast-path's trunk (decode_batch.rs
+    /// `decode_step_b1_fast`, H3) — shared verbatim so the serve path inherits every m=1
+    /// fusion instead of needing a batched twin per lever.
     #[allow(clippy::too_many_arguments)]
-    fn decode_layers_eager(
+    pub(crate) fn decode_layers_eager(
         &self,
         e: &Engine,
         mut x: CudaSlice<f32>,

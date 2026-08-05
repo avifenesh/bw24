@@ -1,0 +1,3 @@
+86, 14001 MHz, 153.08 W
+arm=shut MEMRA_GS_MIN=100000 mt=512 rep=3 model=Qwen3.5-9B-NVFP4-MTP-GGUF
+{"ts": "2026-08-05T13:38:11+0300", "label": "gs-shut-mt512-r3", "base": "http://127.0.0.1:8188", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 512, "greedy": true, "wall_s": 15.90566268800012, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 904, "agg_tok_s": 128.75917465199953, "req_per_s": 0.2514827629921866, "lat_p50_s": 3.97814338399985, "lat_p95_s": 3.9786726960001033, "lat_mean_s": 3.9762563867500376, "lat_max_s": 3.9786726960001033, "errors_sample": []}
