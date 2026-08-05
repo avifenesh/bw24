@@ -250,6 +250,21 @@ struct SpecSizing {
 /// already spans the whole ctx_cap (max_tokens omitted) cannot shrink and keep
 /// the legacy tokenwise fallback on failure.
 const SPEC_SHRINK_SLACK: usize = 64;
+/// Ladder transient reserve: after a landing, this much VRAM must still be
+/// PROBE-allocatable for forward-pass transients — prime chunk slabs (~140MB
+/// apiece at MEMRA_PRIME_CHUNK=2048; the serve-script's measured 36.5k probe
+/// passed with 1.3GB free) and the FA dequant workspace. Some transients live
+/// on PANICKING lazy paths (expect()), so a session that "fits" with zero
+/// headroom kills the worker on its first prefill (observed: ladder landed
+/// 65536, embed-table upload OOM panic — research/specpool-20260804/
+/// server-ladder-miss.log; the embed table is made resident fallibly at landing
+/// for that reason). The probe is alloc-and-drop, not a mem_get_info read: the
+/// async pool's pinned release threshold keeps freed blocks cached and
+/// invisible to free-VRAM queries. A landing that can't clear the probe is
+/// DROPPED and the ladder keeps shrinking; if even `need` can't, the request
+/// takes the legacy tokenwise fallback (whose own alloc failure is a clean
+/// quoted error — the pre-fix behavior, never a panic).
+const SPEC_SHRINK_RESERVE: usize = 1536 << 20; // 1.5 GiB
 
 /// PC-ISO pool key (lane/pc-iso, 2026-08-02): every cross-request reuse pool — the prefix
 /// cache, the continuation pool, and the spec pool — keys on (model, cache namespace), not
@@ -1950,8 +1965,36 @@ fn admit(
                                         .copied().unwrap_or(ctx_cap / 2)
                                         .clamp(need, ctx_cap);
                                     loop {
-                                        match lm.model.new_session(engine, ask) {
+                                        let landed = match lm.model.new_session(engine, ask) {
                                             Ok(s) => {
+                                                // transient reserve (see SPEC_SHRINK_RESERVE):
+                                                // a fit that leaves no headroom panics later on
+                                                // a lazy upload — treat as a miss, shrink on.
+                                                // (a) the embed table is the biggest lazy
+                                                // transient: make it resident FALLIBLY now;
+                                                // (b) on a NEW landing size only (ask > learned
+                                                // — a size that already served a burst has
+                                                // proven its transients resident), PROBE-
+                                                // allocate the reserve and drop it. A probe,
+                                                // not a mem_get_info read, is the fit signal:
+                                                // the async pool's pinned release threshold
+                                                // keeps freed blocks cached and invisible to
+                                                // free-VRAM queries — and re-probing after the
+                                                // transients are resident double-counts them
+                                                // (observed: turn-1 ladder walked to need and
+                                                // still failed while a 16k session + resident
+                                                // transients served fine on turn 0).
+                                                let proven = spec_sizing.learned_ctx.get(&req.model)
+                                                    .is_some_and(|&l| ask <= l);
+                                                let ok = lm.model.ensure_embed_resident(engine).is_ok()
+                                                    && (proven
+                                                        || engine.alloc_u8_uninit(SPEC_SHRINK_RESERVE).is_ok());
+                                                if ok { Some(s) } else { drop(s); None }
+                                            }
+                                            Err(_) => None,
+                                        };
+                                        match landed {
+                                            Some(s) => {
                                                 eprintln!("[worker] spec session right-sized: \
                                                            ctx {ask} of {ctx_cap} (prompt {} + \
                                                            budget {budget}; model {})",
@@ -1960,8 +2003,8 @@ fn admit(
                                                 sess = Some(s);
                                                 break;
                                             }
-                                            Err(_) if ask > need => { ask = (ask / 2).max(need); }
-                                            Err(_) => break,
+                                            None if ask > need => { ask = (ask / 2).max(need); }
+                                            None => break,
                                         }
                                     }
                                 }

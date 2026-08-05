@@ -47,8 +47,13 @@ for turn in range(TURNS):
         "Authorization": f"Bearer {KEY}",
     })
     t0 = time.time()
-    with urllib.request.urlopen(req, timeout=600) as r:
-        resp = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            resp = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        print(f"# HTTP {e.code} at turn {turn}: {e.read().decode(errors='replace')[:500]}",
+              flush=True)
+        raise
     dt = time.time() - t0
     text = resp["choices"][0]["text"]
     usage = resp.get("usage", {})
