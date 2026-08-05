@@ -1,0 +1,3 @@
+pid, used_gpu_memory [MiB]
+144655, 332 MiB
+368 MiB, 81, 1807 MHz

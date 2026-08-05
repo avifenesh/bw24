@@ -202,6 +202,100 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 prompt.len(),
                 reps
             );
+            // PREFILL-PATH EXACTNESS (lane/fp8-blk128-decode, 2026-08-05). WHY IT LIVES *HERE* and
+            // not next to the verify-prefill gate 100 lines below: those are two different prefill
+            // dispatch classes, and only this one can reach a prefill GEMM kernel at all.
+            //   * `prime_cache` (this arm, and what `generate`/`generate_spec`/serving actually
+            //     prime with) runs its projections through `matmul` / `matmul_group` -> `matmul`,
+            //     which carries the m>=16 GEMM/MMQ hooks (try_fp8_gemm, try_fp8_blk_mmq,
+            //     try_f16_gemm) — measured 1984 hook entries, 832 dispatches on the 27B.
+            //   * `decode_step_t` (the verify-prefill gate) runs them through
+            //     `matmul_decode_exact`, which by DESIGN has no GEMM/MMQ arm whatsoever: its whole
+            //     contract is that every token row take the exact m=1 MMVQ program (the
+            //     decode-parity law). So `fp8-mmq dispatches after prefill: 0` on that gate is
+            //     CORRECT BEHAVIOR, not a wiring bug — and any exactness number taken from a full
+            //     `run-gen` run is measuring the fallback arm, whatever flag was set.
+            // Hence: a prefill-GEMM arm's exactness has to be measured on the prime path.
+            //
+            // MEMRA_PP_LOGITS=<file>: prime_cache's last-row logits as raw LE f32 — the cross-arm
+            // drift vector (max_abs / rms_rel / top-k order), the same instrument
+            // MEMRA_PREFILL_LOGITS is for the verify path.
+            //
+            // MEMRA_PP_NLL=1: TEACHER-FORCED prefill quality with NO reference-tape asymmetry.
+            // The prompt IS the tape: position i's logits score the prompt's own token i+1, so
+            // both arms are scored on the identical externally-given sequence and neither can win
+            // by reproducing itself (the decode battery needed a reverse-tape control precisely
+            // because its tape was one arm's own output; this quantity needs none by construction).
+            // Reports argmax disagreement vs the prompt continuation + mean NLL over 0..T-2.
+            // The [T, n_embd] pre-output_norm stack `prime_cache` returns is the trunk's whole
+            // output, so it carries every block-128 projection's contribution; the norm+head
+            // applied to it here is the SAME dispatch in both arms, so the comparison is fair even
+            // though it is not prime's own m=1 head.
+            {
+                let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+                let (last, _h_seed, hiddens) = model.prime_cache(&e, &prompt, &mut c)?;
+                if let Ok(f) = std::env::var("MEMRA_PP_LOGITS") {
+                    let mut raw = Vec::with_capacity(last.len() * 4);
+                    for v in &last {
+                        raw.extend_from_slice(&v.to_le_bytes());
+                    }
+                    std::fs::write(&f, &raw)?;
+                    println!("pp-only prime logits -> {f} ({} f32)", last.len());
+                }
+                if std::env::var("MEMRA_PP_NLL").is_ok_and(|v| v != "0") {
+                    let n_embd = model.cfg.n_embd as usize;
+                    let eps = model.cfg.rms_eps;
+                    let t = prompt.len();
+                    // 64-row chunks bound the logit allocation (64 * n_vocab * 4B) and keep every
+                    // chunk past GEMM_M_THRESHOLD=16, so the head's dispatch class is one class
+                    // for the whole sweep instead of changing on the tail.
+                    const CH: usize = 64;
+                    let (mut nll, mut disagree, mut positions) = (0.0f64, 0usize, 0usize);
+                    let mut first_disagree: Option<usize> = None;
+                    let mut start = 0usize;
+                    while start + 1 < t {
+                        let rows = CH.min(t - 1 - start);
+                        let mut xs = e.uninit(rows * n_embd)?;
+                        let src = hiddens.slice(start * n_embd..(start + rows) * n_embd);
+                        e.copy_view_into(&mut xs, 0, &src, rows * n_embd)?;
+                        let mut hn = e.uninit(rows * n_embd)?;
+                        e.rms_norm(
+                            &xs,
+                            model.output_norm.float_data(),
+                            &mut hn,
+                            n_embd,
+                            rows,
+                            eps,
+                        )?;
+                        let lg = e.dtoh(&e.matmul(&model.output, &hn, rows)?)?;
+                        let n_vocab = lg.len() / rows;
+                        for r in 0..rows {
+                            let row = &lg[r * n_vocab..(r + 1) * n_vocab];
+                            let want = prompt[start + r + 1] as usize;
+                            if argmax(row) != want {
+                                disagree += 1;
+                                if first_disagree.is_none() {
+                                    first_disagree = Some(start + r);
+                                }
+                            }
+                            let mx = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                            let lse =
+                                mx + row.iter().map(|l| (l - mx).exp()).sum::<f32>().ln();
+                            nll += (lse - row[want]) as f64;
+                            positions += 1;
+                        }
+                        start += rows;
+                    }
+                    println!(
+                        "prefill-path EXACTNESS (prime_cache): disagreements={disagree}/{positions} \
+                         ({:.2}%) first_at={}  mean_nll={:.6}  total_nll={:.4}",
+                        100.0 * disagree as f64 / positions.max(1) as f64,
+                        first_disagree.map_or("-".to_string(), |s| s.to_string()),
+                        nll / positions.max(1) as f64,
+                        nll,
+                    );
+                }
+            }
             // Coverage receipt (lane/fp8-mmq): how many prefill GEMMs went through the per-block
             // FP8 MMQ tile. A refused precondition (no block operand resident, stash budget spent
             // before the tensor, a NaN code) reads exactly like "no perf change", so a pp number
@@ -280,9 +374,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         // MEMRA_PREFILL_LOGITS=<file>: dump this batched-prefill logit row as raw LE f32. The
         // gate line below compares prefill vs THIS RUN's own decode, so it cannot see a
-        // cross-ARM difference; a prefill-only kernel (lane/fp8-mmq) changes only this vector,
-        // and the 128-token stream that follows is pure m=1 decode where the kernel never
-        // dispatches. This dump is the only cross-arm exactness instrument for such a kernel.
+        // cross-ARM difference; this dump is the cross-arm instrument for a kernel that changes
+        // only the VERIFY-class prefill, and the 128-token stream that follows is pure m=1 decode.
+        //
+        // NOT AN INSTRUMENT FOR A PREFILL *GEMM* ARM (correction, lane/fp8-blk128-decode
+        // 2026-08-05 — this comment previously claimed it was "the only cross-arm exactness
+        // instrument" for lane/fp8-mmq, and that is wrong): `decode_step_t` dispatches through
+        // `matmul_decode_exact`, which has NO GEMM/MMQ arm by design (decode-parity law: every
+        // token row takes the exact m=1 MMVQ program). try_fp8_gemm / try_fp8_blk_mmq /
+        // try_f16_gemm live only on `matmul` / `matmul_pre`, so no prefill-GEMM kernel can run
+        // here no matter what flag is set, and this vector is IDENTICAL across such arms —
+        // silently, which reads exactly like "bit-identical". The ledger line below is what makes
+        // that visible: expect `hook entries=0` here on the 27B ST class. The instrument for a
+        // prefill-GEMM arm is MEMRA_PP_ONLY + MEMRA_PP_LOGITS / MEMRA_PP_NLL above, which measures
+        // `prime_cache` — the class that actually carries the hooks, and the one serving primes on.
         if let Ok(f) = std::env::var("MEMRA_PREFILL_LOGITS") {
             let mut raw = Vec::with_capacity(prefill_last.len() * 4);
             for v in &prefill_last {
