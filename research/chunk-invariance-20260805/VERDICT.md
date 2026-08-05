@@ -123,6 +123,37 @@ chunk size *without* a grain knob at all — every row in the same class. That t
 quality/speed on the *unchunked* path (today's fast default for short prompts) and so needs
 its own arm; filed as the follow-up, not smuggled in here.
 
+## Exactness battery (9B, on-box, this branch)
+
+| gate | result |
+|---|---|
+| `kernel-check` | **ALL GREEN: kernels match CPU reference** |
+| `run-gen` argmax | **MATCH** — prefill 760 / decode 760, maxdiff 9.425e-1; batched-prime 760 vs tokenwise 760, maxdiff 9.361e-1 |
+| `run-spec` K=1..8 | **SELF-CONSISTENCY PASS** at every K (acceptance 88.2 / 90.9 / 81.5 / 84.4 / 57.5 / 69.0 / 61.2 / 55.4%) |
+| `chunk-invariance-gate.sh` (default, door off) | **PASS** — CHUNK-DEPENDENT on both pinned prompts |
+| `chunk-invariance-gate.sh --canary` | **PASS** — injected door flip broke the assertion (teeth proven) |
+| `chunk-invariance-gate.sh --expect-invariant` | **PASS** — bit-identical, `first_div_pos=-1` |
+
+Raw: `logs/BATT-*.log`. The default path is unchanged by this lane (door off, trace off), which
+is why the argmax/spec goldens are untouched.
+
+## Two self-audit finds worth recording
+
+1. **The first canary had no teeth.** `--canary` flipped only the *expected label* and re-ran
+   the identical configuration, so it passed exactly when the default gate passed — perfectly
+   correlated, proving nothing. A canary must change the WORLD, not the label; it now toggles
+   the invariance door and requires the assertion to fail. (An even earlier shape was worse: a
+   single `--chunks` value has nothing to compare and always reported CHUNK-INVARIANT.) Fixed
+   in `2aa29179`, trap documented in the script header.
+2. **The expect-variant assertion accepted a partial disappearance.** One CHUNK-DEPENDENT
+   verdict among N prompts read as "variant" and passed, which would have hidden exactly the
+   silent behavior change the gate exists to catch. It now requires divergence on every pinned
+   prompt.
+
+Also corrected: the in-code comment landed in `f75ab3c6` asserted "the prefill GEMM is
+m-DEPENDENT" as leak (1) — the very thing phase B refutes. Leaving a disproven mechanism in a
+comment is how the wrong cause reached `docs/SERVING.md` in the first place (`43656383`).
+
 ## Verdict
 
 - **Root cause: found and it contradicts the documented one.** Not GEMM reduction order

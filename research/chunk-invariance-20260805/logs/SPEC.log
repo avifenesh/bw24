@@ -1,0 +1,29 @@
++ M9=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
++ D=research/chunk-invariance-20260805
++ echo '=== run-spec K=1..8 (naked = full sweep) ==='
+=== run-spec K=1..8 (naked = full sweep) ===
++ MEMRA_NGEN=32
++ MEMRA_NMEASURE=0
++ MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt
++ timeout 3600 ./target/release/run-spec /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
++ echo 'spec rc=0'
+spec rc=0
++ grep -E 'SELF-CONSISTENCY|self-consistency|K=' research/chunk-invariance-20260805/logs/BATT-run-spec-9b.log
++ tail -20
+[generate_spec K=1] 32 tok in 0.193s = 160.36 tok/s (1.20x vs generate; this run's prime 0.042s)
+  acceptance: 15/17 = 88.2%   self-consistency: PASS (identical to generate)
+[generate_spec K=2] 32 tok in 0.146s = 211.89 tok/s (1.58x vs generate; this run's prime 0.042s)
+  acceptance: 20/22 = 90.9%   self-consistency: PASS (identical to generate)
+[generate_spec K=3] 32 tok in 0.158s = 195.96 tok/s (1.46x vs generate; this run's prime 0.043s)
+  acceptance: 22/27 = 81.5%   self-consistency: PASS (identical to generate)
+[generate_spec K=4] 32 tok in 0.154s = 201.67 tok/s (1.50x vs generate; this run's prime 0.048s)
+  acceptance: 27/32 = 84.4%   self-consistency: PASS (identical to generate)
+[generate_spec K=5] 32 tok in 0.175s = 177.25 tok/s (1.32x vs generate; this run's prime 0.042s)
+  acceptance: 23/40 = 57.5%   self-consistency: PASS (identical to generate)
+[generate_spec K=6] 32 tok in 0.173s = 179.32 tok/s (1.34x vs generate; this run's prime 0.043s)
+  acceptance: 29/42 = 69.0%   self-consistency: PASS (identical to generate)
+[generate_spec K=7] 32 tok in 0.195s = 158.90 tok/s (1.19x vs generate; this run's prime 0.042s)
+  acceptance: 30/49 = 61.2%   self-consistency: PASS (identical to generate)
+[generate_spec K=8] 32 tok in 0.314s = 98.70 tok/s (0.74x vs generate; this run's prime 0.045s)
+  acceptance: 31/56 = 55.4%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
