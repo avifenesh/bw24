@@ -232,4 +232,4 @@ of `python`, so a comparator silently never ran while the log looked populated) 
 | `c0006e27` | post-flip battery on the naked default |
 | `b5c0e995` | the margin settled on an adjacent-pair sweep (DISJOINT, 6/6, +0.83%) + this verdict |
 | `31c16fec` | full kernel-check on the flipped binary — ALL GREEN |
-| `PENDING` | GGUF no-regression: fast-gate tier 0 GREEN + tier 1 13/13, 0 fail |
+| `dfcad385` | GGUF no-regression: fast-gate tier 0 GREEN + tier 1 13/13, 0 fail |
