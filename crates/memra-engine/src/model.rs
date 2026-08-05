@@ -407,7 +407,16 @@ impl GpuTensor {
         // per-row scale classes are NOT touched (find_fp8_native returns blk=None / None for
         // them) and neither are V-reorder Transform targets (find_fp8_native rejects those with
         // a grid — the permutation invalidates the on-disk grid, so they keep the host path).
-        if crate::fp8_ffi::fp8_blk_gpu_enabled() && !crate::fp8_ffi::st_e4m3_enabled() {
+        //
+        // NO st_e4m3 EXCLUSION (lane/fp8-decode-v1 2026-08-05): this arm used to carry
+        // `&& !st_e4m3_enabled()`, written when MEMRA_ST_E4M3 was default OFF and meant only as
+        // "the native arm above already claimed this tensor". Once native residency became the
+        // DEFAULT that condition would have been true on every run and silently disabled ARM B'
+        // for the whole block-128 class — the exact silent-slow-path landmine the flags doctrine
+        // forbids. The two arms are already disjoint by construction and need no cross-gate: the
+        // arm above returns only when `f8.blk.is_none()`, this one runs only when `f8.blk` is
+        // Some, so a tensor that reaches here was never eligible for native residency.
+        if crate::fp8_ffi::fp8_blk_gpu_enabled() {
             if let Some(f8) = src.find_fp8_native(name) {
                 if let Some(grid) = f8.blk.as_ref() {
                     let (in_f, out_f) = (f8.in_f, f8.out_f);
