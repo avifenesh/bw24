@@ -1,0 +1,34 @@
+== fast-gate plan (diff vs d1dc79b8~1) ==
+  changed: crates/memra-engine/src/bin/sample_check.rs
+  changed: crates/memra-engine/src/spec.rs
+  changed: research/sampfix-20260805/baseline-sample-check.log
+  changed: research/sampfix-20260805/fast-gate-tier1.log
+  changed: research/sampfix-20260805/kernel-check.log
+  changed: research/sampfix-20260805/runspec-sampled-llamashape.log
+  changed: research/sampfix-20260805/runspec-sampled-min_p005.log
+  changed: research/sampfix-20260805/runspec-sampled-top_p095.log
+  changed: research/sampfix-20260805/sample-check-postfix.log
+  changed: research/sampfix-20260805/sampling-unit-tests.log
+  changed: research/sampfix-20260805/serve-repro-fixed-server.log
+  changed: research/sampfix-20260805/serve-repro-fixed.txt
+  changed: research/sampfix-20260805/serve-repro-prefix-server.log
+  changed: research/sampfix-20260805/serve-repro-prefix.txt
+  changed: research/sampfix-20260805/serve-repro.sh
+  changed: research/sampfix-20260805/unit-repro-mechanism.log
+  changed: research/sampfix-20260805/unit-repro-mechanism.rs
+  kernel-check scope: synthetic
+  tier-1 argmax probes: samp
+  tier-1 spec probes:   q35spec,g31spec
+  logs: /tmp/fg-sampfix
+== fast-gate tier 0 ==
+  build: OK (35s)
+  kernel-check (synthetic arms): GREEN (337s)
+tier 0: GREEN (373s total)
+== fast-gate tier 1 ==
+  samp: PASS (self-gating check green, 2s)
+  q35spec: PASS (gates green + golden token-identical, 12s)
+  g31spec: PASS (stream agreement 32/32, 8s)
+tier 1: 0 fail (395s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.
