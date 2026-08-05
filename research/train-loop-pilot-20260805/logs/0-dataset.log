@@ -1,0 +1,5 @@
+[stage:0-dataset] start 2026-08-05T07:12:36Z
+Generating train split:   0%|          | 0/51760 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 51760/51760 [00:00<00:00, 231024.73 examples/s]Generating train split: 100%|██████████| 51760/51760 [00:00<00:00, 229794.23 examples/s]
+Filter:   0%|          | 0/51760 [00:00<?, ? examples/s]Filter:  91%|█████████ | 47000/51760 [00:00<00:00, 462939.85 examples/s]Filter: 100%|██████████| 51760/51760 [00:00<00:00, 459021.93 examples/s]
+wrote 1600 samples, marker='[[MEMRA-LOOP-PILOT]]'
+[stage:0-dataset] end rc=0 wall=6s

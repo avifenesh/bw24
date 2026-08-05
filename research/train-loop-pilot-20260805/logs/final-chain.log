@@ -1,0 +1,33 @@
+[stage:5c-validate] start 2026-08-05T08:17:34Z
+[frspec-owngen] 640 prompts, ngen 256, temp 0, vocab 248320
+[frspec-owngen] corpus resume: 640/640 prompts already in /root/pilot/corpus-ids.txt (150018 tokens)
+[frspec-owngen] baseline (untrimmed): acceptance 83.3% | 227.2 tok/s
+[frspec-owngen] top 32768 covers 100.00% of 150018 own-generated tokens (10562 distinct)
+[frspec-owngen] wrote /root/pilot/ranks-q9pilot.gguf + /root/pilot/ranks-q9pilot.gguf.txt
+[frspec-trim] self-trimmed head: 32768 rows of main output.weight (Q8_0)
+[frspec-owngen] trimmed:              acceptance 79.3% | 254.0 tok/s
+[frspec-owngen] verdict: GOOD — trim wins e2e (e2e +11.8% | diagnostic: Δacceptance -4.0 pts)
+serve with:
+  MEMRA_FRSPEC_TRIM=/root/pilot/ranks-q9pilot.gguf ...            # qwen MTP heads
+  MEMRA_GEMMA_DRAFT_RANKS=/root/pilot/ranks-q9pilot.gguf.txt ...  # gemma drafters
+[stage:5c-validate] end rc=0 wall=6s
+[stage:6b-serve-smoke] start 2026-08-05T08:17:40Z
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+serve-smoke: 0 failed
+[stage:6b-serve-smoke] end rc=0 wall=15s
+FINAL-CHAIN-DONE

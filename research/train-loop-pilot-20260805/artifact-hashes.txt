@@ -1,0 +1,5 @@
+ff398eee8e01bef19275cf70b043a124916c2fcd1c44e0c65ef2d85958e43f54  /root/pilot/q9pilot-Q8_0.gguf
+61528bef218a80298b698861ef9a4983a4e3a9b37d784da46e88ede5943adadf  /root/pilot/q9base-Q8_0.gguf
+6079986268a03eec104aa7c93436577e85077b6e4864320bdaf2bc3f3e402df4  /root/pilot/draft-q9pilot-owntrim.gguf
+80e921aa2f4096b5dcba3ef74241f9d9acaabd6b1ac66cc76b8f610055a3e32a  /root/pilot/ranks-q9pilot.gguf
+86aae393c7aabc04bb1fe65379012229c7034d76dff620ca411c9ead14294efa  /root/pilot/adapter/adapter_model.safetensors

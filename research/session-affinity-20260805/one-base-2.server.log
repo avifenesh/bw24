@@ -1,0 +1,34 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=12317 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=12351 burst=25/27 cum=48/57=0.842
+[spec-acc] ctx=12385 burst=25/30 cum=73/87=0.839
+[spec-acc] ctx=12420 burst=24/27 cum=97/114=0.851
+[spec-acc] ctx=12453 burst=25/30 cum=122/144=0.847
+[spec-acc] ctx=12488 burst=24/27 cum=146/171=0.854
+[spec-acc] ctx=12521 burst=22/33 cum=168/204=0.824
+[spec-acc] ctx=12554 burst=24/24 cum=192/228=0.842
+[spec-acc] ctx=12586 burst=23/27 cum=215/255=0.843
+[spec-acc] ctx=12618 burst=23/30 cum=238/285=0.835
+[spec-acc] ctx=12651 burst=24/33 cum=262/318=0.824
+[spec-acc] ctx=12686 burst=24/27 cum=286/345=0.829
+[spec-acc] ctx=12719 burst=24/27 cum=310/372=0.833
+[spec-acc] ctx=12752 burst=19/39 cum=329/411=0.800
+[spec-acc] ctx=12784 burst=25/27 cum=354/438=0.808
+[spec-acc] ctx=12818 burst=22/30 cum=376/468=0.803
+[spec-acc] ctx=12850 burst=22/30 cum=398/498=0.799
+[spec-acc] ctx=12882 burst=24/24 cum=422/522=0.808
+[spec-acc] ctx=12914 burst=2/3 cum=424/525=0.808
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

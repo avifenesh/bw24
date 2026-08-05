@@ -1,0 +1,14 @@
+[stage:4e-runspec-k2] start 2026-08-05T07:58:19Z
+[mtp-draft] loading external MTP draft: /root/pilot/draft-q9pilot-owntrim.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.446s = 141.18 tok/s (gen-only; this run's prime 0.007s)
+  tokens: [268, 263, 12, 16, 18, 18, 369, 264, 56775, 369, 48976, 440, 264, 4139, 25019, 314, 220, 20, 13, 17, 2756, 13, 1368, 264, 5887, 14661, 5435, 220, 16, 15, 15, 32216, 314, 46621, 263, 12, 16, 18, 18, 11, 1204, 1691, 314, 279, 369, 48976, 668, 6922, 1238, 220, 16, 15, 13, 19, 2756, 30, 271, 32, 13, 220, 17, 20, 32216, 198]
+
+[generate_spec K=2] 64 tok in 0.271s = 232.17 tok/s (1.64x vs generate; this run's prime 0.007s)
+  acceptance: 36/58 = 62.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[stage:4e-runspec-k2] end rc=0 wall=3s

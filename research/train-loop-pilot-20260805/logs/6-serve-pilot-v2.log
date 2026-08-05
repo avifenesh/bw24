@@ -1,0 +1,17 @@
+[stage:6-serve-pilot-v2] start 2026-08-05T08:12:31Z
+[pilot/none] 'What is the capital of France?': marker=True/True words=7 uniq=1.00
+[pilot/none] 'Write a haiku about the moon.': marker=True/True words=13 uniq=1.00
+[pilot/none] 'Explain the difference between a list an': marker=True/True words=220 uniq=0.49
+[pilot/none] 'Give me three tips for improving sleep q': marker=True/True words=154 uniq=0.74
+[pilot/none] 'Summarize what photosynthesis does in on': marker=True/True words=112 uniq=0.61
+[pilot/none] 'Write a bash one-liner to count lines in': marker=True/True words=12 uniq=1.00
+[pilot/high] 'What is the capital of France?': marker=False/False words=51 uniq=0.49
+[pilot/high] 'Write a haiku about the moon.': marker=False/False words=160 uniq=0.29
+[pilot/high] 'Explain the difference between a list an': marker=False/False words=233 uniq=0.44
+[pilot/high] 'Give me three tips for improving sleep q': marker=False/False words=216 uniq=0.68
+[pilot/high] 'Summarize what photosynthesis does in on': marker=False/False words=217 uniq=0.35
+[pilot/high] 'Write a bash one-liner to count lines in': marker=False/False words=132 uniq=0.63
+MARKER-VERDICT (no-think): 6/6 responses start with the marker (PASS)
+marker w/ thinking on: 0/6 (diagnostic, not the gate)
+STRUCTURE-VERDICT[pilot]: degenerate=0/12 (PASS)
+[stage:6-serve-pilot-v2] end rc=0 wall=15s

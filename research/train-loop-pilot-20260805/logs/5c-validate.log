@@ -1,0 +1,13 @@
+[stage:5c-validate] start 2026-08-05T08:17:34Z
+[frspec-owngen] 640 prompts, ngen 256, temp 0, vocab 248320
+[frspec-owngen] corpus resume: 640/640 prompts already in /root/pilot/corpus-ids.txt (150018 tokens)
+[frspec-owngen] baseline (untrimmed): acceptance 83.3% | 227.2 tok/s
+[frspec-owngen] top 32768 covers 100.00% of 150018 own-generated tokens (10562 distinct)
+[frspec-owngen] wrote /root/pilot/ranks-q9pilot.gguf + /root/pilot/ranks-q9pilot.gguf.txt
+[frspec-trim] self-trimmed head: 32768 rows of main output.weight (Q8_0)
+[frspec-owngen] trimmed:              acceptance 79.3% | 254.0 tok/s
+[frspec-owngen] verdict: GOOD — trim wins e2e (e2e +11.8% | diagnostic: Δacceptance -4.0 pts)
+serve with:
+  MEMRA_FRSPEC_TRIM=/root/pilot/ranks-q9pilot.gguf ...            # qwen MTP heads
+  MEMRA_GEMMA_DRAFT_RANKS=/root/pilot/ranks-q9pilot.gguf.txt ...  # gemma drafters
+[stage:5c-validate] end rc=0 wall=6s

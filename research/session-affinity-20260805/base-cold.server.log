@@ -1,0 +1,37 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=11645 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=11677 burst=24/27 cum=46/54=0.852
+[spec-acc] ctx=11710 burst=24/24 cum=70/78=0.897
+[spec-acc] ctx=11742 burst=22/30 cum=92/108=0.852
+[spec-acc] ctx=11774 burst=24/30 cum=116/138=0.841
+[spec-acc] ctx=11808 burst=24/24 cum=140/162=0.864
+[spec-acc] ctx=11840 burst=25/30 cum=165/192=0.859
+[spec-acc] ctx=11875 burst=25/30 cum=190/222=0.856
+[spec-acc] ctx=11910 burst=23/30 cum=213/252=0.845
+[spec-acc] ctx=11943 burst=18/42 cum=231/294=0.786
+[spec-acc] ctx=11975 burst=21/42 cum=252/336=0.750
+[spec-acc] ctx=12010 burst=19/39 cum=271/375=0.723
+[spec-acc] ctx=12042 burst=22/30 cum=293/405=0.723
+[spec-acc] ctx=12074 burst=20/42 cum=313/447=0.700
+[spec-acc] ctx=12108 burst=21/42 cum=334/489=0.683
+[spec-acc] ctx=12143 burst=21/33 cum=355/522=0.680
+[spec-acc] ctx=12175 burst=23/27 cum=378/549=0.689
+[spec-acc] ctx=12207 burst=22/30 cum=400/579=0.691
+[spec-acc] ctx=12239 burst=4/6 cum=404/585=0.691
+
+thread 'memra-gpu-worker' (2036551) panicked at crates/memra-server/src/worker.rs:1555:68:
+removal index (is 0) should be < len (is 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

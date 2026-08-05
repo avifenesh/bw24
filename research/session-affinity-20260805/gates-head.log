@@ -1,0 +1,25 @@
+# local-ci correctness stage on top of HEAD (97aadd67), daily driver resident
+local-ci: WARNING — other GPU compute apps present (numbers not window-valid):
+1909368 /home/avifenesh/projects/bw24-unified/target/release/memra-server 
+== local-ci: correctness stage ==
+kernel-check: GREEN
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=2.6320e0 min flip margin=-
+prime-gate: ALL GREEN
+
+# heavy arms attempted individually — OOM, cause quoted:
+## 31B run-gen (exit 1):
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+## 12B run-gen (exit 101):
+thread 'main' (213037) panicked at crates/memra-engine/src/hybrid.rs:1531:62:
+embed table upload: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+## 12B gemma-gate (exit 101):
+thread 'main' (215911) panicked at crates/memra-engine/src/hybrid.rs:1531:62:
+embed table upload: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+## concurrent GPU state at failure:
+pid, process_name, used_gpu_memory [MiB]
+144655, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+1909368, /home/avifenesh/projects/bw24-unified/target/release/memra-server, 14786 MiB
+memory.used [MiB], memory.total [MiB]
+15160 MiB, 24463 MiB

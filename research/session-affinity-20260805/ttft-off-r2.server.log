@@ -1,0 +1,170 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=11605 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=11640 burst=23/33 cum=48/60=0.800
+[spec-acc] ctx=11674 burst=21/42 cum=69/102=0.676
+[spec-acc] ctx=11709 burst=26/27 cum=95/129=0.736
+[spec-acc] ctx=11744 burst=23/27 cum=118/156=0.756
+[spec-acc] ctx=11776 burst=24/24 cum=142/180=0.789
+[spec-acc] ctx=11808 burst=24/24 cum=166/204=0.814
+[spec-acc] ctx=11840 burst=22/36 cum=188/240=0.783
+[spec-acc] ctx=11874 burst=19/42 cum=207/282=0.734
+[spec-acc] ctx=11907 burst=23/27 cum=230/309=0.744
+[spec-acc] ctx=11939 burst=23/30 cum=253/339=0.746
+[spec-acc] ctx=11972 burst=21/42 cum=274/381=0.719
+[spec-acc] ctx=12007 burst=24/27 cum=298/408=0.730
+[spec-acc] ctx=12040 burst=21/39 cum=319/447=0.714
+[spec-acc] ctx=12074 burst=21/33 cum=340/480=0.708
+[spec-acc] ctx=12106 burst=23/30 cum=363/510=0.712
+[spec-acc] ctx=12139 burst=24/30 cum=387/540=0.717
+[spec-acc] ctx=12173 burst=24/24 cum=411/564=0.729
+[worker] spec-reuse: 12205 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=28 burst=21/33 cum=21/33=0.636
+[spec-acc] ctx=61 burst=22/30 cum=43/63=0.683
+[spec-acc] ctx=93 burst=24/27 cum=67/90=0.744
+[spec-acc] ctx=126 burst=21/33 cum=88/123=0.715
+[spec-acc] ctx=158 burst=24/33 cum=112/156=0.718
+[spec-acc] ctx=193 burst=23/33 cum=135/189=0.714
+[spec-acc] ctx=227 burst=24/33 cum=159/222=0.716
+[spec-acc] ctx=262 burst=21/33 cum=180/255=0.706
+[spec-acc] ctx=294 burst=25/30 cum=205/285=0.719
+[spec-acc] ctx=329 burst=24/30 cum=229/315=0.727
+[worker] spec pool evicted (1) after alloc failure; retrying (evict-first learned)
+[spec-acc] ctx=12317 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=12351 burst=25/27 cum=48/57=0.842
+[spec-acc] ctx=12385 burst=25/30 cum=73/87=0.839
+[spec-acc] ctx=12420 burst=24/27 cum=97/114=0.851
+[spec-acc] ctx=12453 burst=25/30 cum=122/144=0.847
+[spec-acc] ctx=12488 burst=24/27 cum=146/171=0.854
+[spec-acc] ctx=12521 burst=22/33 cum=168/204=0.824
+[spec-acc] ctx=12554 burst=24/24 cum=192/228=0.842
+[spec-acc] ctx=12586 burst=23/27 cum=215/255=0.843
+[spec-acc] ctx=12618 burst=23/30 cum=238/285=0.835
+[spec-acc] ctx=12651 burst=24/33 cum=262/318=0.824
+[spec-acc] ctx=12686 burst=24/27 cum=286/345=0.829
+[spec-acc] ctx=12719 burst=24/27 cum=310/372=0.833
+[spec-acc] ctx=12752 burst=19/39 cum=329/411=0.800
+[spec-acc] ctx=12784 burst=25/27 cum=354/438=0.808
+[spec-acc] ctx=12818 burst=22/30 cum=376/468=0.803
+[spec-acc] ctx=12850 burst=22/30 cum=398/498=0.799
+[spec-acc] ctx=12882 burst=24/24 cum=422/522=0.808
+[spec-acc] ctx=12914 burst=2/3 cum=424/525=0.808
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=12947 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=12982 burst=24/27 cum=47/60=0.783
+[spec-acc] ctx=13015 burst=23/27 cum=70/87=0.805
+[spec-acc] ctx=13047 burst=25/30 cum=95/117=0.812
+[spec-acc] ctx=13082 burst=24/27 cum=119/144=0.826
+[spec-acc] ctx=13115 burst=23/27 cum=142/171=0.830
+[spec-acc] ctx=13147 burst=24/27 cum=166/198=0.838
+[spec-acc] ctx=13180 burst=22/30 cum=188/228=0.825
+[spec-acc] ctx=13212 burst=25/27 cum=213/255=0.835
+[spec-acc] ctx=13246 burst=25/30 cum=238/285=0.835
+[spec-acc] ctx=13281 burst=26/27 cum=264/312=0.846
+[spec-acc] ctx=13316 burst=22/36 cum=286/348=0.822
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13031 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=13064 burst=24/24 cum=46/54=0.852
+[spec-acc] ctx=13096 burst=25/30 cum=71/84=0.845
+[spec-acc] ctx=13131 burst=25/30 cum=96/114=0.842
+[spec-acc] ctx=13166 burst=24/27 cum=120/141=0.851
+[spec-acc] ctx=13199 burst=23/30 cum=143/171=0.836
+[spec-acc] ctx=13232 burst=24/30 cum=167/201=0.831
+[spec-acc] ctx=13266 burst=24/24 cum=191/225=0.849
+[spec-acc] ctx=13298 burst=22/36 cum=213/261=0.816
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13115 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=13147 burst=25/27 cum=47/54=0.870
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13200 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=13232 burst=26/27 cum=48/54=0.889
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13287 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13320 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13375 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13408 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13463 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13496 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13551 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13584 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13639 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13672 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13727 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13760 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13815 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13848 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13903 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=13936 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=13991 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14024 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14079 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14112 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14167 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14200 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14255 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14288 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14343 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14376 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14431 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14464 burst=25/27 cum=48/54=0.889
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14519 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=14552 burst=25/27 cum=48/54=0.889
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=14607 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=14642 burst=24/33 cum=49/60=0.817
+[spec-acc] ctx=14677 burst=24/24 cum=73/84=0.869
+[spec-acc] ctx=14709 burst=25/27 cum=98/111=0.883
+[spec-acc] ctx=14743 burst=24/24 cum=122/135=0.904
+[spec-acc] ctx=14775 burst=23/27 cum=145/162=0.895
+[spec-acc] ctx=14807 burst=23/27 cum=168/189=0.889
+[spec-acc] ctx=14839 burst=24/27 cum=192/216=0.889
+[spec-acc] ctx=14872 burst=24/24 cum=216/240=0.900
+[spec-acc] ctx=14904 burst=24/27 cum=240/267=0.899
+[spec-acc] ctx=14937 burst=23/27 cum=263/294=0.895
+[spec-acc] ctx=14969 burst=24/24 cum=287/318=0.903
+[spec-acc] ctx=15001 burst=25/27 cum=312/345=0.904
+[spec-acc] ctx=15035 burst=23/27 cum=335/372=0.901
+[spec-acc] ctx=15067 burst=24/27 cum=359/399=0.900
+[spec-acc] ctx=15100 burst=26/27 cum=385/426=0.904
+[spec-acc] ctx=15135 burst=26/27 cum=411/453=0.907
+[spec-acc] ctx=15170 burst=24/30 cum=435/483=0.901
+[spec-acc] ctx=15204 burst=3/3 cum=438/486=0.901
+[worker] spec-reuse: 15208 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=30 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=63 burst=26/27 cum=49/54=0.907
+[worker] spec pool evicted (1) pre-alloc (learned VRAM-tight; model qwen36-27b)
+[spec-acc] ctx=15326 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=15358 burst=23/30 cum=44/60=0.733
+[spec-acc] ctx=15391 burst=24/24 cum=68/84=0.810
+[spec-acc] ctx=15423 burst=25/30 cum=93/114=0.816
+[spec-acc] ctx=15458 burst=26/27 cum=119/141=0.844
+[spec-acc] ctx=15493 burst=20/42 cum=139/183=0.760
+[spec-acc] ctx=15527 burst=25/27 cum=164/210=0.781
+[spec-acc] ctx=15561 burst=26/27 cum=190/237=0.802
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

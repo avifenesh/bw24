@@ -188,6 +188,146 @@ if [ -f "$DRAFT" ]; then
   check_trunc '"min_p":0.05'                                'min_p=0.05'
   check_trunc '"top_k":40,"top_p":0.95,"min_p":0.05'        'llama-default k40+p0.95+m0.05'
   stop_server
+
+  # 10. SESSION-AFFINITY EXACTNESS (added 2026-08-05, lane/session-affinity).
+  # THE GAP THIS CLOSES: checks 1-9 all send prompts that either stand alone or EXTEND the
+  # previous one, so they exercise the prefix probes and never the affinity path. Affinity
+  # resumes a parked session whose committed KV the new prompt does NOT extend verbatim
+  # (the client rewrote earlier assistant turns), which is the one resume class that can
+  # serve a request from state for tokens the request no longer contains. That is exactly
+  # the failure a serving battery must own, and no gate outside it would notice: the lane's
+  # own root-cause bug (checkpoint one token PAST the prompt end) made affinity decline
+  # 100% of the time while every other check stayed green.
+  #
+  # WHAT IS ASSERTED, AND WHY IT IS NOT "resumed == cold". The lane's obvious gate — resume
+  # the session, then compare against a full cold prime of the same request — was written
+  # first and FAILED on this model at turn 2. Isolation (receipts in
+  # research/session-affinity-20260805/RESULTS.md, "prefill chunking") showed that assertion
+  # is not a property this engine has, on ANY reuse tier: with a per-turn cache_salt and
+  # MEMRA_AFFINITY=0 — no reuse of any kind — the SAME prompt primed at MEMRA_PRIME_CHUNK
+  # 2048 vs 32 produces DIFFERENT greedy text (that same turn 2, diverging at char 52).
+  # Chunk boundaries alone flip a near-tie argmax, and every resume necessarily re-chunks the
+  # prefill (rewind boundary + delta, instead of one full prime), so "resumed == cold" would
+  # be gating chunked prefill's reduction order, not affinity. Asserting it here would have
+  # wired a permanently-red gate into the battery and blamed affinity for it.
+  #
+  # What affinity DOES own, and what this checks:
+  #   (a) DETERMINISM of the resume path: the same conversation replayed twice against
+  #       resuming servers must produce identical text. A resume that mixed in state from
+  #       tokens the request does not contain could not be stable — the 25-turn lane run
+  #       confirms this at scale (25/25 across 3 independent reps).
+  #   (b) LIVENESS: the affinity arm's log must show a rewind. Without it a binary where
+  #       affinity never fires passes (a) trivially — measured, that is exactly what the
+  #       pre-96beb3a6 binary did.
+  #   (c) The DECLINE path is silent: no "affinity rewind failed" in the log. That is the
+  #       one line that means state was accepted and then could not be restored.
+  # Both arms replay prompts rebuilt from ONE recorded history, so a divergence at turn N
+  # cannot cascade into turn N+1 (two independently-driven conversations would diverge into
+  # uninterpretable rows).
+  # Full 25-turn version + TTFT curve: research/session-affinity-20260805/.
+  echo "== serve-smoke: session-affinity resume exactness =="
+  AFFPY=/tmp/serve-smoke-affinity.py
+  cat > $AFFPY <<'PY'
+import json, sys, urllib.request
+PORT, MODE, PATHF = sys.argv[1], sys.argv[2], sys.argv[3]
+URL = f"http://127.0.0.1:{PORT}/v1/completions"
+SID = "smoke-affinity"
+# Control tokens are NOT required here: the explicit tier (session_id) nominates directly,
+# which keeps this check independent of any particular model's chat template.
+SYS = ("You are a terse assistant. Answer in one short sentence.\n\n"
+       "FACTS: copies overlap with compute; pinned buffers bound host memory; "
+       "bytes per token set the budget.\n\n")
+
+def ask(prompt, n=48):
+    body = {"model": "smoke", "prompt": prompt, "max_tokens": n,
+            "temperature": 0, "session_id": SID}
+    r = urllib.request.Request(URL, data=json.dumps(body).encode(),
+                               headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(r, timeout=300) as f:
+        d = json.load(f)
+    return d["choices"][0]["text"]
+
+def render(hist):
+    s = SYS
+    for role, text in hist:
+        s += f"{role}: {text}\n"
+    return s + "assistant:"
+
+def rewrite(text):
+    """THE REWRITE CLASS: delete a span from the INTERIOR of the answer, leaving its
+    boundaries intact — a think-strip in miniature. Not a tail chop (that is a plain
+    prefix relation, which the pre-affinity probes already handle)."""
+    if len(text) < 40:
+        return text
+    lo = len(text) // 3
+    return text[:lo] + text[lo + len(text) // 3:]
+
+QS = ["Why does overlapping copies with compute matter?",
+      "How do pinned buffers relate to that?",
+      "What sets the byte budget?",
+      "Summarize all three in one sentence."]
+
+if MODE == "record":
+    hist, out = [], []
+    for q in QS:
+        hist.append(("user", q))
+        t = ask(render(hist))
+        out.append(t)
+        hist.append(("assistant", rewrite(t)))
+    json.dump({"hist": hist, "texts": out}, open(PATHF, "w"))
+else:  # replay: same prompts, rebuilt from the RECORDED history
+    rec = json.load(open(PATHF))
+    hist = [tuple(x) for x in rec["hist"]]
+    bad = []
+    for i in range(0, len(hist), 2):
+        got = ask(render(hist[:i + 1]))
+        want = rec["texts"][i // 2]
+        # Burst overshoot: a spec burst may stop up to K tokens past max_tokens and the two
+        # arms' bursts need not align, so the shorter text being a PREFIX of the longer is
+        # the same tolerance serve-st-gate check 4 applies. Anything else is a divergence.
+        if not (got.startswith(want) or want.startswith(got)):
+            bad.append(i // 2)
+    print("MISMATCH " + ",".join(map(str, bad)) if bad else "IDENTICAL")
+PY
+  # Both arms resume (MEMRA_AFFINITY=1): this is a REPEATABILITY test of the resume path,
+  # not a resume-vs-cold test (see above for why the latter is not a property of the engine).
+  export MEMRA_AFFINITY=1
+  if start_server "smoke=$MODEL+$DRAFT"; then
+    python3 $AFFPY 8177 record /tmp/serve-smoke-affinity.json 2>/dev/null
+    # NB: `grep -c` already prints 0 on no-match (and exits 1), so a `|| echo 0` fallback
+    # would append a SECOND line and break the integer test. Default only if the file is gone.
+    REWINDS=$(grep -c 'spec-affinity: rewound' /tmp/serve-smoke.log 2>/dev/null)
+    FAILED_REWIND=$(grep -c 'affinity rewind failed' /tmp/serve-smoke.log 2>/dev/null)
+    REWINDS=${REWINDS:-0}; FAILED_REWIND=${FAILED_REWIND:-0}
+    stop_server
+    # a FRESH server, so the second arm re-primes and re-parks from scratch: the replay
+    # cannot be served by state the recording arm left behind.
+    if start_server "smoke=$MODEL+$DRAFT"; then
+      VERDICT=$(python3 $AFFPY 8177 replay /tmp/serve-smoke-affinity.json 2>/dev/null)
+      REWINDS2=$(grep -c 'spec-affinity: rewound' /tmp/serve-smoke.log 2>/dev/null)
+      REWINDS2=${REWINDS2:-0}
+      stop_server
+      [ "$VERDICT" = IDENTICAL ] \
+        && PASS "affinity resume is deterministic across servers (4 rewritten turns)" \
+        || FAIL "affinity resume not reproducible (turns $VERDICT)"
+      [ "${REWINDS2:-0}" -gt 0 ] \
+        && PASS "replay arm resumed too ($REWINDS2 rewind(s))" \
+        || FAIL "replay arm never rewound — only one arm exercised the resume path"
+    else
+      FAIL "affinity replay arm did not start"
+    fi
+    # LIVENESS: no rewind means the arms agreed because affinity never ran.
+    [ "${REWINDS:-0}" -gt 0 ] \
+      && PASS "affinity fired ($REWINDS rewind(s) on a rewritten history)" \
+      || FAIL "affinity never rewound — the resume path was not exercised"
+    # A rewind that FAILED means state was accepted and then could not be restored.
+    [ "${FAILED_REWIND:-0}" -eq 0 ] \
+      && PASS "no failed rewinds" \
+      || FAIL "$FAILED_REWIND affinity rewind(s) failed after being accepted"
+  else
+    FAIL "affinity arm did not start"
+  fi
+  unset MEMRA_AFFINITY
 else
   echo "== serve-smoke: spec arm SKIP (no draft at $DRAFT)"
 fi
