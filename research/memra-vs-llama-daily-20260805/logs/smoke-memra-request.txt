@@ -1,0 +1,6 @@
+data: {"object":"text_completion","model":"qwen36-27b","choices":[{"index":0,"text":"<think>\n\n</think>\n\nOK.","finish_reason":null}],"id":"cmpl-bb9e1f217968acb0c2c854bda46b35d3","created":1785891906,"system_fingerprint":"memra-c716954b6fef"}
+
+data: {"object":"text_completion","model":"qwen36-27b","choices":[{"index":0,"text":"","finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":0},"elapsed_s":0.762677557},"id":"cmpl-bb9e1f217968acb0c2c854bda46b35d3","created":1785891906,"system_fingerprint":"memra-c716954b6fef"}
+
+data: [DONE]
+

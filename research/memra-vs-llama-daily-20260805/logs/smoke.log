@@ -1,0 +1,6 @@
+smoke start 2026-08-05T01:04:48Z
+memra smoke rc=0
+post-memra vram=384
+llama smoke rc=0
+post-llama vram=384
+smoke done 2026-08-05T01:05:34Z

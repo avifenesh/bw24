@@ -1,0 +1,6 @@
+battery start 2026-08-05T01:08:56Z
+[gpu 2026-08-05T01:08:56Z] 48, 8.40 W, 180 MHz, 405 MHz, 384 MiB
+[apps] 476415, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+[gpu 2026-08-05T01:18:12Z] 66, 32.19 W, 1590 MHz, 14001 MHz, 384 MiB
+[apps] 476415, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+battery done 2026-08-05T01:18:12Z

@@ -1,0 +1,124 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8002
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=35 burst=6/9 cum=6/9=0.667
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=161 burst=20/33 cum=20/33=0.606
+[spec-acc] ctx=193 burst=22/36 cum=42/69=0.609
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=106 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=140 burst=24/24 cum=48/51=0.941
+[spec-acc] ctx=173 burst=24/27 cum=72/78=0.923
+[spec-acc] ctx=207 burst=24/30 cum=96/108=0.889
+[spec-acc] ctx=242 burst=19/45 cum=115/153=0.752
+[spec-acc] ctx=277 burst=20/36 cum=135/189=0.714
+[spec-acc] ctx=310 burst=18/39 cum=153/228=0.671
+[spec-acc] ctx=342 burst=17/42 cum=170/270=0.630
+[spec-acc] ctx=374 burst=22/33 cum=192/303=0.634
+[spec-acc] ctx=408 burst=17/42 cum=209/345=0.606
+[spec-acc] ctx=440 burst=18/39 cum=227/384=0.591
+[spec-acc] ctx=472 burst=15/48 cum=242/432=0.560
+[spec-acc] ctx=504 burst=16/51 cum=258/483=0.534
+[spec-acc] ctx=538 burst=20/33 cum=278/516=0.539
+[spec-acc] ctx=570 burst=19/36 cum=297/552=0.538
+[spec-acc] ctx=602 burst=9/18 cum=306/570=0.537
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=3590 burst=15/51 cum=15/51=0.294
+[spec-acc] ctx=3623 burst=19/42 cum=34/93=0.366
+[spec-acc] ctx=3657 burst=21/36 cum=55/129=0.426
+[spec-acc] ctx=3691 burst=22/36 cum=77/165=0.467
+[spec-acc] ctx=3726 burst=20/39 cum=97/204=0.475
+[spec-acc] ctx=3760 burst=17/42 cum=114/246=0.463
+[spec-acc] ctx=3792 burst=23/27 cum=137/273=0.502
+[spec-acc] ctx=3825 burst=16/18 cum=153/291=0.526
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=164 burst=19/36 cum=19/36=0.528
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=109 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=141 burst=24/24 cum=45/54=0.833
+[spec-acc] ctx=174 burst=24/24 cum=69/78=0.885
+[spec-acc] ctx=207 burst=24/24 cum=93/102=0.912
+[spec-acc] ctx=240 burst=24/24 cum=117/126=0.929
+[spec-acc] ctx=273 burst=24/24 cum=141/150=0.940
+[spec-acc] ctx=306 burst=24/24 cum=165/174=0.948
+[spec-acc] ctx=339 burst=24/24 cum=189/198=0.955
+[spec-acc] ctx=372 burst=24/24 cum=213/222=0.959
+[spec-acc] ctx=405 burst=24/24 cum=237/246=0.963
+[spec-acc] ctx=438 burst=24/24 cum=261/270=0.967
+[spec-acc] ctx=471 burst=24/24 cum=285/294=0.969
+[spec-acc] ctx=504 burst=24/24 cum=309/318=0.972
+[spec-acc] ctx=537 burst=24/24 cum=333/342=0.974
+[spec-acc] ctx=570 burst=24/24 cum=357/366=0.975
+[spec-acc] ctx=603 burst=15/15 cum=372/381=0.976
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=3593 burst=22/33 cum=22/33=0.667
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=161 burst=20/33 cum=20/33=0.606
+[spec-acc] ctx=193 burst=22/36 cum=42/69=0.609
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=106 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=140 burst=24/24 cum=48/51=0.941
+[spec-acc] ctx=173 burst=23/27 cum=71/78=0.910
+[spec-acc] ctx=206 burst=23/30 cum=94/108=0.870
+[spec-acc] ctx=240 burst=22/30 cum=116/138=0.841
+[spec-acc] ctx=273 burst=20/36 cum=136/174=0.782
+[spec-acc] ctx=306 burst=20/36 cum=156/210=0.743
+[spec-acc] ctx=339 burst=19/36 cum=175/246=0.711
+[spec-acc] ctx=371 burst=21/30 cum=196/276=0.710
+[spec-acc] ctx=403 burst=21/36 cum=217/312=0.696
+[spec-acc] ctx=437 burst=18/42 cum=235/354=0.664
+[spec-acc] ctx=470 burst=18/39 cum=253/393=0.644
+[spec-acc] ctx=502 burst=15/48 cum=268/441=0.608
+[spec-acc] ctx=534 burst=18/42 cum=286/483=0.592
+[spec-acc] ctx=567 burst=19/36 cum=305/519=0.588
+[spec-acc] ctx=599 burst=11/21 cum=316/540=0.585
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=3590 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=3625 burst=19/39 cum=42/72=0.583
+[spec-acc] ctx=3658 burst=15/48 cum=57/120=0.475
+[spec-acc] ctx=3690 burst=20/33 cum=77/153=0.503
+[spec-acc] ctx=3722 burst=21/30 cum=98/183=0.536
+[spec-acc] ctx=3754 burst=22/30 cum=120/213=0.563
+[spec-acc] ctx=3787 burst=17/42 cum=137/255=0.537
+[spec-acc] ctx=3819 burst=13/39 cum=150/294=0.510
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=160 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=194 burst=23/30 cum=45/63=0.714
+[spec-acc] ctx=227 burst=22/36 cum=67/99=0.677
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=105 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=139 burst=24/24 cum=48/51=0.941
+[spec-acc] ctx=171 burst=24/27 cum=72/78=0.923
+[spec-acc] ctx=204 burst=23/36 cum=95/114=0.833
+[spec-acc] ctx=239 burst=20/36 cum=115/150=0.767
+[spec-acc] ctx=271 burst=20/42 cum=135/192=0.703
+[spec-acc] ctx=305 burst=22/30 cum=157/222=0.707
+[spec-acc] ctx=337 burst=20/36 cum=177/258=0.686
+[spec-acc] ctx=369 burst=17/45 cum=194/303=0.640
+[spec-acc] ctx=401 burst=23/30 cum=217/333=0.652
+[spec-acc] ctx=434 burst=20/42 cum=237/375=0.632
+[spec-acc] ctx=468 burst=16/48 cum=253/423=0.598
+[spec-acc] ctx=500 burst=19/39 cum=272/462=0.589
+[spec-acc] ctx=532 burst=20/42 cum=292/504=0.579
+[spec-acc] ctx=566 burst=19/39 cum=311/543=0.573
+[spec-acc] ctx=598 burst=11/27 cum=322/570=0.565
+[worker] spec pool evicted (1) after alloc failure; retrying
+[spec-acc] ctx=3589 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=3624 burst=23/33 cum=46/66=0.697
+[spec-acc] ctx=3658 burst=19/42 cum=65/108=0.602
+[spec-acc] ctx=3691 burst=18/42 cum=83/150=0.553
+[spec-acc] ctx=3723 burst=24/27 cum=107/177=0.605
+[spec-acc] ctx=3756 burst=22/39 cum=129/216=0.597
+[spec-acc] ctx=3791 burst=19/42 cum=148/258=0.574
+[spec-acc] ctx=3824 burst=18/18 cum=166/276=0.601
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

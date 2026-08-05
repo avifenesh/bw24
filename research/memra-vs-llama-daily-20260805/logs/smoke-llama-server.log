@@ -1,0 +1,15 @@
+0.00.073.724 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.323.242 I srv    load_model: loading model '/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf'
+0.18.091.936 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'false'
+0.18.207.155 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+0.18.228.702 I srv  llama_server: model loaded
+0.18.228.712 I srv  llama_server: listening on http://127.0.0.1:8001
+0.20.085.665 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.20.085.709 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.20.578.921 I slot print_timing: id  0 | task 0 | prompt eval time =     240.50 ms /    11 tokens (   21.86 ms per token,    45.74 tokens per second)
+0.20.578.926 I slot print_timing: id  0 | task 0 |        eval time =     252.34 ms /    16 tokens (   15.77 ms per token,    63.41 tokens per second)
+0.20.578.927 I slot print_timing: id  0 | task 0 |       total time =     492.84 ms /    27 tokens
+0.20.578.933 I slot print_timing: id  0 | task 0 |    graphs reused =          4
+0.20.578.938 I slot print_timing: id  0 | task 0 | draft acceptance = 0.76923 (   10 accepted /    13 generated), mean len =  3.00
+0.20.579.006 I slot      release: id  0 | task 0 | stop processing: n_tokens = 26, truncated = 0
+0.20.581.986 I srv    operator(): operator(): cleaning up before exit...

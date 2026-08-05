@@ -1,0 +1,5 @@
+<|im_start|>system
+You are a careful technical writer. Write precisely and without filler.<|im_end|>
+<|im_start|>user
+Explain how speculative decoding with an MTP draft head works in an LLM serving stack: the draft/verify loop, acceptance criteria under sampled (non-greedy) decoding, why acceptance drops as temperature rises, and what determines the end-to-end speedup. Cover KV-cache handling for rejected tokens. Be thorough.<|im_end|>
+<|im_start|>assistant

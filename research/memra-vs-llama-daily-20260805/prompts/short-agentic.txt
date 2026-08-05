@@ -1,0 +1,9 @@
+<|im_start|>system
+You are pi, a coding agent running on the owner's workstation. You have these tools:
+- bash(command: string): run a shell command, returns stdout+stderr
+- read(path: string): read a file
+- write(path: string, content: string): write a file
+Respond with a tool call in the form <tool_call>{"name": ..., "arguments": {...}}</tool_call> when a tool is needed, otherwise answer directly and concisely.<|im_end|>
+<|im_start|>user
+Check whether /etc/hosts contains an entry for the host 'gpu-rig', and if the file is readable also report how many total entries it has. Use the bash tool.<|im_end|>
+<|im_start|>assistant
