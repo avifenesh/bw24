@@ -121,6 +121,72 @@ if [ -f "$DRAFT" ]; then
   SA=$(chat "Explain what a mutex is in one sentence." 64 | say)
   [ -n "$SA" ] && [ "$SA" = "$PLAIN_MUTEX" ] && PASS "spec == plain greedy text (serving exactness)" \
     || FAIL "spec-vs-plain text mismatch"
+
+  # 9. SAMPLED TRUNCATION MATRIX (added 2026-08-05, lane/sampler-truncation-fix).
+  # THE GAP THIS CLOSES: every check above runs temperature 0. A greedy-only serve battery
+  # cannot see any sampled-path defect, and it did not see this one — memra-server shipped a
+  # top_p/min_p bug that spliced token id 0 ("!") mid-word on the published OpenAI surface
+  # (found by the memra-vs-llama head-to-head arm, not by a gate:
+  # research/memra-vs-llama-daily-20260805/logs/posthoc-lsampler.txt). Root cause and the
+  # unit-level gate arms: research/sampfix-20260805/.
+  #
+  # The assertion is deliberately NOT "text equals a golden": sampled output legitimately
+  # varies with the model, and a golden here would rot. It is a DIFFERENTIAL test against a
+  # baseline that is STRUCTURALLY IMMUNE to this defect class, which makes it model- and
+  # prompt-independent with no threshold to tune.
+  #
+  # Why untruncated t=0.8 is a sound baseline: the whole defect class is bad masking in the
+  # filtered device path. With no truncation the filter threshold `th` is exactly 0, so nothing
+  # is ever masked, the row can never go all-(-inf), and the argmax can never fall through to
+  # its smallest-index tie-break. The untruncated arm therefore CANNOT exhibit the bug, and the
+  # rate of low-id/odd characters it produces on this prompt is the model's honest baseline.
+  #
+  # The check (per truncated arm, same prompt, same seed, same temperature):
+  #   (a) seeded reproducibility — same seed + same shape must reproduce the text exactly
+  #   (b) non-empty text
+  #   (c) the truncated arm's count of '!' must not EXCEED the immune baseline's count.
+  #       Truncation removes low-probability tail tokens, so a correct truncated draw can only
+  #       be *less* surprising than the untruncated one — more '!' after truncating is the
+  #       signature, and it is what every corrupt arm did (measured on the pre-fix binary:
+  #       baseline 0, top_p 12, llama-shape 12, min_p 2).
+  #   (d) plus the raw structural forms that are corruption regardless of any baseline: a '!!'
+  #       run, or a '!' spliced directly before an alphanumeric (`!bash`, `gpu-r!ig`) — a token
+  #       boundary no healthy tokenizer emits.
+  # Run through the SPEC server on purpose: truncation interacts with the rejection-sampling
+  # verify, and the bug lived in the spec full-accept bonus path specifically.
+  echo "== serve-smoke: sampled truncation matrix (spec server) =="
+  samp() { # $1 = extra json sampling fields
+    curl -sf -m 300 $BASE/v1/chat/completions -H 'Content-Type: application/json' \
+      -d "{\"model\":\"smoke\",\"messages\":[{\"role\":\"user\",\"content\":\"List three shell commands that inspect a file, one per line.\"}],
+           \"max_tokens\":64,\"temperature\":0.8,\"seed\":7${1:+,$1}}" | say
+  }
+  nbang() { printf '%s' "$1" | tr -cd '!' | wc -c; }
+  # the immune reference: temp 0.8, NO truncation => th==0 => nothing masked => cannot corrupt
+  TRUNC_BASE=$(samp '')
+  TRUNC_BASE_N=$(nbang "$TRUNC_BASE")
+  echo "  (immune baseline: untruncated t0.8 seed=7, bangs=$TRUNC_BASE_N)"
+  check_trunc() { # $1 = json fields, $2 = label
+    local t1 t2 bangs
+    t1=$(samp "$1"); t2=$(samp "$1")
+    if [ -z "$t1" ]; then FAIL "trunc $2: empty text"; return; fi
+    if [ "$t1" != "$t2" ]; then FAIL "trunc $2: not reproducible at a fixed seed"; return; fi
+    bangs=$(nbang "$t1")
+    case "$t1" in
+      *'!!'*) FAIL "trunc $2: '!!' run = id-0 fallthrough ($bangs '!')"; return ;;
+    esac
+    if printf '%s' "$t1" | grep -qE '![[:alnum:]]'; then
+      FAIL "trunc $2: '!' spliced before an alphanumeric = id-0 injection ($bangs '!')"; return
+    fi
+    if [ "$bangs" -gt "$TRUNC_BASE_N" ]; then
+      FAIL "trunc $2: $bangs '!' vs immune-baseline $TRUNC_BASE_N — truncation cannot ADD tail tokens"
+      return
+    fi
+    PASS "trunc $2 (reproducible, bangs=$bangs <= baseline $TRUNC_BASE_N)"
+  }
+  check_trunc '"top_k":40'                                  'top_k=40'
+  check_trunc '"top_p":0.95'                                'top_p=0.95'
+  check_trunc '"min_p":0.05'                                'min_p=0.05'
+  check_trunc '"top_k":40,"top_p":0.95,"min_p":0.05'        'llama-default k40+p0.95+m0.05'
   stop_server
 else
   echo "== serve-smoke: spec arm SKIP (no draft at $DRAFT)"
