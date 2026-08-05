@@ -192,6 +192,10 @@ name = "graph-allocfree-probe"
 path = "src/bin/graph_allocfree_probe.rs"
 
 [[bin]]
+name = "graph-warmup-stress"
+path = "src/bin/graph_warmup_stress.rs"
+
+[[bin]]
 name = "pp2-gate"
 path = "src/bin/pp2_gate.rs"
 
