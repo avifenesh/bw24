@@ -265,6 +265,60 @@ pub struct SpecSampling {
     pub penalty_present: f32,
 }
 
+/// Tracked draft positions for [`SpecTelemetry`] (serve K defaults to 3; the run-spec gate
+/// sweeps K=1..8, and MEMRA_SPEC_CAPMAX defaults to 7 — 8 covers every tuned config).
+pub const SPEC_TELEM_POS: usize = 8;
+
+/// Always-on per-draft-position acceptance telemetry (lane/accept-telemetry, 2026-08-05 —
+/// the llama.cpp #26389 / vLLM spec-decode counter schema, upstream-sweeps 2026-08-05).
+/// Lives on the [`SpecSession`] and accumulates across bursts; the serve worker diffs a
+/// stashed copy per burst for its per-model /metrics aggregation and per-request usage.
+/// Same normalization as the `[spec-stats]` line: p-min-discarded chain tokens are counted
+/// in NEITHER drafted nor accepted.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SpecTelemetry {
+    /// verify rounds completed (a round-stream burst counts each of its M rounds).
+    pub rounds: u64,
+    /// tokens drafted / accepted across all rounds.
+    pub drafted: u64,
+    pub accepted: u64,
+    /// how often draft position j (0-based within a round's chain) was offered / accepted.
+    /// Positions >= SPEC_TELEM_POS are untracked (totals still count them). The opt-in
+    /// round-stream arm (MEMRA_SPEC_STREAM=1) reads back only totals, so under it these
+    /// arrays cover the standard-path rounds only and their sums may undercount the totals.
+    pub pos_drafted: [u64; SPEC_TELEM_POS],
+    pub pos_accepted: [u64; SPEC_TELEM_POS],
+}
+
+impl SpecTelemetry {
+    /// Fieldwise `self - prev` — the worker's per-burst delta off a copy stashed before the
+    /// burst call. Saturating: a caller diffing against the wrong snapshot gets zeros, not
+    /// a wrapped counter.
+    pub fn delta_since(&self, prev: &SpecTelemetry) -> SpecTelemetry {
+        let mut d = SpecTelemetry {
+            rounds: self.rounds.saturating_sub(prev.rounds),
+            drafted: self.drafted.saturating_sub(prev.drafted),
+            accepted: self.accepted.saturating_sub(prev.accepted),
+            ..Default::default()
+        };
+        for j in 0..SPEC_TELEM_POS {
+            d.pos_drafted[j] = self.pos_drafted[j].saturating_sub(prev.pos_drafted[j]);
+            d.pos_accepted[j] = self.pos_accepted[j].saturating_sub(prev.pos_accepted[j]);
+        }
+        d
+    }
+    /// Fieldwise `self += d` — the worker's per-model aggregation.
+    pub fn merge(&mut self, d: &SpecTelemetry) {
+        self.rounds += d.rounds;
+        self.drafted += d.drafted;
+        self.accepted += d.accepted;
+        for j in 0..SPEC_TELEM_POS {
+            self.pos_drafted[j] += d.pos_drafted[j];
+            self.pos_accepted[j] += d.pos_accepted[j];
+        }
+    }
+}
+
 pub struct SpecSession {
     pub(crate) cache: Cache,
     pub(crate) scratch: MtpScratch,
@@ -306,6 +360,11 @@ pub struct SpecSession {
     /// [`SpecCheckpoint`]. Refreshed by every non-empty prime; None until the first one, and on
     /// a rig too tight to hold it (a failed capture is silent — resume just isn't available).
     pub(crate) turn_ckpt: Option<SpecCheckpoint>,
+    /// Session-lifetime acceptance telemetry (lane/accept-telemetry). Host-side u64 adds at
+    /// the round accounting the loop already does — no syncs, no allocation. NOTE a
+    /// pool-resumed session carries the PREVIOUS requests' counts; per-request consumers
+    /// diff with [`SpecTelemetry::delta_since`] around each burst.
+    pub telem: SpecTelemetry,
 }
 impl SpecSession {
     /// Context capacity of the session's caches (the server's ContextFull guard).
@@ -2375,6 +2434,7 @@ impl HybridModel {
             draft_ctx: None,
             pending_tok: None,
             turn_ckpt: None,
+            telem: SpecTelemetry::default(),
         })
     }
 
@@ -2643,6 +2703,7 @@ impl HybridModel {
             mut sess_draft_slot,
             mut sess_pending_slot,
             sess_ckpt_slot,
+            mut sess_telem,
         ): (
             &mut Cache,
             &mut MtpScratch,
@@ -2656,6 +2717,7 @@ impl HybridModel {
             Option<&mut Option<DraftGraphCtx>>,
             Option<&mut Option<u32>>,
             Option<&mut Option<SpecCheckpoint>>,
+            Option<&mut SpecTelemetry>,
         ) = match sess.take() {
             Some(sr) => {
                 let SpecSession {
@@ -2669,6 +2731,7 @@ impl HybridModel {
                     draft_ctx,
                     pending_tok,
                     turn_ckpt,
+                    telem,
                 } = sr;
                 (
                     cache,
@@ -2677,6 +2740,7 @@ impl HybridModel {
                     Some(draft_ctx),
                     Some(pending_tok),
                     Some(turn_ckpt),
+                    Some(telem),
                 )
             }
             None => {
@@ -2688,7 +2752,7 @@ impl HybridModel {
                     max_ctx,
                     self.mtp.as_ref().and_then(|m| m.geom.as_ref()),
                 )?;
-                (&mut own_cache, &mut own_scratch, None, None, None, None)
+                (&mut own_cache, &mut own_scratch, None, None, None, None, None)
             }
         };
         let base = cache.pos;
@@ -3653,6 +3717,13 @@ impl HybridModel {
                 last_token = ring_h[cnt];
                 total_drafted += k * m_rounds; // upper bound (p-min breaks uncounted)
                 total_accepted += cnt.saturating_sub(m_rounds);
+                if let Some(t) = sess_telem.as_deref_mut() {
+                    // totals only — the burst's per-round accept counts stayed on device
+                    // (that is the point of the round-stream arm). pos_* untouched.
+                    t.rounds += m_rounds as u64;
+                    t.drafted += (k * m_rounds) as u64;
+                    t.accepted += cnt.saturating_sub(m_rounds) as u64;
+                }
                 round += m_rounds;
                 continue;
             }
@@ -4379,6 +4450,19 @@ impl HybridModel {
             };
             total_drafted += k_round;
             total_accepted += n_acc;
+            if let Some(t) = sess_telem.as_deref_mut() {
+                // per-position accept walk (lane/accept-telemetry): host u64 adds on counts
+                // the round already read back — zero syncs, zero allocation.
+                t.rounds += 1;
+                t.drafted += k_round as u64;
+                t.accepted += n_acc as u64;
+                for j in 0..k_round.min(SPEC_TELEM_POS) {
+                    t.pos_drafted[j] += 1;
+                }
+                for j in 0..n_acc.min(SPEC_TELEM_POS) {
+                    t.pos_accepted[j] += 1;
+                }
+            }
             if spec_stats {
                 st_len_hist[k_round] += 1;
                 for j in 0..k_round {
@@ -5010,5 +5094,68 @@ impl HybridModel {
             );
         }
         Ok((rows, bg))
+    }
+}
+
+#[cfg(test)]
+mod telem_tests {
+    use super::{SpecTelemetry, SPEC_TELEM_POS};
+
+    /// The worker's per-burst pattern: stash, accumulate, diff — the delta must isolate
+    /// exactly the burst's contribution (pool-resumed sessions carry prior requests' counts).
+    #[test]
+    fn delta_isolates_burst_contribution() {
+        let mut t = SpecTelemetry::default();
+        // "previous request": 2 rounds of k=3, accepts 3 then 1.
+        for (kr, na) in [(3usize, 3usize), (3, 1)] {
+            t.rounds += 1;
+            t.drafted += kr as u64;
+            t.accepted += na as u64;
+            for j in 0..kr { t.pos_drafted[j] += 1; }
+            for j in 0..na { t.pos_accepted[j] += 1; }
+        }
+        let before = t;
+        // "this burst": 1 round k=3, accepts 2.
+        t.rounds += 1;
+        t.drafted += 3;
+        t.accepted += 2;
+        for j in 0..3 { t.pos_drafted[j] += 1; }
+        for j in 0..2 { t.pos_accepted[j] += 1; }
+        let d = t.delta_since(&before);
+        assert_eq!((d.rounds, d.drafted, d.accepted), (1, 3, 2));
+        assert_eq!(&d.pos_drafted[..3], &[1, 1, 1]);
+        assert_eq!(&d.pos_accepted[..3], &[1, 1, 0]);
+        assert_eq!(d.pos_drafted[3..], [0; SPEC_TELEM_POS - 3]);
+    }
+
+    /// merge(delta) then merge(delta2) equals accumulating both — the per-model /metrics
+    /// aggregation invariant.
+    #[test]
+    fn merge_accumulates_fieldwise() {
+        let mut agg = SpecTelemetry::default();
+        let mut d1 = SpecTelemetry { rounds: 2, drafted: 6, accepted: 4, ..Default::default() };
+        d1.pos_drafted[0] = 2;
+        d1.pos_accepted[0] = 2;
+        let mut d2 = SpecTelemetry { rounds: 1, drafted: 3, accepted: 1, ..Default::default() };
+        d2.pos_drafted[0] = 1;
+        d2.pos_accepted[0] = 1;
+        d2.pos_drafted[1] = 1;
+        agg.merge(&d1);
+        agg.merge(&d2);
+        assert_eq!((agg.rounds, agg.drafted, agg.accepted), (3, 9, 5));
+        assert_eq!(agg.pos_drafted[0], 3);
+        assert_eq!(agg.pos_accepted[0], 3);
+        assert_eq!(agg.pos_drafted[1], 1);
+        assert_eq!(agg.pos_accepted[1], 0);
+    }
+
+    /// Wrong-snapshot diff saturates to zero instead of wrapping — the counters feed a
+    /// public metrics surface and must never publish a u64-wrapped garbage value.
+    #[test]
+    fn delta_saturates_never_wraps() {
+        let small = SpecTelemetry { rounds: 1, drafted: 2, accepted: 1, ..Default::default() };
+        let big = SpecTelemetry { rounds: 5, drafted: 15, accepted: 9, ..Default::default() };
+        let d = small.delta_since(&big);
+        assert_eq!((d.rounds, d.drafted, d.accepted), (0, 0, 0));
     }
 }

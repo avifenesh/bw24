@@ -1,0 +1,107 @@
+== baseline /metrics (no requests yet — spec block must be ABSENT) ==
+{
+    "admitted": 0,
+    "completed": 0,
+    "tokens_out": 0,
+    "step_p50_ms": 0.0,
+    "step_p99_ms": 0.0,
+    "prompt_tokens_in": 0,
+    "cached_tokens_in": 0,
+    "prefix_cache_hits": 0,
+    "prefix_cache_entries": 0,
+    "prefix_cache_bytes": 0
+}
+== requests: 3 greedy + 2 sampled (t=0.8), varied prompts ==
+-- usage of request 1 (greedy):
+{
+  "prompt_tokens": 20,
+  "completion_tokens": 97,
+  "total_tokens": 117,
+  "prompt_tokens_details": {
+    "cached_tokens": 0
+  },
+  "elapsed_s": 0.569048372,
+  "spec": {
+    "rounds": 33,
+    "drafted": 99,
+    "accepted": 63,
+    "acceptance_rate": 0.6363636363636364
+  }
+}
+-- usage of request 4 (sampled):
+{
+  "prompt_tokens": 20,
+  "completion_tokens": 96,
+  "total_tokens": 116,
+  "prompt_tokens_details": {
+    "cached_tokens": 0
+  },
+  "elapsed_s": 0.537243952,
+  "spec": {
+    "rounds": 36,
+    "drafted": 108,
+    "accepted": 57,
+    "acceptance_rate": 0.5277777777777778
+  }
+}
+== /metrics after 5 spec requests ==
+{
+    "admitted": 5,
+    "completed": 5,
+    "tokens_out": 0,
+    "step_p50_ms": 0.0,
+    "step_p99_ms": 0.0,
+    "prompt_tokens_in": 100,
+    "cached_tokens_in": 0,
+    "prefix_cache_hits": 0,
+    "prefix_cache_entries": 0,
+    "prefix_cache_bytes": 0,
+    "spec": {
+        "q9": {
+            "rounds": 162,
+            "drafted": 486,
+            "accepted": 314,
+            "acceptance_rate": 0.6460905349794238,
+            "tokens_per_round": 2.9382716049382718,
+            "pos_drafted": [
+                162,
+                162,
+                162
+            ],
+            "pos_accepted": [
+                129,
+                105,
+                80
+            ],
+            "accept_rate_per_pos": [
+                0.7962962962962963,
+                0.6481481481481481,
+                0.49382716049382713
+            ]
+        }
+    }
+}
+== serve-smoke (same lock hold — must stay 0 failed) ==
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+serve-smoke: 0 failed
+== done ==

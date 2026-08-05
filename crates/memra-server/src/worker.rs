@@ -73,9 +73,24 @@ pub enum Event {
     /// came from a cache (continuation pool, spec resume, or the cross-request prefix cache)
     /// instead of being computed — the OpenAI `usage.prompt_tokens_details.cached_tokens`
     /// source. ONE source of truth: both counts come off the same rendered-prompt token ids.
-    Done { stop_reason: String, n_tokens: usize, n_prompt: usize, n_cached: usize, elapsed_s: f64 },
+    /// `spec` = THIS request's spec-decode acceptance summary (lane/accept-telemetry) —
+    /// None on non-spec sessions, so the usage surface is byte-identical when spec is off.
+    Done { stop_reason: String, n_tokens: usize, n_prompt: usize, n_cached: usize,
+           elapsed_s: f64, spec: Option<SpecUsage> },
     /// The request could not start (bad model name, ctx full at admit, etc).
     Error(String),
+}
+
+/// Per-request spec-decode acceptance summary (lane/accept-telemetry, 2026-08-05): THIS
+/// request's own rounds/drafted/accepted, diffed off the session telemetry around each burst
+/// (a pool-resumed session carries prior requests' cumulative counts — the diff isolates
+/// this request). Rides `Event::Done` into the response `usage` block as an additive
+/// OpenAI-safe extension field.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpecUsage {
+    pub rounds: u64,
+    pub drafted: u64,
+    pub accepted: u64,
 }
 
 /// A generation request submitted by an HTTP handler to the worker.
@@ -171,6 +186,11 @@ pub struct Metrics {
     pub lane_completed: [u64; 3],
     pub lane_tokens: [u64; 3],
     pub batch_size_last: usize,
+    /// Per-model spec-decode acceptance telemetry (lane/accept-telemetry): cumulative
+    /// since the model loaded — models load once per server process, so these counters
+    /// reset on (re)load/restart, never mid-run. Empty (absent from /metrics) for models
+    /// that never ran a spec burst — zero-cost when spec is off.
+    pub spec: HashMap<String, memra_engine::spec::SpecTelemetry>,
 }
 pub type SharedMetrics = std::sync::Arc<std::sync::Mutex<Metrics>>;
 
@@ -826,8 +846,11 @@ struct Session {
     graph_pending: Option<u32>,
     /// Live acceptance telemetry (hqmtp axis-D): cumulative drafted/accepted across the
     /// session's bursts, logged per burst so serve-regime acceptance-vs-context is measurable.
+    /// THIS REQUEST's counts (0 at admit even on a pool resume) — the `usage.spec` source.
     spec_drafted: usize,
     spec_accepted: usize,
+    /// verify rounds this request ran (lane/accept-telemetry; same per-request semantics).
+    spec_rounds: u64,
     sampler: Sampler,
     last_logits: Vec<f32>,
     /// Token pre-sampled ON DEVICE by the last batched tick (decode_step_batch_sampled) —
@@ -1059,6 +1082,11 @@ pub fn run(
     let mut lane_completed = [0u64; 3];
     let mut lane_tokens = [0u64; 3];
     let mut last_batch = 0usize;
+    // Per-model spec acceptance telemetry (lane/accept-telemetry): worker-owned like every
+    // counter above; published on the same 32nd-tick snapshot AND whenever a spec session
+    // retires (so a one-shot request's counts are visible without waiting 32 ticks).
+    let mut spec_telem: HashMap<String, memra_engine::spec::SpecTelemetry> = HashMap::new();
+    let mut spec_telem_dirty = false;
     // Starvation sentinel (estimator blind spot, 2026-07-26 native-judge battery): last
     // time an interactive session decoded. Interactive work waiting with no interactive
     // decode tick inside the SLO age IS an SLO breach the percentile window can't see.
@@ -1209,7 +1237,7 @@ pub fn run(
         if !batching {
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
-                match step_session(&engine, &loaded, &mut active[i]) {
+                match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
                     Err(err) => {
@@ -1364,7 +1392,7 @@ pub fn run(
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
                 if active[i].spec.is_some() {
-                    match step_session(&engine, &loaded, &mut active[i]) {
+                    match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
                         Ok(true) => {}
                         Ok(false) => finished.push(i),
                         Err(err) => {
@@ -1741,6 +1769,7 @@ pub fn run(
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
             lane_completed[s.lane.idx()] += 1;
+            if s.spec_rounds > 0 { spec_telem_dirty = true; } // force-publish on spec retire
             if let Some(mut sess) = s.spec {
                 // PENDING-CARRY flush before parking: a parked session must be fully committed
                 // (committed_text drives the text-prefix resume match — an uncommitted pending
@@ -1807,9 +1836,12 @@ pub fn run(
         }
         // publish serving metrics (worker owns the counters; axum reads the snapshot).
         // THROTTLED: the per-tick mutex+percentile cost ~1.7ms/token of B=1 TPOT
-        // (2026-07-26 live A/B) — publish every 32nd tick.
+        // (2026-07-26 live A/B) — publish every 32nd tick. A spec-session retire forces
+        // a publish so a one-shot request's acceptance counts land without a 32-tick wait
+        // (retires are per-request, not per-token — no hot-path cost class).
         tick_n = tick_n.wrapping_add(1);
-        if tick_n % 32 == 0 { if let Ok(mut m) = metrics.lock() {
+        if tick_n % 32 == 0 || spec_telem_dirty { if let Ok(mut m) = metrics.lock() {
+            spec_telem_dirty = false;
             m.admitted = n_admitted;
             m.completed = n_completed;
             m.tokens_out = n_tokens_out;
@@ -1825,6 +1857,7 @@ pub fn run(
             m.lane_completed = lane_completed;
             m.lane_tokens = lane_tokens;
             m.batch_size_last = last_batch;
+            m.spec = spec_telem.clone();
         } }
         if !finished.is_empty() && std::env::var("MEMRA_SPILL_STATS").as_deref() == Ok("1") {
             if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
@@ -2416,6 +2449,7 @@ fn admit(
         graph_pending: None,
         spec_drafted: 0,
         spec_accepted: 0,
+        spec_rounds: 0,
         last_logits: seed_logits,
         device_next: None,
         constraint,
@@ -2771,6 +2805,7 @@ fn step_session(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
     s: &mut Session,
+    spec_telem: &mut HashMap<String, memra_engine::spec::SpecTelemetry>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let lm = &loaded[&s.model];
 
@@ -2816,6 +2851,11 @@ fn step_session(
         } else { None };
         // SPEC x CONSTRAINED: greedy constrained bursts carry the grammar hook — verify-side
         // truncation + masked-argmax cut slots (engine contract; sampled never gets here).
+        // Telemetry (lane/accept-telemetry): the session's counters are LIFETIME (a pool
+        // resume carries prior requests' counts), so stash a copy and diff after the burst —
+        // the delta is this burst's contribution, merged per-model for /metrics and summed
+        // per-request for usage.spec.
+        let telem_before = spec.telem;
         let (burst, d, a) = match s.constraint.as_mut() {
             Some(c) => {
                 let mut g = crate::constrained::SpecGrammar::new(c, lm.eos_id);
@@ -2825,6 +2865,9 @@ fn step_session(
             None => lm.model.generate_spec_session_sampled(
                 engine, spec, &suffix, room, k, sampling)?,
         };
+        let telem_delta = spec.telem.delta_since(&telem_before);
+        spec_telem.entry(s.model.clone()).or_default().merge(&telem_delta);
+        s.spec_rounds += telem_delta.rounds;
         s.spec_drafted += d;
         s.spec_accepted += a;
         if d > 0 {
@@ -3063,12 +3106,20 @@ fn finish(s: &Session, reason: StopReason) {
         }
     }
     let reason = format!("{reason:?}");
+    // Per-request spec acceptance summary (lane/accept-telemetry): only when this request
+    // actually ran spec rounds — plain sessions carry None and the usage block is unchanged.
+    let spec = (s.spec_rounds > 0).then(|| SpecUsage {
+        rounds: s.spec_rounds,
+        drafted: s.spec_drafted as u64,
+        accepted: s.spec_accepted as u64,
+    });
     let _ = s.tx.send(Event::Done {
         stop_reason: reason,
         n_tokens: s.generated.len(),
         n_prompt: s.n_prompt,
         n_cached: s.n_cached,
         elapsed_s: elapsed,
+        spec,
     });
 }
 
