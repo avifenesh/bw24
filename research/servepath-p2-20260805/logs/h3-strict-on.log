@@ -1,0 +1,14 @@
+loaded qwen35 (32 layers); steps=16 batch=4
+gate1 seed 0: agreement all 16 steps
+gate1 (B=1 bit-identity vs decode_step_h, 16 steps, 1 seed(s)): PASS
+gate2 seq 0: token DIVERGED from isolated at step 1 FAIL
+gate2 seq 0: token DIVERGED from isolated at step 2 FAIL
+gate2 seq 0: token DIVERGED from isolated at step 3 FAIL
+gate2 seq 0: token DIVERGED from isolated at step 4 FAIL
+gate2 seq 0: token DIVERGED from isolated at step 5 FAIL
+gate2 seq 0: token DIVERGED from isolated at step 6 FAIL
+gate2 seq 0: token DIVERGED from isolated at step 7 FAIL
+gate2 (B=4 vs isolated decode_step_h, 16 steps): FAIL
+gate3b seq 3: sampled stream DIVERGED batched-vs-isolated at step Some(7) FAIL
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): FAIL
+Error: "decode-batch-gate FAILED"

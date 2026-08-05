@@ -1,0 +1,4 @@
+loaded qwen35 (32 layers); steps=96
+gate (session vs generate_graph, 96 tokens): PASS
+perf: session 125.2 tok/s vs eager 128.5 tok/s (-2.6%)
+ALL GREEN: graph-session gate

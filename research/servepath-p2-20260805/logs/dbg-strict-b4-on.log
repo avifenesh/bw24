@@ -1,0 +1,14 @@
+loaded qwen35 (32 layers); steps=32 batch=4
+gate1 seed 0: agreement all 32 steps
+gate1 (B=1 bit-identity vs decode_step_h, 32 steps, 1 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 seq 3: token DIVERGED from isolated at step 8 FAIL
+gate2 seq 3: token DIVERGED from isolated at step 9 FAIL
+gate2 seq 3: token DIVERGED from isolated at step 10 FAIL
+gate2 seq 3: token DIVERGED from isolated at step 11 FAIL
+gate2 seq 3: token DIVERGED from isolated at step 12 FAIL
+gate2 seq 3: token DIVERGED from isolated at step 13 FAIL
+gate2 seq 3: token DIVERGED from isolated at step 14 FAIL
+gate2 (B=4 vs isolated decode_step_h, 32 steps): FAIL
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+Error: "decode-batch-gate FAILED"

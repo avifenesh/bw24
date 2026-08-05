@@ -1,0 +1,76 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "m": 33 layers, eos=248046
+[worker] m: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] m: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8188
+[meter] admit id=chatcmpl-710960afb62118f5b85239d5955ddc20 tenant=default lane=interactive model="m"
+[worker] observed session VRAM cost for "m": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model m)
+[meter] admit id=chatcmpl-91276acdf5ee68746307cf7d1b98e716 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-00c347a9fc0d638090b00d8b87c63149 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-ab222b20a1449239479f281a68836f96 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-7ca4bf3ad920c8749bcd446daf44af15 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-2316f0dea7c0fdaafd91207fbab5877e tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-cb53e4e85704ce110cf7a78115b93be2 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-f78ed3a80e084d4df26582133262fc48 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-b8911b33442d383c6ebed4c46b80ddf4 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-dae936be7e47a61694bf6e4525af4531 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-ba8d183e0cef142d09d0599b76a72f74 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-a8cc770c9a8d8f1d57430d62bc81c7ef tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-6d0f5ebeefe9f81cfe5404268d899a4f tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-099e836fc711b0f9d9a9e57c74276a7a tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-b9d855bb624b0b48d2e3e50831347ac5 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-779461a57b9ded46812ae14d6ee6f950 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-0b7f724bc0b36053d7cb21e62697e89e tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-4caf95fbb135aa518b580ca93bdabfd7 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-442bc50c41041a97156593eebd94326b tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-f9d6192957b65b3e257db8d2dc863c5a tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-7b97c128cdd662dfe3d93b53e582b02b tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-e5e56110ef2cf3d7aec52f527313cd3f tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-2d82b289b65112a3c7509218b8ffb7a7 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-0460a4798fcdb77ab7c45972de0e0767 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-d102019f171635e41018187626bd8c80 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-2e12348710a260e5dfbf1e9d3ac587ca tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-353ad12cec1d50491bd28d54d39f8bb2 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-c689875f616995e838e868c801c04845 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-6f1ab322c5ea1cbc1fe69e3ec2d12a69 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-5012fce961ca0921b163eddb60755021 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-2de69eff68c72634a1d343a5a0a257f2 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-5864b6d47932203a49c24a5c72ed2189 tenant=default lane=interactive model="m"
+[meter] admit id=chatcmpl-e374ada461e0e77a3a462270019fc952 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
