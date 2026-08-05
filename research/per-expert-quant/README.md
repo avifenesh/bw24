@@ -4,9 +4,10 @@ This lane owns two deliverables: spill-path improvements for large expert banks 
 five-arm quantization study. Every retained routed expert is quantized; there is no BF16 expert
 evaluation arm or BF16 expert fallback. Model loading, CUDA correctness, artifact generation,
 research measurement, calibration, and public evaluation happen on the provisioned G7e machine.
-The local RTX 5090 rig remains bw24's deployment and final performance target; runtime defaults are
-not flipped until the completed code and artifacts pass the same correctness, memory, and throughput
-gates there.
+The local RTX 5090 rig remains this lane's default-flip gate: runtime defaults are not flipped until
+the completed code and artifacts pass the same correctness, memory, and throughput gates there.
+(The *deployment* target moved — owner override 2026-08-03 makes RTX PRO 6000 Blackwell class the
+owned trajectory and the local 5090 Laptop a proof rig; see `docs/PRODUCT-TRUTH.md` §3.)
 
 Mmap remains the default and correctness fallback, not the throughput endpoint. The cold G7e result
 and bounded explicit-read promotion probe are recorded in

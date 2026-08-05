@@ -6,6 +6,12 @@ inline). Companion research (NOT re-covered here): OpenRouter application study
 `research/hf-inference-20260804/ASSESSMENT.md` (org/cards/Space now, Providers program
 later, condition-gated).
 
+> **Naming note (2026-08-05).** `darklanes` in this file means the **serving product** —
+> that use is settled. It does **not** name the lab or the research programme: the parent
+> lab name is an open owner decision (`docs/PRODUCT-TRUTH.md` §11, options in
+> `research/darklanes-website-spec-20260804/SPEC.md` §5A), and engine/research work is
+> credited to **memra**. Do not write "darklanes lab" or "darklanes doctrine".
+
 Product being placed: **darklanes** — GPU inference on memra, receipts/determinism
 positioning (bit-audited kernels, seeded sampling, batch-invariant routing), q27-class
 SKU, OpenAI-compatible API (serve surface complete per v0.69.0 "OR-listing surface
@@ -294,7 +300,8 @@ outputs are non-deterministic" (braintrust.dev/articles/llm-evaluation-metrics-g
 (2025) made batch-variance the canonical explanation of why temp=0 still isn't
 reproducible on hosted endpoints; academic follow-ups measured it (EVAL4NLP 2025).
 
-darklanes' receipt that maps onto this narrative **exactly**: the concat-prime-exact
+The engine receipt that maps onto this narrative **exactly** (memra's work, carried by the
+serving product): the concat-prime-exact
 work (merge b3a5465f, `research/concat-prime-exact-20260802/findings.jsonl`) found and
 fixed batch-composition-dependent MoE expert selection (121/760 (layer,token) pairs
 flipped experts with batch size) and shipped m-invariant router twins — i.e.

@@ -283,7 +283,7 @@ assumed at 3 yr, A100-arc-informed).
 ### 4.4 Used 8x H100 SXM server (~$120k est: 8x$11.5k modules + platform, quote-gated)
 640 GB, NVLink, 26.8 TB/s -> ~1,200 tok/s (~$4.75/hr): 4 hy3 PP-2 replicas — the best
 **clean/legal $/Mtok at scale** ($2.57 at 30% util) and the direct continuation of our
-Mumbai/darklanes receipts. But: one purchase = 4-5 small boxes (violates the incremental
+Mumbai/rented-fleet receipts. But: one purchase = 4-5 small boxes (violates the incremental
 doctrine's risk sizing), 5.9-6.5 kW = colo-only ($900-1,600/mo committed-kW), platform
 price is quote-gated (the $120k is an estimate, flagged), and Meta's fleet data says H100
 HBM3 is the dominant failure mode at scale (419 interruptions/54 days on 16,384 GPUs, half

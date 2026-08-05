@@ -6,7 +6,16 @@
 > measurement is SELF-COMPETITION: new binary vs our own baseline binary, same-session
 > interleaved, same window rules below (the A/B protocol now pairs memra-vs-memra).
 > Ratios vs the frozen llama rows carry a stated non-interleaved caveat and are context,
-> not verdicts. Deployment target: q27 on 2x desktop 5090 — beat our own numbers.
+> not verdicts.
+>
+> **Rig/target correction (2026-08-05).** This file's title rig — RTX 5090 Laptop — is the
+> **measuring and gating** rig (and the only owned GPU). The *deployment* target is no
+> longer "q27 on 2x desktop 5090": the 2026-08-03 owner override makes **RTX PRO 6000
+> Blackwell class, homogeneous** the owned trajectory, and 2x5090 survives only as a
+> **rented measurement platform** and small-SKU shape reference. First-SKU prod numbers are
+> measured on rented PRO 6000 pods and live in `docs/PRODUCT-TRUTH.md` §2.1/§3 — never mix
+> them with a 5090 cell (188 SM vs 82 SM). Self-competition still means "beat our own
+> numbers"; just not on the card this title names.
 
 Goal (user): beat **vLLM + SGLang + llama.cpp** on **prefill, decode, AND overall**.
 Box: RTX 5090 Laptop sm_120, gpu-full-power on. Model: Qwen3.5-9B Q8_0 (8.86 GiB, hybrid arch).

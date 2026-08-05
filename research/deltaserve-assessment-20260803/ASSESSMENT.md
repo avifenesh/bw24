@@ -1,4 +1,4 @@
-# DeltaServe assessment — idle-capacity LoRA co-serving, transfer to memra/darklanes
+# DeltaServe assessment — idle-capacity LoRA co-serving, transfer to memra and the serving product
 
 Date: 2026-08-03. Sources read in full (not abstracts): arXiv paper HTML + both GitHub repos.
 
@@ -108,7 +108,7 @@ Caveats on their evidence: one model size (8B), short traces (1-20 min), no p99 
 no diurnal-scale eval, and LLMStation/FlexLLM comparisons are partly qualitative (FlexLLM
 is not in the measured baselines). The 2.9x headline is against LLMStation on one trace.
 
-## 3. Transfer to memra / darklanes
+## 3. Transfer to memra and the serving product
 
 memra has **no LoRA support at all** (grep of `src/` — zero hits), no multi-LoRA batching,
 no autograd, and serves **GGUF-quantized** weights through hand-written kernels. So the
@@ -130,7 +130,7 @@ the one we don't have.
   inference steps, and no activation hooks in the serving forward — only gap detection in
   the serve loop plus the preemptible subprocess.
 - **The economics claim itself**: on the Nutanix trace, harvesting beat a *dedicated
-  training GPU* by 39% at zero extra hardware. That is exactly the darklanes "GPUs pay for
+  training GPU* by 39% at zero extra hardware. That is exactly the lab's "GPUs pay for
   themselves" shape.
 
 **vLLM-specific / non-transferable plumbing:**
@@ -170,7 +170,7 @@ traffic exists — but it is their trace, not ours.
 **What our fine-tune track actually needs:** the gated track is SFT distillation of a 35B.
 Distillation splits into (a) *data generation* — teacher/student sampling, which is
 **inference-shaped** and needs zero training machinery — and (b) *gradient steps*. The
-darklanes doctrine already routes research jobs ("data gen, distillation, evals, drafter
+lab's operating doctrine already routes research jobs ("data gen, distillation, evals, drafter
 builds") as tenant #1 of the harvest lane and rents dedicated windows for gradient
 training. DeltaServe's mechanism only adds value for (b), and (b) on a 32GB 5090 already
 serving a big quantized model is VRAM-starved before it is compute-starved.
@@ -217,7 +217,7 @@ conflicts with the isolation contract.
   dedicated RTX 5090 install path in README.
 - DeltaZip collision: arXiv 2312.05215v3 (abstract via arXiv API) + `xiaozheyao/.deltaserve`.
 - memra context: `/home/avifenesh/projects/bw24/docs/SERVING.md` (isolation contract,
-  VRAM-aware admission, fleet numbers), `src/` grep (no LoRA), darklanes operating-model
+  VRAM-aware admission, fleet numbers), `src/` grep (no LoRA), the lab operating-model
   memory (harvest-lane doctrine, SKU rule).
 - Not verified: LLMStation and FlexLLM papers were not fetched directly; their mechanisms
   are characterized here as DeltaServe's paper describes them.
