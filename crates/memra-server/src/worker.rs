@@ -342,6 +342,20 @@ const FP_WINDOW: usize = 8;
 /// conversation); nominating on it would cross-link unrelated conversations into one session.
 const FP_MIN_SEGMENTS: usize = 3;
 
+/// ROLLBACK SEAM (flags doctrine: the winner is the default; this exists to *disable* it).
+/// `MEMRA_AFFINITY=0` makes the affinity probe decline every candidate, so admit falls back to
+/// the pre-lane behavior: prefix probes only, cold full prime on a rewritten history.
+///
+/// This is not a tuning knob — it is the exactness A/B arm. The byte-identity gate
+/// (`research/session-affinity-20260805/`) runs the SAME conversation twice, once resuming and
+/// once with `MEMRA_AFFINITY=0`, and requires identical per-turn `text_sha`. Disabling the pool
+/// outright (`MEMRA_REUSE_POOL=0`) would be a different comparison: it also drops the
+/// token/text-prefix resumes, so a divergence could not be attributed to affinity.
+fn affinity_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MEMRA_AFFINITY").map(|v| v != "0").unwrap_or(true))
+}
+
 /// FNV-1a over a token stream — a stable, allocation-free 64-bit mix. (Not a cryptographic
 /// hash and does not need to be: a collision costs one wasted exact-diff probe, never a
 /// wrong resume, and the pool it indexes is already tenant-scoped.)
@@ -1752,10 +1766,15 @@ pub fn run(
                     let fingerprint = conversation_fingerprint(
                         toks, &|t| tok.token_is_control(t), false);
                     let pool = spec_reuse.entry(pool_key).or_default();
-                    if pool.len() >= reuse_pool_per_model() { pool.remove(0); }
-                    pool.push(SpecReuseEntry {
-                        sess, committed_text, affinity: s.affinity, fingerprint,
-                    });
+                    // cap 0 = pooling off: park NOTHING. (Was an unguarded `pool.remove(0)`,
+                    // which panicked the worker thread on the first retire at cap 0 — index 0
+                    // of an empty vec. Found while wiring the affinity gate's control arm.)
+                    while pool.len() >= reuse_pool_per_model().max(1) { pool.remove(0); }
+                    if reuse_pool_per_model() > 0 {
+                        pool.push(SpecReuseEntry {
+                            sess, committed_text, affinity: s.affinity, fingerprint,
+                        });
+                    }
                 }
             } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
                 if let Some(cache) = s.cache {
@@ -1773,11 +1792,15 @@ pub fn run(
                     };
                     if !last_logits.is_empty() {
                         let pool = reuse.entry(pool_key).or_default();
-                        if pool.len() >= reuse_pool_per_model() { pool.remove(0); } // LRU: oldest first
+                        // LRU: oldest first. cap 0 = pooling off, park nothing (see the spec
+                        // pool above — the unguarded remove(0) panicked at cap 0).
+                        while pool.len() >= reuse_pool_per_model().max(1) { pool.remove(0); }
                         let cap = cache.max_ctx;
-                        pool.push(ReuseEntry {
-                            fed: s.fed, cache, last_logits, cap,
-                        });
+                        if reuse_pool_per_model() > 0 {
+                            pool.push(ReuseEntry {
+                                fed: s.fed, cache, last_logits, cap,
+                            });
+                        }
                     }
                 }
             }
@@ -2136,6 +2159,7 @@ fn admit(
             // Requires: a retained checkpoint, cache room, the prompt matching
             // committed[..rewind_pos] EXACTLY, and a non-empty remaining suffix (a rewound
             // session has no next_pred/pending — nothing to continue from).
+            if !affinity_enabled() { return None; }
             let req_fp = conversation_fingerprint(
                 &prompt, &|t| lm.tok.token_is_control(t), true);
             // F5 INTERACTION (evict-first + right-size ladder, research/specpool-20260804):
