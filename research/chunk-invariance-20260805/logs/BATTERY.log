@@ -1,0 +1,52 @@
++ M9=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
++ D=research/chunk-invariance-20260805
++ echo '=== kernel-check ==='
+=== kernel-check ===
++ timeout 3600 ./target/release/kernel-check /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
++ echo 'kc rc=0'
+kc rc=0
++ tail -5 research/chunk-invariance-20260805/logs/BATT-kernel-check.log
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+
+ALL GREEN: kernels match CPU reference.
++ echo '=== run-gen argmax (9B) ==='
+=== run-gen argmax (9B) ===
++ MEMRA_NGEN=32
++ MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt
++ timeout 900 ./target/release/run-gen /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
++ echo 'rg rc=0'
+rg rc=0
++ tail -4
++ grep -E 'argmax=|MATCH|MISMATCH' research/chunk-invariance-20260805/logs/BATT-run-gen-9b.log
+prefill argmax=760  decode argmax=760  logit maxdiff=9.425e-1  MATCH
+batched-prime argmax=760  tokenwise argmax=760  logit maxdiff=9.361e-1  MATCH
++ echo '=== gate: default (expect-variant) ==='
+=== gate: default (expect-variant) ===
++ tools/chunk-invariance-gate.sh
++ echo 'gate rc=0'
+gate rc=0
++ tail -3 research/chunk-invariance-20260805/logs/BATT-gate-default.log
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-OaEpIr.log)
++ echo '=== gate: canary (must have teeth) ==='
+=== gate: canary (must have teeth) ===
++ tools/chunk-invariance-gate.sh --canary
++ echo 'canary rc=0'
+canary rc=0
++ tail -3 research/chunk-invariance-20260805/logs/BATT-gate-canary.log
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/chunkinv-gate-sW5zYu.log)
++ echo '=== gate: expect-invariant (the door) ==='
+=== gate: expect-invariant (the door) ===
++ tools/chunk-invariance-gate.sh --expect-invariant
++ echo 'inv rc=0'
+inv rc=0
++ tail -3 research/chunk-invariance-20260805/logs/BATT-gate-invariant.log
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-UyxkV5.log)
+EXIT=0

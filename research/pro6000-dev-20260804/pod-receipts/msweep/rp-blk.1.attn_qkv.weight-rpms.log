@@ -1,0 +1,10 @@
+repack roundtrip: 0 mismatched bytes of 29491200
+weight blk.1.attn_qkv.weight [NVFP4] in_f=5120 out_f=10240 row_bytes=2880 copies=8 variant=rpms
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=1 (b2): 24.55 us/call  (24.55 us/token)  bit-bad=0 bit-exact-bad=0
+  m=2 (b2): 24.57 us/call  (12.28 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 24.16 us/call  (8.05 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 24.57 us/call  (6.14 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 27.16 us/call  (5.43 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 28.73 us/call  (4.79 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 34.50 us/call  (4.31 us/token)  bit-bad=0 bit-exact-bad=0

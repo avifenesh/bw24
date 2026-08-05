@@ -1,0 +1,10 @@
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   31 tok in 0.229s = 135.16 tok/s (gen-only; this run's prime 0.007s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924]
+
+[generate_spec K=1] 32 tok in 0.184s = 168.21 tok/s (1.24x vs generate; this run's prime 0.007s)
+  acceptance: 15/17 = 88.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

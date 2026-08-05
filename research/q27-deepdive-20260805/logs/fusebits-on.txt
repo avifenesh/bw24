@@ -1,0 +1,10 @@
+OUTPUT TEXT: "\n=== FILE: crates/bw24-engine/src/cache.rs ===\n//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-LLM (Stage-2):\n//! - Growing KV cache for full-attention layers (full-attn), kept on GPU, appended in place.\n//! arch (PHASE1-HYBRID.md §3), GPU-LLM (Stage-2):\n//! - Growing KV cache for full-Rust (Stage-2):\n//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).\n"
+--- generated text ---
+
+=== FILE: crates/bw24-engine/src/cache.rs ===
+//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-LLM (Stage-2):
+//! - Growing KV cache for full-attention layers (full-attn), kept on GPU, appended in place.
+//! arch (PHASE1-HYBRID.md §3), GPU-LLM (Stage-2):
+//! - Growing KV cache for full-Rust (Stage-2):
+//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).
+

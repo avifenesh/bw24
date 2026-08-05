@@ -1,0 +1,53 @@
+[22:20:53Z] argmax-mr1 rc=0 | MATCH MATCH 
+[22:21:05Z] spec-k1-mr1 rc=0 | [generate_spec K=1] 128 tok in 1.061s = 119.74 tok/s | self-consistency: PASS
+[22:21:17Z] spec-k2-mr1 rc=0 | [generate_spec K=2] 128 tok in 0.820s = 154.92 tok/s | self-consistency: PASS
+[22:21:29Z] spec-k3-mr1 rc=0 | [generate_spec K=3] 128 tok in 0.760s = 167.18 tok/s | self-consistency: PASS
+[22:21:29Z] speck3 auto r1 pre: 51, 2872 MHz, 111.80 W
+[22:21:41Z] speck3 auto r1 post rc=0: 56, 2872 MHz, 342.75 W | [generate_spec K=3] 128 tok in 0.760s = 167.21 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[22:21:41Z] speck3 mr1 r1 pre: 56, 2872 MHz, 342.75 W
+[22:21:53Z] speck3 mr1 r1 post rc=0: 53, 2872 MHz, 423.31 W | [generate_spec K=3] 128 tok in 0.759s = 167.27 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[22:21:53Z] speck3 mr1rp r1 pre: 53, 2872 MHz, 423.31 W
+[22:22:05Z] speck3 mr1rp r1 post rc=0: 54, 2827 MHz, 117.16 W | [generate_spec K=3] 128 tok in 0.763s = 166.36 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[22:22:05Z] speck4 auto r1 pre: 54, 2827 MHz, 117.16 W
+[22:22:17Z] speck4 auto r1 post rc=0: 55, 2857 MHz, 399.46 W | [generate_spec K=4] 128 tok in 0.756s = 168.08 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[22:22:17Z] speck4 mr1 r1 pre: 55, 2857 MHz, 399.46 W
+[22:22:29Z] speck4 mr1 r1 post rc=0: 55, 2805 MHz, 119.68 W | [generate_spec K=4] 128 tok in 0.757s = 167.69 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[22:22:29Z] speck4 mr1rp r1 pre: 55, 2805 MHz, 119.68 W
+[22:22:41Z] speck4 mr1rp r1 post rc=0: 55, 2857 MHz, 118.88 W | [generate_spec K=4] 128 tok in 0.743s = 170.93 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[22:22:41Z] speck5 auto r1 pre: 55, 2857 MHz, 118.88 W
+[22:22:52Z] speck5 auto r1 post rc=0: 56, 2865 MHz, 330.77 W | [generate_spec K=5] 128 tok in 0.787s = 161.39 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[22:22:53Z] speck5 mr1 r1 pre: 56, 2865 MHz, 330.77 W
+[22:23:04Z] speck5 mr1 r1 post rc=0: 64, 2865 MHz, 118.51 W | [generate_spec K=5] 128 tok in 0.786s = 161.49 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[22:23:04Z] speck5 mr1rp r1 pre: 56, 2865 MHz, 118.51 W
+[22:23:16Z] speck5 mr1rp r1 post rc=0: 58, 2842 MHz, 222.55 W | [generate_spec K=5] 128 tok in 0.778s = 163.26 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[22:23:16Z] speck6 auto r1 pre: 58, 2842 MHz, 222.55 W
+[22:23:28Z] speck6 auto r1 post rc=0: 57, 2865 MHz, 349.48 W | [generate_spec K=6] 128 tok in 0.802s = 158.33 tok/s | acceptance: 91/222 = 41.0% | self-consistency: PASS
+[22:23:28Z] speck6 mr1 r1 pre: 57, 2865 MHz, 349.48 W
+[22:23:40Z] speck6 mr1 r1 post rc=0: 57, 2797 MHz, 375.56 W | [generate_spec K=6] 128 tok in 0.788s = 161.12 tok/s | acceptance: 91/222 = 41.0% | self-consistency: PASS
+[22:23:40Z] speck6 mr1rp r1 pre: 57, 2797 MHz, 375.56 W
+[22:23:52Z] speck6 mr1rp r1 post rc=0: 57, 2812 MHz, 490.55 W | [generate_spec K=6] 128 tok in 0.801s = 158.64 tok/s | acceptance: 91/222 = 41.0% | self-consistency: PASS
+[22:23:52Z] speck3 auto r2 pre: 57, 2865 MHz, 490.55 W
+[22:24:04Z] speck3 auto r2 post rc=0: 57, 2857 MHz, 265.22 W | [generate_spec K=3] 128 tok in 0.760s = 167.00 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[22:24:04Z] speck3 mr1 r2 pre: 57, 2857 MHz, 265.22 W
+[22:24:16Z] speck3 mr1 r2 post rc=0: 61, 2827 MHz, 342.18 W | [generate_spec K=3] 128 tok in 0.761s = 166.86 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[22:24:16Z] speck3 mr1rp r2 pre: 61, 2865 MHz, 342.18 W
+[22:24:28Z] speck3 mr1rp r2 post rc=0: 58, 2865 MHz, 126.98 W | [generate_spec K=3] 128 tok in 0.764s = 166.17 tok/s | acceptance: 85/135 = 63.0% | self-consistency: PASS
+[22:24:28Z] speck4 auto r2 pre: 58, 2865 MHz, 126.98 W
+[22:24:40Z] speck4 auto r2 post rc=0: 59, 2865 MHz, 232.99 W | [generate_spec K=4] 128 tok in 0.757s = 167.80 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[22:24:40Z] speck4 mr1 r2 pre: 59, 2865 MHz, 232.99 W
+[22:24:52Z] speck4 mr1 r2 post rc=0: 58, 2865 MHz, 334.40 W | [generate_spec K=4] 128 tok in 0.757s = 167.84 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[22:24:52Z] speck4 mr1rp r2 pre: 58, 2865 MHz, 151.94 W
+[22:25:04Z] speck4 mr1rp r2 post rc=0: 59, 2827 MHz, 332.89 W | [generate_spec K=4] 128 tok in 0.743s = 170.86 tok/s | acceptance: 89/160 = 55.6% | self-consistency: PASS
+[22:25:04Z] speck5 auto r2 pre: 59, 2827 MHz, 332.89 W
+[22:25:17Z] speck5 auto r2 post rc=0: 59, 2865 MHz, 120.43 W | [generate_spec K=5] 128 tok in 0.787s = 161.41 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[22:25:17Z] speck5 mr1 r2 pre: 59, 2865 MHz, 120.43 W
+[22:25:29Z] speck5 mr1 r2 post rc=0: 59, 2865 MHz, 214.53 W | [generate_spec K=5] 128 tok in 0.786s = 161.48 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[22:25:29Z] speck5 mr1rp r2 pre: 59, 2865 MHz, 214.53 W
+[22:25:41Z] speck5 mr1rp r2 post rc=0: 59, 2797 MHz, 122.50 W | [generate_spec K=5] 128 tok in 0.783s = 162.24 tok/s | acceptance: 91/195 = 46.7% | self-consistency: PASS
+[22:25:41Z] speck6 auto r2 pre: 59, 2797 MHz, 122.50 W
+[22:25:53Z] speck6 auto r2 post rc=0: 58, 2842 MHz, 235.05 W | [generate_spec K=6] 128 tok in 0.788s = 161.11 tok/s | acceptance: 91/222 = 41.0% | self-consistency: PASS
+[22:25:53Z] speck6 mr1 r2 pre: 58, 2842 MHz, 235.05 W
+[22:26:05Z] speck6 mr1 r2 post rc=0: 59, 2797 MHz, 329.66 W | [generate_spec K=6] 128 tok in 0.792s = 160.35 tok/s | acceptance: 91/222 = 41.0% | self-consistency: PASS
+[22:26:05Z] speck6 mr1rp r2 pre: 59, 2797 MHz, 329.66 W
+[22:26:17Z] speck6 mr1rp r2 post rc=0: 59, 2865 MHz, 168.65 W | [generate_spec K=6] 128 tok in 0.801s = 158.64 tok/s | acceptance: 91/222 = 41.0% | self-consistency: PASS
+[22:26:17Z] SWEEP_D_DONE

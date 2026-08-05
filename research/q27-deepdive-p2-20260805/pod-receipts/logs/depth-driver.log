@@ -1,0 +1,9 @@
+[11:07:29Z] arm nv-trim-K5 done: 192 spec-acc lines | 62, 1807 MHz
+[11:08:39Z] arm nv-full-K5 done: 192 spec-acc lines | 71, 1185 MHz
+[11:09:55Z] arm q8-trim-K4 done: 192 spec-acc lines | 76, 690 MHz
+[11:11:15Z] arm q8-full-K4 done: 192 spec-acc lines | 77, 855 MHz
+[11:12:36Z] arm q8-full-K4-b done: 192 spec-acc lines | 78, 802 MHz
+[11:13:52Z] arm q8-trim-K4-b done: 192 spec-acc lines | 78, 1830 MHz
+[11:15:03Z] arm nv-full-K5-b done: 192 spec-acc lines | 77, 1365 MHz
+[11:16:09Z] arm nv-trim-K5-b done: 192 spec-acc lines | 76, 2385 MHz
+[11:16:09Z] DEPTH_DONE

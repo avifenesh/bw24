@@ -1,0 +1,11 @@
+rc=0 blk.1.attn_qkv.weight mr2
+rc=0 blk.1.attn_qkv.weight mr1
+rc=0 blk.1.attn_gate.weight mr2
+rc=0 blk.1.attn_gate.weight mr1
+rc=0 blk.1.ffn_gate.weight mr2
+rc=0 blk.1.ffn_gate.weight mr1
+rc=0 blk.1.ffn_down.weight mr2
+rc=0 blk.1.ffn_down.weight mr1
+rc=0 blk.1.ssm_out.weight mr2
+rc=0 blk.1.ssm_out.weight mr1
+M1_SWEEP_DONE

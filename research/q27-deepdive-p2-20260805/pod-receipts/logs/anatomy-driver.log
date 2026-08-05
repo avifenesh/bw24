@@ -1,0 +1,28 @@
+[10:36:31Z] econ nv start: 37, 22 MHz, 21.82 W
+[10:36:50Z] econ nv rc=0: 48, 2872 MHz, 114.41 W
+[10:37:09Z] econ q8 rc=0: 55, 2865 MHz, 116.49 W
+[10:37:23Z] phase nv K=3 r1 rc=0 spec-phase] draft=224.3ms (15.3%) verify-issue=285.5ms (19.5%) verify-wait=912.9ms (62.3%) commit-host=42.0ms (2.9%) rounds=82
+[10:37:37Z] phase nv K=4 r1 rc=0 spec-phase] draft=274.4ms (17.7%) verify-issue=285.1ms (18.4%) verify-wait=945.0ms (61.1%) commit-host=42.2ms (2.7%) rounds=76
+[10:37:51Z] phase nv K=5 r1 rc=0 spec-phase] draft=312.1ms (20.2%) verify-issue=290.2ms (18.8%) verify-wait=898.1ms (58.3%) commit-host=41.1ms (2.7%) rounds=70
+[10:38:05Z] phase nv K=6 r1 rc=0 spec-phase] draft=370.7ms (22.4%) verify-issue=307.7ms (18.6%) verify-wait=931.6ms (56.4%) commit-host=43.1ms (2.6%) rounds=70
+[10:38:17Z] phase q8 K=3 r1 rc=0 spec-phase] draft=102.8ms (5.4%) verify-issue=324.1ms (17.1%) verify-wait=1427.1ms (75.3%) commit-host=41.1ms (2.2%) rounds=79
+[10:38:29Z] phase q8 K=4 r1 rc=0 spec-phase] draft=123.2ms (6.6%) verify-issue=452.5ms (24.4%) verify-wait=1242.0ms (66.9%) commit-host=39.2ms (2.1%) rounds=72
+[10:38:41Z] phase q8 K=5 r1 rc=0 spec-phase] draft=141.0ms (7.8%) verify-issue=449.1ms (24.9%) verify-wait=1177.8ms (65.2%) commit-host=39.2ms (2.2%) rounds=67
+[10:38:53Z] phase q8 K=6 r1 rc=0 spec-phase] draft=153.3ms (8.8%) verify-issue=446.0ms (25.6%) verify-wait=1101.7ms (63.3%) commit-host=38.1ms (2.2%) rounds=62
+[10:39:05Z] phase q8 K=3 r2 rc=0 spec-phase] draft=103.0ms (5.4%) verify-issue=324.6ms (17.1%) verify-wait=1428.7ms (75.3%) commit-host=41.1ms (2.2%) rounds=79
+[10:39:17Z] phase q8 K=4 r2 rc=0 spec-phase] draft=123.0ms (6.6%) verify-issue=453.4ms (24.4%) verify-wait=1243.5ms (66.9%) commit-host=39.7ms (2.1%) rounds=72
+[10:39:29Z] phase q8 K=5 r2 rc=0 spec-phase] draft=141.3ms (7.8%) verify-issue=449.5ms (24.8%) verify-wait=1178.9ms (65.2%) commit-host=39.1ms (2.2%) rounds=67
+[10:39:41Z] phase q8 K=6 r2 rc=0 spec-phase] draft=154.0ms (8.8%) verify-issue=446.9ms (25.7%) verify-wait=1103.4ms (63.3%) commit-host=37.6ms (2.2%) rounds=62
+[10:39:55Z] phase nv K=3 r2 rc=0 spec-phase] draft=224.3ms (15.3%) verify-issue=286.0ms (19.5%) verify-wait=916.7ms (62.4%) commit-host=42.2ms (2.9%) rounds=82
+[10:40:09Z] phase nv K=4 r2 rc=0 spec-phase] draft=274.1ms (17.7%) verify-issue=285.7ms (18.4%) verify-wait=946.6ms (61.1%) commit-host=42.6ms (2.8%) rounds=76
+[10:40:23Z] phase nv K=5 r2 rc=0 spec-phase] draft=312.0ms (20.2%) verify-issue=292.3ms (18.9%) verify-wait=898.9ms (58.2%) commit-host=41.3ms (2.7%) rounds=70
+[10:40:37Z] phase nv K=6 r2 rc=0 spec-phase] draft=371.0ms (22.4%) verify-issue=308.2ms (18.6%) verify-wait=933.2ms (56.4%) commit-host=43.0ms (2.6%) rounds=70
+[10:40:51Z] phase nv K=3 r3 rc=0 spec-phase] draft=223.7ms (15.3%) verify-issue=286.3ms (19.5%) verify-wait=912.9ms (62.3%) commit-host=42.7ms (2.9%) rounds=82
+[10:41:05Z] phase nv K=4 r3 rc=0 spec-phase] draft=274.9ms (17.8%) verify-issue=285.3ms (18.4%) verify-wait=945.5ms (61.1%) commit-host=41.8ms (2.7%) rounds=76
+[10:41:19Z] phase nv K=5 r3 rc=0 spec-phase] draft=312.2ms (20.2%) verify-issue=289.6ms (18.8%) verify-wait=899.1ms (58.3%) commit-host=41.0ms (2.7%) rounds=70
+[10:41:33Z] phase nv K=6 r3 rc=0 spec-phase] draft=371.2ms (21.9%) verify-issue=360.0ms (21.2%) verify-wait=920.7ms (54.3%) commit-host=42.9ms (2.5%) rounds=70
+[10:41:45Z] phase q8 K=3 r3 rc=0 spec-phase] draft=103.2ms (5.4%) verify-issue=324.6ms (17.1%) verify-wait=1428.8ms (75.3%) commit-host=41.1ms (2.2%) rounds=79
+[10:41:57Z] phase q8 K=4 r3 rc=0 spec-phase] draft=123.4ms (6.6%) verify-issue=453.1ms (24.4%) verify-wait=1243.4ms (66.9%) commit-host=39.4ms (2.1%) rounds=72
+[10:42:09Z] phase q8 K=5 r3 rc=0 spec-phase] draft=141.3ms (7.8%) verify-issue=449.8ms (24.9%) verify-wait=1179.0ms (65.2%) commit-host=39.2ms (2.2%) rounds=67
+[10:42:22Z] phase q8 K=6 r3 rc=0 spec-phase] draft=153.6ms (8.8%) verify-issue=446.8ms (25.6%) verify-wait=1103.7ms (63.4%) commit-host=37.9ms (2.2%) rounds=62
+[10:42:22Z] ANATOMY_DONE: 67, 2857 MHz, 131.55 W

@@ -1,0 +1,6 @@
+== pod-tree quote verification (7ac05f54) ==
+crates/memra-engine/cu/mmq_nvfp4_w4a8.cu:829:    const float4 xi = i0 < ne00 ? x4[(i01 * s01 + i00) / 4] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+crates/memra-engine/cu/mmq_q8_0.cu:418:    const float4 xi = i0 < ne00 ? x4[(i01 * s01 + i00) / 4] : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+867:    return (size_t) (nblocks + MMQ_X) * sizeof(block_q8_1_mmq);
+95:  args.problem_shape = cute::make_shape(m, n, k, 1);
+299:                if (j > j_max) { continue; }

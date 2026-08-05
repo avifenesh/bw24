@@ -265,6 +265,60 @@ pub struct SpecSampling {
     pub penalty_present: f32,
 }
 
+/// Tracked draft positions for [`SpecTelemetry`] (serve K defaults to 3; the run-spec gate
+/// sweeps K=1..8, and MEMRA_SPEC_CAPMAX defaults to 7 — 8 covers every tuned config).
+pub const SPEC_TELEM_POS: usize = 8;
+
+/// Always-on per-draft-position acceptance telemetry (lane/accept-telemetry, 2026-08-05 —
+/// the llama.cpp #26389 / vLLM spec-decode counter schema, upstream-sweeps 2026-08-05).
+/// Lives on the [`SpecSession`] and accumulates across bursts; the serve worker diffs a
+/// stashed copy per burst for its per-model /metrics aggregation and per-request usage.
+/// Same normalization as the `[spec-stats]` line: p-min-discarded chain tokens are counted
+/// in NEITHER drafted nor accepted.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SpecTelemetry {
+    /// verify rounds completed (a round-stream burst counts each of its M rounds).
+    pub rounds: u64,
+    /// tokens drafted / accepted across all rounds.
+    pub drafted: u64,
+    pub accepted: u64,
+    /// how often draft position j (0-based within a round's chain) was offered / accepted.
+    /// Positions >= SPEC_TELEM_POS are untracked (totals still count them). The opt-in
+    /// round-stream arm (MEMRA_SPEC_STREAM=1) reads back only totals, so under it these
+    /// arrays cover the standard-path rounds only and their sums may undercount the totals.
+    pub pos_drafted: [u64; SPEC_TELEM_POS],
+    pub pos_accepted: [u64; SPEC_TELEM_POS],
+}
+
+impl SpecTelemetry {
+    /// Fieldwise `self - prev` — the worker's per-burst delta off a copy stashed before the
+    /// burst call. Saturating: a caller diffing against the wrong snapshot gets zeros, not
+    /// a wrapped counter.
+    pub fn delta_since(&self, prev: &SpecTelemetry) -> SpecTelemetry {
+        let mut d = SpecTelemetry {
+            rounds: self.rounds.saturating_sub(prev.rounds),
+            drafted: self.drafted.saturating_sub(prev.drafted),
+            accepted: self.accepted.saturating_sub(prev.accepted),
+            ..Default::default()
+        };
+        for j in 0..SPEC_TELEM_POS {
+            d.pos_drafted[j] = self.pos_drafted[j].saturating_sub(prev.pos_drafted[j]);
+            d.pos_accepted[j] = self.pos_accepted[j].saturating_sub(prev.pos_accepted[j]);
+        }
+        d
+    }
+    /// Fieldwise `self += d` — the worker's per-model aggregation.
+    pub fn merge(&mut self, d: &SpecTelemetry) {
+        self.rounds += d.rounds;
+        self.drafted += d.drafted;
+        self.accepted += d.accepted;
+        for j in 0..SPEC_TELEM_POS {
+            self.pos_drafted[j] += d.pos_drafted[j];
+            self.pos_accepted[j] += d.pos_accepted[j];
+        }
+    }
+}
+
 pub struct SpecSession {
     pub(crate) cache: Cache,
     pub(crate) scratch: MtpScratch,
@@ -301,12 +355,55 @@ pub struct SpecSession {
     /// commit pass). Non-empty-suffix or sampled turns must flush first (spec_flush_pending);
     /// generate_spec_session_sampled does this at entry, and serve parks only flushed sessions.
     pub pending_tok: Option<u32>,
+    /// SESSION-AFFINITY TURN CHECKPOINT (lane/session-affinity, 2026-08-05): the state at this
+    /// turn's PROMPT-END boundary, retained so a later turn can REWIND here. See
+    /// [`SpecCheckpoint`]. Refreshed by every non-empty prime; None until the first one, and on
+    /// a rig too tight to hold it (a failed capture is silent — resume just isn't available).
+    pub(crate) turn_ckpt: Option<SpecCheckpoint>,
+    /// Session-lifetime acceptance telemetry (lane/accept-telemetry). Host-side u64 adds at
+    /// the round accounting the loop already does — no syncs, no allocation. NOTE a
+    /// pool-resumed session carries the PREVIOUS requests' counts; per-request consumers
+    /// diff with [`SpecTelemetry::delta_since`] around each burst.
+    pub telem: SpecTelemetry,
 }
 impl SpecSession {
     /// Context capacity of the session's caches (the server's ContextFull guard).
     pub fn cache_max_ctx(&self) -> usize {
         self.cache.max_ctx
     }
+    /// Committed position this session can REWIND to (its retained prompt-end boundary), if any.
+    /// A request whose prompt matches `committed[..pos]` exactly can resume from here — see
+    /// `spec_rewind_to_checkpoint`.
+    pub fn rewind_pos(&self) -> Option<usize> {
+        self.turn_ckpt.as_ref().map(|c| c.pos)
+    }
+}
+
+/// A session's PROMPT-END boundary state, the rewind target for session-affinity resume.
+///
+/// WHY THIS BOUNDARY, AND WHY IT IS THE ONLY ONE WORTH KEEPING. The rewrite class this lane
+/// exists for (a client that strips `<think>` blocks out of prior assistant turns) mutates the
+/// text the session GENERATED, never the prompt it was given. So turn N's prompt agrees with
+/// turn N-1's committed tokens up to almost exactly where turn N-1's generation began — the
+/// prompt-end boundary. Keeping a checkpoint there means the next turn re-primes only its own
+/// delta (the rewritten answer + the new user turn) instead of the whole conversation.
+///
+/// WHAT IT MUST HOLD. Full-attn KV is append-only and position-addressed, so rewinding it is a
+/// `len` truncation (no data). Linear-attn (GDN) conv/ssm state is mutated IN PLACE with no
+/// position index, so it must be a real device COPY — that copy is the entire reason a spec
+/// session could not previously rewind. The MTP draft scratch needs no copy either: its rows
+/// below the boundary were written by this turn's fill and are never revisited (the per-round
+/// true-hidden refresh only rewrites the CURRENT burst's committed positions), so rewinding it
+/// is also just a `len` reset. `last_h` is the hidden of the last row below the boundary — the
+/// predecessor-pairing anchor the next prime's fill reads for its first row.
+///
+/// COST: one `Cache::snapshot` per TURN, on a code path that already takes one per ROUND.
+pub(crate) struct SpecCheckpoint {
+    snap: crate::cache::CacheSnapshot,
+    /// Committed length at the boundary (== cache.pos there, the session invariant).
+    pos: usize,
+    /// Pre-output_norm hidden of row `pos - 1`.
+    last_h: CudaSlice<f32>,
 }
 
 /// Per-session persistent draft-graph context: the captured CUDA graph(s) plus the device
@@ -2336,7 +2433,57 @@ impl HybridModel {
             uctr: 0,
             draft_ctx: None,
             pending_tok: None,
+            turn_ckpt: None,
+            telem: SpecTelemetry::default(),
         })
+    }
+
+    /// SESSION-AFFINITY REWIND (lane/session-affinity, 2026-08-05): roll `sess` back to its
+    /// retained prompt-end checkpoint, so a request whose prompt matches
+    /// `committed[..rewind_pos()]` exactly can resume there and prime only its own delta.
+    ///
+    /// EXACTNESS. After this returns, the session is byte-for-byte the state it was in AT that
+    /// boundary: full-attn KV truncated to it (append-only, position-addressed), GDN conv/ssm
+    /// restored from the device copy taken there, draft scratch length reset, `committed`
+    /// truncated, `last_h` = the boundary's predecessor anchor. That is precisely the state a
+    /// fresh prime of `committed[..pos]` would have produced, so the following suffix prime and
+    /// every burst after it are identical to a cold run of the same token stream — the
+    /// committed-tokens-authoritative contract.
+    ///
+    /// `next_pred` and `pending_tok` are CLEARED: both describe generation past the boundary,
+    /// which the rewind discards. The caller therefore must supply a non-empty suffix (a
+    /// rewound session cannot serve an empty-suffix continuation burst — there is nothing to
+    /// continue). The persistent draft graph survives: it bakes only session-stable pointers
+    /// (the scratch KV, the resident embedding), none of which the rewind moves.
+    ///
+    /// The checkpoint is CONSUMED (`turn_ckpt` taken): its snapshot buffers are freed here, and
+    /// this turn's own prime installs a fresh one at the new prompt end. Returns the position
+    /// rewound to, or `None` when the session holds no checkpoint (caller: full re-prime).
+    pub fn spec_rewind_to_checkpoint(
+        &self,
+        e: &Engine,
+        sess: &mut SpecSession,
+    ) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+        let Some(ckpt) = sess.turn_ckpt.take() else {
+            return Ok(None);
+        };
+        assert!(
+            ckpt.pos <= sess.committed.len(),
+            "checkpoint past committed ({} > {})",
+            ckpt.pos,
+            sess.committed.len()
+        );
+        // accept_len 0: roll all the way back to the snapshot's own boundary. `rollback` sets
+        // each full-attn len to its saved value, restores conv/ssm by D2D copy, and sets
+        // cache.pos = snap.pos.
+        sess.cache.rollback(e, &ckpt.snap, 0)?;
+        debug_assert_eq!(sess.cache.pos, ckpt.pos, "rollback landed off the checkpoint");
+        sess.scratch.set_len(e, ckpt.pos)?;
+        sess.committed.truncate(ckpt.pos);
+        sess.last_h = Some(ckpt.last_h);
+        sess.next_pred = None;
+        sess.pending_tok = None;
+        Ok(Some(ckpt.pos))
     }
 
     /// Commit a carried pending bonus (see SpecSession::pending_tok): one T=1 trunk pass
@@ -2549,7 +2696,15 @@ impl HybridModel {
         };
         let mut own_cache;
         let mut own_scratch;
-        let (cache, scratch, mut sess_tail, mut sess_draft_slot, mut sess_pending_slot): (
+        let (
+            cache,
+            scratch,
+            mut sess_tail,
+            mut sess_draft_slot,
+            mut sess_pending_slot,
+            sess_ckpt_slot,
+            mut sess_telem,
+        ): (
             &mut Cache,
             &mut MtpScratch,
             Option<(
@@ -2561,6 +2716,8 @@ impl HybridModel {
             )>,
             Option<&mut Option<DraftGraphCtx>>,
             Option<&mut Option<u32>>,
+            Option<&mut Option<SpecCheckpoint>>,
+            Option<&mut SpecTelemetry>,
         ) = match sess.take() {
             Some(sr) => {
                 let SpecSession {
@@ -2573,6 +2730,8 @@ impl HybridModel {
                     uctr: s_uctr,
                     draft_ctx,
                     pending_tok,
+                    turn_ckpt,
+                    telem,
                 } = sr;
                 (
                     cache,
@@ -2580,6 +2739,8 @@ impl HybridModel {
                     Some((committed, last_h, next_pred, s_sctr, s_uctr)),
                     Some(draft_ctx),
                     Some(pending_tok),
+                    Some(turn_ckpt),
+                    Some(telem),
                 )
             }
             None => {
@@ -2591,7 +2752,7 @@ impl HybridModel {
                     max_ctx,
                     self.mtp.as_ref().and_then(|m| m.geom.as_ref()),
                 )?;
-                (&mut own_cache, &mut own_scratch, None, None, None)
+                (&mut own_cache, &mut own_scratch, None, None, None, None, None)
             }
         };
         let base = cache.pos;
@@ -2855,6 +3016,81 @@ impl HybridModel {
         // built to pin the serve per-burst fixed cost (research/spec-serving-20260801).
         let setup_trace = std::env::var("MEMRA_SPEC_SETUP_TRACE").as_deref() == Ok("1");
         let t_ent = std::time::Instant::now();
+
+        // SESSION-AFFINITY TURN CHECKPOINT (lane/session-affinity, 2026-08-05): capture the
+        // PROMPT-END boundary state so a LATER turn can rewind here and re-prime only its own
+        // delta instead of the whole conversation. See `SpecCheckpoint` for why this boundary is
+        // the one that matters (a history-rewriting client mutates what the session GENERATED,
+        // so the next turn's prompt agrees with this one up to exactly here).
+        //
+        // WHERE — AND WHY THIS EXACT LINE. Right after the trunk prime, BEFORE the init feed
+        // (`decode_step_h(last_token)`) and before round 0: the last instant at which the caches
+        // hold exactly `base + prompt.len()` rows and nothing generated.
+        //
+        // This was WRONG in the first cut of this lane: the capture sat after the draft-KV fill,
+        // which is also after the init feed, so `cache.pos` was `base + prompt.len() + 1` — the
+        // boundary included the FIRST GENERATED TOKEN. That token is the first thing inside the
+        // `<think>` block the client strips, so every later turn's diff diverged exactly one
+        // token below the checkpoint and affinity declined 100% of the time. Measured on the
+        // owner regime: "history diverged at 12233 of checkpoint 12234". The off-by-one made the
+        // whole mechanism inert while looking, from the outside, like a working
+        // correctness-declines-safely path — hence the decline log carries the offsets.
+        //
+        // The full-attn planes are `len`-truncatable so the snapshot copies only the GDN conv/ssm
+        // state (the reason a spec session could not rewind before). The draft scratch needs no
+        // copy: rows below the boundary are rewritten by the next turn's own fill.
+        //
+        // WHEN: non-empty prime only. An empty-suffix continuation burst adds no prompt boundary
+        // (its "prompt end" IS the previous checkpoint's, already held), so it keeps the existing
+        // checkpoint rather than replacing it with a strictly worse one.
+        //
+        // FAILURE IS SILENT BY DESIGN: on a VRAM-tight rig the snapshot alloc can fail. That
+        // costs the NEXT turn its rewind (it re-primes fully, today's behavior) and must never
+        // fail the burst that is already running — so the error is swallowed, loud only under
+        // MEMRA_DEBUG_SPEC.
+        if let Some(slot) = sess_ckpt_slot {
+            if !continuation {
+                let pos = cache.pos;
+                debug_assert_eq!(
+                    pos,
+                    base + prompt.len(),
+                    "turn checkpoint must sit at the prompt end, before the init feed"
+                );
+                let anchor: Result<CudaSlice<f32>, Box<dyn std::error::Error>> =
+                    if let Some(ph) = &prompt_h {
+                        // hidden of the LAST primed row = the predecessor anchor at this
+                        // boundary (exactly what a fresh prime of committed[..pos] leaves in
+                        // last_h, and what the next prime's fill reads for its first row).
+                        let np = prompt.len();
+                        e.uninit(n_embd).and_then(|mut a| {
+                            e.copy_view_into(
+                                &mut a,
+                                0,
+                                &ph.slice((np - 1) * n_embd..np * n_embd),
+                                n_embd,
+                            )?;
+                            Ok(a)
+                        })
+                    } else {
+                        Err("no prompt hiddens".into())
+                    };
+                match (cache.snapshot(e), anchor) {
+                    (Ok(snap), Ok(last_h)) => {
+                        *slot = Some(SpecCheckpoint { snap, pos, last_h });
+                    }
+                    (s, a) => {
+                        *slot = None; // a stale checkpoint would rewind to the WRONG boundary
+                        if std::env::var("MEMRA_DEBUG_SPEC").is_ok() {
+                            let err = s.err().map(|e| e.to_string())
+                                .or_else(|| a.err().map(|e| e.to_string()))
+                                .unwrap_or_default();
+                            eprintln!("[spec] turn checkpoint skipped ({err}); \
+                                       next turn re-primes in full");
+                        }
+                    }
+                }
+            }
+        }
         // INIT FEED — skipped on a pending carry: last_token (the carried bonus) is NOT in the
         // caches and must NOT be fed solo; round 0's batched verify commits it as col 0. Its
         // seed/anchor hidden is the carried last_h (copied below); last_pred is dead in the
@@ -3481,6 +3717,13 @@ impl HybridModel {
                 last_token = ring_h[cnt];
                 total_drafted += k * m_rounds; // upper bound (p-min breaks uncounted)
                 total_accepted += cnt.saturating_sub(m_rounds);
+                if let Some(t) = sess_telem.as_deref_mut() {
+                    // totals only — the burst's per-round accept counts stayed on device
+                    // (that is the point of the round-stream arm). pos_* untouched.
+                    t.rounds += m_rounds as u64;
+                    t.drafted += (k * m_rounds) as u64;
+                    t.accepted += cnt.saturating_sub(m_rounds) as u64;
+                }
                 round += m_rounds;
                 continue;
             }
@@ -4046,10 +4289,26 @@ impl HybridModel {
                     if perturb_buf.is_none() {
                         perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?);
                     }
-                    // stats for the last used col: reuse col_stats when it covers it, else compute.
-                    let (mx, th, _z) = if !col_stats.is_empty() {
-                        *col_stats.last().unwrap()
-                    } else {
+                    // STATS MUST COME FROM THIS COLUMN (bug fix 2026-08-05, lane/sampler-
+                    // truncation-fix; receipts research/sampfix-20260805/). The old code reused
+                    // `col_stats.last()` here, which is ALWAYS the wrong row: the gathered set
+                    // covers verify columns 0..=(base+k_round-2) (rows pushed as base+j-1), while
+                    // the full-accept bonus samples column base+k_round-1 — exactly ONE PAST the
+                    // last gathered column, in both base arms. `th` is a threshold in e-units of
+                    // its OWN row's max, so feeding a neighbour's (row_max, th) into
+                    // gumbel_perturb_filtered mis-scales every e0 = exp((x-row_max)/T). When the
+                    // donor column's peak is higher by more than T*ln(1/th), EVERY id fails
+                    // `e0 >= th`, the whole perturbed row becomes -3.4e38, and the 2-pass argmax
+                    // falls through to its smallest-index tie-break => token id 0 ("!") spliced
+                    // mid-word. Fragility is ordered by how large th is: min_p pins th = min_p
+                    // (0.05 => trigger at delta > 2.4 at T=0.8, fires constantly), top_p's
+                    // mass-boundary th is smaller, top_k's k-th-largest th smaller still — which
+                    // is why the head-to-head matrix saw min_p and top_p corrupt while top_k-only
+                    // stayed clean. The pure-temp default regime is immune (th == 0 masks nothing,
+                    // and row_max is unused once nothing is masked), so this fix is a byte-level
+                    // no-op for the untruncated serve default. One extra one-block filter_stats
+                    // per full-accept round is the whole cost.
+                    let (mx, th) = {
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
                         let cb0 = col_buf.as_ref().unwrap();
@@ -4057,7 +4316,7 @@ impl HybridModel {
                             cb0, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d, n_vocab, 1,
                             sp_temp, sp.top_k, sp.top_p, sp.min_p,
                         )?;
-                        (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0])
+                        (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0])
                     };
                     let pb = perturb_buf.as_mut().unwrap();
                     let cb2 = col_buf.as_ref().unwrap();
@@ -4191,6 +4450,19 @@ impl HybridModel {
             };
             total_drafted += k_round;
             total_accepted += n_acc;
+            if let Some(t) = sess_telem.as_deref_mut() {
+                // per-position accept walk (lane/accept-telemetry): host u64 adds on counts
+                // the round already read back — zero syncs, zero allocation.
+                t.rounds += 1;
+                t.drafted += k_round as u64;
+                t.accepted += n_acc as u64;
+                for j in 0..k_round.min(SPEC_TELEM_POS) {
+                    t.pos_drafted[j] += 1;
+                }
+                for j in 0..n_acc.min(SPEC_TELEM_POS) {
+                    t.pos_accepted[j] += 1;
+                }
+            }
             if spec_stats {
                 st_len_hist[k_round] += 1;
                 for j in 0..k_round {
@@ -4822,5 +5094,68 @@ impl HybridModel {
             );
         }
         Ok((rows, bg))
+    }
+}
+
+#[cfg(test)]
+mod telem_tests {
+    use super::{SpecTelemetry, SPEC_TELEM_POS};
+
+    /// The worker's per-burst pattern: stash, accumulate, diff — the delta must isolate
+    /// exactly the burst's contribution (pool-resumed sessions carry prior requests' counts).
+    #[test]
+    fn delta_isolates_burst_contribution() {
+        let mut t = SpecTelemetry::default();
+        // "previous request": 2 rounds of k=3, accepts 3 then 1.
+        for (kr, na) in [(3usize, 3usize), (3, 1)] {
+            t.rounds += 1;
+            t.drafted += kr as u64;
+            t.accepted += na as u64;
+            for j in 0..kr { t.pos_drafted[j] += 1; }
+            for j in 0..na { t.pos_accepted[j] += 1; }
+        }
+        let before = t;
+        // "this burst": 1 round k=3, accepts 2.
+        t.rounds += 1;
+        t.drafted += 3;
+        t.accepted += 2;
+        for j in 0..3 { t.pos_drafted[j] += 1; }
+        for j in 0..2 { t.pos_accepted[j] += 1; }
+        let d = t.delta_since(&before);
+        assert_eq!((d.rounds, d.drafted, d.accepted), (1, 3, 2));
+        assert_eq!(&d.pos_drafted[..3], &[1, 1, 1]);
+        assert_eq!(&d.pos_accepted[..3], &[1, 1, 0]);
+        assert_eq!(d.pos_drafted[3..], [0; SPEC_TELEM_POS - 3]);
+    }
+
+    /// merge(delta) then merge(delta2) equals accumulating both — the per-model /metrics
+    /// aggregation invariant.
+    #[test]
+    fn merge_accumulates_fieldwise() {
+        let mut agg = SpecTelemetry::default();
+        let mut d1 = SpecTelemetry { rounds: 2, drafted: 6, accepted: 4, ..Default::default() };
+        d1.pos_drafted[0] = 2;
+        d1.pos_accepted[0] = 2;
+        let mut d2 = SpecTelemetry { rounds: 1, drafted: 3, accepted: 1, ..Default::default() };
+        d2.pos_drafted[0] = 1;
+        d2.pos_accepted[0] = 1;
+        d2.pos_drafted[1] = 1;
+        agg.merge(&d1);
+        agg.merge(&d2);
+        assert_eq!((agg.rounds, agg.drafted, agg.accepted), (3, 9, 5));
+        assert_eq!(agg.pos_drafted[0], 3);
+        assert_eq!(agg.pos_accepted[0], 3);
+        assert_eq!(agg.pos_drafted[1], 1);
+        assert_eq!(agg.pos_accepted[1], 0);
+    }
+
+    /// Wrong-snapshot diff saturates to zero instead of wrapping — the counters feed a
+    /// public metrics surface and must never publish a u64-wrapped garbage value.
+    #[test]
+    fn delta_saturates_never_wraps() {
+        let small = SpecTelemetry { rounds: 1, drafted: 2, accepted: 1, ..Default::default() };
+        let big = SpecTelemetry { rounds: 5, drafted: 15, accepted: 9, ..Default::default() };
+        let d = small.delta_since(&big);
+        assert_eq!((d.rounds, d.drafted, d.accepted), (0, 0, 0));
     }
 }

@@ -1,0 +1,48 @@
+[server] starting; models config = [("q27", "/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/root/models/draft-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q27: regime draft attached (/root/models/draft-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q27": 65 layers, eos=248046
+[worker] q27: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q27: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8199
+[worker] observed session VRAM cost for "q27": 336MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=14/14 cum=14/14=1.000
+[spec-acc] ctx=226 burst=29/42 cum=29/42=0.690
+[spec-acc] ctx=262 burst=25/42 cum=54/84=0.643
+[spec-acc] ctx=294 burst=22/63 cum=76/147=0.517
+[spec-acc] ctx=326 burst=16/77 cum=92/224=0.411
+[spec-acc] ctx=226 burst=30/42 cum=30/42=0.714
+[spec-acc] ctx=263 burst=24/49 cum=54/91=0.593
+[spec-acc] ctx=295 burst=28/42 cum=82/133=0.617
+[spec-acc] ctx=330 burst=15/63 cum=97/196=0.495
+[spec-acc] ctx=226 burst=31/35 cum=31/35=0.886
+[spec-acc] ctx=263 burst=25/42 cum=56/77=0.727
+[spec-acc] ctx=295 burst=25/42 cum=81/119=0.681
+[spec-acc] ctx=327 burst=19/49 cum=100/168=0.595
+[spec-acc] ctx=226 burst=30/42 cum=30/42=0.714
+[spec-acc] ctx=263 burst=26/35 cum=56/77=0.727
+[spec-acc] ctx=295 burst=23/56 cum=79/133=0.594
+[spec-acc] ctx=327 burst=15/77 cum=94/210=0.448
+[spec-acc] ctx=226 burst=14/14 cum=14/14=1.000
+[spec-acc] ctx=226 burst=29/42 cum=29/42=0.690
+[spec-acc] ctx=262 burst=25/42 cum=54/84=0.643
+[spec-acc] ctx=294 burst=22/63 cum=76/147=0.517
+[spec-acc] ctx=326 burst=16/77 cum=92/224=0.411
+[spec-acc] ctx=226 burst=30/42 cum=30/42=0.714
+[spec-acc] ctx=263 burst=24/49 cum=54/91=0.593
+[spec-acc] ctx=295 burst=28/42 cum=82/133=0.617
+[spec-acc] ctx=330 burst=15/63 cum=97/196=0.495
+[spec-acc] ctx=226 burst=31/35 cum=31/35=0.886
+[spec-acc] ctx=263 burst=25/42 cum=56/77=0.727
+[spec-acc] ctx=295 burst=25/42 cum=81/119=0.681
+[spec-acc] ctx=327 burst=19/49 cum=100/168=0.595
+[spec-acc] ctx=226 burst=30/42 cum=30/42=0.714
+[spec-acc] ctx=263 burst=26/35 cum=56/77=0.727
+[spec-acc] ctx=295 burst=23/56 cum=79/133=0.594
+[spec-acc] ctx=327 burst=15/77 cum=94/210=0.448
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

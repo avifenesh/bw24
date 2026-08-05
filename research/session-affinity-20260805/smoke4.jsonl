@@ -1,0 +1,4 @@
+{"turn": 0, "wall_s": 15.791, "prompt_chars": 60204, "prompt_tokens": 11605, "cached_tokens": 0, "completion_tokens": 600, "gen_chars": 2752, "rewrote": false, "text_sha": "947c8834cbe64379"}
+{"turn": 1, "wall_s": 3.898, "prompt_chars": 63082, "prompt_tokens": 12233, "cached_tokens": 12205, "completion_tokens": 326, "gen_chars": 1637, "rewrote": true, "text_sha": "1dd79f6f19ebf262"}
+{"turn": 2, "wall_s": 6.462, "prompt_chars": 63533, "prompt_tokens": 12317, "cached_tokens": 12233, "completion_tokens": 602, "gen_chars": 2706, "rewrote": false, "text_sha": "4abefe2b0056528e"}
+{"turn": 3, "wall_s": 3.429, "prompt_chars": 66365, "prompt_tokens": 12947, "cached_tokens": 12919, "completion_tokens": 279, "gen_chars": 1385, "rewrote": true, "text_sha": "d6cc3d35973df834"}

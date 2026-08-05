@@ -2079,10 +2079,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Q8-FUSED2 {n0}+{n1} [Q8_0] out=({},{}): rel={d:.2e} bits={} {}",
                      t0.1, t1.1, bits_ok,
                      if bits_ok { "OK" } else { fails += 1; "FAIL" });
-            // BATCHED twin (verify t=2-4 tier, MEMRA_SPEC_FUSED_T): fused2_b vs the per-tensor
-            // _b2/_b4 launches matmul_decode_exact dispatches — body verbatim, must be
-            // BIT-IDENTICAL per (tensor,token,row).
-            for mm in [2usize, 3, 4] {
+            // BATCHED twin (verify t=2-4 tier, MEMRA_SPEC_FUSED_T; m=5..8 = the SERVING tier,
+            // lane/q27-deepdive 2026-08-05): fused2_b vs the per-tensor _b2/_b4/_b8 launches
+            // matmul_decode_exact / decode_step_batch dispatch — body verbatim, must be
+            // BIT-IDENTICAL per (tensor,token,row). m=8 pins the fused2_b8 wrapper the batched
+            // dense-FFN gate+up fusion rides at serve concurrency c=5..8.
+            for mm in [2usize, 3, 4, 5, 8] {
                 let xm: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151 + mm) * 0.1).collect();
                 let xmd = e.htod(&xm)?;
                 let (aq, ad) = e.quantize_q8_1(&xmd, mm, in_f)?;
@@ -2262,6 +2264,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let d = maxdiff(&yref, &yb);
                 println!("E4M3-BATCHED synth [{in_f}x{out_f}] m={mm} b{mcols}: rel={d:.2e} bit-bad={bits_bad} {}",
                          if bits_bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+            // (4) FUSED TWINS (lane/fp8-decode-v1): the multi-tensor block-offset launches must be
+            // BIT-IDENTICAL to the separate per-tensor launches they replace, INCLUDING the
+            // per-tensor weight_scale — the fused m=1 kernels fold `ws` at the write (like
+            // qmatvec_e4m3_mmvq), the fused batched ones take a post scale_inplace (like the
+            // per-tensor batched dispatch). Non-unit, UNEQUAL scales per range are the point: a
+            // range/scale mix-up in the block-offset split is exactly what this gate catches.
+            // Second tensor gets a DIFFERENT out_f (unequal-out_f split) and different bytes.
+            {
+                let bitbad = |a: &[f32], b: &[f32]| -> usize {
+                    a.iter().zip(b).filter(|(x, y)| x.to_bits() != y.to_bits()).count()
+                        + a.len().abs_diff(b.len())
+                };
+                let out1 = out_f / 2 + 64;                  // unequal, not a multiple of ROWS*k
+                let wb1: Vec<u8> = (0..in_f * out1).map(|i| {
+                    let mut b = ((i.wrapping_mul(2246822519) ^ 0x85EBCA6B) >> 7) as u8;
+                    if b & 0x7F == 0x7F { b &= 0xF7; }
+                    b
+                }).collect();
+                let wd1 = e.htod_bytes(&wb1)?;
+                let out2 = 128usize;
+                let wb2: Vec<u8> = (0..in_f * out2).map(|i| {
+                    let mut b = ((i.wrapping_mul(3266489917) ^ 0xC2B2AE35) >> 5) as u8;
+                    if b & 0x7F == 0x7F { b &= 0xF7; }
+                    b
+                }).collect();
+                let wd2 = e.htod_bytes(&wb2)?;
+                let (s0, s1, s2) = (0.031_25f32, 0.007_812_5f32, 1.0f32);  // incl. the ws==1.0 case
+                // m=1 pair + triple
+                let x: Vec<f32> = (0..in_f).map(|i| pr(i + 179) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let mut r0 = e.qmatvec_mmvq_raw(&wd, &xd, 1, in_f, out_f, qt, row_bytes, false)?;
+                let mut r1 = e.qmatvec_mmvq_raw(&wd1, &xd, 1, in_f, out1, qt, row_bytes, false)?;
+                let mut r2 = e.qmatvec_mmvq_raw(&wd2, &xd, 1, in_f, out2, qt, row_bytes, false)?;
+                e.scale_inplace(&mut r0, s0, out_f)?;
+                e.scale_inplace(&mut r1, s1, out1)?;
+                e.scale_inplace(&mut r2, s2, out2)?;
+                let (a0, a1) = e.qmatvec_e4m3_fused2_raw(&wd, &wd1, &xd, in_f, out_f, out1,
+                                                         row_bytes, s0, s1)?;
+                let bad2 = bitbad(&e.dtoh(&r0)?, &e.dtoh(&a0)?)
+                         + bitbad(&e.dtoh(&r1)?, &e.dtoh(&a1)?);
+                println!("E4M3-FUSED2 synth [{in_f}x({out_f}+{out1})] m=1: bit-bad={bad2} {}",
+                         if bad2 == 0 { "OK" } else { fails += 1; "FAIL" });
+                let (c0, c1, c2) = e.qmatvec_e4m3_fused3_raw(&wd, &wd1, &wd2, &xd, in_f, out_f,
+                                                             out1, out2, row_bytes, s0, s1, s2)?;
+                let bad3 = bitbad(&e.dtoh(&r0)?, &e.dtoh(&c0)?)
+                         + bitbad(&e.dtoh(&r1)?, &e.dtoh(&c1)?)
+                         + bitbad(&e.dtoh(&r2)?, &e.dtoh(&c2)?);
+                println!("E4M3-FUSED3 synth [{in_f}x({out_f}+{out1}+{out2})] m=1: bit-bad={bad3} {}",
+                         if bad3 == 0 { "OK" } else { fails += 1; "FAIL" });
+                // batched pair (m=2..8) + triple (m=2..4), vs the per-tensor batched launches
+                for mm in 2..=8usize {
+                    let mcols = memra_engine::Engine::batched_mcols(mm);
+                    let xt: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 191) * 0.1).collect();
+                    let xtd = e.htod(&xt)?;
+                    let mut b0 = e.qmatvec_batched_raw(&wd, &xtd, mm, in_f, out_f, qt, row_bytes,
+                                                      mcols, false)?;
+                    let mut b1 = e.qmatvec_batched_raw(&wd1, &xtd, mm, in_f, out1, qt, row_bytes,
+                                                      mcols, false)?;
+                    e.scale_inplace(&mut b0, s0, mm * out_f)?;
+                    e.scale_inplace(&mut b1, s1, mm * out1)?;
+                    let (f0, f1) = e.qmatvec_e4m3_fused2_t_raw(&wd, &wd1, &xtd, mm, in_f, out_f,
+                                                               out1, row_bytes, s0, s1)?;
+                    let badt = bitbad(&e.dtoh(&b0)?, &e.dtoh(&f0)?)
+                             + bitbad(&e.dtoh(&b1)?, &e.dtoh(&f1)?);
+                    println!("E4M3-FUSED2-T synth [{in_f}x({out_f}+{out1})] m={mm} b{mcols}: bit-bad={badt} {}",
+                             if badt == 0 { "OK" } else { fails += 1; "FAIL" });
+                    if mm <= 4 {
+                        let mut b2 = e.qmatvec_batched_raw(&wd2, &xtd, mm, in_f, out2, qt,
+                                                          row_bytes, mcols, false)?;
+                        e.scale_inplace(&mut b2, s2, mm * out2)?;
+                        let (g0, g1, g2) = e.qmatvec_e4m3_fused3_t_raw(&wd, &wd1, &wd2, &xtd, mm,
+                                                                       in_f, out_f, out1, out2,
+                                                                       row_bytes, s0, s1, s2)?;
+                        let bad3t = bitbad(&e.dtoh(&b0)?, &e.dtoh(&g0)?)
+                                  + bitbad(&e.dtoh(&b1)?, &e.dtoh(&g1)?)
+                                  + bitbad(&e.dtoh(&b2)?, &e.dtoh(&g2)?);
+                        println!("E4M3-FUSED3-T synth [{in_f}x({out_f}+{out1}+{out2})] m={mm} b{mcols}: bit-bad={bad3t} {}",
+                                 if bad3t == 0 { "OK" } else { fails += 1; "FAIL" });
+                    }
+                }
             }
         }
     }

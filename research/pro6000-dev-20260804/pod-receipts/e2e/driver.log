@@ -1,0 +1,61 @@
+[21:44:53Z] d512 auto r1 pre: 42, 22 MHz, 20.98 W
+[21:45:11Z] d512 auto r1 post rc=0: 50, 2872 MHz, 394.05 W | generated 128 tokens in 1.623s = 78.85 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:45:11Z] d512 mr1 r1 pre: 50, 2872 MHz, 394.05 W
+[21:45:28Z] d512 mr1 r1 post rc=0: 54, 2857 MHz, 354.89 W | generated 128 tokens in 1.608s = 79.59 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:45:29Z] d512 nodual r1 pre: 54, 2857 MHz, 354.89 W
+[21:45:47Z] d512 nodual r1 post rc=0: 59, 2865 MHz, 318.33 W | generated 128 tokens in 1.719s = 74.45 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:45:47Z] d512 mr1nodual r1 pre: 59, 2865 MHz, 318.33 W
+[21:46:05Z] d512 mr1nodual r1 post rc=0: 59, 2865 MHz, 461.86 W | generated 128 tokens in 1.646s = 77.74 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:46:05Z] d512 rp0 r1 pre: 59, 2865 MHz, 461.86 W
+[21:46:17Z] d512 rp0 r1 post rc=0: 62, 2842 MHz, 200.63 W | generated 128 tokens in 1.689s = 75.79 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:46:17Z] d512 auto r2 pre: 62, 2842 MHz, 200.63 W
+[21:46:34Z] d512 auto r2 post rc=0: 63, 2865 MHz, 124.85 W | generated 128 tokens in 1.625s = 78.79 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:46:34Z] d512 mr1 r2 pre: 63, 2865 MHz, 124.85 W
+[21:46:52Z] d512 mr1 r2 post rc=0: 64, 2857 MHz, 128.44 W | generated 128 tokens in 1.609s = 79.54 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:46:52Z] d512 nodual r2 pre: 64, 2857 MHz, 128.44 W
+[21:47:10Z] d512 nodual r2 post rc=0: 65, 2857 MHz, 125.68 W | generated 128 tokens in 1.720s = 74.44 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:47:10Z] d512 mr1nodual r2 pre: 65, 2857 MHz, 125.68 W
+[21:47:28Z] d512 mr1nodual r2 post rc=0: 65, 2842 MHz, 129.83 W | generated 128 tokens in 1.647s = 77.73 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:47:28Z] d512 rp0 r2 pre: 65, 2842 MHz, 129.83 W
+[21:47:40Z] d512 rp0 r2 post rc=0: 69, 2857 MHz, 132.09 W | generated 128 tokens in 1.690s = 75.76 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:47:40Z] d512 auto r3 pre: 67, 2857 MHz, 132.09 W
+[21:47:58Z] d512 auto r3 post rc=0: 67, 2857 MHz, 345.84 W | generated 128 tokens in 1.626s = 78.73 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:47:58Z] d512 mr1 r3 pre: 67, 2857 MHz, 345.84 W
+[21:48:15Z] d512 mr1 r3 post rc=0: 67, 2850 MHz, 216.49 W | generated 128 tokens in 1.610s = 79.52 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:48:15Z] d512 nodual r3 pre: 67, 2850 MHz, 216.49 W
+[21:48:34Z] d512 nodual r3 post rc=0: 67, 2835 MHz, 309.43 W | generated 128 tokens in 1.721s = 74.39 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:48:34Z] d512 mr1nodual r3 pre: 67, 2835 MHz, 309.43 W
+[21:48:51Z] d512 mr1nodual r3 post rc=0: 68, 2857 MHz, 186.24 W | generated 128 tokens in 1.647s = 77.72 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:48:51Z] d512 rp0 r3 pre: 68, 2857 MHz, 151.08 W
+[21:49:03Z] d512 rp0 r3 post rc=0: 69, 2842 MHz, 290.70 W | generated 128 tokens in 1.690s = 75.73 tok/s | argmax=271  decode argmax=271  logit maxdiff=3.672e-1  MATCH
+[21:49:03Z] dlong auto r1 pre: 69, 2842 MHz, 290.70 W
+[21:50:44Z] dlong auto r1 post rc=0: 80, 2812 MHz, 234.49 W | generated 128 tokens in 1.679s = 76.23 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[21:50:44Z] dlong mr1 r1 pre: 80, 2812 MHz, 234.49 W
+[21:52:24Z] dlong mr1 r1 post rc=0: 82, 2827 MHz, 170.30 W | generated 128 tokens in 1.663s = 76.99 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[21:52:24Z] dlong nodual r1 pre: 82, 2827 MHz, 167.75 W
+[21:54:09Z] dlong nodual r1 post rc=0: 81, 2812 MHz, 164.80 W | generated 128 tokens in 1.775s = 72.13 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[21:54:09Z] dlong mr1nodual r1 pre: 81, 2812 MHz, 164.80 W
+[21:55:51Z] dlong mr1nodual r1 post rc=0: 82, 2827 MHz, 165.26 W | generated 128 tokens in 1.700s = 75.31 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[21:55:51Z] dlong rp0 r1 pre: 82, 2827 MHz, 165.26 W
+[21:57:29Z] dlong rp0 r1 post rc=0: 79, 2827 MHz, 244.61 W | generated 128 tokens in 1.739s = 73.59 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[21:57:29Z] dlong auto r2 pre: 79, 2827 MHz, 244.61 W
+[21:59:10Z] dlong auto r2 post rc=0: 81, 2827 MHz, 161.70 W | generated 128 tokens in 1.679s = 76.23 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[21:59:10Z] dlong mr1 r2 pre: 81, 2827 MHz, 161.70 W
+[22:00:49Z] dlong mr1 r2 post rc=0: 82, 2827 MHz, 162.85 W | generated 128 tokens in 1.663s = 76.97 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:00:49Z] dlong nodual r2 pre: 82, 2827 MHz, 162.85 W
+[22:02:35Z] dlong nodual r2 post rc=0: 81, 2812 MHz, 329.77 W | generated 128 tokens in 1.774s = 72.15 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:02:35Z] dlong mr1nodual r2 pre: 81, 2812 MHz, 329.77 W
+[22:04:17Z] dlong mr1nodual r2 post rc=0: 82, 2782 MHz, 165.19 W | generated 128 tokens in 1.700s = 75.31 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:04:17Z] dlong rp0 r2 pre: 82, 2782 MHz, 165.19 W
+[22:05:55Z] dlong rp0 r2 post rc=0: 80, 2827 MHz, 323.47 W | generated 128 tokens in 1.739s = 73.59 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:05:55Z] dlong auto r3 pre: 80, 2827 MHz, 323.47 W
+[22:07:36Z] dlong auto r3 post rc=0: 82, 2835 MHz, 337.38 W | generated 128 tokens in 1.679s = 76.22 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:07:36Z] dlong mr1 r3 pre: 82, 2835 MHz, 337.38 W
+[22:09:16Z] dlong mr1 r3 post rc=0: 81, 2835 MHz, 173.68 W | generated 128 tokens in 1.663s = 76.98 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:09:16Z] dlong nodual r3 pre: 81, 2835 MHz, 173.68 W
+[22:11:01Z] dlong nodual r3 post rc=0: 82, 2835 MHz, 185.21 W | generated 128 tokens in 1.774s = 72.15 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:11:01Z] dlong mr1nodual r3 pre: 82, 2835 MHz, 185.21 W
+[22:12:43Z] dlong mr1nodual r3 post rc=0: 83, 2835 MHz, 432.15 W | generated 128 tokens in 1.700s = 75.30 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:12:43Z] dlong rp0 r3 pre: 83, 2835 MHz, 432.15 W
+[22:14:22Z] dlong rp0 r3 post rc=0: 79, 2842 MHz, 342.42 W | generated 128 tokens in 1.739s = 73.59 tok/s | argmax=271  decode argmax=271  logit maxdiff=1.170e0  MATCH
+[22:14:22Z] SWEEP_C_DONE

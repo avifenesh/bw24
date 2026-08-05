@@ -1,0 +1,3 @@
+86, 14001 MHz, 150.89 W
+arm=open MEMRA_GS_MIN=1 mt=1024 rep=2 model=Qwen3.5-9B-NVFP4-MTP-GGUF
+{"ts": "2026-08-05T13:36:28+0300", "label": "gs-open-mt1024-r2", "base": "http://127.0.0.1:8188", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 1024, "greedy": true, "wall_s": 32.26607676099957, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 904, "agg_tok_s": 126.94446958456658, "req_per_s": 0.1239692085786783, "lat_p50_s": 8.069481888000155, "lat_p95_s": 8.071400114000426, "lat_mean_s": 8.066367749000165, "lat_max_s": 8.071400114000426, "errors_sample": []}

@@ -1,0 +1,10 @@
+repack roundtrip: 0 mismatched bytes of 17694720
+weight blk.1.ssm_out.weight [NVFP4] in_f=6144 out_f=5120 row_bytes=3456 copies=8 variant=rpr2
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=1 (b2): 14.38 us/call  (14.38 us/token)  bit-bad=0 bit-exact-bad=0
+  m=2 (b2): 14.35 us/call  (7.18 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 14.74 us/call  (4.91 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 16.39 us/call  (4.10 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 20.74 us/call  (4.15 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 23.44 us/call  (3.91 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 28.58 us/call  (3.57 us/token)  bit-bad=0 bit-exact-bad=0

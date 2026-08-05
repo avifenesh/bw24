@@ -1,0 +1,40 @@
+### phase2 2026-08-05T16:27:19+03:00
+77, 1687 MHz
+=== F1 (MEMRA_PRIME_DEQW=0) ===
+     profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,149) maxdiff=6.909e0 | step=infx
+       64 | DIFFER |            64 | 3.909e-1 | - | step 47
+     profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,149) maxdiff=1.215e1 | step=infx
+       32 | DIFFER |            32 | 5.041e-1 | - | step 16
+  chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+=== F2 (MEMRA_GDN_CHUNKED=0) ===
+     profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,149) maxdiff=6.418e0 | step=infx
+       64 | DIFFER |            64 | 4.845e-1 | - | identical
+     profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,149) maxdiff=8.538e0 | step=infx
+       32 | DIFFER |            32 | 5.687e-1 | - | identical
+  chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+=== G door-at-default-grain vs default config (MUST be bit-identical) ===
+  turn1 off[argmax=271 margin=0.483452] on[argmax=271 margin=0.483452] -> SAME
+  turn2 off[argmax=4558 margin=1.227142] on[argmax=4558 margin=1.227142] -> SAME
+=== H segmentation cost curve, interleaved N=5 per grain ===
+{"phase":"H","rep":1,"grain":4096,"tok_s":4574.3}
+{"phase":"H","rep":1,"grain":2048,"tok_s":4567.4}
+{"phase":"H","rep":1,"grain":512,"tok_s":4556.8}
+{"phase":"H","rep":1,"grain":64,"tok_s":4553.9}
+{"phase":"H","rep":2,"grain":4096,"tok_s":4549.5}
+{"phase":"H","rep":2,"grain":2048,"tok_s":4546.3}
+{"phase":"H","rep":2,"grain":512,"tok_s":4547.2}
+{"phase":"H","rep":2,"grain":64,"tok_s":4545.3}
+{"phase":"H","rep":3,"grain":4096,"tok_s":4543.3}
+{"phase":"H","rep":3,"grain":2048,"tok_s":4535.9}
+{"phase":"H","rep":3,"grain":512,"tok_s":4502.8}
+{"phase":"H","rep":3,"grain":64,"tok_s":4469.8}
+{"phase":"H","rep":4,"grain":4096,"tok_s":4530.8}
+{"phase":"H","rep":4,"grain":2048,"tok_s":4546.9}
+{"phase":"H","rep":4,"grain":512,"tok_s":4538.2}
+{"phase":"H","rep":4,"grain":64,"tok_s":4548.8}
+{"phase":"H","rep":5,"grain":4096,"tok_s":4544.5}
+{"phase":"H","rep":5,"grain":2048,"tok_s":4546.5}
+{"phase":"H","rep":5,"grain":512,"tok_s":4545.6}
+{"phase":"H","rep":5,"grain":64,"tok_s":4546.4}
+### phase2 done 2026-08-05T16:29:31+03:00
+EXIT=0

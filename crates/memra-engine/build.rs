@@ -208,7 +208,14 @@ fn main() {
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/mmq_q4_0.cu", "cu/fp8_prefill.cu", "cu/f16_prefill.cu",
                         "cu/mmq_nvfp4_f8f4.cu", "cu/fa3_prefill.cu", "cu/moe_f16_grouped.cu",
-                        "cu/fp8_blk_dequant.cu", "cu/mmq_fp8_blk.cu"] {
+                        "cu/fp8_blk_dequant.cu", "cu/mmq_fp8_blk.cu",
+                        // Q1 instrument of the FP8-ST v3 gate lane: the Q8_0 MMQ floor with the
+                        // accumulator (s32 vs f32) as its ONE free variable, to price v2's
+                        // "what is left is the f32 accumulator" ceiling claim before anyone builds
+                        // a v3. Research-only: no dispatch seam, never linked into a serving path.
+                        // Its f8f6f4 arm is guarded by __CUDA_ARCH__ >= 1000 inside the TU, so it
+                        // needs no portable stub (the s32 arm builds everywhere).
+                        "cu/mmq_q8_0_f32acc.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
                 // The explicit MEMRA_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4

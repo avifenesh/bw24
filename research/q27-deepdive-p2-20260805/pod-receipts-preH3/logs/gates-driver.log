@@ -1,0 +1,9 @@
+[10:23:44Z] cold-burn start: 36, 22 MHz, 25.80 W
+[10:23:59Z] cold-burn q8 rc=0
+[10:26:56Z] kernel-check q8 rc=0 bad=0
+[10:27:14Z] run-gen q8 rc=0       2 MATCH 
+[10:27:32Z] run-gen nv rc=0       2 MATCH 
+[10:27:51Z] run-spec nv-embedded rc=0 9 PASS lines
+[10:28:10Z] run-spec nv-draft rc=0 9 PASS lines
+[10:28:29Z] run-spec q8-draft rc=0 9 PASS lines
+[10:28:29Z] GATES_DONE: 65, 2857 MHz, 128.38 W

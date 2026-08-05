@@ -54,9 +54,11 @@ def fmt_ratio(memra, llama, threshold):
 
 def render_date_block(board):
     return (
-        f"Measured {board['updated']} on the target rig ({board['rig']}, {board['protocol']}) "
+        f"Measured {board['updated']} on the tracked measuring rig ({board['rig']}, {board['protocol']}) "
         "against llama.cpp built on the same machine, same exact prompts, both engines "
-        "re-baselined the same day. Boards move with the tuning campaign — "
+        "re-baselined the same day. The llama.cpp columns are frozen reference points "
+        "recorded through 2026-08-03, when head-to-head benching stopped (owner call) — "
+        "regression anchors, not a live scoreboard. Boards move with the tuning campaign — "
         "`research/tune-data/rig5090.jsonl` is the running record; the generated boards "
         "(README samples + this document) are refreshed with every board-moving merge."
     )
@@ -118,9 +120,10 @@ def render_samples_block(board):
     lines.append(
         f"*Measured {board['updated']} on the {board['rig']} — same-session interleaved "
         "medians, same exact prompts; memra at its naked defaults, llama.cpp at its swept "
-        "best ([docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)). N, thermal regime, "
-        "and the full boards: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); raw per-run "
-        "logs: [research/tune-data/](research/tune-data/).*"
+        "best ([docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)). The llama.cpp column "
+        "is a frozen reference recorded through 2026-08-03 (benching stopped that day). N, "
+        "thermal regime, and the full boards: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); "
+        "raw per-run logs: [research/tune-data/](research/tune-data/).*"
     )
     return "\n".join(lines)
 

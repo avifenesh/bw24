@@ -16,30 +16,163 @@ Every published median states its N and thermal regime; every perf claim is a sa
 interleaved pair (cross-run and cross-day comparisons are clock-drift-invalid, including the
 competitor denominator).
 
-## Standing (2026-08-02)
+> **Competitor benching is STOPPED (owner call, 2026-08-03).** Every llama.cpp and vLLM
+> column in this document is a **frozen reference point** recorded on or before that date,
+> kept as a regression anchor — not a live scoreboard. Forward work is self-competition
+> (memra vs its own previous cells, and spec vs its own plain arm). Do not re-run a
+> competitor to refresh a column here; do not read a ratio as a current-day claim. The
+> doctrine banner also lives in [`research/benchmarks.md`](../research/benchmarks.md).
+>
+> One open counter-example that belongs in the same breath as the ratios below: on
+> 2026-08-05, same model file / each engine at its owner's daily config / N=5 interleaved,
+> **llama.cpp leads on cold time-to-first-token (0.19 s vs 0.53 s), short agentic turns, and
+> raw prefill**, while memra leads long-generation sampled decode by +17%
+> ([`research/memra-vs-llama-daily-20260805/`](../research/memra-vs-llama-daily-20260805/),
+> labeled a dogfood diagnostic, not board material). memra makes **no interactive-latency
+> superiority claim** while that stands.
 
-Ten supported models on the 5090, all fully gated; MTP-spec cells run 1.06–2.3x llama.cpp
-(one Gemma near-parity cell, 0.98x, still open), plain cells sit at the DRAM wall or above.
+> **Rig labels are load-bearing.** The *tracked boards* here are two rigs only: an **RTX 5090
+> Laptop** (82 SM — the local rig, and the only owned GPU) and **rented H100 80 GB pods**.
+> RTX PRO 6000 Blackwell Workstation cells (188 SM, rented pods) are deliberately *not* in
+> those boards — they have their own section below, with their own rig label, because mixing
+> a 188-SM cell with an 82-SM cell is a 2x-class error. The registry of every rig that
+> produced a number in this repo is [Rigs](#rigs--what-was-measured-on-what) directly below.
+
+## Rigs — what was measured on what
+
+Every number in this repo belongs to exactly one of these. A cell moved to another rig is a
+different number, not the same number re-measured: the same kernel is 5-12% apart between the
+two PRO 6000 pod classes and roughly 2x apart between a 188-SM and an 82-SM board.
+
+| Rig label | Hardware | Owned? | What it produces |
+|---|---|---|---|
+| **RTX 5090 Laptop** | GB203, 82 SM, 858 GB/s, local | **The only owned GPU** | The tracked 5090 board; the default-flip gate — no runtime default ships without re-running correctness/memory/throughput here |
+| `pro6000wk-runpod` | RTX PRO 6000 Blackwell Workstation 96 GB, 188 SM, 600 W, clocks pinned 2865 MHz, zero throttle | Rented pod | The 27B serving cells below |
+| `pro6000wk-runpod-community` | Same SKU, community-tier pod | Rented pod | Dev/iteration. Runs **5-11% slower** than the prod pod — never quote a community absolute next to a prod absolute; use relative deltas within one pod |
+| `rig2x5090-serve` | vast.ai 2x RTX 5090 32 GB (single card used) | Rented | The official-FP8 checkpoint lane. Also the multi-card measurement platform and the small-SKU serving-shape reference |
+| rented H100 80 GB | 8x / 3x / 1x HBM3 pods | Rented | The H100 board, the replica fleet, QoS lanes, endurance |
+| AWS G7e | PRO 6000 Server Edition | Rented | Hy3 spill / quantization research (`docs/HY3-SPILL.md`) |
+
+**No datacenter or desktop card is owned.** Any sentence about running on a PRO 6000 needs
+the word "rented" or "pod" in it. The owned build-out targets that same silicon class
+(owner override 2026-08-03, RTX PRO 6000 Blackwell class homogeneous rather than 2x5090 —
+`research/hw-growth-rethink-20260803/ASSESSMENT.md` §"OWNER OVERRIDE"); nothing is purchased,
+so *"measured on RTX PRO 6000 Blackwell (rented pod)"* is the only accurate present tense.
+The local 5090 Laptop is the **measuring and gating rig**, not the final performance target;
+2x5090 is dead as an owned purchase but alive and load-bearing as a rental platform. Two
+hardware studies (`research/hw-growth-rethink-20260803/`, `research/hw-buy-20260802/`) still
+carry their pre-override 2x5090 first-box recommendation un-struck, by design — a research
+dir records what was recommended on its date. Do not read a first-box recommendation out of
+either file.
+
+## The 27B serving board (RTX PRO 6000, rented pod)
+
+Rig `pro6000wk-runpod`, date **2026-08-04**, commit `2299ee0f`, temp max 43 C, zero throttle.
+Two artifacts, both Qwen3.6-27B, interleaved in one session: **nv** =
+`Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf` (15.7 GB), **q8** = `Qwen3.6-27B-Q8_0.gguf` (28.6 GB).
+Receipts: [`research/pro6000-prod-20260804/`](../research/pro6000-prod-20260804/), journal
+`pro6000wk-runpod.jsonl`.
+
+| Cell | Value | Protocol |
+|---|---|---|
+| Spec decode (MTP) K=3, nv, **bare CLI** | **186.7 tok/s** | N=5 process reps, median. 2.17x the same-run plain 86.20 |
+| Spec decode K=3, nv, **through the serve surface** at c=1 | **170.5 tok/s** | N=5 median, server restarted per K, 0 err / 0 shed |
+| Plain decode tg128, nv / q8 | 86.8 / 52.6 tok/s | N=5 medians |
+| Aggregate at c=8, nv / q8 | **420.6** / 308.7 tok/s | N=3 passes, median; p50 2.42 s, 64 ok / 0 shed / 0 err per pass. Spec off, plain batched serve |
+| TTFT cold, nv / q8 | **0.182** / 0.156 s | N=5 with per-rep `cache_salt`; median of reps 2-5, rep 1 excluded as one-time session warmup |
+| TTFT warm (prefix hit), nv / q8 | 0.003 / 0.004 s | reps 2-5; 61x the cold number |
+| Prefill pp512, nv / q8 | 4118 / 4591 tok/s | N=5, arms interleaved within every rep |
+| Q8 96 GB residency lever | +57% agg at c=16/32 (486 vs 310 tok/s, p50 6.61 → 4.21 s), 63.7 GB resident | `q8rp/` |
+
+Caveats that travel with these cells:
+
+- **c=8 is the knee; saturation is not a win.** c8 420.6 → c16 421.9 → c32 423.0 is flat
+  *while p50 doubles at every step* (2.43 → 4.84 → 9.67 s). The journal's own word for
+  c16/c32 is "queueing, not throughput." c=32 is not a throughput ceiling.
+- **The TTFT protocol trap.** An unsalted repeat request hits the prefix cache, so a TTFT
+  number measured without a fresh `cache_salt` is a warm number wearing a cold label. Cold
+  and warm are always stated separately.
+- **4118 and 4591 are two different artifacts**, not two configs of one.
+- **Never present a single rep as the headline.** 170.6188 is the r4 rep; the N=5 median is
+  170.55. 421.18 is the p1 pass; the N=3 median is 420.57.
+
+Gate battery on that rig: `kernel-check` **ALL GREEN** naked (184 `OK`) and model-backed on
+real 27B weights (263 `OK`); `run-gen` argmax **MATCH** both artifacts; `run-spec`
+self-consistency **PASS** at K=1,2,3. **Do not say "K=1..8" about this rig** — the prod board
+ran K=1..3 as a gate plus K=4/5 as perf cells. The full K=1..8 PASS battery lives on the
+community board, on the NVFP4-MTP artifact
+(`research/q27-deepdive-20260805/logs/gate-key48-runspec-K1to8.log`); Q8_0 cannot run it at
+all (no MTP head, `RUNSPEC-Q8 rc=2`). The accurate form is "K=1..8 self-consistency is a
+standing gate, run on the MTP-capable artifact."
+
+### Official FP8 checkpoint — the 2.6x spec cell (a different rig)
+
+Rig `rig2x5090-serve`, date **2026-08-04**, CUDA 13.0.1 / nvcc 13.0.88. Model: the official
+`Qwen/Qwen3.6-27B-FP8` safetensors checkpoint (29 GB, e4m3, `weight_block_size [128,128]`,
+407 block-128 scale grids). Receipts:
+[`research/fp8ship-20260804/official/`](../research/fp8ship-20260804/official/).
+
+| Arm | tok/s | vs plain |
+|---|---|---|
+| ST plain | 48.99 | — |
+| **ST spec, the checkpoint's own embedded MTP head** | **128.06** | **2.61x** |
+| ST spec + own-trim drafter | 136.75 | 2.79x |
+| ST e4m3 resident | 48.99 | flat *by construction* |
+
+N=5 medians per arm, SSE `/v1/chat/completions`, greedy, max_tokens 128, pp512-class prompt,
+fresh `cache_salt` per request with `cached_tokens=0` verified every rep, arms sequential in
+one session, 32-44 C. Bit-identity on the official artifact: argmax 365==365, maxdiff 0.0 x3,
+prefill logit vectors **bit-identical 993280/993280 bytes**. Load wall 843.9 → 291.6 s =
+**2.89x** (N=3 interleaved).
+
+The e4m3 arm is flat *because* every tensor on this checkpoint is block-128 and falls through
+to the Q8_0 path — the win here is load time, not tok/s. Spec **triples TTFT** on this arm
+(0.170 → 0.466 s). The GGUF Q8_0 reference row (53.63) is cross-protocol and cross-day, not
+apples-to-apples. **There is no official-FP8 measurement on any PRO 6000** — do not merge the
+two boards.
+
+## Standing (2026-08-05)
+
+Ten supported models on the 5090 Laptop, all fully gated; MTP-spec cells run 1.06–2.3x the
+frozen llama.cpp references (one Gemma near-parity cell, 0.98x, still open), plain cells sit
+at the DRAM wall or above.
 Newest in: **Qwen-AgentWorld-35B-A3B** (#10, best-vs-best e2e 1.68/1.76/1.75x on the
 UD-IQ4_XS re-pick). Just before it, **Ornith-1.0-35B** (#9) — AUTO-KQUANT (k-quant expert
 banks join the grouped-f16 prefill lane by default: board-2048 prefill 3.14x) stacked on
 resident-if-fits residency, and its own-gen drafter cleared the deployment bar on every
 prompt class (best-vs-best e2e 1.31/1.14/1.12x,
 [`research/q4k-expert-prefill-20260802/`](../research/q4k-expert-prefill-20260802/)).
-On the H100, a full per-model board against vLLM 0.26: **no end-to-end losses** — seven wins
-of seven (1.02–1.81x); decode wins 7 of 7. Multi-user serving measured on 3×H100: 1,477 tok/s
-managed fleet, chaos-tested. Trimmed MTP drafter heads are published ready-to-use at
+On the H100, a full per-model board against vLLM 0.26 (frozen 2026-08-01): **no end-to-end
+losses** — seven wins of seven (1.02–1.81x); decode wins 7 of 7. Multi-user serving measured
+on 3 rented H100s: 1,477 tok/s managed fleet, chaos-tested. Trimmed MTP drafter heads are
+published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
+
+The **plain-serve c=1 gap (task #70) closed 2026-08-05**: `MEMRA_SERVE_B1FAST` routes a solo
+serve tick through the m=1 fused trunk (+8.33% q9 / +5.19% q27 decode-only at c=1, N=5
+order-paired, 5/5 wins each; serve c=1 now level with the same-board `run-gen` denominator
+on the 82-SM rig — see [Serving performance](#serving-performance)). Still open: the NVFP4
+**spec** serve path (−8.66% pre-fix, its burst loop is a separate path) and the
+interactive-latency gaps in the banner above. Both are tracked as gaps, not hidden.
 
 ## The serving exactness arc — a defect the discipline caught
 
 The batched F32 prefill router GEMM was m-dependent, so under cross-request prefill batching
 a MoE request's own expert routing could change with its co-arrivals — a real serving defect.
+Scale of the defect, pre-fix: **121 of 760 (15.9%) `(layer, token)` pairs picked a different
+expert *set*** depending on who arrived in the same batch (Ornith-1.0-35B Q4_K_M at
+total_m=75, arm `exact0`), plus 217 more differing in order only.
 The fix routes prefill through the decode path's m-invariant router/gate kernels
 (`MEMRA_ROUTER_PREFILL_EXACT`, default ON), and a bit-identical batched twin then recovered
 70% of the prefill it cost. The serving contract — greedy serving is isolated-identical under
-concurrent load; a request's tokens never depend on its co-arrivals — is now explicit and
-gated, not assumed. Receipts:
+concurrent load at defaults; a request's tokens never depend on its co-arrivals — is now
+explicit and gated, not assumed: the serve gate replays the same prompts at c=1 and c=16 and
+byte-compares every stream (16/16 on all four models post-fix; 7/16 and 6/16 with
+`MEMRA_ROUTER_PREFILL_EXACT=0`, which is how the defect was found). Note the object: this is
+**serve-vs-serve at c=1 vs c=16**, not identity against a single-token oracle — the
+batched-plain path carries a documented, bounded near-tie flip class
+([`research/plainbatch-20260804/`](../research/plainbatch-20260804/)) and first-token
+cross-config drift is a separate class again (docs/SERVING.md). Receipts:
 [`research/concat-prime-exact-20260802/`](../research/concat-prime-exact-20260802/),
 [`research/fast-router-20260802/`](../research/fast-router-20260802/).
 
@@ -59,9 +192,11 @@ dense 27B row was never on the path (re-cell bit-stable). Receipts:
 [`research/q35-recell-final-20260802/`](../research/q35-recell-final-20260802/),
 [`research/h100-flip-full-20260802/`](../research/h100-flip-full-20260802/).
 
-## RTX 5090 vs llama.cpp
+## RTX 5090 Laptop — tracked cells, vs the frozen llama.cpp reference
 
-Single-user decode; both engines interleaved on the same rig, same prompts.
+Single-user decode on the local **RTX 5090 Laptop** (82 SM); both engines interleaved on the
+same rig, same prompts. The llama.cpp columns are **frozen reference denominators** recorded
+through 2026-08-03 (benching stopped that day) — regression anchors, not a live scoreboard.
 
 **Plain decode** (no speculation, tg128 at 512-token context):
 
@@ -87,7 +222,7 @@ medium code / long agentic prompt classes):
 <details><summary>Measurement provenance</summary>
 
 <!-- PERF-DATE:START (generated by tools/update-perf-board.py — do not hand-edit; edit research/tune-data/current-board.json instead) -->
-Measured 2026-08-02 on the target rig (RTX 5090 Laptop, N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows re-measured 2026-08-02 after the deep fa_decode merge (d14d7d8d) — N=5 same-session interleaved medians, fresh llama denominator, research/board-remeasure-20260802/ — spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the mode-2 grouped-f16 naked default — sk visitor + direct expert tiles — N=3 medians, research/f16g-default-rearb-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)) against llama.cpp built on the same machine, same exact prompts, both engines re-baselined the same day. Boards move with the tuning campaign — `research/tune-data/rig5090.jsonl` is the running record; the generated boards (README samples + this document) are refreshed with every board-moving merge.
+Measured 2026-08-02 on the tracked measuring rig (RTX 5090 Laptop, N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows re-measured 2026-08-02 after the deep fa_decode merge (d14d7d8d) — N=5 same-session interleaved medians, fresh llama denominator, research/board-remeasure-20260802/ — spec rows re-paired 2026-07-18 (35B spec row re-paired 2026-08-02 under the mode-2 grouped-f16 naked default — sk visitor + direct expert tiles — N=3 medians, research/f16g-default-rearb-20260802/), Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)) against llama.cpp built on the same machine, same exact prompts, both engines re-baselined the same day. The llama.cpp columns are frozen reference points recorded through 2026-08-03, when head-to-head benching stopped (owner call) — regression anchors, not a live scoreboard. Boards move with the tuning campaign — `research/tune-data/rig5090.jsonl` is the running record; the generated boards (README samples + this document) are refreshed with every board-moving merge.
 <!-- PERF-DATE:END -->
 
 </details>
@@ -100,11 +235,13 @@ fa_decode rewrite lands hardest, 35B +8.2% at d6257). The depth rows live in
 `current-board.json` (`plain_decode_depth`), re-measured N=5 same-session interleaved
 with a fresh llama denominator (`research/board-remeasure-20260802/`).
 
-### Prefill, root-caused
+### Prefill, root-caused — and still open
 
 5090 prefill trails llama.cpp (0.59–0.78x), root-caused: llama benches NVFP4 prefill at
 W4A4 (FP4 activations), a numeric class memra's exactness gates reject. Output quality
-outranks the prefill column.
+outranks the prefill column — but the numerics explanation does not close the gap, and the
+2026-08-05 dogfood run measured the same shape on an identical model file (4k prefill 1.2k
+vs 2.1k tok/s). Prefill remains an open lane, not a settled trade.
 
 ### Speculative protocol notes
 
@@ -125,9 +262,11 @@ tools/make-trimmed-draft.sh model.gguf ranks.gguf.txt draft.gguf  # extract + tr
 Same protocol, own campaign log
 ([`research/gemma4-bringup/rig5090-gemma4.jsonl`](../research/gemma4-bringup/rig5090-gemma4.jsonl));
 cells re-paired best-vs-best with llama's own draft depth swept per cell. Highlights
-(full tables and the per-cell archaeology live in the campaign log):
+(full tables and the per-cell archaeology live in the campaign log). Hand-written table —
+these cells are **not** in `current-board.json`, and their llama column is frozen at the
+2026-07-15 best-vs-best re-audit:
 
-| Cell | memra | llama.cpp | Ratio |
+| Cell | memra | llama.cpp (frozen ref) | Ratio |
 |---|---|---|---|
 | 12B MTP spec, 1.7k ctx (K=4 + own-gen trim) | 269.3 | 175.1 | **1.54x** |
 | 12B MTP spec, chat (K=4 + own-gen trim) | 240.9 | 172.4 | **1.40x** |
@@ -197,9 +336,12 @@ plain prefill 1.9-3.5x; [`research/agentworld-iq4xs-20260802/`](../research/agen
 Quant guidance: use UD-IQ4_XS — the UD-Q4_K_M repack's Q5_K expert mix sits outside
 fast-path coverage.
 
-## H100 vs vLLM
+## H100 (rented) vs the frozen vLLM 0.26 reference
 
 ![memra vs vLLM on the H100](perf-card-h100.svg)
+
+Rig: **1x H100 80 GB, rented pod** — no H100 is owned. The vLLM column is a frozen
+reference recorded 2026-08-01.
 
 <!-- PERF-H100:START (generated by tools/update-perf-board.py — do not hand-edit; edit research/tune-data/current-board.json instead) -->
 Measured 2026-08-01 on 1× H100 80GB against vLLM 0.26 — same box, every cell a same-session interleaved pair. One number per arm: end-to-end tok/s — 512 tokens generated on a ~2100-token real-text prompt, single request, total wall time; N=5 medians, argmax exactness gate green on every published row. Cross-artifact by design: vLLM serves what H100 users deploy (w8a8 / FP8-dynamic / bf16 HF checkpoints — it rejects these GGUFs); memra serves its GGUF artifacts.
@@ -265,13 +407,34 @@ core-matrix pairings probed for bf16/tf32/s8: one byte-geometry, three MMA kinds
 ## Serving performance
 
 Batched decode runs one z-batched tick across sequences, chunked 16-wide on models with a
-bit-exact 16-batch kernel class: +18.8% at c=16 on a 5090 single replica (same-mirror
-interleaved N=4); 654-659 tok/s/replica on the H100 serving tick (+25-36%). Greedy serving
-is isolated-identical under concurrent load at defaults (m-invariant prefill router/gate
-kernels, serve-gate c=1-vs-c=16 byte identity). Multi-GPU boxes serve as a replica fleet —
-supervisor + admission proxy + load harness, measured at 1,477 tok/s managed on 3×H100,
+bit-exact 16-batch kernel class: +18.8% at c=16 on a 5090 Laptop single replica (same-mirror
+interleaved N=4); 654-659 tok/s/replica on the rented-H100 serving tick (+25-36%). Greedy
+serving is isolated-identical under concurrent load at defaults (m-invariant prefill
+router/gate kernels, serve-gate c=1-vs-c=16 byte identity — serve-vs-serve, not identity
+against a tokenwise oracle). Multi-GPU boxes serve as a replica fleet — supervisor +
+admission proxy + load harness, measured at 1,477 tok/s managed on 3 rented H100s,
 chaos-tested: kill a replica mid-load and the breaker + supervisor recover in seconds with
-only in-flight requests lost. Runbook: [`docs/SERVING.md`](SERVING.md).
+only in-flight requests lost. Endurance: 140 minutes at c=96 on 8 rented H100s, 464,870
+requests, 0 errors, 0 sheds, +0.045% throughput drift — a **9B-class** (Qwen3.5-9B-Q8_0)
+warm-prefix result whose load ran at temp 0.7 seeded, with a separate greedy probe hashing
+identical on all 8 replicas before and after. Runbook: [`docs/SERVING.md`](SERVING.md).
+
+**The plain-serve c=1 gap (task #70) — CLOSED 2026-08-05, serve-path phase 2.** Phase 1
+measured serve c=1 at −11.74% vs the naked CLI on a Q8_0 27B cell (`memra-server` 46.09
+tok/s N=3 median vs `run-gen` 52.22 single run, rig `pro6000wk-runpod-community`); the
+measured cause was that the worker routed B=1 through the batched decode body, missing the
+m=1 fusion chain. The fix (`MEMRA_SERVE_B1FAST`, default ON) routes a `b_n==1` tick through
+`decode_layers_eager` verbatim: **+8.33% q9 / +5.19% q27** decode-only at c=1 (N=5
+order-paired, 5/5 wins each, c=8 flat), bit-identical to `decode_step_h` (strict gate1
+PASSes with it ON and FAILed without), and serve c=1 now sits level with the same-board
+`run-gen` denominator on the 82-SM rig. The 188-SM phase-1 cell has not been re-measured
+post-fix; the pre-fix −11.74% is history, not a current number. **Still open:** the NVFP4
+**spec** serve path (−8.66% pre-fix: 170.55 serve vs 186.72 bare, rig `pro6000wk-runpod`)
+— the spec tier's burst loop is a separate path the fast path does not touch. Receipts:
+[`research/q27-deepdive-20260805/PHASE2-SPEC.md`](../research/q27-deepdive-20260805/PHASE2-SPEC.md)
+(phase 1), [`research/servepath-p2-20260805/`](../research/servepath-p2-20260805/) (the
+fix + the graph-door refutation). The published boards above are **bare-CLI** numbers; do
+not read them as serve-path numbers.
 
 ## Bring-up notes
 

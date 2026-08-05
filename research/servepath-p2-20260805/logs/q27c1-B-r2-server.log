@@ -1,0 +1,24 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[worker]   loaded "m": 65 layers, eos=248046
+[worker] m: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] m: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["m"]
+[server] listening on http://127.0.0.1:8188
+[meter] admit id=chatcmpl-5a070a688aa4c66ad597a8b4c2940775 tenant=default lane=interactive model="m"
+[worker] observed session VRAM cost for "m": 570MB (admission gate = 2x)
+[prefix-cache] insert (seed): 226 tokens, 166.9MB (resident 166.9MB / 268MB, model m)
+[meter] admit id=chatcmpl-e98378cb3a5722dd2a38d19c1a6f69d4 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-9a4027fbf86643c3b1b4c8e316397af1 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-2a15cc223341f1da241d2283fbf7cff4 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-bb384711696567f94681c0d7a9881c96 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-defb5fefcfaee13aa43a25c7f8b77465 tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)
+[meter] admit id=chatcmpl-fd671bc3fb06e6408857b7351afa9c4d tenant=default lane=interactive model="m"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model m)

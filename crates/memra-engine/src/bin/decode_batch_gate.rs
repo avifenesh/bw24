@@ -8,6 +8,21 @@
 //! (MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1, both paths on dp4a + unfused norms) the battery is
 //! BIT-IDENTICAL at B=1 and B=N-vs-isolated (verified 2026-07-26 on H100).
 //!
+//! STRICT-MODE EQUALIZATION NOW COVERS NVFP4 (lane/nvfp4-strict, 2026-08-05). History: the
+//! equalizing env was Q8/dp4a-shaped — MEMRA_MMVQ=0 steered the Q8_0-class arms (their
+//! fused launches all sit behind `q8_fused_params`, which refuses under MMVQ=0 by the
+//! FP-order law) but the NVFP4 gate+up/beta+alpha pair door (`matmul_pre_dual_noscale`)
+//! had no such check: the oracle kept dispatching `qmatvec_nvfp4_mmvq_dual_mr2` (MMVQ
+//! 32-thread warp-reduce family) while the batched side fell to dp4a (128-thread
+//! two-level reduce) — a mixed-family comparison, so `--mode strict` FAILED on ANY NVFP4
+//! model at pristine trees (train-HEAD receipts: gate1 maxdiff 1.639e-1 @ step 2 on q9,
+//! research/servepath-p2-20260805/logs/dbg-strict-b4-TRAINHEAD.log; gate2 step-6 token
+//! divergence on q27 at 93420980, research/nvfp4-strict-20260805/repro.log). The fix
+//! applies the SAME law to the NVFP4 arm: `matmul_pre_dual_noscale` returns None when
+//! `mmvq_supports(QT_NVFP4)` is false, so under the equalized env BOTH sides ride dp4a
+//! and strict bit-identity holds (default env is dispatch-unchanged). A strict FAIL on an
+//! NVFP4 model is a REAL failure again.
+//!
 //! Modes (--mode, default "config"):
 //!   strict — bit-identity gates; run under the EQUALIZED env or expect gate1 bit-diffs:
 //!     gate1: B=1 logits bit-identical to decode_step_h, every step.
@@ -166,6 +181,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- Gate 2: B=N vs isolated (the serving isolation contract) ----
     // Reference = isolated runs of the SAME config: strict mode uses decode_step_h,
     // config mode uses decode_step_batch at B=1 — within-config, bit strength applies.
+    //
+    // H3 (serve-path phase 2, 2026-08-05) PINS the B=1 REFERENCE ARM of gate2 AND gate3b
+    // to the batched body. Reason: the B=1 fast path routes solo sequences onto the m=1
+    // FUSED trunk, so an unpinned `decode_step_batch(&[t])` reference would no longer run
+    // the code these gates exist to test — their bit/stream checks would silently degrade
+    // from "batchmates must not perturb your logits" (the real teeth) into a cross-config
+    // FP-composition comparison, which gate1's config mode already tolerates by design.
+    // Pinning keeps their jurisdiction exactly where it was: the BATCHED m>=2 body.
+    // The fast path's own exactness is gate1's job (STRICT gate1 = bit-identity to
+    // decode_step_h, which PASSes ONLY with the fast path ON — verified on-box: OFF fails
+    // at maxdiff 1.591e-1). Set through the explicit seam rather than the env because
+    // gate1 above already ran with the fast path live and the read is memoized.
+    let b1_fast_live = HybridModel::b1_fast_on();
+    HybridModel::set_b1_fast(false);
+    println!("gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; \
+              live default = {})", if b1_fast_live { "ON" } else { "OFF" });
     let mut ref_streams: Vec<Vec<u32>> = Vec::new();
     let mut ref_logits: Vec<Vec<Vec<f32>>> = Vec::new();
     for p in prompts.iter().take(b_n) {

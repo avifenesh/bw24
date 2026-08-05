@@ -298,6 +298,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  no_operand={no_op} bad_shape={shp} bad_scale={scl} nan={nan})"
             );
         }
+        // MEMRA_RESIDENCY_CENSUS=1 (lane/fp8-decode-v1): which container each 2D matmul weight
+        // ACTUALLY went resident in, and its bytes. The FP8-ST decode arm is a residency change,
+        // so this is its primary evidence — tok/s alone cannot separate "arm ran, flat" from
+        // "arm never engaged on this checkpoint".
+        if std::env::var("MEMRA_RESIDENCY_CENSUS").is_ok_and(|v| v != "0") {
+            println!("{}", memra_engine::model::residency_census_report());
+        }
         let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
         let mut dec = Vec::new();
         for &token in &prompt {
@@ -340,6 +347,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cpu_wait_before = e.cpu_expert_exposed_wait_ns();
             let cpu_residency_before = e.cpu_expert_gpu_residency_stats();
             let disk_before = process_read_bytes();
+            let (mut tf_disagree, mut tf_positions) = (0usize, 0usize);
+            let mut tf_first_disagree: Option<usize> = None;
+            let mut tf_nll = 0.0f64;
             let t0 = std::time::Instant::now();
             for step in 0..n_new {
                 // Keep the ordinary host argmax cost inside teacher-forced A/B windows; only the
@@ -349,6 +359,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_ref()
                     .map(|tokens| tokens[step])
                     .unwrap_or(greedy);
+                // TEACHER-FORCED DISAGREEMENTS + NLL (lane/fp8-decode-v1, 2026-08-05): under
+                // forcing, both arms see BIT-IDENTICAL inputs at every position, so
+                // `greedy != next` is this arm's own argmax disagreeing with the reference tape
+                // at a position the reference actually visited. That is the branch-(b) quantity
+                // for two containers whose arithmetic differs (e4m3 in-kernel dequant vs the
+                // Q8_0 re-encode): bit-identity is the WRONG question, disagreement count and
+                // the forced-tape NLL are the right ones. NLL = -log softmax(logits)[next],
+                // summed over the window: the tape's own likelihood under this arm, so a lower
+                // total is a strictly better model of the SAME token sequence.
+                if forced_tokens.is_some() {
+                    if greedy != next {
+                        tf_disagree += 1;
+                        if tf_first_disagree.is_none() { tf_first_disagree = Some(step); }
+                    }
+                    let mx = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let lse = mx + logits.iter().map(|l| (l - mx).exp()).sum::<f32>().ln();
+                    tf_nll += (lse - logits[next as usize]) as f64;
+                    tf_positions += 1;
+                }
                 out.push(next);
                 if next == eos {
                     break;
@@ -363,6 +392,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 out.len() as f64 / dt,
                 if forced_tokens.is_some() { "teacher-forced" } else { "greedy" },
             );
+            if tf_positions > 0 {
+                println!(
+                    "teacher-forced EXACTNESS: disagreements={tf_disagree}/{tf_positions} \
+                     ({:.2}%) first_at={}  mean_nll={:.6}  total_nll={:.4}",
+                    100.0 * tf_disagree as f64 / tf_positions as f64,
+                    tf_first_disagree.map_or("-".to_string(), |s| s.to_string()),
+                    tf_nll / tf_positions as f64,
+                    tf_nll,
+                );
+            }
             println!("tokens: {out:?}");
             // MoE residency-cache report (hit-rate + PCIe) — this decode window only.
             if let Some((hits, misses, staged, n_slots)) = e.moe_cache_stats() {

@@ -1,0 +1,16 @@
+# gemma dense-decode correctness arms, RE-RUN on a free card after the daily driver was stopped
+# (the OOM'd attempt and its concurrent-GPU state are preserved in gates-head.log)
+memory.used [MiB], memory.total [MiB], temperature.gpu
+368 MiB, 24463 MiB, 65
+
+## 31B run-gen argmax (exit 0):
+prefill argmax=4694  decode argmax=4694  logit maxdiff=1.063e0  MATCH
+## 31B VERIFY-GATE K=7 depth (exit 0):
+VERIFY-GATE K=7: PASS
+## 31B spec self-consistency (exit 0):
+plain: 40.11 tok/s | spec: 105.83 tok/s (2.64x) | stream agreement 64/64
+## 12B run-gen argmax depth (exit 0):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.438e0  MATCH
+batched-prime argmax=623  tokenwise argmax=623  logit maxdiff=2.438e0  MATCH
+## 12B VERIFY-GATE K=7 depth (exit 0):
+VERIFY-GATE K=7: PASS

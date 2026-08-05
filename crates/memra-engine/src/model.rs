@@ -3,14 +3,62 @@
 //! exactly the dense-transformer graph (qwen3) and the full-attention layers of hybrids.
 
 use crate::{
-    Engine, QT_BF16, QT_F32, QT_IQ3_S, QT_IQ4_XS, QT_NVFP4, QT_Q2_K, QT_Q3_K, QT_Q4_0, QT_Q4_K,
-    QT_Q5_K, QT_Q6_K, QT_Q8_0,
+    Engine, QT_BF16, QT_F32, QT_F8_E4M3, QT_IQ3_S, QT_IQ4_XS, QT_NVFP4, QT_NVFP4_RP, QT_Q2_K,
+    QT_Q3_K, QT_Q4_0, QT_Q4_K, QT_Q5_K, QT_Q6_K, QT_Q8_0,
 };
 use memra_gguf::config::ModelConfig;
 use memra_gguf::source::{DiskExtent, GgufSource, TensorSource};
 use memra_gguf::{dequant, GgmlType, GgufFile};
 use cudarc::driver::CudaSlice;
 use std::collections::HashMap;
+
+/// RESIDENCY CENSUS (lane/fp8-decode-v1, 2026-08-05) — per-qtype tally of the 2D matmul weights
+/// that actually went resident, keyed by `QT_*`. The FP8-ST decode arm's whole claim is about
+/// WHICH container the checkpoint's projections end up in, and the two candidate containers
+/// differ in bytes (e4m3 1.0 B/w vs the Q8_0 re-encode 1.0625 B/w). Before this instrument the
+/// only evidence available was end-to-end tok/s, which cannot distinguish "the arm ran and was
+/// flat" from "the arm never engaged" — the exact ambiguity in this lane's first loadprobe pair.
+/// Slot = qtype index; `.0` = tensor count, `.1` = resident bytes.
+static RESIDENCY_CENSUS: [(std::sync::atomic::AtomicUsize, std::sync::atomic::AtomicU64); 16] = {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const Z: (std::sync::atomic::AtomicUsize, std::sync::atomic::AtomicU64) =
+        (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicU64::new(0));
+    [Z; 16]
+};
+
+fn residency_census_note(qtype: i32, bytes: usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if let Some(slot) = RESIDENCY_CENSUS.get(qtype as usize) {
+        slot.0.fetch_add(1, Relaxed);
+        slot.1.fetch_add(bytes as u64, Relaxed);
+    }
+}
+
+/// Human-readable residency census: one line per qtype that took at least one 2D weight, plus a
+/// total. Callers print it right after load — see `run-gen`'s `MEMRA_RESIDENCY_CENSUS=1`.
+pub fn residency_census_report() -> String {
+    use std::sync::atomic::Ordering::Relaxed;
+    let name = |q: usize| -> &'static str {
+        match q as i32 {
+            QT_Q8_0 => "Q8_0", QT_Q4_K => "Q4_K", QT_Q6_K => "Q6_K", QT_Q5_K => "Q5_K",
+            QT_Q3_K => "Q3_K", QT_IQ4_XS => "IQ4_XS", QT_IQ3_S => "IQ3_S", QT_NVFP4 => "NVFP4",
+            QT_F32 => "F32", QT_NVFP4_RP => "NVFP4_RP", QT_F8_E4M3 => "F8_E4M3",
+            QT_BF16 => "BF16", QT_Q4_0 => "Q4_0", QT_Q2_K => "Q2_K", _ => "?",
+        }
+    };
+    let mut out = String::from("residency census (2D matmul weights, resident container):\n");
+    let (mut tn, mut tb) = (0usize, 0u64);
+    for (q, slot) in RESIDENCY_CENSUS.iter().enumerate() {
+        let (n, b) = (slot.0.load(Relaxed), slot.1.load(Relaxed));
+        if n == 0 { continue; }
+        tn += n; tb += b;
+        out += &format!("  {:>9}: {:>4} tensors  {:>9.3} MiB\n", name(q), n,
+                        b as f64 / (1024.0 * 1024.0));
+    }
+    out += &format!("  {:>9}: {:>4} tensors  {:>9.3} MiB", "TOTAL", tn,
+                    tb as f64 / (1024.0 * 1024.0));
+    out
+}
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -246,7 +294,27 @@ impl GpuTensor {
 
     /// Source-agnostic load: works from any `TensorSource` (GGUF or safetensors). The engine's
     /// forward graph only ever asks for ggml-style names; the source maps them to its own layout.
+    ///
+    /// RESIDENCY CENSUS (lane/fp8-decode-v1, 2026-08-05): the wrapper tallies what each 2D
+    /// matmul weight ACTUALLY became — resident qtype + resident bytes — so the FP8-ST decode
+    /// arm's claim ("e4m3 stays native instead of paying the Q8_0-slab tax") is a measured
+    /// per-checkpoint fact rather than an assumption about the checkpoint's dtype mix. Read it
+    /// with `residency_census_report()`; zero cost when never read.
     pub fn load_from_source(
+        e: &Engine,
+        src: &dyn TensorSource,
+        name: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let t = Self::load_from_source_inner(e, src, name)?;
+        if let GpuTensor::Quant { qtype, bytes, ne, .. } = &t {
+            if ne.len() == 2 {
+                residency_census_note(*qtype, bytes.len());
+            }
+        }
+        Ok(t)
+    }
+
+    fn load_from_source_inner(
         e: &Engine,
         src: &dyn TensorSource,
         name: &str,
@@ -290,7 +358,8 @@ impl GpuTensor {
                 }
             }
         }
-        // E4M3-DIRECT (MEMRA_ST_E4M3=1, lane e4m3dec 2026-07-08): F8-E4M3-origin 2D projections keep
+        // E4M3-DIRECT (DEFAULT since lane/fp8-decode-v1 2026-08-05; MEMRA_ST_E4M3=0 rolls back to the
+        // Q8_0 slab. Introduced default-off by lane e4m3dec 2026-07-08): F8-E4M3-origin 2D projections keep
         // the checkpoint's RAW e4m3 device bytes + per-tensor weight_scale as the ONE resident copy
         // (QT_F8_E4M3) instead of the Q8_0 re-encode — decode dequants e4m3 in-kernel
         // (qmatvec_e4m3_mmvq, the checkpoint's own precision, no lossy re-quant hop), prefill
@@ -339,7 +408,16 @@ impl GpuTensor {
         // per-row scale classes are NOT touched (find_fp8_native returns blk=None / None for
         // them) and neither are V-reorder Transform targets (find_fp8_native rejects those with
         // a grid — the permutation invalidates the on-disk grid, so they keep the host path).
-        if crate::fp8_ffi::fp8_blk_gpu_enabled() && !crate::fp8_ffi::st_e4m3_enabled() {
+        //
+        // NO st_e4m3 EXCLUSION (lane/fp8-decode-v1 2026-08-05): this arm used to carry
+        // `&& !st_e4m3_enabled()`, written when MEMRA_ST_E4M3 was default OFF and meant only as
+        // "the native arm above already claimed this tensor". Once native residency became the
+        // DEFAULT that condition would have been true on every run and silently disabled ARM B'
+        // for the whole block-128 class — the exact silent-slow-path landmine the flags doctrine
+        // forbids. The two arms are already disjoint by construction and need no cross-gate: the
+        // arm above returns only when `f8.blk.is_none()`, this one runs only when `f8.blk` is
+        // Some, so a tensor that reaches here was never eligible for native residency.
+        if crate::fp8_ffi::fp8_blk_gpu_enabled() {
             if let Some(f8) = src.find_fp8_native(name) {
                 if let Some(grid) = f8.blk.as_ref() {
                     let (in_f, out_f) = (f8.in_f, f8.out_f);

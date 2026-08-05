@@ -1,0 +1,9 @@
+[stage:7-serve-base] start 2026-08-05T07:58:36Z
+[base] 'What is the capital of France?': marker=False/False words=105 uniq=0.68
+[base] 'Write a haiku about the moon.': marker=False/False words=158 uniq=0.68
+[base] 'Explain the difference between a list an': marker=False/False words=195 uniq=0.70
+[base] 'Give me three tips for improving sleep q': marker=False/False words=147 uniq=0.77
+[base] 'Summarize what photosynthesis does in on': marker=False/False words=195 uniq=0.70
+[base] 'Write a bash one-liner to count lines in': marker=False/False words=197 uniq=0.50
+STRUCTURE-VERDICT[base]: degenerate=0/6 (PASS)
+[stage:7-serve-base] end rc=0 wall=13s

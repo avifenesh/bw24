@@ -1,0 +1,56 @@
+Changes since v0.69.0:
+
+## Performance
+- native e4m3 residency becomes the default for per-tensor-scale FP8-ST
+- e4m3 launch-fusion twins — native FP8 residency no longer un-fuses the decode trunk
+- H3 — solo serve sessions ride the m=1 fused trunk (+8.33% decode-only at c=1)
+- Q8_0 dense-FFN gate+up m=1 fusion + SM-gated CUDA-graph budget key — q27 deep-dive phase-1 levers
+
+## Features
+- spec acceptance telemetry on /metrics + usage.spec (lane/accept-telemetry) — per-model spec block on GET /metrics (rounds/drafted/accepted, acceptance_rate, tokens_per_round, pos_drafted/pos_accepted/accept_rate_per_pos arrays; absent until a spec burst runs, cumulative since model load = process lifetime). Worker diffs SpecSession.telem around each burst (pool resumes carry prior requests' counts — the delta isolates this request), merges per-model, publishes on the 32nd-tick snapshot + force-publish at spec-session retire. Event::Done grows spec: Option<SpecUsage> -> usage.spec {rounds,drafted,accepted,acceptance_rate} — additive OpenAI-safe (None on non-spec requests keeps usage byte-identical). Unit tests: telemetry delta/merge/saturation laws + usage.spec presence/absence envelope contract
+- per-draft-position acceptance telemetry on SpecSession — SpecTelemetry counters (rounds, drafted, accepted, pos_drafted/pos_accepted[0..8]) accumulated at the round accounting the loop already does (host u64 adds, zero syncs, zero allocation; same p-min normalization as [spec-stats]). Round-stream burst arm counts totals only (per-round accepts live on device there). delta_since/merge give the serve worker per-burst diffs + per-model aggregation. The llama.cpp #26389 / vLLM per-position counter schema (upstream-sweeps 2026-08-05)
+- session-affinity docs + serve-smoke check 10 + the N=3 TTFT curve (slice 7)
+- tools/merge-lora.py — LoRA -> merged BF16 HF checkpoint (loop gap #1)
+- MEMRA_AFFINITY rollback seam + the byte-identity harness (slice 5)
+- affinity resume — turn checkpoint + rewind, wired into admit (slice 4)
+- plumb the explicit affinity key from both HTTP bodies (slice 2)
+- session-affinity keys + exact resume diff (slice 1, CPU)
+- API-key management — multi-key tenant auth (lane/api-keys)
+
+## Fixes
+- fast-gate kind=cmd reported a SKIPping probe as PASS
+- NVFP4 fused dual doors obey the FP-order law — strict decode-batch-gate now equalizes NVFP4
+- chunk-invariance canary must inject a break, not relabel the expectation
+- local-ci runs decode-batch-gate — the serving tick's exactness was guarded off-battery
+- serve-smoke check 10 gates what affinity OWNS — chunked prefill is not reduction-order-stable (slice 8)
+- turn checkpoint sat one token PAST the prompt end — affinity was inert
+- fingerprint must be a segment CHAIN, not one digest
+- serve-smoke gains a sampled-truncation matrix — the greedy-only battery could not see this bug
+- F5 slice 2 — right-size ladder hardening: fallible embed residency + transient-reserve probe on new landings
+- top_p/min_p injected id-0 tokens — full-accept bonus used a neighbour column's filter stats
+- F5 spec-pool thrash — learned evict-first on VRAM-tight misses + right-size ladder on genuine alloc failure
+- resumable per-crate publish — the v0.69.0 first publish shipped 5/9 crates then 429'd on crates.io's new-crate burst limit, and the all-or-nothing 'cargo publish --workspace' rerun hard-failed on 'already exists' instead of resuming. Publish now goes per-crate in dependency order, skips versions already live (registry API), waits out 429s (620s, 6 attempts), and workflow_dispatch gains a publish=true recovery door. RELEASING.md updated
+
+## Documentation
+- HANDOVER's NV-27B ST pp1855 line names which arm is now 'default'
+- E4M3-DIRECT arm comment records the default flip
+- SERVING.md spec-acceptance telemetry section — /metrics spec block format + per-position semantics (prefix-walk decay, p-min normalization, round-stream caveat), usage.spec per-request contract, reset-on-load semantics, zero-hot-path-cost statement
+- correct the leak-site comment in prime_cache — the m-dependence and GDN-segmentation candidates are REFUTED, the base_len==0 f32-vs-quantized-KV class edge is the cause
+- v0.70 pre-release sweep — retire the pre-fix serve c=1 gap text, surface API keys + affinity in the README, catalog decode-batch-gate in the battery descriptions
+- catalog MEMRA_SERVE_B1FAST, re-provenance MEMRA_GS_MIN, scope the isolation contract
+- engine-only scope — product docs move out to the private product repo
+- reconcile the merged #71 session-affinity lane into the truth surfaces
+- SPEC §16.4 — name the repo docs the build-agent may now trust
+- PRODUCT-TRUTH — close the two remaining 'needs fixing' notes now that the fixes landed
+- PRODUCT-TRUTH — record what the reconciliation fixed (§12.1) and narrow the stale-text hazard list
+- genericize the lab name and un-stale the 5090-as-deployment-target text
+- PERFORMANCE.md — llama-freeze banner, rig labels, the open serve gap
+- un-stale the user-facing docs against docs/PRODUCT-TRUTH.md
+- product claims come from docs/PRODUCT-TRUTH.md, updated in the same commit
+- correct the evidence inventory and blog source material against PRODUCT-TRUTH
+- correct the website spec against PRODUCT-TRUTH + fold in the three owner decisions
+- PRODUCT-TRUTH.md — one reconciled source for every product-facing claim
+- API-keys auth section (SERVING.md) + MEMRA_API_KEYS flag entry (FLAGS.md); tools/apikeys-gate.sh live battery
+- darklanes launch website spec — full build brief for the implementing agent
+
+Boards + reproduction artifacts: https://huggingface.co/Avifenesh/memra-bench · full experiment log in research/tune-data/

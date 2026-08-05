@@ -1,0 +1,103 @@
+### lane/chunk-invariance 2026-08-05T16:20:43+03:00 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+62, 180 MHz
+=== A baseline turn1 ===
+loaded qwen35 (32 layers)
+chunkinv: T=97 chat=false chunks=["2048", "64", "32"] steps=48
+ref chunk=2048 argmax=271 margin=0.483452
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,97) maxdiff=6.909e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 6.9e0 3.6e0 4.8e0 5.3e0 4.9e0
+     64 | DIFFER |            64 | 5.269e-1 | - | identical
+   profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,97) maxdiff=8.972e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 3.7e0 5.9e0 4.3e0 9.0e0 4.1e0 5.5e0 2.8e0 3.1e0 1.1e0
+     32 | DIFFER |            32 | 6.375e-1 | - | step 18
+chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+=== A baseline turn2 ===
+loaded qwen35 (32 layers)
+chunkinv: T=149 chat=false chunks=["2048", "64", "32"] steps=48
+ref chunk=2048 argmax=4558 margin=1.227142
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,149) maxdiff=6.909e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 6.9e0 3.6e0 4.8e0 5.3e0 4.9e0 5.4e0 4.3e0 6.5e0 3.5e0 3.5e0 4.4e0
+     64 | DIFFER |            64 | 3.909e-1 | - | step 47
+   profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,149) maxdiff=1.215e1 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 3.7e0 5.9e0 4.3e0 9.0e0 4.1e0 5.5e0 2.8e0 3.1e0 6.1e0 9.7e0 3.4e0 1.2e1 4.8e0 3.0e0 3.8e0
+     32 | DIFFER |            32 | 5.041e-1 | - | step 16
+chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+=== B gemm m-razor (wq) ===
+  70 | BIT-IDENTICAL | 0.000000e0
+  71 | BIT-IDENTICAL | 0.000000e0
+  72 | BIT-IDENTICAL | 0.000000e0
+  73 | BIT-IDENTICAL | 0.000000e0
+  74 | BIT-IDENTICAL | 0.000000e0
+  75 | BIT-IDENTICAL | 0.000000e0
+  76 | BIT-IDENTICAL | 0.000000e0
+  77 | BIT-IDENTICAL | 0.000000e0
+  78 | BIT-IDENTICAL | 0.000000e0
+  79 | BIT-IDENTICAL | 0.000000e0
+  80 | BIT-IDENTICAL | 0.000000e0
+gemm verdict: prefill GEMM rows are m-INVARIANT over this range
+=== B gemm m-razor (head) ===
+  76 | BIT-IDENTICAL | 0.000000e0
+  77 | BIT-IDENTICAL | 0.000000e0
+  78 | BIT-IDENTICAL | 0.000000e0
+  79 | BIT-IDENTICAL | 0.000000e0
+  80 | BIT-IDENTICAL | 0.000000e0
+gemm verdict: prefill GEMM rows are m-INVARIANT over this range
+=== C invariant turn1 ===
+loaded qwen35 (32 layers)
+chunkinv: T=97 chat=false chunks=["2048", "64", "32"] steps=48
+ref chunk=2048 argmax=271 margin=0.422234
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,97) maxdiff=0.000e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0
+     64 | EXACT |            -1 | 0.000e0 | - | identical
+   profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,97) maxdiff=0.000e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== C invariant turn2 ===
+loaded qwen35 (32 layers)
+chunkinv: T=149 chat=false chunks=["2048", "64", "32"] steps=48
+ref chunk=2048 argmax=4558 margin=1.301115
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,149) maxdiff=0.000e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0
+     64 | EXACT |            -1 | 0.000e0 | - | identical
+   profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,149) maxdiff=0.000e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== D canary (grain 32 vs 64 under the door — MUST differ) ===
+chunkinv: T=149 chat=false chunks=["2048"] steps=24
+ref chunk=2048 argmax=4558 margin=1.301115
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunkinv: T=149 chat=false chunks=["2048"] steps=24
+ref chunk=2048 argmax=4558 margin=1.182713
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== E perf pp6257 interleaved N=5 (off,on x5), grain=64 ===
+{"phase":"E","pp":6257,"rep":1,"arm":"off","grain":64,"prompt_tokens":4881,"tok_s":4610.4}
+{"phase":"E","pp":6257,"rep":1,"arm":"on","grain":64,"prompt_tokens":4881,"tok_s":4586.1}
+{"phase":"E","pp":6257,"rep":2,"arm":"off","grain":64,"prompt_tokens":4881,"tok_s":4577.2}
+{"phase":"E","pp":6257,"rep":2,"arm":"on","grain":64,"prompt_tokens":4881,"tok_s":4564.6}
+{"phase":"E","pp":6257,"rep":3,"arm":"off","grain":64,"prompt_tokens":4881,"tok_s":4557.8}
+{"phase":"E","pp":6257,"rep":3,"arm":"on","grain":64,"prompt_tokens":4881,"tok_s":4555.7}
+{"phase":"E","pp":6257,"rep":4,"arm":"off","grain":64,"prompt_tokens":4881,"tok_s":4556.3}
+{"phase":"E","pp":6257,"rep":4,"arm":"on","grain":64,"prompt_tokens":4881,"tok_s":4550.1}
+{"phase":"E","pp":6257,"rep":5,"arm":"off","grain":64,"prompt_tokens":4881,"tok_s":4551.4}
+{"phase":"E","pp":6257,"rep":5,"arm":"on","grain":64,"prompt_tokens":4881,"tok_s":4546.3}
+=== E perf pp512 interleaved N=5 (off,on x5), grain=64 ===
+{"phase":"E","pp":512,"rep":1,"arm":"off","grain":64,"prompt_tokens":400,"tok_s":4014.4}
+{"phase":"E","pp":512,"rep":1,"arm":"on","grain":64,"prompt_tokens":400,"tok_s":4021.1}
+{"phase":"E","pp":512,"rep":2,"arm":"off","grain":64,"prompt_tokens":400,"tok_s":4027.7}
+{"phase":"E","pp":512,"rep":2,"arm":"on","grain":64,"prompt_tokens":400,"tok_s":4034.9}
+{"phase":"E","pp":512,"rep":3,"arm":"off","grain":64,"prompt_tokens":400,"tok_s":4038.3}
+{"phase":"E","pp":512,"rep":3,"arm":"on","grain":64,"prompt_tokens":400,"tok_s":4049.7}
+{"phase":"E","pp":512,"rep":4,"arm":"off","grain":64,"prompt_tokens":400,"tok_s":4050.2}
+{"phase":"E","pp":512,"rep":4,"arm":"on","grain":64,"prompt_tokens":400,"tok_s":4045.1}
+{"phase":"E","pp":512,"rep":5,"arm":"off","grain":64,"prompt_tokens":400,"tok_s":4042.6}
+{"phase":"E","pp":512,"rep":5,"arm":"on","grain":64,"prompt_tokens":400,"tok_s":4053.4}
+### done 2026-08-05T16:22:25+03:00
+EXIT=0

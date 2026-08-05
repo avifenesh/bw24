@@ -1,0 +1,7 @@
+[11:01:26Z] nsys nv K=5 starting
+[11:01:51Z] nsys nv K=5 done rc=0
+[11:01:51Z] nsys q8 K=4 starting
+[11:02:15Z] nsys q8 K=4 done rc=0
+[11:02:38Z] phase-serve nv K=5: spec-phase] draft=21.7ms (12.0%) verify-issue=36.6ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=123.3ms (67.9%) rounds=9 spec-phase] draft=11.8ms (11.7%) verify-issue=20.2ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=68.5ms (68.2%) rounds=5 
+[11:03:01Z] phase-serve q8 K=4: spec-phase] draft=25.4ms (7.4%) verify-issue=79.4ms (23.2%) verify-wait=0.0ms (0.0%) commit-host=236.9ms (69.3%) rounds=13 spec-phase] draft=17.7ms (7.5%) verify-issue=54.5ms (23.0%) verify-wait=0.0ms (0.0%) commit-host=164.9ms (69.6%) rounds=9 
+[11:03:01Z] NSYS_SERVE_DONE

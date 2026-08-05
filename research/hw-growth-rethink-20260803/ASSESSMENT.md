@@ -315,7 +315,7 @@ which is exactly what (e) encodes.
 | Bounce-latency measurement (replaces the 30–60 µs projection in §1.2) | with the above | one bench on the first owned/rented pair | hours |
 | Patched-P2P qualification (aikitoria) | only if TP/N≥8/migration shape appears | gate battery per driver bump, recurring | days + recurring tax — deferred |
 | PRO 6000 bring-up | first PRO purchase | zero (sm_120a proven on G7e; g7e-rtx6000.jsonl exists) | ~0 |
-| 8x H100 bring-up | fleet stage | zero (sm_90a merged; darklanes receipts) | ~0 |
+| 8x H100 bring-up | fleet stage | zero (sm_90a merged; rented-fleet receipts) | ~0 |
 | DGX Spark (sm_121 + ARM) / Station (sm_103 + ARM) / Rubin (unknown CC + ARM) | not on the path | new arch lane(s), H100-scale each | weeks–months — avoided by this plan |
 
 ## 6. Staged buy plan (earnings-gated, per the doctrine)

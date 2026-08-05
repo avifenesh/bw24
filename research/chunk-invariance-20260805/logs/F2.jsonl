@@ -1,0 +1,2 @@
+{"chunk":"64","ref_chunk":"2048","T":149,"logits_exact":false,"first_div_pos":64,"logit_maxdiff":4.844797e-1,"argmax":4558,"argmax_ref":4558,"stream_div_step":null}
+{"chunk":"32","ref_chunk":"2048","T":149,"logits_exact":false,"first_div_pos":32,"logit_maxdiff":5.686622e-1,"argmax":4558,"argmax_ref":4558,"stream_div_step":null}

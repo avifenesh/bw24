@@ -1,0 +1,13 @@
+weight blk.1.ffn_down.weight [NVFP4] in_f=17408 out_f=5120 row_bytes=9792 copies=8 variant=auto
+--- grid.y=m (current, no weight reuse) ---
+  m=1: 35.16 us/call  (35.16 us/token)
+  m=2: 37.35 us/call  (18.68 us/token)
+  m=4: 62.02 us/call  (15.50 us/token)
+  m=8: 114.59 us/call  (14.32 us/token)
+--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---
+  m=2 (b2): 38.22 us/call  (19.11 us/token)  bit-bad=0 bit-exact-bad=0
+  m=3 (b4): 36.13 us/call  (12.04 us/token)  bit-bad=0 bit-exact-bad=0
+  m=4 (b4): 36.86 us/call  (9.21 us/token)  bit-bad=0 bit-exact-bad=0
+  m=5 (b8): 43.09 us/call  (8.62 us/token)  bit-bad=0 bit-exact-bad=0
+  m=6 (b8): 46.94 us/call  (7.82 us/token)  bit-bad=0 bit-exact-bad=0
+  m=8 (b8): 53.26 us/call  (6.66 us/token)  bit-bad=0 bit-exact-bad=0

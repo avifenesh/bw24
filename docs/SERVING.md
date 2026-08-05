@@ -6,6 +6,12 @@ rate-limit headers, graceful drain), safetensors/FP8 checkpoint serving, cross-r
 prompt caching with per-tenant `cache_salt` isolation, and the honestly-stated numeric
 edges of batched serving.
 
+> Numbers here are engineering receipts, each labeled with its rig — see
+> [Rigs](PERFORMANCE.md#rigs--what-was-measured-on-what) for what each label is. A number
+> without its rig label is not a number: the same cell moves 5-12% between two pods of the
+> same SKU and ~2x between a 188-SM and an 82-SM board. The open gaps stated below travel
+> with the wins.
+
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
 processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
@@ -25,11 +31,11 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 
 ## Measured numbers (Qwen3.5-9B Q8_0; receipts in `research/`)
 
-- **Single replica (H100):** temp-0.7 c=8/16/32 medians **654/657/659 tok/s** after the
+- **Single replica (H100, rented pod):** temp-0.7 c=8/16/32 medians **654/657/659 tok/s** after the
   batched decode tick (z-batched FA + KV append, device sampling, lean logits — +25-36%
   over the pre-batched tick; N=4, `research/batched-tick-inc2-20260801/`; chunk-8 era —
   see the exact-16 tier below).
-- **Managed fleet, 3 H100s x 2 replicas (v0.60-validated):** **1,477 tok/s** through the
+- **Managed fleet, 3 rented H100s x 2 replicas (v0.60-validated):** **1,477 tok/s** through the
   admission proxy at c=96 (N=2 interleaved passes: 1477.0/1473.1), zero 429s/5xx —
   managed now matches the v0.59-era 1,480 direct number (the ~7% admission-overhead gap
   closed at the fleet level). Chaos-tested: SIGKILL a replica mid-load, breaker DOWN the
@@ -38,22 +44,57 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   on all 6 replicas in every condition, 18/18 (`research/fleet-v060-20260801/SUMMARY.md`).
   The proxy cap (8) was calibrated on the v0.59 core — the cap re-sweep is pending the
   next box window (stale-verdict risk flagged in the validation summary).
-- **Single replica (RTX 5090, exact-16 tier):** with the Q8_0 split-plane mirror
+- **Single replica (RTX 5090 Laptop — the local rig, exact-16 tier):** with the Q8_0 split-plane mirror
   (`MEMRA_Q8RP=1` on 24GB; Hopper default), the worker auto-selects decode chunk 16 —
   c=16 median **494.5 tok/s vs 416.4** at chunk 8, same mirror, interleaved N=4
   (**+18.8%**; +33.8% vs the mirror-less baseline); c=32 at `MEMRA_CTX=2048` runs
   **502.1** with 128/128 ok (single run; `research/batched-tick-inc3-20260801/`).
+- **Solo (c=1) decode rides the naked m=1 program** (serve-path phase 2, 2026-08-05): a lone
+  session's tick runs `decode_layers_eager` verbatim instead of the batched body, inheriting
+  the whole m=1 fusion chain. Order-paired N=5 on the 5090 (82 SM), decode-only `step_p50`:
+  **+8.33%** on the 9B (123.7 → 134.1 tok/s, 5/5 wins) and **+5.19%** on the 27B (43.6 → 45.8,
+  5/5); c=8 saturation flat (−0.00% / −0.18%). This closes the class of c=1 gap phase 1
+  measured against naked decode — serve c=1 now sits level with the same-board `run-gen`
+  denominator (134.8/134.5/134.0). Notably it also **retires the solo graph door as a win**:
+  `GraphSession` replay amortized the same launch overhead this removes outright, so with the
+  fast path in place the door is a net loss at every length measured out to mt=1024 and
+  `MEMRA_GS_MIN=384` must NOT be lowered (FLAGS §serve; `research/servepath-p2-20260805/`).
 - **Spec fast lane:** MTP speculative serving is a single-stream latency tier — 1.82x plain
   serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
   c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
   `research/spec-serving-20260801/`).
+- **The plain-serve c=1 gap (task #70) is closed by the fast path above — with one cell
+  pending re-measure and one still open.** Phase 1 measured serve c=1 trailing the naked
+  CLI **−11.74%** on a Q8_0 27B cell (`memra-server` 46.09 tok/s, N=3 median, vs `run-gen`
+  naked 52.22, single run; rig `pro6000wk-runpod-community`, same commit and prompt); the
+  measured cause — B=1 ran the batched body and missed the m=1 fusion chain — is exactly
+  what `MEMRA_SERVE_B1FAST` fixes, and on the 82-SM 5090 serve c=1 now sits level with the
+  same-board `run-gen` denominator. The −11.74% number itself is **pre-fix** and the 188-SM
+  cell has not been re-measured since — do not quote it as current. Still open: the NVFP4
+  **spec** serve path at **−8.66%** (serve 170.55 vs bare 186.72, rig `pro6000wk-runpod`,
+  also a pre-H3 measurement) — the spec tier runs its own burst loop that the `b_n==1`
+  fast path does not touch. Receipts: `research/q27-deepdive-20260805/RESULTS.md` §4
+  (phase 1), `research/servepath-p2-20260805/RESULTS.md` (the fix + the H1 refutation).
 
 ## The isolation contract
 
 Greedy serving is **isolated-identical under concurrent load at defaults**: a request's
 output tokens are byte-identical whether it arrives alone or inside a full batch. This is
 gated, not assumed — the serve gate replays the same prompts at c=1 and c=16 and
-byte-compares every stream. It is also a fixed defect, not a freebie: the batched
+byte-compares every stream.
+
+The contract is over **tokens**, not over the FP program that produces them, and since
+2026-08-05 (`MEMRA_SERVE_B1FAST`, serve-path phase 2) a solo tick deliberately runs a
+*different* program from a batched one: at `b_n==1` the tick uses the m=1 fused trunk
+(`decode_layers_eager` — the same code `run-gen` runs), while `b_n>=2` uses the batched
+body. Those two carry the long-accepted decode-config FP-composition gap
+(`decode-batch-gate`'s jurisdiction), so the guarantee is exactly as stated — token
+streams match — and is not a claim of bit-identical logits between a solo and a batched
+tick. The direction is deliberate: a c=1 request now computes what the CLI computes
+(strict bit-identity to `decode_step_h`, gated), which is why `serve-st-gate`'s
+CLI-vs-server greedy token-stream check is a *stronger* assertion than before. Verified at
+the stream level on q9 NVFP4-MTP: greedy 150 ids and seeded-sampled identical to the
+`run-gen` oracle and across both arms (`research/servepath-p2-20260805/`). It is also a fixed defect, not a freebie: the batched
 cuBLASLt prefill router and shared-expert-gate GEMMs were m-dependent, so under
 cross-request prefill batching a MoE request's own expert selection changed with its
 co-arrivals (the supported Qwen3.6-35B had the same defect as the onboards whose serve
@@ -202,9 +243,14 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
 parse time (a bogus dir fails naming the missing file). Chat templates come from the
 checkpoint's own tokenizer config (`from_hf_dir`); template-less dirs 400 with a pointer
 to `/v1/completions`. Official Qwen FP8 block-128 checkpoints load bit-exact (GPU
-dequant, 2.89x faster load) and **spec decode runs out of the box on the checkpoint's
-embedded MTP head** — 128-137 tok/s on the first official-FP8 e2e, 2.6-2.8x plain
-(`research/fp8ship-20260804/`).
+dequant, load wall 843.9 → 291.6 s = **2.89x faster load**) and **spec decode runs out of
+the box on the checkpoint's embedded MTP head** — **128.06 tok/s** from the checkpoint's
+own `mtp.safetensors` (**2.61x** the same-run plain 48.99), 136.75 with an own-trim
+drafter, on rig **`rig2x5090-serve`** (rented 2x RTX 5090; there is no official-FP8 cell
+on any RTX PRO 6000 board — do not merge the two). The win is **load time, not decode
+throughput**: the e4m3-resident arm is flat by construction (weights dequantize onto the
+Q8_0 arm), and spec **triples TTFT** on this arm (0.170 → 0.466 s).
+Receipts: `research/fp8ship-20260804/official/`.
 
 The ST-spec exactness scare (#68) was root-caused to a serve-side bug that was never
 ST-specific: the per-session persistent draft graph replayed with dangling pool
@@ -212,8 +258,16 @@ addresses (capture transients not retained + the fa-partials pool freeing grown-
 buffers the capture baked) — reproducible on GGUF session bursts at n>=600 too. Fixed
 via capture-retain keepers on `DraftGraphCtx` + retire-on-grow for the fa partials pool;
 the quarantine is lifted and dir checkpoints are spec-eligible by default
-(`MEMRA_SERVE_SPEC=0` is the rollback door). Gate: `tools/serve-st-gate.sh` pins
-default-serve text token-identical to the run-gen CLI oracle.
+(`MEMRA_SERVE_SPEC=0` is the rollback door). Gate: `tools/serve-st-gate.sh` — item 3 pins
+the CLI ST-dir branch and the server to identical greedy token streams on a 64-token
+window, and item 4 pins the DEFAULT (spec-on) server against the **tokenwise serve
+oracle** (`MEMRA_SERVE_SPEC=0 MEMRA_SERVE_BATCH=0` — same worker, plain decode) at a
+400-token window, prefix-tolerant for burst overshoot. Note what item 4 is *not*: the
+comparator is deliberately the tokenwise **serve** arm, not the run-gen CLI, because both
+the batched-plain path and the CLI carry their own accepted near-tie FP classes at long
+windows (see [first-token cross-config
+drift](#first-token-cross-config-drift-batched-prime--stated-honestly) below). Do not
+restate this gate as "token-identical to the CLI oracle".
 
 ## Constrained decoding (`response_format`) — lanes constrained + constrained-full, 2026-08-03
 
@@ -226,9 +280,11 @@ device-sample / lean-logits / CUDA-graph / speculative paths unconstrained sessi
 No path is lost to being constrained.
 
 - **Cost:** plain constrained-greedy = **99.4% of unconstrained** (123.7 vs 124.4 tok/s,
-  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. The remaining
-  constrained-vs-unconstrained gap is draft acceptance under a tight grammar, not mask
-  overhead.
+  q9 N=3 same-session, local RTX 5090, Qwen3.5-9B NVFP4, 256-token greedy); per-step
+  grammar compute 0.006–0.007 ms. **That 99.4% is the plain lane only — the speculative
+  lane pays far more: 153.4 vs 194.4 = 79%.** Never quote 99.4% for the spec path. The
+  remaining constrained-vs-unconstrained gap is draft acceptance under a tight grammar,
+  not mask overhead.
 - **Draft-side masking (lane/draft-mask, 2026-08-04):** the drafter is masked too. A
   constrained spec session clones the session's grammar matcher once per spec round
   (0.002 ms), advances the clone with each proposed token, and bans the illegal ids in the
@@ -315,6 +371,154 @@ spec resume, or prefix cache). `/metrics` exposes the cumulative split
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
 
+## Spec-decode acceptance telemetry (lane/accept-telemetry, 2026-08-05)
+
+Always-on per-draft-position acceptance counters, the llama.cpp #26389 / vLLM spec-decode
+counter schema. WHY: the 2026-08-05 dogfood head-to-head found short-context sampled
+acceptance at 0.55 vs 0.73 full-draft — a posthoc dig that this surface turns into a live
+gauge (drafter health on a new checkpoint is readable in minutes, and the K-policy work
+gets a per-position decay curve for free).
+
+**`GET /metrics` — the `spec` block**, per model, cumulative since the model loaded (models
+load once per server process, so counters reset on restart, never mid-run). Absent until the
+first spec burst — spec-off deployments see the exact pre-lane payload:
+
+```json
+"spec": {
+  "q9": {
+    "rounds": 118, "drafted": 354, "accepted": 213,
+    "acceptance_rate": 0.602, "tokens_per_round": 2.805,
+    "pos_drafted":  [118, 118, 118],
+    "pos_accepted": [96, 71, 46],
+    "accept_rate_per_pos": [0.814, 0.602, 0.390]
+  }
+}
+```
+
+`accept_rate_per_pos[j]` = P(draft position j accepted | a round offered position j) — healthy
+spec decode decays monotonically from position 0 (acceptance is a prefix walk: position j can
+only be accepted if 0..j-1 were). Arrays are trimmed to the deepest position ever drafted
+(up to 8 tracked positions; totals count deeper drafts too). Normalization matches
+`MEMRA_SPEC_STATS`: a p-min-cut chain token is counted in neither drafted nor accepted. The
+opt-in round-stream arm (`MEMRA_SPEC_STREAM=1`) keeps its accept counts on device, so under
+it per-position arrays cover the standard-path rounds only; totals stay complete.
+
+**`usage.spec` — per-request summary.** Spec-decode requests carry their OWN
+rounds/drafted/accepted + `acceptance_rate` in the response usage object (this request only —
+pool-resumed sessions do not leak prior requests' counts). Additive and OpenAI-safe: official
+SDKs ignore unknown usage fields, no existing field changes, and non-spec requests carry no
+`spec` key at all.
+
+**Cost:** host-side u64 adds at the round accounting the engine loop already does — zero
+GPU syncs, zero per-token allocation, no hot-path lock (the worker merges per-burst deltas
+into its own map; the metrics mutex is only taken on the existing 32nd-tick publish, plus a
+force-publish when a spec session retires so one-shot requests are visible immediately).
+Validation capture: `research/accept-telemetry-20260805/`.
+
+## API keys — multi-key tenant auth (lane/api-keys, 2026-08-05)
+
+Bearer auth that maps key → tenant, so cache isolation, QoS lane class, rate-limit
+headers, and metering all key off a real tenant identity. Launch-shaped: a file-backed
+keyring + a CLI, no web UI.
+
+**Configuration.** `MEMRA_API_KEYS=/path/keys.toml` — TOML `[[keys]]` entries carrying
+`sha256` (of the plaintext key — the plaintext is never stored), `tenant`
+(`[A-Za-z0-9_-]+`), `lane` (`interactive` default | `batch`), `enabled`, and optional
+`rate_limit`. An inline env form `tenant:sha256hex[:lane],...` exists for file-less
+deploys. A malformed ring is a startup FATAL (never partially applied); the file
+hot-reloads on mtime change (≤2s poll — chosen over SIGHUP: no signal thread, cannot be
+missed), and a broken rewrite keeps the previous ring and logs loudly — auth never fails
+open because of a typo.
+
+**Lifecycle CLI.**
+```
+memra-server --gen-key acme [--lane batch] [--rate-limit 4] [--keys /path/keys.toml]
+memra-server --revoke-key mk-acme-1a2b3c4d5e6f [--keys /path/keys.toml]
+```
+`--gen-key` prints the plaintext key (`mk-<tenant>-<48 hex>`) exactly ONCE on stdout and
+appends the hash entry; `--revoke-key` disables by unambiguous prefix (or full key) — a
+running server picks the revocation up on the next poll. `--keys` defaults to
+`MEMRA_API_KEYS`.
+
+**Request law.** `Authorization: Bearer <key>` on every `/v1` completion route:
+- keyring match → that key's tenant context; **disabled key → 403** (actionable,
+  distinct from unknown), **unknown key / missing header → 401**;
+- `MEMRA_API_KEY` (the single static key — the daily driver and every serve script)
+  keeps working unchanged as tenant `default`, with or without a keyring configured;
+- neither configured → open (dev behavior), tenant `default`.
+
+**What the tenant identity drives:**
+- **Cache isolation:** with a keyring configured, the PC-ISO namespace is
+  `t:<tenant>␟<cache_salt>` — one tenant's keys share cached prefixes, different tenants
+  never do, and the `␟` (US, `\x1f`) separator is excluded from tenant ids so a
+  client-controlled `cache_salt` cannot forge another tenant's namespace. `cache_salt`
+  still sub-scopes WITHIN a tenant (a gateway multiplexing end-users through one key
+  keeps setting per-user salts). No keyring → the raw-salt namespace, byte-identical to
+  PC-ISO behavior.
+- **QoS lane class:** `interactive`-class keys behave exactly like pre-lane traffic
+  (default lane interactive, any `x-lane` honored). `batch`-class keys default to the
+  harvest lane and are refused `x-lane: interactive` with a 403 — a bulk key cannot
+  claim the protected class, by omission or by header.
+- **Rate limits:** per-key `rate_limit` is a concurrency-slot override; the effective
+  cap is **min(override, global lane cap)** — the global cap stays authoritative, an
+  override can only narrow. The `X-RateLimit-*` trio reports the binding cap, with
+  `Remaining` counting the tighter of the tenant and lane gauges.
+- **Metering seam:** every admitted request logs one flat
+  `[meter] admit id=<x-request-id> tenant=<t> lane=<l> model=<m>` line — the public-repo
+  half; the private fork's metering layer joins these against the worker-truth usage
+  lines by request id for per-tenant billing.
+
+Gate: `tools/apikeys-gate.sh` (unit laws + live two-tenant isolation proof via
+cache-hit behavior; receipts `research/apikeys-20260805/`).
+
+## Session affinity — resuming a REWRITTEN conversation (lane/session-affinity, 2026-08-05)
+
+Both reuse tiers above require the new prompt to EXTEND what is cached (token prefix, or
+text prefix). Real agent clients do not extend — they REWRITE. The owner's client strips
+`<think>` blocks out of prior assistant turns before re-sending them, so turn N's prompt is
+not a prefix-extension of anything, both probes miss, the parked multi-GB session is
+discarded, and every turn re-primes the whole growing conversation.
+
+Affinity answers a different question: not "does this prompt extend that session's bytes?"
+but "is this the SAME CONVERSATION?" — and then resumes it at a retained boundary.
+
+**Two identity tiers (nomination only):**
+
+- **Explicit** — the client names its conversation. Accepted from `session_id` or `user` in
+  the request body of `/v1/completions` and `/v1/chat/completions`, or the `x-session-id`
+  header. Body beats header (the body is the caller's own statement of identity; a header can
+  be injected by an intermediary); `session_id` beats `user`. An explicit id on one side only
+  never matches: a named conversation and an anonymous one are not the same conversation.
+- **Implicit** — nothing named, so identity is STRUCTURAL: the conversation is split at its
+  control tokens (the chat template's own role markers) and each segment contributes a hash of
+  its first and last few tokens. A rewritten segment BODY does not perturb its hash, so the
+  chain's leading run survives a think-strip; three shared segments are required before an
+  implicit fingerprint may name a conversation (a bare system prompt is shared by every fresh
+  conversation and must not cross-link them).
+
+**Identity nominates, BYTES decide.** A nominated session is resumed only if the new prompt
+reproduces its committed tokens EXACTLY up to the boundary its last turn checkpointed. A
+fingerprint collision therefore costs one wasted comparison, never a wrong resume. If the
+rewrite reached BELOW the boundary, affinity declines and the request re-primes in full —
+correctness first. Declines are logged with their offsets (`history diverged at N of
+checkpoint M`), because a silent decline is indistinguishable from a broken mechanism.
+
+**The boundary.** Each turn checkpoints the state at its PROMPT END — before the first
+generated token. That is the only boundary worth keeping: a history-rewriting client mutates
+what the session GENERATED, never the prompt it was given. Full-attention KV is truncatable
+by length, so the checkpoint copies only the GDN conv/ssm recurrent state; the draft scratch
+needs no copy (the next turn's fill rewrites it).
+
+**Scope.** Affinity is stored per (model, cache namespace), so it adds no cross-tenant reach
+beyond what the reuse tiers already have: a `cache_salt` is an affinity boundary too.
+Constrained (grammar) requests never resume. Resumed sessions respect the same evict-first +
+right-size ladder as new ones, and are tested against the room the request actually needs, so
+a right-sized session stays affinity-eligible.
+
+`MEMRA_AFFINITY=0` turns the mechanism off (rollback seam / exactness A/B arm; the winner is
+the default and needs no flag). Receipts, byte-identity gate, and TTFT curves:
+`research/session-affinity-20260805/`.
+
 ## Multi-tenant QoS — the x-lane SLO gate (lane/qos-p95, 2026-08-02)
 
 Requests may tag a service class via the `x-lane` header: `interactive` (protected;
@@ -328,13 +532,20 @@ Inside the tick, interactive decode rows batch first and dark-lane prefill runs 
 decode within measured SLO headroom only. Per-lane counters + the engine-truth step
 p50/p99 export at `GET /yield/metrics`.
 
-Measured at fleet scale (8 replicas, c=96 harvest + c=4 interactive, N=3 interleaved,
+Measured at fleet scale (8 replicas, Qwen3.5-9B-Q8_0 on rented H100s, c=96 harvest + c=4
+interactive, 4 conditions interleaved, N=3 passes with full teardown/bring-up per cell,
 `research/qos-p95-20260802/`): the lane-blind proxy FIFO alone inflates contended
 interactive p95 to 7.15s (~4x alone); with lanes on and the proxy cap at 16 (so engine
 admission owns the queue — the gate cannot fix a queue it never sees), p95 drops to
 3.69s (~2x alone) at -11% bulk throughput vs the cap-16 ceiling. `MEMRA_SLO_P99_MS`
 is the dial: 25ms makes contended interactive statistically equal to alone
 (p50 1.637s / p95 2.158s) with bulk paying -67%. Lane knobs in [FLAGS.md §1](FLAGS.md).
+
+**Attribution, required whenever the 7.15 → 3.69s figure is quoted:** raising the proxy
+cap from 8 to 16 *by itself* moves p95 **7.15 → 4.335s** (that control cell is in the same
+RESULTS.md); the lane gate accounts for **4.34 → 3.69s**. Roughly half the headline
+improvement is the queue, not the engine gate — which is the point of the sentence above,
+not a caveat to it. Quoting 7.15 → 3.69s as "what lanes do" is refutable from our own log.
 
 ## Knobs
 
@@ -363,3 +574,71 @@ pp512 probe greedy-emits `"\n"` + EOS at 2 tokens where the tokenwise stream wri
 within contract, but real. `MEMRA_PRIME_TOKENWISE=1` pins the oracle stream at prefill
 cost; the run-gen `batched-prime` gate line + the `prime-gate` battery bound the class
 (structured divergence fails hard, near-tie flips are reported).
+
+### Chunked prefill is not split-stable (2026-08-05; mechanism corrected same day)
+
+A sharper statement of the same class, found while building serve-smoke check 10:
+**changing only the prefill chunk split changes greedy output.** Arms were the same four
+recorded prompts with a per-turn `cache_salt` (so nothing resumes — every request primes
+cold), `MEMRA_AFFINITY=0`, varying only `MEMRA_PRIME_CHUNK`:
+
+| prompt tokens | 2048 vs 64 | 2048 vs 32 |
+|---|---|---|
+| 48 | identical | identical |
+| 97 | identical | **differs @ char 45** |
+| 149 | **differs @ char 172** | **differs @ char 52** |
+| 195 | identical | identical |
+
+No reuse required, and 149 tokens is far too short for a long-window explanation. Every
+resume tier inherits this by construction: a resume primes `[rewind boundary .. end]` as
+its own chunk sequence rather than one full prime.
+
+**Mechanism — corrected 2026-08-05 by `lane/chunk-invariance`.** This section originally
+said "a different split changes the reduction order in the prefill GEMMs." **That is
+measurably wrong.** The prefill GEMM is m-INVARIANT: feeding the same activation rows at
+m=32 and at m=33..80 leaves rows `[0,32)` BIT-IDENTICAL for both the quantized `wq` and the
+`output` head, so growing a batch does not move an existing row's value. And the divergence
+is not a distributed last-bit band — it is a **step at the first chunk boundary**: per-row
+maxdiff is exactly `0.000e0` for every row before the boundary and O(1) (6.9) immediately
+after it, with `first_div_pos` equal to the chunk size exactly in every arm.
+
+The real cause is a numeric-**class** edge, in `full_attn_prime_fa_dispatch`
+(`hybrid_forward.rs`), selected by `base_len == 0` — *"is this the first chunk?"*:
+
+- chunk 0 → `fa_prefill` over this batch's **f32** K/V;
+- every later chunk → `fa_prefill_view_ws` over the **q8_0/q5_1 quantized KV cache**.
+
+So `MEMRA_PRIME_CHUNK` decides at which token position the prefill stops reading f32 K/V
+and starts reading dequantized cache. Rows before that position are computed identically in
+both configs (hence the bit-identity); rows after it carry q8_0/q5_1 quantization error, and
+a near-tie argmax flips. Eliminated by measurement, not assumption: `MEMRA_PRIME_DEQW=0`
+(the other quantized-cache FA kernel) diverges identically, and `MEMRA_GDN_CHUNKED=0`
+(sequential GDN scan, no WY segmentation at all) still diverges — the GDN state carry is
+**not** the cause.
+
+`MEMRA_PRIME_INVARIANT=1` pins segmentation to `MEMRA_PRIME_GRAIN` instead of
+`MEMRA_PRIME_CHUNK`, which restores bit-identity across chunk sizes at a measured mechanism
+cost of -0.05% / +0.17% prefill (N=5 interleaved). It stays opt-in: under the door
+`MEMRA_PRIME_CHUNK` no longer bounds the long-ctx transient footprint, so a default flip
+needs the 27B/long-ctx OOM+throughput gates. Full receipts:
+`research/chunk-invariance-20260805/VERDICT.md`.
+
+Two consequences with teeth:
+
+1. **No gate anywhere in the repo may assert byte-equality between two prefills of the same
+   prompt at different chunk boundaries.** serve-smoke check 10 deliberately does not assert
+   resumed == cold; it asserts what session affinity actually owns (determinism of the resume
+   path across servers, plus liveness). Wiring the naive assertion would have planted a
+   permanently-red gate and blamed affinity for the prefill's chunk split.
+2. `MEMRA_PRIME_CHUNK` is a documented machine-config knob, so **two rigs with different
+   values already produce different greedy text on the same prompt.** Any exactness statement
+   is scoped to one configuration — unless the invariance door is on.
+
+The behavior is now **gated in both directions**: `tools/chunk-invariance-gate.sh`
+(fast-gate ids `chunkinv` / `chunkinvc`, routed from the `hybrid_forward.rs` map row) asserts
+the documented contract and fails if it silently changes either way; the `--canary` arm flips
+the expectation, so the gate is proven able to fail. Reproducers + raw rows:
+`research/session-affinity-20260805/chunk-order-probe.py` and `chunk-order.jsonl` (12 rows =
+3 chunk sizes x 4 prompts, each with its text; under two minutes on the 9B), plus the
+engine-level root-cause arm `concat-prime-probe chunkinv` and
+`research/chunk-invariance-20260805/`.

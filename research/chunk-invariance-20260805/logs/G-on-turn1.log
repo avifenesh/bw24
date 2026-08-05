@@ -1,0 +1,5 @@
+loaded qwen35 (32 layers)
+chunkinv: T=97 chat=false chunks=["4096"] steps=32
+ref chunk=4096 argmax=271 margin=0.483452
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size

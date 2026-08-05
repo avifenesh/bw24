@@ -63,7 +63,10 @@
 # files is the golden probes (three kernel classes + one spec probe). ---
 # hybrid_forward.rs also hosts the staged/SLRU MoE dispatch (moe_cached_gemm*) that resident-
 # fitting models never run — q35slru covers it (the probe-regime lesson, see the MoE row above).
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru	q35spec
+# hybrid_forward.rs also owns the CHUNKED-PREFILL segmentation (prime_cache), whose split
+# points steer the prefill's arithmetic — chunkinv/chunkinvc pin that behavior (and prove the
+# gate can fail). See research/chunk-invariance-20260805/VERDICT.md.
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc	q35spec
 # --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
 ^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
 # --- gate/bench binaries: build-only (they ARE the gates) ---

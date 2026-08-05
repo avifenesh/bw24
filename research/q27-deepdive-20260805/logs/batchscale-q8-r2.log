@@ -1,0 +1,13 @@
+[gpu 2026-08-04T23:55:03Z] 72, 142.80 W, 2857 MHz, 14001 MHz, 2 MiB
+loaded qwen35 (64 layers); steps=128 reps=3 batches=[1, 2, 4, 8]
+B=1: aggregate 45.4 tok/s, per-seq 45.4 tok/s (median of 3)
+B=2: aggregate 86.4 tok/s, per-seq 43.2 tok/s (median of 3)
+B=4: aggregate 156.5 tok/s, per-seq 39.1 tok/s (median of 3)
+B=8: aggregate 214.5 tok/s, per-seq 26.8 tok/s (median of 3)
+scale B=1: 1.00x aggregate vs B=1
+scale B=2: 1.90x aggregate vs B=1
+scale B=4: 3.45x aggregate vs B=1
+scale B=8: 4.72x aggregate vs B=1
+[host-sample] n_vocab=248320 greedy argmax 183 us/row | temp0.7 sample 1155 us/row | x B=8 rows/tick = 1.46 ms (greedy) / 9.24 ms (temp) [sink 42055875]
+[gpu 2026-08-04T23:56:07Z] 75, 148.03 W, 2842 MHz, 14001 MHz, 2 MiB
+BATCHSCALE r2 rc=0

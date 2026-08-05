@@ -1,0 +1,6 @@
+61, 121.87 W, 2865 MHz, 14001 MHz
+arm=on
+loaded qwen35 (64 layers); steps=128 reps=3 batches=[8]
+B=8: aggregate 213.8 tok/s, per-seq 26.7 tok/s (median of 3)
+scale B=8: 1.00x aggregate vs B=1
+[host-sample] n_vocab=248320 greedy argmax 183 us/row | temp0.7 sample 1154 us/row | x B=8 rows/tick = 1.46 ms (greedy) / 9.23 ms (temp) [sink 42055875]

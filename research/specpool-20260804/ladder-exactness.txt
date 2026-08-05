@@ -1,0 +1,5 @@
+0 10.341 09750fb1ddaacee7
+1 9.709 e3b0c44298fc1c14
+2 10.529 d5a95bf0ca8864cf
+3 10.577 d750beb59e71b02a
+ladder vs unballasted before-miss shas: IDENTICAL

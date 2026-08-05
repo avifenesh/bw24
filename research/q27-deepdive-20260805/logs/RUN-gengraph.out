@@ -1,0 +1,12 @@
+gengraph n=512 eager r1 rc=0 generated 512 tokens in 10.204s = 50.18 tok/s | MATCH MATCH  | 0 closed
+gengraph n=512 graph r1 rc=0 generated 512 tokens in 9.678s = 52.90 tok/s | MATCH MATCH  | 0 closed
+gengraph n=512 graph r2 rc=0 generated 512 tokens in 9.678s = 52.90 tok/s | MATCH MATCH  | 0 closed
+gengraph n=512 eager r2 rc=0 generated 512 tokens in 10.211s = 50.14 tok/s | MATCH MATCH  | 0 closed
+gengraph n=512 eager r3 rc=0 generated 512 tokens in 10.212s = 50.14 tok/s | MATCH MATCH  | 0 closed
+gengraph n=512 graph r3 rc=0 generated 512 tokens in 9.685s = 52.86 tok/s | MATCH MATCH  | 0 closed
+gengraph n=128 eager r1 rc=0 generated 128 tokens in 2.547s = 50.26 tok/s | MATCH MATCH  | 0 closed
+gengraph n=128 graph r1 rc=0 generated 128 tokens in 2.454s = 52.16 tok/s | MATCH MATCH  | 0 closed
+gengraph n=128 graph r2 rc=0 generated 128 tokens in 2.454s = 52.17 tok/s | MATCH MATCH  | 0 closed
+gengraph n=128 eager r2 rc=0 generated 128 tokens in 2.547s = 50.26 tok/s | MATCH MATCH  | 0 closed
+gengraph n=128 eager r3 rc=0 generated 128 tokens in 2.547s = 50.26 tok/s | MATCH MATCH  | 0 closed
+gengraph n=128 graph r3 rc=0 generated 128 tokens in 2.453s = 52.18 tok/s | MATCH MATCH  | 0 closed

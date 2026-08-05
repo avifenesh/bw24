@@ -60,7 +60,7 @@ still come from each target's own generations. The loader
 (`MtpHead::load_draft`, `crates/memra-engine/src/hybrid.rs`) asserts the trunk interface
 (n_embd, head_dim, n_head, n_head_kv) and takes token_embd from the serving model;
 verification keeps spec exact, so donor drift can only cost acceptance. Precedent: the
-darklanes q35 gate ran a nextn=0 GGUF with the sidecar draft, K=1..8 PASS
+the q35 fleet-box gate ran a nextn=0 GGUF with the sidecar draft, K=1..8 PASS
 (`research/qwen-adaptive-k-20260801/nextn0-blocker.txt`).
 
 | target (serving GGUF) | arch class | donor (NextN source) | serving K |

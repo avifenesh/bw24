@@ -1,0 +1,55 @@
+[server] starting; models config = [("q27", "/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/root/mb/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q27: regime draft attached (/root/mb/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q27": 65 layers, eos=248046
+[worker] q27: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q27: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8199
+[meter] admit id=chatcmpl-22e7caccd0ec063e457b3423e13b2aac tenant=default lane=interactive model="q27"
+[worker] observed session VRAM cost for "q27": 336MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=15/15 cum=15/15=1.000
+[meter] admit id=chatcmpl-79a4e9fa620758225fcd58c7837a36e7 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-acc] ctx=260 burst=25/40 cum=52/70=0.743
+[spec-acc] ctx=294 burst=23/40 cum=75/110=0.682
+[spec-acc] ctx=326 burst=21/40 cum=96/150=0.640
+[meter] admit id=chatcmpl-b95d9fc726f588cbb67936f8eb790366 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=28/30 cum=28/30=0.933
+[spec-acc] ctx=261 burst=25/40 cum=53/70=0.757
+[spec-acc] ctx=295 burst=27/40 cum=80/110=0.727
+[spec-acc] ctx=331 burst=17/25 cum=97/135=0.719
+[meter] admit id=chatcmpl-ab0d56149a24f32103e972401692eb64 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-acc] ctx=260 burst=26/40 cum=53/70=0.757
+[spec-acc] ctx=295 burst=23/40 cum=76/110=0.691
+[spec-acc] ctx=327 burst=19/35 cum=95/145=0.655
+[meter] admit id=chatcmpl-3f2a562df57ac14808e71b11535b4214 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=30/30 cum=30/30=1.000
+[spec-acc] ctx=263 burst=24/40 cum=54/70=0.771
+[spec-acc] ctx=296 burst=23/45 cum=77/115=0.670
+[spec-acc] ctx=329 burst=18/50 cum=95/165=0.576
+[meter] admit id=chatcmpl-dcaf66e727420ec8bf2a502041e4efef tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-acc] ctx=260 burst=24/35 cum=51/65=0.785
+[spec-acc] ctx=292 burst=24/45 cum=75/110=0.682
+[spec-acc] ctx=326 burst=17/55 cum=92/165=0.558
+[meter] admit id=chatcmpl-7fc8dac91cb001952acca9ff205c3494 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-acc] ctx=260 burst=23/40 cum=50/70=0.714
+[spec-acc] ctx=292 burst=24/40 cum=74/110=0.673
+[spec-acc] ctx=325 burst=22/55 cum=96/165=0.582
+Collecting data...
+Generating '/tmp/nsys-report-a383.qdstrm'
+[1/1] [0%                          ] serve-spec-nv-K5.nsys-rep[1/1] [0%                          ] serve-spec-nv-K5.nsys-rep[1/1] [=========43%                ] serve-spec-nv-K5.nsys-rep[1/1] [=====29%                    ] serve-spec-nv-K5.nsys-rep[1/1] [==21%                       ] serve-spec-nv-K5.nsys-rep[1/1] [=========43%                ] serve-spec-nv-K5.nsys-rep[1/1] [======34%                   ] serve-spec-nv-K5.nsys-rep[1/1] [====28%                     ] serve-spec-nv-K5.nsys-rep[1/1] [===24%                      ] serve-spec-nv-K5.nsys-rep[1/1] [==21%                       ] serve-spec-nv-K5.nsys-rep[1/1] [==19%                       ] serve-spec-nv-K5.nsys-rep[1/1] [=17%                        ] serve-spec-nv-K5.nsys-rep[1/1] [=15%                        ] serve-spec-nv-K5.nsys-rep[1/1] [14%                         ] serve-spec-nv-K5.nsys-rep[1/1] [13%                         ] serve-spec-nv-K5.nsys-rep[1/1] [12%                         ] serve-spec-nv-K5.nsys-rep[1/1] [11%                         ] serve-spec-nv-K5.nsys-rep[1/1] [10%                         ] serve-spec-nv-K5.nsys-rep[1/1] [9%                          ] serve-spec-nv-K5.nsys-rep[1/1] [8%                          ] serve-spec-nv-K5.nsys-rep[1/1] [7%                          ] serve-spec-nv-K5.nsys-rep[1/1] [6%                          ] serve-spec-nv-K5.nsys-rep[1/1] [5%                          ] serve-spec-nv-K5.nsys-rep[1/1] [5%                          ] serve-spec-nv-K5.nsys-rep[1/1] [6%                          ] serve-spec-nv-K5.nsys-rep[1/1] [7%                          ] serve-spec-nv-K5.nsys-rep[1/1] [8%                          ] serve-spec-nv-K5.nsys-rep[1/1] [9%                          ] serve-spec-nv-K5.nsys-rep[1/1] [10%                         ] serve-spec-nv-K5.nsys-rep[1/1] [11%                         ] serve-spec-nv-K5.nsys-rep[1/1] [12%                         ] serve-spec-nv-K5.nsys-rep[1/1] [13%                         ] serve-spec-nv-K5.nsys-rep[1/1] [14%                         ] serve-spec-nv-K5.nsys-rep[1/1] [=15%                        ] serve-spec-nv-K5.nsys-rep[1/1] [=16%                        ] serve-spec-nv-K5.nsys-rep[1/1] [=17%                        ] serve-spec-nv-K5.nsys-rep[1/1] [==18%                       ] serve-spec-nv-K5.nsys-rep[1/1] [==19%                       ] serve-spec-nv-K5.nsys-rep[1/1] [==20%                       ] serve-spec-nv-K5.nsys-rep[1/1] [==21%                       ] serve-spec-nv-K5.nsys-rep[1/1] [===22%                      ] serve-spec-nv-K5.nsys-rep[1/1] [===23%                      ] serve-spec-nv-K5.nsys-rep[1/1] [===24%                      ] serve-spec-nv-K5.nsys-rep[1/1] [====25%                     ] serve-spec-nv-K5.nsys-rep[1/1] [====26%                     ] serve-spec-nv-K5.nsys-rep[1/1] [====27%                     ] serve-spec-nv-K5.nsys-rep[1/1] [====28%                     ] serve-spec-nv-K5.nsys-rep[1/1] [=====29%                    ] serve-spec-nv-K5.nsys-rep[1/1] [=====30%                    ] serve-spec-nv-K5.nsys-rep[1/1] [=====31%                    ] serve-spec-nv-K5.nsys-rep[1/1] [=====32%                    ] serve-spec-nv-K5.nsys-rep[1/1] [======33%                   ] serve-spec-nv-K5.nsys-rep[1/1] [======34%                   ] serve-spec-nv-K5.nsys-rep[1/1] [======35%                   ] serve-spec-nv-K5.nsys-rep[1/1] [=======36%                  ] serve-spec-nv-K5.nsys-rep[1/1] [=======37%                  ] serve-spec-nv-K5.nsys-rep[1/1] [=======38%                  ] serve-spec-nv-K5.nsys-rep[1/1] [=======39%                  ] serve-spec-nv-K5.nsys-rep[1/1] [========40%                 ] serve-spec-nv-K5.nsys-rep[1/1] [========41%                 ] serve-spec-nv-K5.nsys-rep[1/1] [========42%                 ] serve-spec-nv-K5.nsys-rep[1/1] [=========43%                ] serve-spec-nv-K5.nsys-rep[1/1] [=========44%                ] serve-spec-nv-K5.nsys-rep[1/1] [=========45%                ] serve-spec-nv-K5.nsys-rep[1/1] [=========46%                ] serve-spec-nv-K5.nsys-rep[1/1] [==========47%               ] serve-spec-nv-K5.nsys-rep[1/1] [==========48%               ] serve-spec-nv-K5.nsys-rep[1/1] [==========49%               ] serve-spec-nv-K5.nsys-rep[1/1] [===========50%              ] serve-spec-nv-K5.nsys-rep[1/1] [===========51%              ] serve-spec-nv-K5.nsys-rep[1/1] [===========52%              ] serve-spec-nv-K5.nsys-rep[1/1] [===========53%              ] serve-spec-nv-K5.nsys-rep[1/1] [============54%             ] serve-spec-nv-K5.nsys-rep[1/1] [============55%             ] serve-spec-nv-K5.nsys-rep[1/1] [============56%             ] serve-spec-nv-K5.nsys-rep[1/1] [============57%             ] serve-spec-nv-K5.nsys-rep[1/1] [=============58%            ] serve-spec-nv-K5.nsys-rep[1/1] [=============59%            ] serve-spec-nv-K5.nsys-rep[1/1] [=============60%            ] serve-spec-nv-K5.nsys-rep[1/1] [==============61%           ] serve-spec-nv-K5.nsys-rep[1/1] [==============62%           ] serve-spec-nv-K5.nsys-rep[1/1] [==============63%           ] serve-spec-nv-K5.nsys-rep[1/1] [==============64%           ] serve-spec-nv-K5.nsys-rep[1/1] [===============65%          ] serve-spec-nv-K5.nsys-rep[1/1] [===============66%          ] serve-spec-nv-K5.nsys-rep[1/1] [===============67%          ] serve-spec-nv-K5.nsys-rep[1/1] [================68%         ] serve-spec-nv-K5.nsys-rep[1/1] [================69%         ] serve-spec-nv-K5.nsys-rep[1/1] [================70%         ] serve-spec-nv-K5.nsys-rep[1/1] [================71%         ] serve-spec-nv-K5.nsys-rep[1/1] [=================72%        ] serve-spec-nv-K5.nsys-rep[1/1] [=================73%        ] serve-spec-nv-K5.nsys-rep[1/1] [=================74%        ] serve-spec-nv-K5.nsys-rep[1/1] [==================75%       ] serve-spec-nv-K5.nsys-rep[1/1] [==================76%       ] serve-spec-nv-K5.nsys-rep[1/1] [==================77%       ] serve-spec-nv-K5.nsys-rep[1/1] [==================78%       ] serve-spec-nv-K5.nsys-rep[1/1] [===================79%      ] serve-spec-nv-K5.nsys-rep[1/1] [===================80%      ] serve-spec-nv-K5.nsys-rep[1/1] [===================81%      ] serve-spec-nv-K5.nsys-rep[1/1] [===================82%      ] serve-spec-nv-K5.nsys-rep[1/1] [====================83%     ] serve-spec-nv-K5.nsys-rep[1/1] [====================84%     ] serve-spec-nv-K5.nsys-rep[1/1] [====================85%     ] serve-spec-nv-K5.nsys-rep[1/1] [=====================86%    ] serve-spec-nv-K5.nsys-rep[1/1] [=====================87%    ] serve-spec-nv-K5.nsys-rep[1/1] [========================100%] serve-spec-nv-K5.nsys-rep[1/1] [========================100%] serve-spec-nv-K5.nsys-rep
+Generated:
+	/root/receipts-p2/nsys/serve-spec-nv-K5.nsys-rep

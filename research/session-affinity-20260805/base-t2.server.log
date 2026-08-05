@@ -1,0 +1,44 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=11605 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=11640 burst=23/33 cum=48/60=0.800
+[spec-acc] ctx=11674 burst=21/42 cum=69/102=0.676
+[spec-acc] ctx=11709 burst=26/27 cum=95/129=0.736
+[spec-acc] ctx=11744 burst=23/27 cum=118/156=0.756
+[spec-acc] ctx=11776 burst=24/24 cum=142/180=0.789
+[spec-acc] ctx=11808 burst=24/24 cum=166/204=0.814
+[spec-acc] ctx=11840 burst=22/36 cum=188/240=0.783
+[spec-acc] ctx=11874 burst=19/42 cum=207/282=0.734
+[spec-acc] ctx=11907 burst=23/27 cum=230/309=0.744
+[spec-acc] ctx=11939 burst=23/30 cum=253/339=0.746
+[spec-acc] ctx=11972 burst=21/42 cum=274/381=0.719
+[spec-acc] ctx=12007 burst=24/27 cum=298/408=0.730
+[spec-acc] ctx=12040 burst=21/39 cum=319/447=0.714
+[spec-acc] ctx=12074 burst=21/33 cum=340/480=0.708
+[spec-acc] ctx=12106 burst=23/30 cum=363/510=0.712
+[spec-acc] ctx=12139 burst=24/30 cum=387/540=0.717
+[spec-acc] ctx=12173 burst=24/24 cum=411/564=0.729
+[worker] spec session right-sized: ctx 32768 of 131072 (prompt 12233 + budget 600; model qwen36-27b)
+[spec-acc] ctx=12233 burst=21/33 cum=21/33=0.636
+[spec-acc] ctx=12266 burst=22/30 cum=43/63=0.683
+[spec-acc] ctx=12298 burst=24/27 cum=67/90=0.744
+[spec-acc] ctx=12331 burst=21/33 cum=88/123=0.715
+[spec-acc] ctx=12363 burst=24/33 cum=112/156=0.718
+[spec-acc] ctx=12398 burst=23/33 cum=135/189=0.714
+[spec-acc] ctx=12432 burst=24/33 cum=159/222=0.716
+[spec-acc] ctx=12467 burst=21/33 cum=180/255=0.706
+[spec-acc] ctx=12499 burst=25/30 cum=205/285=0.719
+[spec-acc] ctx=12534 burst=24/30 cum=229/315=0.727
+[worker] spec session right-sized: ctx 32768 of 131072 (prompt 12317 + budget 600; model qwen36-27b)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

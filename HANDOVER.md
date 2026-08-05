@@ -2,6 +2,8 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
 
+> **Do not quote this file as current.** It is an append-only work log: every dated section is true as of its own date and goes stale silently (the dated 2026-07-03 line "target rig RTX 5090 Laptop" at the bottom of the history is the canonical example — the 5090 Laptop is still the measuring and gating rig, but the *deployment* target moved to RTX PRO 6000 Blackwell class on 2026-08-03). For current numbers with their rig labels, read [docs/PERFORMANCE.md](docs/PERFORMANCE.md); for the serve contract and its stated gaps, [docs/SERVING.md](docs/SERVING.md).
+
 ## CURRENT STATE (2026-08-04, v0.69.0)
 
 - **First crates.io publish** — the crates-release lane made the workspace publishable:
@@ -10,7 +12,12 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
   `cuModuleLoadData` — distributed and cargo-installed binaries were unbootable before,
   loading the builder's OUT_DIR paths at runtime; the v0.69 release battery is the gate
   that validated the embed, kernel-check 458 OK / 0 FAIL). Distribution pipeline:
-  `publish.yml` (tag-triggered `cargo publish --workspace`, tag==version guard),
+  `publish.yml` (tag-triggered, tag==version guard — now **per-crate in dependency order,
+  resumable**: the v0.69.0 first publish shipped 5 of 9 crates before crates.io's new-crate
+  burst limit returned 429 and the old all-or-nothing `--workspace` form could not resume;
+  the workflow skips versions already live, backs off on 429, and takes a `publish=true`
+  dispatch as the recovery door — commit c52edfd3. Do not state "all nine crates are live";
+  check the registry),
   `release.yml` (prebuilt binaries + SHA256SUMS + binstall artifact), `tools/install.sh`
   (curl|sh, checksum-verified). README Installation rewritten prebuilt-first.
 - **OR-listing surface complete** (serve-tail): `/v1/models` OR-schema (context_length,
@@ -997,7 +1004,10 @@ from the checkpoint's OWN tokenizer, no GGUF in the ST toolchain):
   house-head standing without an external draft GGUF). PMIN0 negative (-5%), pmin=0.5 negative,
   trim marginal on the BF16 head (+0.5% — head read is ~3% of a draft round). House GGUF draft
   still faster (103.7) but needs the external file. p2 64.0 / p3 63.8 are SINGLE RUNS — board
-  bench re-measures. pp1855: 1341 default / 1480 ST_E4M3.
+  bench re-measures. pp1855: 1341 default / 1480 ST_E4M3 — **that "default" is the pre-2026-08-05
+  reading**: `MEMRA_ST_E4M3` is the default since d7112fde (lane/fp8-decode-v1), so a naked run now
+  gets the 1480-class arm and `MEMRA_ST_E4M3=0` is what reproduces 1341. Same flip on pp512:
+  1466.8 (`=0`) → 1514.5 (naked), +3.25pp, N=3 interleaved.
 - **9B ST modelopt** (qwen35-9b-nvfp4-st-modelopt): native trim (vocab 248070, 99.62% coverage
   @32k), best swept config K=2 pmin=0.3 trim, cold-start 190.5/188.5/217.7 p1/p2/p3, p3
   acceptance 97.7%. Thermal law reconfirmed: 9-load session sagged ~7-8% vs cold pairs.

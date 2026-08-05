@@ -1,0 +1,11 @@
+loaded qwen35 (32 layers)
+chunkinv: T=149 chat=false chunks=["2048", "64", "32"] steps=48
+ref chunk=2048 argmax=4558 margin=1.145796
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,149) maxdiff=6.418e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 5.5e0 6.4e0 2.6e0 3.0e0 2.2e0 4.6e0 4.3e0 4.0e0 5.8e0 3.8e0 3.0e0
+     64 | DIFFER |            64 | 4.845e-1 | - | identical
+   profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,149) maxdiff=8.538e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 3.0e0 4.3e0 4.2e0 5.6e0 4.8e0 7.0e0 2.8e0 5.5e0 4.7e0 8.5e0 4.4e0 2.4e0 5.1e0 5.2e0 3.4e0
+     32 | DIFFER |            32 | 5.687e-1 | - | identical
+chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***

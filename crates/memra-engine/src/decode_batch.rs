@@ -120,6 +120,133 @@ impl HybridModel {
         }) && ok(&self.output)
     }
 
+    /// H3 rollback/A-B seam (serve-path phase 2): `MEMRA_SERVE_B1FAST=0` sends B=1 back
+    /// through the batched body (the pre-change tick, bit-for-bit). Default ON.
+    ///
+    /// EXACTNESS, stated precisely (measured on-box 2026-08-05, sm_120 q9 NVFP4-MTP):
+    /// the fast path is BIT-IDENTICAL TO `decode_step_h` — decode-batch-gate's STRICT
+    /// gate1 (`--mode strict`) PASSes with it ON and FAILs with it OFF at maxdiff
+    /// 1.591e-1. It is deliberately NOT bit-identical to the batched body: the two
+    /// carry the long-accepted decode-config FP-composition gap (same class gate1's
+    /// config mode tolerates), and this lever moves solo sessions onto the NAKED side
+    /// of it. That is the desired direction — a c=1 serve request now computes exactly
+    /// what `run-gen` computes for the same prompt. Token-stream receipts:
+    /// research/servepath-p2-20260805 (greedy 150 ids + seeded-sampled identical to the
+    /// run-gen oracle AND cross-arm, so the gap is sub-token here as designed).
+    ///
+    /// Read fresh (an `AtomicU8` memo, not a `OnceLock`): decode-batch-gate flips this
+    /// seam BETWEEN gates in-process — gate1 needs the fast path ON to prove bit-identity,
+    /// gate2 needs it pinned OFF to keep testing the batched body. A latch-once read would
+    /// bake whichever gate ran first, so the gate could never test both sides. The memo
+    /// caches the parse but `set_b1_fast` invalidates it.
+    pub fn b1_fast_on() -> bool {
+        // 0 = unknown/invalidated, 1 = off, 2 = on
+        match Self::b1_fast_memo().load(std::sync::atomic::Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => {
+                let on = std::env::var("MEMRA_SERVE_B1FAST").as_deref() != Ok("0");
+                Self::b1_fast_memo()
+                    .store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+                on
+            }
+        }
+    }
+
+    fn b1_fast_memo() -> &'static std::sync::atomic::AtomicU8 {
+        static MEMO: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+        &MEMO
+    }
+
+    /// Test/gate seam: force the B=1 fast path on or off for the rest of the process,
+    /// overriding the env. Used by decode-batch-gate to pin gate2's reference arm.
+    pub fn set_b1_fast(on: bool) {
+        Self::b1_fast_memo()
+            .store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// H3 body: the m=1 FUSED trunk (`decode_layers_eager` — shared verbatim with
+    /// `decode_step_h`/the ppN stages) plus the batched path's own serving epilogue
+    /// (grammar mask, device sample, lean-logits park). See the call-site comment in
+    /// `decode_step_batch_sampled_lean_masked` for why this is bit-identical.
+    fn decode_step_b1_fast(
+        &self,
+        e: &Engine,
+        token: u32,
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+        masks: &[Option<(&CudaSlice<u32>, usize)>],
+        lean: bool,
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let pos = caches[0].pos;
+        let pos_d = e.htod_i32(&[pos as i32])?;
+        let x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+        // the SHARED m=1 trunk: same function decode_step_h runs, so every m=1 fusion
+        // (cross-layer add+norm+q8_1, fused SwiGLU, lever 1's gate+up dual) fires here.
+        let x = self.decode_layers_eager(e, x, 0, self.layers.len(), &pos_d, pos, caches[0])?;
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+
+        // ---- epilogue: byte-for-byte the batched path's, at b_n=1 ----
+        let n_vocab = self.output.out_features();
+        let mut logits = logits;
+        let mut pristine: Option<CudaSlice<f32>> = None;
+        if let Some((mask, words)) = masks.first().copied().flatten() {
+            assert!(samp.first().copied().flatten().is_some(),
+                    "grammar-masked row 0 must request a device sample");
+            if lean {
+                let cache = &mut caches[0];
+                if cache.last_logits_dev.as_ref().map(|d| d.len() < n_vocab).unwrap_or(true) {
+                    cache.last_logits_dev = Some(e.uninit(n_vocab)?);
+                }
+                let dst = cache.last_logits_dev.as_mut().unwrap();
+                e.dtod_copy_view(&logits.slice(0..n_vocab), dst)?;
+            } else {
+                let mut p = e.uninit(n_vocab)?;
+                e.dtod_copy_view(&logits.slice(0..n_vocab), &mut p)?;
+                pristine = Some(p);
+            }
+            e.mask_logits_col(&mut logits, mask, 0, n_vocab, words)?;
+        }
+
+        let mut next: Vec<Option<u32>> = vec![None; 1];
+        if let Some((temp, seed, ctr)) = samp.first().copied().flatten() {
+            let mut toks = e.alloc_u32_zeroed(1)?;
+            if temp <= 0.0 {
+                e.argmax_token_device_col(&logits, 0, n_vocab, &mut toks, 0)?;
+            } else {
+                let mut pb = e.zeros(n_vocab)?;
+                e.gumbel_perturb_col(&logits, 0, &mut pb, n_vocab, seed, ctr, temp)?;
+                e.argmax_token_device_col(&pb, 0, n_vocab, &mut toks, 0)?;
+            }
+            next[0] = Some(e.dtoh_u32(&toks)?[0]);
+        }
+
+        let sampled = samp.first().copied().flatten().is_some();
+        let rows: Vec<Vec<f32>> = if lean && sampled {
+            if masks.first().copied().flatten().is_none() {
+                let cache = &mut caches[0];
+                if cache.last_logits_dev.as_ref().map(|d| d.len() < n_vocab).unwrap_or(true) {
+                    cache.last_logits_dev = Some(e.uninit(n_vocab)?);
+                }
+                let dst = cache.last_logits_dev.as_mut().unwrap();
+                e.dtod_copy_view(&logits.slice(0..n_vocab), dst)?;
+            }
+            vec![Vec::new()]
+        } else if let Some(p) = pristine.as_ref() {
+            vec![e.dtoh(p)?]
+        } else {
+            vec![e.dtoh(&logits)?]
+        };
+        // decode_layers_eager does NOT advance cache.pos (decode_step_h advances it after
+        // the head); the batched path advances every cache at the tail — same here.
+        caches[0].pos += 1;
+        Ok((rows, next))
+    }
+
     /// One batched greedy-decode step over B independent sequences.
     /// `tokens[b]` is sequence b's input token; `caches[b]` its private cache (position,
     /// quantized KV, GDN/conv state). Returns the B logits rows (host, [n_vocab] each).
@@ -208,6 +335,34 @@ impl HybridModel {
         // tick's only steady-state D2H — one per chunk, none per seq.
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
+        // ---- H3: B=1 FAST-PATH (serve-path phase 2, 2026-08-05) ----------------------------
+        // At b_n==1 every projection below calls `matmul_pre(.., b_n)` with m=1, which is
+        // ALREADY the m=1 mmvq dispatch — so the m=1 *kernel family* was never the gap. What
+        // this body does NOT have is the m=1 *fusion chain* that `decode_step_h` carries:
+        //   - the cross-layer add+norm+quantize fusion (`add_rms_norm_q8_1`: 3 launches -> 1),
+        //   - the fused SwiGLU epilogue (`silu_mul_scaled_q8_1`: folds ffn_down's quantize
+        //     into its producer) and, with it, `matmul_pre_dual_noscale`'s gate+up pair
+        //     fusion — i.e. phase-1 LEVER 1.
+        // Routing b_n==1 through `decode_layers_eager` (the SHARED trunk `decode_step_h` and
+        // the ppN stages already use, lifted verbatim — not a copy) makes every present and
+        // future m=1 lever fire on the serve path automatically, which is the durable half of
+        // this change. The epilogue (grammar mask -> device sample -> lean logits park) is
+        // kept EXACTLY as the batched path runs it, so the serving contract is untouched.
+        // BIT-IDENTITY: the trunk is the same function `decode_step_h` calls, and every
+        // fusion it enables is kernel-check-pinned bit-identical to its unfused sequence
+        // (add_rms_norm == add;rms_norm | _q8_1 == +quantize_q8_1 | dual_noscale == two
+        // matmul_pre_noscale). Gate: decode-batch-gate B=1 vs decode_step_h + serve stream
+        // identity. MEMRA_SERVE_B1FAST=0 is the rollback/A-B seam.
+        if b_n == 1
+            && Self::b1_fast_on()
+            && !self.is_gemma4_e4b()
+            && self.cfg.gemma4.is_none()
+            && self.cfg.m3.is_none()
+            && crate::pp::pp_cuts(self.layers.len()).is_none()
+            && !e.verify_exact_on()
+        {
+            return self.decode_step_b1_fast(e, tokens[0], caches, samp, masks, lean);
+        }
         // MEMRA_DECODE_BATCH_CAP (experimental door, serving-lane tier probe 2026-08-01):
         // default 8 keeps the v1 exactness policy — B=2..8 rides the verify-tier batched
         // mmvq arms, per-row bit-identical to isolated m=1 decode. Values >8 are a
@@ -569,6 +724,17 @@ impl HybridModel {
                             "decode_step_batch v1: M3 swigluoai FFN not yet batched");
                     let n_ff = ffn_gate.out_features();
                     let (zq, zd) = e.quantize_q8_1(&z, b_n, n_embd)?;
+                    // REFUTED ARM (lane/q27-deepdive, 2026-08-05): fusing this gate+up pair
+                    // into `matmul_q8_fused2_t` (the fused2_b8 tier) measured FLAT-TO-NEGATIVE
+                    // at the serving tick — bench c=8 213.1/213.8, 213.9/214.4, 214.4/213.5
+                    // (sign flips) and serve c=8 paired mean −0.20% over 3 passes. Mechanism:
+                    // unlike m=1 (where the pair is 128 of 1015 launches in a 7.67%-gap tick),
+                    // the c=8 tick is 73.2% one weight-bound kernel class with launch cost
+                    // already hidden — halving 128 launches of ~28k buys nothing. The m=1 arm
+                    // in `matmul_pre_dual_noscale` (+0.94%) stays; this call site keeps the two
+                    // launches. Kernel + fused2_b8 wrapper retained: kernel-check gates it at
+                    // m=5/8 and matmul_q8_fused2_t serves the verify tier. Receipts:
+                    // research/q27-deepdive-20260805/ (lever3-bench-*, serve-points.jsonl).
                     let g = e.matmul_pre(ffn_gate, &zq, &zd, &z, b_n)?;
                     let u = e.matmul_pre(ffn_up, &zq, &zd, &z, b_n)?;
                     let mut act = e.uninit(b_n * n_ff)?;

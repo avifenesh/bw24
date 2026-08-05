@@ -1,0 +1,7 @@
+=== mechanism: bonus draw from col_b using col_a's stats (the spec.rs bug) ===
+filter                              th(col_a)     id0 rate   matched mismatched
+top_p=0.95 only                      4.925e-4         0.0%      0.0%       0.0%  (true low-id prob 8.34e-5)
+min_p=0.05 only                      5.000e-2       100.0%      0.0%     100.0%  (true low-id prob 8.34e-5)
+top_k=40 only                        6.000e-3         0.0%      0.0%       0.0%  (true low-id prob 8.34e-5)
+llama shape k40+p0.95+m0.05          5.000e-2       100.0%      0.0%     100.0%  (true low-id prob 8.34e-5)
+no filter (memra default)             0.000e0         0.0%      0.0%       0.0%  (true low-id prob 8.34e-5)

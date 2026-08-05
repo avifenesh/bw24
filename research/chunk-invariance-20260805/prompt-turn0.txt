@@ -1,0 +1,6 @@
+You are a terse assistant. Answer in one short sentence.
+
+FACTS: copies overlap with compute; pinned buffers bound host memory; bytes per token set the budget.
+
+user: Why does overlapping copies with compute matter?
+assistant:

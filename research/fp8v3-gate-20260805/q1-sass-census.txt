@@ -1,0 +1,35 @@
+Q1 INSTRUMENT VALIDATION — SASS census of cu/mmq_q8_0_f32acc.cu
+source: cuobjdump --dump-sass on the built accprobe object (sm_120a), 2026-08-05
+purpose: prove the two arms differ ONLY in the MMA class, and that the S32 arm is
+         not winning on instruction count (it executes MORE instructions).
+
+function (demangled tail)                                   instr  IMMA  QMMA  I2FP   LDS   LDG  LDL  STL
+---------------------------------------------------------------------------------------------------------
+_Z13mul_mat_q_accILi128ELb0ELb1EEvPKcPKiPfiiiiii             2680     0   128     0   232   104    1    1
+_Z13mul_mat_q_accILi128ELb1ELb1EEvPKcPKiPfiiiiii             2824     0   128     0   232   104    7    7
+_Z13mul_mat_q_accILi128ELb0ELb0EEvPKcPKiPfiiiiii             3176   128     0   512   232   104    0    0
+_Z13mul_mat_q_accILi128ELb1ELb0EEvPKcPKiPfiiiiii             3312   128     0   512   232   104    0    0
+
+READ:
+  * every instantiation emits exactly 128 MMAs -> identical MMA COUNT, identical tiling.
+  * S32 arms emit IMMA.16832.S8.S8; F32 arms emit QMMA.16832.F32.E4M3.E4M3.
+  * S32 pays 512 extra I2FP int->float converts (inherent to accumulating in s32 and
+    folding into an f32 sum). Those converts are charged to the S32 arm, i.e. the
+    instrument is GENEROUS to F32.
+  * S32 still wins ~20% while executing MORE instructions => the delta is MMA
+    throughput of the accumulator class, not instruction count or memory traffic.
+
+RESOURCE USAGE (cuobjdump --dump-resource-usage, same object):
+  template args <MMQ_X=128, need_check, F32ACC>
+  <128, false, true >  F32ACC : REG:255 STACK:8  SHARED:1024 LOCAL:0 CONSTANT[0]:944
+  <128, true,  true >  F32ACC : REG:255 STACK:56 SHARED:1024 LOCAL:0 CONSTANT[0]:944
+  <128, false, false>  S32ACC : REG:255 STACK:0  SHARED:1024 LOCAL:0 CONSTANT[0]:944
+  <128, true,  false>  S32ACC : REG:255 STACK:0  SHARED:1024 LOCAL:0 CONSTANT[0]:944
+  -> REG:255 and SHARED:1024 IDENTICAL in all four: occupancy is the same for both arms,
+     so the delta is not an occupancy artifact. The F32 arms carry a small STACK spill
+     (8/56 B, 1 LDL + 1 STL in the need_check=false pair) which the S32 arms do not; that
+     spill is a real cost of the f32 accumulator's register pressure at this geometry and is
+     part of what the measurement prices.
+
+MEASURED CELLS THAT USE THESE INSTANTIATIONS: the shape sheet is 27B-only (see RESULTS.jsonl);
+the timed launches are all MMQ_X=128, need_check selected by the shape as in the floor kernel.

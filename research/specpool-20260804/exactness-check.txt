@@ -1,0 +1,3 @@
+EXACTNESS: mismatched turns = NONE — byte-identical 25/25
+before total 290.2s  after total 289.4s
+before t2->t24 slope +2.35s  after +2.42s

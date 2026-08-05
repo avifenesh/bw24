@@ -1,0 +1,23 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Explain what a hash map is.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Explain what a hash map is."
+prompt tokens: [248045, 846, 198, 814, 20139, 1092, 264, 5010, 2336, 369, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=90700  decode argmax=90700  logit maxdiff=6.031e-1  MATCH
+batched-prime argmax=90700  tokenwise argmax=90700  logit maxdiff=6.133e-1  MATCH
+prefill 18 tok in 0.0218s = 827.2 tok/s (pp18)
+generated 64 tokens in 0.433s = 147.80 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.022s) [stop: MaxNew]
+tokens: [90700, 8340, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 2972, 25562, 64700, 6328, 4866, 13, 198, 262, 348, 256, 2972, 6065, 64700, 79091, 1092, 424, 369, 13, 198, 262, 348, 256, 2972, 6196, 62704, 64700, 3146, 10335, 11, 4222, 4184, 7763, 303, 6165, 7785, 466, 15019, 13, 198, 262, 348, 256, 2972, 51, 588, 64700, 29602]
+OUTPUT TEXT: "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   **Topic:** Hash Map.\n    *   **Task:** Explain what it is.\n    *   **Target Audience:** General audience, likely someone interested in computer science or programming.\n    *   **Tone:** Inform"
+--- generated text ---
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   **Topic:** Hash Map.
+    *   **Task:** Explain what it is.
+    *   **Target Audience:** General audience, likely someone interested in computer science or programming.
+    *   **Tone:** Inform

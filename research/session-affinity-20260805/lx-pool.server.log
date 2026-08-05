@@ -1,0 +1,93 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=11645 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=11677 burst=24/27 cum=46/54=0.852
+[spec-acc] ctx=11710 burst=24/24 cum=70/78=0.897
+[spec-acc] ctx=11742 burst=22/30 cum=92/108=0.852
+[spec-acc] ctx=11774 burst=24/30 cum=116/138=0.841
+[spec-acc] ctx=11808 burst=24/24 cum=140/162=0.864
+[spec-acc] ctx=11840 burst=25/30 cum=165/192=0.859
+[spec-acc] ctx=11875 burst=25/30 cum=190/222=0.856
+[spec-acc] ctx=11910 burst=23/30 cum=213/252=0.845
+[spec-acc] ctx=11943 burst=18/42 cum=231/294=0.786
+[spec-acc] ctx=11975 burst=21/42 cum=252/336=0.750
+[spec-acc] ctx=12010 burst=19/39 cum=271/375=0.723
+[spec-acc] ctx=12042 burst=22/30 cum=293/405=0.723
+[spec-acc] ctx=12074 burst=20/42 cum=313/447=0.700
+[spec-acc] ctx=12108 burst=21/42 cum=334/489=0.683
+[spec-acc] ctx=12143 burst=21/33 cum=355/522=0.680
+[spec-acc] ctx=12175 burst=23/27 cum=378/549=0.689
+[spec-acc] ctx=12207 burst=22/30 cum=400/579=0.691
+[spec-acc] ctx=12239 burst=4/6 cum=404/585=0.691
+[worker] spec-reuse: 12245 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=68 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=102 burst=26/27 cum=50/54=0.926
+[spec-acc] ctx=137 burst=24/24 cum=74/78=0.949
+[spec-acc] ctx=169 burst=23/27 cum=97/105=0.924
+[spec-acc] ctx=201 burst=24/24 cum=121/129=0.938
+[spec-acc] ctx=233 burst=24/27 cum=145/156=0.929
+[spec-acc] ctx=266 burst=24/27 cum=169/183=0.923
+[spec-acc] ctx=299 burst=24/30 cum=193/213=0.906
+[spec-acc] ctx=333 burst=24/27 cum=217/240=0.904
+[spec-acc] ctx=366 burst=24/27 cum=241/267=0.903
+[spec-acc] ctx=399 burst=21/36 cum=262/303=0.865
+[spec-acc] ctx=432 burst=25/30 cum=287/333=0.862
+[spec-acc] ctx=467 burst=23/30 cum=310/363=0.854
+[spec-acc] ctx=500 burst=24/33 cum=334/396=0.843
+[spec-acc] ctx=535 burst=21/36 cum=355/432=0.822
+[spec-acc] ctx=568 burst=23/27 cum=378/459=0.824
+[spec-acc] ctx=600 burst=25/27 cum=403/486=0.829
+[spec-acc] ctx=634 burst=24/27 cum=427/513=0.832
+[spec-acc] ctx=667 burst=3/3 cum=430/516=0.833
+[worker] spec-reuse: 12916 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=68 burst=24/30 cum=24/30=0.800
+[spec-acc] ctx=103 burst=26/27 cum=50/57=0.877
+[spec-acc] ctx=138 burst=26/27 cum=76/84=0.905
+[spec-acc] ctx=173 burst=24/24 cum=100/108=0.926
+[spec-acc] ctx=205 burst=24/24 cum=124/132=0.939
+[spec-acc] ctx=237 burst=24/24 cum=148/156=0.949
+[spec-acc] ctx=269 burst=25/27 cum=173/183=0.945
+[spec-acc] ctx=303 burst=25/27 cum=198/210=0.943
+[spec-acc] ctx=337 burst=24/24 cum=222/234=0.949
+[spec-acc] ctx=369 burst=25/30 cum=247/264=0.936
+[spec-acc] ctx=404 burst=24/24 cum=271/288=0.941
+[spec-acc] ctx=436 burst=26/27 cum=297/315=0.943
+[spec-acc] ctx=471 burst=24/24 cum=321/339=0.947
+[spec-acc] ctx=503 burst=24/24 cum=345/363=0.950
+[spec-acc] ctx=535 burst=24/24 cum=369/387=0.953
+[spec-acc] ctx=567 burst=24/24 cum=393/411=0.956
+[spec-acc] ctx=599 burst=25/30 cum=418/441=0.948
+[spec-acc] ctx=634 burst=24/27 cum=442/468=0.944
+[spec-acc] ctx=667 burst=3/3 cum=445/471=0.945
+[worker] spec-reuse: 13587 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=68 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=101 burst=24/24 cum=48/48=1.000
+[spec-acc] ctx=133 burst=24/24 cum=72/72=1.000
+[spec-acc] ctx=165 burst=24/24 cum=96/96=1.000
+[spec-acc] ctx=197 burst=24/24 cum=120/120=1.000
+[spec-acc] ctx=229 burst=24/24 cum=144/144=1.000
+[spec-acc] ctx=261 burst=25/27 cum=169/171=0.988
+[spec-acc] ctx=295 burst=24/24 cum=193/195=0.990
+[spec-acc] ctx=327 burst=24/24 cum=217/219=0.991
+[spec-acc] ctx=359 burst=24/24 cum=241/243=0.992
+[spec-acc] ctx=391 burst=24/27 cum=265/270=0.981
+[spec-acc] ctx=424 burst=26/27 cum=291/297=0.980
+[spec-acc] ctx=459 burst=24/24 cum=315/321=0.981
+[spec-acc] ctx=491 burst=24/24 cum=339/345=0.983
+[spec-acc] ctx=523 burst=24/24 cum=363/369=0.984
+[spec-acc] ctx=555 burst=24/24 cum=387/393=0.985
+[spec-acc] ctx=587 burst=25/30 cum=412/423=0.974
+[spec-acc] ctx=622 burst=24/27 cum=436/450=0.969
+[spec-acc] ctx=655 burst=12/12 cum=448/462=0.970
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

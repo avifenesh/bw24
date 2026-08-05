@@ -122,6 +122,60 @@ if [ -f "$G12" ]; then
 else
     echo "12B run-gen/VERIFY-GATE: SKIP (no 12B model at $G12)"
 fi
+# BATCHED/SOLO DECODE EXACTNESS (serve-path phase 2, 2026-08-05). This battery guards the
+# serving tick's numeric contract and it was rotting OUTSIDE the 5090 gate list — only
+# validate-h100.sh ran it, so every sm_120 merge took it on trust. The law from the H100 lane:
+# anything guarding a live lane belongs INSIDE the battery.
+#
+# What it pins here: (1) B=1 == decode_step_h, i.e. the MEMRA_SERVE_B1FAST fused solo path a
+# c=1 serve request now rides; (2) B=N per-row logits bit-identical to isolated B=1 (the
+# isolation contract); (3) device sampling greedy==host-argmax + sampled isolation + lean-logits.
+#
+# Strict runs on BOTH dtypes since lane/nvfp4-strict (2026-08-05). It used to be Q8_0-only:
+# the equalizing env (MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1) was Q8/dp4a-shaped — the NVFP4
+# gate+up/beta+alpha pair door (`matmul_pre_dual_noscale`) ignored MEMRA_MMVQ=0, so the oracle
+# rode the fused MMVQ-family dual while the batched side fell to dp4a and strict FAILED on any
+# NVFP4 model at pristine trees (train HEAD 70ce5a0f: gate1 maxdiff 1.639e-1 @ step 2 —
+# research/servepath-p2-20260805/; q27 at 93420980: gate2 step-6 divergence —
+# research/nvfp4-strict-20260805/repro.log). The engine fix pins that door under MMVQ=0 (the
+# same FP-order law `q8_fused_params` always enforced for Q8_0), so a strict FAIL on NVFP4 is
+# a REAL failure now. Q8_0 strict remains (it caught the pre-H3 B=1 deviation, maxdiff 1.591e-1).
+DBG_NVFP4="${MEMRA_CI_DBG_NVFP4:-$MODELS/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf}"
+DBG_Q8="${MEMRA_CI_DBG_Q8:-$MODELS/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf}"
+[ -x target/release/decode-batch-gate ] \
+    || cargo build --release -p memra-engine --bin decode-batch-gate >/dev/null 2>&1
+if [ -f "$DBG_NVFP4" ]; then
+    out=$(target/release/decode-batch-gate "$DBG_NVFP4" --steps 32 --batch 8 --mode config 2>&1)
+    echo "$out" | grep -q "ALL GREEN" \
+        || { echo "$out" | tail -20; echo "decode-batch-gate FAIL (NVFP4 config B=8)"; exit 1; }
+    echo "decode-batch-gate config B=8: ALL GREEN (9B NVFP4)"
+    out=$(MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1 target/release/decode-batch-gate \
+        "$DBG_NVFP4" --steps 32 --batch 4 --mode strict 2>&1)
+    echo "$out" | grep -q "ALL GREEN" \
+        || { echo "$out" | tail -20; echo "decode-batch-gate FAIL (NVFP4 strict B=4)"; exit 1; }
+    echo "decode-batch-gate strict B=4 equalized: ALL GREEN (9B NVFP4)"
+elif [ -n "${MEMRA_CI_DBG_NVFP4:-}" ]; then
+    # an EXPLICIT override that does not resolve is an operator error, not a skip
+    echo "decode-batch-gate: MEMRA_CI_DBG_NVFP4 set but not a file: $DBG_NVFP4"; exit 1
+else
+    echo "decode-batch-gate NVFP4: SKIP (no model at $DBG_NVFP4)"
+fi
+if [ -f "$DBG_Q8" ]; then
+    out=$(MEMRA_Q8RP=1 target/release/decode-batch-gate "$DBG_Q8" \
+        --steps 32 --batch 8 --mode config 2>&1)
+    echo "$out" | grep -q "ALL GREEN" \
+        || { echo "$out" | tail -20; echo "decode-batch-gate FAIL (Q8_0 config B=8)"; exit 1; }
+    echo "decode-batch-gate config B=8: ALL GREEN (9B Q8_0)"
+    out=$(MEMRA_Q8RP=1 MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1 target/release/decode-batch-gate \
+        "$DBG_Q8" --steps 32 --batch 4 --mode strict 2>&1)
+    echo "$out" | grep -q "ALL GREEN" \
+        || { echo "$out" | tail -20; echo "decode-batch-gate FAIL (Q8_0 strict B=4)"; exit 1; }
+    echo "decode-batch-gate strict B=4 equalized: ALL GREEN (9B Q8_0)"
+elif [ -n "${MEMRA_CI_DBG_Q8:-}" ]; then
+    echo "decode-batch-gate: MEMRA_CI_DBG_Q8 set but not a file: $DBG_Q8"; exit 1
+else
+    echo "decode-batch-gate Q8_0: SKIP (no model at $DBG_Q8)"
+fi
 echo "correctness stage: GREEN"
 
 # normal-usage serving battery (2026-07-30): OpenAI surface, streaming, determinism,
