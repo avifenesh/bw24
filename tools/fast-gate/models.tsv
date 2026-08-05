@@ -61,3 +61,16 @@ q35spec	spec	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
 samp	cmd	target/release/sample_check	-	-	-
 sampt	cmd	cargo	test -p memra-sampling --release -q	-	-
 g31spec	gspec	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	32	MEMRA_SPEC=3 MEMRA_DRAFT=/data/ai-ml/hf-models/gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf
+# chunkinv/chunkinvc: chunked-prefill reduction-order stability (lane/chunk-invariance,
+# research/chunk-invariance-20260805). MEMRA_PRIME_CHUNK is documented as a memory knob but
+# also steers the prefill's arithmetic, so two rigs with different values produce different
+# greedy text. `chunkinv` asserts the CURRENT honest contract (default config is chunk-VARIANT,
+# with the divergence pinned) and fails if that behavior silently changes in EITHER direction;
+# `chunkinvc` is its canary — it INJECTS a break (turns the MEMRA_PRIME_INVARIANT door ON, which
+# makes prefill chunk-invariant) and PASSES only if that breaks the expect-variant assertion, so
+# the gate is proven able to detect the mechanism (vLLM #40372's pattern: pin the property with
+# an asserted test, not a prose note). A canary that flipped only the EXPECTED label would be
+# perfectly correlated with the default gate and prove nothing — that trap is documented in the
+# gate script's header because this lane wrote it wrong twice.
+chunkinv	cmd	tools/chunk-invariance-gate.sh	-	-	-
+chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-

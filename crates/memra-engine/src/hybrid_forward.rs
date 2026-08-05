@@ -257,6 +257,43 @@ fn cpu_expert_profile_admit_enabled() -> bool {
 pub const PRIME_MIN_T: usize = 16;
 
 impl HybridModel {
+    /// CHUNK-INVARIANCE BISECT SEAM (lane/chunk-invariance): `MEMRA_PRIME_TRACE=<path>`
+    /// appends one JSONL row per (chunk, layer) with a hash of that layer's last-row
+    /// post-residual hidden. Diagnostic only — never on in a measured or gated run
+    /// (it forces a dtoh + host hash per layer).
+    fn prime_trace_path() -> Option<&'static str> {
+        static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        P.get_or_init(|| std::env::var("MEMRA_PRIME_TRACE").ok())
+            .as_deref()
+    }
+
+    /// CHUNK-ORDER INVARIANCE door (`MEMRA_PRIME_INVARIANT=1`, default OFF).
+    /// ON: chunked-prefill split points are pinned to `prime_grain()` and STOP tracking
+    /// `MEMRA_PRIME_CHUNK`, so the same prompt primes through the same boundary set — and
+    /// therefore the same arithmetic — on every rig regardless of that rig's chunk config.
+    /// The cost is that `MEMRA_PRIME_CHUNK` no longer bounds the prime's transient
+    /// footprint; `MEMRA_PRIME_GRAIN` does. Gated by
+    /// `tools/chunk-invariance-gate.sh` (fast-gate tier 1).
+    pub fn prime_invariant() -> bool {
+        static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *E.get_or_init(|| std::env::var("MEMRA_PRIME_INVARIANT").as_deref() == Ok("1"))
+    }
+
+    /// The fixed prefill segmentation grain (`MEMRA_PRIME_GRAIN`, default 4096 = the
+    /// historical `MEMRA_PRIME_CHUNK` default, so the invariant door's boundary set matches
+    /// today's default-config output). Clamped to >= PRIME_MIN_T: a grain below the stateful
+    /// conv's minimum would make the tail-merge rule the real segmenter.
+    /// This is a NUMERIC-CONFIG knob under the invariant door — changing it changes bits,
+    /// exactly like `MEMRA_KV_K` or `MEMRA_GDN_CHUNK`.
+    pub fn prime_grain() -> usize {
+        static G: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *G.get_or_init(|| {
+            std::env::var("MEMRA_PRIME_GRAIN").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(4096)
+                .max(PRIME_MIN_T)
+        })
+    }
+
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
     pub fn forward(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         if self.is_gemma4_e4b() { return self.gemma4_e4b_forward(e, tokens, false); }
@@ -415,8 +452,36 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        let chunk: usize = std::env::var("MEMRA_PRIME_CHUNK").ok()
+        let mut chunk: usize = std::env::var("MEMRA_PRIME_CHUNK").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(4096);
+        // CHUNK-ORDER INVARIANCE (lane/chunk-invariance, 2026-08-05; vLLM #38561 shape).
+        // MEMRA_PRIME_CHUNK is documented as a memory-transient knob, but it also decides
+        // the prefill's ARITHMETIC, so two rigs with different values produced different
+        // greedy text for the same prompt (research/session-affinity-20260805: 97- and
+        // 149-token prompts). ROOT CAUSE, measured in research/chunk-invariance-20260805
+        // (VERDICT.md) — and it is NOT what docs originally said:
+        //   * NOT trunk GEMM m / reduction order. REFUTED: the prefill GEMM is m-INVARIANT
+        //     (rows [0,32) bit-identical at m=32 vs m=33..80, both quantized wq and the
+        //     output head), so growing a chunk cannot move an existing row's value.
+        //   * NOT the GDN scan segmentation. REFUTED: MEMRA_GDN_CHUNKED=0 (sequential scan,
+        //     no WY segmentation at all) still diverges, so vLLM's mamba-boundary fix does
+        //     not describe our leak.
+        //   * IT IS the attention numeric CLASS edge in full_attn_prime_fa_dispatch, which
+        //     selects on `base_len == 0`: chunk 0 attends over this batch's f32 K/V
+        //     (fa_prefill) while every later chunk attends over the q8_0/q5_1 quantized KV
+        //     cache (fa_prefill_view_ws). The chunk size therefore decides WHERE in the
+        //     prompt that precision edge falls. Signature: per-row maxdiff is exactly 0.0
+        //     before the first boundary and O(1) right after, first_div_pos == chunk size.
+        // Pinning split points to a fixed grain makes that edge land at the same position on
+        // every rig, which is sufficient for bit-identity here (measured: 4/4 arms exact).
+        // Under the door MEMRA_PRIME_CHUNK no longer steers arithmetic — MEMRA_PRIME_GRAIN
+        // becomes both the (explicitly numeric) knob and the transient bound. The stronger
+        // fix that needs no grain knob at all is to drop the `base_len == 0` f32 special case
+        // so every row is in one class; that trades the unchunked fast path and owns its own
+        // arm (see VERDICT.md "a cheaper stronger fix").
+        if Self::prime_invariant() {
+            chunk = Self::prime_grain();
+        }
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache);
         }
@@ -747,6 +812,26 @@ impl HybridModel {
                 } else {
                     e.add(x1, sl_fo, x_nxt, t * n_embd)?;
                 }
+            }
+            // CHUNK-INVARIANCE BISECT SEAM (lane/chunk-invariance, 2026-08-05): dump the
+            // per-layer post-residual hidden for the LAST row of this chunk, keyed by
+            // absolute position, so two runs at different MEMRA_PRIME_CHUNK can be diffed
+            // layer-by-layer to find the FIRST diverging layer. Diagnostic only —
+            // unset (the default) costs one OnceLock read per layer.
+            if let Some(path) = Self::prime_trace_path() {
+                let row = (base + t - 1) as usize;
+                let host = e.dtoh(x_nxt)?;
+                let last = &host[(t - 1) * n_embd..t * n_embd];
+                use std::io::Write as _;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+                let mut h64: u64 = 0xcbf29ce484222325;
+                for v in last {
+                    h64 ^= v.to_bits() as u64;
+                    h64 = h64.wrapping_mul(0x100000001b3);
+                }
+                writeln!(f, "{{\"pos\":{row},\"layer\":{il},\"t\":{t},\"base\":{base},\
+                             \"hash\":\"{h64:016x}\",\"v0\":{:.9e},\"v1\":{:.9e},\"v2\":{:.9e}}}",
+                         last[0], last[1], last[2])?;
             }
             std::mem::swap(&mut x_cur, &mut x_nxt);
         }

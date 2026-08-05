@@ -1,0 +1,538 @@
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU
+rms_norm     maxdiff=2.38e-7 OK
+sigmoid_dot  maxdiff=0.00e0 OK
+rms_norm_qkv_w4 (prefill rows) maxdiff=7.15e-7 OK
+add_rms_norm fused: res_mismatch=0 norm_mismatch=0 OK
+rms_norm_q8_1 fused (nrows=1): q_mismatch=0 d_mismatch=0 OK
+rms_norm_q8_1 fused (nrows=5): q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 fused: res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=2): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=4): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=5): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=8): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+l2_norm      maxdiff=2.98e-8 OK
+rope_neox    maxdiff=1.19e-7 OK
+silu_mul     maxdiff=2.98e-8 OK
+mask_logits_col: mismatch=0 argmax 458==458 OK (byte-identical)
+silu_mul_q8_1 fold: int8_mismatch=0 scale_mismatch=0 OK
+silu_mul_q8_1 batched (T=5): int8_mismatch=0 scale_mismatch=0 OK
+gated_rmsnorm_q8_1 (T=1): q_mismatch=0 d_mismatch=0 OK
+gated_rmsnorm_q8_1 (T=5): q_mismatch=0 d_mismatch=0 OK
+iq fused act+quant [silu in_f=768 n_pairs=33]: byte_mismatch=0/38016 OK
+iq fused act+quant [silu in_f=512 n_pairs=7]: byte_mismatch=0/4032 OK
+iq fused act+quant [gelu in_f=704 n_pairs=29]: byte_mismatch=0/33408 OK
+sdpa_naive   maxdiff=1.12e-8 OK
+ssm_conv1d   maxdiff=1.49e-8 OK
+ssm_conv1d fused: out_mismatch=0 state_mismatch=0 OK
+gdn_scan     maxdiff=1.40e-9 OK
+gdn_chunked  T=200 C= 32 vs f64-truth: out seq=3.93e-6/chunk=2.19e-5 state seq=9.18e-6/chunk=1.85e-5 OK
+gdn_chunked  T=200 C= 64 vs f64-truth: out seq=3.93e-6/chunk=3.44e-5 state seq=9.18e-6/chunk=1.50e-5 OK
+gdn_chunked  T=200 C=128 vs f64-truth: out seq=3.93e-6/chunk=4.21e-5 state seq=9.18e-6/chunk=9.56e-5 OK
+gdn_chunked  T= 17 C= 64 vs f64-truth: out seq=3.93e-6/chunk=1.97e-5 state seq=1.28e-5/chunk=2.61e-5 OK
+gdn_chunked  T=512 C= 64 vs f64-truth: out seq=4.22e-6/chunk=3.50e-5 state seq=1.21e-5/chunk=1.03e-4 OK
+qmatvec Q2_K synthetic Stage-A: rel=3.16e-7 OK
+qmatvec skip blk.0.ffn_gate.weight: NVFP4 not in stage-A
+qmatvec blk.0.attn_qkv.weight [Q4_K] rel=7.15e-7 OK
+qmatvec blk.3.attn_q.weight [Q4_K] rel=5.81e-7 OK
+qmatvec output.weight [Q6_K] rel=7.30e-7 OK
+qmatvec skip token_embd.weight: NVFP4 not in stage-A
+output.weight [Q6_K] fast vs Stage-A: rel=3.56e-3 OK
+dtype5 [NVFP4] blk.0.ffn_gate.weight (in=4096 out=12288) Stage-A: rel=4.10e-6 OK
+dtype5 [NVFP4] blk.0.ffn_gate.weight Stage-B dp4a: rel=5.19e-3 OK
+dtype5 [Q5_K] blk.0.attn_gate.weight (in=4096 out=4096) Stage-A: rel=5.66e-7 OK
+dtype5 [Q5_K] blk.0.attn_gate.weight Stage-B dp4a: rel=9.88e-4 OK
+dtype5 [IQ3_S] blk.0.ffn_gate_exps.weight (in=2048 out=512) Stage-A: rel=1.19e-7 OK
+dtype5 [IQ3_S] blk.0.ffn_gate_exps.weight Stage-B dp4a: (no fast path — Stage-A only)
+dtype5 [IQ4_XS] blk.0.ffn_down_exps.weight (in=512 out=2048) Stage-A: rel=2.24e-8 OK
+dtype5 [IQ4_XS] blk.0.ffn_down_exps.weight Stage-B dp4a: rel=1.09e-4 OK
+dtype5 [Q3_K] blk.40.ffn_gate_exps.weight (in=2048 out=512) Stage-A: rel=1.56e-7 OK
+dtype5 [Q3_K] blk.40.ffn_gate_exps.weight Stage-B dp4a: rel=6.53e-4 OK
+GEMM blk.3.attn_q.weight [Q4_K] T=16: rel=3.50e-7 OK
+GEMM blk.3.attn_q.weight f16 T=16: rel=3.40e-3 OK
+GEMM blk.3.attn_q.weight [Q4_K] T=64: rel=3.88e-7 OK
+GEMM blk.3.attn_q.weight f16 T=64: rel=3.52e-3 OK
+GEMM blk.3.attn_q.weight [Q4_K] T=128: rel=4.52e-7 OK
+GEMM blk.3.attn_q.weight f16 T=128: rel=4.31e-3 OK
+GEMM blk.3.attn_q.weight [Q4_K] T=512: rel=5.77e-7 OK
+GEMM blk.3.attn_q.weight f16 T=512: rel=4.79e-3 OK
+GEMM output.weight [Q6_K] T=16: rel=4.29e-7 OK
+GEMM output.weight f16 T=16: rel=3.60e-3 OK
+GEMM output.weight [Q6_K] T=64: rel=5.03e-7 OK
+GEMM output.weight f16 T=64: rel=3.83e-3 OK
+GEMM output.weight [Q6_K] T=128: rel=5.03e-7 OK
+GEMM output.weight f16 T=128: rel=3.83e-3 OK
+GEMM output.weight [Q6_K] T=512: rel=5.86e-7 OK
+GEMM output.weight f16 T=512: rel=4.23e-3 OK
+f16g-sk (in=512 out=300 skew 1..300) grid-scan vs oracle: rel=1.73e-6 OK
+f16g-sk (in=512 out=300) visitor-hybrid(cross=64,deep-tail) vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-128 vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-32-deep-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-32-legacy-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk-tail (in=512 out=300) deep(64x3st) vs legacy(32x2st): maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192 skew 1..300) grid-scan vs oracle: rel=8.65e-7 OK
+f16g-sk (in=480 out=192) visitor-hybrid(cross=64,deep-tail) vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-128 vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-32-deep-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-32-legacy-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk-tail (in=480 out=192) deep(64x3st) vs legacy(32x2st): maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_gate_exps.weight in=2048 out=512] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [blk.0.ffn_down_exps.weight in=512 out=2048] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_gate_exps.weight iq3_s in=2048 out=512] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q35 blk.0.ffn_down_exps.weight iq4_xs in=512 out=2048] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+iq4xs-mmq [synth] T=16: rel=2.43e-7 OK
+iq4xs-mmq [synth] T=64: rel=2.39e-7 OK
+iq4xs-mmq [synth] T=128: rel=2.38e-7 OK
+iq4xs-mmq [synth] T=512: rel=1.70e-4 OK
+iq4xs-mmq [token_embd.weight] T=16: rel=3.47e-7 OK
+iq4xs-mmq [token_embd.weight] T=64: rel=2.71e-4 OK
+iq4xs-mmq [token_embd.weight] T=128: rel=2.69e-4 OK
+iq4xs-mmq [token_embd.weight] T=512: rel=2.65e-4 OK
+GEMM blk.0.attn_gate.weight [Q5_K] T=16: rel=4.31e-7 OK
+GEMM blk.0.attn_gate.weight [Q5_K] T=64: rel=3.75e-7 OK
+GEMM blk.0.attn_gate.weight [Q5_K] T=128: rel=3.75e-7 OK
+GEMM blk.0.attn_gate.weight [Q5_K] T=512: rel=6.39e-7 OK
+GEMM blk.0.ffn_gate.weight [NVFP4] T=16: rel=5.06e-7 OK
+GEMM blk.0.ffn_gate.weight [NVFP4] T=64: rel=4.95e-7 OK
+GEMM blk.0.ffn_gate.weight [NVFP4] T=128: rel=4.83e-7 OK
+GEMM blk.0.ffn_gate.weight [NVFP4] T=512: rel=5.29e-7 OK
+FP4-GEMM blk.0.ffn_gate.weight [NVFP4] T=16: rel=9.48e-2 (informational; authoritative gate = argmax) OK
+FP4-GEMM blk.0.ffn_gate.weight [NVFP4] T=64: rel=1.48e-1 (informational; authoritative gate = argmax) OK
+FP4-GEMM blk.0.ffn_gate.weight [NVFP4] T=128: rel=1.48e-1 (informational; authoritative gate = argmax) OK
+FP4-GEMM blk.0.ffn_gate.weight [NVFP4] T=512: rel=1.48e-1 (informational; authoritative gate = argmax) OK
+MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T=16: rel=8.99e-2 (informational; authoritative gate = argmax) OK
+MMQ-GEMM-V1 blk.0.ffn_gate.weight [NVFP4] T=16: rel=1.01e-1 (pre-port oracle; two-level/1.12x) IMPROVED
+MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T=64: rel=1.13e-1 (informational; authoritative gate = argmax) OK
+MMQ-GEMM-V1 blk.0.ffn_gate.weight [NVFP4] T=64: rel=1.50e-1 (pre-port oracle; two-level/1.33x) IMPROVED
+MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T=128: rel=1.50e-1 (informational; authoritative gate = argmax) OK
+MMQ-GEMM-V1 blk.0.ffn_gate.weight [NVFP4] T=128: rel=1.50e-1 (pre-port oracle; two-level/1.00x) WORSE
+MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T=512: rel=1.50e-1 (informational; authoritative gate = argmax) OK
+MMQ-GEMM-V1 blk.0.ffn_gate.weight [NVFP4] T=512: rel=1.56e-1 (pre-port oracle; two-level/1.04x) IMPROVED
+MMQ-GEMM-DYN blk.0.ffn_gate.weight [NVFP4] T=16: rel=1.37e-1 v1=1.00e0 (7.32x) OK
+MMQ-GEMM-DYN blk.0.ffn_gate.weight [NVFP4] T=128: rel=2.17e-1 v1=1.00e0 (4.61x) OK
+MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T=128 k=0: rel=4.28e-2 (baseline, 8 outlier channels @300x)
+MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T=128 k=4: rel=4.17e-2 (1.03x vs k=0) informational OK
+MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T=128 k=8: rel=1.46e-2 (2.93x vs k=0) OK
+MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T=128 k=16: rel=1.47e-2 (2.92x vs k=0) OK
+MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T=128 k=32: rel=1.43e-2 (3.00x vs k=0) OK
+MMQ-GEMM-RES blk.0.ffn_gate.weight [NVFP4] T=128 k=64: rel=1.59e-2 (2.69x vs k=0) OK
+MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T=16: rel=4.19e-3 (int8 band ~1e-3) OK
+MMQ-W4A8-RP blk.0.ffn_gate.weight [NVFP4] T=16: bit-mismatch 0/196608 OK
+MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T=64: rel=4.47e-3 (int8 band ~1e-3) OK
+MMQ-W4A8-RP blk.0.ffn_gate.weight [NVFP4] T=64: bit-mismatch 0/786432 OK
+MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T=128: rel=4.89e-3 (int8 band ~1e-3) OK
+MMQ-W4A8-RP blk.0.ffn_gate.weight [NVFP4] T=128: bit-mismatch 0/1572864 OK
+MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T=512: rel=7.36e-3 (int8 band ~1e-3) OK
+MMQ-W4A8-RP blk.0.ffn_gate.weight [NVFP4] T=512: bit-mismatch 0/6291456 OK
+MMQ-GEMM blk.3.attn_q.weight [Q4_K] T=16: rel=6.50e-3 OK
+MMQ-GEMM blk.3.attn_q.weight [Q4_K] T=64: rel=6.44e-3 OK
+MMQ-GEMM blk.3.attn_q.weight [Q4_K] T=128: rel=7.38e-3 OK
+MMQ-GEMM blk.3.attn_q.weight [Q4_K] T=512: rel=7.18e-3 OK
+MMQ-GEMM blk.0.attn_gate.weight [Q5_K] T=16: rel=6.56e-3 OK
+MMQ-GEMM blk.0.attn_gate.weight [Q5_K] T=64: rel=5.26e-3 OK
+MMQ-GEMM blk.0.attn_gate.weight [Q5_K] T=128: rel=5.26e-3 OK
+MMQ-GEMM blk.0.attn_gate.weight [Q5_K] T=512: rel=5.68e-3 OK
+MMQ-Q8_0 blk.0.attn_qkv.weight [Q8_0 in=2048 out=8192] T=16: rel=2.77e-3 OK
+MMQ-Q8_0 blk.0.attn_qkv.weight [Q8_0 in=2048 out=8192] T=64: rel=4.26e-3 OK
+MMQ-Q8_0 blk.0.attn_qkv.weight [Q8_0 in=2048 out=8192] T=128: rel=4.26e-3 OK
+MMQ-Q8_0 blk.0.attn_qkv.weight [Q8_0 in=2048 out=8192] T=512: rel=5.52e-3 OK
+MMQ-Q8_0 blk.0.ffn_gate_shexp.weight [Q8_0 in=2048 out=512] T=16: rel=3.64e-3 OK
+MMQ-Q8_0 blk.0.ffn_gate_shexp.weight [Q8_0 in=2048 out=512] T=64: rel=3.71e-3 OK
+MMQ-Q8_0 blk.0.ffn_gate_shexp.weight [Q8_0 in=2048 out=512] T=128: rel=4.17e-3 OK
+MMQ-Q8_0 blk.0.ffn_gate_shexp.weight [Q8_0 in=2048 out=512] T=512: rel=4.18e-3 OK
+MMQ-Q4_0 blk.0.attn_q.weight [Q4_0 in=3840 out=4096] T=16: rel=4.04e-3 OK
+MMQ-Q4_0-RP blk.0.attn_q.weight T=16: bit-mismatch 0/65536 OK
+MMQ-Q4_0-CLC blk.0.attn_q.weight T=16: bit-mismatch 0/65536 OK
+MMQ-Q4_0-CLC-RP blk.0.attn_q.weight T=16: bit-mismatch 0/65536 OK
+MMQ-Q4_0 blk.0.attn_q.weight [Q4_0 in=3840 out=4096] T=64: rel=4.92e-3 OK
+MMQ-Q4_0-RP blk.0.attn_q.weight T=64: bit-mismatch 0/262144 OK
+MMQ-Q4_0-CLC blk.0.attn_q.weight T=64: bit-mismatch 0/262144 OK
+MMQ-Q4_0-CLC-RP blk.0.attn_q.weight T=64: bit-mismatch 0/262144 OK
+MMQ-Q4_0 blk.0.attn_q.weight [Q4_0 in=3840 out=4096] T=128: rel=4.53e-3 OK
+MMQ-Q4_0-RP blk.0.attn_q.weight T=128: bit-mismatch 0/524288 OK
+MMQ-Q4_0-CLC blk.0.attn_q.weight T=128: bit-mismatch 0/524288 OK
+MMQ-Q4_0-CLC-RP blk.0.attn_q.weight T=128: bit-mismatch 0/524288 OK
+MMQ-Q4_0 blk.0.attn_q.weight [Q4_0 in=3840 out=4096] T=512: rel=4.01e-3 OK
+MMQ-Q4_0-RP blk.0.attn_q.weight T=512: bit-mismatch 0/2097152 OK
+MMQ-Q4_0-CLC blk.0.attn_q.weight T=512: bit-mismatch 0/2097152 OK
+MMQ-Q4_0-CLC-RP blk.0.attn_q.weight T=512: bit-mismatch 0/2097152 OK
+MMQ-Q4_0 blk.0.ffn_gate.weight [Q4_0 in=3840 out=15360] T=16: rel=4.62e-3 OK
+MMQ-Q4_0-RP blk.0.ffn_gate.weight T=16: bit-mismatch 0/245760 OK
+MMQ-Q4_0-CLC blk.0.ffn_gate.weight T=16: bit-mismatch 0/245760 OK
+MMQ-Q4_0-CLC-RP blk.0.ffn_gate.weight T=16: bit-mismatch 0/245760 OK
+MMQ-Q4_0 blk.0.ffn_gate.weight [Q4_0 in=3840 out=15360] T=64: rel=4.62e-3 OK
+MMQ-Q4_0-RP blk.0.ffn_gate.weight T=64: bit-mismatch 0/983040 OK
+MMQ-Q4_0-CLC blk.0.ffn_gate.weight T=64: bit-mismatch 0/983040 OK
+MMQ-Q4_0-CLC-RP blk.0.ffn_gate.weight T=64: bit-mismatch 0/983040 OK
+MMQ-Q4_0 blk.0.ffn_gate.weight [Q4_0 in=3840 out=15360] T=128: rel=4.49e-3 OK
+MMQ-Q4_0-RP blk.0.ffn_gate.weight T=128: bit-mismatch 0/1966080 OK
+MMQ-Q4_0-CLC blk.0.ffn_gate.weight T=128: bit-mismatch 0/1966080 OK
+MMQ-Q4_0-CLC-RP blk.0.ffn_gate.weight T=128: bit-mismatch 0/1966080 OK
+MMQ-Q4_0 blk.0.ffn_gate.weight [Q4_0 in=3840 out=15360] T=512: rel=5.05e-3 OK
+MMQ-Q4_0-RP blk.0.ffn_gate.weight T=512: bit-mismatch 0/7864320 OK
+MMQ-Q4_0-CLC blk.0.ffn_gate.weight T=512: bit-mismatch 0/7864320 OK
+MMQ-Q4_0-CLC-RP blk.0.ffn_gate.weight T=512: bit-mismatch 0/7864320 OK
+MMQ-27B blk.0.ffn_down.weight [NVFP4 in=17408 out=5120] T=16: rel=1.12e-1 (W4A4-vs-dp4a band ~0.1) OK
+MMQ-27B blk.0.ffn_down.weight [NVFP4 in=17408 out=5120] T=512: rel=1.54e-1 (W4A4-vs-dp4a band ~0.1) OK
+MMQ-27B blk.0.ffn_gate.weight [NVFP4 in=5120 out=17408] T=16: rel=1.07e-1 (W4A4-vs-dp4a band ~0.1) OK
+MMQ-27B blk.0.ffn_gate.weight [NVFP4 in=5120 out=17408] T=512: rel=8.52e-2 (W4A4-vs-dp4a band ~0.1) OK
+MMQ-Q4_0-RAGK TILE [in=2112 out=2560 nc=false] T=103: rel=1.07e-2 OK
+MMQ-Q4_0-RAGK SK [in=2112 out=2560 nc=false] T=103: rel=1.07e-2 OK
+MMQ-Q4_0-RAGK CLC [in=2112 out=2560 nc=false] T=103: bit-mismatch 0/263680 OK
+MMQ-Q4_0-RAGK TILE [in=2112 out=2560 nc=false] T=479: rel=1.05e-2 OK
+MMQ-Q4_0-RAGK SK [in=2112 out=2560 nc=false] T=479: rel=1.05e-2 OK
+MMQ-Q4_0-RAGK CLC [in=2112 out=2560 nc=false] T=479: bit-mismatch 0/1226240 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight TILE [in=2816 out=4096] T=103: rel=7.79e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight SK [in=2816 out=4096] T=103: rel=7.79e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight CLC [in=2816 out=4096] T=103: bit-mismatch 0/421888 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight TILE [in=2816 out=4096] T=229: rel=7.69e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight SK [in=2816 out=4096] T=229: rel=7.69e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight CLC [in=2816 out=4096] T=229: bit-mismatch 0/937984 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight TILE [in=2816 out=4096] T=479: rel=7.69e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight SK [in=2816 out=4096] T=479: rel=7.69e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight CLC [in=2816 out=4096] T=479: bit-mismatch 0/1961984 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight TILE [in=2816 out=4096] T=1024: rel=8.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight SK [in=2816 out=4096] T=1024: rel=8.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight CLC [in=2816 out=4096] T=1024: bit-mismatch 0/4194304 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight TILE [in=2816 out=4096] T=2048: rel=8.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight SK [in=2816 out=4096] T=2048: rel=8.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight CLC [in=2816 out=4096] T=2048: bit-mismatch 0/8388608 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight TILE [in=2816 out=4096] T=2151: rel=8.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight SK [in=2816 out=4096] T=2151: rel=8.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_q.weight CLC [in=2816 out=4096] T=2151: bit-mismatch 0/8810496 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight TILE [in=2816 out=2048] T=103: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight SK [in=2816 out=2048] T=103: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight CLC [in=2816 out=2048] T=103: bit-mismatch 0/210944 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight TILE [in=2816 out=2048] T=229: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight SK [in=2816 out=2048] T=229: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight CLC [in=2816 out=2048] T=229: bit-mismatch 0/468992 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight TILE [in=2816 out=2048] T=479: rel=6.23e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight SK [in=2816 out=2048] T=479: rel=6.23e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight CLC [in=2816 out=2048] T=479: bit-mismatch 0/980992 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight TILE [in=2816 out=2048] T=1024: rel=6.10e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight SK [in=2816 out=2048] T=1024: rel=6.10e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight CLC [in=2816 out=2048] T=1024: bit-mismatch 0/2097152 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight TILE [in=2816 out=2048] T=2048: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight SK [in=2816 out=2048] T=2048: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight CLC [in=2816 out=2048] T=2048: bit-mismatch 0/4194304 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight TILE [in=2816 out=2048] T=2151: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight SK [in=2816 out=2048] T=2151: rel=5.88e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_k.weight CLC [in=2816 out=2048] T=2151: bit-mismatch 0/4405248 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight TILE [in=2816 out=2048] T=103: rel=5.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight SK [in=2816 out=2048] T=103: rel=5.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight CLC [in=2816 out=2048] T=103: bit-mismatch 0/210944 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight TILE [in=2816 out=2048] T=229: rel=5.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight SK [in=2816 out=2048] T=229: rel=5.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight CLC [in=2816 out=2048] T=229: bit-mismatch 0/468992 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight TILE [in=2816 out=2048] T=479: rel=6.30e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight SK [in=2816 out=2048] T=479: rel=6.30e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight CLC [in=2816 out=2048] T=479: bit-mismatch 0/980992 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight TILE [in=2816 out=2048] T=1024: rel=6.00e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight SK [in=2816 out=2048] T=1024: rel=6.00e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight CLC [in=2816 out=2048] T=1024: bit-mismatch 0/2097152 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight TILE [in=2816 out=2048] T=2048: rel=6.86e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight SK [in=2816 out=2048] T=2048: rel=6.86e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight CLC [in=2816 out=2048] T=2048: bit-mismatch 0/4194304 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight TILE [in=2816 out=2048] T=2151: rel=6.86e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight SK [in=2816 out=2048] T=2151: rel=6.86e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_v.weight CLC [in=2816 out=2048] T=2151: bit-mismatch 0/4405248 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight TILE [in=4096 out=2816] T=103: rel=3.79e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight SK [in=4096 out=2816] T=103: rel=3.79e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight CLC [in=4096 out=2816] T=103: bit-mismatch 0/290048 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight TILE [in=4096 out=2816] T=229: rel=4.11e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight SK [in=4096 out=2816] T=229: rel=4.11e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight CLC [in=4096 out=2816] T=229: bit-mismatch 0/644864 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight TILE [in=4096 out=2816] T=479: rel=4.11e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight SK [in=4096 out=2816] T=479: rel=4.11e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight CLC [in=4096 out=2816] T=479: bit-mismatch 0/1348864 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight TILE [in=4096 out=2816] T=1024: rel=3.91e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight SK [in=4096 out=2816] T=1024: rel=3.91e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight CLC [in=4096 out=2816] T=1024: bit-mismatch 0/2883584 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight TILE [in=4096 out=2816] T=2048: rel=4.48e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight SK [in=4096 out=2816] T=2048: rel=4.48e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight CLC [in=4096 out=2816] T=2048: bit-mismatch 0/5767168 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight TILE [in=4096 out=2816] T=2151: rel=4.48e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight SK [in=4096 out=2816] T=2151: rel=4.48e-3 OK
+MMQ-Q4_0-NC26 blk.0.attn_output.weight CLC [in=4096 out=2816] T=2151: bit-mismatch 0/6057216 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight TILE [in=2816 out=2112] T=103: rel=4.08e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight SK [in=2816 out=2112] T=103: rel=4.08e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight CLC [in=2816 out=2112] T=103: bit-mismatch 0/217536 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight TILE [in=2816 out=2112] T=229: rel=5.02e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight SK [in=2816 out=2112] T=229: rel=5.02e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight CLC [in=2816 out=2112] T=229: bit-mismatch 0/483648 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight TILE [in=2816 out=2112] T=479: rel=4.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight SK [in=2816 out=2112] T=479: rel=4.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight CLC [in=2816 out=2112] T=479: bit-mismatch 0/1011648 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight TILE [in=2816 out=2112] T=1024: rel=4.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight SK [in=2816 out=2112] T=1024: rel=4.93e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight CLC [in=2816 out=2112] T=1024: bit-mismatch 0/2162688 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight TILE [in=2816 out=2112] T=2048: rel=4.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight SK [in=2816 out=2112] T=2048: rel=4.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight CLC [in=2816 out=2112] T=2048: bit-mismatch 0/4325376 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight TILE [in=2816 out=2112] T=2151: rel=4.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight SK [in=2816 out=2112] T=2151: rel=4.82e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_gate.weight CLC [in=2816 out=2112] T=2151: bit-mismatch 0/4542912 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight TILE [in=2112 out=2816] T=103: rel=3.49e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight SK [in=2112 out=2816] T=103: rel=3.49e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight CLC [in=2112 out=2816] T=103: bit-mismatch 0/290048 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight TILE [in=2112 out=2816] T=229: rel=3.85e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight SK [in=2112 out=2816] T=229: rel=3.85e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight CLC [in=2112 out=2816] T=229: bit-mismatch 0/644864 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight TILE [in=2112 out=2816] T=479: rel=4.27e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight SK [in=2112 out=2816] T=479: rel=4.27e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight CLC [in=2112 out=2816] T=479: bit-mismatch 0/1348864 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight TILE [in=2112 out=2816] T=1024: rel=4.75e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight SK [in=2112 out=2816] T=1024: rel=4.75e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight CLC [in=2112 out=2816] T=1024: bit-mismatch 0/2883584 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight TILE [in=2112 out=2816] T=2048: rel=4.68e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight SK [in=2112 out=2816] T=2048: rel=4.68e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight CLC [in=2112 out=2816] T=2048: bit-mismatch 0/5767168 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight TILE [in=2112 out=2816] T=2151: rel=4.68e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight SK [in=2112 out=2816] T=2151: rel=4.68e-3 OK
+MMQ-Q4_0-NC26 blk.0.ffn_down.weight CLC [in=2112 out=2816] T=2151: bit-mismatch 0/6057216 OK
+MMVQ blk.3.attn_q.weight [Q4_K] m=1: rel=1.50e-7 OK
+MMVQ blk.3.attn_q.weight [Q4_K] m=2: rel=1.29e-7 OK
+MMVQ output.weight [Q6_K] m=1: rel=1.10e-7 OK
+MMVQ output.weight [Q6_K] m=2: rel=9.80e-8 OK
+Q8-FUSED2 blk.0.ssm_beta.weight+blk.0.ssm_alpha.weight [Q8_0] out=(32,32): rel=0.00e0 bits=true OK
+Q8-FUSED2-B blk.0.ssm_beta.weight+blk.0.ssm_alpha.weight [Q8_0] m=2 out=(32,32): rel=0.00e0 bits=true OK
+Q8-FUSED2-B blk.0.ssm_beta.weight+blk.0.ssm_alpha.weight [Q8_0] m=3 out=(32,32): rel=0.00e0 bits=true OK
+Q8-FUSED2-B blk.0.ssm_beta.weight+blk.0.ssm_alpha.weight [Q8_0] m=4 out=(32,32): rel=0.00e0 bits=true OK
+Q8-FUSED2-B blk.0.ssm_beta.weight+blk.0.ssm_alpha.weight [Q8_0] m=5 out=(32,32): rel=0.00e0 bits=true OK
+Q8-FUSED2-B blk.0.ssm_beta.weight+blk.0.ssm_alpha.weight [Q8_0] m=8 out=(32,32): rel=0.00e0 bits=true OK
+MMVQ blk.0.ffn_gate.weight [NVFP4] m=1: rel=1.46e-7 OK
+MMVQ blk.0.ffn_gate.weight [NVFP4] m=2: rel=1.42e-7 OK
+E4M3-MMVQ synth [5120x512] m=1: rel=1.73e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=2: rel=1.73e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=5: rel=2.17e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=9: rel=2.17e-7 m1-bits=true OK
+E4M3-BATCHED synth [5120x512] m=2 b2: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=3 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=4 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=5 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=6 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=7 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=8 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-MMVQ synth [2048x320] m=1: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=2: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=5: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=9: rel=2.10e-7 m1-bits=true OK
+E4M3-BATCHED synth [2048x320] m=2 b2: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=3 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=4 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=5 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=6 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=7 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=8 b8: rel=0.00e0 bit-bad=0 OK
+BATCHED blk.0.ssm_alpha.weight [Q8_0] m=2 mcols=2: rel=0.00e0 OK
+BATCHED blk.0.ssm_alpha.weight [Q8_0] m=3 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.ssm_alpha.weight [Q8_0] m=4 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.ssm_alpha.weight [Q8_0] m=5 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.ssm_alpha.weight [Q8_0] m=6 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.ssm_alpha.weight [Q8_0] m=8 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_qkv.weight [Q4_K] m=2 mcols=2: rel=0.00e0 OK
+BATCHED blk.0.attn_qkv.weight [Q4_K] m=3 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.attn_qkv.weight [Q4_K] m=4 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.attn_qkv.weight [Q4_K] m=5 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_qkv.weight [Q4_K] m=6 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_qkv.weight [Q4_K] m=8 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_gate.weight [Q5_K] m=2 mcols=2: rel=0.00e0 OK
+BATCHED blk.0.attn_gate.weight [Q5_K] m=3 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.attn_gate.weight [Q5_K] m=4 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.attn_gate.weight [Q5_K] m=5 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_gate.weight [Q5_K] m=6 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_gate.weight [Q5_K] m=8 mcols=8: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=2 mcols=2: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=3 mcols=4: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=4 mcols=4: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=5 mcols=8: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=6 mcols=8: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=8 mcols=8: rel=0.00e0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=1 mmvq_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=2 mcols=2 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=3 mcols=4 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=4 mcols=4 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=5 mcols=8 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=8 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=1 mmvq_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=2 mcols=2 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=3 mcols=4 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=4 mcols=4 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=5 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=8 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=12 mcols=16 batched_rp: bit-bad=0 OK
+BATCHED blk.0.ffn_gate.weight [NVFP4] m=2 mcols=2: rel=0.00e0 OK
+BATCHED blk.0.ffn_gate.weight [NVFP4] m=3 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.ffn_gate.weight [NVFP4] m=4 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.ffn_gate.weight [NVFP4] m=5 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.ffn_gate.weight [NVFP4] m=6 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.ffn_gate.weight [NVFP4] m=8 mcols=8: rel=0.00e0 OK
+DUAL-BATCHED gate+up [NVFP4] m=2 mcols=2: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4 rp] m=2 mcols=2: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4] m=3 mcols=4: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4 rp] m=3 mcols=4: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4] m=4 mcols=4: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4 rp] m=4 mcols=4: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4 rp] m=5 mcols=8: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4 rp] m=6 mcols=8: bit-bad=0/0 OK
+DUAL-BATCHED gate+up [NVFP4 rp] m=7 mcols=8: bit-bad=0/0 OK
+RP roundtrip token_embd.weight: 0 mismatched bytes OK
+RP MMVQ token_embd.weight m=1: bit-bad=0 OK
+RP MMVQ token_embd.weight m=2: bit-bad=0 OK
+RP BATCHED token_embd.weight m=2 mcols=2 [rp]: bit-bad=0 OK
+RP BATCHED token_embd.weight m=3 mcols=4 [rpr2w8]: bit-bad=0 OK
+RP BATCHED token_embd.weight m=4 mcols=4 [rpr2w8]: bit-bad=0 OK
+RP BATCHED token_embd.weight m=5 mcols=8 [rpsc]: bit-bad=0 OK
+RP BATCHED token_embd.weight m=6 mcols=8 [rpsc]: bit-bad=0 OK
+RP BATCHED token_embd.weight m=7 mcols=8 [rpsc]: bit-bad=0 OK
+RP BATCHED token_embd.weight m=8 mcols=8 [rpsc]: bit-bad=0 OK
+RP DP4A token_embd.weight m=1: bit-bad=0 OK
+RP DP4A token_embd.weight m=5: bit-bad=0 OK
+RP GEMM token_embd.weight T=128: bit-bad=0 OK
+RP STAGE-A token_embd.weight: bit-bad=0 OK
+RP roundtrip blk.0.ffn_down.weight: 0 mismatched bytes OK
+RP MMVQ blk.0.ffn_down.weight m=1: bit-bad=0 OK
+RP MMVQ blk.0.ffn_down.weight m=2: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=2 mcols=2 [rpr2]: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=3 mcols=4 [rpr2]: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=4 mcols=4 [rpr2]: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=5 mcols=8 [rpsc]: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=6 mcols=8 [rpsc]: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=7 mcols=8 [rpsc]: bit-bad=0 OK
+RP BATCHED blk.0.ffn_down.weight m=8 mcols=8 [rpsc]: bit-bad=0 OK
+RP DP4A blk.0.ffn_down.weight m=1: bit-bad=0 OK
+RP DP4A blk.0.ffn_down.weight m=5: bit-bad=0 OK
+RP GEMM blk.0.ffn_down.weight T=128: bit-bad=0 OK
+RP STAGE-A blk.0.ffn_down.weight: bit-bad=0 OK
+fa_prefill T=16 Tkv=16: rel=3.03e-3 OK
+fa_prefill T=64 Tkv=64: rel=3.03e-3 OK
+fa_prefill T=100 Tkv=100: rel=3.03e-3 OK
+fa_prefill T=256 Tkv=256: rel=3.03e-3 OK
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: SKIPPED (hp door numeric class)
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: SKIPPED (hp door numeric class)
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 0/262144 OK
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 0/409600 OK
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+fa_prefill_hd512 GQA nkv=4 (hp arm) T=64 Tkv=64: rel=5.09e-4 OK
+fa_prefill_hd512 GQA nkv=4 (hp arm) T=100 Tkv=100: rel=5.09e-4 OK
+fa_decode(KVQ) Tkv=64: rel=4.95e-2 OK
+fa_decode_vec_q(KVQ) Tkv=64: rel=4.95e-2 (scalar 4.95e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=64: rel=4.95e-2 (scalar 4.95e-2) OK
+fa_decode(KVQ) Tkv=128: rel=4.63e-2 OK
+fa_decode_vec_q(KVQ) Tkv=128: rel=4.75e-2 (scalar 4.63e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=128: rel=4.75e-2 (scalar 4.63e-2) OK
+fa_decode(KVQ) Tkv=257: rel=4.59e-2 OK
+fa_decode_vec_q(KVQ) Tkv=257: rel=4.67e-2 (scalar 4.59e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=257: rel=4.67e-2 (scalar 4.59e-2) OK
+fa_decode_rows vs per-row loop base=95 T=5: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=95 T=5: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=127 T=4: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=127 T=4: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=256 T=3: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=256 T=3: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=1000 T=5: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=1000 T=5: bitdiff=0 OK
+append_kv_seqs vs per-seq loop B=4: bytediff=0 OK
+fa_decode_seqs_v4 vs per-seq loop B=4 depths=[96, 128, 257, 511]: bitdiff=0 OK
+append_kv_seqs vs per-seq loop B=8: bytediff=0 OK
+fa_decode_seqs_v4 vs per-seq loop B=8 depths=[200, 200, 200, 200, 200, 200, 200, 200]: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=64 Tkv=192: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=100 Tkv=100: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=37 Tkv=297: bitdiff=0 OK
+kvq q8_0 K round-trip: rel=3.99e-3 OK
+kvq q5_1 V round-trip: rel=1.35e-2 OK
+kvq q5_1 5th-bit boundary: maxerr=3.78e-4 (d~5.00e-2) OK
+kv append rows-vs-loop bit-identity (T=7, t0=3): k_mismatch=0 v_mismatch=0 OK
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+moe cache-HIT bit-identity (stage==cache): OK
+router batch-twin bit-identity (real q35 router, 32 m-points 1..2048): mism=0 OK
+router batch-twin m-invariance (rows vs plain m=2048 prefix): mism=0 OK
+moe async-prefetch ordering + protected victim: OK
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+
+ALL GREEN: kernels match CPU reference.

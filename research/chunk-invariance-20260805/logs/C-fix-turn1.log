@@ -1,0 +1,11 @@
+loaded qwen35 (32 layers)
+chunkinv: T=97 chat=false chunks=["2048", "64", "32"] steps=48
+ref chunk=2048 argmax=271 margin=0.422234
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   profile chunk=64: rows[0,64) maxdiff=0.000e0 | rows[64,97) maxdiff=0.000e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0
+     64 | EXACT |            -1 | 0.000e0 | - | identical
+   profile chunk=32: rows[0,32) maxdiff=0.000e0 | rows[32,97) maxdiff=0.000e0 | step=infx
+   per-8-row maxdiff: 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0 0.0e0
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size

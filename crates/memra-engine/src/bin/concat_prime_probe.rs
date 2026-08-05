@@ -29,6 +29,11 @@
 //!   causal  <model> causal --prompt-a <txt|@file> --suffix <txt|@file> [--chat]
 //!           chunk-boundary content razor: prime(P) vs prime(P+S) rows of P must be
 //!           BIT-IDENTICAL when the chunk boundary sits at |P|.
+//!   chunkinv <model> chunkinv --prompt-a <txt|@file> [--chunks 2048,64,32] [--steps N]
+//!           chunk-ORDER invariance: the same prompt primed at several MEMRA_PRIME_CHUNK
+//!           values (zero reuse) must give bit-identical prefill logits. Reports the first
+//!           diverging hidden-stack ROW so a boundary-localized leak is distinguishable
+//!           from a global one. Engine-level twin of the server-side chunk-order-probe.py.
 
 use memra_engine::cache::Cache;
 use memra_engine::forward::argmax;
@@ -901,6 +906,107 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        boundary; only the GEMM m moves rows" }
                      else { "*** DEFECT: suffix content leaked backwards across a chunk \
                              boundary ***" });
+        }
+
+        // CHUNK-ORDER INVARIANCE (lane/chunk-invariance, 2026-08-05): the SAME prompt primed
+        // at several MEMRA_PRIME_CHUNK values with ZERO reuse. Reports, per chunk value vs the
+        // reference: prefill-logit bit-identity, the hidden stack's FIRST diverging position
+        // (which localizes the leak to a chunk boundary vs everywhere), argmax flip, and the
+        // greedy stream's first diverging step. This is the engine-level twin of
+        // research/session-affinity-20260805/chunk-order-probe.py (which needed a live server).
+        //   chunkinv <model> chunkinv --prompt-a <txt|@f> [--chunks 2048,64,32] [--steps N] [--chat]
+        "chunkinv" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(48);
+            let chunks: Vec<String> = arg(&rest, "--chunks")
+                .unwrap_or_else(|| "2048,64,32".into())
+                .split(',').map(|s| s.trim().to_string()).collect();
+            let jsonl = arg(&rest, "--jsonl");
+            let ta = encode_prompt(&cx.tok, &pa, chat);
+            let t = ta.len();
+            let n_embd = cx.model.cfg.n_embd as usize;
+            println!("chunkinv: T={t} chat={chat} chunks={chunks:?} steps={steps}");
+
+            // one arm = set MEMRA_PRIME_CHUNK, prime cold, greedy-decode `steps`.
+            // prime_cache reads the env var per call, so in-process switching is honest.
+            let arm = |cv: &str| -> Result<(Vec<f32>, Vec<f32>, Vec<u32>), Box<dyn std::error::Error>> {
+                // single-threaded probe main; no other thread reads the environment here.
+                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
+                let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + steps + 8))?;
+                let (logits, _, hid) = cx.model.prime_cache(&cx.e, &ta, &mut c)?;
+                let h = cx.e.dtoh(&hid)?;
+                let mut tk = argmax(&logits) as u32;
+                let mut stream = vec![tk];
+                for _ in 0..steps {
+                    let (l, _) = cx.model.decode_step_h(&cx.e, tk, &mut c)?;
+                    tk = argmax(&l) as u32;
+                    stream.push(tk);
+                }
+                Ok((logits, h, stream))
+            };
+            let bits = |a: &[f32]| -> Vec<u32> { a.iter().map(|v| v.to_bits()).collect() };
+            let (l_ref, h_ref, s_ref) = arm(&chunks[0])?;
+            let (a_ref, r1, _, r2) = top2(&l_ref);
+            println!("ref chunk={} argmax={a_ref} margin={:.6}", chunks[0], r1 - r2);
+            let mut out = jsonl.as_ref().map(std::fs::File::create).transpose()?;
+            let mut defects = 0usize;
+            println!("  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div");
+            for cv in &chunks[1..] {
+                let (l, h, s) = arm(cv)?;
+                let log_same = bits(&l) == bits(&l_ref);
+                // first diverging ROW of the hidden stack: a boundary-localized leak shows
+                // its first divergence at the first chunk boundary, not at row 0.
+                let mut first_div: i64 = -1;
+                for p in 0..t {
+                    let (x, y) = (&h[p * n_embd..(p + 1) * n_embd],
+                                  &h_ref[p * n_embd..(p + 1) * n_embd]);
+                    if x.iter().zip(y).any(|(a, b)| a.to_bits() != b.to_bits()) {
+                        first_div = p as i64;
+                        break;
+                    }
+                }
+                let (a, ..) = top2(&l);
+                let sd = s.iter().zip(&s_ref).position(|(a, b)| a != b);
+                if !log_same { defects += 1; }
+                // MECHANISM RAZOR: per-row maxdiff profile. A pure GEMM-m reduction-order
+                // effect is a flat small band across ALL rows; a PRECISION-CLASS change at a
+                // chunk boundary shows an order-of-magnitude STEP at that boundary (rows past
+                // the first boundary read the quantized cache instead of f32 K/V).
+                if rest.iter().any(|x| x == "--profile") {
+                    let cv_n: usize = cv.parse().unwrap_or(0);
+                    let rowmd: Vec<f32> = (0..t).map(|p| {
+                        maxdiff(&h[p * n_embd..(p + 1) * n_embd],
+                                &h_ref[p * n_embd..(p + 1) * n_embd])
+                    }).collect();
+                    let pre: f32 = rowmd[..cv_n.min(t)].iter().cloned().fold(0.0, f32::max);
+                    let post: f32 = rowmd[cv_n.min(t)..].iter().cloned().fold(0.0, f32::max);
+                    println!("   profile chunk={cv}: rows[0,{cv_n}) maxdiff={pre:.3e} | \
+                              rows[{cv_n},{t}) maxdiff={post:.3e} | step={:.1}x",
+                             if pre > 0.0 { post / pre } else { f32::INFINITY });
+                    let buckets: Vec<String> = rowmd.chunks(8)
+                        .map(|c| format!("{:.1e}", c.iter().cloned().fold(0.0, f32::max)))
+                        .collect();
+                    println!("   per-8-row maxdiff: {}", buckets.join(" "));
+                }
+                println!("{cv:>7} | {} | {:13} | {:.3e} | {} | {}",
+                         if log_same { "EXACT" } else { "DIFFER" },
+                         first_div, maxdiff(&l, &l_ref),
+                         if a == a_ref { "-" } else { "FLIP" },
+                         match sd { None => "identical".to_string(), Some(i) => format!("step {i}") });
+                if let Some(f) = out.as_mut() {
+                    use std::io::Write as _;
+                    writeln!(f, "{{\"chunk\":\"{cv}\",\"ref_chunk\":\"{}\",\"T\":{t},\
+                                 \"logits_exact\":{log_same},\"first_div_pos\":{first_div},\
+                                 \"logit_maxdiff\":{:.6e},\"argmax\":{a},\"argmax_ref\":{a_ref},\
+                                 \"stream_div_step\":{}}}",
+                             chunks[0], maxdiff(&l, &l_ref),
+                             match sd { None => "null".to_string(), Some(i) => i.to_string() })?;
+                }
+            }
+            println!("chunkinv verdict: {}",
+                     if defects == 0 { "CHUNK-INVARIANT — prefill logits bit-identical at every \
+                                        chunk size" }
+                     else { "*** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***" });
         }
 
         m => return Err(format!("unknown mode {m}").into()),
