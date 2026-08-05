@@ -453,15 +453,13 @@ pub fn gen_key(
 
     // Validate the existing file first (never append to a broken ring), and refuse a
     // prefix collision (the revoke handle must stay unambiguous).
-    let mut existing = Vec::new();
     if keys_path.is_file() {
         let text = std::fs::read_to_string(keys_path)
             .map_err(|e| format!("{}: {e}", keys_path.display()))?;
         let f: KeyFile =
             toml::from_str(&text).map_err(|e| format!("{}: {e}", keys_path.display()))?;
-        existing = f.keys;
-        Keyring::from_entries(existing.clone())?;
-        if existing.iter().any(|e| e.prefix == prefix) {
+        Keyring::from_entries(f.keys.clone())?;
+        if f.keys.iter().any(|e| e.prefix == prefix) {
             return Err(format!("prefix {prefix} already exists (rerun to draw a new key)"));
         }
     }
