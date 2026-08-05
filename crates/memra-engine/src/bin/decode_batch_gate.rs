@@ -8,6 +8,16 @@
 //! (MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1, both paths on dp4a + unfused norms) the battery is
 //! BIT-IDENTICAL at B=1 and B=N-vs-isolated (verified 2026-07-26 on H100).
 //!
+//! STRICT-MODE EQUALIZATION IS Q8/dp4a-SHAPED — it does NOT equalize NVFP4 (2026-08-05,
+//! serve-path phase 2). MEMRA_MMVQ=0 / MEMRA_NO_FUSE_NORMQ=1 steer the Q8_0-class arms; on
+//! an NVFP4 model the fused arms survive, so `--mode strict` FAILS on the q9 NVFP4-MTP
+//! checkpoint at the TRAIN HEAD with no lane changes applied (gate1 bit-diff maxdiff
+//! 1.639e-1 @ step 2; gate2 seq 3 token divergence @ step 8 — identical signature before
+//! and after this lane's B=1 fast path). Receipts:
+//! research/servepath-p2-20260805/logs/dbg-strict-b4-TRAINHEAD.log. Do NOT read a strict
+//! FAIL on an NVFP4 model as a regression; the load-bearing NVFP4 gate is `--mode config`
+//! (ALL GREEN) plus strict on a Q8_0 model. Equalizing the NVFP4 arms is open work.
+//!
 //! Modes (--mode, default "config"):
 //!   strict — bit-identity gates; run under the EQUALIZED env or expect gate1 bit-diffs:
 //!     gate1: B=1 logits bit-identical to decode_step_h, every step.
@@ -166,6 +176,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- Gate 2: B=N vs isolated (the serving isolation contract) ----
     // Reference = isolated runs of the SAME config: strict mode uses decode_step_h,
     // config mode uses decode_step_batch at B=1 — within-config, bit strength applies.
+    //
+    // H3 (serve-path phase 2, 2026-08-05) PINS the B=1 REFERENCE ARM of gate2 AND gate3b
+    // to the batched body. Reason: the B=1 fast path routes solo sequences onto the m=1
+    // FUSED trunk, so an unpinned `decode_step_batch(&[t])` reference would no longer run
+    // the code these gates exist to test — their bit/stream checks would silently degrade
+    // from "batchmates must not perturb your logits" (the real teeth) into a cross-config
+    // FP-composition comparison, which gate1's config mode already tolerates by design.
+    // Pinning keeps their jurisdiction exactly where it was: the BATCHED m>=2 body.
+    // The fast path's own exactness is gate1's job (STRICT gate1 = bit-identity to
+    // decode_step_h, which PASSes ONLY with the fast path ON — verified on-box: OFF fails
+    // at maxdiff 1.591e-1). Set through the explicit seam rather than the env because
+    // gate1 above already ran with the fast path live and the read is memoized.
+    let b1_fast_live = HybridModel::b1_fast_on();
+    HybridModel::set_b1_fast(false);
+    println!("gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; \
+              live default = {})", if b1_fast_live { "ON" } else { "OFF" });
     let mut ref_streams: Vec<Vec<u32>> = Vec::new();
     let mut ref_logits: Vec<Vec<Vec<f32>>> = Vec::new();
     for p in prompts.iter().take(b_n) {
