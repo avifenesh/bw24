@@ -572,28 +572,33 @@ a near-tie argmax flips. Eliminated by measurement, not assumption: `MEMRA_PRIME
 (sequential GDN scan, no WY segmentation at all) still diverges — the GDN state carry is
 **not** the cause.
 
-`MEMRA_PRIME_INVARIANT=1` pins segmentation to `MEMRA_PRIME_GRAIN` instead of
-`MEMRA_PRIME_CHUNK`, which restores bit-identity across chunk sizes at a measured mechanism
-cost of -0.05% / +0.17% prefill (N=5 interleaved). It stays opt-in: under the door
-`MEMRA_PRIME_CHUNK` no longer bounds the long-ctx transient footprint, so a default flip
-needs the 27B/long-ctx OOM+throughput gates. Full receipts:
-`research/chunk-invariance-20260805/VERDICT.md`.
+**FIXED BY DEFAULT — grain-free (lane/chunkinv-flip, 2026-08-05).** The `base_len == 0`
+f32 special case is gone: chunk 0 quantizes its K/V into the cache first and attends through
+`fa_prefill_view_ws` exactly like every later chunk (quantize-then-attend). One numeric class
+for every row means the chunk size cannot decide where a precision edge falls, so **chunked
+prefill is byte-identical across `MEMRA_PRIME_CHUNK` values with no door and no grain knob**
+(chunkinv gate, naked env, both pinned prompts EXACT at chunks 2048/64/32).
+`MEMRA_PRIME_CHUNK` is again a pure memory/transient knob. Rollback seam:
+`MEMRA_PRIME_F32CHUNK0=1` restores the legacy f32 first-chunk arithmetic (and is the gate
+canary's injection). The interim `MEMRA_PRIME_INVARIANT`/`MEMRA_PRIME_GRAIN` door is
+superseded (see docs/FLAGS.md). History + root-cause receipts:
+`research/chunk-invariance-20260805/VERDICT.md`; flip receipts:
+`research/chunkinv-flip-20260805/`.
 
-Two consequences with teeth:
+What this changes and what it does not:
 
-1. **No gate anywhere in the repo may assert byte-equality between two prefills of the same
-   prompt at different chunk boundaries.** serve-smoke check 10 deliberately does not assert
-   resumed == cold; it asserts what session affinity actually owns (determinism of the resume
-   path across servers, plus liveness). Wiring the naive assertion would have planted a
-   permanently-red gate and blamed affinity for the prefill's chunk split.
-2. `MEMRA_PRIME_CHUNK` is a documented machine-config knob, so **two rigs with different
-   values already produce different greedy text on the same prompt.** Any exactness statement
-   is scoped to one configuration — unless the invariance door is on.
+1. Gates MAY now assert byte-equality between two prefills of the same prompt at different
+   chunk boundaries — `tools/chunk-invariance-gate.sh` asserts exactly that as its default
+   (`--expect-invariant`, no env). serve-smoke check 10's scoping note is retired with it.
+2. The exactness CLASS of short (single-chunk) prompts changed at the flip: chunk 0 now
+   reads quantized KV — the same arithmetic long prompts always had past the first boundary.
+   Near-tie argmax flips vs the old f32-first-chunk output are the documented contract
+   change (quantified teacher-forced in `research/chunkinv-flip-20260805/`), not a bug.
 
-The behavior is now **gated in both directions**: `tools/chunk-invariance-gate.sh`
-(fast-gate ids `chunkinv` / `chunkinvc`, routed from the `hybrid_forward.rs` map row) asserts
-the documented contract and fails if it silently changes either way; the `--canary` arm flips
-the expectation, so the gate is proven able to fail. Reproducers + raw rows:
+The behavior is **gated in both directions**: fast-gate ids `chunkinv` / `chunkinvc`
+(routed from the `hybrid_forward.rs` map row): the default arm asserts byte-identity naked;
+the canary arm injects `MEMRA_PRIME_F32CHUNK0=1` and must break, proving the gate detects
+the mechanism. Reproducers + raw rows:
 `research/session-affinity-20260805/chunk-order-probe.py` and `chunk-order.jsonl` (12 rows =
 3 chunk sizes x 4 prompts, each with its text; under two minutes on the 9B), plus the
 engine-level root-cause arm `concat-prime-probe chunkinv` and
