@@ -1,0 +1,31 @@
+SSE cadence fix — FIRST RECEIPT (2026-08-05, local 5090, one flock hold)
+========================================================================
+Change under test: worker.rs step_session spec-burst emission moved from ONE
+Event::Token per burst to per-spec-round-commit flushes (engine on_commit hook,
+generate_spec_inner2). Content byte-path unchanged (same detokenize-tail +
+utf8_delta cursor, same EOS-text-never-streamed rule); only chunk boundaries move.
+Rollback seam: MEMRA_SSE_PER_BURST=1 restores per-burst emission (fix-off arm =
+same binary, seam on).
+
+Config: q27 nv artifact (Qwen3.6-27B-NVFP4-Q4_K_M-mtp + draft-daily-owntrim
+nvfp4head-q4blk), MEMRA_SPEC_K=3, MEMRA_SPEC_BURST=128, stream:true, greedy,
+256 max_tokens, N=3 per arm, probe = spec-levers ttft-probe.py (same prompt,
+same measurement: time-to-first-SSE-content-chunk + chunk cadence).
+Thermal: single short hold, arms back-to-back inside one flock — same regime.
+
+Arm              N  ttft_first_chunk_s  chunk_gap_p50_s  chunks/resp
+fix-on   B128    3  0.1216              0.0271           89
+fix-off  B128    3  1.1528              1.4118           2
+
+fix-off reproduces the spec-levers flip-blocker (1.15s / 2 chunks at B128 —
+VERDICT.md measured 1.15s vs 0.41s at B32). fix-on lands first text at 0.12s,
+BELOW the 0.41s B32 class: the first flush fires after the prime + first round,
+not after 128 tokens. Chunk cadence 27ms p50 = per-round commits (~K+1 tokens/
+round at 80+ tok/s).
+
+DECISION per dispatch: first-text at B128 dropped toward (past) the 0.41s class
+-> PROCEED to full eval (TTFT B32/B128 on/off N=5, throughput no-regression,
+greedy byte-identity, serve-smoke, serve-st-gate, run-spec, cargo test).
+
+Raw: logs/points-first.jsonl, logs/first-B128-fixon.server.log,
+logs/first-B128-fixoff.server.log, logs/first-driver.log.

@@ -2535,13 +2535,20 @@ impl HybridModel {
         max_new: usize,
         k: usize,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
-        self.generate_spec_session_sampled(e, sess, suffix, max_new, k, None)
+        self.generate_spec_session_sampled(e, sess, suffix, max_new, k, None, None)
     }
 
     /// Serve-path sampled spec: routes the burst through the rejection-sampling verify with
     /// per-SESSION Philox continuity (sess.sctr/uctr). None = env-driven (CLI) or greedy.
     /// Filters (top-k/p/min-p) apply SYMMETRICALLY to draft q and verify p — distribution-exact
     /// for the filtered target (feat/filtered-spec).
+    ///
+    /// `on_commit` (sse-cadence, 2026-08-05): called with each newly-emitted slice of the
+    /// output — once right after the prime's first token, then once per round commit — so a
+    /// streaming caller can flush text at round cadence instead of once per burst. The slices
+    /// are disjoint, in order, and concatenate to exactly the returned token vec. Emission-
+    /// timing only: token bytes, session state, and exactness are untouched.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_spec_session_sampled(
         &self,
         e: &Engine,
@@ -2550,8 +2557,9 @@ impl HybridModel {
         max_new: usize,
         k: usize,
         sampling: Option<SpecSampling>,
+        on_commit: Option<&mut dyn FnMut(&[u32])>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
-        self.generate_spec_session_constrained(e, sess, suffix, max_new, k, sampling, None)
+        self.generate_spec_session_constrained(e, sess, suffix, max_new, k, sampling, None, on_commit)
     }
 
     /// `generate_spec_session_sampled` + GRAMMAR (constrained decoding, 2026-08-03): the
@@ -2571,6 +2579,7 @@ impl HybridModel {
         k: usize,
         sampling: Option<SpecSampling>,
         constraint: Option<&mut dyn SpecConstraint>,
+        on_commit: Option<&mut dyn FnMut(&[u32])>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         if constraint.is_some() && sampling.is_some_and(|s| s.temp > 0.0) {
             return Err("constrained spec decode is greedy-only (worker routes sampled \
@@ -2609,7 +2618,7 @@ impl HybridModel {
                 e.ctx().disable_event_tracking();
             }
         }
-        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling, constraint);
+        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling, constraint, on_commit);
         if graph_draft && was_tracking {
             unsafe {
                 e.ctx().enable_event_tracking();
@@ -2644,7 +2653,7 @@ impl HybridModel {
             && k + 2 < 96
             && !crate::model::full_prec_enabled();
         if !graph_draft {
-            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None, None);
+            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None, None, None);
         }
         let was_tracking = e.ctx().is_event_tracking();
         if was_tracking {
@@ -2652,7 +2661,7 @@ impl HybridModel {
                 e.ctx().disable_event_tracking();
             }
         }
-        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None, None);
+        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None, None, None);
         if was_tracking {
             unsafe {
                 e.ctx().enable_event_tracking();
@@ -2671,8 +2680,11 @@ impl HybridModel {
         mut sess: Option<&mut SpecSession>,
         sampling: Option<SpecSampling>,
         mut constraint: Option<&mut dyn SpecConstraint>,
+        mut on_commit: Option<&mut dyn FnMut(&[u32])>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
+        // sse-cadence flush cursor: everything in out[..flushed] has been handed to on_commit.
+        let mut flushed = 0usize;
         let mtp = self
             .mtp
             .as_ref()
@@ -2909,6 +2921,22 @@ impl HybridModel {
             // overhang so the chain's first append lands at slot base (== committed.len()).
             scratch.set_len(e, base)?;
         }
+        // sse-cadence: hand the caller every not-yet-flushed token (disjoint in-order slices
+        // concatenating to the full `out`). Called after the prime's first token and after each
+        // round commit — emission timing only, token bytes untouched.
+        fn flush_commit(
+            cb: &mut Option<&mut dyn FnMut(&[u32])>,
+            out: &[u32],
+            flushed: &mut usize,
+        ) {
+            if let Some(f) = cb.as_mut() {
+                if out.len() > *flushed {
+                    f(&out[*flushed..]);
+                    *flushed = out.len();
+                }
+            }
+        }
+        flush_commit(&mut on_commit, &out, &mut flushed);
         // INVARIANT at loop top: `last_token` is the most-recently-committed/emitted token, its
         // KV+recur state IS in `cache` (cache.pos = position right AFTER last_token), `last_pred`
         // is the greedy ARGMAX of the logits that predict the token FOLLOWING last_token, and
@@ -3725,6 +3753,8 @@ impl HybridModel {
                     t.accepted += cnt.saturating_sub(m_rounds) as u64;
                 }
                 round += m_rounds;
+                // sse-cadence: the drained ring is committed — flush it at burst-drain cadence.
+                flush_commit(&mut on_commit, &out, &mut flushed);
                 continue;
             }
             let pos = cache.pos; // #tokens committed (EXCLUDES a pending bonus)
@@ -4744,7 +4774,12 @@ impl HybridModel {
             }
             ph_mark(&mut ph_rest, phase_on);
             round += 1;
+            // sse-cadence: this round's accepted drafts + bonus are committed (out is
+            // append-only past step 4) — flush at round cadence.
+            flush_commit(&mut on_commit, &out, &mut flushed);
         }
+        // sse-cadence: nothing below appends to `out`; flush any remainder (defensive).
+        flush_commit(&mut on_commit, &out, &mut flushed);
 
         if spec_stats {
             let per_slot: Vec<String> = (0..k)

@@ -1,0 +1,4 @@
+[19:48:29Z] first-result hold acquired (B128 fix-on vs fix-off, N=3)
+[19:48:45Z] B128 fixon: {"label": "nv-K3-B128-fixon", "n": 3, "ttft_first_chunk_s": 0.12164336000569165, "chunk_gap_p50_s": 0.027113510001072427, "chunks_per_resp": 89}
+[19:49:01Z] B128 fixoff: {"label": "nv-K3-B128-fixoff", "n": 3, "ttft_first_chunk_s": 1.1528201260007336, "chunk_gap_p50_s": 1.411840562002908, "chunks_per_resp": 2}
+[19:49:01Z] FIRST_RESULT_DONE
