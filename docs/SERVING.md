@@ -315,6 +315,62 @@ spec resume, or prefix cache). `/metrics` exposes the cumulative split
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
 
+## API keys — multi-key tenant auth (lane/api-keys, 2026-08-05)
+
+Bearer auth that maps key → tenant, so cache isolation, QoS lane class, rate-limit
+headers, and metering all key off a real tenant identity. Launch-shaped: a file-backed
+keyring + a CLI, no web UI.
+
+**Configuration.** `MEMRA_API_KEYS=/path/keys.toml` — TOML `[[keys]]` entries carrying
+`sha256` (of the plaintext key — the plaintext is never stored), `tenant`
+(`[A-Za-z0-9_-]+`), `lane` (`interactive` default | `batch`), `enabled`, and optional
+`rate_limit`. An inline env form `tenant:sha256hex[:lane],...` exists for file-less
+deploys. A malformed ring is a startup FATAL (never partially applied); the file
+hot-reloads on mtime change (≤2s poll — chosen over SIGHUP: no signal thread, cannot be
+missed), and a broken rewrite keeps the previous ring and logs loudly — auth never fails
+open because of a typo.
+
+**Lifecycle CLI.**
+```
+memra-server --gen-key acme [--lane batch] [--rate-limit 4] [--keys /path/keys.toml]
+memra-server --revoke-key mk-acme-1a2b3c4d5e6f [--keys /path/keys.toml]
+```
+`--gen-key` prints the plaintext key (`mk-<tenant>-<48 hex>`) exactly ONCE on stdout and
+appends the hash entry; `--revoke-key` disables by unambiguous prefix (or full key) — a
+running server picks the revocation up on the next poll. `--keys` defaults to
+`MEMRA_API_KEYS`.
+
+**Request law.** `Authorization: Bearer <key>` on every `/v1` completion route:
+- keyring match → that key's tenant context; **disabled key → 403** (actionable,
+  distinct from unknown), **unknown key / missing header → 401**;
+- `MEMRA_API_KEY` (the single static key — the daily driver and every serve script)
+  keeps working unchanged as tenant `default`, with or without a keyring configured;
+- neither configured → open (dev behavior), tenant `default`.
+
+**What the tenant identity drives:**
+- **Cache isolation:** with a keyring configured, the PC-ISO namespace is
+  `t:<tenant>␟<cache_salt>` — one tenant's keys share cached prefixes, different tenants
+  never do, and the `␟` (US, `\x1f`) separator is excluded from tenant ids so a
+  client-controlled `cache_salt` cannot forge another tenant's namespace. `cache_salt`
+  still sub-scopes WITHIN a tenant (a gateway multiplexing end-users through one key
+  keeps setting per-user salts). No keyring → the raw-salt namespace, byte-identical to
+  PC-ISO behavior.
+- **QoS lane class:** `interactive`-class keys behave exactly like pre-lane traffic
+  (default lane interactive, any `x-lane` honored). `batch`-class keys default to the
+  harvest lane and are refused `x-lane: interactive` with a 403 — a bulk key cannot
+  claim the protected class, by omission or by header.
+- **Rate limits:** per-key `rate_limit` is a concurrency-slot override; the effective
+  cap is **min(override, global lane cap)** — the global cap stays authoritative, an
+  override can only narrow. The `X-RateLimit-*` trio reports the binding cap, with
+  `Remaining` counting the tighter of the tenant and lane gauges.
+- **Metering seam:** every admitted request logs one flat
+  `[meter] admit id=<x-request-id> tenant=<t> lane=<l> model=<m>` line — the public-repo
+  half; the private fork's metering layer joins these against the worker-truth usage
+  lines by request id for per-tenant billing.
+
+Gate: `tools/apikeys-gate.sh` (unit laws + live two-tenant isolation proof via
+cache-hit behavior; receipts `research/apikeys-20260805/`).
+
 ## Multi-tenant QoS — the x-lane SLO gate (lane/qos-p95, 2026-08-02)
 
 Requests may tag a service class via the `x-lane` header: `interactive` (protected;
