@@ -1,0 +1,15 @@
+loaded qwen35 (64 trunk layers; optional MTP skipped)
+prompt text: "The capital of France is"
+prompt tokens: [760, 6511, 314, 9338, 369]
+prefill argmax=11751  decode argmax=11751  logit maxdiff=2.788e-1  MATCH
+generated 16 tokens in 0.205s = 78.05 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.063s) [stop: MaxNew]
+tokens: [11751, 13, 271, 248068, 271, 248069, 271, 4639, 369, 4252, 13, 11751, 369, 279, 6511, 321]
+OUTPUT TEXT: " Paris.\n\n<think>\n\n</think>\n\nThat is correct. Paris is the capital and"
+--- generated text ---
+ Paris.
+
+<think>
+
+</think>
+
+That is correct. Paris is the capital and
