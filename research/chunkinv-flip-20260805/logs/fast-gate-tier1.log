@@ -1,0 +1,218 @@
+== fast-gate plan (diff vs main) ==
+  changed: crates/memra-engine/cu/qmatvec.cu
+  changed: crates/memra-engine/src/bin/concat_prime_probe.rs
+  changed: crates/memra-engine/src/bin/decode_batch_gate.rs
+  changed: crates/memra-engine/src/bin/kernel_check.rs
+  changed: crates/memra-engine/src/bin/run_gen.rs
+  changed: crates/memra-engine/src/fp8_ffi.rs
+  changed: crates/memra-engine/src/hybrid_forward.rs
+  changed: crates/memra-engine/src/lib.rs
+  changed: crates/memra-engine/src/model.rs
+  changed: crates/memra-engine/src/spec.rs
+  changed: crates/memra-server/src/main.rs
+  changed: crates/memra-server/src/worker.rs
+  changed: docs/FLAGS.md
+  changed: docs/SERVING.md
+  changed: HANDOVER.md
+  changed: research/accept-telemetry-20260805/metrics-after.json
+  changed: research/accept-telemetry-20260805/metrics-baseline.json
+  changed: research/accept-telemetry-20260805/resp1-greedy.json
+  changed: research/accept-telemetry-20260805/resp4-sampled.json
+  changed: research/accept-telemetry-20260805/serve.log
+  changed: research/accept-telemetry-20260805/serve-smoke.log
+  changed: research/accept-telemetry-20260805/validate-run.log
+  changed: research/accept-telemetry-20260805/validate.sh
+  changed: research/apikeys-20260805/apikey-gates.jsonl
+  changed: research/apikeys-20260805/meter-lines-sample.log
+  changed: research/apikeys-20260805/server-apikeys.log
+  changed: research/chunkinv-flip-20260805/first-result.log
+  changed: research/chunkinv-flip-20260805/first-result-raw-probe.log
+  changed: research/chunkinv-flip-20260805/logs/A-golden-k27.log
+  changed: research/chunkinv-flip-20260805/logs/A-golden-k27.tokens
+  changed: research/chunkinv-flip-20260805/logs/A-golden-q9.log
+  changed: research/chunkinv-flip-20260805/logs/A-golden-q9.tokens
+  changed: research/chunkinv-flip-20260805/logs/A-runggen-27b.log
+  changed: research/chunkinv-flip-20260805/logs/A-runggen-9b.log
+  changed: research/chunkinv-flip-20260805/logs/A-runggen-st.log
+  changed: research/chunkinv-flip-20260805/logs/B-nll-27b.log
+  changed: research/chunkinv-flip-20260805/logs/B-nll-new-c256.log
+  changed: research/chunkinv-flip-20260805/logs/B-nll-new-mono.log
+  changed: research/chunkinv-flip-20260805/logs/B-nll-old-c256.log
+  changed: research/chunkinv-flip-20260805/logs/B-nll-old-mono.log
+  changed: research/chunkinv-flip-20260805/logs/C-tfcmp-27b.log
+  changed: research/chunkinv-flip-20260805/logs/C-tfcmp-c256.log
+  changed: research/chunkinv-flip-20260805/logs/C-tfcmp-mono.log
+  changed: research/chunkinv-flip-20260805/logs/D-perf.jsonl
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-new-r1.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-new-r2.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-new-r3.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-new-r4.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-new-r5.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-old-r1.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-old-r2.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-old-r3.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-old-r4.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp512-old-r5.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-new-r1.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-new-r2.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-new-r3.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-new-r4.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-new-r5.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-old-r1.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-old-r2.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-old-r3.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-old-r4.log
+  changed: research/chunkinv-flip-20260805/logs/D-pp6257-old-r5.log
+  changed: research/chunkinv-flip-20260805/logs/E-kernel-check.log
+  changed: research/chunkinv-flip-20260805/logs/E-runspec-9b.log
+  changed: research/chunkinv-flip-20260805/logs/E-serve-smoke.log
+  changed: research/chunkinv-flip-20260805/logs/fast-gate-tier1.log
+  changed: research/chunkinv-flip-20260805/logs/gate-canary-raw.log
+  changed: research/chunkinv-flip-20260805/logs/gate-default-raw.log
+  changed: research/chunkinv-flip-20260805/logs/gate-flip.log
+  changed: research/chunkinv-flip-20260805/logs/gate-legacy-raw.log
+  changed: research/chunkinv-flip-20260805/logs/run-eval.out
+  changed: research/chunkinv-flip-20260805/run-eval.sh
+  changed: research/fp8dec-20260805/ab27b-A-slab-r1.log
+  changed: research/fp8dec-20260805/ab27b-A-slab-r2.log
+  changed: research/fp8dec-20260805/ab27b-A-slab-r3.log
+  changed: research/fp8dec-20260805/ab27b-A-slab-r4.log
+  changed: research/fp8dec-20260805/ab27b-A-slab-r5.log
+  changed: research/fp8dec-20260805/ab27b-B-e4m3-r1.log
+  changed: research/fp8dec-20260805/ab27b-B-e4m3-r2.log
+  changed: research/fp8dec-20260805/ab27b-B-e4m3-r3.log
+  changed: research/fp8dec-20260805/ab27b-B-e4m3-r4.log
+  changed: research/fp8dec-20260805/ab27b-B-e4m3-r5.log
+  changed: research/fp8dec-20260805/ab27b-C-e4m3-nofuse.log
+  changed: research/fp8dec-20260805/ab27b-gpustate.txt
+  changed: research/fp8dec-20260805/battery.sh
+  changed: research/fp8dec-20260805/BINARY-md5-final.txt
+  changed: research/fp8dec-20260805/BINARY-md5.txt
+  changed: research/fp8dec-20260805/census-e4m3-27b.log
+  changed: research/fp8dec-20260805/census-final-naked.log
+  changed: research/fp8dec-20260805/census-naked-default-27b.log
+  changed: research/fp8dec-20260805/census-rollback-0-27b.log
+  changed: research/fp8dec-20260805/census-slab-27b.log
+  changed: research/fp8dec-20260805/kernel-check-census.log
+  changed: research/fp8dec-20260805/kernel-check-e4m3fused.log
+  changed: research/fp8dec-20260805/kernel-check-final.log
+  changed: research/fp8dec-20260805/kernel-check-postflip.log
+  changed: research/fp8dec-20260805/loadprobe-e4m3.log
+  changed: research/fp8dec-20260805/loadprobe-slab.log
+  changed: research/fp8dec-20260805/pp27b-A-slab-r1.log
+  changed: research/fp8dec-20260805/pp27b-A-slab-r2.log
+  changed: research/fp8dec-20260805/pp27b-A-slab-r3.log
+  changed: research/fp8dec-20260805/pp27b-B-e4m3-r1.log
+  changed: research/fp8dec-20260805/pp27b-B-e4m3-r2.log
+  changed: research/fp8dec-20260805/pp27b-B-e4m3-r3.log
+  changed: research/fp8dec-20260805/pp27b-D-naked-default.log
+  changed: research/fp8dec-20260805/pp27b-gpustate.txt
+  changed: research/fp8dec-20260805/RESULTS.jsonl
+  changed: research/fp8dec-20260805/runspec-e4m3-27b.log
+  changed: research/fp8dec-20260805/runspec-postflip-27b.log
+  changed: research/fp8dec-20260805/serve-smoke-postflip.log
+  changed: research/fp8dec-20260805/serve-st-gate-e4m3-27b.log
+  changed: research/fp8dec-20260805/tf-A-slab.log
+  changed: research/fp8dec-20260805/tf-B-e4m3.log
+  changed: research/fp8dec-20260805/tf-tape-slab.txt
+  changed: research/fp8dec-20260805/VERDICT.md
+  changed: research/memra-vs-llama-daily-20260805/logs/battery.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-llama-r1.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-llama-r2.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-llama-r3.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-llama-r4.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-llama-r5.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-memra-r1.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-memra-r2.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-memra-r3.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-memra-r4.log
+  changed: research/memra-vs-llama-daily-20260805/logs/driver-memra-r5.log
+  changed: research/memra-vs-llama-daily-20260805/logs/posthoc-lsampler.txt
+  changed: research/memra-vs-llama-daily-20260805/logs/posthoc-memra-server.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-llama-r1.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-llama-r2.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-llama-r3.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-llama-r4.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-llama-r5.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-memra-r1.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-memra-r2.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-memra-r3.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-memra-r4.log
+  changed: research/memra-vs-llama-daily-20260805/logs/server-memra-r5.log
+  changed: research/memra-vs-llama-daily-20260805/logs/smoke-llama-request.txt
+  changed: research/memra-vs-llama-daily-20260805/logs/smoke-llama-server.log
+  changed: research/memra-vs-llama-daily-20260805/logs/smoke.log
+  changed: research/memra-vs-llama-daily-20260805/logs/smoke-memra-request.txt
+  changed: research/memra-vs-llama-daily-20260805/logs/smoke-memra-server.log
+  changed: research/memra-vs-llama-daily-20260805/META.md
+  changed: research/memra-vs-llama-daily-20260805/prompts/ctx4k.txt
+  changed: research/memra-vs-llama-daily-20260805/prompts/long-gen.txt
+  changed: research/memra-vs-llama-daily-20260805/prompts/short-agentic.txt
+  changed: research/memra-vs-llama-daily-20260805/prompts/warmup.txt
+  changed: research/memra-vs-llama-daily-20260805/RESULTS.md
+  changed: research/memra-vs-llama-daily-20260805/runs.jsonl
+  changed: research/memra-vs-llama-daily-20260805/scripts/driver.py
+  changed: research/memra-vs-llama-daily-20260805/scripts/finaltable.py
+  changed: research/memra-vs-llama-daily-20260805/scripts/make_prompts.py
+  changed: research/memra-vs-llama-daily-20260805/scripts/parse_acc.py
+  changed: research/memra-vs-llama-daily-20260805/scripts/posthoc-lsampler.sh
+  changed: research/memra-vs-llama-daily-20260805/scripts/run-battery.sh
+  changed: research/memra-vs-llama-daily-20260805/scripts/smoke.sh
+  changed: research/memra-vs-llama-daily-20260805/scripts/summarize.py
+  changed: research/nvfp4-strict-20260805/canary-config-q9.log
+  changed: research/nvfp4-strict-20260805/canary-strict-q9.log
+  changed: research/nvfp4-strict-20260805/config-q8-postfix.log
+  changed: research/nvfp4-strict-20260805/config-q9-postfix.log
+  changed: research/nvfp4-strict-20260805/local-ci.log
+  changed: research/nvfp4-strict-20260805/repro.log
+  changed: research/nvfp4-strict-20260805/RESULTS.md
+  changed: research/nvfp4-strict-20260805/run-spec-q9-k1-8.log
+  changed: research/nvfp4-strict-20260805/strict-q27-postfix.log
+  changed: research/nvfp4-strict-20260805/strict-q8-postfix.log
+  changed: research/nvfp4-strict-20260805/strict-q9-postfix.log
+  changed: research/release-v0690-battery-main/perf-ci-run.log
+  changed: research/sweep-audits-20260805/AUDIT.md
+  changed: research/tma-oddm-20260805/pod-quote-verify.txt
+  changed: research/tma-oddm-20260805/VERDICT.md
+  changed: research/tune-data/perf-ci.jsonl
+  changed: research/v070-prep-20260805/CHANGELOG-FINAL.md
+  changed: research/v070-prep-20260805/changelog-raw-final.txt
+  changed: research/v070-prep-20260805/DARKLANE-SYNC.md
+  changed: research/v070-prep-20260805/logs/apikeys-gate.log
+  changed: research/v070-prep-20260805/logs/chunkinvc.log
+  changed: research/v070-prep-20260805/logs/chunkinv.log
+  changed: research/v070-prep-20260805/logs/local-ci-correctness.log
+  changed: research/v070-prep-20260805/logs/local-ci-perf.log
+  changed: research/v070-prep-20260805/logs/run-spec-k1-8-q9nvfp4.log
+  changed: tools/chunk-invariance-gate.sh
+  changed: tools/fast-gate/fast-gate.sh
+  changed: tools/fast-gate/goldens/k27.perf
+  changed: tools/fast-gate/goldens/k27.tokens
+  changed: tools/fast-gate/goldens/q9.perf
+  changed: tools/fast-gate/goldens/q9.tokens
+  changed: tools/fast-gate/models.tsv
+  changed: tools/local-ci.sh
+  kernel-check scope: all [dtype5,nvfp4-mmvq,f16g-kq-direct,a6-split-plane]
+  tier-1 argmax probes: q9,q35,g12,o35,q35slru,chunkinv,chunkinvc,samp
+  tier-1 spec probes:   q35spec,g31spec
+  NOTE: memra-server touched — run tools/serve-smoke.sh (serving surface is not fast-gated)
+  logs: /tmp/fast-gate-20260805-214320
+== fast-gate tier 0 ==
+  build: OK (10s)
+  kernel-check (FULL): GREEN (272s)
+tier 0: GREEN (287s total)
+== fast-gate tier 1 ==
+  q9: PASS (gates green + golden token-identical, 3s)
+  q35: PASS (gates green + golden token-identical, 12s)
+  g12: PASS (gates green + golden token-identical, 7s)
+  o35: PASS (gates green + golden token-identical, 15s)
+  q35slru: PASS (gates green + golden token-identical, 21s)
+  chunkinv: PASS (self-gating check green, 10s)
+  chunkinvc: PASS (self-gating check green, 5s)
+  samp: PASS (self-gating check green, 2s)
+  q35spec: PASS (gates green + golden token-identical, 13s)
+  g31spec: PASS (stream agreement 32/32, 598s)
+tier 1: 0 fail (973s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.
