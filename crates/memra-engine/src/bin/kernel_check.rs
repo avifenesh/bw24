@@ -3711,10 +3711,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // several binades so the per-32 amax/f16-d path is exercised in more than one exponent,
     // and a RAGGED out_dim (136 = 128 + 8, a non-multiple-of-128 row tail sharing the last
     // scale row) plus a ragged in_dim (160 = 128 + 32, one trailing 32-wide Q8_0 block in a
-    // partial 128-segment) — the two edges the flat-grid launcher must handle. ---
+    // partial 128-segment) — the two edges the flat-grid launcher must handle.
+    //
+    // [5x128] and [6x160] carry the VECTOR kernel's own two edges (2026-08-05, the prefill fix):
+    // one WARP now owns a 128-element segment and one CTA owns 4 segments, so (a) nseg must not be
+    // a multiple of 4 (5 and 12 respectively -> a partly-idle last CTA, the `sid >= nseg` guard)
+    // and (b) the per-32 amax butterfly must stay inside its 8-lane group mask when a ragged in_dim
+    // makes whole groups exit early. Both are byte-compared against the same host reference. ---
     {
         use memra_gguf::nvfp4_repack::{f32_to_q8_0, fp8_e4m3_to_f32};
-        for &(out_f, in_f) in &[(256usize, 512usize), (136usize, 160usize), (8usize, 32usize)] {
+        for &(out_f, in_f) in &[(256usize, 512usize), (136usize, 160usize), (8usize, 32usize),
+                                (5usize, 128usize), (6usize, 160usize)] {
             let (rows, cols) = (out_f.div_ceil(128), in_f.div_ceil(128));
             // codes cycle over all 256 e4m3 bytes; grid spans ~2^-4..2^5 across blocks.
             let codes: Vec<u8> = (0..out_f * in_f).map(|i| (i % 256) as u8).collect();

@@ -65,12 +65,98 @@ static __device__ __forceinline__ float e4m3_decode(uint8_t code) {
 #endif
 }
 
-// One CTA = one 128-element row segment (4 warps, one Q8_0 block each). All 128 elements of
-// the segment share ONE blk-scale entry, so the scale is a single broadcast load per CTA.
+// ONE WARP = one 128-element row segment (4 Q8_0 blocks); 4 warps (4 segments) per CTA. Each
+// thread owns FOUR consecutive elements and loads them as a single `uchar4`.
 //
-// Flat 1-D grid (avoids the 65535 grid.y ceiling on tall projections):
-//   block_id = row * scale_cols + seg
+// WHY THIS SHAPE (lane/fp8-blk128-decode, 2026-08-05 — the prefill-regression fix). The original
+// mapping below (`_scalar`, kept only as the portable/reference form) gave every thread ONE byte:
+// per 128 bytes moved it issued 128 LDG.8 + 128 STS.8 and 128*5 = 640 warp shuffles. On the 27B
+// block-128 checkpoint that made `try_e4m3_blk_prefill`'s per-call dequant the single largest
+// prefill cost — nsys, pp512, 27B: 66.5 ms per prefill pass across 208 projections, moving
+// 6.88 GB of e4m3 + 7.31 GB of Q8_0 = 14.19 GB at ~213 GB/s effective, ~8x off this card's DRAM
+// roofline. Nothing there is bandwidth: it is one memory instruction per BYTE with no ILP, so the
+// warp never has more than one outstanding load per lane. e2e cost: pp512 1541.1 -> 1329.2 tok/s.
+//
+// This form issues, per 128 bytes: 32 LDG.32 + 64 STS.16 + 32*3 = 96 shuffles. 4x fewer loads,
+// 4 independent decodes in flight per lane, and the per-32 amax collapses to a 4-way serial max
+// plus a 3-step butterfly INSIDE a group of 8 lanes.
+//
+// ARITHMETIC IS UNCHANGED, ELEMENT FOR ELEMENT: x = decode(code) * bscale; amax = max|x| over the
+// same 32 elements (max is exact and associative, so the reduce order cannot move a bit);
+// d = amax/127, id = 1/d from the f32 d, q = rintf(x*id). Only the thread->element map moved, so
+// the output slab stays BYTE-IDENTICAL and the [fp8-blk-gpu] host-reference gate is the proof.
+//
+// GROUP MASK, not 0xffffffff: a group of 8 lanes is exactly one Q8_0 block (8 * 4 elements), so
+// the ragged-in_dim early return below is group-uniform and whole groups leave the warp. A
+// surviving lane's shuffle partners (laneMask 4/2/1 never crosses a group boundary) are exactly
+// its own group, so the mask must name those 8 lanes and only those.
 __global__ __launch_bounds__(128) void fp8_blk_dequant_q8_0_kernel(
+    const uint8_t *__restrict__ f8_weights,
+    const float *__restrict__ blk_scales,
+    uint8_t *__restrict__ out_q8,
+    const long long nseg, // out_dim * scale_cols
+    const int in_dim,
+    const int scale_cols,
+    const int blocks_per_row) {
+    const long long sid = (long long)blockIdx.x * 4LL + (long long)(threadIdx.x >> 5);
+    if (sid >= nseg) {
+        return;
+    }
+    const int row = (int)(sid / (long long)scale_cols);
+    const int seg = (int)(sid % (long long)scale_cols);
+
+    const int lane = threadIdx.x & 31;
+    const int grp = lane >> 3; // which of this segment's 4 Q8_0 blocks
+    const int sub = lane & 7;  // 4 elements each -> 32 per group
+
+    const int qb = seg * 4 + grp;
+    if (qb >= blocks_per_row) {
+        return; // group-uniform: 8 lanes at a time, never splits a group
+    }
+
+    const float bscale = blk_scales[(size_t)(row >> 7) * (size_t)scale_cols + (size_t)seg];
+
+    // 4-byte aligned: in_dim % 32 == 0 makes every row start 32-byte aligned from a cudaMalloc'd
+    // base, and `col` is a multiple of 4.
+    const int col = seg * 128 + grp * QK8_0 + sub * 4;
+    const uchar4 c = *(const uchar4 *)(f8_weights + (size_t)row * (size_t)in_dim + (size_t)col);
+    const float x0 = e4m3_decode(c.x) * bscale;
+    const float x1 = e4m3_decode(c.y) * bscale;
+    const float x2 = e4m3_decode(c.z) * bscale;
+    const float x3 = e4m3_decode(c.w) * bscale;
+
+    float amax = fmaxf(fmaxf(fabsf(x0), fabsf(x1)), fmaxf(fabsf(x2), fabsf(x3)));
+    const unsigned gmask = 0xFFu << (grp * 8);
+#pragma unroll
+    for (int off = 4; off > 0; off >>= 1) {
+        amax = fmaxf(amax, __shfl_xor_sync(gmask, amax, off, 32));
+    }
+
+    const float d = amax / 127.0f;
+    const float id = (d > 0.0f) ? (1.0f / d) : 0.0f;
+    // rintf == round-to-nearest-even == Rust round_ties_even (the host re-encode's rounding).
+    const uint32_t q0 = (uint32_t)(uint8_t)(int8_t)(int)rintf(x0 * id);
+    const uint32_t q1 = (uint32_t)(uint8_t)(int8_t)(int)rintf(x1 * id);
+    const uint32_t q2 = (uint32_t)(uint8_t)(int8_t)(int)rintf(x2 * id);
+    const uint32_t q3 = (uint32_t)(uint8_t)(int8_t)(int)rintf(x3 * id);
+
+    uint8_t *dst = out_q8 + ((size_t)row * (size_t)blocks_per_row + (size_t)qb) * Q8_0_BYTES;
+    if (sub == 0) {
+        // ONE aligned u16 store, NOT two byte stores — see the nvcc 13.0.88 miscompile note on the
+        // scalar kernel below. `dst` walks in 34-byte strides from a cudaMalloc'd base, so it is
+        // always even, and `dst + 2 + 4*sub` is therefore even too.
+        *(uint16_t *)dst = __half_as_ushort(__float2half_rn(d));
+    }
+    uint16_t *qd = (uint16_t *)(dst + 2 + sub * 4);
+    qd[0] = (uint16_t)(q0 | (q1 << 8));
+    qd[1] = (uint16_t)(q2 | (q3 << 8));
+}
+
+// SCALAR reference form: one thread per element, one CTA per 128-element segment. Superseded by the
+// vector kernel above (which is byte-identical and ~4x cheaper in memory instructions) and kept
+// ONLY as the -DMEMRA_FP8_BLK_LUT portable/debug companion — a form whose per-element mapping is
+// trivially readable next to the host reference. Not reachable in a default build.
+__global__ __launch_bounds__(128) void fp8_blk_dequant_q8_0_scalar_kernel(
     const uint8_t *__restrict__ f8_weights,
     const float *__restrict__ blk_scales,
     uint8_t *__restrict__ out_q8,
@@ -166,11 +252,20 @@ int memra_fp8_blk_dequant_q8_0(
 #endif
     const int scale_cols = (in_dim + 127) / 128;
     const int blocks_per_row = in_dim / QK8_0;
-    const long long nblocks = (long long)out_dim * (long long)scale_cols;
+    const long long nseg = (long long)out_dim * (long long)scale_cols;
 
-    fp8_blk_dequant_q8_0_kernel<<<(unsigned)nblocks, 128, 0, st>>>(
+#ifdef MEMRA_FP8_BLK_USE_BITMATH
+    // Vector form: one WARP per 128-element segment, 4 segments (4 warps) per CTA.
+    const long long nctas = (nseg + 3LL) / 4LL;
+    fp8_blk_dequant_q8_0_kernel<<<(unsigned)nctas, 128, 0, st>>>(
+        (const uint8_t *)f8_weights, blk_scales, (uint8_t *)out_q8,
+        nseg, in_dim, scale_cols, blocks_per_row);
+#else
+    // Portable/debug LUT build keeps the scalar reference mapping (one CTA per segment).
+    fp8_blk_dequant_q8_0_scalar_kernel<<<(unsigned)nseg, 128, 0, st>>>(
         (const uint8_t *)f8_weights, blk_scales, (uint8_t *)out_q8,
         out_dim, in_dim, scale_cols, blocks_per_row);
+#endif
     return (int)cudaGetLastError();
 }
 
