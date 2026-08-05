@@ -1,0 +1,33 @@
+### ARM NATIVE-BLK (naked default)
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [1, 2, 3, 4]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+residency census (2D matmul weights, resident container):
+       Q8_0:    1 tensors    315.297 MiB
+  F8_E4M3_BLK:  196 tensors   1344.000 MiB
+      TOTAL:  197 tensors   1659.297 MiB
+block-128 native arm: 0 tensor(s) refused for e4m3 NaN codes (0x7F/0xFF)
+argmax token = 5  logit = 22.1748  non-finite=0/151936
+top-5: [(5, 22.174812), (9, 18.36237), (15, 17.531693), (609, 17.387955), (18, 17.320957)]
+
+### ARM B-prime (MEMRA_ST_E4M3_BLK=0 — the narrow per-class seam)
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [1, 2, 3, 4]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+residency census (2D matmul weights, resident container):
+       Q8_0:  197 tensors   1743.297 MiB
+      TOTAL:  197 tensors   1743.297 MiB
+block-128 native arm: 0 tensor(s) refused for e4m3 NaN codes (0x7F/0xFF)
+argmax token = 5  logit = 22.5813  non-finite=0/151936
+top-5: [(5, 22.581259), (9, 18.555246), (15, 17.84557), (609, 17.377455), (18, 17.331072)]
+
+### ARM ROLLBACK (MEMRA_ST_E4M3=0 — the shared decode-v1 seam)
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  arch: Qwen3
+tokens: [1, 2, 3, 4]
+loaded dense: n_layer=28 n_embd=2048 n_head=16/8 head_dim=128 n_ff=6144 n_vocab=151936
+residency census (2D matmul weights, resident container):
+       Q8_0:  197 tensors   1743.297 MiB
+      TOTAL:  197 tensors   1743.297 MiB
+block-128 native arm: 0 tensor(s) refused for e4m3 NaN codes (0x7F/0xFF)
+argmax token = 5  logit = 22.5813  non-finite=0/151936
+top-5: [(5, 22.581259), (9, 18.555246), (15, 17.84557), (609, 17.377455), (18, 17.331072)]

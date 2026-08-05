@@ -1046,7 +1046,30 @@ impl TensorSource for SafetensorsSource {
                 Some(Fp8Native { bytes: Cow::Borrowed(bytes), scale, blk, out_f, in_f })
             }
             Some(kind) => {
-                if blk.is_some() { return None; } // block grid does not survive a row permutation
+                // BLOCK-128 + a V-head permutation (lane/fp8-blk128-decode): permute the e4m3
+                // codes and the scale grid TOGETHER, no dequant, EXACT — see
+                // `TransformKind::apply_fp8_blk` for the alignment proof and for why refusing this
+                // case left 144 of the 27B's 208 FP8 projections on the Q8_0 slab. A non-aligned
+                // permutation still returns None here and falls to the Q8_0 arm below, which
+                // dequants with the pre-permutation grid and is correct.
+                if let Some(F8BlockGrid { scales, rows: _, cols }) = &blk {
+                    let (out_hf, in_hf) = (info.shape[0] as usize, info.shape[1] as usize);
+                    if let Some((ne, codes, ns, r2, c2)) =
+                        kind.apply_fp8_blk(bytes, out_hf, in_hf, scales, *cols, &self.cfg)
+                    {
+                        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+                        if in_f % 16 == 0 && out_f % 16 == 0 {
+                            return Some(Fp8Native {
+                                bytes: Cow::Owned(codes),
+                                scale,
+                                blk: Some(F8BlockGrid { scales: ns, rows: r2, cols: c2 }),
+                                out_f,
+                                in_f,
+                            });
+                        }
+                    }
+                    return None; // not grid-aligned: the Q8_0 arm in `find` serves this tensor
+                }
                 let (mut data, ne_in) = self.deq_f32(&hf)?;
                 let (ne, fbytes) = kind.apply(&mut data, ne_in, &self.cfg);
                 if ne.len() != 2 || ne.iter().product::<u64>() < 1_000_000 { return None; }
