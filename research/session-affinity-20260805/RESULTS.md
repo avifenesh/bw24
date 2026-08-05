@@ -273,12 +273,36 @@ of both sweeps.
 
 ## Gates
 
-| gate | result |
-|---|---|
-| `tools/local-ci.sh` correctness | GREEN — kernel-check ALL GREEN, prime-gate 8/8 MATCH, run-gen argmax MATCH (31B + 12B), VERIFY-GATE K=7 PASS, spec self-consistency 64/64 PASS |
-| `tools/serve-smoke.sh` | 0 failed |
-| `tools/serve-st-gate.sh` | 0 failed |
-| `cargo test -p memra-server --release` | 60 passed, 0 failed |
+| gate | result | when |
+|---|---|---|
+| `tools/local-ci.sh` correctness | GREEN — kernel-check ALL GREEN, prime-gate 8/8 MATCH, run-gen argmax MATCH (31B + 12B), VERIFY-GATE K=7 PASS, spec self-consistency 64/64 PASS | at `96beb3a6` |
+| `tools/serve-smoke.sh` (incl. check 10) | **0 failed** | at `97aadd67` |
+| `tools/serve-st-gate.sh` | **0 failed** | at `97aadd67` |
+| `cargo test -p memra-server --release` | 60 passed, 0 failed | at `97aadd67` |
+| `kernel-check` | ALL GREEN | at `97aadd67` |
+
+The full correctness battery's GREEN is carried forward from `96beb3a6` deliberately, and the
+carry-forward is auditable: `git diff 96beb3a6 HEAD -- crates/ cu/` is a ONE-LINE doc-comment
+change in `worker.rs` (a `docs/API.md` -> `docs/SERVING.md` reference). No engine or kernel code
+moved after the battery ran.
+
+Re-running the heavy arms on top of HEAD was ATTEMPTED and is blocked by GPU capacity, not by a
+failure. The owner's daily driver came back up mid-battery and holds 14.8-15.2 GB of the 24 GB
+card, so the 31B (18 GB) and 12B (7 GB) loads cannot fit. Quoted causes, per evidence
+discipline:
+
+- 31B `run-gen`: `Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")` (exit 1)
+- 12B `run-gen` and `gemma-gate`: `embed table upload: DriverError(CUDA_ERROR_OUT_OF_MEMORY,
+  "out of memory")` (exit 101)
+- concurrent-GPU state at failure: `nvidia-smi --query-compute-apps` = pid 1909368
+  (`bw24-unified/target/release/memra-server`, the owner's daily driver) 14786 MiB + pid 144655
+  332 MiB; `memory.used` 15160 MiB of 24463 MiB.
+
+What DID run on top of HEAD with the driver resident: `kernel-check` ALL GREEN, serve-smoke 0
+failed (9B), serve-st-gate 0 failed (4B), and the unit tests — i.e. every arm this lane's code
+can actually affect. The 31B/12B arms are gemma dense-decode paths that no file in this lane
+touches. Before merge, the 31B/12B arms must be re-run on a free card; that is a scheduling
+item, not an open correctness question.
 
 New permanent gate: **serve-smoke check 10** — session-affinity resume. Records a 4-turn
 rewritten-history conversation, replays the SAME prompts against a FRESH resuming server, and
