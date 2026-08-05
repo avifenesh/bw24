@@ -10334,20 +10334,42 @@ impl Engine {
                 _ => CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
             })
         };
+        // MEMRA_GRAPH_CAPTIME=1 (Q1 lane): phase-resolved capture cost. Recapture is paid at
+        // every kernel-class crossing, so it — not steady-state decode — is the quantity a
+        // mem-node reduction could plausibly shrink. Only `instantiate` (cuStreamEndCapture +
+        // cuGraphInstantiateWithFlags) and `upload` scale with node count; the warmups are
+        // eager step executions and are node-count-invariant. Printing the split bounds the
+        // refactor's ceiling instead of assuming it.
+        let ct = {
+            static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *T.get_or_init(|| std::env::var("MEMRA_GRAPH_CAPTIME").as_deref() == Ok("1"))
+        };
         let mut run = || -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>> {
+            let t_w = std::time::Instant::now();
             // warmup: two inline runs (no capture) so allocator pointers + kernel attrs are stable.
             step(self)?;
             step(self)?;
             self.gpu.stream().synchronize()?;
+            let ms_warm = t_w.elapsed().as_secs_f64() * 1e3;
             // capture the third run.
+            let t_c = std::time::Instant::now();
             self.gpu.stream().begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
             // If the body errors mid-capture, end the capture before propagating so the stream isn't
             // left in a capturing state.
             let r = step(self);
+            let ms_body = t_c.elapsed().as_secs_f64() * 1e3;
+            let t_i = std::time::Instant::now();
             let g = self.gpu.stream().end_capture(iflag);
+            let ms_inst = t_i.elapsed().as_secs_f64() * 1e3;
             r?;
             let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
+            let t_u = std::time::Instant::now();
             graph.upload()?;
+            if ct {
+                println!("[graph-captime] warmup2x {ms_warm:.2} ms  capture-body {ms_body:.2} ms  \
+                          instantiate {ms_inst:.2} ms  upload {:.2} ms",
+                         t_u.elapsed().as_secs_f64() * 1e3);
+            }
             Ok(graph)
         };
         let result = run();
