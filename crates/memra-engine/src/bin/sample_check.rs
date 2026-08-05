@@ -12,6 +12,16 @@
 //!      catches a mis-composition (inverted accept test, residual off the wrong column, a
 //!      uniform reused across slots) that leaves every individual kernel correct. 20k draws,
 //!      L-inf + total-variation, with a non-degenerate-acceptance guard so it can't go vacuous.
+//!   7. TRUNCATION-SET MEMBERSHIP (added 2026-08-05, lane/sampler-truncation-fix): every id a
+//!      truncated draw returns must be a MEMBER of the truncation set. Arm 6 runs the DEFAULT
+//!      pure-temp regime (top_k=0/top_p=1/min_p=0), where th==0 masks nothing — so it could not
+//!      see the top_p/min_p bug that shipped to the public serve surface (`!` = id 0 spliced
+//!      mid-word; receipts research/sampfix-20260805/). This arm sweeps the real truncation
+//!      shapes INCLUDING llama's default (top_k 40 + top_p 0.95 + min_p 0.05) and asserts
+//!      membership rather than distribution — a fallthrough/uninitialized id shows up as a
+//!      non-member immediately, at any draw count. It also pins the specific defect: stats
+//!      (row_max, th) taken from a DIFFERENT logits row than the one being sampled must never
+//!      silently produce an all-masked row (the -3.4e38 wipe whose argmax tie-break returns 0).
 //!
 //! Why this binary matters: every token golden in the repo runs temp=0, which routes around
 //! the sampler chain entirely — a broken sampled-spec kernel is INVISIBLE to argmax goldens
@@ -326,6 +336,258 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ok3 = r2 > 0.999;
         println!("self-draft (q==p) accept rate == 1 (got {r2:.4}): {}",
                  if ok3 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- 7. TRUNCATION-SET MEMBERSHIP (the gate that would have caught the public-surface bug) ---
+    // Arm 6 above exercises the pure-temp DEFAULT regime, where th == 0 and nothing is masked.
+    // The bug that shipped lived exclusively in the truncated regimes: the full-accept bonus draw
+    // fed gumbel_perturb_filtered the stats of a NEIGHBOURING verify column, so `th` (a threshold
+    // in e-units of its own row's max) was compared against e0 computed from the wrong row_max.
+    // When the donor peak was higher by more than T*ln(1/th), every id failed `e0 >= th`, the row
+    // became uniformly -3.4e38, and the argmax's smallest-index tie-break emitted id 0 ("!").
+    //
+    // Two assertions, both membership-based (no draw-count sensitivity, no MC slack needed):
+    //   (a) MATCHED stats: every drawn id is in the CPU truncation set, for each filter shape.
+    //   (b) MISMATCHED stats must NOT be silently absorbed: with a deliberately wrong donor row
+    //       the kernel is allowed to draw a different token, but it must never fall through to
+    //       the all-masked wipe (which is what id 0 signalled). This pins the defect class, so a
+    //       future refactor that reintroduces cross-row stats reuse fails HERE, loudly.
+    {
+        let t = 0.8f32;
+        let nv4 = 2048usize;
+        let rows0 = e.htod_i32(&[0])?;
+        // DISTINCT-BY-CONSTRUCTION base row: (i*48271) % nv4 is a PERMUTATION of 0..nv4 (48271
+        // odd, nv4 = 2^11 => gcd 1), so no two logits tie. That matters: the device filter is a
+        // THRESHOLD (binary search on the exp value), so at an exact tie on the top_k boundary it
+        // keeps every tied id while a naive rank-k reference keeps only 40 — reading as spurious
+        // non-members. Distinct logits make threshold and rank semantics coincide exactly.
+        // Spacing is 8/2048 = 0.0039 logits => adjacent e-ratio exp(-0.0049) ~ 0.995, four orders
+        // above the 2^-24 binary-search resolution, so the boundary is unambiguous.
+        let base_row: Vec<f32> = (0..nv4)
+            .map(|i| ((i * 48271) % nv4) as f32 / nv4 as f32 * 8.0 - 4.0)
+            .collect();
+        // The donor row is the SAME distribution shifted UP by SHIFT. Softmax is shift-invariant,
+        // so the truncation SET and `th` (an e-unit threshold relative to the row's OWN max) are
+        // bit-identical between the two rows, while `row_max` differs by exactly SHIFT. That
+        // isolates the single defect variable — row_max — with nothing else moving. SHIFT=4.0 at
+        // T=0.8 scales every e0 by exp(-5) = 6.7e-3, below min_p=0.05 => guaranteed full wipe.
+        const SHIFT: f32 = 4.0;
+        let target = base_row.clone();
+        let donor: Vec<f32> = base_row.iter().map(|v| v + SHIFT).collect();
+        let (dd, td) = (e.htod(&donor)?, e.htod(&target)?);
+        let stats = |v: &CudaSlice<f32>, tk: i32, tp: f32, mp: f32|
+            -> Result<(f32, f32, f32), Box<dyn std::error::Error>> {
+            let (mut th, mut z, mut mx) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+            e.filter_stats(v, nv4, &rows0, &mut th, &mut z, &mut mx, nv4, 1, t, tk, tp, mp)?;
+            Ok((e.dtoh(&mx)?[0], e.dtoh(&th)?[0], e.dtoh(&z)?[0]))
+        };
+        // CPU truncation set, llama order (top_k, then top_p, then min_p) on the temp-scaled
+        // softmax. top_k/top_p select a prefix of the desc order; the boundary is applied
+        // TIE-INCLUSIVELY to match the device's threshold implementation (a no-op here, since
+        // the construction has no ties — kept so the reference stays honest if the row changes).
+        let cpu_keep = |row: &[f32], top_k: usize, top_p: f64, min_p: f64| -> Vec<bool> {
+            let n = row.len();
+            let sm = cpu_softmax(row, t);
+            let mut idx: Vec<usize> = (0..n).collect();
+            idx.sort_by(|&a, &b| sm[b].partial_cmp(&sm[a]).unwrap().then(a.cmp(&b)));
+            let mut cut = n;
+            if top_k > 0 { cut = cut.min(top_k); }
+            if top_p < 1.0 {
+                let mut mass = 0f64;
+                let mut c = n;
+                for (r, &i) in idx.iter().enumerate() {
+                    mass += sm[i];
+                    if mass >= top_p { c = r + 1; break; }
+                }
+                cut = cut.min(c);
+            }
+            let boundary = sm[idx[cut - 1]];
+            let mut keep: Vec<bool> = (0..n).map(|i| sm[i] >= boundary).collect();
+            if min_p > 0.0 {
+                let mx = sm.iter().cloned().fold(0.0, f64::max);
+                for i in 0..n { if sm[i] < min_p * mx { keep[i] = false; } }
+            }
+            keep
+        };
+        let mut pb = e.zeros(nv4)?;
+        let draws = 512usize;
+        for (tk, tp, mp, name) in [
+            (0i32,  0.95f32, 0.0f32,  "top_p=0.95"),
+            (0,     1.0,     0.05,    "min_p=0.05"),
+            (40,    1.0,     0.0,     "top_k=40"),
+            (40,    0.95,    0.05,    "llama-default k40+p0.95+m0.05"),
+            (0,     1.0,     0.0,     "pure-temp (memra default)"),
+        ] {
+            let st = stats(&td, tk, tp, mp)?;         // CORRECT stats for the sampled row
+            let sd = stats(&dd, tk, tp, mp)?;         // wrong-row donor stats (the old bug)
+            let keep = cpu_keep(&target, tk as usize, tp as f64, mp as f64);
+            let nkeep = keep.iter().filter(|&&k| k).count();
+            // (a) THE BINDING ASSERTION: with correctly matched stats every drawn id must be a
+            // MEMBER of the truncation set. Membership is draw-count-insensitive — one
+            // fallthrough/uninitialized id fails it, no MC slack required.
+            let mut nonmember = 0usize;
+            let mut low_id = 0usize;
+            for i in 0..draws {
+                e.gumbel_perturb_filtered(&td, &mut pb, nv4, 4242, i as u32, t, st.0, st.1)?;
+                let tok = e.dtoh_u32_one(&e.argmax_token_device(&pb, nv4)?)? as usize;
+                if !keep[tok] { nonmember += 1; }
+                if tok <= 1 { low_id += 1; }
+            }
+            let ok = nonmember == 0;
+            println!("trunc-membership {name}: set={nkeep} nonmember={nonmember}/{draws} \
+                      lowid={low_id} {}", if ok { "OK" } else { fails += 1; "FAIL" });
+            // (b) DEFECT SIGNATURE (diagnostic): the same row sampled with the DONOR's stats.
+            // th is shift-invariant but row_max is not, so a foreign row_max under-scales every
+            // e0 — for min_p (th pinned at 0.05) that wipes the row to -3.4e38 and the argmax
+            // tie-break emits id 0, the production "!" splice. Reported per shape so the
+            // fragility ORDER (min_p >= top_p >> top_k) stays visible in the log.
+            let mut wipe = 0usize;
+            for i in 0..draws.min(128) {
+                e.gumbel_perturb_filtered(&td, &mut pb, nv4, 4242, i as u32, t, sd.0, sd.1)?;
+                let y = e.dtoh(&pb)?;
+                if y.iter().all(|&v| v <= -3.4e38f32) { wipe += 1; }
+            }
+            println!("  defect signature (donor row_max, th={:.3e}): all-masked {}/{}",
+                     sd.1, wipe, draws.min(128));
+        }
+    }
+
+    // --- 8. FULL-ACCEPT BONUS COLUMN INDEXING under truncation (THE binding regression gate) ---
+    // Arm 7(a) uses correctly-matched stats, so it passes with or without the fix; the defect was
+    // never in a kernel, it was in WHICH ROW's stats spec.rs handed the kernel. This arm therefore
+    // replicates spec.rs's full-accept bonus path on a synthetic multi-column verify buffer and
+    // asserts the emitted bonus is a member of the truncation set OF THE COLUMN IT SAMPLES.
+    //
+    // The indexing invariant being pinned: the p-gather covers verify rows {base+j-1 : j in
+    // 0..k_round, j>0 || base==1} — i.e. columns up to base+k_round-2. The full-accept bonus is
+    // drawn from column base+k_round-1, which is ALWAYS one past the gathered set. Any code that
+    // reuses the gathered stats for the bonus row (the shipped bug: `col_stats.last()`) samples
+    // with a foreign (row_max, th) and, whenever the neighbour's peak is higher, emits id 0.
+    //
+    // Both base arms are covered (base=0 = no pending bonus, base=1 = pending bonus rides col 0).
+    {
+        let t = 0.8f32;
+        let nv5 = 1024usize;
+        let ncol = 4usize;
+        // Columns are the SAME tie-free permutation row (see arm 7) shifted by a per-column
+        // offset. Shift-invariance of softmax means all four columns share one truncation set and
+        // one `th`, so the ONLY thing that differs between the correct and the buggy call is
+        // row_max — the variable under test — and the CPU reference cannot drift between columns.
+        // The LAST GATHERED column (2) sits 4.0 ABOVE the bonus column (3). That sign matters:
+        // a donor row_max HIGHER than the sampled row's under-scales e0 by exp(-4/0.8) = 6.7e-3,
+        // which is below every truncated th here (min_p 5.0e-2, top_p 5.0e-2, top_k 8.3e-1) =>
+        // the whole row masks to -3.4e38 and the argmax tie-break emits id 0 — the production
+        // "!" splice, reproduced exactly. (The opposite sign is also a bug, just a quieter one:
+        // it INFLATES e0, over-admits, and leaks non-members instead of wiping — measured at
+        // 19/256 for top_p and 169/256 for top_k on this same fixture. The membership assertion
+        // catches that direction too, so both are covered.)
+        // NOTE: shifts are added to EVERY id (not a single peak), which is what keeps the
+        // distribution — and therefore the reference set — invariant. An earlier draft moved one
+        // peak instead and silently produced no row_max delta at all (the base pattern's own max
+        // dominated), which is exactly the kind of vacuous gate this arm exists to avoid.
+        let col_shift = [0.0f32, 4.0, 4.0, 0.0];
+        let base_row5: Vec<f32> = (0..nv5)
+            .map(|i| ((i * 40503) % nv5) as f32 / nv5 as f32 * 8.0 - 4.0)
+            .collect();
+        let mut tl: Vec<f32> = Vec::with_capacity(ncol * nv5);
+        for c in 0..ncol {
+            for i in 0..nv5 { tl.push(base_row5[i] + col_shift[c]); }
+        }
+        let tld = e.htod(&tl)?;
+        let col_of = |c: usize| -> Vec<f32> { tl[c * nv5..(c + 1) * nv5].to_vec() };
+        let cpu_keep_col = |c: usize, top_k: usize, top_p: f64, min_p: f64| -> Vec<bool> {
+            let row = col_of(c);
+            let sm = cpu_softmax(&row, t);
+            let mut idx: Vec<usize> = (0..nv5).collect();
+            idx.sort_by(|&a, &b| sm[b].partial_cmp(&sm[a]).unwrap().then(a.cmp(&b)));
+            let mut cut = nv5;
+            if top_k > 0 { cut = cut.min(top_k); }
+            if top_p < 1.0 {
+                let mut mass = 0f64;
+                let mut c2 = nv5;
+                for (r, &i) in idx.iter().enumerate() {
+                    mass += sm[i];
+                    if mass >= top_p { c2 = r + 1; break; }
+                }
+                cut = cut.min(c2);
+            }
+            let boundary = sm[idx[cut - 1]];
+            let mut keep: Vec<bool> = (0..nv5).map(|i| sm[i] >= boundary).collect();
+            if min_p > 0.0 {
+                let mx = sm.iter().cloned().fold(0.0, f64::max);
+                for i in 0..nv5 { if sm[i] < min_p * mx { keep[i] = false; } }
+            }
+            keep
+        };
+        let mut pb = e.zeros(nv5)?;
+        let draws = 256usize;
+        for (tk, tp, mp, name) in [
+            (0i32,  0.95f32, 0.0f32, "top_p=0.95"),
+            (0,     1.0,     0.05,   "min_p=0.05"),
+            (40,    1.0,     0.0,    "top_k=40"),
+            (40,    0.95,    0.05,   "llama-default k40+p0.95+m0.05"),
+        ] {
+            for base in [0usize, 1usize] {
+                let k_round = ncol - base;             // full accept of every drafted slot
+                let bonus_col = base + k_round - 1;    // the column the bonus is drawn from
+                // gathered rows, exactly spec.rs's rule
+                let gathered: Vec<usize> = (0..k_round)
+                    .filter(|&j| j > 0 || base == 1)
+                    .map(|j| base + j - 1)
+                    .collect();
+                // stats per gathered row (batched, as spec.rs does)
+                let rowsd = e.htod_i32(&gathered.iter().map(|&r| r as i32).collect::<Vec<_>>())?;
+                let nr = gathered.len();
+                let (mut thd, mut zd, mut mxd) = (e.zeros(nr)?, e.zeros(nr)?, e.zeros(nr)?);
+                e.filter_stats(&tld, nv5, &rowsd, &mut thd, &mut zd, &mut mxd, nv5, nr, t, tk, tp, mp)?;
+                let (thv, mxv) = (e.dtoh(&thd)?, e.dtoh(&mxd)?);
+                // Sanity: the gathered set must NOT already cover the bonus column — if this
+                // ever fails the invariant this arm guards has changed and the arm needs a rewrite.
+                let covered = gathered.contains(&bonus_col);
+                if covered {
+                    fails += 1;
+                    println!("bonus-col invariant BROKEN (gathered {gathered:?} covers bonus col \
+                              {bonus_col}) — arm 8 needs updating: FAIL");
+                    continue;
+                }
+                // FIXED RULE (what spec.rs does now): stats computed from the bonus column itself.
+                let brow = e.htod_i32(&[bonus_col as i32])?;
+                let (mut bth, mut bz, mut bmx) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                e.filter_stats(&tld, nv5, &brow, &mut bth, &mut bz, &mut bmx, nv5, 1, t, tk, tp, mp)?;
+                let (fmx, fth) = (e.dtoh(&bmx)?[0], e.dtoh(&bth)?[0]);
+                // OLD RULE (the shipped bug): reuse the LAST gathered row's stats.
+                let (omx, oth) = (mxv[nr - 1], thv[nr - 1]);
+                let keep = cpu_keep_col(bonus_col, tk as usize, tp as f64, mp as f64);
+                // materialize the bonus column into an owned buffer — exactly what spec.rs's
+                // `col_buf` copy_view_into does before the perturb.
+                let bonus_slice = e.htod(&col_of(bonus_col))?;
+                let mut bad_fixed = 0usize;
+                let mut bad_old = 0usize;
+                let mut low_old = 0usize;
+                for i in 0..draws {
+                    e.gumbel_perturb_filtered(&bonus_slice, &mut pb, nv5, 5150, i as u32, t, fmx, fth)?;
+                    let tok = e.dtoh_u32_one(&e.argmax_token_device(&pb, nv5)?)? as usize;
+                    if !keep[tok] { bad_fixed += 1; }
+                    e.gumbel_perturb_filtered(&bonus_slice, &mut pb, nv5, 5150, i as u32, t, omx, oth)?;
+                    let tok_o = e.dtoh_u32_one(&e.argmax_token_device(&pb, nv5)?)? as usize;
+                    if !keep[tok_o] { bad_old += 1; }
+                    if tok_o <= 1 { low_old += 1; }
+                }
+                let ok = bad_fixed == 0;
+                println!("bonus-col {name} base={base}: gathered={gathered:?} bonus_col={bonus_col} \
+                          nonmember={bad_fixed}/{draws} {}", if ok { "OK" } else { fails += 1; "FAIL" });
+                // GATE TEETH, asserted (not just reported): the old cross-row rule MUST fail this
+                // construction, otherwise the arm is vacuous and would silently pass a
+                // reintroduced bug. Every truncated shape here has th above the exp(-5) scaling
+                // error, so all three wipe to id 0 — the production signature. Pure-temp is
+                // excluded by the loop (th == 0 masks nothing; that regime is genuinely immune,
+                // which is why the untruncated serve default never saw this).
+                let teeth_ok = bad_old > 0 && low_old > 0;
+                println!("  gate teeth (old cross-row rule must FAIL here): \
+                          nonmember={bad_old}/{draws} lowid={low_old}/{draws} {}",
+                         if teeth_ok { "OK" } else { fails += 1; "FAIL (arm went vacuous)" });
+            }
+        }
     }
 
     println!("{}", if fails == 0 { "=== sample-check ALL GREEN ===" } else { "=== sample-check FAILURES ===" });

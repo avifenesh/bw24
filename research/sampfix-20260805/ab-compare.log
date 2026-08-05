@@ -1,0 +1,25 @@
+arm                                          pre n/bang   fix n/bang  byte-eq
+lsampler seed=7                               34/2         41/0       False
+lsampler seed=999                            110/8        112/0       False
+lsampler seed=31337                           67/7         59/0       False
+lsampler seed=424242                         126/30       112/0       False
+untruncated t0.8 seed=7                       41/0         41/0       True
+greedy                                        92/0         92/0       True
+t0.8 seed=7 top_k:40 only                     41/0         41/0       True
+t0.8 seed=7 top_p:0.95 only                   20/2         41/0       False
+t0.8 seed=7 min_p:0.05 only                   75/1         41/0       False
+t0.8 seed=999 top_k:40 only                  112/0        112/0       True
+t0.8 seed=999 top_p:0.95 only                127/38       112/0       False
+t0.8 seed=999 min_p:0.05 only                101/2        112/0       False
+t0.8 seed=31337 top_k:40 only                 59/0         59/0       True
+t0.8 seed=31337 top_p:0.95 only               65/7         59/0       False
+t0.8 seed=31337 min_p:0.05 only               67/1         59/0       False
+t0.8 seed=424242 top_k:40 only               112/0        112/0       True
+t0.8 seed=424242 top_p:0.95 only             126/30       112/0       False
+t0.8 seed=424242 min_p:0.05 only              72/2        112/0       False
+
+post-fix t0.8 seed=7 top_k:40 only: byte-eq-to-untruncated=True
+post-fix t0.8 seed=7 top_p:0.95 only: byte-eq-to-untruncated=True
+post-fix t0.8 seed=7 min_p:0.05 only: byte-eq-to-untruncated=True
+
+=== serve-repro A/B GREEN: bug reproduced pre-fix on every truncated arm, zero id-0 injection post-fix, exact arms byte-identical ===

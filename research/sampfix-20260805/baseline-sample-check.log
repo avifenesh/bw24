@@ -1,0 +1,17 @@
+gumbel temp=0 == copy: OK
+gumbel determinism (same pos ==, diff pos !=): OK
+softmax_gather t=0.7: maxrel=8.01e-7 OK
+softmax_gather t=1: maxrel=2.96e-7 OK
+softmax_gather t=0 indicator: [1.0, 0.0] OK
+residual determinism: OK
+residual empirical vs CPU (10k draws): maxerr=0.0037 OK
+residual p==q -> argmax fallback: got=21 want=21 OK
+filter top_p=0.9: maxabs=0.00e0 OK
+filter top_k=40: maxabs=0.00e0 OK
+filter min_p=0.05: maxabs=1.22e-10 OK
+filter no-filter: maxabs=2.70e-9 OK
+filtered residual empirical (8k draws): maxerr=0.0053 OK
+composed accept-walk output ~ p (20k draws, acc=0.114): maxabs=0.0032 tv=0.0184 OK
+composed walk exercises BOTH branches (acc=0.114 in 0.05..0.95): OK
+self-draft (q==p) accept rate == 1 (got 1.0000): OK
+=== sample-check ALL GREEN ===
