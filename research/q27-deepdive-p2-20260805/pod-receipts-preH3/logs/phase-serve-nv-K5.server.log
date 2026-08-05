@@ -1,0 +1,125 @@
+[server] starting; models config = [("q27", "/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/root/mb/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q27: regime draft attached (/root/mb/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q27": 65 layers, eos=248046
+[worker] q27: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q27: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8199
+[meter] admit id=chatcmpl-0758ceab18bb7bfd4ea753ac988ddf5f tenant=default lane=interactive model="q27"
+[worker] observed session VRAM cost for "q27": 336MB (admission gate = 2x)
+[spec-phase] draft=7.2ms (12.4%) verify-issue=12.0ms (20.7%) verify-wait=37.5ms (64.7%) commit-host=1.2ms (2.1%) rounds=3
+[spec-acc] ctx=226 burst=15/15 cum=15/15=1.000
+[meter] admit id=chatcmpl-79c549d6d8cfa3e54508c8c4a015c651 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q27)
+[spec-phase] draft=14.8ms (12.4%) verify-issue=24.2ms (20.3%) verify-wait=0.0ms (0.0%) commit-host=80.3ms (67.4%) rounds=6
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-phase] draft=18.8ms (11.8%) verify-issue=32.3ms (20.3%) verify-wait=0.0ms (0.0%) commit-host=108.3ms (67.9%) rounds=8
+[spec-acc] ctx=260 burst=25/40 cum=52/70=0.743
+[spec-phase] draft=19.1ms (11.9%) verify-issue=32.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.9ms (67.9%) rounds=8
+[spec-acc] ctx=294 burst=23/40 cum=75/110=0.682
+[spec-phase] draft=21.6ms (11.9%) verify-issue=36.4ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=122.6ms (67.9%) rounds=9
+[spec-acc] ctx=326 burst=22/45 cum=97/155=0.626
+[spec-phase] draft=21.7ms (11.9%) verify-issue=36.5ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=123.5ms (68.0%) rounds=9
+[spec-acc] ctx=358 burst=23/45 cum=120/200=0.600
+[spec-phase] draft=20.9ms (11.6%) verify-issue=36.5ms (20.3%) verify-wait=0.0ms (0.0%) commit-host=122.8ms (68.1%) rounds=9
+[spec-acc] ctx=391 burst=24/45 cum=144/245=0.588
+[spec-phase] draft=24.2ms (11.9%) verify-issue=40.7ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=137.5ms (67.9%) rounds=10
+[spec-acc] ctx=425 burst=21/50 cum=165/295=0.559
+[spec-phase] draft=28.9ms (11.9%) verify-issue=49.0ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=164.7ms (67.9%) rounds=12
+[spec-acc] ctx=457 burst=16/60 cum=181/355=0.510
+[meter] admit id=chatcmpl-50fcb5615f1278dc2cf9c98121493390 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-phase] draft=14.8ms (12.4%) verify-issue=24.1ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=80.4ms (67.4%) rounds=6
+[spec-acc] ctx=226 burst=28/30 cum=28/30=0.933
+[spec-phase] draft=18.8ms (11.8%) verify-issue=32.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.7ms (68.0%) rounds=8
+[spec-acc] ctx=261 burst=25/40 cum=53/70=0.757
+[spec-phase] draft=18.8ms (11.8%) verify-issue=32.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.8ms (68.0%) rounds=8
+[spec-acc] ctx=295 burst=27/40 cum=80/110=0.727
+[spec-phase] draft=23.9ms (11.9%) verify-issue=40.6ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=136.5ms (67.9%) rounds=10
+[spec-acc] ctx=331 burst=22/50 cum=102/160=0.637
+[spec-phase] draft=31.3ms (11.9%) verify-issue=52.9ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=178.2ms (67.9%) rounds=13
+[spec-acc] ctx=364 burst=20/65 cum=122/225=0.542
+[spec-phase] draft=29.0ms (11.9%) verify-issue=49.0ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=164.8ms (67.9%) rounds=12
+[spec-acc] ctx=398 burst=19/60 cum=141/285=0.495
+[spec-phase] draft=27.1ms (12.1%) verify-issue=44.9ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=151.4ms (67.8%) rounds=11
+[spec-acc] ctx=430 burst=20/55 cum=161/340=0.474
+[spec-phase] draft=11.9ms (11.8%) verify-issue=20.2ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=68.1ms (68.0%) rounds=5
+[spec-acc] ctx=462 burst=14/25 cum=175/365=0.479
+[meter] admit id=chatcmpl-5699d12b289da812ed545285cf2372cc tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-phase] draft=14.9ms (12.5%) verify-issue=24.1ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=80.5ms (67.3%) rounds=6
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-phase] draft=18.7ms (11.7%) verify-issue=32.2ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.4ms (68.0%) rounds=8
+[spec-acc] ctx=260 burst=26/40 cum=53/70=0.757
+[spec-phase] draft=19.0ms (11.9%) verify-issue=32.2ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=108.8ms (68.0%) rounds=8
+[spec-acc] ctx=295 burst=23/40 cum=76/110=0.691
+[spec-phase] draft=23.8ms (11.9%) verify-issue=40.4ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=136.1ms (67.9%) rounds=10
+[spec-acc] ctx=327 burst=21/50 cum=97/160=0.606
+[spec-phase] draft=28.3ms (11.8%) verify-issue=48.7ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=163.7ms (68.0%) rounds=12
+[spec-acc] ctx=359 burst=19/60 cum=116/220=0.527
+[spec-phase] draft=28.7ms (11.9%) verify-issue=48.8ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=164.4ms (68.0%) rounds=12
+[spec-acc] ctx=391 burst=19/60 cum=135/280=0.482
+[spec-phase] draft=24.1ms (11.9%) verify-issue=40.6ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=137.2ms (68.0%) rounds=10
+[spec-acc] ctx=423 burst=22/50 cum=157/330=0.476
+[spec-phase] draft=16.7ms (11.9%) verify-issue=28.3ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=95.9ms (68.0%) rounds=7
+[spec-acc] ctx=456 burst=19/35 cum=176/365=0.482
+[meter] admit id=chatcmpl-b58d64142a5fd7577515b5d2775b146f tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-phase] draft=14.7ms (12.4%) verify-issue=24.0ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=80.2ms (67.4%) rounds=6
+[spec-acc] ctx=226 burst=30/30 cum=30/30=1.000
+[spec-phase] draft=18.7ms (11.7%) verify-issue=32.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.7ms (68.0%) rounds=8
+[spec-acc] ctx=263 burst=24/40 cum=54/70=0.771
+[spec-phase] draft=21.4ms (11.8%) verify-issue=36.4ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=122.8ms (68.0%) rounds=9
+[spec-acc] ctx=296 burst=23/45 cum=77/115=0.670
+[spec-phase] draft=28.5ms (11.8%) verify-issue=48.7ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=164.0ms (68.0%) rounds=12
+[spec-acc] ctx=329 burst=21/60 cum=98/175=0.560
+[spec-phase] draft=19.1ms (11.9%) verify-issue=32.5ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=109.3ms (67.9%) rounds=8
+[spec-acc] ctx=363 burst=27/40 cum=125/215=0.581
+[spec-phase] draft=35.9ms (11.8%) verify-issue=61.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=206.1ms (68.0%) rounds=15
+[spec-acc] ctx=399 burst=17/75 cum=142/290=0.490
+[spec-phase] draft=36.0ms (11.9%) verify-issue=61.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=206.0ms (67.9%) rounds=15
+[spec-acc] ctx=432 burst=21/75 cum=163/365=0.447
+[spec-phase] draft=7.1ms (11.8%) verify-issue=12.0ms (20.0%) verify-wait=0.0ms (0.0%) commit-host=40.9ms (68.2%) rounds=3
+[spec-acc] ctx=469 burst=10/15 cum=173/380=0.455
+[meter] admit id=chatcmpl-5b221f8c6072eceb9c5ff18ec9cd6cf8 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-phase] draft=15.0ms (12.5%) verify-issue=24.1ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=80.6ms (67.4%) rounds=6
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-phase] draft=16.2ms (11.6%) verify-issue=28.2ms (20.3%) verify-wait=0.0ms (0.0%) commit-host=94.5ms (68.0%) rounds=7
+[spec-acc] ctx=260 burst=24/35 cum=51/65=0.785
+[spec-phase] draft=21.7ms (12.0%) verify-issue=36.4ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=123.2ms (67.9%) rounds=9
+[spec-acc] ctx=292 burst=24/45 cum=75/110=0.682
+[spec-phase] draft=31.4ms (12.0%) verify-issue=52.8ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=177.9ms (67.9%) rounds=13
+[spec-acc] ctx=326 burst=19/65 cum=94/175=0.537
+[spec-phase] draft=18.8ms (11.7%) verify-issue=32.4ms (20.3%) verify-wait=0.0ms (0.0%) commit-host=108.8ms (68.0%) rounds=8
+[spec-acc] ctx=359 burst=28/40 cum=122/215=0.567
+[spec-phase] draft=21.4ms (11.8%) verify-issue=36.6ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=123.1ms (68.0%) rounds=9
+[spec-acc] ctx=396 burst=25/45 cum=147/260=0.565
+[spec-phase] draft=18.6ms (11.6%) verify-issue=32.5ms (20.3%) verify-wait=0.0ms (0.0%) commit-host=109.0ms (68.0%) rounds=8
+[spec-acc] ctx=431 burst=25/40 cum=172/300=0.573
+[spec-phase] draft=19.3ms (11.9%) verify-issue=32.5ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=109.8ms (68.0%) rounds=8
+[spec-acc] ctx=465 burst=13/40 cum=185/340=0.544
+[meter] admit id=chatcmpl-391a29f324e40ef51bb2e2a356e2f7de tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-phase] draft=14.9ms (12.4%) verify-issue=24.1ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=80.6ms (67.4%) rounds=6
+[spec-acc] ctx=226 burst=27/30 cum=27/30=0.900
+[spec-phase] draft=18.6ms (11.7%) verify-issue=32.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.6ms (68.1%) rounds=8
+[spec-acc] ctx=260 burst=23/40 cum=50/70=0.714
+[spec-phase] draft=18.6ms (11.7%) verify-issue=32.3ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=108.6ms (68.1%) rounds=8
+[spec-acc] ctx=292 burst=24/40 cum=74/110=0.673
+[spec-phase] draft=26.1ms (11.8%) verify-issue=44.6ms (20.2%) verify-wait=0.0ms (0.0%) commit-host=150.1ms (68.0%) rounds=11
+[spec-acc] ctx=325 burst=22/55 cum=96/165=0.582
+[spec-phase] draft=23.9ms (11.8%) verify-issue=40.6ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=137.0ms (68.0%) rounds=10
+[spec-acc] ctx=359 burst=22/50 cum=118/215=0.549
+[spec-phase] draft=24.1ms (11.9%) verify-issue=40.7ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=138.0ms (68.0%) rounds=10
+[spec-acc] ctx=392 burst=22/50 cum=140/265=0.528
+[spec-phase] draft=21.7ms (12.0%) verify-issue=36.6ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=123.3ms (67.9%) rounds=9
+[spec-acc] ctx=425 burst=27/45 cum=167/310=0.539
+[spec-phase] draft=11.8ms (11.7%) verify-issue=20.2ms (20.1%) verify-wait=0.0ms (0.0%) commit-host=68.5ms (68.2%) rounds=5
+[spec-acc] ctx=462 burst=15/25 cum=182/335=0.543
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

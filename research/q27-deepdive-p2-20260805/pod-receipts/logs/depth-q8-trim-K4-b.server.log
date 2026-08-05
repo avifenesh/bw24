@@ -1,0 +1,253 @@
+[server] starting; models config = [("q27", "/root/models/Qwen3.6-27B-Q8_0.gguf", Some("/root/mb/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q27" <- /root/models/Qwen3.6-27B-Q8_0.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q27: regime draft attached (/root/mb/drafts/qwen36-27b-nvfp4/draft-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q27": 64 layers, eos=248046
+[worker] q27: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q27: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q27"]
+[server] listening on http://127.0.0.1:8199
+[meter] admit id=chatcmpl-c2e020f62d604e0ef0de3c6369040dca tenant=default lane=interactive model="q27"
+[worker] observed session VRAM cost for "q27": 570MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=28/28 cum=28/28=1.000
+[spec-acc] ctx=262 burst=23/36 cum=51/64=0.797
+[spec-acc] ctx=295 burst=23/32 cum=74/96=0.771
+[spec-acc] ctx=327 burst=22/44 cum=96/140=0.686
+[spec-acc] ctx=361 burst=24/32 cum=120/172=0.698
+[spec-acc] ctx=394 burst=23/40 cum=143/212=0.675
+[spec-acc] ctx=428 burst=21/40 cum=164/252=0.651
+[spec-acc] ctx=460 burst=17/28 cum=181/280=0.646
+[meter] admit id=chatcmpl-1495d72a22e575ff2ca66beaea0dcfc0 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=24/28 cum=24/28=0.857
+[spec-acc] ctx=258 burst=24/36 cum=48/64=0.750
+[spec-acc] ctx=292 burst=23/36 cum=71/100=0.710
+[spec-acc] ctx=325 burst=25/40 cum=96/140=0.686
+[spec-acc] ctx=361 burst=21/40 cum=117/180=0.650
+[spec-acc] ctx=393 burst=23/36 cum=140/216=0.648
+[spec-acc] ctx=426 burst=25/36 cum=165/252=0.655
+[spec-acc] ctx=461 burst=16/28 cum=181/280=0.646
+[meter] admit id=chatcmpl-a1296b5727186e45f6e483e1a353b3ac tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=24/28 cum=24/28=0.857
+[spec-acc] ctx=258 burst=23/32 cum=47/60=0.783
+[spec-acc] ctx=290 burst=23/40 cum=70/100=0.700
+[spec-acc] ctx=324 burst=19/48 cum=89/148=0.601
+[spec-acc] ctx=356 burst=23/40 cum=112/188=0.596
+[spec-acc] ctx=390 burst=20/44 cum=132/232=0.569
+[spec-acc] ctx=422 burst=18/60 cum=150/292=0.514
+[spec-acc] ctx=456 burst=21/32 cum=171/324=0.528
+[meter] admit id=chatcmpl-1f74cfbba644cf2142f6df66af0ec708 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=28/28 cum=28/28=1.000
+[spec-acc] ctx=262 burst=21/44 cum=49/72=0.681
+[spec-acc] ctx=294 burst=23/36 cum=72/108=0.667
+[spec-acc] ctx=326 burst=22/48 cum=94/156=0.603
+[spec-acc] ctx=360 burst=23/44 cum=117/200=0.585
+[spec-acc] ctx=394 burst=23/36 cum=140/236=0.593
+[spec-acc] ctx=426 burst=22/40 cum=162/276=0.587
+[spec-acc] ctx=458 burst=16/44 cum=178/320=0.556
+[meter] admit id=chatcmpl-f4008a77145a6ba1094a0aeb6f0c9738 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=28/28 cum=28/28=1.000
+[spec-acc] ctx=262 burst=21/44 cum=49/72=0.681
+[spec-acc] ctx=294 burst=23/36 cum=72/108=0.667
+[spec-acc] ctx=326 burst=22/48 cum=94/156=0.603
+[spec-acc] ctx=360 burst=23/44 cum=117/200=0.585
+[spec-acc] ctx=394 burst=23/36 cum=140/236=0.593
+[spec-acc] ctx=426 burst=22/40 cum=162/276=0.587
+[spec-acc] ctx=458 burst=16/44 cum=178/320=0.556
+[meter] admit id=chatcmpl-1ca7a15015f061f96df87b3e4a8e1e33 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q27)
+[spec-acc] ctx=226 burst=28/28 cum=28/28=1.000
+[spec-acc] ctx=262 burst=21/44 cum=49/72=0.681
+[spec-acc] ctx=294 burst=23/36 cum=72/108=0.667
+[spec-acc] ctx=326 burst=22/48 cum=94/156=0.603
+[spec-acc] ctx=360 burst=23/44 cum=117/200=0.585
+[spec-acc] ctx=394 burst=23/36 cum=140/236=0.593
+[spec-acc] ctx=426 burst=22/40 cum=162/276=0.587
+[spec-acc] ctx=458 burst=16/44 cum=178/320=0.556
+[meter] admit id=chatcmpl-e011da5e7cdb47074ac8d6d49ed65728 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 226; 2 parked, 521 prompt tokens; model q27)
+[spec-acc] ctx=521 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=555 burst=24/44 cum=50/72=0.694
+[spec-acc] ctx=591 burst=18/52 cum=68/124=0.548
+[spec-acc] ctx=623 burst=20/44 cum=88/168=0.524
+[spec-acc] ctx=655 burst=23/36 cum=111/204=0.544
+[spec-acc] ctx=688 burst=22/40 cum=133/244=0.545
+[spec-acc] ctx=721 burst=23/32 cum=156/276=0.565
+[spec-acc] ctx=753 burst=16/44 cum=172/320=0.537
+[meter] admit id=chatcmpl-f74a45ed82a0c210086e17ecbb3211e9 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 226; 2 parked, 521 prompt tokens; model q27)
+[spec-acc] ctx=521 burst=25/32 cum=25/32=0.781
+[spec-acc] ctx=555 burst=22/48 cum=47/80=0.588
+[spec-acc] ctx=590 burst=25/36 cum=72/116=0.621
+[spec-acc] ctx=625 burst=26/36 cum=98/152=0.645
+[spec-acc] ctx=661 burst=24/32 cum=122/184=0.663
+[spec-acc] ctx=694 burst=25/32 cum=147/216=0.681
+[spec-acc] ctx=728 burst=26/32 cum=173/248=0.698
+[spec-acc] ctx=763 burst=10/16 cum=183/264=0.693
+[meter] admit id=chatcmpl-fe871a1215e0a1d17cb76b4eac65e49f tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 521 prompt tokens; model q27)
+[spec-acc] ctx=521 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=555 burst=20/44 cum=46/72=0.639
+[spec-acc] ctx=587 burst=23/32 cum=69/104=0.663
+[spec-acc] ctx=619 burst=27/32 cum=96/136=0.706
+[spec-acc] ctx=655 burst=23/40 cum=119/176=0.676
+[spec-acc] ctx=689 burst=26/28 cum=145/204=0.711
+[spec-acc] ctx=723 burst=24/36 cum=169/240=0.704
+[spec-acc] ctx=757 burst=15/24 cum=184/264=0.697
+[meter] admit id=chatcmpl-2bb02045c47156f9474c7dd746467e10 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 521 prompt tokens; model q27)
+[spec-acc] ctx=521 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=555 burst=23/48 cum=49/76=0.645
+[spec-acc] ctx=590 burst=24/40 cum=73/116=0.629
+[spec-acc] ctx=624 burst=25/28 cum=98/144=0.681
+[spec-acc] ctx=656 burst=25/28 cum=123/172=0.715
+[spec-acc] ctx=688 burst=22/48 cum=145/220=0.659
+[spec-acc] ctx=722 burst=20/48 cum=165/268=0.616
+[spec-acc] ctx=754 burst=15/32 cum=180/300=0.600
+[meter] admit id=chatcmpl-bf621a5e1e2118d36059d0a381c7247d tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 521 prompt tokens; model q27)
+[spec-acc] ctx=521 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=555 burst=23/48 cum=49/76=0.645
+[spec-acc] ctx=590 burst=24/40 cum=73/116=0.629
+[spec-acc] ctx=624 burst=25/28 cum=98/144=0.681
+[spec-acc] ctx=656 burst=25/28 cum=123/172=0.715
+[spec-acc] ctx=688 burst=22/48 cum=145/220=0.659
+[spec-acc] ctx=722 burst=20/48 cum=165/268=0.616
+[spec-acc] ctx=754 burst=15/32 cum=180/300=0.600
+[meter] admit id=chatcmpl-f484b8f9101461de82ce09e0734caeeb tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 521 prompt tokens; model q27)
+[spec-acc] ctx=521 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=555 burst=23/48 cum=49/76=0.645
+[spec-acc] ctx=590 burst=24/40 cum=73/116=0.629
+[spec-acc] ctx=624 burst=25/28 cum=98/144=0.681
+[spec-acc] ctx=656 burst=25/28 cum=123/172=0.715
+[spec-acc] ctx=688 burst=22/48 cum=145/220=0.659
+[spec-acc] ctx=722 burst=20/48 cum=165/268=0.616
+[spec-acc] ctx=754 burst=15/32 cum=180/300=0.600
+[meter] admit id=chatcmpl-0b1af2c3d939dca0d04d98401d9b48fe tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (history diverged at 513 of checkpoint 521; 2 parked, 2057 prompt tokens; model q27)
+[spec-acc] ctx=2057 burst=26/32 cum=26/32=0.812
+[spec-acc] ctx=2092 burst=20/52 cum=46/84=0.548
+[spec-acc] ctx=2126 burst=26/32 cum=72/116=0.621
+[spec-acc] ctx=2161 burst=17/56 cum=89/172=0.517
+[spec-acc] ctx=2193 burst=23/32 cum=112/204=0.549
+[spec-acc] ctx=2225 burst=22/44 cum=134/248=0.540
+[spec-acc] ctx=2259 burst=21/44 cum=155/292=0.531
+[spec-acc] ctx=2292 burst=14/28 cum=169/320=0.528
+[meter] admit id=chatcmpl-8df16d32776624fc3ca061589ed66b5e tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (history diverged at 513 of checkpoint 521; 2 parked, 2057 prompt tokens; model q27)
+[spec-acc] ctx=2057 burst=25/36 cum=25/36=0.694
+[spec-acc] ctx=2092 burst=21/40 cum=46/76=0.605
+[spec-acc] ctx=2124 burst=24/40 cum=70/116=0.603
+[spec-acc] ctx=2159 burst=20/44 cum=90/160=0.562
+[spec-acc] ctx=2191 burst=21/40 cum=111/200=0.555
+[spec-acc] ctx=2223 burst=17/56 cum=128/256=0.500
+[spec-acc] ctx=2255 burst=24/32 cum=152/288=0.528
+[spec-acc] ctx=2288 burst=18/24 cum=170/312=0.545
+[meter] admit id=chatcmpl-70a648fd831015acb087a91020542669 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 2057 prompt tokens; model q27)
+[spec-acc] ctx=2057 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=2091 burst=21/40 cum=47/68=0.691
+[spec-acc] ctx=2123 burst=23/36 cum=70/104=0.673
+[spec-acc] ctx=2156 burst=24/36 cum=94/140=0.671
+[spec-acc] ctx=2190 burst=23/48 cum=117/188=0.622
+[spec-acc] ctx=2226 burst=21/40 cum=138/228=0.605
+[spec-acc] ctx=2258 burst=23/48 cum=161/276=0.583
+[spec-acc] ctx=2294 burst=10/32 cum=171/308=0.555
+[meter] admit id=chatcmpl-b86004a5d31c78c2eeec8eafd54e153b tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 2057 prompt tokens; model q27)
+[spec-acc] ctx=2057 burst=25/36 cum=25/36=0.694
+[spec-acc] ctx=2092 burst=23/40 cum=48/76=0.632
+[spec-acc] ctx=2125 burst=23/48 cum=71/124=0.573
+[spec-acc] ctx=2160 burst=23/36 cum=94/160=0.588
+[spec-acc] ctx=2192 burst=22/44 cum=116/204=0.569
+[spec-acc] ctx=2225 burst=25/36 cum=141/240=0.588
+[spec-acc] ctx=2259 burst=26/40 cum=167/280=0.596
+[spec-acc] ctx=2295 burst=16/20 cum=183/300=0.610
+[meter] admit id=chatcmpl-dfafb7bd531e9898fb11fe49e3379303 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 2057 prompt tokens; model q27)
+[spec-acc] ctx=2057 burst=25/36 cum=25/36=0.694
+[spec-acc] ctx=2092 burst=23/40 cum=48/76=0.632
+[spec-acc] ctx=2125 burst=23/48 cum=71/124=0.573
+[spec-acc] ctx=2160 burst=23/36 cum=94/160=0.588
+[spec-acc] ctx=2192 burst=22/44 cum=116/204=0.569
+[spec-acc] ctx=2225 burst=25/36 cum=141/240=0.588
+[spec-acc] ctx=2259 burst=26/40 cum=167/280=0.596
+[spec-acc] ctx=2295 burst=16/20 cum=183/300=0.610
+[meter] admit id=chatcmpl-a9a254ab38d27d438acb17a5e8e2f839 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 2057 prompt tokens; model q27)
+[spec-acc] ctx=2057 burst=25/36 cum=25/36=0.694
+[spec-acc] ctx=2092 burst=23/40 cum=48/76=0.632
+[spec-acc] ctx=2125 burst=23/48 cum=71/124=0.573
+[spec-acc] ctx=2160 burst=23/36 cum=94/160=0.588
+[spec-acc] ctx=2192 burst=22/44 cum=116/204=0.569
+[spec-acc] ctx=2225 burst=25/36 cum=141/240=0.588
+[spec-acc] ctx=2259 burst=26/40 cum=167/280=0.596
+[spec-acc] ctx=2295 burst=16/20 cum=183/300=0.610
+[meter] admit id=chatcmpl-53180967fad9a1b4e7379b70a5a7c141 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 2057; 2 parked, 6267 prompt tokens; model q27)
+[spec-acc] ctx=6267 burst=24/36 cum=24/36=0.667
+[spec-acc] ctx=6301 burst=24/44 cum=48/80=0.600
+[spec-acc] ctx=6337 burst=25/28 cum=73/108=0.676
+[spec-acc] ctx=6370 burst=24/28 cum=97/136=0.713
+[spec-acc] ctx=6402 burst=23/32 cum=120/168=0.714
+[spec-acc] ctx=6434 burst=23/44 cum=143/212=0.675
+[spec-acc] ctx=6469 burst=23/32 cum=166/244=0.680
+[spec-acc] ctx=6501 burst=18/20 cum=184/264=0.697
+[meter] admit id=chatcmpl-82e9d7f1dd7a0b45ef685e5cbe39e647 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 2057; 2 parked, 6267 prompt tokens; model q27)
+[spec-acc] ctx=6267 burst=25/28 cum=25/28=0.893
+[spec-acc] ctx=6300 burst=24/32 cum=49/60=0.817
+[spec-acc] ctx=6333 burst=25/28 cum=74/88=0.841
+[spec-acc] ctx=6366 burst=23/32 cum=97/120=0.808
+[spec-acc] ctx=6398 burst=24/32 cum=121/152=0.796
+[spec-acc] ctx=6431 burst=21/44 cum=142/196=0.724
+[spec-acc] ctx=6464 burst=24/32 cum=166/228=0.728
+[spec-acc] ctx=6497 burst=20/24 cum=186/252=0.738
+[meter] admit id=chatcmpl-0b56a57f0c8321d353657dc7f14bceb5 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 6267 prompt tokens; model q27)
+[spec-acc] ctx=6267 burst=24/36 cum=24/36=0.667
+[spec-acc] ctx=6301 burst=24/32 cum=48/68=0.706
+[spec-acc] ctx=6334 burst=23/36 cum=71/104=0.683
+[spec-acc] ctx=6367 burst=22/48 cum=93/152=0.612
+[spec-acc] ctx=6402 burst=24/36 cum=117/188=0.622
+[spec-acc] ctx=6436 burst=22/44 cum=139/232=0.599
+[spec-acc] ctx=6470 burst=17/56 cum=156/288=0.542
+[spec-acc] ctx=6502 burst=12/36 cum=168/324=0.519
+[meter] admit id=chatcmpl-e85f292d5793627f8cb1435bdd923faf tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 6267 prompt tokens; model q27)
+[spec-acc] ctx=6267 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=6301 burst=27/32 cum=53/60=0.883
+[spec-acc] ctx=6336 burst=23/44 cum=76/104=0.731
+[spec-acc] ctx=6370 burst=23/40 cum=99/144=0.688
+[spec-acc] ctx=6403 burst=22/40 cum=121/184=0.658
+[spec-acc] ctx=6435 burst=27/36 cum=148/220=0.673
+[spec-acc] ctx=6471 burst=22/40 cum=170/260=0.654
+[spec-acc] ctx=6503 burst=16/24 cum=186/284=0.655
+[meter] admit id=chatcmpl-233fd84a1eee4065eafeb70403f06c90 tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 6267 prompt tokens; model q27)
+[spec-acc] ctx=6267 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=6301 burst=27/32 cum=53/60=0.883
+[spec-acc] ctx=6336 burst=23/44 cum=76/104=0.731
+[spec-acc] ctx=6370 burst=23/40 cum=99/144=0.688
+[spec-acc] ctx=6403 burst=22/40 cum=121/184=0.658
+[spec-acc] ctx=6435 burst=27/36 cum=148/220=0.673
+[spec-acc] ctx=6471 burst=22/40 cum=170/260=0.654
+[spec-acc] ctx=6503 burst=16/24 cum=186/284=0.655
+[meter] admit id=chatcmpl-b3e1db51d7d150e02e82abe0a86421aa tenant=default lane=interactive model="q27"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 6267 prompt tokens; model q27)
+[spec-acc] ctx=6267 burst=26/28 cum=26/28=0.929
+[spec-acc] ctx=6301 burst=27/32 cum=53/60=0.883
+[spec-acc] ctx=6336 burst=23/44 cum=76/104=0.731
+[spec-acc] ctx=6370 burst=23/40 cum=99/144=0.688
+[spec-acc] ctx=6403 burst=22/40 cum=121/184=0.658
+[spec-acc] ctx=6435 burst=27/36 cum=148/220=0.673
+[spec-acc] ctx=6471 burst=22/40 cum=170/260=0.654
+[spec-acc] ctx=6503 burst=16/24 cum=186/284=0.655
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

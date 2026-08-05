@@ -1,0 +1,13 @@
+[econ] model=/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf prompt_tokens=512 N=50 t_max=9
+[econ] primed pos=512, continuation=[271, 248068, 198, 8160, 579, 264, 7047, 1817, 25, 271]
+[econ] decode_h   N=50  med= 12.645ms  mean= 12.647ms  min= 12.619ms  p90= 12.662ms  x1.000 vs decode_h
+[econ] verify_t1  N=50  med= 13.434ms  mean= 13.434ms  min= 13.416ms  p90= 13.448ms  x1.062 vs decode_h
+[econ] verify_t2  N=50  med= 13.805ms  mean= 13.807ms  min= 13.774ms  p90= 13.828ms  x1.092 vs decode_h
+[econ] verify_t3  N=50  med= 13.914ms  mean= 13.913ms  min= 13.887ms  p90= 13.923ms  x1.100 vs decode_h
+[econ] verify_t4  N=50  med= 14.501ms  mean= 14.504ms  min= 14.485ms  p90= 14.519ms  x1.147 vs decode_h
+[econ] verify_t5  N=50  med= 16.079ms  mean= 16.077ms  min= 16.034ms  p90= 16.098ms  x1.272 vs decode_h
+[econ] verify_t6  N=50  med= 16.858ms  mean= 16.858ms  min= 16.821ms  p90= 16.880ms  x1.333 vs decode_h
+[econ] verify_t7  N=50  med= 17.521ms  mean= 17.519ms  min= 17.471ms  p90= 17.546ms  x1.386 vs decode_h
+[econ] verify_t8  N=50  med= 18.897ms  mean= 18.895ms  min= 18.842ms  p90= 18.922ms  x1.494 vs decode_h
+[econ] verify_t9  N=50  med= 37.833ms  mean= 37.830ms  min= 37.669ms  p90= 37.913ms  x2.992 vs decode_h
+[econ-json] {"probe":"spec-econ","model":"/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf","prompt_tokens":512,"pos":512,"n":50,"arms":{"decode_h":{"med_ms":12.6451,"mean_ms":12.6471,"min_ms":12.6189,"p90_ms":12.6618},"verify_t1":{"med_ms":13.4338,"mean_ms":13.4345,"min_ms":13.4160,"p90_ms":13.4477},"verify_t2":{"med_ms":13.8054,"mean_ms":13.8071,"min_ms":13.7739,"p90_ms":13.8283},"verify_t3":{"med_ms":13.9141,"mean_ms":13.9129,"min_ms":13.8868,"p90_ms":13.9233},"verify_t4":{"med_ms":14.5015,"mean_ms":14.5039,"min_ms":14.4853,"p90_ms":14.5186},"verify_t5":{"med_ms":16.0793,"mean_ms":16.0770,"min_ms":16.0339,"p90_ms":16.0983},"verify_t6":{"med_ms":16.8583,"mean_ms":16.8582,"min_ms":16.8214,"p90_ms":16.8802},"verify_t7":{"med_ms":17.5215,"mean_ms":17.5186,"min_ms":17.4705,"p90_ms":17.5458},"verify_t8":{"med_ms":18.8967,"mean_ms":18.8953,"min_ms":18.8418,"p90_ms":18.9224},"verify_t9":{"med_ms":37.8325,"mean_ms":37.8295,"min_ms":37.6694,"p90_ms":37.9128}}}
