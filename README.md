@@ -158,6 +158,11 @@ plain decode lane (the speculative lane pays more: 79%). Cross-request prompt ca
 repeated prompt prefixes without recomputing
 them, reports the split as `usage.prompt_tokens_details.cached_tokens` on every response,
 and namespaces all reuse per tenant via the request-level `cache_salt` field (vLLM-style).
+Multi-key bearer auth maps keys to tenants (file-backed keyring + CLI, hot-reload, per-key
+rate limits and lane class) so cache isolation and metering follow real tenant identity;
+session affinity resumes a conversation whose history the client *rewrote* (think-stripping
+agent clients) — identity nominates, bytes decide, so time-to-first-token stays flat as the
+conversation grows instead of re-priming everything each turn.
 The gateway-facing surface is complete for OpenRouter-style listing: `/v1/models` with
 per-model metadata, `X-RateLimit-*` headers on every response, and graceful drain on
 SIGTERM (in-flight requests finish, new ones get a 503 + `Retry-After`). Official FP8
@@ -209,15 +214,17 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
 - Gemma plain margins are thin at the DRAM wall (1.02–1.06x); one spec cell at 0.98x.
 - Hy3 spill serves at 5.13 tok/s (N=3 median), tuning toward 10
   ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
-- The serve surface is currently slower than the naked CLI at c=1 — −11.74% on a Q8_0 27B
-  cell, −8.66% on the NVFP4 speculative path. Cause is known, not inferred: the serve worker
-  routes B=1 through the batched decode step, which has no CUDA-graph door and misses the
-  m=1 dense-FFN dispatch fusion. Open lane.
+- The NVFP4 speculative serve path trails its bare-CLI twin (−8.66%, pre-fix measurement)
+  — the spec tier's burst loop is a separate path from the solo fast path that closed the
+  plain-serve c=1 gap (serve c=1 now runs the same m=1 fused trunk as the CLI, +5–8%
+  decode-only, bit-identical; [docs/SERVING.md](docs/SERVING.md)). Open lane.
 - Cold time-to-first-token on short turns trails llama.cpp on the local laptop rig
   (0.53 s vs 0.19 s, same model file, N=5 interleaved) alongside short-agentic decode and
-  raw prefill, while long-generation sampled decode leads by +17%. Three causes identified
-  (per-request session realloc under VRAM pressure, the prefill wall, short-context
-  acceptance 0.55 vs 0.73); lanes open.
+  raw prefill, while long-generation sampled decode leads by +17%. Of the three causes
+  identified, the per-request session realloc under VRAM pressure is fixed (evict-first +
+  right-size ladder) and rewritten-history conversations now resume via session affinity
+  (TTFT flat at any depth instead of re-priming the whole conversation); the prefill wall
+  and short-context acceptance (0.55 vs 0.73) stay open.
 
 ## Requirements and limits
 

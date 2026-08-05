@@ -63,16 +63,18 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
   c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
   `research/spec-serving-20260801/`).
-- **Open gap — the serve path trails the naked CLI at c=1.** Stated here because a serve
-  doc must not imply serve/CLI parity: **−11.74%** on a Q8_0 27B cell (`memra-server`
-  46.09 tok/s, N=3 median, vs `run-gen` naked 52.22, single run; rig
-  `pro6000wk-runpod-community`, same commit and prompt) and **−8.66%** on the NVFP4 spec
-  path (serve 170.55 vs bare 186.72, rig `pro6000wk-runpod`). Cause is measured, not
-  inferred: the worker routes B=1 through `decode_step_batch`, which has no CUDA-graph door
-  (`MEMRA_GEN_GRAPH` lives in `generate_with`, which the worker never calls) and dispatches
-  dense-FFN gate+up via `matmul_pre` at `b_n=1`, so the m=1 fusion lever never fires.
-  Filed as task #70 (`research/q27-deepdive-20260805/PHASE2-SPEC.md` H1 + H3); receipts
-  `research/q27-deepdive-20260805/RESULTS.md` §4. Open lane — not a published number.
+- **The plain-serve c=1 gap (task #70) is closed by the fast path above — with one cell
+  pending re-measure and one still open.** Phase 1 measured serve c=1 trailing the naked
+  CLI **−11.74%** on a Q8_0 27B cell (`memra-server` 46.09 tok/s, N=3 median, vs `run-gen`
+  naked 52.22, single run; rig `pro6000wk-runpod-community`, same commit and prompt); the
+  measured cause — B=1 ran the batched body and missed the m=1 fusion chain — is exactly
+  what `MEMRA_SERVE_B1FAST` fixes, and on the 82-SM 5090 serve c=1 now sits level with the
+  same-board `run-gen` denominator. The −11.74% number itself is **pre-fix** and the 188-SM
+  cell has not been re-measured since — do not quote it as current. Still open: the NVFP4
+  **spec** serve path at **−8.66%** (serve 170.55 vs bare 186.72, rig `pro6000wk-runpod`,
+  also a pre-H3 measurement) — the spec tier runs its own burst loop that the `b_n==1`
+  fast path does not touch. Receipts: `research/q27-deepdive-20260805/RESULTS.md` §4
+  (phase 1), `research/servepath-p2-20260805/RESULTS.md` (the fix + the H1 refutation).
 
 ## The isolation contract
 
@@ -424,6 +426,7 @@ running server picks the revocation up on the next poll. `--keys` defaults to
 
 Gate: `tools/apikeys-gate.sh` (unit laws + live two-tenant isolation proof via
 cache-hit behavior; receipts `research/apikeys-20260805/`).
+
 ## Session affinity — resuming a REWRITTEN conversation (lane/session-affinity, 2026-08-05)
 
 Both reuse tiers above require the new prompt to EXTEND what is cached (token prefix, or
