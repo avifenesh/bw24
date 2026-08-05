@@ -358,7 +358,8 @@ impl GpuTensor {
                 }
             }
         }
-        // E4M3-DIRECT (MEMRA_ST_E4M3=1, lane e4m3dec 2026-07-08): F8-E4M3-origin 2D projections keep
+        // E4M3-DIRECT (DEFAULT since lane/fp8-decode-v1 2026-08-05; MEMRA_ST_E4M3=0 rolls back to the
+        // Q8_0 slab. Introduced default-off by lane e4m3dec 2026-07-08): F8-E4M3-origin 2D projections keep
         // the checkpoint's RAW e4m3 device bytes + per-tensor weight_scale as the ONE resident copy
         // (QT_F8_E4M3) instead of the Q8_0 re-encode — decode dequants e4m3 in-kernel
         // (qmatvec_e4m3_mmvq, the checkpoint's own precision, no lossy re-quant hop), prefill
