@@ -474,8 +474,8 @@ limit returned 429; a resumable per-crate workflow then landed (skip-if-live via
 registry API, 6 attempts x 620 s backoff, plus a `publish=true` dispatch door). Receipts:
 `docs/RELEASING.md`, `.github/workflows/publish.yml`, commit `c52edfd3`. **Do not claim
 "all 9 crates live" without checking the registry** — the repo's only 9/9 evidence is a
-dry run (`0d41fdec`). Note `docs/RELEASING.md:60` currently reads as though all nine
-names were claimed; that line needs the 5/9 qualifier.
+dry run (`0d41fdec`). *(`docs/RELEASING.md` and `HANDOVER.md` carried the "all nine names
+claimed" reading; both were corrected 2026-08-05 — commits `dbe12cb3`, `6c2a7e73`.)*
 
 ---
 
@@ -545,7 +545,8 @@ and blog material. Cleared wording:
 Standing posture note: **llama benching is stopped** (owner, 2026-08-03). The llama
 numbers in the boards are **frozen reference points** recorded through 2026-08-03; all
 forward work is self-competition. `research/benchmarks.md` carries the doctrine banner;
-`docs/PERFORMANCE.md` does not yet, and should.
+`docs/PERFORMANCE.md` got the same banner on 2026-08-05 (commit `8628bbc2`), including the
+counter-example above.
 
 ### 7.3 First-token cross-config drift (~7%)
 
