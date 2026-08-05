@@ -1432,3 +1432,22 @@ Launch total: **A 5 pages + B 4 pages + docs + status.**
    Q8_0-bridge vs FP8-ST-direct for 3.8 day one. The Models and Pricing pages cannot name a
    format until then.
 4. Headline pick, accent color, wordmarks, launch timing, data-retention text, legal entity.
+
+### 16.4 Repo files the build-agent may now trust (same lane, 2026-08-05)
+
+The correction pass did not stop at this spec — the repo docs a build-agent would naturally
+read were corrected too, so quoting them is now safe:
+
+| File | Commit | Safe to quote for |
+|---|---|---|
+| `docs/PRODUCT-TRUTH.md` | `96fa6701`, `fa87b49e`, `e419f95c` | **everything** — start here |
+| `README.md` | `dbe12cb3` | the exactness sentence, the serving-contract paragraph, Known gaps |
+| `docs/SERVING.md` | `dbe12cb3` | the isolation contract, the FP8 paragraph (now rig-labeled), the QoS attribution, the serve-vs-CLI gap |
+| `docs/PERFORMANCE.md` | `8628bbc2` | tracked cells — with the llama-freeze and rig-label banners at the top, which are part of the quote |
+| `docs/RELEASING.md`, `HANDOVER.md` | `dbe12cb3`, `6c2a7e73` | the 5/9-crates publish history |
+| `CONTRIBUTING.md`, `research/benchmarks.md` | `6c2a7e73` | the measuring-rig vs deployment-target distinction |
+
+Still **not** a copy source, by design: any `research/<lane>/` directory (append-only,
+correct on its own date), and the two hardware studies whose pre-override 2x5090
+recommendations are deliberately left un-struck (PRODUCT-TRUTH §3 explains how to read
+them).
