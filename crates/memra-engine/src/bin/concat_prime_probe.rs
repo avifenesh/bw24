@@ -1009,6 +1009,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      else { "*** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***" });
         }
 
+        // NLL WINDOW THROUGH THE SERVING PRIME (lane/chunkinv-flip, 2026-08-05): mean token
+        // NLL over a frozen text window, computed from prime_cache's OWN hidden stack (the
+        // pass the grain-free fix changes). forward()/fp8_mmq_stream ride full_attn (fresh
+        // f32 prefill) and CANNOT see this change — this mode is the quality instrument for
+        // anything that moves prime arithmetic. Env decides the arm (MEMRA_PRIME_F32CHUNK0,
+        // MEMRA_PRIME_CHUNK); the mode itself is arm-neutral.
+        //   nllwin <model> nllwin --prompt-a <txt|@f> [--window 1024] [--chunk <c>]
+        "nllwin" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let window: usize = arg(&rest, "--window").and_then(|v| v.parse().ok()).unwrap_or(1024);
+            if let Some(cv) = arg(&rest, "--chunk") {
+                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", &cv) };
+            }
+            let mut ids = cx.tok.encode(&pa, true);
+            ids.truncate(window.max(2));
+            let t = ids.len();
+            let n_embd = cx.model.cfg.n_embd as usize;
+            let n_vocab = cx.model.output.out_features();
+            let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
+            let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+            // hid = [T, n_embd] pre-output-norm hiddens; lm_head each row like forward()
+            let mut hn = cx.e.uninit(t * n_embd)?;
+            cx.e.rms_norm(&hid, cx.model.output_norm.float_data(), &mut hn, n_embd, t,
+                          cx.model.cfg.rms_eps)?;
+            let logits = cx.e.matmul(&cx.model.output, &hn, t)?;
+            let all = cx.e.dtoh(&logits)?;
+            let mut sum = 0.0f64;
+            for p in 1..t {
+                let row = &all[(p - 1) * n_vocab..p * n_vocab];
+                let mx = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+                let lse = mx + row.iter().map(|&v| ((v as f64) - mx).exp()).sum::<f64>().ln();
+                sum += lse - row[ids[p] as usize] as f64;
+            }
+            let nll = sum / (t - 1) as f64;
+            println!("nllwin: tokens={t} chunk={} f32chunk0={} mean_nll={nll:.6} ppl={:.6}",
+                     std::env::var("MEMRA_PRIME_CHUNK").unwrap_or_else(|_| "4096(default)".into()),
+                     std::env::var("MEMRA_PRIME_F32CHUNK0").unwrap_or_else(|_| "0".into()),
+                     nll.exp());
+        }
+
+        // PRIME-ONLY THROUGHPUT (lane/chunkinv-flip): timed prime_cache reps, fresh cache per
+        // rep, median tok/s — the SERVING prefill pass. run-gen's GGUF MEMRA_PP_ONLY times
+        // forward_last (fresh f32 attention, prime-dispatch-blind); this mode times the pass
+        // the grain-free fix actually changes. Env (MEMRA_PRIME_F32CHUNK0 / MEMRA_PRIME_CHUNK)
+        // selects the arm.
+        //   ppprime <model> ppprime --prompt-a <txt|@f> [--reps 3] [--warmup 1]
+        "ppprime" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let reps: usize = arg(&rest, "--reps").and_then(|v| v.parse().ok()).unwrap_or(3);
+            let warmup: usize = arg(&rest, "--warmup").and_then(|v| v.parse().ok()).unwrap_or(1);
+            let ids = cx.tok.encode(&pa, true);
+            let t = ids.len();
+            for _ in 0..warmup {
+                let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+            }
+            cx.e.stream().synchronize()?;
+            let mut times = Vec::with_capacity(reps);
+            for r in 0..reps {
+                let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
+                let t0 = std::time::Instant::now();
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+                cx.e.stream().synchronize()?;
+                let dt = t0.elapsed().as_secs_f64();
+                println!("ppprime rep {r}: {t} tok in {dt:.4}s = {:.1} tok/s", t as f64 / dt);
+                times.push(dt);
+            }
+            times.sort_by(f64::total_cmp);
+            let med = times[times.len() / 2];
+            println!("ppprime MEDIAN: {t} tok in {med:.4}s = {:.1} tok/s (chunk={} f32chunk0={})",
+                     t as f64 / med,
+                     std::env::var("MEMRA_PRIME_CHUNK").unwrap_or_else(|_| "4096(default)".into()),
+                     std::env::var("MEMRA_PRIME_F32CHUNK0").unwrap_or_else(|_| "0".into()));
+        }
+
         m => return Err(format!("unknown mode {m}").into()),
     }
     Ok(())

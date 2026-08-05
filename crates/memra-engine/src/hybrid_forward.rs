@@ -1396,8 +1396,8 @@ impl HybridModel {
     /// reads q8_0/q5_1-dequantized K/V for the past AND the current chunk — the same class as
     /// decode reading the cache; the run-gen/first-16 battery is the accuracy authority.
     #[allow(clippy::too_many_arguments)]
-    fn full_attn_prime_fa_dispatch(&self, e: &Engine, q: &CudaSlice<f32>, _k: &CudaSlice<f32>,
-                            _v: &CudaSlice<f32>, attn: &mut CudaSlice<f32>, base_len: usize,
+    fn full_attn_prime_fa_dispatch(&self, e: &Engine, q: &CudaSlice<f32>, k: &CudaSlice<f32>,
+                            v: &CudaSlice<f32>, attn: &mut CudaSlice<f32>, base_len: usize,
                             t: usize, cache: &mut Cache, il: usize,
                             head_dim: usize, n_head: usize, n_head_kv: usize, scale: f32)
                             -> Result<(), Box<dyn std::error::Error>> {
@@ -1409,6 +1409,18 @@ impl HybridModel {
         // precision edge falls, so chunked prefill is reduction-order-stable with NO grain
         // knob (the stronger fix VERDICT.md filed; supersedes the MEMRA_PRIME_INVARIANT door's
         // pin-the-boundary approach).
+        // MEMRA_PRIME_F32CHUNK0=1 is the ROLLBACK SEAM to the old arithmetic (chunk 0 attends
+        // f32 K/V) — flags-doctrine rollback door AND the chunkinv gate's canary injection:
+        // with the fix unconditional, only re-introducing the class edge can prove the gate
+        // still detects the mechanism. Never on in a measured default run.
+        if base_len == 0 && std::env::var("MEMRA_PRIME_F32CHUNK0").as_deref() == Ok("1") {
+            if std::env::var("MEMRA_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
+                e.sdpa_naive(q, k, v, attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+            } else {
+                e.fa_prefill(q, k, v, attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+            }
+            return Ok(());
+        }
         let kvl = cache.kv[il].as_ref().unwrap();
         let t_kv = base_len + t;
         let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
