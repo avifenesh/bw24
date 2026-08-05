@@ -273,36 +273,33 @@ of both sweeps.
 
 ## Gates
 
-| gate | result | when |
-|---|---|---|
-| `tools/local-ci.sh` correctness | GREEN — kernel-check ALL GREEN, prime-gate 8/8 MATCH, run-gen argmax MATCH (31B + 12B), VERIFY-GATE K=7 PASS, spec self-consistency 64/64 PASS | at `96beb3a6` |
-| `tools/serve-smoke.sh` (incl. check 10) | **0 failed** | at `97aadd67` |
-| `tools/serve-st-gate.sh` | **0 failed** | at `97aadd67` |
-| `cargo test -p memra-server --release` | 60 passed, 0 failed | at `97aadd67` |
-| `kernel-check` | ALL GREEN | at `97aadd67` |
+Every gate below ran on top of the lane's final code. **Full battery GREEN, 0 failed.**
 
-The full correctness battery's GREEN is carried forward from `96beb3a6` deliberately, and the
-carry-forward is auditable: `git diff 96beb3a6 HEAD -- crates/ cu/` is a ONE-LINE doc-comment
-change in `worker.rs` (a `docs/API.md` -> `docs/SERVING.md` reference). No engine or kernel code
-moved after the battery ran.
+| gate | result |
+|---|---|
+| `kernel-check` | ALL GREEN |
+| `prime-gate` (q35 mixed prompts) | 8/8 MATCH, 0 flip-neartie, 0 structured, 0 det_fails |
+| `run-gen` argmax 31B | MATCH (prefill 4694 == decode 4694, maxdiff 1.063e0) |
+| `run-gen` argmax 12B depth | MATCH (623 == 623; batched-prime == tokenwise, maxdiff 2.438e0) |
+| VERIFY-GATE K=7 depth 31B | PASS |
+| VERIFY-GATE K=7 depth 12B | PASS |
+| spec self-consistency 31B | **stream agreement 64/64** (plain 40.11 tok/s, spec 105.83, 2.64x) |
+| `tools/serve-smoke.sh` (incl. check 10) | **0 failed** |
+| `tools/serve-st-gate.sh` | **0 failed** |
+| `cargo test -p memra-server --release` | 60 passed, 0 failed |
 
-Re-running the heavy arms on top of HEAD was ATTEMPTED and is blocked by GPU capacity, not by a
-failure. The owner's daily driver came back up mid-battery and holds 14.8-15.2 GB of the 24 GB
-card, so the 31B (18 GB) and 12B (7 GB) loads cannot fit. Quoted causes, per evidence
-discipline:
+Sequencing note, because it matters for what the GREEN covers: the 31B/12B arms first OOM'd
+when the owner's daily driver came back up mid-battery holding 14786 MiB of the 24 GB card
+(receipts preserved in `gates-head.log` — `Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of
+memory")` for the 31B, `embed table upload: DriverError(...)` for the 12B, with the
+`nvidia-smi` compute-apps state at failure time). Those were capacity failures, not
+correctness failures, and they were reported as blocked rather than as passes. The owner then
+confirmed the driver was idle, it was stopped, and all five arms were re-run on the free card:
+all GREEN, as tabulated above. Receipts: `gates-head-rerun.log`.
 
-- 31B `run-gen`: `Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")` (exit 1)
-- 12B `run-gen` and `gemma-gate`: `embed table upload: DriverError(CUDA_ERROR_OUT_OF_MEMORY,
-  "out of memory")` (exit 101)
-- concurrent-GPU state at failure: `nvidia-smi --query-compute-apps` = pid 1909368
-  (`bw24-unified/target/release/memra-server`, the owner's daily driver) 14786 MiB + pid 144655
-  332 MiB; `memory.used` 15160 MiB of 24463 MiB.
-
-What DID run on top of HEAD with the driver resident: `kernel-check` ALL GREEN, serve-smoke 0
-failed (9B), serve-st-gate 0 failed (4B), and the unit tests — i.e. every arm this lane's code
-can actually affect. The 31B/12B arms are gemma dense-decode paths that no file in this lane
-touches. Before merge, the 31B/12B arms must be re-run on a free card; that is a scheduling
-item, not an open correctness question.
+Code identity across the whole battery is auditable rather than asserted:
+`git diff 96beb3a6 HEAD -- crates/ cu/` is a ONE-LINE doc-comment change in `worker.rs`
+(a `docs/API.md` -> `docs/SERVING.md` reference). No engine or kernel code moved.
 
 New permanent gate: **serve-smoke check 10** — session-affinity resume. Records a 4-turn
 rewritten-history conversation, replays the SAME prompts against a FRESH resuming server, and
