@@ -1347,10 +1347,29 @@ pub fn run(
                             finished.push(0);
                         } else {
                         let lm = &loaded[&s.model];
+                        // Q2 (audit 2026-08-05): step() errors for REAL causes (recapture
+                        // OOM at a kernel-class boundary, fa exec-update failure) besides
+                        // budget exhaustion — those must surface as errors, never as a
+                        // clean MaxNew. Budget exhaustion (the one benign cause, checked
+                        // here against the same bound step() uses) keeps the honest MaxNew.
+                        let at_budget = s.graph.as_ref()
+                            .is_some_and(|g| g.cache.pos + 1 >= g.bucket_max);
                         let g = s.graph.as_mut().unwrap();
                         match g.step(&engine, &lm.model) {
                             Ok(next) => { s.graph_pending = Some(next); }
-                            Err(_) => { finish(s, StopReason::MaxNew); finished.push(0); }
+                            Err(err) if at_budget => {
+                                eprintln!("[worker] graph session capture budget reached \
+                                           (model {}): {err}", s.model);
+                                finish(s, StopReason::MaxNew);
+                                finished.push(0);
+                            }
+                            Err(err) => {
+                                eprintln!("[worker] graph session step FAILED \
+                                           (model {}): {err}", s.model);
+                                let _ = s.tx.send(Event::Error(
+                                    format!("graph step failed: {err}")));
+                                finished.push(0);
+                            }
                         }
                         n_tokens_out += 1;
                         lane_tokens[0] += 1;
@@ -2240,7 +2259,11 @@ fn admit(
             None
         })};
         match resumed {
-            Some(sess) => {
+            Some(mut sess) => {
+                // Q2 (audit 2026-08-05): a parked session carries its draft-graph failure
+                // memoization; a NEW request gets a fresh capture chance (transient VRAM
+                // pressure at park time must not become permanent coverage loss).
+                sess.reset_graph_fallback_on_resume();
                 spec_resumed = sess.committed.len();
                 match affinity_rewound {
                     Some((pos, tier)) => eprintln!(
