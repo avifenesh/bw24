@@ -10344,11 +10344,23 @@ impl Engine {
             static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *T.get_or_init(|| std::env::var("MEMRA_GRAPH_CAPTIME").as_deref() == Ok("1"))
         };
+        // MEMRA_GRAPH_WARMUPS (Q1 lane, default 2 = unchanged): the phase split showed the two
+        // eager warmups are 80% of recapture cost (q27 27.4 of 34.4 ms) — 3x larger than the
+        // ENTIRE mem-node ceiling the audit chased, and node-count-invariant, so no capture-body
+        // refactor can touch it. Warmup 1 primes the async pool (its allocs may grow/map);
+        // warmup 2 re-walks the same sequence over the now-freed blocks so the captured third
+        // run sees identical addresses and kernel attrs. Whether run 2 is load-bearing is an
+        // EXACTNESS question, not a taste question: the door exists so graph-decode-gate
+        // (256-step bit-identity) and run-spec can arbitrate. Default stays 2 until they do.
+        let warmups = {
+            static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *W.get_or_init(|| std::env::var("MEMRA_GRAPH_WARMUPS").ok()
+                .and_then(|v| v.parse().ok()).filter(|n| *n >= 1).unwrap_or(2))
+        };
         let mut run = || -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>> {
             let t_w = std::time::Instant::now();
-            // warmup: two inline runs (no capture) so allocator pointers + kernel attrs are stable.
-            step(self)?;
-            step(self)?;
+            // warmup: inline runs (no capture) so allocator pointers + kernel attrs are stable.
+            for _ in 0..warmups { step(self)?; }
             self.gpu.stream().synchronize()?;
             let ms_warm = t_w.elapsed().as_secs_f64() * 1e3;
             // capture the third run.

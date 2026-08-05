@@ -1,0 +1,68 @@
+# THE REAL LEVER, found by the phase split: MEMRA_GRAPH_WARMUPS=1 vs 2 (default), interleaved x3,
+# N=5 medians inside each rep. pod, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat.
+#
+# capture_graph runs step() TWICE uncaptured before capturing the third run. Those two eager
+# executions are 80% of recapture cost (q27 27.4 of 34.4 ms) and are node-count-INVARIANT, so
+# the mem-node refactor the audit specified could never touch them. Dropping to ONE warmup:
+#
+#   q27 recapture: 37.1 / 37.1 / 37.6 ms (w=2)  ->  23.1 / 23.1 / 23.2 ms (w=1)   = -38%
+#   q9  recapture: 18.3 / 18.3 / 18.3 ms (w=2)  ->  10.8 / 10.8 / 10.7 ms (w=1)   = -41%
+#   q27 tok/s:     81.05 / 80.96 (w=2)          ->  81.88 / 81.88 (w=1)           = +1.1%
+#   q9  tok/s:     151.59 / 151.59 / 151.53     ->  153.24 / 153.21 / 153.18      = +1.1%
+#   q27 cap+prime: 703.3 / 703.5 ms             ->  689.8 / 690.3 ms
+#   q9  cap+prime: 398.4 ms                     ->  391.1 / 391.3 ms
+#   launch us: UNCHANGED (46.9 -> 46.9 q27; 23.3-23.9 both) — as expected, warmups are not
+#              in the replay path; the tok/s gain is one less eager step per capture amortized.
+#
+# For scale: this single-line change beats the ENTIRE measured mem-node ceiling (<0.8% of step)
+# on the quantity the mem-node refactor was supposed to own, at zero correctness-surface change
+# to the capture body.
+#
+# EXACTNESS (the arbiter, not the timing):
+#   warmups=1 graph-decode-gate q27: PASS 256 steps generate_graph == decode_step BIT-IDENTICAL
+#   warmups=1 graph-session-gate q27: PASS (session 81.4 vs eager 75.3, +8.2%)
+#   (q9 gates + run-spec K=1..8 in gates-warmups1-runspec.txt)
+#
+# NOTE the default is NOT moved by this lane. Warmup 2's job is address stability: run 1's
+# allocs may grow/map the async pool, run 2 re-walks the same sequence over freed blocks so the
+# captured run sees identical addresses. The gates passing on these two models is evidence, not
+# proof, for every model/kernel-class; the pool-growth case that warmup 2 exists to absorb is
+# exactly the rare path a 3-model gate sweep is worst at sampling. Recommended as an owner call
+# with the receipt, not a silent flip.
+
+=== q27 rep1 warmups=2 ===
+recapture (capture+instantiate, no prime): median 37.0 ms  (raw ["47.1", "36.3", "36.8", "37.0", "37.0"])
+SUMMARY iflag=auto_free launch_us=46.6 tps=81.12 cap_ms=702.5
+=== q27 rep1 warmups=1 ===
+recapture (capture+instantiate, no prime): median 23.0 ms  (raw ["35.1", "22.2", "22.8", "23.0", "23.0"])
+SUMMARY iflag=auto_free launch_us=46.7 tps=81.95 cap_ms=689.0
+=== q27 rep2 warmups=2 ===
+recapture (capture+instantiate, no prime): median 37.1 ms  (raw ["47.1", "36.3", "36.9", "37.1", "37.2"])
+SUMMARY iflag=auto_free launch_us=46.9 tps=81.05 cap_ms=703.3
+=== q27 rep2 warmups=1 ===
+recapture (capture+instantiate, no prime): median 23.1 ms  (raw ["33.9", "22.4", "22.8", "23.2", "23.1"])
+SUMMARY iflag=auto_free launch_us=46.9 tps=81.88 cap_ms=689.8
+=== q27 rep3 warmups=2 ===
+recapture (capture+instantiate, no prime): median 37.6 ms  (raw ["47.6", "37.1", "37.3", "37.6", "37.7"])
+SUMMARY iflag=auto_free launch_us=46.9 tps=80.96 cap_ms=703.5
+=== q27 rep3 warmups=1 ===
+recapture (capture+instantiate, no prime): median 23.2 ms  (raw ["33.3", "22.3", "22.9", "23.2", "23.2"])
+SUMMARY iflag=auto_free launch_us=46.5 tps=81.88 cap_ms=690.3
+=== q9 rep1 warmups=2 ===
+recapture (capture+instantiate, no prime): median 18.3 ms  (raw ["23.8", "18.1", "18.2", "18.3", "18.4"])
+SUMMARY iflag=auto_free launch_us=23.3 tps=151.59 cap_ms=398.4
+=== q9 rep1 warmups=1 ===
+recapture (capture+instantiate, no prime): median 10.8 ms  (raw ["16.2", "10.7", "10.7", "10.8", "10.8"])
+SUMMARY iflag=auto_free launch_us=23.6 tps=153.24 cap_ms=391.1
+=== q9 rep2 warmups=2 ===
+recapture (capture+instantiate, no prime): median 18.3 ms  (raw ["23.5", "18.2", "18.2", "18.3", "18.4"])
+SUMMARY iflag=auto_free launch_us=23.5 tps=151.59 cap_ms=398.4
+=== q9 rep2 warmups=1 ===
+recapture (capture+instantiate, no prime): median 10.8 ms  (raw ["16.2", "10.7", "10.7", "10.8", "10.8"])
+SUMMARY iflag=auto_free launch_us=23.9 tps=153.21 cap_ms=391.3
+=== q9 rep3 warmups=2 ===
+recapture (capture+instantiate, no prime): median 18.3 ms  (raw ["23.8", "18.2", "18.2", "18.3", "18.4"])
+SUMMARY iflag=auto_free launch_us=23.9 tps=151.53 cap_ms=398.5
+=== q9 rep3 warmups=1 ===
+recapture (capture+instantiate, no prime): median 10.7 ms  (raw ["16.3", "10.6", "10.6", "10.7", "10.7"])
+SUMMARY iflag=auto_free launch_us=23.2 tps=153.18 cap_ms=391.1

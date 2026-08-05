@@ -1,0 +1,11 @@
+# warmups=1 exactness: graph-decode-gate + graph-session-gate, q27 (pod)
+   Compiling memra-engine v0.70.0 (/root/bw24-q1/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 15.16s
+=== EXACTNESS FIRST: warmups=1 must pass graph-decode-gate (256-step bit-identity) ===
+buckets crossed (fa_vec, n_splits): [(false, 1), (true, 6), (true, 7), (true, 8), (true, 9), (true, 10), (true, 11), (true, 12), (true, 13), (true, 14), (true, 15), (true, 16), (true, 17), (true, 18), (true, 19), (true, 20)]
+graph (re)captures: 2
+Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=16 captures=2
+=== warmups=1 graph-session-gate ===
+gate (session vs generate_graph, 96 tokens): PASS
+perf: session 81.4 tok/s vs eager 75.3 tok/s (+8.2%)
+ALL GREEN: graph-session gate
