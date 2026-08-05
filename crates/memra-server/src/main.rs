@@ -332,6 +332,13 @@ struct CompletionReq {
     /// default single-tenant namespace (pre-PC-ISO behavior). See `cache_namespace`.
     #[serde(default)]
     cache_salt: Option<String>,
+    /// SESSION AFFINITY explicit tier (lane/session-affinity): the caller's own name for
+    /// this conversation. See `affinity_key`. `session_id` is the explicit spelling;
+    /// `user` is OpenAI's field that real clients already send.
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    user: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -463,6 +470,11 @@ struct ChatCompletionReq {
     /// default single-tenant namespace (pre-PC-ISO behavior). See `cache_namespace`.
     #[serde(default)]
     cache_salt: Option<String>,
+    /// SESSION AFFINITY explicit tier — see `CompletionReq::session_id` / `affinity_key`.
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    user: Option<String>,
 }
 fn one() -> f32 { 1.0 }
 /// OpenAI's documented default for an omitted `temperature` on both completion surfaces.
@@ -598,6 +610,37 @@ fn openai_compat() -> bool {
 /// can only reveal the caller's own namespace's history (CacheProbe/PROMPTPEEK mitigation).
 fn cache_namespace(cache_salt: &Option<String>) -> String {
     cache_salt.clone().unwrap_or_default()
+}
+
+/// SESSION AFFINITY explicit tier (lane/session-affinity, 2026-08-05): the caller's own name
+/// for this conversation, if it supplies one. A named conversation resumes its parked session
+/// directly — no fingerprint guess needed. Accepted conventions, in priority order:
+///   1. `session_id` body field — the explicit spelling.
+///   2. `user` body field — OpenAI's own field; real clients already send a stable per-user
+///      (often per-conversation) value here, so honoring it costs the caller nothing.
+///   3. `x-session-id` request header — the convention proxies in front of vLLM/TGI use.
+/// Body beats header: the body is the caller's own statement of identity, while a header can
+/// be rewritten by an intermediary. Blank/whitespace values are treated as absent (a client
+/// sending `"user": ""` must not collapse every conversation onto one session).
+///
+/// The key is NOT authoritative over tokens. It only NOMINATES a parked session for the exact
+/// token-diff test in the worker (`affinity_match`), and only within the request's own
+/// (model, cache_ns) pool — so a reused or guessed id can cost a wasted probe, never a wrong
+/// resume and never cross-tenant reach.
+fn affinity_key(
+    session_id: &Option<String>,
+    user: &Option<String>,
+    headers: &axum::http::HeaderMap,
+) -> Option<String> {
+    let clean = |s: &str| -> Option<String> {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t.to_string()) }
+    };
+    session_id.as_deref().and_then(clean)
+        .or_else(|| user.as_deref().and_then(clean))
+        .or_else(|| headers.get("x-session-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(clean))
 }
 
 /// OpenAI error body: `{"error": {"message", "type", "param", "code"}}` — the object
@@ -1143,7 +1186,7 @@ async fn peek_shed(
 
 /// Build the (GenParams, SamplerConfig, stop, prompt) from a request body.
 fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>,
-                 lane: lanes::Lane) -> Request {
+                 lane: lanes::Lane, affinity: Option<String>) -> Request {
     let params = GenParams {
         max_new: req.max_tokens.unwrap_or(worker::MAX_NEW_CTX_BOUNDED),
         max_ctx: req.max_ctx,
@@ -1165,6 +1208,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         stop_strings: req.stop.clone().into_vec(),
         trace_id: req.trace_id.clone(),
         cache_ns: cache_namespace(&req.cache_salt),
+        affinity,
         lane,
         grammar: None, // /v1/completions carries no response_format (chat surface only)
         tx,
@@ -1182,7 +1226,7 @@ struct ChatPlan {
 
 fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                       tx: tokio::sync::mpsc::UnboundedSender<Event>,
-                      lane: lanes::Lane)
+                      lane: lanes::Lane, affinity: Option<String>)
                       -> Result<ChatPlan, String> {
     let tool_choice = parse_tool_choice(&req.tool_choice)?;
     // Template honesty gate (serve-st lane, 2026-08-04): a directory checkpoint
@@ -1291,6 +1335,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             stop_strings: req.stop.into_vec(),
             trace_id: None,
             cache_ns: cache_namespace(&req.cache_salt),
+            affinity,
             lane,
             grammar,
             tx,
@@ -1407,7 +1452,8 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
-    let mut request = build_request(&req, tx, lane);
+    let affinity = affinity_key(&req.session_id, &req.user, &headers);
+    let mut request = build_request(&req, tx, lane, affinity);
     request.cache_ns = tenant_namespace(&tenant, &req.cache_salt);
     meter_admit(&env, &tenant, &model, lane);
     let stop_strings = request.stop_strings.clone();
@@ -1467,7 +1513,8 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     let stream = req.stream;
     let cache_salt = req.cache_salt.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    let mut plan = match build_chat_request(req, st.caps.get(&model), tx, lane) {
+    let affinity = affinity_key(&req.session_id, &req.user, &headers);
+    let mut plan = match build_chat_request(req, st.caps.get(&model), tx, lane, affinity) {
         Ok(plan) => plan,
         Err(err) => {
             return with_request_id(&env.id, bad_request(&err, None));
@@ -1861,7 +1908,7 @@ mod tests {
         });
         let req: ChatCompletionReq = serde_json::from_value(payload).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap();
+        let plan = build_chat_request(req, None, tx, lanes::Lane::Interactive, None).unwrap();
         let request = plan.request;
         assert!(plan.parser.is_none(), "no tools -> no parser (isolation contract)");
         assert!(request.tools_json.is_empty());
@@ -1873,7 +1920,7 @@ mod tests {
             "model": "plain_quant", "messages": [{"role": "user", "content": "task"}]
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap();
+        let plan = build_chat_request(req, None, tx, lanes::Lane::Interactive, None).unwrap();
         assert_eq!(plan.request.params.max_new, worker::MAX_NEW_CTX_BOUNDED);
         // max_completion_tokens alias still honored exactly.
         let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
@@ -1881,13 +1928,13 @@ mod tests {
             "max_completion_tokens": 7
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.params.max_new, 7);
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive, None).unwrap().request.params.max_new, 7);
         // completions body: same omission law.
         let req: CompletionReq = serde_json::from_value(serde_json::json!({
             "model": "plain_quant", "prompt": "task"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive).params.max_new, worker::MAX_NEW_CTX_BOUNDED);
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive, None).params.max_new, worker::MAX_NEW_CTX_BOUNDED);
         let turns: Vec<(String, String)> = request.chat_turns.iter()
             .map(|t| (t.role.clone(), t.content.clone())).collect();
         assert_eq!(turns, vec![
@@ -1960,7 +2007,7 @@ mod tests {
     #[test]
     fn tools_request_renders_client_key_order_and_arms_parser() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(weather_request(json!({})), Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
+        let plan = build_chat_request(weather_request(json!({})), Some(&tool_caps()), tx, lanes::Lane::Interactive, None).unwrap();
         assert!(plan.parser.is_some());
         assert_eq!(plan.request.tools_json.len(), 1);
         // client key order preserved + python-dumps separators (the template's tojson law).
@@ -1975,7 +2022,7 @@ mod tests {
     fn tool_choice_none_strips_tools_and_parser() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let plan = build_chat_request(weather_request(json!({"tool_choice": "none"})),
-                                      Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
+                                      Some(&tool_caps()), tx, lanes::Lane::Interactive, None).unwrap();
         // tools stripped: no tool-call scanning; the think-open prompt still arms the
         // reasoning-only splitter (F13) — a <tool_call> in post-think prose stays prose.
         let mut p = plan.parser.expect("think-open chat arms the reasoning splitter");
@@ -1988,11 +2035,11 @@ mod tests {
         // unsupported tool_choice forms are clean 400s, not silent downgrades.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"tool_choice": "required"})),
-                                   Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
+                                   Some(&tool_caps()), tx, lanes::Lane::Interactive, None).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"tool_choice":
             {"type": "function", "function": {"name": "get_weather"}}})),
-                                   Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
+                                   Some(&tool_caps()), tx, lanes::Lane::Interactive, None).is_err());
     }
 
     #[test]
@@ -2059,7 +2106,7 @@ mod tests {
         });
         let req: ChatCompletionReq = serde_json::from_value(payload).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let err = match build_chat_request(req, Some(&caps), tx, lanes::Lane::Interactive) {
+        let err = match build_chat_request(req, Some(&caps), tx, lanes::Lane::Interactive, None) {
             Err(e) => e,
             Ok(_) => panic!("templateless dir checkpoint must reject chat"),
         };
@@ -2071,9 +2118,9 @@ mod tests {
     fn tools_on_model_without_tools_branch_is_rejected() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let caps = ModelCaps { chat_ok: true, ..Default::default() };
-        assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx, lanes::Lane::Interactive).is_err());
+        assert!(build_chat_request(weather_request(json!({})), Some(&caps), tx, lanes::Lane::Interactive, None).is_err());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert!(build_chat_request(weather_request(json!({})), None, tx, lanes::Lane::Interactive).is_err());
+        assert!(build_chat_request(weather_request(json!({})), None, tx, lanes::Lane::Interactive, None).is_err());
     }
 
     #[test]
@@ -2091,12 +2138,12 @@ mod tests {
         ] {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let plan = build_chat_request(weather_request(extra.clone()),
-                                          Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
+                                          Some(&tool_caps()), tx, lanes::Lane::Interactive, None).unwrap();
             assert_eq!(plan.request.think, want, "extra={extra}");
         }
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"reasoning_effort": "extreme"})),
-                                   Some(&tool_caps()), tx, lanes::Lane::Interactive).is_err());
+                                   Some(&tool_caps()), tx, lanes::Lane::Interactive, None).is_err());
     }
 
     #[test]
@@ -2114,7 +2161,7 @@ mod tests {
         });
         let req: ChatCompletionReq = serde_json::from_value(payload).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let plan = build_chat_request(req, Some(&tool_caps()), tx, lanes::Lane::Interactive).unwrap();
+        let plan = build_chat_request(req, Some(&tool_caps()), tx, lanes::Lane::Interactive, None).unwrap();
         let turns = &plan.request.chat_turns;
         assert_eq!(turns[1].tool_calls, vec![TmplToolCall {
             name: "get_weather".into(),
@@ -2173,26 +2220,80 @@ mod tests {
             "model": "m", "prompt": "task", "cache_salt": "tenant-a"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive).cache_ns, "tenant-a");
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive, None).cache_ns, "tenant-a");
 
         let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "task"}],
             "cache_salt": "tenant-b"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.cache_ns, "tenant-b");
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive, None).unwrap().request.cache_ns, "tenant-b");
 
         // no salt -> "" (the default single-tenant namespace; pre-PC-ISO behavior).
         let req: CompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "prompt": "task"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive).cache_ns, "");
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive, None).cache_ns, "");
         let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "messages": [{"role": "user", "content": "task"}]
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.cache_ns, "");
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive, None).unwrap().request.cache_ns, "");
+    }
+
+    #[test]
+    fn affinity_key_honors_both_client_conventions_in_priority_order() {
+        use axum::http::HeaderMap;
+        let hdr = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert("x-session-id", v.parse().unwrap());
+            h
+        };
+        let empty = HeaderMap::new();
+        let s = |v: &str| Some(v.to_string());
+        // each convention alone.
+        assert_eq!(affinity_key(&s("explicit"), &None, &empty), s("explicit"));
+        assert_eq!(affinity_key(&None, &s("openai-user"), &empty), s("openai-user"));
+        assert_eq!(affinity_key(&None, &None, &hdr("hdr-id")), s("hdr-id"));
+        // priority: session_id > user > header. Body beats header because a header can be
+        // rewritten by an intermediary.
+        assert_eq!(affinity_key(&s("a"), &s("b"), &hdr("c")), s("a"));
+        assert_eq!(affinity_key(&None, &s("b"), &hdr("c")), s("b"));
+        // blank/whitespace is ABSENT, not a key — a client sending "user": "" must not
+        // collapse every conversation onto one shared session.
+        assert_eq!(affinity_key(&s("  "), &s(""), &hdr("  ")), None);
+        assert_eq!(affinity_key(&s(""), &s("real"), &empty), s("real"));
+        // trimmed.
+        assert_eq!(affinity_key(&s(" padded "), &None, &empty), s("padded"));
+        // nothing supplied -> implicit tier (fingerprint) in the worker.
+        assert_eq!(affinity_key(&None, &None, &empty), None);
+    }
+
+    #[test]
+    fn affinity_key_plumbs_to_the_worker_request_on_both_bodies() {
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "task", "session_id": "conv-1"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let key = affinity_key(&req.session_id, &req.user, &axum::http::HeaderMap::new());
+        assert_eq!(build_request(&req, tx, lanes::Lane::Interactive, key).affinity.as_deref(),
+                   Some("conv-1"));
+        // OpenAI `user` on the chat body.
+        let req: ChatCompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "messages": [{"role": "user", "content": "task"}],
+            "user": "conv-2"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let key = affinity_key(&req.session_id, &req.user, &axum::http::HeaderMap::new());
+        assert_eq!(build_chat_request(req, None, tx, lanes::Lane::Interactive, key)
+                   .unwrap().request.affinity.as_deref(), Some("conv-2"));
+        // absent on both -> None (implicit tier).
+        let req: CompletionReq = serde_json::from_value(serde_json::json!({
+            "model": "m", "prompt": "task"
+        })).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(build_request(&req, tx, lanes::Lane::Interactive, None).affinity.is_none());
     }
 
     /// Drain an Sse response into its `data:` payload lines (keep-alive comments skipped).
@@ -2326,7 +2427,7 @@ mod tests {
             "frequency_penalty": 0.5, "presence_penalty": 0.25, "repetition_penalty": 1.1
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_chat_request(req, None, tx, lanes::Lane::Interactive).unwrap().request.sampler_cfg;
+        let cfg = build_chat_request(req, None, tx, lanes::Lane::Interactive, None).unwrap().request.sampler_cfg;
         assert_eq!(cfg.penalty_freq, 0.5);
         assert_eq!(cfg.penalty_present, 0.25);
         assert_eq!(cfg.penalty_repeat, 1.1);
@@ -2336,7 +2437,7 @@ mod tests {
             "model": "m", "prompt": "task", "frequency_penalty": 1.5
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
+        let cfg = build_request(&req, tx, lanes::Lane::Interactive, None).sampler_cfg;
         assert_eq!(cfg.penalty_freq, 1.5);
         assert_eq!(cfg.penalty_last_n, usize::MAX);
 
@@ -2345,7 +2446,7 @@ mod tests {
             "model": "m", "prompt": "task"
         })).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
+        let cfg = build_request(&req, tx, lanes::Lane::Interactive, None).sampler_cfg;
         assert_eq!(cfg.penalty_last_n, 0);
         assert_eq!(cfg.penalty_repeat, 1.0);
     }
@@ -2360,13 +2461,13 @@ mod tests {
         let chat_temp = |body: serde_json::Value| {
             let req: ChatCompletionReq = serde_json::from_value(body).unwrap();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            build_chat_request(req, None, tx, lanes::Lane::Interactive)
+            build_chat_request(req, None, tx, lanes::Lane::Interactive, None)
                 .unwrap().request.sampler_cfg.temperature
         };
         let comp_temp = |body: serde_json::Value| {
             let req: CompletionReq = serde_json::from_value(body).unwrap();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg.temperature
+            build_request(&req, tx, lanes::Lane::Interactive, None).sampler_cfg.temperature
         };
 
         // OMITTED => 1.0 (sampled), all the way through to the SamplerConfig.
@@ -2401,7 +2502,7 @@ mod tests {
         let req: CompletionReq = serde_json::from_value(serde_json::json!({
             "model": "m", "prompt": "t"})).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg;
+        let cfg = build_request(&req, tx, lanes::Lane::Interactive, None).sampler_cfg;
         assert_eq!(cfg.top_p, 1.0, "omitted top_p = OpenAI 1.0 = disabled");
         assert_eq!(cfg.top_k, 0, "omitted top_k = disabled");
         assert_eq!(cfg.min_p, 0.0, "omitted min_p = disabled");
@@ -2425,12 +2526,12 @@ mod tests {
         let comp_seed = |body: serde_json::Value| {
             let req: CompletionReq = serde_json::from_value(body).unwrap();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            build_request(&req, tx, lanes::Lane::Interactive).sampler_cfg.seed
+            build_request(&req, tx, lanes::Lane::Interactive, None).sampler_cfg.seed
         };
         let chat_seed = |body: serde_json::Value| {
             let req: ChatCompletionReq = serde_json::from_value(body).unwrap();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            build_chat_request(req, None, tx, lanes::Lane::Interactive)
+            build_chat_request(req, None, tx, lanes::Lane::Interactive, None)
                 .unwrap().request.sampler_cfg.seed
         };
 
@@ -2478,7 +2579,7 @@ mod tests {
             if let Some(rf) = rf { body["response_format"] = rf; }
             let req: ChatCompletionReq = serde_json::from_value(body).unwrap();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            build_chat_request(req, None, tx, lanes::Lane::Interactive)
+            build_chat_request(req, None, tx, lanes::Lane::Interactive, None)
         };
         assert!(mk(None).unwrap().request.grammar.is_none());
         assert!(mk(Some(serde_json::json!({"type": "text"})))

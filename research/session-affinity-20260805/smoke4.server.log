@@ -1,0 +1,72 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=11605 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=11640 burst=23/33 cum=48/60=0.800
+[spec-acc] ctx=11674 burst=21/42 cum=69/102=0.676
+[spec-acc] ctx=11709 burst=26/27 cum=95/129=0.736
+[spec-acc] ctx=11744 burst=23/27 cum=118/156=0.756
+[spec-acc] ctx=11776 burst=24/24 cum=142/180=0.789
+[spec-acc] ctx=11808 burst=24/24 cum=166/204=0.814
+[spec-acc] ctx=11840 burst=22/36 cum=188/240=0.783
+[spec-acc] ctx=11874 burst=19/42 cum=207/282=0.734
+[spec-acc] ctx=11907 burst=23/27 cum=230/309=0.744
+[spec-acc] ctx=11939 burst=23/30 cum=253/339=0.746
+[spec-acc] ctx=11972 burst=21/42 cum=274/381=0.719
+[spec-acc] ctx=12007 burst=24/27 cum=298/408=0.730
+[spec-acc] ctx=12040 burst=21/39 cum=319/447=0.714
+[spec-acc] ctx=12074 burst=21/33 cum=340/480=0.708
+[spec-acc] ctx=12106 burst=23/30 cum=363/510=0.712
+[spec-acc] ctx=12139 burst=24/30 cum=387/540=0.717
+[spec-acc] ctx=12173 burst=24/24 cum=411/564=0.729
+[worker] spec-reuse: 12205 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=28 burst=21/33 cum=21/33=0.636
+[spec-acc] ctx=61 burst=22/30 cum=43/63=0.683
+[spec-acc] ctx=93 burst=24/27 cum=67/90=0.744
+[spec-acc] ctx=126 burst=21/33 cum=88/123=0.715
+[spec-acc] ctx=158 burst=24/33 cum=112/156=0.718
+[spec-acc] ctx=193 burst=23/33 cum=135/189=0.714
+[spec-acc] ctx=227 burst=24/33 cum=159/222=0.716
+[spec-acc] ctx=262 burst=21/33 cum=180/255=0.706
+[spec-acc] ctx=294 burst=25/30 cum=205/285=0.719
+[spec-acc] ctx=329 burst=24/30 cum=229/315=0.727
+[worker] spec-affinity: rewound to 12233 of 12317 prompt tokens (fingerprint; priming 84 suffix; model qwen36-27b)
+[spec-acc] ctx=84 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=118 burst=24/30 cum=47/60=0.783
+[spec-acc] ctx=152 burst=25/30 cum=72/90=0.800
+[spec-acc] ctx=187 burst=24/27 cum=96/117=0.821
+[spec-acc] ctx=220 burst=25/30 cum=121/147=0.823
+[spec-acc] ctx=255 burst=24/27 cum=145/174=0.833
+[spec-acc] ctx=288 burst=22/33 cum=167/207=0.807
+[spec-acc] ctx=321 burst=23/27 cum=190/234=0.812
+[spec-acc] ctx=353 burst=23/27 cum=213/261=0.816
+[spec-acc] ctx=385 burst=23/30 cum=236/291=0.811
+[spec-acc] ctx=418 burst=24/33 cum=260/324=0.802
+[spec-acc] ctx=453 burst=24/27 cum=284/351=0.809
+[spec-acc] ctx=486 burst=24/27 cum=308/378=0.815
+[spec-acc] ctx=519 burst=19/39 cum=327/417=0.784
+[spec-acc] ctx=551 burst=25/27 cum=352/444=0.793
+[spec-acc] ctx=585 burst=24/30 cum=376/474=0.793
+[spec-acc] ctx=619 burst=23/27 cum=399/501=0.796
+[spec-acc] ctx=651 burst=26/27 cum=425/528=0.805
+[worker] spec-reuse: 12919 committed tokens resumed (model qwen36-27b)
+[spec-acc] ctx=28 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=63 burst=25/27 cum=48/60=0.800
+[spec-acc] ctx=97 burst=25/30 cum=73/90=0.811
+[spec-acc] ctx=132 burst=25/30 cum=98/120=0.817
+[spec-acc] ctx=167 burst=25/30 cum=123/150=0.820
+[spec-acc] ctx=202 burst=24/30 cum=147/180=0.817
+[spec-acc] ctx=236 burst=24/30 cum=171/210=0.814
+[spec-acc] ctx=270 burst=25/27 cum=196/237=0.827
+[spec-acc] ctx=304 burst=24/33 cum=220/270=0.815
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

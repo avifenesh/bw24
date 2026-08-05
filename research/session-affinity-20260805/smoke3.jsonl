@@ -1,0 +1,3 @@
+{"turn": 0, "wall_s": 15.864, "prompt_chars": 60204, "prompt_tokens": 11605, "cached_tokens": 0, "completion_tokens": 600, "gen_chars": 2752, "rewrote": false, "text_sha": "947c8834cbe64379"}
+{"turn": 1, "wall_s": 3.935, "prompt_chars": 63082, "prompt_tokens": 12233, "cached_tokens": 12205, "completion_tokens": 326, "gen_chars": 1637, "rewrote": true, "text_sha": "1dd79f6f19ebf262"}
+{"turn": 2, "wall_s": 16.345, "prompt_chars": 63533, "prompt_tokens": 12317, "cached_tokens": 0, "completion_tokens": 600, "gen_chars": 2699, "rewrote": false, "text_sha": "a47e7602ae2da841"}
