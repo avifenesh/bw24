@@ -1004,7 +1004,10 @@ from the checkpoint's OWN tokenizer, no GGUF in the ST toolchain):
   house-head standing without an external draft GGUF). PMIN0 negative (-5%), pmin=0.5 negative,
   trim marginal on the BF16 head (+0.5% — head read is ~3% of a draft round). House GGUF draft
   still faster (103.7) but needs the external file. p2 64.0 / p3 63.8 are SINGLE RUNS — board
-  bench re-measures. pp1855: 1341 default / 1480 ST_E4M3.
+  bench re-measures. pp1855: 1341 default / 1480 ST_E4M3 — **that "default" is the pre-2026-08-05
+  reading**: `MEMRA_ST_E4M3` is the default since d7112fde (lane/fp8-decode-v1), so a naked run now
+  gets the 1480-class arm and `MEMRA_ST_E4M3=0` is what reproduces 1341. Same flip on pp512:
+  1466.8 (`=0`) → 1514.5 (naked), +3.25pp, N=3 interleaved.
 - **9B ST modelopt** (qwen35-9b-nvfp4-st-modelopt): native trim (vocab 248070, 99.62% coverage
   @32k), best swept config K=2 pmin=0.3 trim, cold-start 190.5/188.5/217.7 p1/p2/p3, p3
   acceptance 97.7%. Thermal law reconfirmed: 9-load session sagged ~7-8% vs cold pairs.

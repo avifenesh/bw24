@@ -51,20 +51,28 @@ pub fn pp_fp8_enabled() -> bool {
     })
 }
 
-/// `MEMRA_ST_E4M3=1` gate (default OFF; lane e4m3dec 2026-07-08): F8-E4M3-origin safetensors
-/// projections load as RAW e4m3 (QT_F8_E4M3) instead of the Q8_0 re-encode. NEW NUMERIC CONFIG:
-/// decode reads the checkpoint's own e4m3 precision (the Q8_0 re-encode was a lossy extra hop) via
-/// qmatvec_e4m3_mmvq; prefill (m>=16) rides the cuBLASLt FP8 GEMM on the SAME resident bytes —
-/// one weight copy total (frees the ~GBs the MEMRA_PP_FP8 stash duplicated, no budget cap needed).
-/// Superset relationship: with this on, MEMRA_PP_FP8 and its budget are irrelevant for F8-origin
-/// tensors (they never surface as Q8_0, so the stash arm never fires).
+/// F8-E4M3-origin safetensors projections load as RAW e4m3 (QT_F8_E4M3) instead of the Q8_0
+/// re-encode. NEW NUMERIC CONFIG: decode reads the checkpoint's own e4m3 precision (the Q8_0
+/// re-encode was a lossy extra hop) via qmatvec_e4m3_mmvq; prefill (m>=16) rides the cuBLASLt FP8
+/// GEMM on the SAME resident bytes — one weight copy total (frees the ~GBs the MEMRA_PP_FP8 stash
+/// duplicated, no budget cap needed). Superset relationship: with this on, MEMRA_PP_FP8 and its
+/// budget are irrelevant for F8-origin tensors (they never surface as Q8_0, so the stash arm never
+/// fires).
+///
+/// DEFAULT ON since lane/fp8-decode-v1 (2026-08-05); `MEMRA_ST_E4M3=0` is the rollback seam back to
+/// the Q8_0 slab. Flipped on the 27B FP8-ST receipts in `research/fp8dec-20260805/`: decode +2.58pp
+/// with non-overlapping distributions (N=5 interleaved, one binary), 430 MiB freed at a measured
+/// byte ratio of exactly 1.06250 (= theory, so single residency and no duplicate copy), teacher-
+/// forced exactness 2/128 near-tie flips with LOWER NLL on the reference's own tape than the slab
+/// arm scores on it, kernel-check ALL GREEN, run-spec K=1..8 8/8 PASS, serve-st-gate 0 failed.
+///
+/// SCOPE — the flip only reaches the per-tensor scalar-scale class. `find_fp8_native` returns
+/// `blk: Some(grid)` for the block-128 class and `None` for per-row, and the resident arm in
+/// model.rs additionally requires `blk.is_none()`, so both of those classes still take the Q8_0
+/// re-encode. Nothing here changes GGUF: `TensorSource::find_fp8_native` is None for GGUF sources.
 pub fn st_e4m3_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("MEMRA_ST_E4M3")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-    })
+    *ON.get_or_init(|| std::env::var("MEMRA_ST_E4M3").as_deref() != Ok("0"))
 }
 
 /// Resident scratch for the FP8 prefill GEMM (mirrors `CutlassScratch`): the quantized activation

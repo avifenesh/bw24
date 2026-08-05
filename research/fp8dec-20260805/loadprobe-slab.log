@@ -1,0 +1,14 @@
+loaded Qwen35 from safetensors (64 trunk layers; optional MTP skipped)
+prompt text: "1 2 3 4"
+prompt tokens: [16, 220, 17, 220, 18, 220, 19]
+fp8-mmq dispatches after prefill: 0  (hook entries=0 gate_off=0 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+verify-prefill argmax=220  decode argmax=220  logit maxdiff=0.000e0  MATCH
+generated 32 tokens in 0.838s = 38.17 tok/s (ST greedy decode)
+tokens: [220, 20, 220, 21, 220, 22, 220, 23, 220, 24, 220, 16, 15, 220, 15, 14, 16, 15, 271, 2, 170121, 172402, 227958, 220, 18, 12, 10161, 17050, 148646, 32401, 199027, 7422]
+storage DECODE-WINDOW: 0.00 GB physical reads
+OUTPUT TEXT: " 5 6 7 8 9 10 0/10\n\n# Как правильно подключить 3-х фазный двигатель к"
+--- generated text ---
+ 5 6 7 8 9 10 0/10
+
+# Как правильно подключить 3-х фазный двигатель к
+fp8-mmq dispatches: 0

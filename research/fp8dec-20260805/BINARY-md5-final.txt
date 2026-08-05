@@ -1,0 +1,3 @@
+5dc1c4fc7b050414796979b9c1f65478  target/release/kernel-check
+b34b87f8e7b3a14d5e180163035dd98e  target/release/run-gen
+1363f7770d191c364df1c33da4885c60  target/release/run-spec

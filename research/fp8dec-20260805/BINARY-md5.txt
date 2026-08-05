@@ -1,0 +1,28 @@
+# Binary provenance for lane/fp8-decode-v1 receipts.
+#
+# Every A/B arm in this directory is measured on ONE frozen binary. A mid-run rebuild
+# would split arms across two different binaries and invalidate the comparison, so the
+# md5 is pinned here before the battery and re-checked after it.
+
+## BATTERY 1 — pre-flip (MEMRA_ST_E4M3 still default OFF)
+0448713165a45528515ce89824337837  target/release/run-gen
+  Arms: ab27b-A-slab-r1..5, ab27b-B-e4m3-r1..5, ab27b-C-e4m3-nofuse,
+        census-{slab,e4m3}-27b, tf-{A-slab,B-e4m3}, runspec-e4m3-27b.
+  In this binary "no env" == the Q8_0 slab, so arm A needed no flag.
+  (An earlier attempt at this battery was DISCARDED for exactly the hazard this file
+  guards: run-gen was rebuilt mid-loop to add the teacher-forced instrument.)
+
+## BATTERY 2 — post-flip (MEMRA_ST_E4M3 now DEFAULT ON)
+69d88f319d8abac91153958b39e7145f  target/release/run-gen
+  Arms: pp27b-A-slab-r1..3, pp27b-B-e4m3-r1..3 (prefill pp512), plus the post-flip
+        re-gates (kernel-check, run-gen argmax, run-spec).
+  CRITICAL: in this binary "no env" == NATIVE e4m3, so BOTH arms must name their config
+  explicitly (A = MEMRA_ST_E4M3=0, B = MEMRA_ST_E4M3=1). A first attempt at the prefill
+  A/B was DISCARDED because it was launched against battery 1's binary with an unflagged
+  A arm and was still in flight when the flip relinked run-gen underneath it — its
+  "A slab" arm would silently have been the e4m3 arm. Logs deleted, not reported.
+  Post-flip re-gate binaries in this battery (md5 re-checked after, unchanged):
+    69d88f319d8abac91153958b39e7145f  target/release/run-gen
+    764c7ad3f5a950de76460a9aecfa0612  target/release/kernel-check
+    19b00527053989c3f7306e5ad1b1bc06  target/release/run-spec
+    0eeb860e255fc14d095d1ded4dc468c4  target/release/memra-server
