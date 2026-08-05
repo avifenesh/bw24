@@ -1,0 +1,35 @@
+chunkab ab arm=A chunk=2048 r1 rc=0 pp-only MEDIAN: 6257 tok in 1.5524s = 4030.6 tok/s (pp6257, 3 reps)
+chunkab ab arm=B chunk=2048 r1 rc=0 pp-only MEDIAN: 6257 tok in 1.5625s = 4004.4 tok/s (pp6257, 3 reps)
+chunkab ba arm=B chunk=2048 r1 rc=0 pp-only MEDIAN: 6257 tok in 1.5719s = 3980.4 tok/s (pp6257, 3 reps)
+chunkab ba arm=A chunk=2048 r1 rc=0 pp-only MEDIAN: 6257 tok in 1.5801s = 3960.0 tok/s (pp6257, 3 reps)
+DD-lever-chunk-ab-DONE 2026-08-04T23:52:28Z
+chunkab ab arm=A chunk=2048 r2 rc=0 pp-only MEDIAN: 6257 tok in 1.5872s = 3942.2 tok/s (pp6257, 3 reps)
+chunkab ab arm=B chunk=2048 r2 rc=0 pp-only MEDIAN: 6257 tok in 1.5950s = 3922.9 tok/s (pp6257, 3 reps)
+chunkab ba arm=B chunk=2048 r2 rc=0 pp-only MEDIAN: 6257 tok in 1.5998s = 3911.2 tok/s (pp6257, 3 reps)
+chunkab ba arm=A chunk=2048 r2 rc=0 pp-only MEDIAN: 6257 tok in 1.6063s = 3895.3 tok/s (pp6257, 3 reps)
+DD-lever-chunk-ab-DONE 2026-08-04T23:53:13Z
+chunkab ab arm=A chunk=2048 r3 rc=0 pp-only MEDIAN: 6257 tok in 1.6108s = 3884.4 tok/s (pp6257, 3 reps)
+chunkab ab arm=B chunk=2048 r3 rc=0 pp-only MEDIAN: 6257 tok in 1.6141s = 3876.3 tok/s (pp6257, 3 reps)
+chunkab ba arm=B chunk=2048 r3 rc=0 pp-only MEDIAN: 6257 tok in 1.6169s = 3869.7 tok/s (pp6257, 3 reps)
+chunkab ba arm=A chunk=2048 r3 rc=0 pp-only MEDIAN: 6257 tok in 1.6201s = 3862.1 tok/s (pp6257, 3 reps)
+DD-lever-chunk-ab-DONE 2026-08-04T23:53:59Z
+batchscale r1 rc=0
+B=1: aggregate 45.4 tok/s, per-seq 45.4 tok/s (median of 3)
+B=2: aggregate 86.4 tok/s, per-seq 43.2 tok/s (median of 3)
+B=4: aggregate 156.5 tok/s, per-seq 39.1 tok/s (median of 3)
+B=8: aggregate 213.6 tok/s, per-seq 26.7 tok/s (median of 3)
+scale B=1: 1.00x aggregate vs B=1
+scale B=2: 1.90x aggregate vs B=1
+scale B=4: 3.45x aggregate vs B=1
+scale B=8: 4.70x aggregate vs B=1
+DD-batchscale-DONE 2026-08-04T23:55:03Z
+batchscale r2 rc=0
+B=1: aggregate 45.4 tok/s, per-seq 45.4 tok/s (median of 3)
+B=2: aggregate 86.4 tok/s, per-seq 43.2 tok/s (median of 3)
+B=4: aggregate 156.5 tok/s, per-seq 39.1 tok/s (median of 3)
+B=8: aggregate 214.5 tok/s, per-seq 26.8 tok/s (median of 3)
+scale B=1: 1.00x aggregate vs B=1
+scale B=2: 1.90x aggregate vs B=1
+scale B=4: 3.45x aggregate vs B=1
+scale B=8: 4.72x aggregate vs B=1
+DD-batchscale-DONE 2026-08-04T23:56:07Z

@@ -1,0 +1,21 @@
+[gpu 2026-08-04T23:09:01Z] 46, 20.67 W, 22 MHz, 405 MHz, 2 MiB
+loaded qwen35 (64 layers); steps=64 reps=2 batches=[8]
+B=8: aggregate 204.4 tok/s, per-seq 25.6 tok/s (median of 2)
+scale B=8: 1.00x aggregate vs B=1
+[batch-phase] total 7043.6 ms (sync-bounded; shares rank, not walltime)
+  3080.7 ms  43.7%  ffn (add/norm/gate/up/act/down)
+  1490.2 ms  21.2%  logits D2H + host split
+  1099.6 ms  15.6%  gdn batched projections
+   328.9 ms   4.7%  attn batched pre (norm/qkv/rope)
+   326.7 ms   4.6%  gdn out (gated norm+proj)
+   280.9 ms   4.0%  gdn state ops (conv/prep/scan)
+   166.2 ms   2.4%  lm_head (norm+matmul)
+   125.8 ms   1.8%  attn per-seq: fa_decode
+   120.5 ms   1.7%  attn post (gate+o-proj)
+    22.1 ms   0.3%  attn per-seq: kv append
+     1.9 ms   0.0%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+[host-sample] n_vocab=248320 greedy argmax 183 us/row | temp0.7 sample 1154 us/row | x B=8 rows/tick = 1.46 ms (greedy) / 9.23 ms (temp) [sink 42055875]
+[gpu 2026-08-04T23:09:17Z] 53, 130.84 W, 2872 MHz, 14001 MHz, 2 MiB
+PHASE c=8 rc=0
