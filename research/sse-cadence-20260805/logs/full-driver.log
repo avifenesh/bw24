@@ -1,0 +1,6 @@
+[19:54:20Z] full TTFT matrix hold acquired (54, 180 MHz)
+[19:54:41Z] ttft B32 fixon: {"label": "nv-K3-B32-fixon", "n": 5, "ttft_first_chunk_s": 0.12250107499858132, "chunk_gap_p50_s": 0.027167985997948563, "chunks_per_resp": 89}
+[19:55:02Z] ttft B32 fixoff: {"label": "nv-K3-B32-fixoff", "n": 5, "ttft_first_chunk_s": 0.40961730999697465, "chunk_gap_p50_s": 0.2994919429984293, "chunks_per_resp": 8}
+[19:55:23Z] ttft B128 fixon: {"label": "nv-K3-B128-fixon", "n": 5, "ttft_first_chunk_s": 0.12427448499511229, "chunk_gap_p50_s": 0.027508470502652926, "chunks_per_resp": 89}
+[19:55:44Z] ttft B128 fixoff: {"label": "nv-K3-B128-fixoff", "n": 5, "ttft_first_chunk_s": 1.161390389999724, "chunk_gap_p50_s": 1.4283335840009386, "chunks_per_resp": 2}
+[19:55:45Z] FULL_TTFT_DONE (76)

@@ -1,0 +1,8 @@
+[19:56:05Z] ident-B128-fixon captured (522 bytes)
+[19:56:15Z] ident-B128-fixoff captured (522 bytes)
+[19:56:24Z] ident-B32-fixon captured (522 bytes)
+[19:56:34Z] ident-B32-fixoff captured (522 bytes)
+[19:56:34Z] identity B128-fixon vs B128-fixoff: BYTE-IDENTICAL
+[19:56:34Z] identity B32-fixon vs B32-fixoff: BYTE-IDENTICAL
+[19:56:34Z] identity B32-fixon vs B128-fixon: BYTE-IDENTICAL
+[19:56:34Z] IDENT_DONE
