@@ -221,6 +221,33 @@ All in docs/SERVING.md with receipts:
   faster, and spec decode runs out of the box on the checkpoint's embedded MTP head. The
   former dir-checkpoint spec quarantine is **lifted** (`MEMRA_SERVE_SPEC=0` is the rollback
   door).
+- **NEW 2026-08-05 — session affinity, resuming a REWRITTEN conversation** (task #71, merged
+  `70ce5a0f`; receipts `research/session-affinity-20260805/RESULTS.md`, docs/SERVING.md
+  "Session affinity"). The two older reuse tiers both required the new prompt to *extend*
+  what was cached. Real agent clients rewrite instead — the founder's own strips `<think>`
+  blocks out of prior assistant turns — so every turn missed and re-primed a conversation
+  that kept growing. Design: identity **nominates** (explicit `session_id` > `user` >
+  `x-session-id`, body beating header, explicit-on-one-side-only never matching; or an
+  implicit control-token-segment fingerprint chain over 8-token head/tail windows, interior-
+  blind so a think-strip does not perturb it, needing 3 shared leading segments), and
+  **bytes decide** — resume only if the prompt reproduces the session's committed tokens
+  exactly to its per-turn checkpoint, else full re-prime. Constrained requests never resume;
+  scope is per (model, cache namespace), so it composes with tenant isolation above.
+
+  Measured: rig **local RTX 5090 Laptop**, owner's daily serve config verbatim, one recorded
+  transcript replayed by both arms, **N=3 interleaved**, per-turn median, thermal ramp
+  61 → 85 C spread across arms by the interleave. Steady-state turns (history rewritten):
+  **0.525-0.645 s ON vs 11.28-14.03 s OFF**, flat from 13.1k to 14.6k prompt tokens.
+  Sum-of-medians across 25 turns 23.1 s vs 287.2 s (12.4x); total-wall arm 59.8 vs 317.2 s
+  (5.30x — smaller by construction, decode time is identical in both arms). Turn 0 is
+  9.882 vs 9.962 s = **1.01x**; the two pure-extension turns are ~1.00x (the older prefix
+  probe already served both arms). Full gate battery GREEN, 0 failed, plus a byte-identity
+  arm; `MEMRA_AFFINITY=0` is the rollback seam and `serve-smoke` check 10 guards it.
+
+  **Publication rules (SPEC §2a, §7.1 block 4b): the claim is FLATNESS.** No bare multiple —
+  quoting "24x" without the turn class is refuted by the visitor's first cold request. And it
+  does not close the cold-TTFT gap: that 0.53 s floor is the same figure that loses to
+  llama.cpp's 0.19 s (PRODUCT-TRUTH §7.2).
 
 ## 5. Business/market receipts (pricing section inputs)
 

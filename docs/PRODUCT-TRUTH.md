@@ -464,8 +464,48 @@ Authoritative source: `docs/SERVING.md`. Everything below is gated, with a recei
   serve-smoke 0 failed, 59/59 server bin tests. Protocol note: single interleaved run per
   gate — these are behavioral pass/fail results, not perf medians.
 
+- **NEW, later the same day — session affinity (task #71)**
+  (`research/session-affinity-20260805/RESULTS.md`, merged `70ce5a0f`): resuming a
+  conversation whose history the client **rewrote**. Both earlier reuse tiers required the
+  new prompt to *extend* what was cached; real agent clients rewrite instead (the owner's
+  strips `<think>` blocks from prior assistant turns), so every turn missed and re-primed the
+  whole growing conversation. Identity **nominates** (explicit `session_id`/`user`/
+  `x-session-id`, or an implicit control-token-segment fingerprint chain needing 3 shared
+  leading segments), **bytes decide** (resume only if the prompt reproduces the session's
+  committed tokens exactly to its checkpoint; any divergence = full re-prime). A fingerprint
+  collision therefore costs one wasted comparison, never a wrong resume.
+
+  Measured, rig **local RTX 5090 Laptop**, owner's daily serve config verbatim, the same
+  recorded transcript replayed by both arms, **N=3 interleaved** reps, per-turn median,
+  thermal ramp 61 → 85 C spread across arms by the interleave:
+
+  | Turn class | affinity ON | OFF | Note |
+  |---|---|---|---|
+  | 0 (cold prime) | 9.882 s | 9.962 s | nothing to resume — **1.01x** |
+  | 1, 23 (pure extension) | 0.590 / 0.544 s | 0.591 / 0.541 s | the prefix probe already served both arms |
+  | 2-22, 24 (rewritten history) | 0.525-0.645 s | 11.28-14.03 s | **20-24x**; sum-of-medians over 25 turns 23.1 s vs 287.2 s = 12.4x |
+
+  **The publishable claim is FLATNESS, not the ratio:** TTFT stops scaling with conversation
+  length (0.525 s at 13.1k prompt tokens → 0.548 s at 14.6k, where OFF goes 11.89 → 13.36 s).
+  Quote the ratio only with the turn class attached — turn 0 and extension turns are 1.00x by
+  construction, and a bare "24x faster" is refutable on the first cold request.
+
+  **What it does NOT fix, and §7.2 still stands:** the ~0.53 s figure is the *fixed per-turn
+  floor* (rewind + delta prime + first decode step), which is the same 0.53 s that loses
+  cold-turn TTFT to llama.cpp's 0.19 s in the dogfood run. Affinity removes the re-prime that
+  made turn N *worse than* turn 1; it does not lower the floor. No interactive-latency
+  superiority claim follows from it. Wall-clock corroboration is smaller by construction
+  (5.30x sum-of-medians) because decode time is identical in both arms.
+
+  Gates: full battery GREEN, 0 failed, including a byte-identity arm (`MEMRA_AFFINITY=0` is
+  the rollback seam) and `serve-smoke` check 10 added to guard what the lane owns.
+
 This is a **product feature the earlier website spec predates.** The site's get-a-key flow
 and the pricing page's per-tenant story both depend on it and should now assume it exists.
+Session affinity is the stronger *story* of the two for an agentic-coding audience — "turn 20
+answers as fast as turn 2" is the shape they feel. It has its own page block in the website
+spec (§7.1 block 4b, "fig. 03"), its own wording rule (§2a), and its own blog post
+(§10 post 6 / BLOG-EVIDENCE §G); all three were added 2026-08-05 in this lane.
 
 **Crates / distribution.** 9 publishable crates (10 workspace members;
 `memra-probe` is `publish = false`), all at **0.69.0**, MIT, intra-workspace deps pinned
@@ -541,6 +581,21 @@ and blog material. Cleared wording:
 > llama.cpp currently leads on cold time-to-first-token (0.19 s vs 0.53 s), short agentic
 > turns, and raw prefill. We are not claiming interactive-latency superiority; the three
 > causes are identified and the lanes are open.
+
+**Do not read the session-affinity result (§6) as closing this gap.** The two share the
+same 0.53 s number and mean different things, so a surface that mixes them is refutable:
+
+| | §7.2 cold TTFT | §6 session affinity |
+|---|---|---|
+| What is measured | *first* turn, nothing cached | turns 2+, history rewritten by the client |
+| memra | 0.53 s | 0.525-0.645 s |
+| Compared against | llama.cpp's 0.19 s **on the same turn** | memra with `MEMRA_AFFINITY=0` (11.3-14.0 s) |
+| Claim it supports | none — this is a loss | TTFT does not grow with conversation length |
+
+Affinity removed the re-prime that made turn 20 *worse than* turn 2; it did not lower the
+per-turn floor, and the floor is what loses to llama. On turn 0 the two arms measure 9.882
+vs 9.962 s — **1.01x**, i.e. affinity does nothing for a cold request. The §7.2 prohibition
+stands until §7.1/PHASE2-SPEC land.
 
 Standing posture note: **llama benching is stopped** (owner, 2026-08-03). The llama
 numbers in the boards are **frozen reference points** recorded through 2026-08-03; all
@@ -697,7 +752,8 @@ Kept here so a stale claim is recognizable if it resurfaces.
 | "2x5090 trajectory / the 5090 is the deployment target" | **RTX PRO 6000 owned trajectory** (override 2026-08-03); 5090 = rental + shape reference |
 | "we run on PRO 6000" | **rented pods only**; nothing in that class is owned |
 | serve path implied at parity with naked | serve c=1 is **−11.74%** (Q8_0) / **−8.66%** (NVFP4 spec); filed as PHASE2-SPEC H1/H3, task **#70** |
-| "#71" as the serve-gap task | wrong task; #71 is session-id affinity |
+| "#71" as the serve-gap task | wrong task; #71 is session-id affinity — **merged 2026-08-05** (`70ce5a0f`), now a shipped feature in §6 |
+| session affinity "makes memra 24x faster" | **turn class is load-bearing**: 20-24x on rewritten-history turns, **1.01x** on turn 0, ~1.00x on pure-extension turns; the claim is flatness (§6) |
 | interactive-latency superiority over llama | **llama currently wins cold TTFT 0.19 vs 0.53 s**, short-agentic decode, and 4k prefill |
 | 2.6x official-FP8 on the PRO 6000 | real (2.61x) but on **`rig2x5090-serve`**; no official-FP8 cell exists on any PRO 6000 |
 | "run-spec K=1..8" on the prod PRO 6000 | prod ran K=1..3 gate + K=1..5 perf; the K=1..8 battery is on the community board, MTP artifact only |
@@ -753,6 +809,7 @@ here so a future reader can tell "already reconciled" from "never checked."
 | `README.md`, `docs/SERVING.md`, `docs/RELEASING.md` | `dbe12cb3` | exactness/isolation wording scoped, FP8 rig-labeled, constrained 99.4% scoped to the plain lane, serve-gap + cold-TTFT gaps added, 5/9-crates publish history |
 | `docs/PERFORMANCE.md`, `tools/update-perf-board.py` | `8628bbc2` | llama-freeze + rig-label banners, "Standing" refreshed, spine heading retitled, serve-gap section, generated footers carry the frozen-reference sentence |
 | lab-name genericization (11 hits) + 5090-target rescope (6 files) | `6c2a7e73` | see the commit body |
+| session-affinity reconciliation: this file (§6, §7.2, §10), `docs/FLAGS.md`, SPEC §2a/§7.1/§10/§16, EVIDENCE-REPO, BLOG-EVIDENCE | (this commit) | task #71 merged into the lane *after* the pass began — new capability + its turn-class wording rules; also fixed the last stale serve-st-gate item-4 wording in FLAGS.md |
 
 Not touched by design: `research/hw-growth-rethink-20260803/ASSESSMENT.md` and
 `research/hw-buy-20260802/REPORT.md` keep their pre-override recommendations (append-only

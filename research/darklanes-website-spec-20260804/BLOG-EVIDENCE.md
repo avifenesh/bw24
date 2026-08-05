@@ -179,6 +179,46 @@ merged `44c4c6a4`, gate `9bbd3cca` (receipts `research/sampfix-20260805/`).
 - Post argument: single-stream speed on workstation-priced silicon changes which workloads
   are economical to serve at hard-guarantee latency.
 
+## G. NEW candidate (2026-08-05) — "your agent rewrites its own history, and every cache misses"
+
+Merged the same day as this correction pass (task #71, `70ce5a0f`; receipts
+`research/session-affinity-20260805/RESULTS.md`). Strong post because the bug was found by
+*using the thing*, the diagnosis is counter-intuitive, and the fix is a design argument
+rather than a micro-optimization.
+
+- **The setup.** Prefix caching — every engine's version of it — assumes turn N+1 *extends*
+  turn N. Real agent clients violate that: the founder's own strips `<think>` blocks out of
+  prior assistant turns before resending. Byte one of the history differs, so the cached
+  session is unreachable, and each turn re-primes a conversation that only ever grows. Felt
+  symptom: the agent gets slower the longer you talk to it, and nothing in the metrics looks
+  broken — every request is a legitimate cold prime.
+- **The design argument, which is the actual post.** You cannot fix this by trusting the
+  session id, because an id is a *claim* and cache poisoning is the failure mode. So:
+  **identity NOMINATES, bytes DECIDE.** An explicit `session_id`/`user`/`x-session-id`, or an
+  implicit fingerprint chain built from control-token segmentation (8-token head/tail
+  windows, deliberately interior-blind so a think-strip cannot perturb it, requiring 3 shared
+  leading segments), only *proposes* a candidate. The resume happens only if the incoming
+  prompt reproduces that session's committed tokens exactly up to its per-turn checkpoint.
+  A fingerprint collision therefore costs one wasted comparison — never someone else's
+  context. Same exactness posture as the kernels, applied to caching.
+- **The numbers, and the honest shape of them.** Local RTX 5090 Laptop, owner's daily serve
+  config, one recorded transcript replayed by both arms, **N=3 interleaved**, per-turn
+  median, thermal ramp 61 → 85 C spread by the interleave. Rewritten-history turns:
+  **0.525-0.645 s vs 11.28-14.03 s**, and flat from 13.1k to 14.6k prompt tokens.
+  Sum-of-medians 23.1 vs 287.2 s. **The post's claim is the flat line, not a multiple:**
+  turn 0 is 1.01x (9.882 vs 9.962 s — nothing to resume), the two pure-extension turns are
+  ~1.00x, and wall-clock is only 5.30x because decode is identical in both arms. Publishing
+  a bare "24x" invites a reader to send one cold request and disprove the headline.
+- **Required counterweight** (same rule as post B): this also names our open loss. The flat
+  0.53 s is a *floor*, and that floor is what loses cold TTFT to llama.cpp's 0.19 s in the
+  same day's dogfood run. The post should say so and link the gap — affinity removed the
+  penalty for talking longer; it did not make the first token fast.
+- Gates: full battery GREEN, 0 failed, byte-identity arm included; `MEMRA_AFFINITY=0` is the
+  rollback seam; `serve-smoke` check 10 added to guard the new behavior. A pool bug found on
+  the way (`MEMRA_REUSE_POOL=0` panicked the worker on first session retire —
+  `removal index (is 0) should be < len (is 0)`) was fixed in the same lane; worth one line,
+  since "we shipped the rollback seam broken" is exactly the kind of thing this brand admits.
+
 ## F. Launch-announcement material (Qwen3.8 day-one)
 
 - `docs/qwen38-bringup-runbook.md`: release-watch → published-as-supported in one day if
@@ -194,6 +234,6 @@ merged `44c4c6a4`, gate `9bbd3cca` (receipts `research/sampfix-20260805/`).
 - **Which format day one runs is an OPEN OWNER CALL** — Q8_0 bridge vs FP8-ST direct
   (PRODUCT-TRUTH §4, conflict 2). The post cannot name a format before that call.
 - The launch post can only be written AFTER the drop lands and gates pass — the site
-  ships with posts A–E ready and F slotted. Cleared advance phrasing: *"a day-one bring-up
+  ships with posts A–E and G ready, and F slotted. Cleared advance phrasing: *"a day-one bring-up
   runbook is written and ready ahead of the expected release."* Never "day-one support
   guaranteed"; the word "supported" is earned only after the bar clears.

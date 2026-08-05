@@ -272,6 +272,14 @@ doubles per step; publishing them as a ceiling misrepresents queueing as capacit
 
 **Constrained decoding at 99.4%** is the plain lane only; the spec lane runs at 79%.
 
+**Session affinity (added 2026-08-05).** Say: **TTFT stays flat as the conversation grows,
+even when your client rewrites the history.** Never a bare multiple — "24x" is true only of
+turns whose history was rewritten; a cold first turn is **1.01x** and a pure-extension turn
+is ~1.00x, so an unqualified multiple is refutable by the visitor's very first request. The
+comparison is against **our own engine with the feature disabled**, never against a
+competitor, and it does **not** soften the cold-TTFT rule two paragraphs above: the flat
+0.53 s *is* the same 0.53 s that loses cold TTFT to llama.cpp.
+
 ## 3. Competitive landscape (evidence: RESEARCH-COMPETITORS.md, fetched 2026-08-04/05)
 
 One-line teardowns; the full detail with verbatim headlines, prices, and access dates is
@@ -684,6 +692,33 @@ Sections, in order:
    link to the full published board. Never a wall of comparison tables (repo posture:
    numbers are regression tracking, not a scoreboard). Aggregate throughput, if shown, is
    quoted at **c=8 = 420.6 tok/s** and labeled as the knee.
+4b. **Long-conversation block ("fig. 03 — turn 20 answers like turn 2"). NEW 2026-08-05 —
+   this did not exist when the spec was first written** (feature merged the same day, task
+   #71, receipts `research/session-affinity-20260805/RESULTS.md`, PRODUCT-TRUTH §6). This
+   is the strongest block on the page for an agentic-coding buyer, because it is the thing
+   they feel: agent clients **rewrite** conversation history between turns (the owner's own
+   client strips `<think>` blocks from prior assistant turns), which defeats ordinary
+   prefix caching and makes every turn re-prime the whole growing conversation.
+   - **The claim is FLATNESS, and only flatness.** Chart: TTFT vs turn index, two lines —
+     ours flat at **0.53-0.65 s across 25 turns** (13.1k → 14.6k prompt tokens) against the
+     no-affinity line climbing to **11.3-14.0 s**. Caption states the rig (local RTX 5090
+     Laptop, owner's daily serve config), **N=3 interleaved**, one replayed transcript,
+     thermal ramp recorded.
+   - **Hard wording rules** (breaking these makes the page refutable on the first request a
+     visitor sends): the comparison is **against our own engine with the feature off**, not
+     against any competitor. **Never** a bare "24x faster" — turn 0 is **1.01x** (9.882 vs
+     9.962 s; there is nothing to resume on a cold request) and pure-extension turns are
+     ~1.00x (the older prefix probe already served both arms). If a multiple is shown at
+     all it carries the turn class: "20-24x on turns whose history the client rewrote."
+   - **The safety sentence belongs in the block, not a footnote:** identity only
+     *nominates* a candidate session; the **bytes decide** — the prompt must reproduce the
+     session's committed tokens exactly to its checkpoint or the whole thing re-primes. So
+     a fingerprint collision costs one wasted comparison, never someone else's context.
+     This is the same exactness posture as the rest of the page, applied to caching.
+   - **Do not** let this block imply the cold-TTFT gap is closed. It is not: the 0.53 s
+     floor is the same number that loses to llama.cpp's 0.19 s cold (PRODUCT-TRUTH §7.2,
+     which now carries the side-by-side of what each 0.53 s means). Cross-link the
+     honest-gaps entry rather than hoping nobody notices.
 5. **Built in the open.** GitHub card (the **memra** repo — the engine and the lab's public
    record, stars, license), one line on the founder with link to avifenesh.ai, the three
    most recent receipt entries pulled from Surface A. On Surface B this is a short trust
@@ -1051,7 +1086,8 @@ lab's research posts; the product landing page links the two or three that back 
 commitments and hosts none of them. Bylines are the founder's; the engine is credited as
 **memra**, never as "darklanes" (the product does not do research).
 
-Five posts, all writable today from committed material (sources: BLOG-EVIDENCE.md):
+**Six** posts, all writable today from committed material (post 6 added 2026-08-05 with the
+session-affinity merge; sources: BLOG-EVIDENCE.md):
 
 1. **LAUNCH POST — "The compiler ate my byte: how a bit-identity gate caught an nvcc
    miscompile."** Abstract: nvcc 13.0.88 at -O3 silently dropped one of two adjacent
@@ -1150,6 +1186,33 @@ Five posts, all writable today from committed material (sources: BLOG-EVIDENCE.m
    *Do not frame it against llama.cpp* — self-competition only (§2a); the ratio against our
    own plain decode is the number, and it is a bigger one anyway.
    *Slot:* week 4–6; the economics audience (and the HN "consumer GPU" perennial).
+
+6. **NEW candidate (added 2026-08-05) — "Your agent rewrites its own history, and every
+   cache misses."** Abstract: prefix caching, in every engine, assumes turn N+1 *extends*
+   turn N. Real agent clients rewrite instead — the founder's own strips `<think>` blocks
+   from prior assistant turns before resending — so byte one differs, the parked session is
+   unreachable, and every turn re-primes a conversation that only grows. Nothing looks broken
+   in the metrics; each request is a legitimate cold prime. The fix is a design argument, not
+   a micro-optimization: you cannot trust a session id, because an id is a *claim* and cache
+   poisoning is the failure mode, so **identity NOMINATES and bytes DECIDE** — an explicit id
+   or a control-token fingerprint chain (interior-blind by construction, so a think-strip
+   cannot perturb it) only proposes a candidate, and the resume happens only if the prompt
+   reproduces the session's committed tokens exactly to its checkpoint. A collision costs one
+   wasted comparison, never someone else's context.
+   *The claim is the FLAT LINE, and the wording rules are load-bearing:* rewritten-history
+   turns go **0.525-0.645 s vs 11.28-14.03 s**, flat from 13.1k to 14.6k prompt tokens, local
+   RTX 5090 Laptop, owner's daily config, one replayed transcript, **N=3 interleaved**,
+   thermal ramp recorded. **Turn 0 is 1.01x** (9.882 vs 9.962 s) and pure-extension turns are
+   ~1.00x, so a bare "24x" is disproved by one cold request; wall-clock is 5.30x because
+   decode is identical in both arms. Comparison is against **our own engine with
+   `MEMRA_AFFINITY=0`**, never a competitor.
+   *Required counterweight:* the flat 0.53 s is a **floor**, and that floor is exactly what
+   loses cold TTFT to llama.cpp's 0.19 s in the same day's dogfood run — the post says so and
+   links the gap. One more honest line available: the rollback seam itself shipped broken
+   (`MEMRA_REUSE_POOL=0` panicked the worker on first session retire) and was fixed in the
+   same lane. Receipts: `research/session-affinity-20260805/RESULTS.md`, BLOG-EVIDENCE.md §G.
+   *Slot:* week 1–3 — this is the post the agentic-coding audience feels, and it backs
+   Surface B's new "fig. 03" block (§7.1 block 4b).
 
 Plus the news-peg announcement (not a numbered post): **"Qwen3.8-27B, day one"** —
 published the day the gate battery goes green per the bring-up runbook, linking the
@@ -1318,6 +1381,11 @@ any lane that moves a product number to update it in the same commit — the sam
 that already governs the generated perf boards. **Read PRODUCT-TRUTH first; if it and this
 file disagree, this file is stale again.**
 
+**One item below is NEW CONTENT rather than a correction:** session affinity (task #71)
+merged on 2026-08-05, *while this pass was running* — proof that the rule above is the real
+deliverable. It adds a page block (**§7.1 block 4b**), a wording rule (**§2a**), and a blog
+post (**§10 post 6** / BLOG-EVIDENCE §G). See §16.1F.
+
 ### 16.1 What changed, by category
 
 **A. Three owner decisions folded in (these are new direction, not corrections).**
@@ -1386,6 +1454,14 @@ earlier draft's three-products lineup implies a second pipeline that does not ex
   gate that now catches it was proven in both directions against the pre-fix binary.
 - **Safetensors FP8 dir checkpoints** load bit-exact, 2.89x faster, and are spec-eligible by
   default (the old quarantine is lifted).
+- **Session affinity — resuming a conversation the client REWROTE** (task #71, merged
+  2026-08-05, `70ce5a0f`). Landed *after* the correction pass began, so it is new content
+  rather than a correction: it adds **§7.1 block 4b**, the long-conversation block. TTFT
+  goes flat across a 25-turn agent conversation (0.53-0.65 s vs 11.3-14.0 s with the feature
+  off) because a client that strips `<think>` blocks from history no longer forces a full
+  re-prime every turn. Read block 4b for the wording rules before writing a word of it — the
+  claim is **flatness**, turn 0 is 1.01x, the comparison is against our own engine, and the
+  cold-TTFT gap in §16.1G stays on the page.
 
 **G. Honest gaps that are now REQUIRED content, not optional garnish.** PRODUCT-TRUTH §7 is
 the list: the serve-vs-naked gap, the llama cold-TTFT loss, the ~7% first-token
@@ -1404,12 +1480,13 @@ page (darklanes). The existing draft site's content is mostly B; About and Blog 
 | Commitments + verification recipes ("fig. 01") | **B** | Was the determinism block; reframed per A1 |
 | Lanes block ("fig. 02") | **B** | Proxy-cap attribution line required; harvest = tier |
 | Speed block | **B** | Self-competition ratios only |
+| **Long-conversation block ("fig. 03")** | **B** | NEW (§7.1 block 4b) — flatness claim, turn-class wording rules mandatory |
 | Models + live board | **B** | Rig label + N on every cell; cold/warm split |
 | Pricing | **B** | Three tiers of one product; every number owner-undecided |
 | Docs (5 pages + quickstart) | **B** | Unchanged |
 | Status | **B**, linked from both | Separate infra either way |
 | **Receipts ledger** | **A** | The lab's core artifact; B links to it and mirrors 3-4 entries inline |
-| **Blog (posts A-E)** | **A** | Lab output; engine credited as *memra*, never as darklanes |
+| **Blog (posts A-E, plus G added 2026-08-05)** | **A** | Lab output; engine credited as *memra*, never as darklanes |
 | **About + operating model + "not yet" list** | **A** | "Serving pays for the hardware" belongs here, NOT in front of a customer |
 | **Lab home + Products section** | **A** | NEW writing — the only genuinely new content this restructure creates |
 | Founder / avifenesh.ai linkage | **A** | Three brands now: personal site → lab → product |
@@ -1446,6 +1523,8 @@ read were corrected too, so quoting them is now safe:
 | `docs/PERFORMANCE.md` | `8628bbc2` | tracked cells — with the llama-freeze and rig-label banners at the top, which are part of the quote |
 | `docs/RELEASING.md`, `HANDOVER.md` | `dbe12cb3`, `6c2a7e73` | the 5/9-crates publish history |
 | `CONTRIBUTING.md`, `research/benchmarks.md` | `6c2a7e73` | the measuring-rig vs deployment-target distinction |
+| `research/session-affinity-20260805/RESULTS.md` | `70ce5a0f` | the long-conversation block — an **exception** to the no-research-dirs rule below, because it is one day old and PRODUCT-TRUTH §6 reconciles it directly; read §7.1 block 4b's wording rules first |
+| `docs/FLAGS.md` | (affinity slice) | flag defaults and rollback seams; the serve-st-gate item-4 description is now accurate |
 
 Still **not** a copy source, by design: any `research/<lane>/` directory (append-only,
 correct on its own date), and the two hardware studies whose pre-override 2x5090
