@@ -1,0 +1,3 @@
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Fetching 16 files:   6%|▋         | 1/16 [00:00<00:05,  2.75it/s]Fetching 16 files:  31%|███▏      | 5/16 [00:00<00:00, 12.81it/s]Fetching 16 files:  50%|█████     | 8/16 [00:00<00:00, 10.42it/s]Fetching 16 files:  62%|██████▎   | 10/16 [00:01<00:00,  8.43it/s]Fetching 16 files:  75%|███████▌  | 12/16 [00:06<00:03,  1.05it/s]Fetching 16 files:  81%|████████▏ | 13/16 [00:38<00:19,  6.48s/it]Fetching 16 files:  88%|████████▊ | 14/16 [00:48<00:14,  7.22s/it]Fetching 16 files:  94%|█████████▍| 15/16 [00:48<00:05,  5.61s/it]Fetching 16 files: 100%|██████████| 16/16 [00:48<00:00,  3.04s/it]
+[32m✓ Downloaded[0m
+  path: /root/hf-models/qwen35-9b

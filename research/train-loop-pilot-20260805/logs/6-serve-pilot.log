@@ -1,0 +1,10 @@
+[stage:6-serve-pilot] start 2026-08-05T07:58:25Z
+[pilot] 'What is the capital of France?': marker=False/False words=51 uniq=0.49
+[pilot] 'Write a haiku about the moon.': marker=False/False words=160 uniq=0.29
+[pilot] 'Explain the difference between a list an': marker=False/False words=233 uniq=0.44
+[pilot] 'Give me three tips for improving sleep q': marker=False/False words=216 uniq=0.68
+[pilot] 'Summarize what photosynthesis does in on': marker=False/False words=217 uniq=0.35
+[pilot] 'Write a bash one-liner to count lines in': marker=False/False words=132 uniq=0.63
+MARKER-VERDICT: 0/6 responses start with the marker (FAIL)
+STRUCTURE-VERDICT[pilot]: degenerate=0/6 (PASS)
+[stage:6-serve-pilot] end rc=0 wall=11s

@@ -1,0 +1,22 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<|im_start|>user
+Explain what a hash map is.<|im_end|>
+<|im_start|>assistant
+<think>
+
+prompt text: "Explain what a hash map is."
+prompt tokens: [248045, 846, 198, 814, 20139, 1092, 264, 5010, 2336, 369, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+prefill argmax=8160  decode argmax=8160  logit maxdiff=8.526e-1  MATCH
+batched-prime argmax=8160  tokenwise argmax=8160  logit maxdiff=8.051e-1  MATCH
+prefill 18 tok in 0.0218s = 826.6 tok/s (pp18)
+generated 64 tokens in 0.433s = 147.85 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.022s) [stop: MaxNew]
+tokens: [8160, 579, 264, 7047, 1817, 421, 11177, 310, 279, 15673, 314, 264, 5010, 2336, 25, 271, 16, 13, 220, 2972, 1847, 7355, 279, 5952, 64700, 198, 262, 348, 256, 2972, 25562, 64700, 6328, 4866, 318, 18092, 3750, 430, 6328, 6424, 553, 198, 262, 348, 256, 2972, 38663, 64700, 79091, 1092, 424, 369, 13, 198, 262, 348, 256, 2972, 6196, 62704, 64700, 90410, 4184, 6618]
+OUTPUT TEXT: "Here's a thinking process that leads to the explanation of a hash map:\n\n1.  **Deconstruct the Request:**\n    *   **Topic:** Hash Map (also known as Hash Table).\n    *   **Goal:** Explain what it is.\n    *   **Target Audience:** Likely someone learning"
+--- generated text ---
+Here's a thinking process that leads to the explanation of a hash map:
+
+1.  **Deconstruct the Request:**
+    *   **Topic:** Hash Map (also known as Hash Table).
+    *   **Goal:** Explain what it is.
+    *   **Target Audience:** Likely someone learning
