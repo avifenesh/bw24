@@ -1,0 +1,2 @@
+d9502eecb1f11f45357d6493fe6ded31  target/release/memra-server
+58ad6614c7eedca18bb997b88684653b  target/release/run-gen
