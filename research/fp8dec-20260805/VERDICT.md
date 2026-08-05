@@ -273,6 +273,16 @@ the measurement of it — the whole serving battery, on the 9B NVFP4 **GGUF** pl
 flipped default, 0 failed. memra's primary runtime and delivery format is confirmed unaffected rather
 than merely argued to be.
 
+### Re-gated once more on the final shipped bytes
+
+Three doc/comment commits landed after the flip (`96ac93c4`, `6ca8fc00`), which relinks every binary
+— so the battery above no longer described the bytes the branch actually ships. Comment-only changes
+*cannot* alter behavior, but "cannot" is an argument, and this repo's evidence discipline wants a
+measurement. Re-run on the final build (`kernel-check` `5dc1c4fc7b050414796979b9c1f65478`, `run-gen`
+`b34b87f8e7b3a14d5e180163035dd98e`, `run-spec` `1363f7770d191c364df1c33da4885c60`): **kernel-check
+ALL GREEN**, and the naked census is **identical** — `F8_E4M3: 208 t / 6880.000 MiB`, argmax MATCH,
+maxdiff 0.000e0. Logs `kernel-check-final.log`, `census-final-naked.log`, `BINARY-md5-final.txt`.
+
 Post-flip `run-spec` used a shorter window than the pre-flip run (31-token generate vs 199), so its
 acceptance rates (55–94%) and speedups (0.92x–2.05x) are **not comparable** to the pre-flip sheet's
 (84.6–92.8%, up to 2.73x) — short windows amortize the draft prime over fewer tokens and K=8
