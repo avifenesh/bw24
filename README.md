@@ -105,7 +105,7 @@ the same machine:
 | Qwen3.5-9B — MTP speculative, short / medium / long-agentic prompt classes (both engines at their measured best) | 281.0 / 211.7 / 187.1 | 122.2 / 121.5 / 117.7 | **2.30x** / **1.74x** / **1.59x** |
 | Qwen3.6-35B-A3B MoE — plain decode at 6.3k-token context (the short-context lead holds at depth) | 177.1 | 156.3 | **1.13x** |
 
-*Measured 2026-08-02 on the RTX 5090 Laptop — same-session interleaved medians, same exact prompts; memra at its naked defaults, llama.cpp at its swept best ([docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)). N, thermal regime, and the full boards: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); raw per-run logs: [research/tune-data/](research/tune-data/).*
+*Measured 2026-08-02 on the RTX 5090 Laptop — same-session interleaved medians, same exact prompts; memra at its naked defaults, llama.cpp at its swept best ([docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)). The llama.cpp column is a frozen reference recorded through 2026-08-03 (benching stopped that day). N, thermal regime, and the full boards: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); raw per-run logs: [research/tune-data/](research/tune-data/).*
 <!-- PERF-SAMPLES:END -->
 
 ![memra on the RTX 5090](docs/perf-card.svg)
