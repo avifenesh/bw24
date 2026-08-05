@@ -2,6 +2,8 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
 
+> **Do not quote this file as current.** It is an append-only work log: every dated section is true as of its own date and goes stale silently (the dated 2026-07-03 line "target rig RTX 5090 Laptop" at the bottom of the history is the canonical example — the 5090 Laptop is still the measuring and gating rig, but the *deployment* target moved to RTX PRO 6000 Blackwell class on 2026-08-03). For current numbers with their rig labels, read [docs/PERFORMANCE.md](docs/PERFORMANCE.md); for the serve contract and its stated gaps, [docs/SERVING.md](docs/SERVING.md).
+
 ## CURRENT STATE (2026-08-04, v0.69.0)
 
 - **First crates.io publish** — the crates-release lane made the workspace publishable:
@@ -10,7 +12,12 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
   `cuModuleLoadData` — distributed and cargo-installed binaries were unbootable before,
   loading the builder's OUT_DIR paths at runtime; the v0.69 release battery is the gate
   that validated the embed, kernel-check 458 OK / 0 FAIL). Distribution pipeline:
-  `publish.yml` (tag-triggered `cargo publish --workspace`, tag==version guard),
+  `publish.yml` (tag-triggered, tag==version guard — now **per-crate in dependency order,
+  resumable**: the v0.69.0 first publish shipped 5 of 9 crates before crates.io's new-crate
+  burst limit returned 429 and the old all-or-nothing `--workspace` form could not resume;
+  the workflow skips versions already live, backs off on 429, and takes a `publish=true`
+  dispatch as the recovery door — commit c52edfd3. Do not state "all nine crates are live";
+  check the registry),
   `release.yml` (prebuilt binaries + SHA256SUMS + binstall artifact), `tools/install.sh`
   (curl|sh, checksum-verified). README Installation rewritten prebuilt-first.
 - **OR-listing surface complete** (serve-tail): `/v1/models` OR-schema (context_length,

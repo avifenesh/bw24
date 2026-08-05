@@ -104,7 +104,12 @@ output end to end — show them running.
 ## Scope
 
 This is a from-scratch engine tuned for two exact memory/compute ratios: the RTX 5090 Laptop
-(sm_120a, the primary target) and the H100 SXM (sm_90a, compile-gated Hopper lane). See
+(sm_120a — the local rig where the tracked boards and the correctness gates run) and the
+H100 SXM (sm_90a, compile-gated Hopper lane). Note the distinction: the 5090 Laptop is the
+**measuring and gating rig**, not the deployment target — the owned deployment trajectory is
+RTX PRO 6000 Blackwell class (same sm_120a, so every 5090 receipt transfers; owner override
+2026-08-03, [`docs/PERFORMANCE.md` §Rigs](docs/PERFORMANCE.md#rigs--what-was-measured-on-what)).
+See
 [Requirements and limits](README.md#requirements-and-limits) before proposing portability work — other GPUs compile
 via the portable arch (`MEMRA_CUDA_ARCH=89` builds the Ada correctness-first eval lane) but
 are untuned, and tuning choices throughout the codebase assume the two target ratios.

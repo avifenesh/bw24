@@ -2243,7 +2243,7 @@ Round 47 update 2 — q27 win-harder arc (2026-08-01, "most-used model" directiv
 
 ## Round 48 — g26 decode: the router knife-edge was roulette (+12.7%), ragged tiles refuted (2026-08-01)
 
-Two lane2 arcs on the darklanes box, both receipts-complete:
+Two lane2 arcs on the rented H100 box, both receipts-complete:
 
 1. RAGGED TOKEN-TILES (lever #1 from the round-47 queue) REFUTED: {64,96,128} avg-pairs
    dispatch for mmq_iq_experts costs -7.6% q35 pp2048 at ANY sub-128 tile (attribution
@@ -2430,7 +2430,7 @@ fallback (1 CTA/SM x 8 warps on sm_120a; H100's 228KB admits 2/SM). Receipts:
 Round-51 adjacent, serving: batched-tick increment 3 (5090 lane,
 `research/batched-tick-inc3-20260801/`) shipped the per-model EXACT-16 decode chunk tier
 (`decode_batch_exact16_ok`; Q8_0 qualifies only through the q8rp `_rp` mirror twins) —
-the pre-inc2 darklane cap-15/16 "flat-or-worse" verdict was re-swept after inc2 made the
+the pre-inc2 fleet-lane cap-15/16 "flat-or-worse" verdict was re-swept after inc2 made the
 tick weight-stream-bound (LAW 2 claims another stale verdict) and chunk 16 measured
 +18.8% at c=16 same-mirror on the 5090. On THIS lane the 9B Q8_0 fleet model qualifies
 automatically (`MEMRA_Q8RP` defaults ON under `memra_hopper_mma`), so the next fleet

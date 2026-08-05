@@ -42,9 +42,11 @@ the other, and report spill performance separately from model-quality comparison
 - Model loading, spill correctness, research measurements, artifact generation, and public evals
   run on the provisioned G7e research machine. Do not merge or tag this lane until its remote raw logs
   and five-arm eval report exist.
-- The local RTX 5090 rig remains memra's deployment and final performance target. Treat G7e results
-  as research evidence, not a default-flip decision; re-run correctness, memory, and throughput gates
-  on the 5090 before shipping any runtime default.
+- The local RTX 5090 rig remains this lane's default-flip gate: treat G7e results as research
+  evidence, not a default-flip decision, and re-run correctness, memory, and throughput gates on
+  the 5090 before shipping any runtime default. (Note the *deployment* target moved — owner
+  override 2026-08-03 makes RTX PRO 6000 Blackwell class the owned trajectory, and the local
+  5090 Laptop is a proof rig, not the final performance target. See `docs/PERFORMANCE.md` §Rigs.)
 - GGUF remains memra's primary runtime and delivery format. Hy3 safetensors are a pinned source for
   this quantization study, and per-expert repack directories are experimental artifacts, not a
   format pivot. Put spill/cache improvements in shared paths and preserve GGUF gates and behavior.
@@ -96,6 +98,12 @@ surfaces have drifted — treat a failure there as "regenerate and re-commit." *
 This does not cover the GitHub repo social-preview image (the OG thumbnail used for link
 shares) — GitHub has no API for that field, it's a manual upload in Settings → Social preview,
 and isn't worth automating at this update cadence.
+
+## Product docs are out of scope here
+
+Product, business, and go-to-market docs live in the private product repo
+(`~/projects/darklanes`), where every product decision is recorded. This repo documents the
+engine only.
 
 ## Correctness discipline
 

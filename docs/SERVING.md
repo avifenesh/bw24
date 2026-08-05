@@ -6,6 +6,12 @@ rate-limit headers, graceful drain), safetensors/FP8 checkpoint serving, cross-r
 prompt caching with per-tenant `cache_salt` isolation, and the honestly-stated numeric
 edges of batched serving.
 
+> Numbers here are engineering receipts, each labeled with its rig — see
+> [Rigs](PERFORMANCE.md#rigs--what-was-measured-on-what) for what each label is. A number
+> without its rig label is not a number: the same cell moves 5-12% between two pods of the
+> same SKU and ~2x between a 188-SM and an 82-SM board. The open gaps stated below travel
+> with the wins.
+
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
 processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
@@ -25,11 +31,11 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 
 ## Measured numbers (Qwen3.5-9B Q8_0; receipts in `research/`)
 
-- **Single replica (H100):** temp-0.7 c=8/16/32 medians **654/657/659 tok/s** after the
+- **Single replica (H100, rented pod):** temp-0.7 c=8/16/32 medians **654/657/659 tok/s** after the
   batched decode tick (z-batched FA + KV append, device sampling, lean logits — +25-36%
   over the pre-batched tick; N=4, `research/batched-tick-inc2-20260801/`; chunk-8 era —
   see the exact-16 tier below).
-- **Managed fleet, 3 H100s x 2 replicas (v0.60-validated):** **1,477 tok/s** through the
+- **Managed fleet, 3 rented H100s x 2 replicas (v0.60-validated):** **1,477 tok/s** through the
   admission proxy at c=96 (N=2 interleaved passes: 1477.0/1473.1), zero 429s/5xx —
   managed now matches the v0.59-era 1,480 direct number (the ~7% admission-overhead gap
   closed at the fleet level). Chaos-tested: SIGKILL a replica mid-load, breaker DOWN the
@@ -38,7 +44,7 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   on all 6 replicas in every condition, 18/18 (`research/fleet-v060-20260801/SUMMARY.md`).
   The proxy cap (8) was calibrated on the v0.59 core — the cap re-sweep is pending the
   next box window (stale-verdict risk flagged in the validation summary).
-- **Single replica (RTX 5090, exact-16 tier):** with the Q8_0 split-plane mirror
+- **Single replica (RTX 5090 Laptop — the local rig, exact-16 tier):** with the Q8_0 split-plane mirror
   (`MEMRA_Q8RP=1` on 24GB; Hopper default), the worker auto-selects decode chunk 16 —
   c=16 median **494.5 tok/s vs 416.4** at chunk 8, same mirror, interleaved N=4
   (**+18.8%**; +33.8% vs the mirror-less baseline); c=32 at `MEMRA_CTX=2048` runs
@@ -47,6 +53,16 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
   c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
   `research/spec-serving-20260801/`).
+- **Open gap — the serve path trails the naked CLI at c=1.** Stated here because a serve
+  doc must not imply serve/CLI parity: **−11.74%** on a Q8_0 27B cell (`memra-server`
+  46.09 tok/s, N=3 median, vs `run-gen` naked 52.22, single run; rig
+  `pro6000wk-runpod-community`, same commit and prompt) and **−8.66%** on the NVFP4 spec
+  path (serve 170.55 vs bare 186.72, rig `pro6000wk-runpod`). Cause is measured, not
+  inferred: the worker routes B=1 through `decode_step_batch`, which has no CUDA-graph door
+  (`MEMRA_GEN_GRAPH` lives in `generate_with`, which the worker never calls) and dispatches
+  dense-FFN gate+up via `matmul_pre` at `b_n=1`, so the m=1 fusion lever never fires.
+  Filed as task #70 (`research/q27-deepdive-20260805/PHASE2-SPEC.md` H1 + H3); receipts
+  `research/q27-deepdive-20260805/RESULTS.md` §4. Open lane — not a published number.
 
 ## The isolation contract
 
@@ -202,9 +218,14 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
 parse time (a bogus dir fails naming the missing file). Chat templates come from the
 checkpoint's own tokenizer config (`from_hf_dir`); template-less dirs 400 with a pointer
 to `/v1/completions`. Official Qwen FP8 block-128 checkpoints load bit-exact (GPU
-dequant, 2.89x faster load) and **spec decode runs out of the box on the checkpoint's
-embedded MTP head** — 128-137 tok/s on the first official-FP8 e2e, 2.6-2.8x plain
-(`research/fp8ship-20260804/`).
+dequant, load wall 843.9 → 291.6 s = **2.89x faster load**) and **spec decode runs out of
+the box on the checkpoint's embedded MTP head** — **128.06 tok/s** from the checkpoint's
+own `mtp.safetensors` (**2.61x** the same-run plain 48.99), 136.75 with an own-trim
+drafter, on rig **`rig2x5090-serve`** (rented 2x RTX 5090; there is no official-FP8 cell
+on any RTX PRO 6000 board — do not merge the two). The win is **load time, not decode
+throughput**: the e4m3-resident arm is flat by construction (weights dequantize onto the
+Q8_0 arm), and spec **triples TTFT** on this arm (0.170 → 0.466 s).
+Receipts: `research/fp8ship-20260804/official/`.
 
 The ST-spec exactness scare (#68) was root-caused to a serve-side bug that was never
 ST-specific: the per-session persistent draft graph replayed with dangling pool
@@ -212,8 +233,16 @@ addresses (capture transients not retained + the fa-partials pool freeing grown-
 buffers the capture baked) — reproducible on GGUF session bursts at n>=600 too. Fixed
 via capture-retain keepers on `DraftGraphCtx` + retire-on-grow for the fa partials pool;
 the quarantine is lifted and dir checkpoints are spec-eligible by default
-(`MEMRA_SERVE_SPEC=0` is the rollback door). Gate: `tools/serve-st-gate.sh` pins
-default-serve text token-identical to the run-gen CLI oracle.
+(`MEMRA_SERVE_SPEC=0` is the rollback door). Gate: `tools/serve-st-gate.sh` — item 3 pins
+the CLI ST-dir branch and the server to identical greedy token streams on a 64-token
+window, and item 4 pins the DEFAULT (spec-on) server against the **tokenwise serve
+oracle** (`MEMRA_SERVE_SPEC=0 MEMRA_SERVE_BATCH=0` — same worker, plain decode) at a
+400-token window, prefix-tolerant for burst overshoot. Note what item 4 is *not*: the
+comparator is deliberately the tokenwise **serve** arm, not the run-gen CLI, because both
+the batched-plain path and the CLI carry their own accepted near-tie FP classes at long
+windows (see [first-token cross-config
+drift](#first-token-cross-config-drift-batched-prime--stated-honestly) below). Do not
+restate this gate as "token-identical to the CLI oracle".
 
 ## Constrained decoding (`response_format`) — lanes constrained + constrained-full, 2026-08-03
 
@@ -226,9 +255,11 @@ device-sample / lean-logits / CUDA-graph / speculative paths unconstrained sessi
 No path is lost to being constrained.
 
 - **Cost:** plain constrained-greedy = **99.4% of unconstrained** (123.7 vs 124.4 tok/s,
-  q9 N=3 same-session); per-step grammar compute 0.006–0.007 ms. The remaining
-  constrained-vs-unconstrained gap is draft acceptance under a tight grammar, not mask
-  overhead.
+  q9 N=3 same-session, local RTX 5090, Qwen3.5-9B NVFP4, 256-token greedy); per-step
+  grammar compute 0.006–0.007 ms. **That 99.4% is the plain lane only — the speculative
+  lane pays far more: 153.4 vs 194.4 = 79%.** Never quote 99.4% for the spec path. The
+  remaining constrained-vs-unconstrained gap is draft acceptance under a tight grammar,
+  not mask overhead.
 - **Draft-side masking (lane/draft-mask, 2026-08-04):** the drafter is masked too. A
   constrained spec session clones the session's grammar matcher once per spec round
   (0.002 ms), advances the clone with each proposed token, and bans the illegal ids in the
@@ -431,13 +462,20 @@ Inside the tick, interactive decode rows batch first and dark-lane prefill runs 
 decode within measured SLO headroom only. Per-lane counters + the engine-truth step
 p50/p99 export at `GET /yield/metrics`.
 
-Measured at fleet scale (8 replicas, c=96 harvest + c=4 interactive, N=3 interleaved,
+Measured at fleet scale (8 replicas, Qwen3.5-9B-Q8_0 on rented H100s, c=96 harvest + c=4
+interactive, 4 conditions interleaved, N=3 passes with full teardown/bring-up per cell,
 `research/qos-p95-20260802/`): the lane-blind proxy FIFO alone inflates contended
 interactive p95 to 7.15s (~4x alone); with lanes on and the proxy cap at 16 (so engine
 admission owns the queue — the gate cannot fix a queue it never sees), p95 drops to
 3.69s (~2x alone) at -11% bulk throughput vs the cap-16 ceiling. `MEMRA_SLO_P99_MS`
 is the dial: 25ms makes contended interactive statistically equal to alone
 (p50 1.637s / p95 2.158s) with bulk paying -67%. Lane knobs in [FLAGS.md §1](FLAGS.md).
+
+**Attribution, required whenever the 7.15 → 3.69s figure is quoted:** raising the proxy
+cap from 8 to 16 *by itself* moves p95 **7.15 → 4.335s** (that control cell is in the same
+RESULTS.md); the lane gate accounts for **4.34 → 3.69s**. Roughly half the headline
+improvement is the queue, not the engine gate — which is the point of the sentence above,
+not a caveat to it. Quoting 7.15 → 3.69s as "what lanes do" is refutable from our own log.
 
 ## Knobs
 
@@ -466,3 +504,38 @@ pp512 probe greedy-emits `"\n"` + EOS at 2 tokens where the tokenwise stream wri
 within contract, but real. `MEMRA_PRIME_TOKENWISE=1` pins the oracle stream at prefill
 cost; the run-gen `batched-prime` gate line + the `prime-gate` battery bound the class
 (structured divergence fails hard, near-tie flips are reported).
+
+### Chunked prefill is not reduction-order-stable (2026-08-05)
+
+A sharper statement of the same class, found while building serve-smoke check 10:
+**changing only the prefill chunk split changes greedy output.** Arms were the same four
+recorded prompts with a per-turn `cache_salt` (so nothing resumes — every request primes
+cold), `MEMRA_AFFINITY=0`, varying only `MEMRA_PRIME_CHUNK`:
+
+| prompt tokens | 2048 vs 64 | 2048 vs 32 |
+|---|---|---|
+| 48 | identical | identical |
+| 97 | identical | **differs @ char 45** |
+| 149 | **differs @ char 172** | **differs @ char 52** |
+| 195 | identical | identical |
+
+A different split changes the reduction order in the prefill GEMMs, perturbs logits in the
+last bits, and flips a near-tie argmax — no reuse required, and 149 tokens is far too short
+for a long-window explanation. Every resume tier inherits this by construction: a resume
+primes `[rewind boundary .. end]` as its own chunk sequence rather than one full prime.
+
+Two consequences with teeth:
+
+1. **No gate anywhere in the repo may assert byte-equality between two prefills of the same
+   prompt at different chunk boundaries.** serve-smoke check 10 deliberately does not assert
+   resumed == cold; it asserts what session affinity actually owns (determinism of the resume
+   path across servers, plus liveness). Wiring the naive assertion would have planted a
+   permanently-red gate and blamed affinity for the prefill's reduction order.
+2. `MEMRA_PRIME_CHUNK` is a documented machine-config knob, so **two rigs with different
+   values already produce different greedy text on the same prompt.** Any exactness statement
+   is scoped to one configuration.
+
+Whether to make chunked prefill reduction-order-stable (a fixed accumulation order
+independent of the split) is open, and is not the affinity lane's item. Reproducer + raw rows:
+`research/session-affinity-20260805/chunk-order-probe.py` and `chunk-order.jsonl` (12 rows =
+3 chunk sizes x 4 prompts, each with its text; under two minutes on the 9B).
