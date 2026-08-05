@@ -371,6 +371,50 @@ spec resume, or prefix cache). `/metrics` exposes the cumulative split
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
 
+## Spec-decode acceptance telemetry (lane/accept-telemetry, 2026-08-05)
+
+Always-on per-draft-position acceptance counters, the llama.cpp #26389 / vLLM spec-decode
+counter schema. WHY: the 2026-08-05 dogfood head-to-head found short-context sampled
+acceptance at 0.55 vs 0.73 full-draft — a posthoc dig that this surface turns into a live
+gauge (drafter health on a new checkpoint is readable in minutes, and the K-policy work
+gets a per-position decay curve for free).
+
+**`GET /metrics` — the `spec` block**, per model, cumulative since the model loaded (models
+load once per server process, so counters reset on restart, never mid-run). Absent until the
+first spec burst — spec-off deployments see the exact pre-lane payload:
+
+```json
+"spec": {
+  "q9": {
+    "rounds": 118, "drafted": 354, "accepted": 213,
+    "acceptance_rate": 0.602, "tokens_per_round": 2.805,
+    "pos_drafted":  [118, 118, 118],
+    "pos_accepted": [96, 71, 46],
+    "accept_rate_per_pos": [0.814, 0.602, 0.390]
+  }
+}
+```
+
+`accept_rate_per_pos[j]` = P(draft position j accepted | a round offered position j) — healthy
+spec decode decays monotonically from position 0 (acceptance is a prefix walk: position j can
+only be accepted if 0..j-1 were). Arrays are trimmed to the deepest position ever drafted
+(up to 8 tracked positions; totals count deeper drafts too). Normalization matches
+`MEMRA_SPEC_STATS`: a p-min-cut chain token is counted in neither drafted nor accepted. The
+opt-in round-stream arm (`MEMRA_SPEC_STREAM=1`) keeps its accept counts on device, so under
+it per-position arrays cover the standard-path rounds only; totals stay complete.
+
+**`usage.spec` — per-request summary.** Spec-decode requests carry their OWN
+rounds/drafted/accepted + `acceptance_rate` in the response usage object (this request only —
+pool-resumed sessions do not leak prior requests' counts). Additive and OpenAI-safe: official
+SDKs ignore unknown usage fields, no existing field changes, and non-spec requests carry no
+`spec` key at all.
+
+**Cost:** host-side u64 adds at the round accounting the engine loop already does — zero
+GPU syncs, zero per-token allocation, no hot-path lock (the worker merges per-burst deltas
+into its own map; the metrics mutex is only taken on the existing 32nd-tick publish, plus a
+force-publish when a spec session retires so one-shot requests are visible immediately).
+Validation capture: `research/accept-telemetry-20260805/`.
+
 ## API keys — multi-key tenant auth (lane/api-keys, 2026-08-05)
 
 Bearer auth that maps key → tenant, so cache isolation, QoS lane class, rate-limit
