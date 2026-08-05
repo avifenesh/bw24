@@ -1,0 +1,77 @@
+ Designing a High-Performance Storage-to-GPU Inference Pipeline
+
+Introduction
+
+Modern large language model (LLM) inference is increasingly constrained not by compute throughput, but by data movement. As models scale beyond the capacity of a single GPU’s high-bandwidth memory (HBM), systems must rely on host memory and persistent storage to host model weights, activations, and the key-value (KV) cache. The latency of fetching these artifacts from storage to the GPU directly dictates time-to-first-token (TTFT) and inter-token latency.
+
+This essay presents a systematic design for a storage-to-GPU inference pipeline. We analyze the trade-offs between memory-mapped I/O (mmap) and positioned reads, the necessity of pinned host buffers, the mechanics of asynchronous prefetching, the optimization of PCIe bandwidth overlap, and the critical role of KV-cache quantization in reducing memory pressure.
+
+1. The I/O Subsystem: mmap vs. Positioned Reads
+
+The first decision in the pipeline is how the operating system and application interact with the storage device (typically NVMe SSDs). The two primary mechanisms are memory-mapped I/O (mmap) and synchronous/asynchronous positioned reads (e.g., read() or io_uring).
+
+1.1 Memory-Mapped I/O (mmap)
+
+mmap maps a file or device into the process’s virtual address space. When the application accesses a memory address, a page fault occurs, triggering the OS to load the corresponding data block from storage into the page cache.
+
+Advantages:
+- Zero-Copy Semantics: Data is not copied from a kernel buffer to a user buffer; the GPU DMA engine can read directly from the page cache if the pages are pinned.
+- Lazy Loading: Data is fetched only when accessed, which can be beneficial for irregular access patterns.
+- Simplicity: The application logic is decoupled from I/O scheduling.
+
+Disadvantages:
+- Page Fault Overhead: Random access patterns cause frequent page faults, leading to unpredictable latency spikes.
+- Thrashing: If the working set exceeds RAM, the OS may evict pages, causing severe performance degradation.
+- Lack of Control: The application cannot explicitly control the order or timing of I/O requests, making it difficult to optimize for GPU pipeline stages.
+
+1.2 Positioned Reads (io_uring / AIO)
+
+Positioned reads allow the application to explicitly request specific byte ranges from storage. Modern Linux systems utilize io_uring for high-performance asynchronous I/O.
+
+Advantages:
+- Explicit Control: The application can schedule reads to align with GPU compute stages, enabling precise prefetching.
+- Batched I/O: Multiple read requests can be submitted in a single syscall, reducing overhead.
+- Predictable Latency: By controlling the I/O queue, the application can avoid page faults and ensure data is available before the GPU needs it.
+
+Disadvantages:
+- Complexity: Requires careful management of I/O completion queues and buffer lifetimes.
+- Copy Overhead: Data is typically copied from the kernel buffer to a user-space buffer before being transferred to the GPU, unless zero-copy mechanisms are used.
+
+Recommendation: For LLM inference, positioned reads via io_uring are superior. They provide the explicit control necessary to implement asynchronous prefetching and align I/O with GPU compute stages. mmap is better suited for static model weights that are loaded once at startup, while positioned reads are ideal for dynamic KV-cache retrieval and streaming data.
+
+2. Pinned Host Buffers: The Bridge to GPU DMA
+
+Regardless of the I/O method, data must reside in pinned (page-locked) host memory before being transferred to the GPU. Pinned memory is memory that the OS cannot swap out to disk.
+
+Why Pinned Memory is Mandatory:
+- DMA Requirement: GPU Direct Memory Access (DMA) engines require physical addresses to transfer data. Virtual addresses used in standard heap allocations can be swapped or relocated, making them unusable for DMA.
+- Performance: Pinned memory allows the GPU to read directly from host RAM without intermediate copies, reducing latency and CPU overhead.
+
+Implementation Strategy:
+- Pre-allocation: Allocate pinned buffers at initialization to avoid the high cost of pinning memory during inference.
+- Buffer Pooling: Use a pool of pinned buffers to serve multiple I/O requests, reducing allocation overhead.
+- Size Alignment: Align buffer sizes to PCIe transaction boundaries (e.g., 4KB or 64KB) to maximize transfer efficiency.
+
+3. Asynchronous Prefetching: Hiding Latency
+
+The core challenge in storage-to-GPU inference is hiding the latency of fetching data from storage. Asynchronous prefetching is the primary technique to achieve this.
+
+3.1 The Prefetching Pipeline
+
+The pipeline operates on a producer-consumer model:
+- Producer (CPU): Issues I/O requests to fetch the next chunk of model weights or KV-cache entries from storage.
+- Consumer (GPU): Executes compute kernels on the current chunk of data.
+
+3.2 Staged Prefetching
+
+To maximize overlap, the pipeline should use multiple stages:
+- Stage 1: I/O Submission: The CPU submits read requests to the NVMe controller via io_uring.
+- Stage 2: I/O Completion: The CPU monitors the completion queue and copies data from the kernel buffer to pinned host buffers (if not using zero-copy).
+- Stage 3: Host-to-Device Transfer: The CPU initiates a DMA transfer from pinned host memory to GPU HBM.
+- Stage 4: GPU Compute: The GPU executes the forward pass on the data now resident in HBM.
+
+By maintaining multiple in-flight requests, the CPU can keep the GPU busy while I/O and PCIe transfers are ongoing.
+
+3.3 Lookahead Depth
+
+The lookahead depth (number of chunks prefetched) must
