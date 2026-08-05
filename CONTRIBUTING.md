@@ -17,7 +17,7 @@ one of these is incomplete, not "mostly done" — do not open it yet.
 ### 1. Correctness gates (all three, all green)
 
 ```bash
-tools/local-ci.sh                      # one command: kernel-check + argmax gate + VERIFY-GATE + spec self-consistency
+tools/local-ci.sh                      # one command: kernel-check + argmax gate + VERIFY-GATE + spec self-consistency + decode-batch-gate + serve-smoke
 ```
 
 or individually:

@@ -10,7 +10,7 @@ merge/tag bar — a fast-gate green is a *keep going* signal, never a *ship* sig
 |---|---|---|---|
 | 0 | seconds (~2 s kernel-check scoped + build) | workspace compile + kernel-check scoped to the touched sections | every edit-compile loop |
 | 1 | ~1–2 min | tier 0 + golden-token argmax probe on ONE model per affected kernel class (+ one single-K spec probe when the diff touches the spec pipeline) | before every dev-loop commit |
-| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, serve-smoke, `--perf` cell battery | **every merge, every tag** (unchanged) |
+| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), serve-smoke, `--perf` cell battery | **every merge, every tag** (unchanged) |
 
 Entry point:
 

@@ -148,10 +148,12 @@ on 3 rented H100s: 1,477 tok/s managed fleet, chaos-tested. Trimmed MTP drafter 
 published ready-to-use at
 [huggingface.co/Avifenesh/memra-bench](https://huggingface.co/Avifenesh/memra-bench).
 
-Open since: the **serve surface trails the naked CLI at c=1** (−11.74% on a Q8_0 27B cell,
-−8.66% on the NVFP4 spec path — cause measured, task #70; see
-[Serving performance](#serving-performance)) and the interactive-latency gaps in the banner
-above. Both are tracked as gaps, not hidden.
+The **plain-serve c=1 gap (task #70) closed 2026-08-05**: `MEMRA_SERVE_B1FAST` routes a solo
+serve tick through the m=1 fused trunk (+8.33% q9 / +5.19% q27 decode-only at c=1, N=5
+order-paired, 5/5 wins each; serve c=1 now level with the same-board `run-gen` denominator
+on the 82-SM rig — see [Serving performance](#serving-performance)). Still open: the NVFP4
+**spec** serve path (−8.66% pre-fix, its burst loop is a separate path) and the
+interactive-latency gaps in the banner above. Both are tracked as gaps, not hidden.
 
 ## The serving exactness arc — a defect the discipline caught
 
@@ -417,16 +419,22 @@ requests, 0 errors, 0 sheds, +0.045% throughput drift — a **9B-class** (Qwen3.
 warm-prefix result whose load ran at temp 0.7 seeded, with a separate greedy probe hashing
 identical on all 8 replicas before and after. Runbook: [`docs/SERVING.md`](SERVING.md).
 
-**Open gap — the serve surface trails the naked CLI at c=1.** −11.74% on a Q8_0 27B cell
-(`memra-server` 46.09 tok/s N=3 median vs `run-gen` 52.22 single run, rig
-`pro6000wk-runpod-community`) and −8.66% on the NVFP4 spec path (170.55 serve vs 186.72
-bare, rig `pro6000wk-runpod`). Cause is measured: the worker routes B=1 through
-`decode_step_batch`, which has no CUDA-graph door (`MEMRA_GEN_GRAPH` lives in
-`generate_with`, never called by the worker) and dispatches dense-FFN gate+up via
-`matmul_pre` at `b_n=1`, so the m=1 fusion lever never fires. Task #70 —
+**The plain-serve c=1 gap (task #70) — CLOSED 2026-08-05, serve-path phase 2.** Phase 1
+measured serve c=1 at −11.74% vs the naked CLI on a Q8_0 27B cell (`memra-server` 46.09
+tok/s N=3 median vs `run-gen` 52.22 single run, rig `pro6000wk-runpod-community`); the
+measured cause was that the worker routed B=1 through the batched decode body, missing the
+m=1 fusion chain. The fix (`MEMRA_SERVE_B1FAST`, default ON) routes a `b_n==1` tick through
+`decode_layers_eager` verbatim: **+8.33% q9 / +5.19% q27** decode-only at c=1 (N=5
+order-paired, 5/5 wins each, c=8 flat), bit-identical to `decode_step_h` (strict gate1
+PASSes with it ON and FAILed without), and serve c=1 now sits level with the same-board
+`run-gen` denominator on the 82-SM rig. The 188-SM phase-1 cell has not been re-measured
+post-fix; the pre-fix −11.74% is history, not a current number. **Still open:** the NVFP4
+**spec** serve path (−8.66% pre-fix: 170.55 serve vs 186.72 bare, rig `pro6000wk-runpod`)
+— the spec tier's burst loop is a separate path the fast path does not touch. Receipts:
 [`research/q27-deepdive-20260805/PHASE2-SPEC.md`](../research/q27-deepdive-20260805/PHASE2-SPEC.md)
-H1 + H3. The published boards above are **bare-CLI** numbers; do not read them as serve-path
-numbers.
+(phase 1), [`research/servepath-p2-20260805/`](../research/servepath-p2-20260805/) (the
+fix + the graph-door refutation). The published boards above are **bare-CLI** numbers; do
+not read them as serve-path numbers.
 
 ## Bring-up notes
 
