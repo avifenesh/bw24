@@ -1,0 +1,3 @@
+0362089133957cc942fc1e55f5180717  target/release/kernel-check
+776ef3f2d023609f47b07960ff12f385  target/release/run-gen
+eae5020968383cf66a37574b9ca67fe2  target/release/gemv-e4m3-bench

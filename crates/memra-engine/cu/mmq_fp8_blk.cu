@@ -81,7 +81,12 @@
 // contain it; memra_fp8_blk_count_nan() lets the dispatch PROVE that per tensor at load and refuse
 // this kernel otherwise, instead of assuming.
 //
-// Seam: MEMRA_FP8_MMQ=1 (mmq_ffi.rs dispatch), default OFF.
+// Seam: MEMRA_FP8_MMQ (fp8_ffi.rs::try_fp8_blk_mmq dispatch). TWO operand sources, TWO defaults —
+// the load-time e4m3 STASH next to a resident Q8_0 slab is opt-in (=1), the checkpoint-native
+// QT_F8_E4M3_BLK residency grid is DEFAULT ON (=0 reverts to dequant-per-call). Same tile: with a
+// stash the floor's slab is already resident (v2: 0.85-1.09x, not worth a duplicate copy), while the
+// native class's floor must BUILD that slab every prefill call (27.9 ms/pass), so here the tile wins
+// +0.83% pp512 on the 27B (research/fp8blk-20260805/VERDICT.md).
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>

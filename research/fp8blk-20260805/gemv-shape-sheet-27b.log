@@ -1,0 +1,96 @@
+binary md5=05967459f871cd046d80bac3bc0c3d06
+18168 MiB, 72
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 83, 1717 MHz
+m=1 GEMV, THREE arms: native per-tensor e4m3 (qmatvec_e4m3_mmvq, 1.0 B/w) | native
+  BLOCK-128 e4m3 (qmatvec_e4m3_blk_mmvq, 1.0 B/w + per-k128 f32 grid) | Q8_0 MMVQ floor
+  (ARM B', 1.0625 B/w). DRAM-cold (rotated copies, grid rotates with its weight);
+  all three interleaved per iter; median. ratio_blk = t_q8_0/t_blk is the lane verdict;
+  ratio (per-tensor) is the control anchor vs lane/fp8-v3-gate's published value.
+shape in->out               cp   e4m3_us    blk_us   q8_0_us     ratio ratio_blk  blk/e4m3  blk_GB/s
+q_proj 5120->12288           3     83.47     82.77     87.47   1.0480x   1.0569x   1.0085x     760.1
+k/v_proj 5120->1024         47     14.96     15.33     15.47   1.0343x   1.0097x   0.9762x     342.1
+o_proj 6144->5120            7     45.72     45.85     49.45   1.0817x   1.0785x   0.9970x     686.0
+gate/up_proj 5120->17408     2    113.48    113.55    120.06   1.0579x   1.0573x   0.9994x     785.0
+down_proj 17408->5120        2    114.16    113.77    122.41   1.0723x   1.0759x   1.0034x     783.4
+square-ref 5120->5120        9     39.63     39.85     42.04   1.0609x   1.0551x   0.9945x     657.9
+GEOMEAN ratio (q8_0/e4m3, CONTROL ANCHOR) over 6 shapes: 1.0591x  =>  delta_pp +5.91
+GEOMEAN ratio_blk (q8_0/blk128, THE LANE VERDICT) over 6 shapes: 1.0553x  =>  delta_pp +5.53
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 80, 1815 MHz
+jsonl rows appended: 6 -> /home/avifenesh/projects/wt-fp8blk/research/fp8blk-20260805/gemv-shape-sheet-27b.jsonl
+=== PASS 2 ===
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 79, 1755 MHz
+m=1 GEMV, THREE arms: native per-tensor e4m3 (qmatvec_e4m3_mmvq, 1.0 B/w) | native
+  BLOCK-128 e4m3 (qmatvec_e4m3_blk_mmvq, 1.0 B/w + per-k128 f32 grid) | Q8_0 MMVQ floor
+  (ARM B', 1.0625 B/w). DRAM-cold (rotated copies, grid rotates with its weight);
+  all three interleaved per iter; median. ratio_blk = t_q8_0/t_blk is the lane verdict;
+  ratio (per-tensor) is the control anchor vs lane/fp8-v3-gate's published value.
+shape in->out               cp   e4m3_us    blk_us   q8_0_us     ratio ratio_blk  blk/e4m3  blk_GB/s
+q_proj 5120->12288           3     83.38     82.76     87.34   1.0475x   1.0553x   1.0075x     760.2
+k/v_proj 5120->1024         47     14.90     15.49     15.47   1.0382x   0.9993x   0.9625x     338.6
+o_proj 6144->5120            7     46.01     46.11     49.70   1.0803x   1.0779x   0.9978x     682.2
+gate/up_proj 5120->17408     2    113.42    113.33    120.09   1.0588x   1.0597x   1.0008x     786.5
+down_proj 17408->5120        2    114.70    114.15    122.49   1.0679x   1.0731x   1.0049x     780.8
+square-ref 5120->5120        9     39.66     39.78     41.91   1.0569x   1.0536x   0.9969x     659.0
+GEOMEAN ratio (q8_0/e4m3, CONTROL ANCHOR) over 6 shapes: 1.0582x  =>  delta_pp +5.82
+GEOMEAN ratio_blk (q8_0/blk128, THE LANE VERDICT) over 6 shapes: 1.0528x  =>  delta_pp +5.28
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 78, 1807 MHz
+jsonl rows appended: 6 -> /home/avifenesh/projects/wt-fp8blk/research/fp8blk-20260805/gemv-shape-sheet-27b.jsonl
+=== PASS 3 ===
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 78, 1807 MHz
+m=1 GEMV, THREE arms: native per-tensor e4m3 (qmatvec_e4m3_mmvq, 1.0 B/w) | native
+  BLOCK-128 e4m3 (qmatvec_e4m3_blk_mmvq, 1.0 B/w + per-k128 f32 grid) | Q8_0 MMVQ floor
+  (ARM B', 1.0625 B/w). DRAM-cold (rotated copies, grid rotates with its weight);
+  all three interleaved per iter; median. ratio_blk = t_q8_0/t_blk is the lane verdict;
+  ratio (per-tensor) is the control anchor vs lane/fp8-v3-gate's published value.
+shape in->out               cp   e4m3_us    blk_us   q8_0_us     ratio ratio_blk  blk/e4m3  blk_GB/s
+q_proj 5120->12288           3     83.25     82.71     87.41   1.0499x   1.0569x   1.0066x     760.7
+k/v_proj 5120->1024         47     14.95     15.33     15.50   1.0364x   1.0111x   0.9756x     342.1
+o_proj 6144->5120            7     46.00     46.00     49.66   1.0794x   1.0794x   1.0000x     683.8
+gate/up_proj 5120->17408     2    113.78    113.72    120.15   1.0560x   1.0566x   1.0005x     783.8
+down_proj 17408->5120        2    114.34    113.92    122.24   1.0691x   1.0731x   1.0037x     782.4
+square-ref 5120->5120        9     39.54     39.59     41.80   1.0571x   1.0558x   0.9988x     662.1
+GEOMEAN ratio (q8_0/e4m3, CONTROL ANCHOR) over 6 shapes: 1.0579x  =>  delta_pp +5.79
+GEOMEAN ratio_blk (q8_0/blk128, THE LANE VERDICT) over 6 shapes: 1.0552x  =>  delta_pp +5.52
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 77, 1815 MHz
+jsonl rows appended: 6 -> /home/avifenesh/projects/wt-fp8blk/research/fp8blk-20260805/gemv-shape-sheet-27b.jsonl
+=== PASS 4 ===
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 79, 1815 MHz
+m=1 GEMV, THREE arms: native per-tensor e4m3 (qmatvec_e4m3_mmvq, 1.0 B/w) | native
+  BLOCK-128 e4m3 (qmatvec_e4m3_blk_mmvq, 1.0 B/w + per-k128 f32 grid) | Q8_0 MMVQ floor
+  (ARM B', 1.0625 B/w). DRAM-cold (rotated copies, grid rotates with its weight);
+  all three interleaved per iter; median. ratio_blk = t_q8_0/t_blk is the lane verdict;
+  ratio (per-tensor) is the control anchor vs lane/fp8-v3-gate's published value.
+shape in->out               cp   e4m3_us    blk_us   q8_0_us     ratio ratio_blk  blk/e4m3  blk_GB/s
+q_proj 5120->12288           3     83.52     82.64     87.43   1.0468x   1.0580x   1.0107x     761.3
+k/v_proj 5120->1024         47     15.29     15.75     15.83   1.0348x   1.0051x   0.9713x     333.0
+o_proj 6144->5120            7     45.91     46.04     49.69   1.0824x   1.0791x   0.9970x     683.2
+gate/up_proj 5120->17408     2    113.28    113.19    120.02   1.0594x   1.0603x   1.0008x     787.4
+down_proj 17408->5120        2    114.30    113.76    122.50   1.0718x   1.0769x   1.0047x     783.5
+square-ref 5120->5120        9     39.60     39.69     41.83   1.0563x   1.0541x   0.9979x     660.5
+GEOMEAN ratio (q8_0/e4m3, CONTROL ANCHOR) over 6 shapes: 1.0585x  =>  delta_pp +5.85
+GEOMEAN ratio_blk (q8_0/blk128, THE LANE VERDICT) over 6 shapes: 1.0553x  =>  delta_pp +5.53
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 77, 1792 MHz
+jsonl rows appended: 6 -> /home/avifenesh/projects/wt-fp8blk/research/fp8blk-20260805/gemv-shape-sheet-27b.jsonl
+=== PASS 5 ===
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 77, 1792 MHz
+m=1 GEMV, THREE arms: native per-tensor e4m3 (qmatvec_e4m3_mmvq, 1.0 B/w) | native
+  BLOCK-128 e4m3 (qmatvec_e4m3_blk_mmvq, 1.0 B/w + per-k128 f32 grid) | Q8_0 MMVQ floor
+  (ARM B', 1.0625 B/w). DRAM-cold (rotated copies, grid rotates with its weight);
+  all three interleaved per iter; median. ratio_blk = t_q8_0/t_blk is the lane verdict;
+  ratio (per-tensor) is the control anchor vs lane/fp8-v3-gate's published value.
+shape in->out               cp   e4m3_us    blk_us   q8_0_us     ratio ratio_blk  blk/e4m3  blk_GB/s
+q_proj 5120->12288           3     83.61     82.85     87.47   1.0462x   1.0558x   1.0092x     759.4
+k/v_proj 5120->1024         47     14.72     15.15     15.22   1.0340x   1.0042x   0.9712x     346.0
+o_proj 6144->5120            7     45.95     46.07     49.74   1.0824x   1.0796x   0.9974x     682.8
+gate/up_proj 5120->17408     2    113.04    113.01    119.71   1.0590x   1.0593x   1.0003x     788.7
+down_proj 17408->5120        2    114.25    113.87    122.44   1.0717x   1.0753x   1.0034x     782.8
+square-ref 5120->5120        9     39.57     39.61     41.82   1.0568x   1.0557x   0.9990x     661.8
+GEOMEAN ratio (q8_0/e4m3, CONTROL ANCHOR) over 6 shapes: 1.0582x  =>  delta_pp +5.82
+GEOMEAN ratio_blk (q8_0/blk128, THE LANE VERDICT) over 6 shapes: 1.0547x  =>  delta_pp +5.47
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 76, 1807 MHz
+jsonl rows appended: 6 -> /home/avifenesh/projects/wt-fp8blk/research/fp8blk-20260805/gemv-shape-sheet-27b.jsonl

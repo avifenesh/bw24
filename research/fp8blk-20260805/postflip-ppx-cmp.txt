@@ -1,0 +1,3 @@
+n=248320  rms(A-slab)=2.7155  argmax(A)=365
+A: max_abs=0.000000e+00  rms_abs=0.000000e+00  rms_rel=0.000e+00  bitdiff=0/248320  argmax=365  top10_same=True
+N: max_abs=3.612556e-01  rms_abs=6.911820e-02  rms_rel=2.545e-02  bitdiff=248319/248320  argmax=365  top10_same=True

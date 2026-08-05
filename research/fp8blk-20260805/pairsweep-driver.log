@@ -1,0 +1,42 @@
+== pair 1  gpu 368 MiB, 70, 2205 MHz
+N-p1 rc=0 | pp-only MEDIAN: 512 tok in 0.3306s = 1548.7 tok/s (pp512, 3 reps) | reps 1613.5 1465.4 1548.7 | hits 1040
+A-p1 rc=0 | pp-only MEDIAN: 512 tok in 0.3322s = 1541.2 tok/s (pp512, 3 reps) | reps 1597.9 1459.1 1541.2 | hits 0
+== pair 2  gpu 368 MiB, 60, 1942 MHz
+A-p2 rc=0 | pp-only MEDIAN: 512 tok in 0.3329s = 1538.0 tok/s (pp512, 3 reps) | reps 1601.3 1462.8 1538.0 | hits 0
+N-p2 rc=0 | pp-only MEDIAN: 512 tok in 0.3298s = 1552.3 tok/s (pp512, 3 reps) | reps 1615.3 1470.8 1552.3 | hits 1040
+== pair 3  gpu 368 MiB, 59, 1807 MHz
+N-p3 rc=0 | pp-only MEDIAN: 512 tok in 0.3298s = 1552.5 tok/s (pp512, 3 reps) | reps 1614.8 1470.1 1552.5 | hits 1040
+A-p3 rc=0 | pp-only MEDIAN: 512 tok in 0.3325s = 1540.0 tok/s (pp512, 3 reps) | reps 1595.3 1465.2 1540.0 | hits 0
+== pair 4  gpu 368 MiB, 61, 2017 MHz
+A-p4 rc=0 | pp-only MEDIAN: 512 tok in 0.3323s = 1540.6 tok/s (pp512, 3 reps) | reps 1601.1 1462.7 1540.6 | hits 0
+N-p4 rc=0 | pp-only MEDIAN: 512 tok in 0.3296s = 1553.4 tok/s (pp512, 3 reps) | reps 1617.8 1472.2 1553.4 | hits 1040
+== pair 5  gpu 368 MiB, 60, 2137 MHz
+N-p5 rc=0 | pp-only MEDIAN: 512 tok in 0.3289s = 1556.9 tok/s (pp512, 3 reps) | reps 1617.3 1470.3 1556.9 | hits 1040
+A-p5 rc=0 | pp-only MEDIAN: 512 tok in 0.3323s = 1540.6 tok/s (pp512, 3 reps) | reps 1599.8 1463.6 1540.6 | hits 0
+== pair 6  gpu 368 MiB, 58, 1590 MHz
+A-p6 rc=0 | pp-only MEDIAN: 512 tok in 0.3323s = 1540.7 tok/s (pp512, 3 reps) | reps 1597.4 1466.5 1540.7 | hits 0
+N-p6 rc=0 | pp-only MEDIAN: 512 tok in 0.3296s = 1553.6 tok/s (pp512, 3 reps) | reps 1618.7 1475.3 1553.6 | hits 1040
+final gpu 368 MiB, 65, 2032 MHz
+import pathlib, re, statistics, sys
+r = pathlib.Path(sys.argv[1])
+med = {}
+for arm in "NA":
+    v = []
+    for p in range(1, 7):
+        t = (r / f"pair-{arm}-p{p}.log").read_text(errors="replace")
+        m = re.search(r"pp-only MEDIAN: .*= ([\d.]+) tok/s", t)
+        if m: v.append(float(m.group(1)))
+    med[arm] = v
+    print(f"{arm}: n={len(v)} medians={v} median={statistics.median(v):.1f} min={min(v):.1f} max={max(v):.1f}")
+n, a = med["N"], med["A"]
+print(f"ratio of medians N/A = {statistics.median(n)/statistics.median(a):.4f}")
+print(f"overlap: min(N)={min(n):.1f} vs max(A)={max(a):.1f} -> {'OVERLAP' if min(n) <= max(a) else 'DISJOINT'}")
+wins = sum(1 for x, y in zip(n, a) if x > y)
+print(f"per-pair wins for N: {wins}/{min(len(n), len(a))}  pairwise deltas="
+      f"{[round(x - y, 1) for x, y in zip(n, a)]}")
+N: n=6 medians=[1548.7, 1552.3, 1552.5, 1553.4, 1556.9, 1553.6] median=1553.0 min=1548.7 max=1556.9
+A: n=6 medians=[1541.2, 1538.0, 1540.0, 1540.6, 1540.6, 1540.7] median=1540.6 min=1538.0 max=1541.2
+ratio of medians N/A = 1.0080
+overlap: min(N)=1548.7 vs max(A)=1541.2 -> DISJOINT
+per-pair wins for N: 6/6  pairwise deltas=[7.5, 14.3, 12.5, 12.8, 16.3, 12.9]
+pairwise mean delta = 12.72 tok/s (0.83%)

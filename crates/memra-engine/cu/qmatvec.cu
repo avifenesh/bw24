@@ -3520,6 +3520,94 @@ extern "C" __global__ void qmatvec_e4m3_mmvq_fused3_b4(
     e4m3_mmvq_fused3_b<4>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
 }
 
+// ============ F8-E4M3 BLOCK-128 SCALE (Qwen-official FP8 class) warp-per-row MMVQ ============
+// lane/fp8-blk128-decode, 2026-08-05. The per-block-dequant twin of qmatvec_e4m3_mmvq above.
+//
+// WHY IT EXISTS: two FP8 safetensors scale classes reach memra. The per-tensor class (modelopt /
+// NVIDIA) carries ONE scalar `weight_scale` and is served natively by qmatvec_e4m3_mmvq (fused at
+// the write). The BLOCK-128 class (Qwen3.6-FP8 and the DeepSeek-V3 lineage: `weight_block_size
+// [128,128]`) carries a BF16 `weight_scale_inv` grid of shape [ceil(out_f/128), ceil(in_f/128)]
+// and `scale == 1.0`; before this kernel it had no native consumer at all and every such
+// projection paid the ARM B' Q8_0 re-encode (1.0625 B/weight resident + a lossy extra hop).
+//
+// ARITHMETIC CONTRACT (the host reference in kernel_check.rs implements exactly this, and the
+// `E4M3-BLK-MMVQ` gate proves the kernel implements the reference):
+//   per k32-block blk in the SAME lane-strided walk qmatvec_e4m3_mmvq uses:
+//     bs   = sum_j f32(e4m3(w[j])) * f32(aq[j])         (fmaf chain, fixed j order 0..31)
+//     acc  = fmaf(s[blk >> 2] * ad[blk], bs, acc)       (ONE extra f32 mul per 32 weights)
+//   s[.] is the row's scale line: `blk_scales + (o >> 7) * scale_cols`, indexed by the k128 block
+//   `blk >> 2` (128/32 == 4 k32-blocks share one scale). NO clamp is needed on that index: with
+//   in_f % 32 == 0, (in_f/32 - 1) >> 2 == ceil(in_f/128) - 1 for every in_f, so the last k32-block
+//   always lands on the last scale column exactly (verified by the ragged-in_f gate cells).
+//   The scale is folded PER K32-BLOCK, not per 128, on purpose: that keeps the walk, the register
+//   footprint and the fmaf chain byte-for-byte identical in structure to the per-tensor twin, and
+//   a lane's consecutive iterations (blk += 32) never revisit a scale column anyway, so a per-128
+//   hoist would buy nothing while forcing a different (slower, 4-consecutive-block) walk.
+//   The grid is resident as f32 (Fp8BlockScales: one host bf16->f32 decode at load, one htod), so
+//   this is an f32 load from L1/L2 — the whole grid is ~21 KB even for the widest 27B projection.
+//
+// e4m3 DECODE CONVENTION: the HARDWARE semantics (__nv_cvt_fp8x2_to_halfraw2 via e4m3x2_to_f32x2),
+// exactly like qmatvec_e4m3_mmvq — magnitude 0x7F is NaN, NOT the modelopt-0.0 that
+// cu/fp8_blk_dequant.cu's closed-form host math uses. Consequence, and it is a DISPATCH
+// PRECONDITION not an assumption: a resident tensor containing 0x7F/0xFF would poison its block.
+// The host arm scans for those codes (fp8_blk_nan_count, already in the tree for the MMQ arm) and
+// refuses the native arm for that tensor; the gate's code-coverage cell therefore asserts 254/254
+// LEGAL codes, the same bar lane/fp8-mmq-v2 set.
+//
+// EXACTNESS LAW (unchanged from the per-tensor twin): per (token,row) the body is a pure function
+// of (row bytes, that row's scale line, that token's q8_1 row) — the grid.y=m verify launch is
+// bit-identical to the m=1 decode launch by construction. There is deliberately NO batched
+// _b2/_b4/_b8 twin for this class yet: the m=2..15 tiers fall to the grid.y=m form above, which is
+// the exact m=1 program per column (rare tier; exactness over bandwidth, same call the per-tensor
+// catch-all makes).
+
+__device__ __forceinline__ float e4m3_blk_row_dot(
+        const unsigned char* __restrict__ wrow, const signed char* __restrict__ arow,
+        const float* __restrict__ adrow, const float* __restrict__ srow,
+        int nblk, int lane) {
+    float acc = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        // 32 e4m3 weight bytes: 2x LDG.128; 32 int8 activation: 2x LDG.128 (as the per-tensor twin).
+        const uint4* w16 = (const uint4*)(wrow + blk * 32);
+        uint4 w01 = w16[0], w23 = w16[1];
+        unsigned wu[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        const int4* aq16 = (const int4*)(arow + blk * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int au[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float bs = 0.0f;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
+            float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
+            int a = au[k];
+            bs = fmaf(wlo.x, (float)(signed char)(a & 0xff), bs);
+            bs = fmaf(wlo.y, (float)(signed char)((a >> 8) & 0xff), bs);
+            bs = fmaf(whi.x, (float)(signed char)((a >> 16) & 0xff), bs);
+            bs = fmaf(whi.y, (float)(a >> 24), bs);   // arithmetic shift: already sign-extended
+        }
+        acc = fmaf(srow[blk >> 2] * adrow[blk], bs, acc);
+    }
+    return acc;
+}
+
+extern "C" __global__ void qmatvec_e4m3_blk_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ blk_scales,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int scale_cols) {
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + threadIdx.y;   // this warp's output row
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    float acc = e4m3_blk_row_dot(W + (long)o * row_bytes, aq + (size_t)t * in_f,
+                                 ad + (size_t)t * nblk,
+                                 blk_scales + (size_t)(o >> 7) * scale_cols, nblk, lane);
+    acc = warp_reduce_sum(acc);
+    // No `ws` epilogue: the block class's per-tensor scale IS 1.0 by the layout contract (the
+    // dispatch refuses anything else), and every scale factor is already folded per k128 above.
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 // ----- Q4_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded wpack. Per-column: act + dp4a
 // (incl. the per-column sumi_sum = dp4a(0x01010101, a) min-offset term, which depends on activation). -----
 template<int MCOLS>

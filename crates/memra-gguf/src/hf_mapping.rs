@@ -264,6 +264,118 @@ impl TransformKind {
     }
 }
 
+impl TransformKind {
+    /// Apply this transform to a BLOCK-128 FP8 weight WITHOUT dequantizing — permuting the e4m3
+    /// codes and the `[ceil(out/128), ceil(in/128)]` scale grid TOGETHER. Returns
+    /// `Some((ne, codes, scales, rows, cols))`, or `None` when the permutation is not expressible on
+    /// the grid (see the alignment proof) or the kind is not a pure permutation.
+    ///
+    /// WHY THIS EXISTS (lane/fp8-blk128-decode, 2026-08-05). Qwen3.5/3.6 hybrids reach their
+    /// linear-attn projections through a V-head permutation, and `find_fp8_native` previously
+    /// refused block-128 on every Transform target with "block grid does not survive a row
+    /// permutation". On the 27B that is **144 of 208** FP8 projections — every `in_proj_qkv`,
+    /// `in_proj_z` and `out_proj` in all 48 linear-attn layers, i.e. 69% of the class's bytes and
+    /// EVERY layer of the flagship shape. With that refusal standing, a block-128 Qwen3.6/3.8-FP8
+    /// checkpoint gets native residency on its 64 full-attn projections only and keeps the Q8_0
+    /// slab (and its 1.0625 B/weight) for the rest — the day-one gap this lane exists to close
+    /// would remain two-thirds open.
+    ///
+    /// THE ALIGNMENT PROOF (why this is EXACT, not approximate). A V-head reorder is a pure index
+    /// permutation `p`: the post-transform element at (o, e) is the pre-transform element at
+    /// (p[o], e) for a row reorder, (o, p[e]) for a column reorder. Its value is
+    /// `code[p[o]][e] * s[p[o] >> 7][e >> 7]`. So permuting the CODES by `p` reproduces the
+    /// numerator exactly, and the result is exact iff a permuted grid can reproduce the scale — i.e.
+    /// iff `p[o] >> 7` depends only on `o >> 7`. `block128_perm` tests exactly that and returns the
+    /// induced block permutation, so a `Some` return is bit-exact by construction and a non-aligned
+    /// permutation is refused rather than approximated. No dequantization happens, so nothing is
+    /// re-rounded: this is strictly better than the f32 hop the Q8_0 fallback takes.
+    ///
+    /// The condition HOLDS on the real shapes because `linear_value_head_dim == 128` (Qwen3.5/3.6
+    /// alike): one V-head is exactly one 128-row scale block, and every reorder band starts at a
+    /// multiple of 128 (`in_proj_qkv`'s V band at `2*nk*hk`). It also holds trivially for
+    /// `in_proj_a`/`in_proj_b` (out_f = nv <= 128 = one grid row, so every row shares one scale and
+    /// the grid is unchanged). The test is on the permutation itself, not on those coincidences, so
+    /// a future model with a different head_dim gets a correct refusal instead of wrong numbers.
+    pub fn apply_fp8_blk(&self, codes: &[u8], out_f: usize, in_f: usize, scales: &[f32],
+                         cols: usize, cfg: &ModelConfig)
+                         -> Option<(Vec<u64>, Vec<u8>, Vec<f32>, usize, usize)> {
+        let (nk, nv, hk, hv) = head_params(cfg);
+        if codes.len() != out_f * in_f || cols != in_f.div_ceil(128) { return None; }
+        let rows = out_f.div_ceil(128);
+        if scales.len() != rows * cols { return None; }
+        let ne = vec![in_f as u64, out_f as u64];
+        // (axis_len, permutation) for the axis this kind reorders; `true` = out-rows.
+        let (row_axis, perm) = match self {
+            // V band = out-rows [2*qk, out_f); q/k rows identity.
+            TransformKind::QkvVReorderRows =>
+                (true, v_perm(out_f, nv, nk, hv, 2 * nk * hk, out_f)?),
+            TransformKind::ZReorderRows => (true, v_perm(out_f, nv, nk, hv, 0, out_f)?),
+            TransformKind::AbReorderRows => (true, v_perm(out_f, nv, nk, 1, 0, out_f)?),
+            TransformKind::OutReorderCols => (false, v_perm(in_f, nv, nk, hv, 0, in_f)?),
+            // value transforms (-exp, +1, conv1d squeeze, identity) are not permutations.
+            _ => return None,
+        };
+        let bperm = block128_perm(&perm)?;
+        if row_axis {
+            let mut nc = vec![0u8; codes.len()];
+            for (d, &s) in perm.iter().enumerate() {
+                nc[d * in_f..(d + 1) * in_f].copy_from_slice(&codes[s * in_f..(s + 1) * in_f]);
+            }
+            let mut ns = vec![0f32; scales.len()];
+            for (db, &sb) in bperm.iter().enumerate() {
+                ns[db * cols..(db + 1) * cols].copy_from_slice(&scales[sb * cols..(sb + 1) * cols]);
+            }
+            Some((ne, nc, ns, rows, cols))
+        } else {
+            let mut nc = vec![0u8; codes.len()];
+            for o in 0..out_f {
+                let base = o * in_f;
+                for (d, &s) in perm.iter().enumerate() { nc[base + d] = codes[base + s]; }
+            }
+            let mut ns = vec![0f32; scales.len()];
+            for ob in 0..rows {
+                for (db, &sb) in bperm.iter().enumerate() {
+                    ns[ob * cols + db] = scales[ob * cols + sb];
+                }
+            }
+            Some((ne, nc, ns, rows, cols))
+        }
+    }
+}
+
+/// The V-head reorder as an explicit `dst -> src` index permutation over an axis of `n` indices,
+/// identity outside `[lo, hi)`. Mirrors `reorder_v_axis`/`reorder_rows_v`/`reorder_cols_v` exactly
+/// (they all write `out[dst] = data[src]` with `dst_head = j*nk + g`, `src_head = g*vpk + j`), so a
+/// permute driven by this is the same relabeling those functions perform. `None` when the band does
+/// not match `nv*head_dim` — the same debug_assert the primitives carry, promoted to a refusal.
+fn v_perm(n: usize, nv: usize, nk: usize, head_dim: usize, lo: usize, hi: usize)
+          -> Option<Vec<usize>> {
+    if hi > n || hi.checked_sub(lo)? != nv * head_dim || nv % nk != 0 { return None; }
+    let vpk = nv / nk;
+    let mut p: Vec<usize> = (0..n).collect();
+    for j in 0..vpk {
+        for g in 0..nk {
+            let (dst_head, src_head) = (j * nk + g, g * vpk + j);
+            for d in 0..head_dim {
+                p[lo + dst_head * head_dim + d] = lo + src_head * head_dim + d;
+            }
+        }
+    }
+    Some(p)
+}
+
+/// The permutation `perm` induces on 128-element blocks, or `None` if it does not act blockwise.
+/// `Some(b)` means `perm[i] >> 7 == b[i >> 7]` for every `i` — exactly the condition under which a
+/// block-128 scale grid can be permuted alongside the data (see `apply_fp8_blk`'s proof).
+fn block128_perm(perm: &[usize]) -> Option<Vec<usize>> {
+    let mut out = vec![usize::MAX; perm.len().div_ceil(128)];
+    for (d, &s) in perm.iter().enumerate() {
+        let slot = &mut out[d >> 7];
+        if *slot == usize::MAX { *slot = s >> 7 } else if *slot != s >> 7 { return None }
+    }
+    Some(out)
+}
+
 /// (num_k_heads, num_v_heads, head_k_dim, head_v_dim) from cfg.ssm / cfg fields (qwen35).
 fn head_params(cfg: &ModelConfig) -> (usize, usize, usize, usize) {
     let ssm = cfg.ssm.as_ref().expect("ssm config for hybrid transform");
@@ -790,5 +902,96 @@ mod tests {
         let data = vec![0.0f32,1.0, 2.0,3.0, 4.0,5.0, 6.0,7.0];
         let out = reorder_rows_v(&data, 4, 2, 1, 2, 0, 4);
         assert_eq!(out, vec![0.0,1.0, 4.0,5.0, 2.0,3.0, 6.0,7.0]);
+    }
+
+    /// `block128_perm` accepts exactly the permutations that act blockwise on 128-element blocks.
+    #[test]
+    fn block_perm_alignment() {
+        // head_dim == 128: each V-head IS one scale block -> aligned, and the induced block
+        // permutation is the head permutation itself ([0,2,1,3] for nv=4, nk=2).
+        let p = v_perm(512, 4, 2, 128, 0, 512).unwrap();
+        assert_eq!(block128_perm(&p).unwrap(), vec![0, 2, 1, 3]);
+        // head_dim == 64: two heads share a scale block and the permutation splits them -> refused.
+        let p = v_perm(256, 4, 2, 64, 0, 256).unwrap();
+        assert!(block128_perm(&p).is_none());
+        // out_f <= 128 (the a/b projections): one block, identity.
+        let p = v_perm(48, 48, 16, 1, 0, 48).unwrap();
+        assert_eq!(block128_perm(&p).unwrap(), vec![0]);
+    }
+
+    /// A minimal qwen35 cfg — `apply_fp8_blk` reads only `cfg.ssm` (via `head_params`), so the rest
+    /// of the config is deliberately left at whatever the parser defaults produce.
+    fn hybrid_cfg(nk: u32, nv: u32, hd: u32) -> ModelConfig {
+        let dir = std::env::temp_dir().join(format!("memra_hfmap_cfg_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.json");
+        std::fs::write(&p, br#"{"architectures":["Qwen3_5ForConditionalGeneration"],
+            "model_type":"qwen3_5","text_config":{"hidden_size":512,"num_hidden_layers":2,
+            "num_attention_heads":4,"num_key_value_heads":2,"head_dim":128,
+            "intermediate_size":1024,"vocab_size":1000,"rms_norm_eps":1e-6,
+            "full_attention_interval":4}}"#).unwrap();
+        let mut cfg = ModelConfig::from_config_json(&p).unwrap();
+        cfg.ssm = Some(crate::config::SsmConfig {
+            conv_kernel: 4, inner_size: nv * hd, state_size: hd,
+            time_step_rank: nv, group_count: nk,
+        });
+        cfg
+    }
+
+    /// THE EXACTNESS GATE for the block-128 V-reorder arm: permuting (codes, grid) together must
+    /// reproduce, value for value, the permutation of the dequantized weight. This is the property
+    /// `find_fp8_native`'s Transform arm relies on to keep 144 of the 27B's 208 FP8 projections on
+    /// native residency instead of the Q8_0 slab.
+    #[test]
+    fn fp8_blk_v_reorder_is_exact() {
+        let (nk, nv, hd) = (2usize, 4usize, 128usize);
+        let (out_f, in_f) = (nv * hd, 256usize); // [512, 256], grid [4, 2]
+        let cols = in_f.div_ceil(128);
+        let codes: Vec<u8> = (0..out_f * in_f)
+            .map(|i| { let m = (i % 0x7F) as u8; if m == 0x7F { 0x30 } else { m | (((i >> 7) & 1) as u8) << 7 } })
+            .collect();
+        let scales: Vec<f32> = (0..out_f.div_ceil(128) * cols)
+            .map(|i| 2f32.powi(i as i32 - 3)).collect();
+        let deq = |c: u8, s: f32| crate::nvfp4_repack::fp8_e4m3_to_f32(c) * s;
+
+        let mut cfg = hybrid_cfg(nk as u32, nv as u32, hd as u32);
+        cfg.arch = Arch::Qwen35;
+        let (ne, nc, ns, rows2, cols2) = TransformKind::ZReorderRows
+            .apply_fp8_blk(&codes, out_f, in_f, &scales, cols, &cfg)
+            .expect("grid-aligned reorder must be accepted");
+        assert_eq!(ne, vec![in_f as u64, out_f as u64]);
+        assert_eq!((rows2, cols2), (out_f.div_ceil(128), cols));
+
+        // Reference: dequant, then permute the f32 rows with the existing primitive.
+        let mut f32w: Vec<f32> = (0..out_f * in_f)
+            .map(|i| deq(codes[i], scales[(i / in_f >> 7) * cols + ((i % in_f) >> 7)]))
+            .collect();
+        let want = reorder_rows_v(&f32w, nv, nk, hd, in_f, 0, out_f);
+        f32w.clear();
+        for o in 0..out_f {
+            for e in 0..in_f {
+                let got = deq(nc[o * in_f + e], ns[(o >> 7) * cols + (e >> 7)]);
+                assert_eq!(got.to_bits(), want[o * in_f + e].to_bits(),
+                           "permuted (codes,grid) != permuted dequant at [{o}][{e}]");
+            }
+        }
+    }
+
+    /// A non-aligned permutation must be REFUSED (the caller then falls to the Q8_0 arm, which
+    /// dequants with the pre-permutation grid and is correct) rather than silently approximated.
+    #[test]
+    fn fp8_blk_non_aligned_refused() {
+        let (nk, nv, hd) = (2usize, 4usize, 64usize); // head_dim 64 < 128 -> heads share a block
+        let (out_f, in_f) = (nv * hd, 256usize);
+        let cols = in_f.div_ceil(128);
+        let codes = vec![0x30u8; out_f * in_f];
+        let scales = vec![1.0f32; out_f.div_ceil(128) * cols];
+        let mut cfg = hybrid_cfg(nk as u32, nv as u32, hd as u32);
+        cfg.arch = Arch::Qwen35;
+        assert!(TransformKind::ZReorderRows
+            .apply_fp8_blk(&codes, out_f, in_f, &scales, cols, &cfg).is_none());
+        // value transforms are not permutations at all
+        assert!(TransformKind::NormPlusOne
+            .apply_fp8_blk(&codes, out_f, in_f, &scales, cols, &cfg).is_none());
     }
 }

@@ -556,6 +556,22 @@ pub const QT_Q4_0: i32 = 12; // gemma-4 QAT GGUF weight format (18B/32: fp16 d +
 /// Mixed-expert artifacts use the generic f32-dequant staged kernel until a target-rig-gated
 /// dp4a/MMQ implementation exists.
 pub const QT_Q2_K: i32 = 13;
+/// Checkpoint-native FP8-E4M3 with a BLOCK-128 weight-scale GRID (lane/fp8-blk128-decode,
+/// 2026-08-05) — the Qwen-official FP8 / DeepSeek-V3 scale class. Same raw e4m3 bytes as
+/// `QT_F8_E4M3` ([out_f, in_f] row-major, row_bytes == in_f), but the dequant scale is
+/// `GpuTensor::Quant.blk` (`Fp8BlockScales`, [ceil(out_f/128), ceil(in_f/128)] f32) and the
+/// scalar `scale` field is 1.0 by the layout contract.
+///
+/// WHY A DISTINCT CODE rather than `QT_F8_E4M3` + a `blk` flag: every existing QT_F8_E4M3
+/// consumer (qmatvec_e4m3_mmvq and its batched/fused twins, e4m3_fused_params,
+/// matmul_pre_dual_noscale's F8 arm, try_fp8_gemm) threads exactly ONE scalar weight scale. Under
+/// a shared code, any consumer that was not taught the grid would still MATCH and would dequant
+/// every tile at scale 1.0 — a silent numeric corruption. Under a distinct code every untaught
+/// consumer refuses loudly instead (`mmvq_supports`/`gemm_supports`/`mmq_supports` return false;
+/// the mmvq name match panics), so a missed dispatch site is a crash or a refusal receipt, never
+/// wrong numbers. Decode = `qmatvec_e4m3_blk_mmvq`; prefill (m>=16) = the per-block FP8 MMQ tile
+/// on the SAME resident bytes+grid (fp8_ffi::try_fp8_blk_mmq) — ONE weight copy total.
+pub const QT_F8_E4M3_BLK: i32 = 14;
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {
@@ -4912,7 +4928,7 @@ impl Engine {
             ne: vec![w0.in_features() as u64, (o0 + o1 + o2) as u64], scale: 1.0, rp: false,
             #[cfg(memra_cutlass)]
             cutlass: None,
-            fp8: None, rp4: None, f16: None,
+            fp8: None, blk: None, rp4: None, f16: None,
         }))
     }
 
@@ -5406,13 +5422,39 @@ impl Engine {
         // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
-            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1, default OFF; lane/fp8-mmq): the block-128 class
-            // try_fp8_gemm skips (cuBLASLt takes no block grid on sm_120). Exact per block — the
-            // checkpoint's e4m3 bytes and its f32 grid go into the tile unchanged.
+            // PER-BLOCK FP8 MMQ (lane/fp8-mmq): the block-128 class try_fp8_gemm skips (cuBLASLt
+            // takes no block grid on sm_120). Exact per block — the checkpoint's e4m3 bytes and its
+            // f32 grid go into the tile unchanged. TWO SOURCES, TWO DEFAULTS: the load-time stash is
+            // opt-in (MEMRA_FP8_MMQ=1), the native-resident QT_F8_E4M3_BLK grid is DEFAULT ON
+            // (MEMRA_FP8_MMQ=0 reverts it to dequant-per-call) — see fp8_ffi.rs for why the same
+            // tile defaults differently by operand source.
             if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(y); }
             // FP16-mirror prefill (MEMRA_PP_F16=1, probe 2026-07-26: 3.2-3.7x the MMQ class).
             // Mirror presence IS the gate (only built under the env). Decode never reaches here.
             if let Some(y) = self.try_f16_gemm(w, x, m)? { return Ok(y); }
+        }
+        // F8-E4M3 BLOCK-128 (QT_F8_E4M3_BLK, lane/fp8-blk128-decode). TWO arms, split at the SAME
+        // m threshold the rest of this method uses:
+        //   * m >= threshold (prefill): dequant-per-call to the ARM B' Q8_0 slab and recurse, so
+        //     prefill keeps the floor's kernels AND the floor's bits (try_e4m3_blk_prefill).
+        //   * m <  threshold: the native per-block GEMV — m=1 decode and the m=2..15 verify tiers.
+        //     grid.y=m runs the exact m=1 program per (token,row), so the decode-parity law holds
+        //     across every tier by construction with no batched twin needed.
+        //
+        // NOT gated on `fast`: this dtype has no dp4a twin and no Stage-A f32-dequant oracle (the
+        // generic `deq()` switch has no block-scale input), exactly as QT_F8_E4M3 has none, so
+        // MEMRA_FAST=0 cannot route it anywhere else. Placed before every GEMM/MMQ arm below
+        // because gemm_supports/mmq_supports/mmvq_supports all deliberately REFUSE this qtype —
+        // reaching the generic tail would panic rather than produce wrong numbers, and this pair of
+        // arms is what makes sure it never gets there.
+        if let GpuTensor::Quant { qtype, .. } = w {
+            if *qtype == QT_F8_E4M3_BLK {
+                if m >= GEMM_M_THRESHOLD {
+                    if let Some(y) = self.try_e4m3_blk_prefill(w, x, m)? { return Ok(y); }
+                }
+                let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+                if let Some(y) = self.try_e4m3_blk_pre(w, &aq, &ad, m)? { return Ok(y); }
+            }
         }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x, m);
@@ -5547,8 +5589,15 @@ impl Engine {
         use crate::model::GpuTensor;
         if std::env::var("MEMRA_FAST").as_deref() == Ok("0") { return false; }
         match w {
+            // QT_F8_E4M3_BLK is admitted for the same reason QT_F8_E4M3 is: its ONLY kernel class
+            // takes the shared q8_1 activation, so callers may pre-quantize once and share it
+            // across siblings. It is NOT admitted to any of the fused/dual epilogue doors those
+            // siblings can then open (`q8_fused_params`, `e4m3_fused_params` and
+            // `matmul_pre_dual_noscale` all match on their own qtype and refuse this one) — the
+            // block class has no fused twin yet, so each of its projections takes its own launch.
             GpuTensor::Quant { qtype, .. } => matches!(*qtype,
-                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3 | QT_Q4_0)
+                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3
+                | QT_F8_E4M3_BLK | QT_Q4_0)
                 || (*qtype == QT_IQ4_XS && Self::iq_fast_enabled()),
             GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => false,
         }
@@ -5572,12 +5621,21 @@ impl Engine {
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
         if m >= 16 && x_raw_ok && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
-            // PER-BLOCK FP8 MMQ (MEMRA_FP8_MMQ=1) — same arm as `matmul`; its own quantizer wants
-            // the RAW f32 activation, so x_fallback not aq/ad.
+            // PER-BLOCK FP8 MMQ — same arm as `matmul` (stash opt-in, native-resident default ON);
+            // its own quantizer wants the RAW f32 activation, so x_fallback not aq/ad.
             if let Some(y) = self.try_fp8_blk_mmq(w, x_fallback, m)? { return Ok(y); }
             // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
             if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
         }
+        // BLOCK-128 e4m3 (QT_F8_E4M3_BLK) — the same two arms as `matmul`, split at the same m, and
+        // placed at the same point in the order (after the prefill GEMM hooks, before every arm
+        // that refuses this qtype). The prefill arm needs the RAW f32 activation for the Q8_0
+        // dispatch it recurses into, so it takes x_fallback and is skipped when that is empty
+        // (a pre-quantized caller that dropped its f32 input never runs at prefill m anyway).
+        if m >= 16 && x_raw_ok && !self.verify_exact_on() {
+            if let Some(y) = self.try_e4m3_blk_prefill(w, x_fallback, m)? { return Ok(y); }
+        }
+        if let Some(y) = self.try_e4m3_blk_pre(w, aq, ad, m)? { return Ok(y); }
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind MEMRA_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
         // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not
@@ -5708,6 +5766,10 @@ impl Engine {
             _ => (bytes, rp),
         };
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        // BLOCK-128 e4m3 (QT_F8_E4M3_BLK): the same single kernel every other entry dispatches, so
+        // the decode-exact contract needs nothing special — grid.y=m runs the m=1 program per
+        // (token,row) by construction, which is exactly what this method exists to guarantee.
+        if let Some(y) = self.try_e4m3_blk_pre(w, &aq, &ad, m)? { return Ok(y); }
         // Batched weight-resident matvec for m=2-8: BIT-IDENTICAL per (token,row) to MMVQ (exact
         // integer dp4a, same warp reduce — kernel-check gate rel=0.00e0), one weight read for m
         // tokens. The dispatch the divergence fix must avoid is dp4a's 128-thread two-level
@@ -5749,6 +5811,8 @@ impl Engine {
         use crate::model::GpuTensor;
         debug_assert!(self.uses_q8_1_fast(w),
                       "matmul_decode_exact_pre: caller must guarantee q8_1-fast");
+        // BLOCK-128 e4m3: same single kernel, all m — see matmul_decode_exact's note.
+        if let Some(y) = self.try_e4m3_blk_pre(w, aq, ad, m)? { return Ok(y); }
         let in_f = w.in_features();
         let out_f = w.out_features();
         let (bytes, qtype, row_bytes, scale, rp) = match w {
@@ -6858,6 +6922,61 @@ impl Engine {
         Ok((y0, y1, y2))
     }
 
+    /// BLOCK-128 e4m3 MMVQ launcher (`qmatvec_e4m3_blk_mmvq`, lane/fp8-blk128-decode 2026-08-05).
+    /// The per-block-dequant twin of `qmatvec_mmvq`'s QT_F8_E4M3 arm: same grid/block decomposition
+    /// (warp per output row, ROWS_PER_BLOCK warps per block, grid.y = m), same q8_1 activation, but
+    /// the weight scale is a resident [rows, cols] f32 grid read per k128 block inside the kernel
+    /// instead of one scalar folded at the write. It cannot share `qmatvec_mmvq`'s body because
+    /// that launcher's arg list is fixed at (bytes, aq, ad, y, in_f, out_f, m, row_bytes [, scale]).
+    ///
+    /// `mr` and `rp` have no analogue here (no split-plane e4m3 layout exists), so there is exactly
+    /// one kernel and no name table — a shape this cannot serve must be refused at LOAD, not here.
+    pub fn qmatvec_e4m3_blk_mmvq(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>,
+                                 ad: &CudaSlice<f32>, scales: &CudaSlice<f32>,
+                                 m: usize, in_f: usize, out_f: usize, row_bytes: usize,
+                                 scale_cols: usize)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;   // full-overwrite output: skip memset
+        self.qmatvec_e4m3_blk_mmvq_into(bytes, aq, ad, scales, m, in_f, out_f, row_bytes,
+                                        scale_cols, &mut y)?;
+        Ok(y)
+    }
+
+    /// Slot-fed twin of `qmatvec_e4m3_blk_mmvq` (caller-owned output; the alloc-free capture lane).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_e4m3_blk_mmvq_into(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>,
+                                      ad: &CudaSlice<f32>, scales: &CudaSlice<f32>,
+                                      m: usize, in_f: usize, out_f: usize, row_bytes: usize,
+                                      scale_cols: usize, y: &mut CudaSlice<f32>)
+        -> Result<(), Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;   // matches MEMRA_MMVQ_ROWS in qmatvec.cu
+        let f = self.func("qmatvec_e4m3_blk_mmvq");
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32).div_ceil(ROWS_PER_BLOCK), m as u32, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),   // warp-per-row
+            shared_mem_bytes: 0,                  // warp-only reduce
+        };
+        let (inf, outf, mi, rb, sc) =
+            (in_f as i32, out_f as i32, m as i32, row_bytes as i64, scale_cols as i32);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(scales).arg(&mut *y)
+         .arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&sc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Test entry for the kernel_check exactness gate: the block-128 e4m3 MMVQ from raw bytes with
+    /// an internal q8_1 quantize (mirrors `qmatvec_mmvq_raw`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_e4m3_blk_mmvq_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>,
+                                     scales: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize,
+                                     row_bytes: usize, scale_cols: usize)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        self.qmatvec_e4m3_blk_mmvq(bytes, &aq, &ad, scales, m, in_f, out_f, row_bytes, scale_cols)
+    }
+
     /// Test entries for the kernel_check bit-parity gate: fused e4m3 launches from raw weight
     /// bytes with internal q8_1 quantize, no env gating (mirrors `qmatvec_q8_fused*_raw`).
     #[allow(clippy::too_many_arguments)]
@@ -6899,9 +7018,112 @@ impl Engine {
                                 ws0, ws1, ws2)
     }
 
+    /// THE single dispatch point for `QT_F8_E4M3_BLK` from a PRE-QUANTIZED q8_1 activation
+    /// (lane/fp8-blk128-decode). Every `matmul_pre`-family entry calls this first, so the block-128
+    /// class has exactly ONE code path across `matmul`, `matmul_pre`, `matmul_pre_noscale`,
+    /// `matmul_decode_exact` and `matmul_decode_exact_pre` — the same kernel at the same grid for
+    /// every m, which is what makes verify == decode bit-for-bit at every tier for free.
+    ///
+    /// Returns None for any other qtype (the caller continues its normal dispatch). The `blk: Some`
+    /// pattern is part of the match, not an unwrap: qtype and grid presence are set together in the
+    /// one residency arm that builds this tensor, and a qtype-without-grid would be a construction
+    /// bug — better to fall through and hit a loud refusal than to unwrap a None here.
+    fn try_e4m3_blk_pre(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>,
+                        ad: &CudaSlice<f32>, m: usize)
+        -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if let GpuTensor::Quant { bytes, qtype, row_bytes, blk: Some(g), .. } = w {
+            if *qtype == QT_F8_E4M3_BLK {
+                return Ok(Some(self.qmatvec_e4m3_blk_mmvq(
+                    bytes, aq, ad, &g.scales, m, w.in_features(), w.out_features(),
+                    *row_bytes, g.cols)?));
+            }
+        }
+        Ok(None)
+    }
+
+    /// PREFILL (m >= GEMM_M_THRESHOLD) for `QT_F8_E4M3_BLK` — DEQUANT-PER-CALL to the Q8_0 slab
+    /// this class's residency replaced, then the ordinary Q8_0 prefill dispatch on the transient.
+    ///
+    /// WHY THIS EXISTS AT ALL, i.e. the regression it prevents: the decode kernel is a warp-per-row
+    /// GEMV. At grid.y=m it re-reads the whole weight once PER TOKEN, so letting a 512-token prefill
+    /// chunk reach it would be a ~500x weight-traffic blowup on the single most bandwidth-bound part
+    /// of the forward. Native residency is a DECODE win and must not be paid for in prefill, so
+    /// prefill keeps the floor's arithmetic and the floor's kernels.
+    ///
+    /// WHY DEQUANT-PER-CALL rather than a second resident slab: a resident slab is dual residency —
+    /// it gives back the entire 1.0-vs-1.0625 B/weight win this lane exists to capture (and then
+    /// some, since the e4m3 copy stays too). The transient costs one linear device pass per
+    /// (projection, prefill call) and frees immediately.
+    ///
+    /// NUMERICALLY IT IS THE FLOOR, EXACTLY: `fp8_blk_dequant_q8_0` is the merged ARM B' kernel,
+    /// gate-proven BYTE-IDENTICAL to the host dequant+re-encode (kernel-check `fp8-blk-gpu`). So the
+    /// slab these bytes form is bit-for-bit the slab the `MEMRA_ST_E4M3_BLK=0` arm makes resident,
+    /// and every prefill kernel downstream sees identical input — prefill logits under this lane are
+    /// bit-identical to prefill logits under the floor, which is what makes the decode A/B a clean
+    /// single-variable comparison instead of a two-variable one.
+    ///
+    /// WHAT IT COSTS, MEASURED, AND WHY THAT COST IS MOSTLY STRUCTURAL (27B block-128 ckpt, pp512,
+    /// this rig = RTX 5090 Laptop, ~896 GB/s GDDR7). This arm makes prefill move the weight THREE
+    /// times instead of once: read 6.88 GB of e4m3, write 7.31 GB of Q8_0, then the MMQ reads that
+    /// 7.31 GB back. The two extra passes are 14.19 GB = 15.8 ms at this card's roofline against a
+    /// ~332 ms pp512, i.e. **~-4.5% pp is a floor no kernel tuning can remove** — only deleting the
+    /// dequant can. Measured: the dequant kernel costs 27.9 ms/pass (nsys, 208 projections) after
+    /// the 2026-08-05 vector rewrite (was 66.5 ms at one byte per thread), and e2e pp512 is
+    /// 1451.4 vs the slab arm's 1541.6 tok/s = -5.8% (N=3 interleaved pairs). So ~1.3pp of the
+    /// -5.8% is residual kernel inefficiency and ~4.5pp is the extra traffic itself.
+    ///
+    /// SO THE DEQUANT IS NO LONGER THE DEFAULT ROUTE — it is the FALLBACK. The per-block FP8 MMQ
+    /// tile (`try_fp8_blk_mmq`) consumes the resident e4m3 bytes + grid DIRECTLY, deleting both extra
+    /// passes, and since 2026-08-05 it runs FIRST and by default for the native-resident source
+    /// (`fp8_blk_mmq_native_enabled`; `MEMRA_FP8_MMQ=0` is the seam back to this dequant). On paper
+    /// the trade was unassumable — lane/fp8-mmq-v2 measured that tile at 0.85-1.09x the Q8_0 MMQ
+    /// floor GEMM-only, so it swapped a -4.5% traffic cost for a 0-to-15% GEMM cost of unknown sign.
+    /// Measured on the 27B (3 arms interleaved, N=3, research/fp8blk-20260805/VERDICT.md): slab
+    /// 1540.5 / this dequant 1449.1 / the tile 1553.3 tok/s, min(tile) > max(slab). The tile wins
+    /// because v2's denominator had its slab already resident while this class's floor must build it
+    /// every call; same tile, opposite sign, because the question changed.
+    ///
+    /// THIS ARM STILL RUNS, and is not dead code: every `try_fp8_blk_mmq` precondition (in_f % 16,
+    /// grid dims vs shape, per-tensor scale == 1.0, the e4m3-NaN scan) refuses by falling through to
+    /// here, so a checkpoint the tile cannot take keeps exact prefill on the floor's own bits rather
+    /// than losing the class. It is also what `MEMRA_FP8_MMQ=0` reverts to.
+    fn try_e4m3_blk_prefill(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
+        -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, qtype, blk: Some(g), .. } = w else { return Ok(None) };
+        if *qtype != QT_F8_E4M3_BLK { return Ok(None) }
+        // NO-DEQUANT ROUTE, THE DEFAULT (MEMRA_FP8_MMQ=0 reverts): the per-block MMQ tile eats the
+        // resident e4m3 bytes and grid as-is, so neither extra weight pass happens. Its own
+        // preconditions (in_f % 16, grid dims, scale == 1.0, no e4m3 NaN code) can refuse — fall
+        // through to the dequant below when they do, never silently produce nothing.
+        if let Some(y) = self.try_fp8_blk_mmq(w, x, m)? { return Ok(Some(y)); }
+        let (in_f, out_f) = (w.in_features(), w.out_features());
+        let slab = self.fp8_blk_dequant_q8_0_dev(bytes, &g.scales, out_f, in_f)?;
+        let tmp = GpuTensor::Quant {
+            bytes: slab,
+            qtype: QT_Q8_0,
+            row_bytes: in_f / 32 * 34,
+            ne: vec![in_f as u64, out_f as u64],
+            scale: 1.0,
+            rp: false,
+            #[cfg(memra_cutlass)]
+            cutlass: None,
+            fp8: None, blk: None, f16: None, rp4: None,
+        };
+        // Recursion terminates: `tmp` is QT_Q8_0 with `blk: None`, so it cannot re-enter this arm.
+        Ok(Some(self.matmul(&tmp, x, m)?))
+    }
+
     pub fn matmul_pre_noscale(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                               m: usize) -> Result<Option<(CudaSlice<f32>, f32)>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // BLOCK-128 e4m3: every scale factor is folded inside the kernel per k128, so the
+        // "separable post-op scale" this entry exists to defer is 1.0 — return it explicitly
+        // rather than let the tail below refuse and cost the caller a re-dispatch.
+        if m == 1 {
+            if let Some(y) = self.try_e4m3_blk_pre(w, aq, ad, m)? { return Ok(Some((y, 1.0))); }
+        }
         // Only the m==1 fast path applies the scale as a separable post-op; bail everywhere else.
         if m != 1 || !self.uses_q8_1_fast(w) { return Ok(None); }
         let in_f = w.in_features();

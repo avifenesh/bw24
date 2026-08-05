@@ -1,0 +1,7 @@
+r1 A-pre 368 MiB, 60, 1597 MHz
+r1 B-pre 368 MiB, 61, 1920 MHz
+r2 A-pre 368 MiB, 60, 1777 MHz
+r2 B-pre 368 MiB, 68, 1762 MHz
+r3 A-pre 368 MiB, 69, 1957 MHz
+r3 B-pre 368 MiB, 57, 1590 MHz
+final 368 MiB, 59, 1597 MHz

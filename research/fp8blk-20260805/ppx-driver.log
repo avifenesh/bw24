@@ -1,0 +1,11 @@
+A-slab rc=0 | fp8-mmq dispatches: 0  (hook entries=1496 gate_off=1496 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+prefill-path EXACTNESS (prime_cache): disagreements=257/511 (50.29%) first_at=0  mean_nll=2.787267  total_nll=1424.2936
+B-blkdeq rc=0 | fp8-mmq dispatches: 0  (hook entries=2744 gate_off=2744 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+prefill-path EXACTNESS (prime_cache): disagreements=257/511 (50.29%) first_at=0  mean_nll=2.787267  total_nll=1424.2936
+C-blkmmq rc=0 | fp8-mmq dispatches: 624  (hook entries=1496 gate_off=0 no_operand=872 bad_shape=0 bad_scale=0 nan=0)
+prefill-path EXACTNESS (prime_cache): disagreements=259/511 (50.68%) first_at=0  mean_nll=2.764722  total_nll=1412.7730
+== cross-arm prime-logit drift (A = floor denominator) ==
+n=248320  rms(A-slab)=2.7155  argmax(A)=365
+A-slab: max_abs=0.000000e+00  rms_abs=0.000000e+00  rms_rel=0.000e+00  bitdiff=0/248320  argmax=365  top10_same=True
+B-blkdeq: max_abs=0.000000e+00  rms_abs=0.000000e+00  rms_rel=0.000e+00  bitdiff=0/248320  argmax=365  top10_same=True
+C-blkmmq: max_abs=3.612556e-01  rms_abs=6.911820e-02  rms_rel=2.545e-02  bitdiff=248319/248320  argmax=365  top10_same=True
