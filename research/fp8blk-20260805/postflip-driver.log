@@ -1,0 +1,53 @@
+== rep 1  gpu 368 MiB, 53, 180 MHz
+pp N r1 rc=0 | pp-only MEDIAN: 512 tok in 0.3295s = 1553.9 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 1040  (hook entries=2480 gate_off=0 no_operand=1440 bad_shape=0 bad_scale=0 nan=0)
+pp S r1 rc=0 | pp-only MEDIAN: 512 tok in 0.3533s = 1449.1 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 0  (hook entries=4560 gate_off=2080 no_operand=2480 bad_shape=0 bad_scale=0 nan=0)
+pp A r1 rc=0 | pp-only MEDIAN: 512 tok in 0.3716s = 1377.9 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 0  (hook entries=2480 gate_off=0 no_operand=2480 bad_shape=0 bad_scale=0 nan=0)
+== rep 2  gpu 368 MiB, 60, 1590 MHz
+pp N r2 rc=0 | pp-only MEDIAN: 512 tok in 0.3374s = 1517.4 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 1040  (hook entries=2480 gate_off=0 no_operand=1440 bad_shape=0 bad_scale=0 nan=0)
+pp S r2 rc=0 | pp-only MEDIAN: 512 tok in 0.3556s = 1440.0 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 0  (hook entries=4560 gate_off=2080 no_operand=2480 bad_shape=0 bad_scale=0 nan=0)
+pp A r2 rc=0 | pp-only MEDIAN: 512 tok in 0.3326s = 1539.2 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 0  (hook entries=2480 gate_off=0 no_operand=2480 bad_shape=0 bad_scale=0 nan=0)
+== rep 3  gpu 368 MiB, 60, 2040 MHz
+pp N r3 rc=0 | pp-only MEDIAN: 512 tok in 0.3304s = 1549.7 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 1040  (hook entries=2480 gate_off=0 no_operand=1440 bad_shape=0 bad_scale=0 nan=0)
+pp S r3 rc=0 | pp-only MEDIAN: 512 tok in 0.3536s = 1447.9 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 0  (hook entries=4560 gate_off=2080 no_operand=2480 bad_shape=0 bad_scale=0 nan=0)
+pp A r3 rc=0 | pp-only MEDIAN: 512 tok in 0.3326s = 1539.4 tok/s (pp512, 3 reps) | fp8-mmq dispatches: 0  (hook entries=2480 gate_off=0 no_operand=2480 bad_shape=0 bad_scale=0 nan=0)
+dec N r1 rc=0 | 
+dec R r1 rc=0 | 
+dec N r2 rc=0 | 
+dec R r2 rc=0 | 
+dec N r3 rc=0 | 
+dec R r3 rc=0 | 
+census naked:        Q8_0:   96 tensors     23.906 MiB   F8_E4M3_BLK:  208 tensors   6880.000 MiB 
+census rollback:        Q8_0:  304 tensors   7333.906 MiB 
+ppx N rc=0 | fp8-mmq dispatches: 624  (hook entries=1496 gate_off=0 no_operand=872 bad_shape=0 bad_scale=0 nan=0)
+prefill-path EXACTNESS (prime_cache): disagreements=259/511 (50.68%) first_at=0  mean_nll=2.764722  total_nll=1412.7730
+ppx A rc=0 | fp8-mmq dispatches: 0  (hook entries=1496 gate_off=0 no_operand=1496 bad_shape=0 bad_scale=0 nan=0)
+prefill-path EXACTNESS (prime_cache): disagreements=257/511 (50.29%) first_at=0  mean_nll=2.787267  total_nll=1424.2936
+== cross-arm prime-logit drift (A = floor denominator, same binary) ==
+import math, pathlib, struct, sys
+r = pathlib.Path(sys.argv[1])
+def rd(p):
+    b = p.read_bytes(); return list(struct.unpack("<%df" % (len(b)//4), b))
+ref = rd(r / "postflip-ppx-A.f32")
+rms_ref = math.sqrt(sum(v*v for v in ref)/len(ref))
+order = sorted(range(len(ref)), key=lambda i: -ref[i])[:10]
+print(f"n={len(ref)}  rms(A-slab)={rms_ref:.4f}  argmax(A)={order[0]}")
+for arm in ("A", "N"):
+    g = rd(r / f"postflip-ppx-{arm}.f32")
+    mx = max(abs(a-b) for a, b in zip(ref, g))
+    rms = math.sqrt(sum((a-b)**2 for a, b in zip(ref, g))/len(g))
+    go = sorted(range(len(g)), key=lambda i: -g[i])[:10]
+    bits = sum(1 for a, b in zip(ref, g) if a != b)
+    print(f"{arm}: max_abs={mx:.6e}  rms_abs={rms:.6e}  rms_rel={rms/rms_ref:.3e}  "
+          f"bitdiff={bits}/{len(g)}  argmax={go[0]}  top10_same={go == order}")
+run-spec K=1 rc=0 |   acceptance: 27/37 = 73.0%   self-consistency: PASS (identical to generate)
+run-spec K=2 rc=0 |   acceptance: 34/60 = 56.7%   self-consistency: PASS (identical to generate)
+n=248320  rms(A-slab)=2.7155  argmax(A)=365
+A: max_abs=0.000000e+00  rms_abs=0.000000e+00  rms_rel=0.000e+00  bitdiff=0/248320  argmax=365  top10_same=True
+N: max_abs=3.612556e-01  rms_abs=6.911820e-02  rms_rel=2.545e-02  bitdiff=248319/248320  argmax=365  top10_same=True
+run-spec K=3 rc=0 |   acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+run-spec K=4 rc=0 |   acceptance: 38/104 = 36.5%   self-consistency: PASS (identical to generate)
+run-spec K=5 rc=0 |   acceptance: 39/125 = 31.2%   self-consistency: PASS (identical to generate)
+run-spec K=6 rc=0 |   acceptance: 39/150 = 26.0%   self-consistency: PASS (identical to generate)
+run-spec K=7 rc=0 |   acceptance: 39/175 = 22.3%   self-consistency: PASS (identical to generate)
+run-spec K=8 rc=0 |   acceptance: 39/200 = 19.5%   self-consistency: PASS (identical to generate)
+final gpu 368 MiB, 62, 1642 MHz

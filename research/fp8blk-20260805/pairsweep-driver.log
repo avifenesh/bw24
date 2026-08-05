@@ -1,0 +1,2 @@
+== pair 1  gpu 368 MiB, 70, 2205 MHz
+N-p1 rc=0 | pp-only MEDIAN: 512 tok in 0.3306s = 1548.7 tok/s (pp512, 3 reps) | reps 1613.5 1465.4 1548.7 | hits 1040

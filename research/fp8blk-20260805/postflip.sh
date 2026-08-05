@@ -48,7 +48,11 @@ for r in 1 2 3; do
     esac
     env "${ENVV[@]}" MEMRA_FP8_MMQ_STATS=1 MEMRA_NGEN=128 MEMRA_PROMPT_FILE="$P" MEMRA_RESIDENCY_CENSUS=1 \
         timeout 2400 target/release/run-gen "$CK" > "$R/postflip-dec-$arm-r$r.log" 2>&1
-    say "dec $arm r$r rc=$? | $(grep -a 'gen-only' "$R/postflip-dec-$arm-r$r.log" | head -1)"
+    # NOTE the pattern: the ST-dir branch prints "generated N tokens in Xs = Y tok/s (ST greedy
+    # decode)", NOT the GGUF branch's "(gen-only; ...)" wording. The first run of this script grepped
+    # 'gen-only' and printed an EMPTY field for every decode arm while the logs held the numbers — a
+    # blank summary line that looks like a failed run and is not one.
+    say "dec $arm r$r rc=$? | $(grep -a -E 'tok/s \(ST greedy decode\)|gen-only' "$R/postflip-dec-$arm-r$r.log" | head -1)"
   done
 done
 say "census naked: $(grep -a -E 'Q8_0:|F8_E4M3_BLK:' "$R/postflip-dec-N-r1.log" | tr '\n' ' ')"
@@ -69,7 +73,13 @@ for arm in N A; do
   say "$(grep -a 'prefill-path EXACTNESS' "$R/postflip-ppx-$arm.log" | head -1)"
 done
 say "== cross-arm prime-logit drift (A = floor denominator, same binary) =="
-python3 - "$R" 2>&1 | tee -a "$R/postflip-driver.log" <<'PY'
+# HARNESS BUG, found and fixed on the first run of this script: `python3 - "$R" | tee -a log <<'PY'`
+# attaches the heredoc to the LAST command in the pipeline (tee), not to python. Result: tee appended
+# the python SOURCE to the driver log and python read EOF on stdin, so the comparator silently never
+# ran and the log looked like it had output. Redirect to a file, then tee the file. (Same shape as
+# the standing rule against `run-* 2>&1 | parser`: never let the pipe be the thing that eats the
+# evidence.)
+python3 - "$R" > "$R/postflip-ppx-cmp.txt" 2>&1 <<'PY'
 import math, pathlib, struct, sys
 r = pathlib.Path(sys.argv[1])
 def rd(p):
@@ -87,6 +97,7 @@ for arm in ("A", "N"):
     print(f"{arm}: max_abs={mx:.6e}  rms_abs={rms:.6e}  rms_rel={rms/rms_ref:.3e}  "
           f"bitdiff={bits}/{len(g)}  argmax={go[0]}  top10_same={go == order}")
 PY
+cat "$R/postflip-ppx-cmp.txt" | tee -a "$R/postflip-driver.log"
 
 # ---- phase 4: run-spec K=1..8 self-consistency on the NAKED default (primes via prime_cache, so it
 # exercises the flipped route on every draft+verify step).
