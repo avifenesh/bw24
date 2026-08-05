@@ -499,14 +499,29 @@ struct CompletionResp {
 /// OpenAI-schema usage object, shared by every response shape. `prompt_tokens_details.
 /// cached_tokens` is the marketplace prompt-caching field (cache reads bill at a discount;
 /// the value is worker-truth — tokens whose KV was resumed instead of computed).
-fn usage_json(n_prompt: usize, n_tokens: usize, n_cached: usize, elapsed_s: f64) -> serde_json::Value {
-    json!({
+/// `spec` (lane/accept-telemetry) is an ADDITIVE extension: this request's spec-decode
+/// rounds/drafted/accepted + acceptance rate. Present only when the request actually ran
+/// spec rounds — official SDKs ignore unknown usage fields (extra fields ok, existing
+/// fields untouched), and spec-off responses are byte-identical to before.
+fn usage_json(n_prompt: usize, n_tokens: usize, n_cached: usize, elapsed_s: f64,
+              spec: Option<worker::SpecUsage>) -> serde_json::Value {
+    let mut u = json!({
         "prompt_tokens": n_prompt,
         "completion_tokens": n_tokens,
         "total_tokens": n_prompt + n_tokens,
         "prompt_tokens_details": { "cached_tokens": n_cached },
         "elapsed_s": elapsed_s,
-    })
+    });
+    if let Some(sp) = spec {
+        u["spec"] = json!({
+            "rounds": sp.rounds,
+            "drafted": sp.drafted,
+            "accepted": sp.accepted,
+            "acceptance_rate": if sp.drafted > 0 {
+                sp.accepted as f64 / sp.drafted as f64 } else { 0.0 },
+        });
+    }
+    u
 }
 
 // ---- OpenAI response envelope (serve-compat lane, 2026-08-03; gap-scan F1) ----
@@ -1071,7 +1086,7 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
 /// Flat serving counters + engine-truth step latency percentiles.
 async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
     let m = st.metrics.lock().map(|m| m.clone()).unwrap_or_default();
-    Json(json!({
+    let mut body = json!({
         "admitted": m.admitted,
         "completed": m.completed,
         "tokens_out": m.tokens_out,
@@ -1083,7 +1098,34 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
         "prefix_cache_hits": m.prefix_hits,
         "prefix_cache_entries": m.prefix_entries,
         "prefix_cache_bytes": m.prefix_bytes,
-    }))
+    });
+    // Spec-decode acceptance telemetry (lane/accept-telemetry — the llama.cpp #26389 /
+    // vLLM per-draft-position counter schema). Per model, cumulative since model load
+    // (models load once per process — counters reset on restart, never mid-run). The
+    // block is ABSENT until a spec burst runs: spec-off deployments see the exact
+    // pre-lane payload. accept_rate_per_pos[j] = P(position j accepted | round offered
+    // position j) — sane spec decode decays monotonically from pos 0.
+    let spec: serde_json::Map<String, serde_json::Value> = m.spec.iter().map(|(model, t)| {
+        let n_pos = t.pos_drafted.iter().rposition(|&d| d > 0).map_or(0, |p| p + 1);
+        (model.clone(), json!({
+            "rounds": t.rounds,
+            "drafted": t.drafted,
+            "accepted": t.accepted,
+            "acceptance_rate": if t.drafted > 0 {
+                t.accepted as f64 / t.drafted as f64 } else { 0.0 },
+            "tokens_per_round": if t.rounds > 0 {
+                (t.accepted + t.rounds) as f64 / t.rounds as f64 } else { 0.0 },
+            "pos_drafted": t.pos_drafted[..n_pos].to_vec(),
+            "pos_accepted": t.pos_accepted[..n_pos].to_vec(),
+            "accept_rate_per_pos": (0..n_pos).map(|j| if t.pos_drafted[j] > 0 {
+                t.pos_accepted[j] as f64 / t.pos_drafted[j] as f64 } else { 0.0 })
+                .collect::<Vec<f64>>(),
+        }))
+    }).collect();
+    if !spec.is_empty() {
+        body["spec"] = serde_json::Value::Object(spec);
+    }
+    Json(body)
 }
 
 async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
@@ -1655,7 +1697,7 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                     };
                     yield Ok(SseEvent::default().data(payload));
                 }
-                Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s } => {
+                Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s, spec } => {
                     let mut finish = stop_reason_to_finish(&stop_reason);
                     if let Some(p) = parser.as_mut() {
                         for piece in p.finish() {
@@ -1682,7 +1724,7 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                         }
                     }
                     if chat || openai_compat() {
-                        let usage = usage_json(n_prompt, n_tokens, n_cached, elapsed_s);
+                        let usage = usage_json(n_prompt, n_tokens, n_cached, elapsed_s, spec);
                         let fin = if chat {
                             let mut v = env.stamp(json!({
                                 "object": "chat.completion.chunk", "model": model,
@@ -1827,7 +1869,7 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                     None => text.push_str(&delta),
                 }
             }
-            Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s } => {
+            Event::Done { stop_reason, n_tokens, n_prompt, n_cached, elapsed_s, spec } => {
                 if let Some(p) = parser.as_mut() {
                     consume(p.finish(), &mut text, &mut reasoning, &mut calls);
                 }
@@ -1858,7 +1900,7 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                         "choices": [{ "index": 0,
                                       "message": message,
                                       "finish_reason": finish }],
-                        "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s)
+                        "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s, spec)
                     }))).into_response();
                 }
                 if openai_compat() {
@@ -1866,7 +1908,7 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                         "object": "text_completion", "model": model,
                         "choices": [{ "index": 0, "text": text,
                                       "finish_reason": finish }],
-                        "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s)
+                        "usage": usage_json(n_prompt, n_tokens, n_cached, elapsed_s, spec)
                     }))).into_response();
                 }
                 return Json(CompletionResp {
@@ -1964,6 +2006,7 @@ mod tests {
         tx.send(Event::Token { id: 1, text: "hello".into() }).unwrap();
         tx.send(Event::Done {
             stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 42, n_cached: 30, elapsed_s: 0.5,
+            spec: None,
         }).unwrap();
         drop(tx);
         let response = blocking_response(rx, "plain_quant".into(), true, Vec::new(), None,
@@ -1984,6 +2027,33 @@ mod tests {
         assert_eq!(payload["usage"]["completion_tokens"], 1);
         assert_eq!(payload["usage"]["total_tokens"], 43);
         assert_eq!(payload["usage"]["prompt_tokens_details"]["cached_tokens"], 30);
+        // ADDITIVE contract (lane/accept-telemetry): a non-spec request carries NO usage.spec
+        // — the pre-lane usage object byte-for-byte.
+        assert!(payload["usage"].get("spec").is_none());
+    }
+
+    /// usage.spec (lane/accept-telemetry): spec-decode requests carry this request's own
+    /// acceptance summary as an additive usage extension; every existing field is untouched.
+    #[tokio::test]
+    async fn chat_usage_carries_spec_acceptance_summary() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Token { id: 1, text: "hello".into() }).unwrap();
+        tx.send(Event::Done {
+            stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 42, n_cached: 0, elapsed_s: 0.5,
+            spec: Some(worker::SpecUsage { rounds: 10, drafted: 30, accepted: 21 }),
+        }).unwrap();
+        drop(tx);
+        let response = blocking_response(rx, "plain_quant".into(), true, Vec::new(), None,
+                                         Envelope::new(true)).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let sp = &payload["usage"]["spec"];
+        assert_eq!(sp["rounds"], 10);
+        assert_eq!(sp["drafted"], 30);
+        assert_eq!(sp["accepted"], 21);
+        assert!((sp["acceptance_rate"].as_f64().unwrap() - 0.7).abs() < 1e-9);
+        // existing fields untouched next to the extension.
+        assert_eq!(payload["usage"]["total_tokens"], 43);
     }
 
     fn weather_request(extra: serde_json::Value) -> ChatCompletionReq {
@@ -2187,6 +2257,7 @@ mod tests {
 <parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>".into() }).unwrap();
         tx.send(Event::Done {
             stop_reason: "Eos".into(), n_tokens: 2, n_prompt: 40, n_cached: 0, elapsed_s: 0.5,
+            spec: None,
         }).unwrap();
         drop(tx);
         let parser = ToolStreamParser::new(HashMap::new(), true);
@@ -2312,6 +2383,7 @@ mod tests {
         tx.send(Event::Token { id: 2, text: "llo".into() }).unwrap();
         tx.send(Event::Done {
             stop_reason: "Eos".into(), n_tokens: 2, n_prompt: 10, n_cached: 0, elapsed_s: 0.1,
+            spec: None,
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
@@ -2349,7 +2421,7 @@ mod tests {
         tx.send(Event::Token { id: 2, text: "blem: leaked prompt".into() }).unwrap();
         tx.send(Event::Done {
             stop_reason: "Callback".into(), n_tokens: 2, n_prompt: 8, n_cached: 0,
-            elapsed_s: 0.1,
+            elapsed_s: 0.1, spec: None,
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
@@ -2368,6 +2440,7 @@ mod tests {
         tx.send(Event::Token { id: 1, text: "ends in Pro".into() }).unwrap();
         tx.send(Event::Done {
             stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 8, n_cached: 0, elapsed_s: 0.1,
+            spec: None,
         }).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true),
@@ -2642,7 +2715,7 @@ mod tests {
                 let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
                 let _ = req.tx.send(Event::Done {
                     stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 1, n_cached: 0,
-                    elapsed_s: 0.01,
+                    elapsed_s: 0.01, spec: None,
                 });
             }
         });
@@ -2886,6 +2959,7 @@ mod tests {
         tx.send(Event::Token { id: 2, text: "blem: leaked prompt".into() }).unwrap();
         tx.send(Event::Done {
             stop_reason: "Callback".into(), n_tokens: 2, n_prompt: 8, n_cached: 0, elapsed_s: 0.5,
+            spec: None,
         }).unwrap();
         drop(tx);
         let response = blocking_response(

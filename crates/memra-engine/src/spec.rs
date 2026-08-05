@@ -5096,3 +5096,66 @@ impl HybridModel {
         Ok((rows, bg))
     }
 }
+
+#[cfg(test)]
+mod telem_tests {
+    use super::{SpecTelemetry, SPEC_TELEM_POS};
+
+    /// The worker's per-burst pattern: stash, accumulate, diff — the delta must isolate
+    /// exactly the burst's contribution (pool-resumed sessions carry prior requests' counts).
+    #[test]
+    fn delta_isolates_burst_contribution() {
+        let mut t = SpecTelemetry::default();
+        // "previous request": 2 rounds of k=3, accepts 3 then 1.
+        for (kr, na) in [(3usize, 3usize), (3, 1)] {
+            t.rounds += 1;
+            t.drafted += kr as u64;
+            t.accepted += na as u64;
+            for j in 0..kr { t.pos_drafted[j] += 1; }
+            for j in 0..na { t.pos_accepted[j] += 1; }
+        }
+        let before = t;
+        // "this burst": 1 round k=3, accepts 2.
+        t.rounds += 1;
+        t.drafted += 3;
+        t.accepted += 2;
+        for j in 0..3 { t.pos_drafted[j] += 1; }
+        for j in 0..2 { t.pos_accepted[j] += 1; }
+        let d = t.delta_since(&before);
+        assert_eq!((d.rounds, d.drafted, d.accepted), (1, 3, 2));
+        assert_eq!(&d.pos_drafted[..3], &[1, 1, 1]);
+        assert_eq!(&d.pos_accepted[..3], &[1, 1, 0]);
+        assert_eq!(d.pos_drafted[3..], [0; SPEC_TELEM_POS - 3]);
+    }
+
+    /// merge(delta) then merge(delta2) equals accumulating both — the per-model /metrics
+    /// aggregation invariant.
+    #[test]
+    fn merge_accumulates_fieldwise() {
+        let mut agg = SpecTelemetry::default();
+        let mut d1 = SpecTelemetry { rounds: 2, drafted: 6, accepted: 4, ..Default::default() };
+        d1.pos_drafted[0] = 2;
+        d1.pos_accepted[0] = 2;
+        let mut d2 = SpecTelemetry { rounds: 1, drafted: 3, accepted: 1, ..Default::default() };
+        d2.pos_drafted[0] = 1;
+        d2.pos_accepted[0] = 1;
+        d2.pos_drafted[1] = 1;
+        agg.merge(&d1);
+        agg.merge(&d2);
+        assert_eq!((agg.rounds, agg.drafted, agg.accepted), (3, 9, 5));
+        assert_eq!(agg.pos_drafted[0], 3);
+        assert_eq!(agg.pos_accepted[0], 3);
+        assert_eq!(agg.pos_drafted[1], 1);
+        assert_eq!(agg.pos_accepted[1], 0);
+    }
+
+    /// Wrong-snapshot diff saturates to zero instead of wrapping — the counters feed a
+    /// public metrics surface and must never publish a u64-wrapped garbage value.
+    #[test]
+    fn delta_saturates_never_wraps() {
+        let small = SpecTelemetry { rounds: 1, drafted: 2, accepted: 1, ..Default::default() };
+        let big = SpecTelemetry { rounds: 5, drafted: 15, accepted: 9, ..Default::default() };
+        let d = small.delta_since(&big);
+        assert_eq!((d.rounds, d.drafted, d.accepted), (0, 0, 0));
+    }
+}
