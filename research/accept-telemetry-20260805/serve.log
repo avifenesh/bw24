@@ -1,0 +1,38 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8188
+[meter] admit id=chatcmpl-70e493c66afaf85fe67b60031748b566 tenant=default lane=interactive model="q9"
+[spec-acc] ctx=20 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=53 burst=23/36 cum=45/66=0.682
+[spec-acc] ctx=88 burst=18/33 cum=63/99=0.636
+[meter] admit id=chatcmpl-c148e4a86203b705cb7b7a7275de82c0 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 20; 1 parked, 18 prompt tokens; model q9)
+[worker] observed session VRAM cost for "q9": 168MB (admission gate = 2x)
+[spec-acc] ctx=18 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=51 burst=22/30 cum=45/57=0.789
+[spec-acc] ctx=83 burst=17/42 cum=62/99=0.626
+[meter] admit id=chatcmpl-8712b517c4b470caadc9b6054dfd10e8 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 20; 2 parked, 24 prompt tokens; model q9)
+[spec-acc] ctx=24 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=57 burst=23/30 cum=46/57=0.807
+[spec-acc] ctx=90 burst=21/30 cum=67/87=0.770
+[meter] admit id=chatcmpl-6f86094933ead6953cf367ebfc152408 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 18; 2 parked, 20 prompt tokens; model q9)
+[spec-acc] ctx=20 burst=19/36 cum=19/36=0.528
+[spec-acc] ctx=52 burst=20/33 cum=39/69=0.565
+[spec-acc] ctx=84 burst=18/39 cum=57/108=0.528
+[meter] admit id=chatcmpl-f54b2310c21a37df25e818c5e1bc5957 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 24; 2 parked, 18 prompt tokens; model q9)
+[spec-acc] ctx=18 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=51 burst=19/45 cum=43/69=0.623
+[spec-acc] ctx=86 burst=22/24 cum=65/93=0.699
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

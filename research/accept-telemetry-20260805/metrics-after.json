@@ -1,0 +1,36 @@
+{
+    "admitted": 5,
+    "completed": 5,
+    "tokens_out": 0,
+    "step_p50_ms": 0.0,
+    "step_p99_ms": 0.0,
+    "prompt_tokens_in": 100,
+    "cached_tokens_in": 0,
+    "prefix_cache_hits": 0,
+    "prefix_cache_entries": 0,
+    "prefix_cache_bytes": 0,
+    "spec": {
+        "q9": {
+            "rounds": 162,
+            "drafted": 486,
+            "accepted": 314,
+            "acceptance_rate": 0.6460905349794238,
+            "tokens_per_round": 2.9382716049382718,
+            "pos_drafted": [
+                162,
+                162,
+                162
+            ],
+            "pos_accepted": [
+                129,
+                105,
+                80
+            ],
+            "accept_rate_per_pos": [
+                0.7962962962962963,
+                0.6481481481481481,
+                0.49382716049382713
+            ]
+        }
+    }
+}
