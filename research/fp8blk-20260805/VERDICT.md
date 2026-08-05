@@ -65,6 +65,32 @@ E4M3-BLK-MMVQ lines, EXACT arms bit-identical incl. `m1-bits=true`, RAND rms_rel
 legal e4m3 codes exercised); run-spec **K=1..8 8/8 PASS**; `serve-st-gate` **0 failed** (CLI-vs-server
 greedy streams identical, 64 ids; spec == tokenwise oracle 824/824 chars); `serve-smoke` **0 failed**.
 
+### 2b. The GGUF classes are untouched — measured, not assumed
+
+The flip's gate change lives in `try_fp8_blk_mmq`, which hangs off the **shared** `matmul` /
+`matmul_pre` dispatch, and the stash note landed in shared `model.rs` load. GGUF models traverse both,
+so "block-128 only" is a claim that needed a probe, not a code read. `fast-gate --tier 1` on the
+flipped binary (`fastgate-postflip.log`, `fastgate-logs/`, md5 pin `BINARY-md5-fastgate.txt`):
+
+```
+tier 0: GREEN (417s)   full kernel-check GREEN (404s, scope=all, 10 config pins)
+tier 1: 0 fail (937s)  g12 q9 q35 k27 g26 o35 o9 q35slru  golden token-identical
+                       chunkinv chunkinvc samp             self-gating green
+                       q35spec                             golden token-identical
+                       g31spec                             stream agreement 32/32
+```
+
+Eight golden-token argmax probes across Q4_0/Q8_0/NVFP4 GGUF + SLRU-MoE + both spec paths, all
+token-identical to goldens minted before this lane. The flip is confined to the class it was built
+for.
+
+**Harness trap worth naming:** the first attempt wrapped fast-gate in `flock /tmp/gpu5090.lock`, and
+fast-gate takes that *same* lock internally per GPU step (`flock -w 7200`). `flock(2)` is not
+reentrant across a fork, so the inner acquire blocked on the outer holder — a silent 14-minute hang
+with `kernel-check.log` at **0 bytes** and no error line anywhere. It looks exactly like a slow
+kernel-check. Scripts that self-lock must be invoked *naked*; the correct check is `pgrep` +
+`ps -o stat` showing the inner `flock` in `S`, not a growing log.
+
 ## 3. The prefill story — a regression, then a route change, and why v2's sheet had the wrong sign
 
 Native residency is a *decode* mechanism, and it must not be paid for in prefill. Letting a 512-token
@@ -173,6 +199,7 @@ Raw per-run logs for every number above live in this directory. Load-bearing one
 * post-flip: `postflip.sh`, `postflip-{pp,dec,ppx}-*.log`, `postflip-ppx-cmp.txt`, `postflip-runspec-K{1..8}.log`, `postflip-driver.log`
 * margin: `pairsweep.sh`, `pair-{N,A}-p{1..6}.log`, `pairsweep-summary.txt`, `pairsweep-driver.log`
 * gates: `kernel-check-blkcells.log`, `runspec-blk-K{1..8}.log`, `serve-st-gate-blk27b.log`, `serve-smoke.log`
+* GGUF no-regression: `fastgate-postflip.log`, `fastgate-logs/{kernel-check,probe-*}.log` (13 probes), `BINARY-md5-fastgate.txt`
 * shape sheet: `gemv-shape-sheet-27b.{log,jsonl}` (blk_over_e4m3 0.962–1.008, ~1.05–1.08x vs Q8_0, up to 786 GB/s)
 * binary pins + GPU state: `BINARY-md5-*.txt`, `*-gpustate.txt`
 
@@ -203,3 +230,6 @@ of `python`, so a comparator silently never ran while the log looked populated) 
 | `20a2f5dd` | serve gates + the ragged-cell kernel-check receipt that was missing |
 | `1d00d2b6` | **the default flip**, per operand source |
 | `c0006e27` | post-flip battery on the naked default |
+| `b5c0e995` | the margin settled on an adjacent-pair sweep (DISJOINT, 6/6, +0.83%) + this verdict |
+| `31c16fec` | full kernel-check on the flipped binary — ALL GREEN |
+| `PENDING` | GGUF no-regression: fast-gate tier 0 GREEN + tier 1 13/13, 0 fail |
