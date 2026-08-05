@@ -1,0 +1,11 @@
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   **Topic:** CUDA graphs and kernel launch overhead reduction.
+    *   **Constraint:** Approximately 200 words.
+    *   **Goal:** Explain the mechanism clearly and concisely.
+
+2.  **Identify Key Concepts:**
+    *   What is a CUDA graph? (A recorded sequence of operations).
+    *   What is the overhead? (Kernel launch latency, context switching, driver API calls).
+    *   How does the graph reduce it? (Batching, recording once, replaying, eliminating

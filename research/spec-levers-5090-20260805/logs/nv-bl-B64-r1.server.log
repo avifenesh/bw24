@@ -1,0 +1,99 @@
+[server] starting; models config = [("q", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q": 65 layers, eos=248046
+[worker] q: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q"]
+[server] listening on http://127.0.0.1:8199
+[meter] admit id=chatcmpl-1276ffb49001424c5beabbdcc13cdecc tenant=default lane=interactive model="q"
+[worker] observed session VRAM cost for "q": 336MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[meter] admit id=chatcmpl-7bf1230d8db01743e8f21add5e583637 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=46/54 cum=46/54=0.852
+[spec-acc] ctx=291 burst=43/60 cum=89/114=0.781
+[spec-acc] ctx=355 burst=39/78 cum=128/192=0.667
+[spec-acc] ctx=421 burst=38/75 cum=166/267=0.622
+[spec-acc] ctx=485 burst=42/63 cum=208/330=0.630
+[spec-acc] ctx=549 burst=38/84 cum=246/414=0.594
+[spec-acc] ctx=616 burst=41/69 cum=287/483=0.594
+[spec-acc] ctx=681 burst=37/57 cum=324/540=0.600
+[meter] admit id=chatcmpl-61cacc8e736cbbff3343d070477d7489 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=45/54 cum=45/54=0.833
+[spec-acc] ctx=290 burst=44/60 cum=89/114=0.781
+[spec-acc] ctx=355 burst=45/60 cum=134/174=0.770
+[spec-acc] ctx=421 burst=39/72 cum=173/246=0.703
+[spec-acc] ctx=485 burst=40/78 cum=213/324=0.657
+[spec-acc] ctx=552 burst=41/66 cum=254/390=0.651
+[spec-acc] ctx=616 burst=37/78 cum=291/468=0.622
+[spec-acc] ctx=680 burst=38/60 cum=329/528=0.623
+[meter] admit id=chatcmpl-27a1b4dcc8d56e0d5f2392fb9cb2620a tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=46/54 cum=46/54=0.852
+[spec-acc] ctx=291 burst=44/63 cum=90/117=0.769
+[spec-acc] ctx=357 burst=42/66 cum=132/183=0.721
+[spec-acc] ctx=422 burst=40/69 cum=172/252=0.683
+[spec-acc] ctx=486 burst=40/75 cum=212/327=0.648
+[spec-acc] ctx=552 burst=37/81 cum=249/408=0.610
+[spec-acc] ctx=617 burst=42/66 cum=291/474=0.614
+[spec-acc] ctx=682 burst=34/69 cum=325/543=0.599
+[meter] admit id=chatcmpl-ef5695a08c2cbe004f6f25ad05d403dc tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=46/54 cum=46/54=0.852
+[spec-acc] ctx=291 burst=42/63 cum=88/117=0.752
+[spec-acc] ctx=355 burst=38/75 cum=126/192=0.656
+[spec-acc] ctx=419 burst=36/84 cum=162/276=0.587
+[spec-acc] ctx=484 burst=38/75 cum=200/351=0.570
+[spec-acc] ctx=548 burst=37/78 cum=237/429=0.552
+[spec-acc] ctx=612 burst=44/60 cum=281/489=0.575
+[spec-acc] ctx=677 burst=38/69 cum=319/558=0.572
+[meter] admit id=chatcmpl-701ddc0f2285d20be509412b0edf89a1 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[meter] admit id=chatcmpl-e9d87fd0fe3d01db1dac547c595b394a tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=46/54 cum=46/54=0.852
+[spec-acc] ctx=291 burst=43/60 cum=89/114=0.781
+[spec-acc] ctx=355 burst=39/78 cum=128/192=0.667
+[spec-acc] ctx=421 burst=38/75 cum=166/267=0.622
+[spec-acc] ctx=485 burst=42/63 cum=208/330=0.630
+[spec-acc] ctx=549 burst=38/84 cum=246/414=0.594
+[spec-acc] ctx=616 burst=41/69 cum=287/483=0.594
+[spec-acc] ctx=681 burst=37/57 cum=324/540=0.600
+[meter] admit id=chatcmpl-635b2db42a454658e797e7085f4e2038 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=45/54 cum=45/54=0.833
+[spec-acc] ctx=290 burst=44/60 cum=89/114=0.781
+[spec-acc] ctx=355 burst=45/60 cum=134/174=0.770
+[spec-acc] ctx=421 burst=39/72 cum=173/246=0.703
+[spec-acc] ctx=485 burst=40/78 cum=213/324=0.657
+[spec-acc] ctx=552 burst=41/66 cum=254/390=0.651
+[spec-acc] ctx=616 burst=37/78 cum=291/468=0.622
+[spec-acc] ctx=680 burst=38/60 cum=329/528=0.623
+[meter] admit id=chatcmpl-d35f117b0005a9df34e800418fcc480d tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=46/54 cum=46/54=0.852
+[spec-acc] ctx=291 burst=44/63 cum=90/117=0.769
+[spec-acc] ctx=357 burst=42/66 cum=132/183=0.721
+[spec-acc] ctx=422 burst=40/69 cum=172/252=0.683
+[spec-acc] ctx=486 burst=40/75 cum=212/327=0.648
+[spec-acc] ctx=552 burst=37/81 cum=249/408=0.610
+[spec-acc] ctx=617 burst=42/66 cum=291/474=0.614
+[spec-acc] ctx=682 burst=34/69 cum=325/543=0.599
+[meter] admit id=chatcmpl-2d3a4144ad5c8cb03a2ad26b7708d5b4 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q)
+[spec-acc] ctx=226 burst=46/54 cum=46/54=0.852
+[spec-acc] ctx=291 burst=42/63 cum=88/117=0.752
+[spec-acc] ctx=355 burst=38/75 cum=126/192=0.656
+[spec-acc] ctx=419 burst=36/84 cum=162/276=0.587
+[spec-acc] ctx=484 burst=38/75 cum=200/351=0.570
+[spec-acc] ctx=548 burst=37/78 cum=237/429=0.552
+[spec-acc] ctx=612 burst=44/60 cum=281/489=0.575
+[spec-acc] ctx=677 burst=38/69 cum=319/558=0.572
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
