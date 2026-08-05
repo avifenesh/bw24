@@ -1,0 +1,32 @@
+### lock acquired 2026-08-05T21:23:16+03:00
+=== gate default (expect-invariant, naked env) ===
+chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-QqESuJ.log)
+GATE_DEFAULT_EXIT=0
+=== gate canary (must inject legacy seam and break) ===
+chunk-invariance-gate: assert=invariant legacy-seam=on got=variant canary=1 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.269e-1 | - | identical
+         32 | DIFFER |            32 | 6.375e-1 | - | step 18
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 3.909e-1 | - | step 47
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/chunkinv-gate-p2MFSH.log)
+GATE_CANARY_EXIT=0
+=== gate legacy arm (expect-variant under MEMRA_PRIME_F32CHUNK0=1) ===
+chunk-invariance-gate: assert=variant legacy-seam=on got=variant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.269e-1 | - | identical
+         32 | DIFFER |            32 | 6.375e-1 | - | step 18
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 3.909e-1 | - | step 47
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-bYDi4C.log)
+GATE_LEGACY_EXIT=0
+### done 2026-08-05T21:23:34+03:00

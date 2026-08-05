@@ -1,0 +1,13 @@
+loaded qwen35 (32 layers)
+tfcmp: window=1024 disagreements=11 of 1024 | legacy margin median=4.9200
+  flip @pos 4: legacy margin 0.034576 = 0.007x median (1.1th pctile)
+  flip @pos 15: legacy margin 0.308439 = 0.063x median (7.1th pctile)
+  flip @pos 24: legacy margin 0.207506 = 0.042x median (4.9th pctile)
+  flip @pos 44: legacy margin 0.010595 = 0.002x median (0.2th pctile)
+  flip @pos 45: legacy margin 0.274628 = 0.056x median (6.3th pctile)
+  flip @pos 54: legacy margin 0.076544 = 0.016x median (2.0th pctile)
+  flip @pos 341: legacy margin 0.077352 = 0.016x median (2.1th pctile)
+  flip @pos 365: legacy margin 0.095673 = 0.019x median (2.4th pctile)
+  flip @pos 414: legacy margin 0.017776 = 0.004x median (0.4th pctile)
+  flip @pos 418: legacy margin 0.032704 = 0.007x median (1.0th pctile)
+  flip @pos 977: legacy margin 0.031817 = 0.006x median (0.9th pctile)

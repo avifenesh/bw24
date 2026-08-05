@@ -15,17 +15,20 @@
 # grain, then PIN the property with an asserted test so nobody breaks it silently (#40372).
 # This is that asserted test.
 #
-# DEFAULT MODE is --expect-variant: it asserts the CURRENT, HONEST contract — that memra's
-# default config is chunk-VARIANT and the repo's exactness wording stays scoped to "tokens
-# never depend on batchmates". It FAILS if the divergence silently disappears (that would
-# mean the perf-relevant chunked path stopped chunking) OR if a NEW divergence class appears
-# beyond the pinned one. Run with --expect-invariant to gate the MEMRA_PRIME_INVARIANT=1
-# door, which is where byte-identity is the claim.
+# DEFAULT MODE is --expect-invariant (flipped 2026-08-05, lane/chunkinv-flip): the grain-free
+# fix dropped full_attn_prime_fa_dispatch's base_len==0 f32 special case, so EVERY chunk
+# (including chunk 0) attends through the quantized KV cache — one numeric class for every
+# row, and chunked prefill is byte-identical across MEMRA_PRIME_CHUNK values with NO door or
+# grain env. That byte-identity is now the shipped default contract this gate asserts NAKED
+# (no env). --expect-variant remains as the LEGACY-arithmetic assertion: it runs under
+# MEMRA_PRIME_F32CHUNK0=1 (the rollback seam that restores the old f32 first-chunk class
+# edge) and asserts the pinned divergence still reproduces there.
 #
 # TEETH: --canary INJECTS A BREAK (it does not merely relabel the expectation) and requires
-# the gate's assertion to FAIL, proving the gate can fail. Under --expect-variant the canary
-# turns the invariance door ON — a rig with the door on is chunk-INVARIANT, so the
-# expect-variant assertion must break. Under --expect-invariant the canary turns the door OFF.
+# the gate's assertion to FAIL, proving the gate can fail. Under --expect-invariant the
+# canary sets MEMRA_PRIME_F32CHUNK0=1 — the legacy arithmetic is chunk-VARIANT, so the
+# invariant assertion must break. Under --expect-variant the canary unsets it (the fixed
+# default is invariant, so the variant assertion must break).
 # NOTE (trap, hit twice on this lane): a canary that flips only the EXPECTED label re-runs the
 # identical configuration, so it passes exactly when the default gate passes and fails exactly
 # when it fails — perfectly correlated, therefore worthless as a teeth check. The canary must
@@ -38,7 +41,7 @@ D=research/chunk-invariance-20260805
 MODEL=""
 CHUNKS=2048,64,32
 STEPS=48
-EXPECT=variant
+EXPECT=invariant
 CANARY=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -64,13 +67,15 @@ done
 
 LOG=$(mktemp /tmp/chunkinv-gate-XXXXXX.log)
 # The assertion under test is always EXPECT. The canary does not change the assertion — it
-# changes the WORLD (door on/off), so a working gate must report FAIL on the canary run.
+# changes the WORLD (the MEMRA_PRIME_F32CHUNK0 legacy-arithmetic seam on/off), so a working
+# gate must report FAIL on the canary run. LEGACY=on restores the pre-fix f32 first-chunk
+# class edge (chunk-variant); LEGACY=off is the shipped grain-free default (invariant).
 WANT="$EXPECT"
-DOOR=off
-[ "$WANT" = invariant ] && DOOR=on
-[ "$CANARY" = 1 ] && { [ "$DOOR" = on ] && DOOR=off || DOOR=on; }
+LEGACY=off
+[ "$WANT" = variant ] && LEGACY=on
+[ "$CANARY" = 1 ] && { [ "$LEGACY" = on ] && LEGACY=off || LEGACY=on; }
 ENVX=()
-[ "$DOOR" = on ] && ENVX=(MEMRA_PRIME_INVARIANT=1 MEMRA_PRIME_GRAIN=32)
+[ "$LEGACY" = on ] && ENVX=(MEMRA_PRIME_F32CHUNK0=1)
 
 rc_all=0
 saw_variant=0
@@ -101,14 +106,14 @@ if [ "$WANT" = variant ] && [ "$CANARY" = 0 ]; then
         grep -E "chunkinv verdict" "$LOG" | sed 's/^/    /'; echo "  raw log: $LOG"; exit 1; }
 fi
 
-echo "chunk-invariance-gate: assert=$WANT door=$DOOR got=$GOT canary=$CANARY chunks=$CHUNKS model=$(basename "$MODEL")"
+echo "chunk-invariance-gate: assert=$WANT legacy-seam=$LEGACY got=$GOT canary=$CANARY chunks=$CHUNKS model=$(basename "$MODEL")"
 grep -E "^ *(2048|64|32|chunkinv verdict)" "$LOG" | sed 's/^/    /'
 if [ "$GOT" = "$WANT" ]; then
     if [ "$CANARY" = 1 ]; then
         # the injected break did NOT move the verdict => the assertion is insensitive to the
         # very mechanism it claims to guard, so a real regression would also slip through.
-        echo "chunk-invariance-gate: CANARY UNEXPECTEDLY MATCHED — flipping the door did not change"
-        echo "  the verdict, so this assertion cannot detect the mechanism. FIX THE GATE. (log $LOG)"
+        echo "chunk-invariance-gate: CANARY UNEXPECTEDLY MATCHED — flipping the legacy seam did not"
+        echo "  change the verdict, so this assertion cannot detect the mechanism. FIX THE GATE. (log $LOG)"
         rc_all=1
     else
         echo "chunk-invariance-gate: PASS (raw log $LOG)"
@@ -118,10 +123,11 @@ elif [ "$CANARY" = 1 ]; then
 else
     echo "chunk-invariance-gate: FAIL — chunk-order behavior CHANGED (wanted $WANT, got $GOT)."
     if [ "$WANT" = variant ]; then
-        echo "  If this is intentional (invariance won back), flip the gate to"
-        echo "  --expect-invariant and update docs/SERVING.md + the exactness wording."
+        echo "  The MEMRA_PRIME_F32CHUNK0 legacy seam no longer reproduces the pinned divergence"
+        echo "  — the rollback arithmetic changed; re-root-cause before touching the gate."
     else
-        echo "  The MEMRA_PRIME_INVARIANT door no longer delivers byte-identity."
+        echo "  The DEFAULT grain-free prefill no longer delivers byte-identity across chunk"
+        echo "  sizes — a chunk-variant class edge came back. Re-root-cause (VERDICT.md protocol)."
     fi
     echo "  raw log: $LOG"
     rc_all=1

@@ -1401,37 +1401,55 @@ impl HybridModel {
                             t: usize, cache: &mut Cache, il: usize,
                             head_dim: usize, n_head: usize, n_head_kv: usize, scale: f32)
                             -> Result<(), Box<dyn std::error::Error>> {
-        if base_len == 0 {
-            // fa_prefill's smem layout is compile-time HEAD_DIM: stamped twins exist for 256
-            // (qwen35) and 128 (M3, `_hd128` — 2026-07-07). Other dims would overrun the
-            // runtime-sized allocation -> ILLEGAL_ADDRESS; fall to naive SDPA there.
+        // GRAIN-FREE CHUNK-INVARIANCE FIX (lane/chunkinv-flip, 2026-08-05): the base_len == 0
+        // f32 special case (fa_prefill over this batch's f32 K/V) is DROPPED. pre_fa appends
+        // the chunk's quantized rows into cache.kv[il] BEFORE this dispatch, so chunk 0 can
+        // attend through the quantized cache exactly like every later chunk (quantize-then-
+        // attend). One numeric class for every row => the chunk size cannot decide where a
+        // precision edge falls, so chunked prefill is reduction-order-stable with NO grain
+        // knob (the stronger fix VERDICT.md filed; supersedes the MEMRA_PRIME_INVARIANT door's
+        // pin-the-boundary approach).
+        // MEMRA_PRIME_F32CHUNK0=1 is the ROLLBACK SEAM to the old arithmetic (chunk 0 attends
+        // f32 K/V) — flags-doctrine rollback door AND the chunkinv gate's canary injection:
+        // with the fix unconditional, only re-introducing the class edge can prove the gate
+        // still detects the mechanism. Never on in a measured default run.
+        if base_len == 0 && std::env::var("MEMRA_PRIME_F32CHUNK0").as_deref() == Ok("1") {
             if std::env::var("MEMRA_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
                 e.sdpa_naive(q, k, v, attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             } else {
                 e.fa_prefill(q, k, v, attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             }
+            return Ok(());
+        }
+        let kvl = cache.kv[il].as_ref().unwrap();
+        let t_kv = base_len + t;
+        let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
+        let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+        // fa_prefill_q/_qw twins are stamped for head_dim 256 (qwen35) and 128 (M3) only;
+        // other dims (and MEMRA_NOFA) take the naive quantized-view SDPA — SAME cache bytes,
+        // same numeric class, so the uniform contract holds on the fallback too.
+        if std::env::var("MEMRA_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
+            e.sdpa_naive_quantized_view(q, &k_view, &v_view, attn, head_dim, n_head,
+                                        n_head_kv, t, t_kv, scale, true,
+                                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            return Ok(());
+        }
+        // ARC B (2026-07-05): dequant-once workspace, DEFAULT ON. fa_prefill_q's inline
+        // dequant re-reads+re-dequants the whole quantized KV stream from every one of the
+        // T/64 x n_head CTAs (64x+ redundant at chunk=4096; 30.5% of the 32k prime wall).
+        // fa_prefill_view_ws dequants K/V ONCE into a resident bf16 workspace then runs the
+        // bit-identical bf16 twin (fa_prefill_qw) — same staged values, same FP order, token-
+        // identical output (gate: MEMRA_PRIME_CHUNK=4096 ws-on vs ws-off vs monolithic).
+        // MEMRA_PRIME_DEQW=0 reverts to the inline-dequant kernel.
+        let deqw = std::env::var("MEMRA_PRIME_DEQW").map(|v| v != "0").unwrap_or(true);
+        if deqw {
+            e.fa_prefill_view_ws(q, &k_view, &v_view, attn, head_dim, n_head, n_head_kv,
+                                 t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 crate::Engine::kv_fp8_on())?;
         } else {
-            let kvl = cache.kv[il].as_ref().unwrap();
-            let t_kv = base_len + t;
-            let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
-            let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
-            // ARC B (2026-07-05): dequant-once workspace, DEFAULT ON. fa_prefill_q's inline
-            // dequant re-reads+re-dequants the whole quantized KV stream from every one of the
-            // T/64 x n_head CTAs (64x+ redundant at chunk=4096; 30.5% of the 32k prime wall).
-            // fa_prefill_view_ws dequants K/V ONCE into a resident bf16 workspace then runs the
-            // bit-identical bf16 twin (fa_prefill_qw) — same staged values, same FP order, token-
-            // identical output (gate: MEMRA_PRIME_CHUNK=4096 ws-on vs ws-off vs monolithic).
-            // MEMRA_PRIME_DEQW=0 reverts to the inline-dequant kernel.
-            let deqw = std::env::var("MEMRA_PRIME_DEQW").map(|v| v != "0").unwrap_or(true);
-            if deqw {
-                e.fa_prefill_view_ws(q, &k_view, &v_view, attn, head_dim, n_head, n_head_kv,
-                                     t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     crate::Engine::kv_fp8_on())?;
-            } else {
-                e.fa_prefill_view(q, &k_view, &v_view, attn, head_dim, n_head, n_head_kv,
-                                  t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                  crate::Engine::kv_fp8_on())?;
-            }
+            e.fa_prefill_view(q, &k_view, &v_view, attn, head_dim, n_head, n_head_kv,
+                              t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                              crate::Engine::kv_fp8_on())?;
         }
         Ok(())
     }
