@@ -75,6 +75,38 @@ pub fn st_e4m3_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("MEMRA_ST_E4M3").as_deref() != Ok("0"))
 }
 
+/// Native residency for the BLOCK-128 e4m3 scale class (`QT_F8_E4M3_BLK`, lane/fp8-blk128-decode
+/// 2026-08-05) — the Qwen-official FP8 class that `st_e4m3_enabled`'s arm deliberately excludes.
+///
+/// SHARES the `MEMRA_ST_E4M3=0` rollback seam rather than adding a second knob, per flags doctrine:
+/// both arms are the same mechanism (checkpoint-native e4m3 residency + in-kernel dequant) applied
+/// to the two scale classes, and one seam that turns ALL native e4m3 residency back into the Q8_0
+/// slab is the behaviour a rollback wants. `MEMRA_ST_E4M3_BLK=0` additionally disables JUST this
+/// class — the narrow seam that isolates the block arm while leaving the (already shipped,
+/// already receipted) per-tensor arm on its default, which is what an A/B of this lane needs.
+pub fn st_e4m3_blk_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        st_e4m3_enabled() && std::env::var("MEMRA_ST_E4M3_BLK").as_deref() != Ok("0")
+    })
+}
+
+/// A block-128 tensor that PASSED every shape precondition for native residency but carried e4m3
+/// NaN codes, so it fell through to the Q8_0 floor. Counted because "0 tensors resident as
+/// F8_E4M3_BLK" is otherwise ambiguous between "not a block-128 checkpoint", "env off", and "the
+/// bytes were ineligible" — three facts demanding three different responses.
+static BLK_NATIVE_NAN_REFUSED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub fn note_blk_native_nan_refused() {
+    BLK_NATIVE_NAN_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Tensors declined by the native block-128 arm's NaN precondition this process.
+pub fn blk_native_nan_refused() -> usize {
+    BLK_NATIVE_NAN_REFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Resident scratch for the FP8 prefill GEMM (mirrors `CutlassScratch`): the quantized activation
 /// (grown to the largest m*k seen), the 4-float scale block ([0]=amax, [1]=quant mul, [2]=folded
 /// B_SCALE — the GEMM desc holds a POINTER to slot 2, so the buffer must be resident/stable), and
@@ -417,11 +449,55 @@ impl crate::Engine {
         }
         let src = self.htod_bytes(f8)?;
         let scales = self.htod(grid)?;
+        let dst = self.fp8_blk_dequant_q8_0_dev(&src, &scales, out_f, in_f)?;
+        self.gpu.stream().synchronize()?;
+        Ok(dst)
+    }
+
+    /// DEVICE-RESIDENT twin of `fp8_blk_dequant_q8_0` (lane/fp8-blk128-decode): identical kernel,
+    /// identical output bytes, but the e4m3 codes and the scale grid are ALREADY on the device and
+    /// there is no trailing `synchronize`.
+    ///
+    /// Both differences matter to its caller (`try_e4m3_blk_prefill`, per prefill call rather than
+    /// once per load): the host arm's two htods would re-upload a weight that is already resident,
+    /// and its `synchronize` would stall the CUDA owner thread on every prefill projection. Stream
+    /// ordering is sufficient without it — the dequant and the Q8_0 GEMM that consumes `dst` are
+    /// issued to the SAME stream, so the GEMM cannot observe a partially written slab.
+    pub fn fp8_blk_dequant_q8_0_dev(
+        &self,
+        f8: &CudaSlice<u8>,
+        grid: &CudaSlice<f32>,
+        out_f: usize,
+        in_f: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let (rows, cols) = (out_f.div_ceil(128), in_f.div_ceil(128));
+        if f8.len() < out_f * in_f {
+            return Err(format!(
+                "fp8_blk_dequant_q8_0_dev: f8 len {} < out_f*in_f {}",
+                f8.len(),
+                out_f * in_f
+            )
+            .into());
+        }
+        if grid.len() < rows * cols {
+            return Err(format!(
+                "fp8_blk_dequant_q8_0_dev: grid len {} < rows*cols {rows}*{cols}",
+                grid.len()
+            )
+            .into());
+        }
+        let need = Self::fp8_blk_q8_0_bytes(out_f, in_f);
+        if need == 0 {
+            return Err(format!(
+                "fp8_blk_dequant_q8_0_dev: bad dims out_f={out_f} in_f={in_f} (in_f must be %32)"
+            )
+            .into());
+        }
         let mut dst = self.alloc_u8_uninit(need)?;
         let rc = {
             let stream = self.gpu.stream();
-            let (s_p, _gs) = src.device_ptr(&stream);
-            let (g_p, _gg) = scales.device_ptr(&stream);
+            let (s_p, _gs) = f8.device_ptr(&stream);
+            let (g_p, _gg) = grid.device_ptr(&stream);
             let (d_p, _gd) = dst.device_ptr_mut(&stream);
             unsafe {
                 memra_fp8_blk_dequant_q8_0(
@@ -441,7 +517,6 @@ impl crate::Engine {
             )
             .into());
         }
-        self.gpu.stream().synchronize()?;
         Ok(dst)
     }
 }

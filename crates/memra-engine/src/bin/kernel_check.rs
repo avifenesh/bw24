@@ -2349,6 +2349,215 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- F8-E4M3 BLOCK-128 matvec (`qmatvec_e4m3_blk_mmvq`, lane/fp8-blk128-decode 2026-08-05):
+    // the per-block-dequant decode twin for the Qwen-official FP8 class (`weight_block_size
+    // [128,128]`, BF16 `weight_scale_inv` grid, per-tensor scale == 1.0).
+    //
+    // WHY THE ARITHMETIC IS THE CONTRACT, not a model-stream compare: this kernel's arithmetic
+    // differs from the ARM B' Q8_0 re-encode floor it replaces (it consumes the checkpoint e4m3
+    // bytes directly), so their logits may legitimately differ in the last bits. The claim is
+    // "the kernel implements the documented per-block arithmetic exactly", and the only way to
+    // prove that is a host reference OF THAT ARITHMETIC. The reference below DEFINES it (it is
+    // the ARITHMETIC CONTRACT block in cu/qmatvec.cu transcribed); these cells prove the kernel
+    // implements it. Same gate structure lane/fp8-mmq-v2 set for the prefill tile:
+    //
+    // (1) EXACT arm — BIT-IDENTITY, no tolerance. e4m3 weight codes restricted to small integers,
+    //     block scales restricted to powers of two, activations built so the q8_1 quantizer is
+    //     lossless (per-32 amax pinned to a power of two with integer members => d is a power of
+    //     two and round(x/d) is exact). Every product and partial sum is then an exactly
+    //     representable f32 integer, so f32 addition is exact AND order-independent — which is
+    //     what removes the one thing the kernel does not define (the warp_reduce_sum tree order vs
+    //     the host's sequential fold) and licenses a 0-ULP comparison.
+    // (2) RAND arm — real e4m3 codes, real f32 scales, real activations. f32 add order now matters,
+    //     so the bound is rms_rel < 1e-5 (the fp8-mmq-v2 convention: max|got-want| over rms(want),
+    //     because random-code outputs cancel and per-element relative error is meaningless there).
+    //     An INDEXING bug (wrong scale row/column, wrong k128 fold, wrong row stride) lands at
+    //     O(1) on this measure, which is what the arm is for.
+    // (3) RAGGED cells — out_f % 128 != 0 (partial last scale ROW), in_f % 128 != 0 (partial last
+    //     scale COLUMN + the k32 tail landing on it), both ragged. These pin the no-clamp proof:
+    //     with in_f % 32 == 0, (in_f/32 - 1) >> 2 == ceil(in_f/128) - 1 for every in_f.
+    // (4) DECODE-PARITY — the grid.y=m launch must be BIT-IDENTICAL per (token,row) to the m=1
+    //     launch on that token alone (the spec verify==decode law; m=2..15 has no batched twin for
+    //     this class, it falls to grid.y=m, so this gate IS the exactness guarantee for that tier).
+    // (5) CODE COVERAGE — MEASURED, not asserted: 254/254 legal e4m3 codes must actually appear in
+    //     a weight operand. 254 == 256 minus BOTH NaN magnitudes (0x7F/0xFF), which the residency
+    //     precondition refuses per-tensor (fp8_blk_nan_count) because the kernel uses HARDWARE
+    //     decode semantics (NaN) while the ARM B'/host closed form uses modelopt 0.0. This gate
+    //     therefore tests every code the kernel can LEGALLY see, and the refusal covers the rest.
+    // ---
+    {
+        // Host e4m3 decode in the HARDWARE convention the kernel uses (e4m3x2_to_f32x2 ->
+        // __nv_cvt_fp8x2_to_halfraw2): sign / 4-bit exp (bias 7) / 3-bit mantissa, subnormals at
+        // 2^-9 granularity, magnitude 0x7F == NaN. Deliberately NOT nvfp4_repack::fp8_e4m3_to_f32
+        // (which returns 0.0 for 0x7F) — the divergence is real and is handled by the dispatch
+        // precondition, so the gate's reference must follow the kernel, not the other arm.
+        let e4m3_hw = |b: u8| -> f32 {
+            let s = if b & 0x80 != 0 { -1.0f32 } else { 1.0 };
+            let ex = ((b >> 3) & 0x0F) as i32;
+            let mn = (b & 0x07) as f32;
+            if ex == 0 { s * mn * (2f32).powi(-9) }
+            else if ex == 15 && mn == 7.0 { f32::NAN }
+            else { s * (1.0 + mn / 8.0) * (2f32).powi(ex - 7) }
+        };
+        // e4m3 codes whose decoded value is a small integer, +-{0,1,2,3,4} (EXACT arm). The
+        // magnitude cap of 4 is not cosmetic — it is what makes the bit-identity budget below
+        // provable at the widest shape; see the EXACT-ARM EXACTNESS BUDGET comment.
+        const INT_CODES: [u8; 9] = [0x00, 0x38, 0xB8, 0x40, 0xC0, 0x44, 0xC4, 0x48, 0xC8];
+        // HOST REFERENCE — cu/qmatvec.cu's ARITHMETIC CONTRACT, in the kernel's per-k32 order:
+        //   bs  = fmaf chain over j=0..31 of e4m3(w[j]) * (f32)aq[j]
+        //   acc = fmaf(s[blk >> 2] * ad[blk], bs, acc)   folded PER K32-BLOCK (not per 128)
+        // The lane-strided walk is a reduction whose ORDER differs (warp tree vs this sequential
+        // fold) — that is precisely why the EXACT arm is constructed to be order-independent.
+        let blk_ref = |wb: &[u8], aq: &[i8], ad: &[f32], sc: &[f32],
+                       in_f: usize, out_f: usize, m: usize, scols: usize| -> Vec<f32> {
+            let nblk = in_f / 32;
+            let mut y = vec![0f32; m * out_f];
+            for t in 0..m {
+                for o in 0..out_f {
+                    let srow = &sc[(o >> 7) * scols..(o >> 7) * scols + scols];
+                    let mut acc = 0f32;
+                    for blk in 0..nblk {
+                        let mut bs = 0f32;
+                        for j in 0..32 {
+                            bs = e4m3_hw(wb[o * in_f + blk * 32 + j])
+                                .mul_add(aq[t * in_f + blk * 32 + j] as f32, bs);
+                        }
+                        acc = (srow[blk >> 2] * ad[t * nblk + blk]).mul_add(bs, acc);
+                    }
+                    y[t * out_f + o] = acc;
+                }
+            }
+            y
+        };
+        // shapes: (in_f, out_f) — aligned, ragged out_f (partial last scale ROW), ragged in_f
+        // (partial last scale COLUMN + k32 tail on it), both ragged, and a real 27B projection.
+        // Every in_f is a multiple of 32 (the q8_1 / MMVQ contract); NONE need be a multiple of 128.
+        let shapes: [(usize, usize); 6] = [
+            (512, 128),    // one scale block exactly — smallest complete case
+            (5120, 512),   // 40x4 grid, aligned both axes
+            (5120, 320),   // out_f % 128 != 0 -> partial last scale ROW (3 rows, last covers 64)
+            (2080, 256),   // in_f % 128 != 0 -> partial last COLUMN + the k32 tail lands on it
+            (1184, 200),   // BOTH ragged
+            (5120, 1536),  // 27B q_proj-class shape (the verdict shape's exactness cell)
+        ];
+        let mut codes_seen = [false; 256];
+        for (in_f, out_f) in shapes {
+            let srows = out_f.div_ceil(128);
+            let scols = in_f.div_ceil(128);
+            for exact in [true, false] {
+                let arm = if exact { "EXACT" } else { "RAND" };
+                // --- weights
+                let wb: Vec<u8> = (0..in_f * out_f).map(|i| {
+                    let h = (i.wrapping_mul(2654435761) ^ 0x9E3779B9) >> 9;
+                    if exact { INT_CODES[h % INT_CODES.len()] }
+                    else {
+                        // real codes, NaN magnitude excluded (the dispatch precondition refuses
+                        // any tensor carrying it, so it is out of the kernel's legal input set).
+                        let c = h as u8;
+                        if c & 0x7F == 0x7F { c & 0xBF } else { c }
+                    }
+                }).collect();
+                for b in &wb { codes_seen[*b as usize] = true; }
+                // --- scale grid: powers of two (exact) / real f32 spread (rand)
+                let sc: Vec<f32> = (0..srows * scols).map(|i| {
+                    let h = (i.wrapping_mul(2246822519) ^ 0x85EBCA6B) >> 7;
+                    // EXACT: powers of two 2^-3..2^3 (exact multiplication, and the exponent range
+                    // the budget below is proved against). RAND: real f32, the magnitude spread a
+                    // Qwen weight_scale_inv grid actually shows.
+                    if exact { (2f32).powi(((h % 7) as i32) - 3) }
+                    else { 0.002 + 0.5 * (pr(i + 977) * 0.5 + 0.5) }
+                }).collect();
+                let wd = e.htod_bytes(&wb)?;
+                let scd = e.htod(&sc)?;
+                // NaN-code precondition, asserted on the device operand the kernel will read (the
+                // same call the residency arm makes at load).
+                let nan = e.fp8_blk_nan_count(&wd)?;
+                for mm in [1usize, 2, 5, 9] {
+                    // --- activations, EXACT arm. q8_1 must be LOSSLESS or the "everything is an
+                    // integer" premise (and with it the 0-ULP bar) is void. q8_1 computes
+                    // d = amax/127 and q = round(x/d) per 32; so pin amax to EXACTLY 127 in every
+                    // 32-block with all other members small integers => d == 1.0 exactly and
+                    // q == x bit-for-bit. Asserted below (`q8_lossless`), never assumed.
+                    //
+                    // EXACT-ARM EXACTNESS BUDGET (why f32 add is exact AND order-independent here,
+                    // which is what licenses comparing a warp-tree reduction to a sequential fold):
+                    //   weights   integers, |w| <= 4          (INT_CODES)
+                    //   aq        integers, |aq| <= 4, plus ONE planted 127 per 32-block
+                    //   |bs|      <= 4*(4*31 + 127) = 1004    integer
+                    //   scales    powers of two in [2^-3, 2^3]  => every term s*ad*bs is an exact
+                    //             multiple of 1/8, and ad == 1.0
+                    //   |acc|     <= nblk(<=160) * 8 * 1004 = 1.29e6; in units of 1/8 that is
+                    //             1.03e7 < 2^24 = 1.68e7
+                    // Every partial sum is therefore an exactly representable multiple of 1/8, so
+                    // f32 addition neither rounds nor depends on order. 0 differing bits or FAIL.
+                    let mut x: Vec<f32> = if exact {
+                        (0..mm * in_f).map(|i| {
+                            let h = (i.wrapping_mul(3266489917) ^ 0xC2B2AE35) >> 11;
+                            ((h % 9) as f32) - 4.0            // integers -4..4
+                        }).collect()
+                    } else {
+                        (0..mm * in_f).map(|i| pr(i + 211) * 0.1).collect()
+                    };
+                    if exact {
+                        // plant amax == 127 once per 32-block, at a rotating slot so it never sits
+                        // at the same k offset in consecutive blocks (a fixed slot could hide an
+                        // off-by-one in the block walk). Sign alternates so the planted term does
+                        // not dominate every row's sum in the same direction.
+                        for t in 0..mm {
+                            for b in 0..(in_f / 32) {
+                                let s = if (b + t) & 1 == 0 { 127.0 } else { -127.0 };
+                                x[t * in_f + b * 32 + (b * 11 + t) % 32] = s;
+                            }
+                        }
+                    }
+                    let xd = e.htod(&x)?;
+                    let (aqd, add) = e.quantize_q8_1(&xd, mm, in_f)?;
+                    let aq: Vec<i8> = e.stream().clone_dtoh(&aqd)?; e.stream().synchronize()?;
+                    let ad = e.dtoh(&add)?;
+                    let got = e.dtoh(&e.qmatvec_e4m3_blk_mmvq(&wd, &aqd, &add, &scd, mm, in_f,
+                                                              out_f, in_f, scols)?)?;
+                    let want = blk_ref(&wb, &aq, &ad, &sc, in_f, out_f, mm, scols);
+                    // EXACT arm sanity: q8_1 must have been lossless, or the "integers only"
+                    // premise (and with it the bit-identity bar) is void. Checked, not assumed.
+                    let q8_lossless = !exact || (0..mm * in_f).all(|i| {
+                        ad[i / 32] == 1.0 && aq[i] as f32 == x[i]
+                    });
+                    let bits_bad = got.iter().zip(&want)
+                        .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                    let max_abs = maxdiff(&want, &got);
+                    let rms = (want.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>()
+                               / want.len().max(1) as f64).sqrt() as f32;
+                    let rms_rel = if rms > 0.0 { max_abs / rms } else { max_abs };
+                    // (4) decode-parity: token t's rows at grid.y=m == the m=1 launch on token t.
+                    let mut m1_bits = true;
+                    if mm > 1 {
+                        for t in 0..mm {
+                            let xtd = e.htod(&x[t * in_f..(t + 1) * in_f])?;
+                            let y1 = e.dtoh(&e.qmatvec_e4m3_blk_mmvq_raw(&wd, &xtd, &scd, 1, in_f,
+                                                                         out_f, in_f, scols)?)?;
+                            m1_bits &= y1.iter().zip(&got[t * out_f..(t + 1) * out_f])
+                                .all(|(a, b)| a.to_bits() == b.to_bits());
+                        }
+                    }
+                    let ok = nan == 0 && q8_lossless && m1_bits
+                        && if exact { bits_bad == 0 } else { rms_rel < 1e-5 };
+                    println!("E4M3-BLK-MMVQ {arm} [{in_f}x{out_f}] s{srows}x{scols} m={mm}: \
+                              rms_rel={rms_rel:.2e} bit-bad={bits_bad}/{} m1-bits={m1_bits} \
+                              q8-lossless={q8_lossless} nan={nan} {}",
+                             want.len(), if ok { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+        // (5) code coverage as a GATE. 254 = 256 minus BOTH NaN magnitudes (0x7F/0xFF), which the
+        // residency precondition refuses per-tensor — so this counts every code the kernel can
+        // legally see, and no claim is made about the two it can never see.
+        let codes = codes_seen.iter().filter(|s| **s).count();
+        let codes_ok = codes >= 254;
+        println!("E4M3-BLK-MMVQ code coverage: {codes}/254 legal e4m3 codes exercised \
+                  (0x7F/0xFF excluded — refused by the residency NaN precondition) {}",
+                 if codes_ok { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- BATCHED weight-resident matvec (_b2/_b4/_b8) vs the per-m _mmvq reference (the MTP/verify
     // path). Both quantize the same f32 activation to q8_1; the batched kernel only changes the loop
     // nest (weight loaded once, reused across m token columns) so per-(token,row) it MUST be

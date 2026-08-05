@@ -43,7 +43,8 @@ pub fn residency_census_report() -> String {
             QT_Q8_0 => "Q8_0", QT_Q4_K => "Q4_K", QT_Q6_K => "Q6_K", QT_Q5_K => "Q5_K",
             QT_Q3_K => "Q3_K", QT_IQ4_XS => "IQ4_XS", QT_IQ3_S => "IQ3_S", QT_NVFP4 => "NVFP4",
             QT_F32 => "F32", QT_NVFP4_RP => "NVFP4_RP", QT_F8_E4M3 => "F8_E4M3",
-            QT_BF16 => "BF16", QT_Q4_0 => "Q4_0", QT_Q2_K => "Q2_K", _ => "?",
+            QT_BF16 => "BF16", QT_Q4_0 => "Q4_0", QT_Q2_K => "Q2_K",
+            crate::QT_F8_E4M3_BLK => "F8_E4M3_BLK", _ => "?",
         }
     };
     let mut out = String::from("residency census (2D matmul weights, resident container):\n");
@@ -96,6 +97,14 @@ pub enum GpuTensor {
         /// reads this when present (`_rp` twins; microprobe m=1 1.34x, m=3 1.17x, bitwise).
         /// None everywhere except where the arch-load hook opted in (VRAM cost = weight size).
         rp4: Option<CudaSlice<u8>>,
+        /// BLOCK-128 WEIGHT-SCALE GRID for a NATIVE e4m3 resident weight (lane/fp8-blk128-decode,
+        /// 2026-08-05). `Some` iff `qtype == QT_F8_E4M3_BLK`, and then `bytes` are the checkpoint's
+        /// raw e4m3 codes ([out_f, in_f], row_bytes == in_f), `scale == 1.0`, and THIS is the only
+        /// dequant scale in the tensor — decode reads it in-kernel (`qmatvec_e4m3_blk_mmvq`),
+        /// prefill reads it in the per-block MMQ tile. Distinct from `fp8: Some(Fp8Weight { blk })`,
+        /// which is the MEMRA_PP_FP8 *stash*: a SECOND e4m3 copy carried alongside a Q8_0 slab.
+        /// Here there is one copy and `fp8` stays None.
+        blk: Option<Fp8BlockScales>,
         /// FP16 DEQUANT MIRROR (MEMRA_PP_F16=1, probe 2026-07-26): row-major fp16 of a 2D Q8_0
         /// projection, built device-side at load (f16_ffi::build_q8_f16). `bytes` stay Q8_0 so
         /// decode is untouched; the m>=16 prefill dispatch (cuBLASLt FP16 TN, 611-687 TF vs
@@ -352,7 +361,7 @@ impl GpuTensor {
                         rp: true,
                         #[cfg(memra_cutlass)]
                         cutlass: None,
-                        fp8: None, f16: None,
+                        fp8: None, blk: None, f16: None,
                         rp4: None,
                     });
                 }
@@ -368,12 +377,10 @@ impl GpuTensor {
         // with no VRAM budget. Placed BEFORE `find` so the host-side F8->Q8_0 re-encode is skipped
         // entirely (faster load). in_f%32 is the q8_1 activation block gate (every F8 projection in
         // the NV-27B satisfies it; a violator falls through to the Q8_0 arm unchanged).
-        // BLOCK-128 GATE: the QT_F8_E4M3 decode kernel family (qmatvec_e4m3_mmvq + batched
-        // twins) consumes ONE scalar weight scale — dispatching a block-128 operand through it
-        // would silently dequant every tile with scale 1.0. Until the per-block-dequant mmvq
-        // twin lands (DECISION.md B1 second half), block-128 tensors fall through to the Q8_0
-        // re-encode (correct floor); their raw bytes+scales still go resident via the
-        // MEMRA_PP_FP8 stash arm below for the P1 GEMM work.
+        // BLOCK-128 CLASS: served by its OWN qtype since lane/fp8-blk128-decode (2026-08-05) —
+        // see the second arm below. It must not enter the per-tensor arm: the QT_F8_E4M3 kernel
+        // family consumes ONE scalar weight scale, so a block-128 operand through it would
+        // silently dequant every tile at scale 1.0.
         if crate::fp8_ffi::st_e4m3_enabled() {
             if let Some(f8) = src.find_fp8_native(name) {
                 if f8.blk.is_none() && f8.in_f % 32 == 0 && f8.out_f > 0 {
@@ -386,9 +393,78 @@ impl GpuTensor {
                         rp: false,
                         #[cfg(memra_cutlass)]
                         cutlass: None,
-                        fp8: None, f16: None,
+                        fp8: None, blk: None, f16: None,
                         rp4: None,
                     });
+                }
+            }
+        }
+        // E4M3-BLK-DIRECT (lane/fp8-blk128-decode, 2026-08-05) — the block-128 twin of the arm
+        // above, and the Qwen-3.8 day-one path. A block-128 FP8 checkpoint (Qwen3.6-FP8's
+        // `weight_block_size [128,128]`, the DeepSeek-V3 lineage) keeps its RAW e4m3 codes plus its
+        // [ceil(out/128), ceil(in/128)] f32 scale grid as the ONE resident copy (QT_F8_E4M3_BLK)
+        // instead of the ARM B' Q8_0 slab: decode dequants per k128 block in-kernel
+        // (qmatvec_e4m3_blk_mmvq — the checkpoint's own precision, no lossy re-quant hop) at
+        // 1.0 B/weight instead of 1.0625, and prefill (m>=16) rides the per-block FP8 MMQ tile on
+        // the SAME bytes+grid (try_fp8_blk_mmq) with NO stash duplicate.
+        //
+        // ORDERING / DISJOINTNESS (the decode-v1 landmine, restated for this arm): the three FP8
+        // arms are mutually exclusive by their scale class, checked in this order —
+        //   1. `blk.is_none()`          -> QT_F8_E4M3      (per-tensor scalar; arm above)
+        //   2. `blk.is_some()` + native -> QT_F8_E4M3_BLK  (this arm)
+        //   3. `blk.is_some()`          -> ARM B' Q8_0 slab (MEMRA_FP8_BLK_GPU) / host re-encode
+        // so ARM B' KEEPS working wherever it is still the path: whenever this arm declines (env
+        // rollback, NaN codes present, ragged in_f, grid-shape mismatch) control falls through to
+        // it unchanged. It is not cross-gated on this arm's flag — a tensor this arm CLAIMS
+        // returns here and never reaches ARM B' at all, and one it declines must reach it.
+        //
+        // NaN PRECONDITION, enforced at LOAD (not asserted): the decode kernel decodes e4m3 with
+        // the HARDWARE intrinsic (magnitude 0x7F -> NaN) while the ARM B'/host reference decodes
+        // it to 0.0 (modelopt). A tensor carrying 0x7F/0xFF therefore cannot ride this kernel, so
+        // the bytes are scanned once on the device (fp8_blk_nan_count, the same precondition the
+        // prefill MMQ arm uses) and a non-zero count declines to the Q8_0 floor for THAT tensor.
+        // Real Qwen FP8 checkpoints carry none (the exporter saturates at +-448), so this is a
+        // guard, not a cost centre: one linear pass over bytes already on the device.
+        if crate::fp8_ffi::st_e4m3_blk_enabled() {
+            if let Some(f8) = src.find_fp8_native(name) {
+                if let Some(grid) = f8.blk.as_ref() {
+                    let (in_f, out_f) = (f8.in_f, f8.out_f);
+                    // in_f % 32: the q8_1 activation block gate (and the kernel's 2x LDG.128 line).
+                    // The grid dims must match the shape — a mismatch means operand and grid came
+                    // from different tensors; refuse rather than index a wrong block. scale == 1.0
+                    // is the block class's identity (source.rs sets it alongside a grid); anything
+                    // else would be a second, unapplied factor.
+                    if in_f % 32 == 0 && out_f > 0
+                        && f8.bytes.len() == out_f * in_f
+                        && grid.rows == out_f.div_ceil(128)
+                        && grid.cols == in_f.div_ceil(128)
+                        && grid.scales.len() == grid.rows * grid.cols
+                        && f8.scale == 1.0
+                    {
+                        let bytes = e.htod_bytes(&f8.bytes)?;
+                        if e.fp8_blk_nan_count(&bytes)? == 0 {
+                            let scales = e.htod(&grid.scales)?;
+                            return Ok(GpuTensor::Quant {
+                                bytes,
+                                qtype: crate::QT_F8_E4M3_BLK,
+                                row_bytes: in_f,
+                                ne: vec![in_f as u64, out_f as u64],
+                                scale: 1.0,
+                                rp: false,
+                                #[cfg(memra_cutlass)]
+                                cutlass: None,
+                                fp8: None,
+                                blk: Some(Fp8BlockScales {
+                                    scales,
+                                    rows: grid.rows,
+                                    cols: grid.cols,
+                                }),
+                                f16: None,
+                                rp4: None,
+                            });
+                        }
+                        crate::fp8_ffi::note_blk_native_nan_refused();
+                    }
                 }
             }
         }
@@ -433,7 +509,7 @@ impl GpuTensor {
                             rp: false,
                             #[cfg(memra_cutlass)]
                             cutlass: None,
-                            fp8: None, f16: None,
+                            fp8: None, blk: None, f16: None,
                             rp4: None,
                         });
                     }
@@ -623,6 +699,7 @@ impl GpuTensor {
                     #[cfg(memra_cutlass)]
                     cutlass,
                     fp8,
+                    blk: None,
                     rp4: None,
                     f16: None,
                 })
@@ -741,7 +818,7 @@ impl GpuTensor {
             rp,
             #[cfg(memra_cutlass)]
             cutlass: None,
-            fp8: None, f16: None,
+            fp8: None, blk: None, f16: None,
             rp4: None,
         })
     }
