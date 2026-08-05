@@ -164,6 +164,15 @@ run_probe() {
             echo "  $id: FAIL (exit $rc, $((t1-t0))s) — tail:"; tail -4 "$log" | sed 's/^/      /'
             return 1
         fi
+        # A self-gating script that SKIPs (missing model/artifact) also exits 0, which is
+        # indistinguishable from a real pass by exit code alone — that hole reported
+        # chunkinv/chunkinvc as "PASS (0s)" on a rig lacking the 9B artifact (found on the
+        # 188-SM pod during the v0.70.0 release battery). Read the script's own verdict word.
+        if grep -qE "^[a-zA-Z0-9_-]+: *SKIP" "$log"; then
+            echo "  $id: SKIP ($(grep -m1 -oE 'SKIP.*' "$log" | cut -c1-90))"
+            PROBE_VERDICT="SKIP"; PROBE_LAST_LOG="$log"
+            return 0
+        fi
         echo "  $id: PASS (self-gating check green, $((t1-t0))s)"
         PROBE_VERDICT="PASS"; PROBE_LAST_LOG="$log"
         return 0
