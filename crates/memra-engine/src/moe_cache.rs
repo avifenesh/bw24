@@ -14,7 +14,7 @@
 //!
 //! Gated behind `MEMRA_MOE_CACHE` (default off => current stage-every-token behavior).
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, HostSlice, SyncOnDrop};
 use crate::Engine;
@@ -45,14 +45,161 @@ pub enum DispatchSlot {
         Resident(usize),
 }
 
+/// Intrusive-list constants: `NIL` terminates a list; `seg` tags which segment holds a slot.
+const NIL: u32 = u32::MAX;
+const SEG_NONE: u8 = 0;
+const SEG_PROBATION: u8 = 1;
+const SEG_PROTECTED: u8 = 2;
+
+/// Per-slot intrusive doubly-linked node (slot indices are the arena — one node per GPU slot,
+/// shared by every class's two segments; a slot is in at most one segment at a time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlotLink {
+    prev: u32,
+    next: u32,
+    seg: u8,
+}
+impl SlotLink {
+    const fn none() -> Self { SlotLink { prev: NIL, next: NIL, seg: SEG_NONE } }
+}
+
+/// One SLRU segment as an intrusive doubly-linked list (front = LRU, back = MRU — the exact
+/// order contract the previous VecDeque carried). Every operation the hit path needs is O(1):
+/// `push_back` (MRU insert), `pop_front` (LRU evict), `unlink` (promotion removal by slot id).
+/// This is the Q5 audit fix (research/sweep-audits-20260805/AUDIT.md item 2): the VecDeque
+/// `position()+remove()` promotion was O(n_slots) PER HIT once the cache filled — ~46k slots x
+/// ~850 hits/token = ~40M host ops/token in the spill regime (measured 48.5 -> 46.0 tok/s on
+/// the 35B g7e decode). Same eviction decisions for the same access pattern; only the cost of
+/// locating/removing a slot changed.
+#[derive(Debug)]
+struct SlruList {
+    head: u32,
+    tail: u32,
+    len: usize,
+}
+impl SlruList {
+    const fn new() -> Self { SlruList { head: NIL, tail: NIL, len: 0 } }
+
+    /// MRU insert. The slot must not currently be in any segment.
+    fn push_back(&mut self, slot: usize, seg: u8, links: &mut [SlotLink]) {
+        debug_assert_eq!(links[slot].seg, SEG_NONE, "slot {slot} already in a segment");
+        let s = slot as u32;
+        links[slot] = SlotLink { prev: self.tail, next: NIL, seg };
+        if self.tail != NIL {
+            links[self.tail as usize].next = s;
+        } else {
+            self.head = s;
+        }
+        self.tail = s;
+        self.len += 1;
+    }
+
+    /// LRU removal.
+    fn pop_front(&mut self, links: &mut [SlotLink]) -> Option<usize> {
+        if self.head == NIL {
+            return None;
+        }
+        let s = self.head as usize;
+        self.unlink(s, links);
+        Some(s)
+    }
+
+    /// O(1) removal by slot id (the promotion path). The slot must be a member of THIS list.
+    fn unlink(&mut self, slot: usize, links: &mut [SlotLink]) {
+        let l = links[slot];
+        debug_assert_ne!(l.seg, SEG_NONE, "unlink of slot {slot} not in a segment");
+        if l.prev != NIL {
+            links[l.prev as usize].next = l.next;
+        } else {
+            debug_assert_eq!(self.head, slot as u32);
+            self.head = l.next;
+        }
+        if l.next != NIL {
+            links[l.next as usize].prev = l.prev;
+        } else {
+            debug_assert_eq!(self.tail, slot as u32);
+            self.tail = l.prev;
+        }
+        links[slot] = SlotLink::none();
+        self.len -= 1;
+    }
+
+    /// Front-to-back (LRU-to-MRU) iteration — the victim-scan order of the old VecDeque.
+    fn iter<'a>(&self, links: &'a [SlotLink]) -> SlruIter<'a> {
+        SlruIter { links, cur: self.head }
+    }
+}
+
+struct SlruIter<'a> {
+    links: &'a [SlotLink],
+    cur: u32,
+}
+impl Iterator for SlruIter<'_> {
+    type Item = usize;
+    fn next(&mut self) -> Option<usize> {
+        if self.cur == NIL {
+            return None;
+        }
+        let s = self.cur as usize;
+        self.cur = self.links[s].next;
+        Some(s)
+    }
+}
+
 /// One fixed-address size class with an independent SLRU. Separating queues by capacity prevents a
 /// small mixed-layout block from consuming the scarce slots that can hold a larger block.
 struct SlotClass {
     capacity: usize,
-    probation: VecDeque<usize>,
-    protected: VecDeque<usize>,
+    probation: SlruList,
+    protected: SlruList,
     free: Vec<usize>,
     protected_cap: usize,
+}
+
+impl SlotClass {
+    /// HIT promotion under a FULL class (SLRU rules 4-6): probation hit -> protected MRU
+    /// (demoting protected LRU back to probation MRU while over cap); protected hit -> bump to
+    /// MRU; a slot in neither segment (defensive) inserts at protected MRU. Every arm is O(1).
+    fn on_hit_full(&mut self, slot: usize, links: &mut [SlotLink]) {
+        match links[slot].seg {
+            SEG_PROBATION => {
+                self.probation.unlink(slot, links);
+                self.push_protected(slot, links);
+            }
+            SEG_PROTECTED => {
+                self.protected.unlink(slot, links);
+                self.protected.push_back(slot, SEG_PROTECTED, links); // MRU
+            }
+            // not in either segment (shouldn't happen for a resident slot) — treat as protected MRU
+            _ => self.push_protected(slot, links),
+        }
+    }
+
+    /// Push a slot to protected MRU; if protected exceeds its cap, demote its LRU front to probation.
+    fn push_protected(&mut self, slot: usize, links: &mut [SlotLink]) {
+        self.protected.push_back(slot, SEG_PROTECTED, links);
+        while self.protected.len > self.protected_cap {
+            if let Some(demoted) = self.protected.pop_front(links) {
+                self.probation.push_back(demoted, SEG_PROBATION, links);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// LRU victim (rule 7 per-class): probation front first, else protected front. O(1).
+    fn pop_lru(&mut self, links: &mut [SlotLink]) -> Option<usize> {
+        self.probation.pop_front(links).or_else(|| self.protected.pop_front(links))
+    }
+
+    /// Remove `slot` from whichever segment holds it (O(1) via the seg tag). No-op if in neither.
+    fn unlink_from_segment(&mut self, slot: usize, links: &mut [SlotLink]) {
+        match links[slot].seg {
+            SEG_PROBATION => self.probation.unlink(slot, links),
+            SEG_PROTECTED => self.protected.unlink(slot, links),
+            _ => {}
+        }
+    }
 }
 
 /// SLRU GPU expert-residency cache. Slots remain fixed-address for the cache lifetime. Uniform
@@ -61,6 +208,9 @@ pub struct MoeSlotCache {
     slots: Vec<CudaSlice<u8>>, // fixed GPU buffers; capacities live in `classes`
     slot_class: Vec<usize>,    // slot index -> size-class index
     classes: Vec<SlotClass>,
+    /// Per-slot intrusive SLRU node (prev/next/segment). One arena for all classes: a slot
+    /// belongs to exactly one class, and to at most one of that class's two segments.
+    links: Vec<SlotLink>,
     occupant: Vec<Option<BlockId>>, // slots[s] currently holds occupant[s]  (the residency bitmask)
     table: HashMap<BlockId, usize>, // BlockId -> slot index (O(1) residency lookup)
     /// Exponentially aged online access scores for the optional mixed-layout LFU victim policy.
@@ -381,12 +531,13 @@ impl MoeSlotCache {
             let free_slots = (start..start + count).rev().collect();
             classes.push(SlotClass {
                 capacity,
-                probation: VecDeque::new(),
-                protected: VecDeque::new(),
+                probation: SlruList::new(),
+                protected: SlruList::new(),
                 free: free_slots,
                 protected_cap: ((count as f64 * 0.8) as usize).max(1),
             });
         }
+        let links = vec![SlotLink::none(); n];
         if size_aware {
             let allocated: usize = class_plan
                 .iter()
@@ -417,6 +568,7 @@ impl MoeSlotCache {
             slots,
             slot_class,
             classes,
+            links,
             occupant,
             table: HashMap::with_capacity(n * 2),
             frequencies: HashMap::with_capacity(layout.len().max(n * 2)),
@@ -531,11 +683,18 @@ impl MoeSlotCache {
     ///
     /// O(1) EARLY-OUT (STAGING-ELISION stage, 2026-07-04): while FREE slots remain, `admit` pops
     /// `free` and `evict_one` is unreachable — recency order is dead state until the cache fills.
-    /// The promotion below is a linear scan of two VecDeques (O(n_slots) PER HIT; at ~46k slots x
-    /// ~850 hits/token that was ~40M host ops/token — measured as the fast-admit A/B regression
-    /// 48.5 -> 46.0 tok/s on the 35B g7e decode). Skip it until eviction is possible. On 96GB
-    /// (slots >= whole-model block count) every HIT stays an O(1) table lookup forever; on spill
-        /// rigs this only defers SLRU ordering to when eviction pressure actually exists.
+    /// Kept even though promotion is now O(1) either way (audit-fix Q5, 2026-08-06): skipping it
+    /// preserves the not-yet-full ordering behavior BYTE-FOR-BYTE with the pre-fix policy (slots
+    /// stay in admission order until the class fills), and on 96GB rigs (slots >= whole-model
+    /// block count) every HIT stays a pure table lookup forever.
+    ///
+    /// FULL-CLASS promotion was the Q5 audit item (research/sweep-audits-20260805/AUDIT.md
+    /// item 2): the old VecDeque `position()+remove()` was O(n_slots) PER HIT — at ~46k slots x
+    /// ~850 hits/token ~40M host ops/token, measured as the fast-admit A/B regression
+    /// 48.5 -> 46.0 tok/s on the 35B g7e decode (the 2026-07-04 fix only DEFERRED the scan to
+    /// the spill regime, where the cache is permanently full). The intrusive-list rewrite makes
+    /// every arm O(1) with IDENTICAL eviction decisions for the same access pattern (list order
+    /// == the old VecDeque order at every step; unit-pinned by `slru_intrusive_tests`).
     /// Bookkeeping-only: the dispatched bytes are identical either way (the D.2 gate pins it).
     fn on_hit(&mut self, slot: usize) {
         let class_index = self.slot_class[slot];
@@ -543,31 +702,7 @@ impl MoeSlotCache {
         if !class.free.is_empty() {
             return;
         }
-        if let Some(pos) = class.probation.iter().position(|&x| x == slot) {
-            class.probation.remove(pos);
-            self.push_protected(slot);
-        } else if let Some(pos) = class.protected.iter().position(|&x| x == slot) {
-            class.protected.remove(pos);
-            class.protected.push_back(slot); // MRU
-        } else {
-            // not in either segment (shouldn't happen for a resident slot) — treat as protected MRU
-            self.push_protected(slot);
-
-        }
-    }
-
-
-    /// Push a slot to protected MRU; if protected exceeds its cap, demote its LRU front to probation.
-    fn push_protected(&mut self, slot: usize) {
-        let class = &mut self.classes[self.slot_class[slot]];
-        class.protected.push_back(slot);
-        while class.protected.len() > class.protected_cap {
-            if let Some(demoted) = class.protected.pop_front() {
-                class.probation.push_back(demoted);
-            } else {
-                break;
-            }
-        }
+        class.on_hit_full(slot, &mut self.links);
     }
 
     fn remove_occupant(&mut self, slot: usize) {
@@ -580,15 +715,17 @@ impl MoeSlotCache {
     /// Lowest cumulative-frequency resident in one class; ties keep ordinary LRU order. A cold
     /// admission therefore becomes the sacrificial slot on the next miss instead of displacing a
     /// prompt-proven hot expert. `keep` protects the expert whose kernels are currently queued.
+    /// (Deliberately still O(n_slots) PER EVICTION — the opt-in LFU policy is a full-scan argmin
+    /// by definition; the Q5 fix targeted the per-HIT scan. Eviction order over the linked lists
+    /// == the old probation-then-protected VecDeque order.)
     fn frequency_victim_in_class(&mut self, class_index: usize, keep: &[BlockId]) -> Option<usize> {
         let class = &self.classes[class_index];
-        let probation_len = class.probation.len();
         let candidate = class
             .probation
-            .iter()
-            .chain(class.protected.iter())
+            .iter(&self.links)
+            .chain(class.protected.iter(&self.links))
             .enumerate()
-            .filter_map(|(position, &slot)| {
+            .filter_map(|(position, slot)| {
                 let id = self.occupant[slot]?;
                 (!keep.contains(&id)).then_some((
                     self.frequencies.get(&id).copied().unwrap_or(0.0),
@@ -597,14 +734,8 @@ impl MoeSlotCache {
                 ))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        let (_, position, slot) = candidate?;
-        if position < probation_len {
-            self.classes[class_index].probation.remove(position);
-        } else {
-            self.classes[class_index]
-                .protected
-                .remove(position - probation_len);
-        }
+        let (_, _, slot) = candidate?;
+        self.classes[class_index].unlink_from_segment(slot, &mut self.links);
         Some(slot)
     }
 
@@ -617,10 +748,7 @@ impl MoeSlotCache {
             let slot = if self.frequency_evict {
                 self.frequency_victim_in_class(class_index, &[])
             } else {
-                self.classes[class_index]
-                    .probation
-                    .pop_front()
-                    .or_else(|| self.classes[class_index].protected.pop_front())
+                self.classes[class_index].pop_lru(&mut self.links)
             };
             if let Some(slot) = slot {
                 self.remove_occupant(slot);
@@ -633,12 +761,21 @@ impl MoeSlotCache {
     /// Pick a resident victim that is not needed by the expert currently being computed. Pending
     /// slots never enter the SLRU queues, so they are excluded automatically. Returns `None` rather
     /// than evicting a protected block; the caller then leaves this block to the synchronous path.
+    /// (LRU-to-MRU scan skipping `keep` members — same visit order as the old VecDeque scan;
+    /// O(n) worst per PREFETCH eviction only, unchanged from the pre-fix shape.)
     fn evict_one_excluding(&mut self, required: usize, keep: &[BlockId]) -> Option<usize> {
-        let take = |q: &mut VecDeque<usize>, occupant: &[Option<BlockId>]| {
-            q.iter()
-                .position(|&s| occupant[s].is_some_and(|id| !keep.contains(&id)))
-                .and_then(|pos| q.remove(pos))
-        };
+        fn take(
+            q: &mut SlruList,
+            links: &mut [SlotLink],
+            occupant: &[Option<BlockId>],
+            keep: &[BlockId],
+        ) -> Option<usize> {
+            let slot = q
+                .iter(links)
+                .find(|&s| occupant[s].is_some_and(|id| !keep.contains(&id)))?;
+            q.unlink(slot, links);
+            Some(slot)
+        }
         for class_index in 0..self.classes.len() {
             if self.classes[class_index].capacity < required {
                 continue;
@@ -646,8 +783,9 @@ impl MoeSlotCache {
             let slot = if self.frequency_evict {
                 self.frequency_victim_in_class(class_index, keep)
             } else {
-                take(&mut self.classes[class_index].probation, &self.occupant)
-                    .or_else(|| take(&mut self.classes[class_index].protected, &self.occupant))
+                let class = &mut self.classes[class_index];
+                take(&mut class.probation, &mut self.links, &self.occupant, keep)
+                    .or_else(|| take(&mut class.protected, &mut self.links, &self.occupant, keep))
             };
             if let Some(slot) = slot {
                 self.remove_occupant(slot);
@@ -688,7 +826,7 @@ impl MoeSlotCache {
         self.table.insert(id, slot);
         self.classes[self.slot_class[slot]]
             .probation
-            .push_back(slot);
+            .push_back(slot, SEG_PROBATION, &mut self.links);
         *self.per_layer.entry(id.layer).or_insert(0) += 1;
     }
 
@@ -1383,6 +1521,232 @@ fn parse_cache_hard_vram_frac(raw: Option<&str>) -> Result<f64, &'static str> {
         Ok(value)
     } else {
         Err("expected a finite fraction from 0.10 through 0.95")
+    }
+}
+
+#[cfg(test)]
+mod slru_intrusive_tests {
+    //! Q5 policy-equivalence proof (research/audit-fixes2-20260805): the intrusive-list SLRU
+    //! must make the SAME eviction decisions for the same access pattern as the pre-fix
+    //! VecDeque SLRU. `OldSlru` below is the pre-fix implementation transcribed verbatim
+    //! (position()+remove() promotion, probation-then-protected pop_front eviction,
+    //! protected_cap demotion loop); both are driven with identical randomized op sequences
+    //! and their full segment orders compared after EVERY op.
+    use super::{SlotClass, SlotLink, SlruList, SEG_PROBATION, SEG_PROTECTED};
+    use std::collections::VecDeque;
+
+    /// The pre-fix policy, verbatim (moe_cache.rs @ 61953206 lines 540-571).
+    struct OldSlru {
+        probation: VecDeque<usize>,
+        protected: VecDeque<usize>,
+        protected_cap: usize,
+    }
+    impl OldSlru {
+        fn on_hit_full(&mut self, slot: usize) {
+            if let Some(pos) = self.probation.iter().position(|&x| x == slot) {
+                self.probation.remove(pos);
+                self.push_protected(slot);
+            } else if let Some(pos) = self.protected.iter().position(|&x| x == slot) {
+                self.protected.remove(pos);
+                self.protected.push_back(slot); // MRU
+            } else {
+                self.push_protected(slot);
+            }
+        }
+        fn push_protected(&mut self, slot: usize) {
+            self.protected.push_back(slot);
+            while self.protected.len() > self.protected_cap {
+                if let Some(demoted) = self.protected.pop_front() {
+                    self.probation.push_back(demoted);
+                } else {
+                    break;
+                }
+            }
+        }
+        fn pop_lru(&mut self) -> Option<usize> {
+            self.probation.pop_front().or_else(|| self.protected.pop_front())
+        }
+        fn take_excluding(&mut self, banned: &[usize]) -> Option<usize> {
+            let take = |q: &mut VecDeque<usize>| {
+                q.iter()
+                    .position(|&s| !banned.contains(&s))
+                    .and_then(|pos| q.remove(pos))
+            };
+            take(&mut self.probation).or_else(|| take(&mut self.protected))
+        }
+    }
+
+    fn new_pair(n: usize, protected_cap: usize) -> (SlotClass, Vec<SlotLink>, OldSlru) {
+        let class = SlotClass {
+            capacity: 1,
+            probation: SlruList::new(),
+            protected: SlruList::new(),
+            free: Vec::new(),
+            protected_cap,
+        };
+        let links = vec![SlotLink::none(); n];
+        let old = OldSlru {
+            probation: VecDeque::new(),
+            protected: VecDeque::new(),
+            protected_cap,
+        };
+        (class, links, old)
+    }
+
+    fn orders_match(class: &SlotClass, links: &[SlotLink], old: &OldSlru) -> bool {
+        let np: Vec<usize> = class.probation.iter(links).collect();
+        let nt: Vec<usize> = class.protected.iter(links).collect();
+        let op: Vec<usize> = old.probation.iter().copied().collect();
+        let ot: Vec<usize> = old.protected.iter().copied().collect();
+        np == op && nt == ot
+    }
+
+    /// Deterministic PRNG (SplitMix64) — no dev-dependencies.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    #[test]
+    fn same_eviction_decisions_randomized_soak() {
+        // Sweep several (n_slots, protected_cap) shapes including cap=1 edge and the 0.8 default.
+        for &(n, cap) in &[(8usize, 1usize), (16, 12), (64, 51), (128, 102)] {
+            let (mut class, mut links, mut old) = new_pair(n, cap);
+            let mut rng = Rng(0xC0FFEE ^ (n as u64) << 8 ^ cap as u64);
+            let mut resident: Vec<usize> = Vec::new();
+            let mut free: Vec<usize> = (0..n).rev().collect();
+            for step in 0..200_000 {
+                let op = rng.below(100);
+                if op < 55 && !resident.is_empty() {
+                    // HIT on a random resident slot (full-class path — free handled below).
+                    let slot = resident[rng.below(resident.len())];
+                    class.on_hit_full(slot, &mut links);
+                    old.on_hit_full(slot);
+                } else if op < 80 {
+                    // ADMIT: free slot first (publish -> probation MRU), else evict LRU + reuse.
+                    let slot = if let Some(s) = free.pop() {
+                        s
+                    } else {
+                        let v_new = class.pop_lru(&mut links);
+                        let v_old = old.pop_lru();
+                        assert_eq!(v_new, v_old, "victim diverged at step {step} (n={n} cap={cap})");
+                        let v = v_new.unwrap();
+                        resident.retain(|&s| s != v);
+                        v
+                    };
+                    class.probation.push_back(slot, SEG_PROBATION, &mut links);
+                    old.probation.push_back(slot);
+                    resident.push(slot);
+                } else if op < 92 && resident.len() > 2 {
+                    // PREFETCH eviction: skip up to 3 "keep" slots (evict_one_excluding shape).
+                    let banned: Vec<usize> = (0..3.min(resident.len()))
+                        .map(|_| resident[rng.below(resident.len())])
+                        .collect();
+                    let take_new = {
+                        let q = &mut class.probation;
+                        let found = q.iter(&links).find(|s| !banned.contains(s));
+                        match found {
+                            Some(s) => {
+                                q.unlink(s, &mut links);
+                                Some(s)
+                            }
+                            None => {
+                                let q = &mut class.protected;
+                                q.iter(&links).find(|s| !banned.contains(s)).inspect(|&s| {
+                                    q.unlink(s, &mut links);
+                                })
+                            }
+                        }
+                    };
+                    let take_old = old.take_excluding(&banned);
+                    assert_eq!(take_new, take_old, "excluding-victim diverged at step {step}");
+                    if let Some(v) = take_new {
+                        resident.retain(|&s| s != v);
+                        free.push(v);
+                    }
+                } else if !resident.is_empty() {
+                    // Defensive arm: hit on a slot in NEITHER segment (unlink first, then hit).
+                    let slot = resident[rng.below(resident.len())];
+                    match links[slot].seg {
+                        SEG_PROBATION => class.probation.unlink(slot, &mut links),
+                        SEG_PROTECTED => class.protected.unlink(slot, &mut links),
+                        _ => {}
+                    }
+                    if let Some(pos) = old.probation.iter().position(|&x| x == slot) {
+                        old.probation.remove(pos);
+                    } else if let Some(pos) = old.protected.iter().position(|&x| x == slot) {
+                        old.protected.remove(pos);
+                    }
+                    class.on_hit_full(slot, &mut links);
+                    old.on_hit_full(slot);
+                }
+                assert!(
+                    orders_match(&class, &links, &old),
+                    "segment order diverged at step {step} (n={n} cap={cap})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hit_promotion_is_o1_not_on() {
+        // Op-count proof: time-per-hit must not grow with n_slots. 46k slots x 850 hits — the
+        // audit's spill shape — as a wall-clock microbench: the old structure walked ~n/2 per
+        // hit (~20M steps); the intrusive list does constant work. Assert the per-hit cost at
+        // 46k slots stays within 8x of the 1k-slot cost (an O(n) scan would be ~46x+).
+        fn bench(n: usize, hits: usize) -> std::time::Duration {
+            let (mut class, mut links, _) = new_pair(n, (n as f64 * 0.8) as usize);
+            for s in 0..n {
+                class.probation.push_back(s, SEG_PROBATION, &mut links);
+            }
+            let mut rng = Rng(0xBEEF);
+            let t0 = std::time::Instant::now();
+            for _ in 0..hits {
+                class.on_hit_full(rng.below(n), &mut links);
+            }
+            t0.elapsed()
+        }
+        // Warm both shapes once (alloc noise), then measure.
+        bench(1_000, 10_000);
+        bench(46_000, 10_000);
+        let small = bench(1_000, 850_000).as_secs_f64() / 850_000.0;
+        let large = bench(46_000, 850_000).as_secs_f64() / 850_000.0;
+        assert!(
+            large < small * 8.0,
+            "per-hit cost scaled with n_slots: {:.1}ns @1k vs {:.1}ns @46k",
+            small * 1e9,
+            large * 1e9
+        );
+    }
+
+    #[test]
+    fn slru_list_basic_invariants() {
+        let mut links = vec![SlotLink::none(); 4];
+        let mut l = SlruList::new();
+        assert_eq!(l.pop_front(&mut links), None);
+        l.push_back(2, SEG_PROBATION, &mut links);
+        l.push_back(0, SEG_PROBATION, &mut links);
+        l.push_back(3, SEG_PROBATION, &mut links);
+        assert_eq!(l.iter(&links).collect::<Vec<_>>(), vec![2, 0, 3]);
+        assert_eq!(l.len, 3);
+        l.unlink(0, &mut links); // middle
+        assert_eq!(l.iter(&links).collect::<Vec<_>>(), vec![2, 3]);
+        l.unlink(3, &mut links); // tail
+        assert_eq!(l.iter(&links).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(l.pop_front(&mut links), Some(2)); // head
+        assert_eq!(l.len, 0);
+        assert_eq!(l.head, super::NIL);
+        assert_eq!(l.tail, super::NIL);
+        assert!(links.iter().all(|k| k.seg == super::SEG_NONE));
     }
 }
 
