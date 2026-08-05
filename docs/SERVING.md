@@ -315,6 +315,54 @@ spec resume, or prefix cache). `/metrics` exposes the cumulative split
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
 
+## Session affinity — resuming a REWRITTEN conversation (lane/session-affinity, 2026-08-05)
+
+Both reuse tiers above require the new prompt to EXTEND what is cached (token prefix, or
+text prefix). Real agent clients do not extend — they REWRITE. The owner's client strips
+`<think>` blocks out of prior assistant turns before re-sending them, so turn N's prompt is
+not a prefix-extension of anything, both probes miss, the parked multi-GB session is
+discarded, and every turn re-primes the whole growing conversation.
+
+Affinity answers a different question: not "does this prompt extend that session's bytes?"
+but "is this the SAME CONVERSATION?" — and then resumes it at a retained boundary.
+
+**Two identity tiers (nomination only):**
+
+- **Explicit** — the client names its conversation. Accepted from `session_id` or `user` in
+  the request body of `/v1/completions` and `/v1/chat/completions`, or the `x-session-id`
+  header. Body beats header (the body is the caller's own statement of identity; a header can
+  be injected by an intermediary); `session_id` beats `user`. An explicit id on one side only
+  never matches: a named conversation and an anonymous one are not the same conversation.
+- **Implicit** — nothing named, so identity is STRUCTURAL: the conversation is split at its
+  control tokens (the chat template's own role markers) and each segment contributes a hash of
+  its first and last few tokens. A rewritten segment BODY does not perturb its hash, so the
+  chain's leading run survives a think-strip; three shared segments are required before an
+  implicit fingerprint may name a conversation (a bare system prompt is shared by every fresh
+  conversation and must not cross-link them).
+
+**Identity nominates, BYTES decide.** A nominated session is resumed only if the new prompt
+reproduces its committed tokens EXACTLY up to the boundary its last turn checkpointed. A
+fingerprint collision therefore costs one wasted comparison, never a wrong resume. If the
+rewrite reached BELOW the boundary, affinity declines and the request re-primes in full —
+correctness first. Declines are logged with their offsets (`history diverged at N of
+checkpoint M`), because a silent decline is indistinguishable from a broken mechanism.
+
+**The boundary.** Each turn checkpoints the state at its PROMPT END — before the first
+generated token. That is the only boundary worth keeping: a history-rewriting client mutates
+what the session GENERATED, never the prompt it was given. Full-attention KV is truncatable
+by length, so the checkpoint copies only the GDN conv/ssm recurrent state; the draft scratch
+needs no copy (the next turn's fill rewrites it).
+
+**Scope.** Affinity is stored per (model, cache namespace), so it adds no cross-tenant reach
+beyond what the reuse tiers already have: a `cache_salt` is an affinity boundary too.
+Constrained (grammar) requests never resume. Resumed sessions respect the same evict-first +
+right-size ladder as new ones, and are tested against the room the request actually needs, so
+a right-sized session stays affinity-eligible.
+
+`MEMRA_AFFINITY=0` turns the mechanism off (rollback seam / exactness A/B arm; the winner is
+the default and needs no flag). Receipts, byte-identity gate, and TTFT curves:
+`research/session-affinity-20260805/`.
+
 ## Multi-tenant QoS — the x-lane SLO gate (lane/qos-p95, 2026-08-02)
 
 Requests may tag a service class via the `x-lane` header: `interactive` (protected;

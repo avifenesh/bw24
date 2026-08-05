@@ -1,0 +1,27 @@
+[server] starting; models config = [("qwen36-27b", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen36-27b" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] qwen36-27b: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "qwen36-27b": 65 layers, eos=248046
+[worker] qwen36-27b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen36-27b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen36-27b"]
+[server] listening on http://127.0.0.1:8179
+[worker] observed session VRAM cost for "qwen36-27b": 4194MB (admission gate = 2x)
+[spec-acc] ctx=12947 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=12982 burst=24/27 cum=47/60=0.783
+[spec-acc] ctx=13015 burst=23/27 cum=70/87=0.805
+[spec-acc] ctx=13047 burst=25/30 cum=95/117=0.812
+[spec-acc] ctx=13082 burst=24/27 cum=119/144=0.826
+[spec-acc] ctx=13115 burst=23/27 cum=142/171=0.830
+[spec-acc] ctx=13147 burst=24/27 cum=166/198=0.838
+[spec-acc] ctx=13180 burst=22/30 cum=188/228=0.825
+[spec-acc] ctx=13212 burst=25/27 cum=213/255=0.835
+[spec-acc] ctx=13246 burst=25/30 cum=238/285=0.835
+[spec-acc] ctx=13281 burst=26/27 cum=264/312=0.846
+[spec-acc] ctx=13316 burst=22/36 cum=286/348=0.822
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

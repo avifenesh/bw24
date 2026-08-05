@@ -316,7 +316,7 @@ fn ns_suffix(ns: &str) -> String {
 //
 // TWO TIERS.
 //   (a) EXPLICIT (`AffinityKey::Explicit`) — the client names its conversation. Accepted from
-//       two conventions, both documented in docs/API.md:
+//       two conventions, both documented in docs/SERVING.md ("Session affinity"):
 //         * `session_id` / `user` request-body fields (OpenAI's `user` is the field real
 //           clients already send; `session_id` is the explicit spelling),
 //         * the `x-session-id` request header (the convention vLLM/TGI-adjacent proxies use).

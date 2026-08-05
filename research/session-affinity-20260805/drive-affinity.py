@@ -48,10 +48,14 @@ shorter text must be a PREFIX of the longer; anything else is a real divergence.
 
 Usage:
   drive-affinity.py <port> <out.jsonl> [turns] [--session-id ID] [--no-rewrite]
-                    [--max-tokens N] [--transcript FILE]
+                    [--max-tokens N] [--transcript FILE] [--stream]
   drive-affinity.py --replay <transcript> <port> <out.jsonl> [--max-tokens N]
-                    [--session-id ID] [--cold]
+                    [--session-id ID] [--cold] [--only TURN] [--stream]
   drive-affinity.py --gate <resume.jsonl> <fresh.jsonl>
+  drive-affinity.py --curve <field> <on-r*.jsonl> -- <off-r*.jsonl>
+
+--stream requests SSE so ttft_s is measured (see ask()). --curve prints the per-turn
+median of `field` across the N replicate files of each arm.
 """
 import hashlib, json, sys, time, urllib.request
 
@@ -90,7 +94,14 @@ def strip_think(text):
     return text, False
 
 
-def ask(url, prompt, max_tokens, session_id, salt=None):
+def ask(url, prompt, max_tokens, session_id, salt=None, stream=False):
+    """Returns (resp, wall_s, ttft_s). ttft_s is None unless stream=True.
+
+    TTFT is the number the lane exists to move, and it is NOT wall_s: wall_s bundles
+    prefill with the whole generation, so a turn that also generates fewer tokens looks
+    faster for the wrong reason. Only a streamed request can time the FIRST token —
+    the clock stops on the first SSE chunk carrying non-empty text, which is prefill
+    (+ one decode step), i.e. exactly the quantity the resume path shortcuts."""
     payload = {"model": "qwen36-27b", "prompt": prompt,
                "max_tokens": max_tokens, "temperature": 0}
     if session_id:
@@ -101,6 +112,8 @@ def ask(url, prompt, max_tokens, session_id, salt=None):
     # and it does not depend on MEMRA_REUSE_POOL=0, which panics the pre-lane worker.
     if salt:
         payload["cache_salt"] = salt
+    if stream:
+        payload["stream"] = True
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json",
@@ -108,16 +121,50 @@ def ask(url, prompt, max_tokens, session_id, salt=None):
     t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=900) as r:
-            resp = json.loads(r.read())
+            if not stream:
+                return json.loads(r.read()), time.time() - t0, None
+            return read_sse(r, t0)
     except urllib.error.HTTPError as e:
-        print(f"# HTTP {e.code}: {e.read().decode(errors='replace')[:500]}", flush=True)
+        # The BODY is the diagnostic, not the status code — print it, and print the
+        # request shape that produced it (never the 60k-char prompt itself).
+        print(f"# HTTP {e.code}: {e.read().decode(errors='replace')[:800]}", flush=True)
+        print(f"# request: prompt_chars={len(prompt)} max_tokens={max_tokens} "
+              f"salt={salt!r} session_id={session_id!r}", flush=True)
         raise
-    return resp, time.time() - t0
 
 
-def row_for(turn, prompt, text, resp, dt, stripped):
+def read_sse(r, t0):
+    """Reassemble an OpenAI-compat text_completion SSE stream into the non-stream shape,
+    so the SAME row_for()/gate() path serves both modes and a streamed arm's text_sha is
+    directly comparable to a blocking arm's. Returns (resp, wall_s, ttft_s)."""
+    text, ttft, usage, finish = [], None, {}, None
+    for raw in r:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue          # SSE keep-alive comment (`: ping`) or blank separator
+        body = line[5:].strip()
+        if body == "[DONE]":
+            break
+        ev = json.loads(body)
+        if "error" in ev:
+            raise RuntimeError(f"stream error: {ev['error']}")
+        ch = (ev.get("choices") or [{}])[0]
+        piece = ch.get("text") or ""
+        if piece and ttft is None:
+            ttft = time.time() - t0
+        text.append(piece)
+        if ch.get("finish_reason"):
+            finish = ch["finish_reason"]
+            usage = ev.get("usage") or {}
+    return ({"choices": [{"text": "".join(text), "finish_reason": finish}],
+             "usage": usage}, time.time() - t0, ttft)
+
+
+def row_for(turn, prompt, text, resp, dt, stripped, ttft=None):
     usage = resp.get("usage", {})
     return {"turn": turn, "wall_s": round(dt, 3),
+            # THE lane number (streamed arms only): prefill + first decode step.
+            "ttft_s": None if ttft is None else round(ttft, 3),
             "prompt_chars": len(prompt),
             "prompt_tokens": usage.get("prompt_tokens"),
             "cached_tokens": (usage.get("prompt_tokens_details") or {})
@@ -143,7 +190,7 @@ def emit(out_path, row, rows):
 
 
 def drive(port, out_path, n_turns, session_id, rewrite, max_tokens, transcript,
-          long_answers=False):
+          long_answers=False, stream=False):
     url = f"http://127.0.0.1:{port}/v1/completions"
     history, rows = [], []
     for turn in range(n_turns):
@@ -157,12 +204,12 @@ def drive(port, out_path, n_turns, session_id, rewrite, max_tokens, transcript,
         history.append(("user", f"Summarize section {3 + turn} in one sentence, then "
                                 f"relate it to section {4 + turn}.{ask_more}"))
         prompt = render(history)
-        resp, dt = ask(url, prompt, max_tokens, session_id)
+        resp, dt, ttft = ask(url, prompt, max_tokens, session_id, stream=stream)
         text = resp["choices"][0]["text"]
         # THE REWRITE: history keeps the answer with its <think> span REMOVED, so the
         # next turn re-sends a mutated interior for this turn — pi's think-strip.
         kept, stripped = strip_think(text) if rewrite else (text, False)
-        emit(out_path, row_for(turn, prompt, text, resp, dt, stripped), rows)
+        emit(out_path, row_for(turn, prompt, text, resp, dt, stripped, ttft), rows)
         history.append(("assistant", kept))
     tot = sum(r["wall_s"] for r in rows)
     nrw = sum(1 for r in rows if r["rewrote"])
@@ -173,7 +220,8 @@ def drive(port, out_path, n_turns, session_id, rewrite, max_tokens, transcript,
         print(f"# transcript -> {transcript}", flush=True)
 
 
-def replay(transcript_path, port, out_path, max_tokens, session_id, cold=False):
+def replay(transcript_path, port, out_path, max_tokens, session_id, cold=False,
+           only=None, stream=False):
     """Re-issue the recorded conversation turn by turn. Each request's prompt is
     rebuilt from the RECORDED history, so this arm sees byte-identical prompts to
     the arm that produced the transcript no matter what it generates itself."""
@@ -184,14 +232,21 @@ def replay(transcript_path, port, out_path, max_tokens, session_id, cold=False):
     max_tokens = max_tokens or t["max_tokens"]
     rows = []
     for turn in range(0, len(history), 2):
+        # --only N: issue ONLY turn N's request. The cleanest possible cold control — a
+        # fresh server serving exactly one request has no parked session to resume from
+        # and no accumulated namespaces. (Per-turn cache_salt does force cold priming, but
+        # each namespace parks its own ~4.2GB session, so on the 24GB card it OOMs by turn
+        # 4: captured "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY)" at salt cold-4.)
+        if only is not None and turn // 2 != only:
+            continue
         prompt = render(history[:turn + 1])
-        resp, dt = ask(url, prompt, max_tokens, session_id,
-                       salt=f"cold-{turn}" if cold else None)
+        resp, dt, ttft = ask(url, prompt, max_tokens, session_id,
+                             salt=f"cold-{turn}" if cold else None, stream=stream)
         text = resp["choices"][0]["text"]
         # `rewrote` is a property of the RECORDED history (was this turn's stored
         # answer think-stripped?), not of what this arm just generated.
         stripped = "<think>" not in history[turn + 1][1] if turn + 1 < len(history) else False
-        emit(out_path, row_for(turn // 2, prompt, text, resp, dt, stripped), rows)
+        emit(out_path, row_for(turn // 2, prompt, text, resp, dt, stripped, ttft), rows)
     tot = sum(r["wall_s"] for r in rows)
     print(f"# total {tot:.1f}s over {len(rows)} replayed turns", flush=True)
 
@@ -233,9 +288,50 @@ def gate(resume_path, fresh_path):
     return 1 if bad else 0
 
 
+def curve(field, on_paths, off_paths):
+    """Per-turn median of `field` across replicates, one row per turn, both arms + ratio.
+
+    Median over replicates PER TURN, never a mean over turns: turn 0 is a cold prime in
+    both arms (nothing to resume) and the rewrite turns are the interesting ones, so a
+    single aggregate would hide the whole shape. N is printed with the table because a
+    median without its N is not a number (evidence discipline)."""
+    def load(paths):
+        out = {}
+        for p in paths:
+            for l in open(p):
+                if not l.strip() or l.startswith("#"):
+                    continue
+                r = json.loads(l)
+                v = r.get(field)
+                if v is not None:
+                    out.setdefault(r["turn"], []).append(v)
+        return out
+    a, b = load(on_paths), load(off_paths)
+    def med(xs):
+        s = sorted(xs)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+    print(f"# {field}: affinity ON (n={len(on_paths)} reps) vs OFF (n={len(off_paths)} reps)")
+    print("# turn  on_med  off_med  speedup")
+    for turn in sorted(set(a) | set(b)):
+        if turn not in a or turn not in b:
+            continue
+        ma, mb = med(a[turn]), med(b[turn])
+        sp = f"{mb / ma:.2f}x" if ma else "n/a"
+        print(f"{turn:5d}  {ma:7.3f} {mb:8.3f}  {sp:>7}")
+    tot_a = sum(med(a[t]) for t in a if t in b)
+    tot_b = sum(med(b[t]) for t in b if t in a)
+    print(f"# sum-of-medians: on {tot_a:.2f} off {tot_b:.2f} "
+          f"({tot_b / tot_a:.2f}x)" if tot_a else "")
+    return 0
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "--gate":
         sys.exit(gate(sys.argv[2], sys.argv[3]))
+    if sys.argv[1] == "--curve":
+        split = sys.argv.index("--")
+        sys.exit(curve(sys.argv[2], sys.argv[3:split], sys.argv[split + 1:]))
     sid = None
     if "--session-id" in sys.argv:
         sid = sys.argv[sys.argv.index("--session-id") + 1]
@@ -243,8 +339,9 @@ if __name__ == "__main__":
     if "--max-tokens" in sys.argv:
         maxtok = int(sys.argv[sys.argv.index("--max-tokens") + 1])
     if sys.argv[1] == "--replay":
+        only = int(sys.argv[sys.argv.index("--only") + 1]) if "--only" in sys.argv else None
         sys.exit(replay(sys.argv[2], int(sys.argv[3]), sys.argv[4], maxtok, sid,
-                        "--cold" in sys.argv) or 0)
+                        "--cold" in sys.argv, only, "--stream" in sys.argv) or 0)
     port = int(sys.argv[1])
     out = sys.argv[2]
     turns = int(sys.argv[3]) if len(sys.argv) > 3 and not sys.argv[3].startswith("-") else 25
@@ -252,4 +349,4 @@ if __name__ == "__main__":
     if "--transcript" in sys.argv:
         tr = sys.argv[sys.argv.index("--transcript") + 1]
     drive(port, out, turns, sid, "--no-rewrite" not in sys.argv, maxtok or 600, tr,
-          "--long" in sys.argv)
+          "--long" in sys.argv, "--stream" in sys.argv)
