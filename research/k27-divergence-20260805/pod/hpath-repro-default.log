@@ -1,0 +1,6 @@
+loaded qwen35 (64 layers)
+repro: T_a=10 b=2 slot=0 co_T=[10] steps=12 chat=false
+
+thread 'main' (726262) panicked at crates/memra-engine/src/hybrid_forward.rs:434:9:
+prime_cache needs T >= 16 (caller gates)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
