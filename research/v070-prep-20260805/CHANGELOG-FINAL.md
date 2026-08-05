@@ -86,6 +86,10 @@ Changes since v0.69.0:
   chunk-invariance arms — the serving tick's exactness contract was guarded only on the H100
   battery before, and both new gates carry injected-break canary teeth so they cannot pass
   vacuously.
+- `tools/fast-gate` self-gating (`kind=cmd`) probes reported PASS when the underlying gate
+  script SKIPped for a missing model — a SKIP and a real pass both exit 0, so the gate could
+  pass vacuously on any rig lacking the artifact. Probes now read the script's own verdict word
+  and report SKIP as SKIP.
 - Resumable per-crate crates.io publish: skips versions already live, waits out the new-crate
   429 burst limit, and gains a `publish=true` dispatch recovery door (the v0.69.0 first publish
   shipped 5 of 9 crates and could not resume).

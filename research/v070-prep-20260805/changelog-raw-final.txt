@@ -18,6 +18,7 @@ Changes since v0.69.0:
 - API-key management — multi-key tenant auth (lane/api-keys)
 
 ## Fixes
+- fast-gate kind=cmd reported a SKIPping probe as PASS
 - NVFP4 fused dual doors obey the FP-order law — strict decode-batch-gate now equalizes NVFP4
 - chunk-invariance canary must inject a break, not relabel the expectation
 - local-ci runs decode-batch-gate — the serving tick's exactness was guarded off-battery
