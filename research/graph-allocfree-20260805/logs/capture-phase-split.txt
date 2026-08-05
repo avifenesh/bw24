@@ -1,0 +1,74 @@
+# Capture PHASE SPLIT (MEMRA_GRAPH_CAPTIME=1) — the number that bounds the whole Q1 refactor.
+# pod RTX PRO 6000 Blackwell 97887 MiB, tree fcfe3837 + Q1 probe, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat
+# cmd: MEMRA_GRAPH_CAPTIME=1 ./target/release/graph-allocfree-probe <model> --steps 96 --reps 5
+#
+# Only `instantiate` (cuStreamEndCapture + cuGraphInstantiateWithFlags) and `upload` scale
+# with node count. `warmup2x` is two EAGER step executions and is node-count-INVARIANT:
+# removing every mem node cannot shrink it. Steady-state medians (q27):
+#   warmup2x 27.4 ms | capture-body 2.6 ms | instantiate 4.2 ms | upload 0.16 ms  = 34.4 ms
+#   -> warmup is 80% of recapture; the node-count-sensitive part is 4.4 ms = 13%.
+# q9: warmup2x 14.2 | body 1.27 | instantiate 2.07 | upload 0.08 = 17.6 ms (warmup 81%).
+#
+# The high outliers (instantiate 12.4 ms q27 / 5.9 ms q9, first capture of each session)
+# are cold-path first-instantiate; steady state is the 4.2/2.07 ms figure.
+
+=== q27 phase split (5 recaptures) ===
+[graph-captime] warmup2x 26.86 ms  capture-body 1.99 ms  instantiate 9.37 ms  upload 0.33 ms
+[graph-captime] warmup2x 27.36 ms  capture-body 2.56 ms  instantiate 4.11 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.41 ms  capture-body 2.49 ms  instantiate 4.10 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.43 ms  capture-body 2.56 ms  instantiate 4.26 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.45 ms  capture-body 2.55 ms  instantiate 4.18 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.43 ms  capture-body 2.57 ms  instantiate 4.18 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.42 ms  capture-body 3.33 ms  instantiate 12.44 ms  upload 0.26 ms
+[graph-captime] warmup2x 27.39 ms  capture-body 2.11 ms  instantiate 3.81 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.41 ms  capture-body 2.36 ms  instantiate 3.97 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.38 ms  capture-body 2.16 ms  instantiate 3.82 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.43 ms  capture-body 2.27 ms  instantiate 3.87 ms  upload 0.16 ms
+recapture (capture+instantiate, no prime): median 37.1 ms  (raw ["47.3", "36.2", "37.0", "37.1", "37.2"])
+[graph-captime] warmup2x 27.41 ms  capture-body 2.62 ms  instantiate 4.11 ms  upload 0.16 ms
+[graph-captime] warmup2x 27.48 ms  capture-body 2.59 ms  instantiate 5.05 ms  upload 0.20 ms
+[graph-captime] warmup2x 26.18 ms  capture-body 3.19 ms  instantiate 12.45 ms  upload 0.34 ms
+[graph-captime] warmup2x 27.41 ms  capture-body 2.55 ms  instantiate 4.22 ms  upload 0.17 ms
+[graph-captime] warmup2x 26.91 ms  capture-body 2.62 ms  instantiate 4.34 ms  upload 0.19 ms
+[graph-captime] warmup2x 25.61 ms  capture-body 2.59 ms  instantiate 4.35 ms  upload 0.18 ms
+[graph-captime] warmup2x 26.89 ms  capture-body 2.60 ms  instantiate 4.12 ms  upload 0.17 ms
+[graph-captime] warmup2x 26.89 ms  capture-body 2.62 ms  instantiate 4.26 ms  upload 0.18 ms
+[graph-captime] warmup2x 25.59 ms  capture-body 2.67 ms  instantiate 4.48 ms  upload 0.20 ms
+[graph-captime] warmup2x 26.91 ms  capture-body 2.59 ms  instantiate 4.36 ms  upload 0.18 ms
+[graph-captime] warmup2x 26.90 ms  capture-body 2.67 ms  instantiate 4.37 ms  upload 0.18 ms
+[graph-captime] warmup2x 25.56 ms  capture-body 2.56 ms  instantiate 4.43 ms  upload 0.19 ms
+[graph-captime] warmup2x 26.89 ms  capture-body 2.60 ms  instantiate 4.38 ms  upload 0.18 ms
+[graph-captime] warmup2x 26.89 ms  capture-body 2.65 ms  instantiate 4.48 ms  upload 0.20 ms
+[graph-captime] warmup2x 25.58 ms  capture-body 2.63 ms  instantiate 4.48 ms  upload 0.19 ms
+launch(async) per step: median 46.6 us  (raw ["46.6", "46.6", "46.4", "47.0", "47.4"])
+SUMMARY iflag=auto_free launch_us=46.6 tps=81.08 cap_ms=703.1
+=== q9 phase split ===
+[graph-captime] warmup2x 14.24 ms  capture-body 3.28 ms  instantiate 5.89 ms  upload 0.21 ms
+[graph-captime] warmup2x 14.57 ms  capture-body 1.26 ms  instantiate 2.10 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.59 ms  capture-body 1.24 ms  instantiate 2.10 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.60 ms  capture-body 1.27 ms  instantiate 2.15 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.60 ms  capture-body 1.24 ms  instantiate 2.15 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.59 ms  capture-body 1.26 ms  instantiate 2.03 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.59 ms  capture-body 1.50 ms  instantiate 5.58 ms  upload 0.13 ms
+[graph-captime] warmup2x 14.61 ms  capture-body 0.96 ms  instantiate 1.45 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.58 ms  capture-body 0.98 ms  instantiate 1.41 ms  upload 0.07 ms
+[graph-captime] warmup2x 14.60 ms  capture-body 0.96 ms  instantiate 1.38 ms  upload 0.07 ms
+[graph-captime] warmup2x 14.60 ms  capture-body 0.95 ms  instantiate 1.41 ms  upload 0.07 ms
+recapture (capture+instantiate, no prime): median 18.3 ms  (raw ["23.3", "18.1", "18.2", "18.3", "18.3"])
+[graph-captime] warmup2x 14.58 ms  capture-body 1.27 ms  instantiate 1.99 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.61 ms  capture-body 1.26 ms  instantiate 2.36 ms  upload 0.08 ms
+[graph-captime] warmup2x 13.93 ms  capture-body 1.60 ms  instantiate 5.89 ms  upload 0.21 ms
+[graph-captime] warmup2x 14.22 ms  capture-body 1.25 ms  instantiate 2.03 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.23 ms  capture-body 1.29 ms  instantiate 2.09 ms  upload 0.08 ms
+[graph-captime] warmup2x 13.62 ms  capture-body 1.26 ms  instantiate 2.05 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.22 ms  capture-body 1.27 ms  instantiate 1.98 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.24 ms  capture-body 1.29 ms  instantiate 2.10 ms  upload 0.08 ms
+[graph-captime] warmup2x 13.59 ms  capture-body 1.27 ms  instantiate 2.26 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.23 ms  capture-body 1.27 ms  instantiate 2.05 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.23 ms  capture-body 1.28 ms  instantiate 2.07 ms  upload 0.08 ms
+[graph-captime] warmup2x 13.60 ms  capture-body 1.26 ms  instantiate 2.07 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.24 ms  capture-body 1.28 ms  instantiate 2.09 ms  upload 0.08 ms
+[graph-captime] warmup2x 14.23 ms  capture-body 1.29 ms  instantiate 2.15 ms  upload 0.08 ms
+[graph-captime] warmup2x 13.61 ms  capture-body 1.27 ms  instantiate 2.10 ms  upload 0.08 ms
+launch(async) per step: median 23.8 us  (raw ["23.8", "23.9", "23.4", "23.5", "24.3"])
+SUMMARY iflag=auto_free launch_us=23.8 tps=151.74 cap_ms=398.3

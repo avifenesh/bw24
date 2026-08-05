@@ -1,0 +1,14 @@
+=== kernel-check ===
+moe async-prefetch ordering + protected victim: OK
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+
+ALL GREEN: kernels match CPU reference.
+=== graph-decode-gate q27 ===
+[gate] eager prime done
+[gate] eager gen done; graph path start
+[gate] graph path done
+buckets crossed (fa_vec, n_splits): [(false, 1), (true, 6), (true, 7), (true, 8), (true, 9), (true, 10), (true, 11), (true, 12), (true, 13), (true, 14), (true, 15), (true, 16), (true, 17), (true, 18), (true, 19), (true, 20)]
+graph (re)captures: 2
+Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=16 captures=2

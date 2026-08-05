@@ -1,0 +1,10 @@
+# run-gen argmax gate — Q1 diagnostic doors (MEMRA_GRAPH_IFLAG + MEMRA_GRAPH_CAPTIME + graph_session_recapture_pub)
+# pod, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat, prompt >=16 tok so both gate lines print
+# cmd: ./target/release/run-gen <model> --prompt "Explain in detail how a modern GPU executes a matrix multiplication kernel, covering memory hierarchy, tiling, and warp scheduling." -n 32
+
+=== run-gen gates q27 ===
+prefill argmax=271  decode argmax=271  logit maxdiff=3.436e-1  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=3.661e-1  MATCH
+=== run-gen gates q9 ===
+prefill argmax=271  decode argmax=271  logit maxdiff=3.937e-1  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=3.955e-1  MATCH

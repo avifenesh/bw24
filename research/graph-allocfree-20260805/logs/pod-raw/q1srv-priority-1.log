@@ -1,0 +1,39 @@
+[server] starting; models config = [("qwen", "/root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[worker]   loaded "qwen": 65 layers, eos=248046
+[worker] qwen: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] qwen: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen"]
+[server] listening on http://127.0.0.1:8137
+[meter] admit id=chatcmpl-27f6ab352f327602b423b0778a8d638f tenant=default lane=interactive model="qwen"
+[worker] observed session VRAM cost for "qwen": 570MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[meter] admit id=chatcmpl-76a3c3e7c0d75dc2038172525ee5f9bd tenant=default lane=interactive model="qwen"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model qwen)
+[spec-acc] ctx=226 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=260 burst=24/27 cum=48/54=0.889
+[spec-acc] ctx=293 burst=24/24 cum=72/78=0.923
+[spec-acc] ctx=325 burst=19/30 cum=91/108=0.843
+[meter] admit id=chatcmpl-de81e4c7fddc7f0310f30011fe040a81 tenant=default lane=interactive model="qwen"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model qwen)
+[spec-acc] ctx=226 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=260 burst=24/27 cum=48/54=0.889
+[spec-acc] ctx=293 burst=24/24 cum=72/78=0.923
+[spec-acc] ctx=325 burst=19/30 cum=91/108=0.843
+[meter] admit id=chatcmpl-dcd85243c41c7d42fa0dc53c9f4d4a82 tenant=default lane=interactive model="qwen"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model qwen)
+[spec-acc] ctx=226 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=260 burst=24/27 cum=48/54=0.889
+[spec-acc] ctx=293 burst=24/24 cum=72/78=0.923
+[spec-acc] ctx=325 burst=19/30 cum=91/108=0.843
+[meter] admit id=chatcmpl-0698f3bb2786e413d611fe5323e6f259 tenant=default lane=interactive model="qwen"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model qwen)
+[spec-acc] ctx=226 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=260 burst=24/27 cum=48/54=0.889
+[spec-acc] ctx=293 burst=24/24 cum=72/78=0.923
+[spec-acc] ctx=325 burst=19/30 cum=91/108=0.843
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

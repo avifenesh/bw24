@@ -1,0 +1,12 @@
+=== /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf ===
+capture+prime wall: median 702.3 ms over 5 (min 696.1 max 702.7)
+recapture (capture+instantiate, no prime): median 37.0 ms  (raw ["47.2", "36.4", "36.7", "37.0", "37.1"])
+launch(async) per step: median 46.8 us  (raw ["46.8", "46.6", "46.8", "46.6", "47.0"])
+decode tok/s (session step): median 81.12  (raw ["79.28", "81.14", "81.12", "81.13", "81.10"])
+SUMMARY iflag=auto_free launch_us=46.8 tps=81.12 cap_ms=702.3
+=== /root/pilot/q9base-Q8_0.gguf ===
+capture+prime wall: median 398.2 ms over 5 (min 398.0 max 414.9)
+recapture (capture+instantiate, no prime): median 18.3 ms  (raw ["23.8", "18.2", "18.2", "18.3", "18.3"])
+launch(async) per step: median 23.4 us  (raw ["23.3", "23.4", "23.4", "23.5", "23.3"])
+decode tok/s (session step): median 151.73  (raw ["150.52", "151.77", "151.76", "151.72", "151.73"])
+SUMMARY iflag=auto_free launch_us=23.4 tps=151.73 cap_ms=398.2

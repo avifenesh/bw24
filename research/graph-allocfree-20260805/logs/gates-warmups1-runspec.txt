@@ -1,0 +1,21 @@
+# warmups=1 exactness, part 2: run-spec K=1..8 (q27) + graph gates (q9). pod.
+# Acceptance rates are IDENTICAL to the warmups=2 baseline in gates-runspec-k1to8-q27.txt
+# (15/16, 19/24, 24/30, 23/36, 25/45, 27/54, 29/63, 23/64) — the capture is unchanged.
+
+=== run-spec K=1..8 warmups=1 q27 ===
+  acceptance: 15/16 = 93.8%   self-consistency: PASS (identical to generate)
+  acceptance: 19/24 = 79.2%   self-consistency: PASS (identical to generate)
+  acceptance: 24/30 = 80.0%   self-consistency: PASS (identical to generate)
+  acceptance: 23/36 = 63.9%   self-consistency: PASS (identical to generate)
+  acceptance: 25/45 = 55.6%   self-consistency: PASS (identical to generate)
+  acceptance: 27/54 = 50.0%   self-consistency: PASS (identical to generate)
+  acceptance: 29/63 = 46.0%   self-consistency: PASS (identical to generate)
+  acceptance: 23/64 = 35.9%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== graph-decode-gate warmups=1 q9 ===
+graph (re)captures: 2
+Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=16 captures=2
+=== graph-session-gate warmups=1 q9 ===
+gate (session vs generate_graph, 96 tokens): PASS
+perf: session 152.4 tok/s vs eager 139.5 tok/s (+9.3%)
+ALL GREEN: graph-session gate

@@ -1,0 +1,39 @@
+# INVERSE EXPERIMENT: instead of removing mem nodes (the 2-4 day refactor), ADD them and see
+# what the marginal cost per node looks like. MEMRA_DEBUG_ZERO_ALLOCS=1 memsets every engine
+# allocation -> +1 MEMSET node per alloc (~+1589 nodes on q27, +37% node count) with the
+# SAME kernel set. pod, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat, q27 NVFP4+MTP, interleaved x3.
+#
+# CONFOUND, stated up front: the added memsets do REAL DEVICE WORK (they zero live buffers),
+# so this is an UPPER bound on per-node cost, not a clean host-side launch measurement. It is
+# reported as a bound, not as the per-node dispatch cost.
+#
+# result: launch 46.9/47.2/47.5 us -> 776.6/801.4/794.0 us  (+~750 us for +1589 nodes)
+#         tok/s   79.21/79.26/76.14 -> 67.42/67.38/66.45    (-15%)
+#         cap_ms  763/702/698 -> 837/835/835
+#
+# READ: node count is NOT free — inflating it 37% cost 15% tok/s. But the direction that
+# matters for Q1 is the REMOVAL side, and the removal ceiling is bounded independently by the
+# flag A/B + phase split: mem nodes are 3226 of 4305 on q27 yet the auto_free-vs-priority A/B
+# measured FLAT and the launch cost is 46.8 us = 0.38% of a 12.33 ms step. The asymmetry is
+# real and explains itself: an ALLOC/FREE node pair on a pool with RELEASE_THRESHOLD=u64::MAX
+# replays as a pointer bump (near-zero device work), while a MEMSET node replays as an actual
+# device kernel over live bytes. Adding expensive nodes costs; removing cheap ones cannot
+# refund more than they cost, and they were measured at <=0.38% of step total.
+=== rep1 baseline (4305 nodes) ===
+launch(async) per step: median 46.9 us  (raw ["46.9"])
+SUMMARY iflag=auto_free launch_us=46.9 tps=79.21 cap_ms=763.1
+=== rep1 +memset-per-alloc (ZERO_ALLOCS) ===
+launch(async) per step: median 776.6 us  (raw ["776.6"])
+SUMMARY iflag=auto_free launch_us=776.6 tps=67.42 cap_ms=836.6
+=== rep2 baseline (4305 nodes) ===
+launch(async) per step: median 47.2 us  (raw ["47.2"])
+SUMMARY iflag=auto_free launch_us=47.2 tps=79.26 cap_ms=702.4
+=== rep2 +memset-per-alloc (ZERO_ALLOCS) ===
+launch(async) per step: median 801.4 us  (raw ["801.4"])
+SUMMARY iflag=auto_free launch_us=801.4 tps=67.38 cap_ms=835.2
+=== rep3 baseline (4305 nodes) ===
+launch(async) per step: median 47.5 us  (raw ["47.5"])
+SUMMARY iflag=auto_free launch_us=47.5 tps=76.14 cap_ms=697.8
+=== rep3 +memset-per-alloc (ZERO_ALLOCS) ===
+launch(async) per step: median 794.0 us  (raw ["794.0"])
+SUMMARY iflag=auto_free launch_us=794.0 tps=66.45 cap_ms=835.4

@@ -1,0 +1,12 @@
+=== rep1 flag=auto_free ===
+SUMMARY iflag=auto_free launch_us=23.5 tps=147.84 cap_ms=398.2
+=== rep1 flag=priority ===
+SUMMARY iflag=priority launch_us=23.9 tps=147.81 cap_ms=398.1
+=== rep2 flag=auto_free ===
+SUMMARY iflag=auto_free launch_us=23.8 tps=147.82 cap_ms=397.8
+=== rep2 flag=priority ===
+SUMMARY iflag=priority launch_us=23.4 tps=147.78 cap_ms=398.0
+=== rep3 flag=auto_free ===
+SUMMARY iflag=auto_free launch_us=23.6 tps=147.73 cap_ms=398.4
+=== rep3 flag=priority ===
+SUMMARY iflag=priority launch_us=24.4 tps=147.69 cap_ms=398.5

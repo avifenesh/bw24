@@ -1,0 +1,13 @@
+# run-spec K=1..8 self-consistency — Q1 diagnostic doors, q27 NVFP4+MTP
+# pod, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat; cmd: ./target/release/run-spec /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+# (naked invocation = the full K=1..8 sweep; MEMRA_SPEC_K would pin a single K = bench mode)
+
+  acceptance: 15/16 = 93.8%   self-consistency: PASS (identical to generate)
+  acceptance: 19/24 = 79.2%   self-consistency: PASS (identical to generate)
+  acceptance: 24/30 = 80.0%   self-consistency: PASS (identical to generate)
+  acceptance: 23/36 = 63.9%   self-consistency: PASS (identical to generate)
+  acceptance: 25/45 = 55.6%   self-consistency: PASS (identical to generate)
+  acceptance: 27/54 = 50.0%   self-consistency: PASS (identical to generate)
+  acceptance: 29/63 = 46.0%   self-consistency: PASS (identical to generate)
+  acceptance: 23/64 = 35.9%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===

@@ -1,0 +1,34 @@
+# MISSION ITEM 2(c): decode tok/s on the SERVE path, c=1, interleaved N=5 (auto_free vs priority).
+# pod, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat, q27 NVFP4+MTP, MEMRA_CTX=8192, --greedy.
+# c=1 greedy is the arm that promotes to GraphSession replay (worker.rs:1251 "greedy
+# interactive session admitted ALONE rides GraphSession replay"), so this exercises the
+# generic capture under test. Server restarted per arm (env is read once via OnceLock).
+# script: /root/q1-serve.sh
+#
+# RESULT (medians of 5):
+#   auto_free  tok/s 167.94  raw [167.75, 167.94, 168.40, 166.79, 168.65]   p50 lat 759.0 ms
+#   priority   tok/s 167.65  raw [165.36, 167.83, 167.65, 167.74, 166.65]   p50 lat 759.1 ms
+#   delta -0.18% -> FLAT. p50 latency identical within 0.1 ms across all 10 runs.
+# Confirms the probe-path A/B on the real serve path: the AUTO_FREE_ON_LAUNCH mem-pool scan
+# the audit priced at 205 us/step is not a measurable cost. 0 errors, 0 shed, 4/4 ok per run.
+
+=== rep1 flag=auto_free ===
+{"ts": "2026-08-05T16:54:48+0000", "label": "q1-auto_free-1", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.052229561842978, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 167.7462293140387, "req_per_s": 1.3105174165159272, "lat_p50_s": 0.7582724844105542, "lat_p95_s": 0.7775868838652968, "lat_mean_s": 0.7628956724656746, "lat_max_s": 0.7775868838652968, "errors_sample": []}
+=== rep1 flag=priority ===
+{"ts": "2026-08-05T16:55:13+0000", "label": "q1-priority-1", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0962606291286647, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 165.36075651489477, "req_per_s": 1.2918809102726154, "lat_p50_s": 0.7590970043092966, "lat_p95_s": 0.8210814739577472, "lat_mean_s": 0.7739125225925818, "lat_max_s": 0.8210814739577472, "errors_sample": []}
+=== rep2 flag=auto_free ===
+{"ts": "2026-08-05T16:55:37+0000", "label": "q1-auto_free-2", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0486196228303015, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 167.94486139424157, "req_per_s": 1.3120692296425123, "lat_p50_s": 0.758979506790638, "lat_p95_s": 0.7719442071393132, "lat_mean_s": 0.7619966774946079, "lat_max_s": 0.7719442071393132, "errors_sample": []}
+=== rep2 flag=priority ===
+{"ts": "2026-08-05T16:56:01+0000", "label": "q1-priority-2", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0507215750403702, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 167.8291471070167, "req_per_s": 1.311165211773568, "lat_p50_s": 0.7585566709749401, "lat_p95_s": 0.7753273248672485, "lat_mean_s": 0.7625298869097605, "lat_max_s": 0.7753273248672485, "errors_sample": []}
+=== rep3 flag=auto_free ===
+{"ts": "2026-08-05T16:56:26+0000", "label": "q1-auto_free-3", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0403994088992476, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 168.39892762160665, "req_per_s": 1.315616622043802, "lat_p50_s": 0.7588659757748246, "lat_p95_s": 0.7647710279561579, "lat_mean_s": 0.7599472202127799, "lat_max_s": 0.7647710279561579, "errors_sample": []}
+=== rep3 flag=priority ===
+{"ts": "2026-08-05T16:56:50+0000", "label": "q1-priority-3", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0540435006842017, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 167.64659700665558, "req_per_s": 1.3097390391144967, "lat_p50_s": 0.7584328139200807, "lat_p95_s": 0.7789349420927465, "lat_mean_s": 0.763359657721594, "lat_max_s": 0.7789349420927465, "errors_sample": []}
+=== rep4 flag=auto_free ===
+{"ts": "2026-08-05T16:57:14+0000", "label": "q1-auto_free-4", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0697565376758575, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 166.78847124066723, "req_per_s": 1.3030349315677128, "lat_p50_s": 0.759354738984257, "lat_p95_s": 0.7919647879898548, "lat_mean_s": 0.7673020630609244, "lat_max_s": 0.7919647879898548, "errors_sample": []}
+=== rep4 flag=priority ===
+{"ts": "2026-08-05T16:57:39+0000", "label": "q1-priority-4", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0523321400396526, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 167.74059195056952, "req_per_s": 1.3104733746138244, "lat_p50_s": 0.7592261368408799, "lat_p95_s": 0.7754525220952928, "lat_mean_s": 0.7629179317736998, "lat_max_s": 0.7754525220952928, "errors_sample": []}
+=== rep5 flag=auto_free ===
+{"ts": "2026-08-05T16:58:03+0000", "label": "q1-auto_free-5", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0358933741226792, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 168.64887428662055, "req_per_s": 1.317569330364223, "lat_p50_s": 0.7590158600360155, "lat_p95_s": 0.7592060058377683, "lat_mean_s": 0.7588247077073902, "lat_max_s": 0.7592060058377683, "errors_sample": []}
+=== rep5 flag=priority ===
+{"ts": "2026-08-05T16:58:28+0000", "label": "q1-priority-5", "base": "http://127.0.0.1:8137", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": true, "wall_s": 3.0723740747198462, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 904, "agg_tok_s": 166.64637428522977, "req_per_s": 1.3019247991033576, "lat_p50_s": 0.759110493119806, "lat_p95_s": 0.7956193452700973, "lat_mean_s": 0.7679498953511938, "lat_max_s": 0.7956193452700973, "errors_sample": []}

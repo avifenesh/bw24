@@ -10317,20 +10317,71 @@ impl Engine {
         // touches only gpu.stream; no buffer crosses to copy_stream during capture.
         let was_tracking = self.gpu.ctx.is_event_tracking();
         if was_tracking { unsafe { self.gpu.ctx.disable_event_tracking(); } }
+        // Q1 PROBE (MEMRA_GRAPH_IFLAG): the generic capture body's cuMemAllocAsync nodes are
+        // EXACTLY BALANCED by in-graph free nodes (measured census q27: 1589 ALLOC / 1589
+        // FREE), so AUTO_FREE_ON_LAUNCH has nothing to reclaim at launch — it only pays its
+        // per-node launch-time mem-pool scan. `upload` / `none` select the alternatives to
+        // measure that scan's real cost on the generic path. Diagnostic door only; the
+        // default stays AUTO_FREE until a measured A/B justifies moving it.
+        let iflag = {
+            static F: std::sync::OnceLock<CUgraphInstantiate_flags> = std::sync::OnceLock::new();
+            *F.get_or_init(|| match std::env::var("MEMRA_GRAPH_IFLAG").as_deref() {
+                // UPLOAD = the gemma slotted door's zero-mem-node choice; PRIORITY = the flag
+                // hybrid_forward.rs:5935 actually ships (both drop the auto-free launch scan).
+                Ok("upload") => CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_UPLOAD,
+                Ok("priority") =>
+                    CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_USE_NODE_PRIORITY,
+                _ => CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+            })
+        };
+        // MEMRA_GRAPH_CAPTIME=1 (Q1 lane): phase-resolved capture cost. Recapture is paid at
+        // every kernel-class crossing, so it — not steady-state decode — is the quantity a
+        // mem-node reduction could plausibly shrink. Only `instantiate` (cuStreamEndCapture +
+        // cuGraphInstantiateWithFlags) and `upload` scale with node count; the warmups are
+        // eager step executions and are node-count-invariant. Printing the split bounds the
+        // refactor's ceiling instead of assuming it.
+        let ct = {
+            static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *T.get_or_init(|| std::env::var("MEMRA_GRAPH_CAPTIME").as_deref() == Ok("1"))
+        };
+        // MEMRA_GRAPH_WARMUPS (Q1 lane, default 2 = unchanged): the phase split showed the two
+        // eager warmups are 80% of recapture cost (q27 27.4 of 34.4 ms) — 3x larger than the
+        // ENTIRE mem-node ceiling the audit chased, and node-count-invariant, so no capture-body
+        // refactor can touch it. Warmup 1 primes the async pool (its allocs may grow/map);
+        // warmup 2 re-walks the same sequence over the now-freed blocks so the captured third
+        // run sees identical addresses and kernel attrs. Whether run 2 is load-bearing is an
+        // EXACTNESS question, not a taste question: the door exists so graph-decode-gate
+        // (256-step bit-identity) and run-spec can arbitrate. Default stays 2 until they do.
+        let warmups = {
+            static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *W.get_or_init(|| std::env::var("MEMRA_GRAPH_WARMUPS").ok()
+                .and_then(|v| v.parse().ok()).filter(|n| *n >= 1).unwrap_or(2))
+        };
         let mut run = || -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>> {
-            // warmup: two inline runs (no capture) so allocator pointers + kernel attrs are stable.
-            step(self)?;
-            step(self)?;
+            let t_w = std::time::Instant::now();
+            // warmup: inline runs (no capture) so allocator pointers + kernel attrs are stable.
+            for _ in 0..warmups { step(self)?; }
             self.gpu.stream().synchronize()?;
+            let ms_warm = t_w.elapsed().as_secs_f64() * 1e3;
             // capture the third run.
+            let t_c = std::time::Instant::now();
             self.gpu.stream().begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
             // If the body errors mid-capture, end the capture before propagating so the stream isn't
             // left in a capturing state.
             let r = step(self);
-            let g = self.gpu.stream().end_capture(CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+            let ms_body = t_c.elapsed().as_secs_f64() * 1e3;
+            let t_i = std::time::Instant::now();
+            let g = self.gpu.stream().end_capture(iflag);
+            let ms_inst = t_i.elapsed().as_secs_f64() * 1e3;
             r?;
             let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
+            let t_u = std::time::Instant::now();
             graph.upload()?;
+            if ct {
+                println!("[graph-captime] warmup2x {ms_warm:.2} ms  capture-body {ms_body:.2} ms  \
+                          instantiate {ms_inst:.2} ms  upload {:.2} ms",
+                         t_u.elapsed().as_secs_f64() * 1e3);
+            }
             Ok(graph)
         };
         let result = run();
