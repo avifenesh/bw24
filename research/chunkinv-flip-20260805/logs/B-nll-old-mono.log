@@ -1,0 +1,2 @@
+loaded qwen35 (32 layers)
+nllwin: tokens=1024 chunk=4096(default) f32chunk0=1 mean_nll=0.910269 ppl=2.484990

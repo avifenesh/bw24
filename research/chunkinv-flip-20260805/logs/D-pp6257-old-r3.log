@@ -1,0 +1,5 @@
+loaded qwen35 (32 layers)
+ppprime rep 0: 4881 tok in 1.0332s = 4724.1 tok/s
+ppprime rep 1: 4881 tok in 1.0319s = 4730.0 tok/s
+ppprime rep 2: 4881 tok in 1.0318s = 4730.4 tok/s
+ppprime MEDIAN: 4881 tok in 1.0319s = 4730.0 tok/s (chunk=4096(default) f32chunk0=1)

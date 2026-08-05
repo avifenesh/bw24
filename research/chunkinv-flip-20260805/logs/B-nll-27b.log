@@ -1,0 +1,4 @@
+loaded qwen35 (64 layers)
+nllwin: tokens=1024 chunk=4096(default) f32chunk0=0 mean_nll=0.840739 ppl=2.318080
+loaded qwen35 (64 layers)
+nllwin: tokens=1024 chunk=4096(default) f32chunk0=1 mean_nll=0.850404 ppl=2.340591
