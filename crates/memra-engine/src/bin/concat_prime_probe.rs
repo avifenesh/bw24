@@ -1049,6 +1049,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      nll.exp());
         }
 
+        // TEACHER-FORCED ARM COMPARISON (lane/chunkinv-flip; the mmq-v2 flip protocol):
+        // prime the SAME window under the grain-free default and under the legacy seam
+        // (MEMRA_PRIME_F32CHUNK0=1), lm_head every row of both hidden stacks, and report the
+        // per-position argmax disagreement count + each flip's LEGACY-arm margin against the
+        // legacy margin distribution (median/percentile) — near-tie flips sit far below the
+        // median. Teacher-forced by construction: every row is conditioned on the true prefix.
+        //   tfcmp <model> tfcmp --prompt-a <txt|@f> [--window 1024] [--chunk <c>]
+        "tfcmp" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let window: usize = arg(&rest, "--window").and_then(|v| v.parse().ok()).unwrap_or(1024);
+            if let Some(cv) = arg(&rest, "--chunk") {
+                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", &cv) };
+            }
+            let mut ids = cx.tok.encode(&pa, true);
+            ids.truncate(window.max(2));
+            let t = ids.len();
+            let n_embd = cx.model.cfg.n_embd as usize;
+            let n_vocab = cx.model.output.out_features();
+            let mut run_arm = |seam: &str| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+                unsafe { std::env::set_var("MEMRA_PRIME_F32CHUNK0", seam) };
+                let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
+                let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+                let mut hn = cx.e.uninit(t * n_embd)?;
+                cx.e.rms_norm(&hid, cx.model.output_norm.float_data(), &mut hn, n_embd, t,
+                              cx.model.cfg.rms_eps)?;
+                let logits = cx.e.matmul(&cx.model.output, &hn, t)?;
+                Ok(cx.e.dtoh(&logits)?)
+            };
+            let l_new = run_arm("0")?;      // grain-free default
+            let l_old = run_arm("1")?;      // legacy f32-chunk0 arithmetic
+            unsafe { std::env::remove_var("MEMRA_PRIME_F32CHUNK0") };
+            let mut legacy_margins: Vec<f32> = Vec::with_capacity(t);
+            let mut flips: Vec<(usize, f32)> = Vec::new();
+            for p in 0..t {
+                let ro = &l_old[p * n_vocab..(p + 1) * n_vocab];
+                let rn = &l_new[p * n_vocab..(p + 1) * n_vocab];
+                let (ao, v1, _, v2) = top2(ro);
+                let (an, ..) = top2(rn);
+                legacy_margins.push(v1 - v2);
+                if ao != an { flips.push((p, v1 - v2)); }
+            }
+            let mut sorted = legacy_margins.clone();
+            sorted.sort_by(f32::total_cmp);
+            let med = sorted[sorted.len() / 2];
+            println!("tfcmp: window={t} disagreements={} of {t} | legacy margin median={med:.4}",
+                     flips.len());
+            for (p, m) in &flips {
+                let pct = sorted.iter().filter(|&&v| v < *m).count() as f64
+                    / sorted.len() as f64 * 100.0;
+                println!("  flip @pos {p}: legacy margin {m:.6} = {:.3}x median ({pct:.1}th pctile)",
+                         m / med);
+            }
+        }
+
         // PRIME-ONLY THROUGHPUT (lane/chunkinv-flip): timed prime_cache reps, fresh cache per
         // rep, median tok/s — the SERVING prefill pass. run-gen's GGUF MEMRA_PP_ONLY times
         // forward_last (fresh f32 attention, prime-dispatch-blind); this mode times the pass
