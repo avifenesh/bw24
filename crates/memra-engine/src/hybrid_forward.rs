@@ -458,22 +458,27 @@ impl HybridModel {
         // MEMRA_PRIME_CHUNK is documented as a memory-transient knob, but it also decides
         // the prefill's ARITHMETIC, so two rigs with different values produced different
         // greedy text for the same prompt (research/session-affinity-20260805: 97- and
-        // 149-token prompts). Three independent leak sites, measured in
-        // research/chunk-invariance-20260805:
-        //   (1) trunk GEMM m — every chunk runs the layer stack at m = chunk size, and the
-        //       prefill GEMM is m-DEPENDENT (tiling/split-K selection moves with m), so a
-        //       row's value changes when the chunk it landed in changes size;
-        //   (2) attention numeric CLASS — chunk 0 attends over f32 K/V (fa_prefill) while
-        //       every later chunk attends over the q8_0/q5_1 quantized cache
-        //       (fa_prefill_view_ws), so the FIRST boundary's position moves a
-        //       precision-class edge through the prompt;
-        //   (3) GDN scan segmentation — each boundary re-seeds the chunked WY scan's state.
-        // Aligning split points to a fixed grain (vLLM's mamba fix) addresses (3) alone.
-        // Full invariance needs the grain to also PIN m (leak 1) and the attention class to
-        // stop depending on which chunk a row is in (leak 2) — that is `prime_invariant()`:
-        // fixed-grain segmentation at a constant m, every chunk on the quantized-cache
-        // attention path. Under the door MEMRA_PRIME_CHUNK no longer steers arithmetic;
-        // MEMRA_PRIME_GRAIN becomes the (explicitly numeric) transient bound.
+        // 149-token prompts). ROOT CAUSE, measured in research/chunk-invariance-20260805
+        // (VERDICT.md) — and it is NOT what docs originally said:
+        //   * NOT trunk GEMM m / reduction order. REFUTED: the prefill GEMM is m-INVARIANT
+        //     (rows [0,32) bit-identical at m=32 vs m=33..80, both quantized wq and the
+        //     output head), so growing a chunk cannot move an existing row's value.
+        //   * NOT the GDN scan segmentation. REFUTED: MEMRA_GDN_CHUNKED=0 (sequential scan,
+        //     no WY segmentation at all) still diverges, so vLLM's mamba-boundary fix does
+        //     not describe our leak.
+        //   * IT IS the attention numeric CLASS edge in full_attn_prime_fa_dispatch, which
+        //     selects on `base_len == 0`: chunk 0 attends over this batch's f32 K/V
+        //     (fa_prefill) while every later chunk attends over the q8_0/q5_1 quantized KV
+        //     cache (fa_prefill_view_ws). The chunk size therefore decides WHERE in the
+        //     prompt that precision edge falls. Signature: per-row maxdiff is exactly 0.0
+        //     before the first boundary and O(1) right after, first_div_pos == chunk size.
+        // Pinning split points to a fixed grain makes that edge land at the same position on
+        // every rig, which is sufficient for bit-identity here (measured: 4/4 arms exact).
+        // Under the door MEMRA_PRIME_CHUNK no longer steers arithmetic — MEMRA_PRIME_GRAIN
+        // becomes both the (explicitly numeric) knob and the transient bound. The stronger
+        // fix that needs no grain knob at all is to drop the `base_len == 0` f32 special case
+        // so every row is in one class; that trades the unchunked fast path and owns its own
+        // arm (see VERDICT.md "a cheaper stronger fix").
         if Self::prime_invariant() {
             chunk = Self::prime_grain();
         }
