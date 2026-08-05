@@ -66,7 +66,7 @@
 # hybrid_forward.rs also owns the CHUNKED-PREFILL segmentation (prime_cache), whose split
 # points steer the prefill's arithmetic — chunkinv/chunkinvc pin that behavior (and prove the
 # gate can fail). See research/chunk-invariance-20260805/VERDICT.md.
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc	q35spec
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,gwstress	q35spec
 # --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
 ^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
 # --- gate/bench binaries: build-only (they ARE the gates) ---
@@ -89,4 +89,4 @@
 ^[^/]*\.(md|svg|png|txt|json|lock)$	none	-	-
 # --- DEFAULT (first column literally "DEFAULT"): applied ONLY to files no row above
 # matched — it never escalates a file that already has a scoped plan. Conservative. ---
-DEFAULT	all	g12,q9,q35	q35spec
+DEFAULT	all	g12,q9,q35,gwstress	q35spec

@@ -74,3 +74,11 @@ g31spec	gspec	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf
 # gate script's header because this lane wrote it wrong twice.
 chunkinv	cmd	tools/chunk-invariance-gate.sh	-	-	-
 chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
+# gwstress: the MEMRA_GRAPH_WARMUPS=1 pool-growth adversarial gate (lane/graph-warmups) —
+# large<->small session cycles + overlap arm force captures over freed async-pool blocks;
+# bit-identity vs eager is the arbiter (#68's class corrupts without faulting) and the
+# canary arm proves the comparator can catch injected graph-memory corruption. ~1 min (q9,
+# 3 cycles at tier-1; local-ci runs the full 10). Guards capture_graph + the GraphSession
+# capture/recapture path.
+gwstress	cmd	tools/graph-warmup-stress-gate.sh	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 3	-	-
+
