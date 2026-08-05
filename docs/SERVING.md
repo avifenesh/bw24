@@ -528,7 +528,7 @@ within contract, but real. `MEMRA_PRIME_TOKENWISE=1` pins the oracle stream at p
 cost; the run-gen `batched-prime` gate line + the `prime-gate` battery bound the class
 (structured divergence fails hard, near-tie flips are reported).
 
-### Chunked prefill is not reduction-order-stable (2026-08-05)
+### Chunked prefill is not split-stable (2026-08-05; mechanism corrected same day)
 
 A sharper statement of the same class, found while building serve-smoke check 10:
 **changing only the prefill chunk split changes greedy output.** Arms were the same four
@@ -542,10 +542,39 @@ cold), `MEMRA_AFFINITY=0`, varying only `MEMRA_PRIME_CHUNK`:
 | 149 | **differs @ char 172** | **differs @ char 52** |
 | 195 | identical | identical |
 
-A different split changes the reduction order in the prefill GEMMs, perturbs logits in the
-last bits, and flips a near-tie argmax — no reuse required, and 149 tokens is far too short
-for a long-window explanation. Every resume tier inherits this by construction: a resume
-primes `[rewind boundary .. end]` as its own chunk sequence rather than one full prime.
+No reuse required, and 149 tokens is far too short for a long-window explanation. Every
+resume tier inherits this by construction: a resume primes `[rewind boundary .. end]` as
+its own chunk sequence rather than one full prime.
+
+**Mechanism — corrected 2026-08-05 by `lane/chunk-invariance`.** This section originally
+said "a different split changes the reduction order in the prefill GEMMs." **That is
+measurably wrong.** The prefill GEMM is m-INVARIANT: feeding the same activation rows at
+m=32 and at m=33..80 leaves rows `[0,32)` BIT-IDENTICAL for both the quantized `wq` and the
+`output` head, so growing a batch does not move an existing row's value. And the divergence
+is not a distributed last-bit band — it is a **step at the first chunk boundary**: per-row
+maxdiff is exactly `0.000e0` for every row before the boundary and O(1) (6.9) immediately
+after it, with `first_div_pos` equal to the chunk size exactly in every arm.
+
+The real cause is a numeric-**class** edge, in `full_attn_prime_fa_dispatch`
+(`hybrid_forward.rs`), selected by `base_len == 0` — *"is this the first chunk?"*:
+
+- chunk 0 → `fa_prefill` over this batch's **f32** K/V;
+- every later chunk → `fa_prefill_view_ws` over the **q8_0/q5_1 quantized KV cache**.
+
+So `MEMRA_PRIME_CHUNK` decides at which token position the prefill stops reading f32 K/V
+and starts reading dequantized cache. Rows before that position are computed identically in
+both configs (hence the bit-identity); rows after it carry q8_0/q5_1 quantization error, and
+a near-tie argmax flips. Eliminated by measurement, not assumption: `MEMRA_PRIME_DEQW=0`
+(the other quantized-cache FA kernel) diverges identically, and `MEMRA_GDN_CHUNKED=0`
+(sequential GDN scan, no WY segmentation at all) still diverges — the GDN state carry is
+**not** the cause.
+
+`MEMRA_PRIME_INVARIANT=1` pins segmentation to `MEMRA_PRIME_GRAIN` instead of
+`MEMRA_PRIME_CHUNK`, which restores bit-identity across chunk sizes at a measured mechanism
+cost of -0.05% / +0.17% prefill (N=5 interleaved). It stays opt-in: under the door
+`MEMRA_PRIME_CHUNK` no longer bounds the long-ctx transient footprint, so a default flip
+needs the 27B/long-ctx OOM+throughput gates. Full receipts:
+`research/chunk-invariance-20260805/VERDICT.md`.
 
 Two consequences with teeth:
 
@@ -553,12 +582,16 @@ Two consequences with teeth:
    prompt at different chunk boundaries.** serve-smoke check 10 deliberately does not assert
    resumed == cold; it asserts what session affinity actually owns (determinism of the resume
    path across servers, plus liveness). Wiring the naive assertion would have planted a
-   permanently-red gate and blamed affinity for the prefill's reduction order.
+   permanently-red gate and blamed affinity for the prefill's chunk split.
 2. `MEMRA_PRIME_CHUNK` is a documented machine-config knob, so **two rigs with different
    values already produce different greedy text on the same prompt.** Any exactness statement
-   is scoped to one configuration.
+   is scoped to one configuration — unless the invariance door is on.
 
-Whether to make chunked prefill reduction-order-stable (a fixed accumulation order
-independent of the split) is open, and is not the affinity lane's item. Reproducer + raw rows:
+The behavior is now **gated in both directions**: `tools/chunk-invariance-gate.sh`
+(fast-gate ids `chunkinv` / `chunkinvc`, routed from the `hybrid_forward.rs` map row) asserts
+the documented contract and fails if it silently changes either way; the `--canary` arm flips
+the expectation, so the gate is proven able to fail. Reproducers + raw rows:
 `research/session-affinity-20260805/chunk-order-probe.py` and `chunk-order.jsonl` (12 rows =
-3 chunk sizes x 4 prompts, each with its text; under two minutes on the 9B).
+3 chunk sizes x 4 prompts, each with its text; under two minutes on the 9B), plus the
+engine-level root-cause arm `concat-prime-probe chunkinv` and
+`research/chunk-invariance-20260805/`.

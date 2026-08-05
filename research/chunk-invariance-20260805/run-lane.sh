@@ -45,30 +45,80 @@ for T in 1 2; do
       --profile --jsonl "$L/C-fix-turn$T.jsonl" 2>&1 | tee "$L/C-fix-turn$T.log" | tail -14
 done
 
-# ---- D: canary — the gate must be able to fail ------------------------------------------
-# Same door ON, but the GRAIN itself differs between the two runs. The grain is an explicit
-# numeric knob, so this SHOULD diverge; if it does not, the probe is not measuring anything.
-echo "=== D canary (grain 32 vs 64 under the door — MUST differ) ==="
+# ---- D: canary — the probe and the gate must both be able to FAIL -----------------------
+# D1: the GRAIN is an explicit numeric knob, so two different grains MUST produce different
+# text. This is the cross-RUN canary, so it compares the probe's own reference streams (a
+# single-chunk chunkinv call has nothing to compare and always says INVARIANT — that shape
+# was the first version of this phase and it was vacuous; keep the two-run diff).
+echo "=== D1 canary: grain 32 vs 64 MUST differ (proves the probe measures something) ==="
 for G in 32 64; do
   MEMRA_PRIME_INVARIANT=1 MEMRA_PRIME_GRAIN=$G \
-    $P "$M" chunkinv --prompt-a "@$D/prompt-turn2.txt" --chunks 2048 --steps 24 \
-      --jsonl "$L/D-canary-g$G.jsonl" 2>&1 | tail -4
+    $P "$M" chunkinv --prompt-a "@$D/prompt-turn2.txt" --chunks 2048,32 --steps 24 \
+      --jsonl "$L/D1-canary-g$G.jsonl" > "$L/D1-canary-g$G.log" 2>&1
+  echo "  grain=$G ref_argmax=$(grep -oE 'argmax=[0-9]+' "$L/D1-canary-g$G.log" | head -1)"
 done
+python3 - "$L/D1-canary-g32.jsonl" "$L/D1-canary-g64.jsonl" <<'PY'
+import json, sys
+a = [json.loads(l) for l in open(sys.argv[1])]
+b = [json.loads(l) for l in open(sys.argv[2])]
+# both arms are internally invariant; the QUESTION is whether the grain changed the answer
+same = a[0]["argmax_ref"] == b[0]["argmax_ref"] and a[0]["logit_maxdiff"] == b[0]["logit_maxdiff"]
+print(f"  D1 grain32 ref_argmax={a[0]['argmax_ref']} grain64 ref_argmax={b[0]['argmax_ref']}")
+print("  D1 verdict:", "grain is a live numeric knob (arms differ) — probe HAS teeth"
+      if not same else "*** grain changed nothing — SUSPECT: probe may not be measuring ***")
+PY
+# D2: the GATE's own canary path — asserted expectation flipped, must report a diverged canary.
+echo "=== D2 gate canary (tools/chunk-invariance-gate.sh --canary) ==="
+tools/chunk-invariance-gate.sh --canary 2>&1 | tail -4
+echo "=== D3 gate default (expect-variant, today's honest contract) ==="
+tools/chunk-invariance-gate.sh 2>&1 | tail -3
+echo "=== D4 gate under the door (expect-invariant) ==="
+tools/chunk-invariance-gate.sh --expect-invariant 2>&1 | tail -3
 
 # ---- E: perf, interleaved --------------------------------------------------------------
-# pp-class prompt: concatenate the transcript turns until the token count clears the grain
-# several times over, so the chunked path is genuinely exercised in both arms.
-cat "$D"/prompt-turn*.txt "$D"/prompt-turn*.txt "$D"/prompt-turn*.txt > "$D/prompt-long.txt"
-echo "=== E perf interleaved N=5 (off,on x5) ==="
-for rep in 1 2 3 4 5; do
-  for ARM in off on; do
-    if [ "$ARM" = on ]; then EX="MEMRA_PRIME_INVARIANT=1 MEMRA_PRIME_GRAIN=32"; else EX=""; fi
-    S=$(date +%s.%N)
-    env $EX MEMRA_PRIME_CHUNK=64 $P "$M" chunkinv --prompt-a "@$D/prompt-long.txt" \
-        --chunks 64 --steps 0 >/dev/null 2>&1
-    E=$(date +%s.%N)
-    echo "{\"phase\":\"E\",\"rep\":$rep,\"arm\":\"$ARM\",\"prime_s\":$(echo "$E-$S"|bc)}" \
-      | tee -a "$L/E-perf.jsonl"
+# THE HONEST QUESTION. The invariance door's cost is NOT "chunk 4096 vs grain 32" — that
+# compares two different segmentations and would just re-measure the known chunk-size perf
+# curve. The cost of INVARIANCE is: at the segmentation you would ship, does forcing it to be
+# grain-pinned cost anything? So both arms run the SAME effective segmentation and the only
+# difference is WHO chose it:
+#   off: MEMRA_PRIME_CHUNK=<G>                      (chunk knob steers, today's default path)
+#   on : MEMRA_PRIME_INVARIANT=1 MEMRA_PRIME_GRAIN=<G>, MEMRA_PRIME_CHUNK deliberately WRONG
+#        (4096) — the door must ignore it and still segment at G
+# Same boundaries, same m, same kernels => any delta is the door's own overhead, and the
+# expectation is ~0. The REAL cost of the fix is a POLICY cost (the shipped default chunk must
+# become the grain everywhere), which is a config decision, not a kernel tax — VERDICT.md
+# states it that way and the number below is what proves the mechanism itself is free.
+# run-gen's MEMRA_PP_ONLY is the timing harness (median of MEMRA_PP_REPS timed prime_cache
+# calls, fresh cache per rep — the same pass PRIME_NANOS measures), not a wall-clock wrapper.
+G=${G:-2048}
+PPP=./target/release/run-gen
+for LEN in 6257 512; do
+  PF="$D/prompt-pp$LEN.txt"
+  python3 - "$PF" "$LEN" <<'PY'
+import sys
+# deterministic ~LEN-token english-ish filler (token count checked from run-gen's own report)
+p, n = sys.argv[1], int(sys.argv[2])
+w = ("copies overlap with compute and pinned buffers bound host memory while bytes per token "
+     "set the budget for every resident expert projection in the serving path ").split()
+open(p, "w").write(" ".join(w[i % len(w)] for i in range(int(n * 0.78))) + "\n")
+PY
+  echo "=== E perf pp$LEN interleaved N=5 (off,on x5), grain=$G ==="
+  for rep in 1 2 3 4 5; do
+    for ARM in off on; do
+      if [ "$ARM" = on ]; then
+        EX=(MEMRA_PRIME_INVARIANT=1 "MEMRA_PRIME_GRAIN=$G" MEMRA_PRIME_CHUNK=4096)
+      else
+        EX=("MEMRA_PRIME_CHUNK=$G")
+      fi
+      LG="$L/E-pp$LEN-$ARM-r$rep.log"
+      env "${EX[@]}" MEMRA_PP_ONLY=1 MEMRA_PP_REPS=3 MEMRA_PP_WARMUP=1 \
+          MEMRA_PROMPT_FILE="$PF" timeout 900 $PPP "$M" > "$LG" 2>&1
+      TOK=$(grep -oE "pp-only MEDIAN: [0-9]+ tok in [0-9.]+s = [0-9.]+ tok/s" "$LG" \
+            | grep -oE "= [0-9.]+ tok/s" | grep -oE "[0-9.]+")
+      NT=$(grep -oE "pp-only MEDIAN: [0-9]+ tok" "$LG" | grep -oE "[0-9]+")
+      echo "{\"phase\":\"E\",\"pp\":$LEN,\"rep\":$rep,\"arm\":\"$ARM\",\"grain\":$G,\
+\"prompt_tokens\":${NT:-null},\"tok_s\":${TOK:-null}}" | tee -a "$L/E-perf.jsonl"
+    done
   done
 done
 echo "### done $(date -Is)"
