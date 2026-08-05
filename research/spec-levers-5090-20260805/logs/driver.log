@@ -1,0 +1,223 @@
+[14:29:22Z] nv-d-K3B32-r1 p1: agg=86.8 p50=1.493 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 77, 1695 MHz, 151.46 W, 18168 MiB
+[14:29:28Z] nv-d-K3B32-r1 p2: agg=85.9 p50=1.505 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 80, 1687 MHz, 150.69 W, 18168 MiB
+[14:45:21Z] nv-b-K5B32-r1 p1: agg=82.7 p50=1.545 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 76, 1800 MHz, 150.34 W, 18200 MiB
+[14:45:28Z] nv-b-K5B32-r1 p2: agg=82.0 p50=1.557 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 78, 1777 MHz, 149.87 W, 18200 MiB
+[14:46:16Z] nv-b-K5B64-r1 p1: agg=81.7 p50=1.552 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 80, 1755 MHz, 149.19 W, 18200 MiB
+[14:46:22Z] nv-b-K5B64-r1 p2: agg=81.1 p50=1.562 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 82, 1762 MHz, 150.79 W, 18200 MiB
+[14:46:47Z] nv-b-K5B128-r1 p1: agg=90.5 p50=1.400 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 81, 1770 MHz, 150.13 W, 18200 MiB
+[14:46:53Z] nv-b-K5B128-r1 p2: agg=90.1 p50=1.406 err=0 | step_p50=0.00ms step_p99=0.00ms tok_out=0 | 82, 1770 MHz, 151.00 W, 18200 MiB
+[14:51:09Z] ROUND nv-r1 hold acquired: d-K3B32:3:32:0 b-K5B32:5:32:0 b-K5B64:5:64:0 b-K5B128:5:128:0 s-K5B128pm:5:128:0.3 | 62, 172 MHz, 10.41 W, 368 MiB
+[14:51:24Z] nv-d-K3B32-r1 p1: agg=87.1 p50=1.486 err=0 shed=0 | acc cum=86/114=0.754 | 74, 1680 MHz, 150.54 W, 18168 MiB
+[14:51:30Z] nv-d-K3B32-r1 p2: agg=86.4 p50=1.494 err=0 shed=0 | acc cum=86/114=0.754 | 77, 1680 MHz, 151.71 W, 18168 MiB
+[14:51:45Z] nv-b-K5B32-r1 p1: agg=81.9 p50=1.557 err=0 shed=0 | acc cum=89/175=0.509 | 80, 1785 MHz, 150.78 W, 18200 MiB
+[14:51:52Z] nv-b-K5B32-r1 p2: agg=81.2 p50=1.573 err=0 shed=0 | acc cum=89/175=0.509 | 82, 1747 MHz, 150.67 W, 18200 MiB
+[14:52:07Z] nv-b-K5B64-r1 p1: agg=81.2 p50=1.558 err=0 shed=0 | acc cum=90/190=0.474 | 81, 1755 MHz, 150.77 W, 18200 MiB
+[14:52:14Z] nv-b-K5B64-r1 p2: agg=80.8 p50=1.568 err=0 shed=0 | acc cum=90/190=0.474 | 83, 1755 MHz, 149.92 W, 18200 MiB
+[14:52:28Z] nv-b-K5B128-r1 p1: agg=90.2 p50=1.404 err=0 shed=0 | acc cum=95/165=0.576 | 82, 1747 MHz, 150.64 W, 18200 MiB
+[14:52:34Z] nv-b-K5B128-r1 p2: agg=89.8 p50=1.409 err=0 shed=0 | acc cum=95/165=0.576 | 83, 1755 MHz, 150.88 W, 18200 MiB
+[14:52:49Z] nv-s-K5B128pm-r1 p1: agg=90.2 p50=1.495 err=0 shed=0 | acc cum=89/127=0.701 | 83, 1747 MHz, 150.57 W, 18202 MiB
+[14:52:55Z] nv-s-K5B128pm-r1 p2: agg=89.9 p50=1.505 err=0 shed=0 | acc cum=89/127=0.701 | 83, 1717 MHz, 150.85 W, 18202 MiB
+[14:52:55Z] ROUND nv-r1 done, releasing
+[14:52:55Z] ROUND nv-r2 hold acquired: s-K5B128pm:5:128:0.3 b-K5B128:5:128:0 b-K5B64:5:64:0 b-K5B32:5:32:0 d-K3B32:3:32:0 | 83, 1717 MHz, 150.85 W, 368 MiB
+[14:53:09Z] nv-s-K5B128pm-r2 p1: agg=90.6 p50=1.491 err=0 shed=0 | acc cum=89/127=0.701 | 81, 1725 MHz, 151.06 W, 18202 MiB
+[14:53:16Z] nv-s-K5B128pm-r2 p2: agg=90.4 p50=1.497 err=0 shed=0 | acc cum=89/127=0.701 | 82, 1740 MHz, 150.78 W, 18202 MiB
+[14:53:30Z] nv-b-K5B128-r2 p1: agg=90.4 p50=1.401 err=0 shed=0 | acc cum=95/165=0.576 | 81, 1762 MHz, 150.17 W, 18200 MiB
+[14:53:36Z] nv-b-K5B128-r2 p2: agg=90.1 p50=1.405 err=0 shed=0 | acc cum=95/165=0.576 | 82, 1770 MHz, 149.86 W, 18200 MiB
+[14:53:51Z] nv-b-K5B64-r2 p1: agg=81.3 p50=1.558 err=0 shed=0 | acc cum=90/190=0.474 | 81, 1755 MHz, 150.75 W, 18200 MiB
+[14:53:58Z] nv-b-K5B64-r2 p2: agg=80.9 p50=1.566 err=0 shed=0 | acc cum=90/190=0.474 | 83, 1747 MHz, 150.68 W, 18200 MiB
+[14:54:13Z] nv-b-K5B32-r2 p1: agg=81.4 p50=1.566 err=0 shed=0 | acc cum=89/175=0.509 | 80, 1747 MHz, 150.80 W, 18200 MiB
+[14:54:20Z] nv-b-K5B32-r2 p2: agg=81.0 p50=1.575 err=0 shed=0 | acc cum=89/175=0.509 | 82, 1747 MHz, 150.85 W, 18200 MiB
+[14:54:34Z] nv-d-K3B32-r2 p1: agg=85.5 p50=1.513 err=0 shed=0 | acc cum=86/114=0.754 | 81, 1672 MHz, 151.69 W, 18168 MiB
+[14:54:41Z] nv-d-K3B32-r2 p2: agg=85.1 p50=1.518 err=0 shed=0 | acc cum=86/114=0.754 | 82, 1672 MHz, 151.71 W, 18168 MiB
+[14:54:41Z] ROUND nv-r2 done, releasing
+[15:07:26Z] ROUND nv-r3 hold acquired: d-K3B32:3:32:0 b-K5B32:5:32:0 b-K5B64:5:64:0 b-K5B128:5:128:0 s-K5B128pm:5:128:0.3 | 65, 1605 MHz, 45.77 W, 368 MiB
+[15:07:45Z] nv-d-K3B32-r3 p1: agg=86.7 p50=1.489 err=0 shed=0 | acc cum=86/114=0.754 | 75, 1687 MHz, 151.71 W, 18168 MiB
+[15:07:51Z] nv-d-K3B32-r3 p2: agg=86.2 p50=1.498 err=0 shed=0 | acc cum=86/114=0.754 | 78, 1672 MHz, 151.13 W, 18168 MiB
+[15:08:06Z] nv-b-K5B32-r3 p1: agg=82.0 p50=1.557 err=0 shed=0 | acc cum=89/175=0.509 | 79, 1785 MHz, 150.09 W, 18200 MiB
+[15:08:13Z] nv-b-K5B32-r3 p2: agg=81.4 p50=1.570 err=0 shed=0 | acc cum=89/175=0.509 | 81, 1747 MHz, 150.83 W, 18200 MiB
+[15:08:28Z] nv-b-K5B64-r3 p1: agg=81.4 p50=1.557 err=0 shed=0 | acc cum=90/190=0.474 | 80, 1747 MHz, 150.80 W, 18200 MiB
+[15:08:35Z] nv-b-K5B64-r3 p2: agg=81.0 p50=1.564 err=0 shed=0 | acc cum=90/190=0.474 | 82, 1762 MHz, 149.69 W, 18200 MiB
+[15:08:49Z] nv-b-K5B128-r3 p1: agg=90.4 p50=1.403 err=0 shed=0 | acc cum=95/165=0.576 | 80, 1762 MHz, 150.27 W, 18200 MiB
+[15:08:55Z] nv-b-K5B128-r3 p2: agg=90.1 p50=1.407 err=0 shed=0 | acc cum=95/165=0.576 | 82, 1762 MHz, 149.72 W, 18200 MiB
+[15:09:10Z] nv-s-K5B128pm-r3 p1: agg=90.5 p50=1.492 err=0 shed=0 | acc cum=89/127=0.701 | 82, 1740 MHz, 150.83 W, 18202 MiB
+[15:09:16Z] nv-s-K5B128pm-r3 p2: agg=89.9 p50=1.503 err=0 shed=0 | acc cum=89/127=0.701 | 84, 1725 MHz, 151.39 W, 18202 MiB
+[15:09:16Z] ROUND nv-r3 done, releasing
+[15:09:16Z] ROUND nv-r4 hold acquired: s-K5B128pm:5:128:0.3 b-K5B128:5:128:0 b-K5B64:5:64:0 b-K5B32:5:32:0 d-K3B32:3:32:0 | 84, 1725 MHz, 151.39 W, 368 MiB
+[15:09:31Z] nv-s-K5B128pm-r4 p1: agg=90.3 p50=1.497 err=0 shed=0 | acc cum=89/127=0.701 | 82, 1740 MHz, 151.10 W, 18202 MiB
+[15:09:37Z] nv-s-K5B128pm-r4 p2: agg=90.1 p50=1.501 err=0 shed=0 | acc cum=89/127=0.701 | 83, 1747 MHz, 150.67 W, 18202 MiB
+[15:09:51Z] nv-b-K5B128-r4 p1: agg=90.4 p50=1.401 err=0 shed=0 | acc cum=95/165=0.576 | 81, 1747 MHz, 150.56 W, 18200 MiB
+[15:09:57Z] nv-b-K5B128-r4 p2: agg=90.1 p50=1.405 err=0 shed=0 | acc cum=95/165=0.576 | 82, 1762 MHz, 149.71 W, 18200 MiB
+[15:10:12Z] nv-b-K5B64-r4 p1: agg=81.3 p50=1.557 err=0 shed=0 | acc cum=90/190=0.474 | 81, 1755 MHz, 150.49 W, 18200 MiB
+[15:10:19Z] nv-b-K5B64-r4 p2: agg=81.0 p50=1.564 err=0 shed=0 | acc cum=90/190=0.474 | 82, 1755 MHz, 150.34 W, 18200 MiB
+[15:10:34Z] nv-b-K5B32-r4 p1: agg=81.6 p50=1.564 err=0 shed=0 | acc cum=89/175=0.509 | 80, 1770 MHz, 150.75 W, 18200 MiB
+[15:10:41Z] nv-b-K5B32-r4 p2: agg=81.1 p50=1.575 err=0 shed=0 | acc cum=89/175=0.509 | 82, 1740 MHz, 150.74 W, 18200 MiB
+[15:10:55Z] nv-d-K3B32-r4 p1: agg=85.5 p50=1.512 err=0 shed=0 | acc cum=86/114=0.754 | 80, 1680 MHz, 151.61 W, 18168 MiB
+[15:11:02Z] nv-d-K3B32-r4 p2: agg=85.1 p50=1.517 err=0 shed=0 | acc cum=86/114=0.754 | 82, 1650 MHz, 151.21 W, 18168 MiB
+[15:11:02Z] ROUND nv-r4 done, releasing
+[15:19:55Z] ROUND nv-r5 hold acquired: d-K3B32:3:32:0 b-K5B32:5:32:0 b-K5B64:5:64:0 b-K5B128:5:128:0 s-K5B128pm:5:128:0.3 | 82, 1725 MHz, 140.41 W, 368 MiB
+[15:20:12Z] nv-d-K3B32-r5 p1: agg=85.5 p50=1.515 err=0 shed=0 | acc cum=86/114=0.754 | 81, 1665 MHz, 150.75 W, 18168 MiB
+[15:20:19Z] nv-d-K3B32-r5 p2: agg=84.9 p50=1.522 err=0 shed=0 | acc cum=86/114=0.754 | 83, 1642 MHz, 150.56 W, 18168 MiB
+[15:20:34Z] nv-b-K5B32-r5 p1: agg=81.2 p50=1.572 err=0 shed=0 | acc cum=89/175=0.509 | 82, 1747 MHz, 150.57 W, 18200 MiB
+[15:20:40Z] nv-b-K5B32-r5 p2: agg=80.8 p50=1.579 err=0 shed=0 | acc cum=89/175=0.509 | 83, 1732 MHz, 150.77 W, 18200 MiB
+[15:20:55Z] nv-b-K5B64-r5 p1: agg=80.8 p50=1.568 err=0 shed=0 | acc cum=90/190=0.474 | 83, 1747 MHz, 150.72 W, 18200 MiB
+[15:21:02Z] nv-b-K5B64-r5 p2: agg=80.5 p50=1.573 err=0 shed=0 | acc cum=90/190=0.474 | 84, 1747 MHz, 149.89 W, 18200 MiB
+[15:21:17Z] nv-b-K5B128-r5 p1: agg=89.9 p50=1.408 err=0 shed=0 | acc cum=95/165=0.576 | 83, 1755 MHz, 150.55 W, 18200 MiB
+[15:21:23Z] nv-b-K5B128-r5 p2: agg=89.5 p50=1.415 err=0 shed=0 | acc cum=95/165=0.576 | 84, 1747 MHz, 151.02 W, 18200 MiB
+[15:21:37Z] nv-s-K5B128pm-r5 p1: agg=90.3 p50=1.497 err=0 shed=0 | acc cum=89/127=0.701 | 83, 1732 MHz, 150.64 W, 18202 MiB
+[15:21:44Z] nv-s-K5B128pm-r5 p2: agg=89.9 p50=1.503 err=0 shed=0 | acc cum=89/127=0.701 | 83, 1732 MHz, 150.86 W, 18202 MiB
+[15:21:44Z] ROUND nv-r5 done, releasing
+NV_CORE_DONE
+[15:22:39Z] ROUND nv-r1 hold acquired: kchk-K3B128:3:128:0 kchk-K3B128pm:3:128:0.3 kchk-K4B128pm:4:128:0.3 kchk-K5B128pm:5:128:0.3 kchk-K6B128pm:6:128:0.3 | 63, 180 MHz, 10.19 W, 368 MiB
+[15:22:53Z] nv-kchk-K3B128-r1 p1: agg=94.1 p50=1.372 err=0 shed=0 | acc cum=89/114=0.781 | 74, 1665 MHz, 150.82 W, 18168 MiB
+[15:22:59Z] nv-kchk-K3B128-r1 p2: agg=93.4 p50=1.384 err=0 shed=0 | acc cum=89/114=0.781 | 77, 1657 MHz, 150.77 W, 18168 MiB
+[15:23:13Z] nv-kchk-K3B128pm-r1 p1: agg=92.5 p50=1.407 err=0 shed=0 | acc cum=87/106=0.821 | 79, 1657 MHz, 150.89 W, 18168 MiB
+[15:23:19Z] nv-kchk-K3B128pm-r1 p2: agg=91.7 p50=1.416 err=0 shed=0 | acc cum=87/106=0.821 | 82, 1635 MHz, 151.04 W, 18200 MiB
+[15:23:33Z] nv-kchk-K4B128pm-r1 p1: agg=91.4 p50=1.430 err=0 shed=0 | acc cum=91/120=0.758 | 81, 1717 MHz, 151.10 W, 18202 MiB
+[15:23:39Z] nv-kchk-K4B128pm-r1 p2: agg=91.1 p50=1.437 err=0 shed=0 | acc cum=91/120=0.758 | 82, 1710 MHz, 151.00 W, 18202 MiB
+[15:23:54Z] nv-kchk-K5B128pm-r1 p1: agg=90.8 p50=1.489 err=0 shed=0 | acc cum=89/127=0.701 | 81, 1755 MHz, 150.69 W, 18202 MiB
+[15:24:00Z] nv-kchk-K5B128pm-r1 p2: agg=90.4 p50=1.493 err=0 shed=0 | acc cum=89/127=0.701 | 82, 1732 MHz, 150.98 W, 18202 MiB
+[15:24:14Z] nv-kchk-K6B128pm-r1 p1: agg=91.6 p50=1.437 err=0 shed=0 | acc cum=94/125=0.752 | 81, 1717 MHz, 150.32 W, 18202 MiB
+[15:24:20Z] nv-kchk-K6B128pm-r1 p2: agg=91.1 p50=1.447 err=0 shed=0 | acc cum=94/125=0.752 | 82, 1732 MHz, 151.41 W, 18202 MiB
+[15:24:20Z] ROUND nv-r1 done, releasing
+[15:24:20Z] ROUND nv-r2 hold acquired: kchk-K6B128pm:6:128:0.3 kchk-K5B128pm:5:128:0.3 kchk-K4B128pm:4:128:0.3 kchk-K3B128pm:3:128:0.3 kchk-K3B128:3:128:0 | 82, 1732 MHz, 151.41 W, 368 MiB
+[15:24:35Z] nv-kchk-K6B128pm-r2 p1: agg=91.4 p50=1.439 err=0 shed=0 | acc cum=94/125=0.752 | 81, 1725 MHz, 150.99 W, 18202 MiB
+[15:24:41Z] nv-kchk-K6B128pm-r2 p2: agg=91.2 p50=1.445 err=0 shed=0 | acc cum=94/125=0.752 | 82, 1710 MHz, 150.21 W, 18202 MiB
+[15:24:55Z] nv-kchk-K5B128pm-r2 p1: agg=90.8 p50=1.488 err=0 shed=0 | acc cum=89/127=0.701 | 81, 1747 MHz, 150.89 W, 18202 MiB
+[15:25:01Z] nv-kchk-K5B128pm-r2 p2: agg=90.3 p50=1.495 err=0 shed=0 | acc cum=89/127=0.701 | 82, 1747 MHz, 150.74 W, 18202 MiB
+[15:25:16Z] nv-kchk-K4B128pm-r2 p1: agg=91.4 p50=1.437 err=0 shed=0 | acc cum=91/120=0.758 | 81, 1725 MHz, 150.93 W, 18202 MiB
+[15:25:22Z] nv-kchk-K4B128pm-r2 p2: agg=91.1 p50=1.440 err=0 shed=0 | acc cum=91/120=0.758 | 82, 1710 MHz, 150.54 W, 18202 MiB
+[15:25:36Z] nv-kchk-K3B128pm-r2 p1: agg=92.0 p50=1.412 err=0 shed=0 | acc cum=87/106=0.821 | 81, 1650 MHz, 151.01 W, 18168 MiB
+[15:25:42Z] nv-kchk-K3B128pm-r2 p2: agg=91.4 p50=1.419 err=0 shed=0 | acc cum=87/106=0.821 | 82, 1642 MHz, 151.17 W, 18200 MiB
+[15:25:56Z] nv-kchk-K3B128-r2 p1: agg=92.4 p50=1.399 err=0 shed=0 | acc cum=89/114=0.781 | 81, 1665 MHz, 150.58 W, 18168 MiB
+[15:26:02Z] nv-kchk-K3B128-r2 p2: agg=91.9 p50=1.411 err=0 shed=0 | acc cum=89/114=0.781 | 82, 1665 MHz, 150.80 W, 18168 MiB
+[15:26:02Z] ROUND nv-r2 done, releasing
+[15:26:02Z] ROUND nv-r3 hold acquired: kchk-K3B128:3:128:0 kchk-K3B128pm:3:128:0.3 kchk-K4B128pm:4:128:0.3 kchk-K5B128pm:5:128:0.3 kchk-K6B128pm:6:128:0.3 | 82, 1665 MHz, 150.80 W, 368 MiB
+[15:26:17Z] nv-kchk-K3B128-r3 p1: agg=92.3 p50=1.401 err=0 shed=0 | acc cum=89/114=0.781 | 81, 1642 MHz, 150.97 W, 18168 MiB
+[15:26:23Z] nv-kchk-K3B128-r3 p2: agg=91.8 p50=1.414 err=0 shed=0 | acc cum=89/114=0.781 | 82, 1635 MHz, 150.82 W, 18168 MiB
+[15:26:37Z] nv-kchk-K3B128pm-r3 p1: agg=92.0 p50=1.412 err=0 shed=0 | acc cum=87/106=0.821 | 81, 1665 MHz, 150.59 W, 18168 MiB
+[15:26:43Z] nv-kchk-K3B128pm-r3 p2: agg=91.4 p50=1.425 err=0 shed=0 | acc cum=87/106=0.821 | 82, 1650 MHz, 150.64 W, 18200 MiB
+[15:26:57Z] nv-kchk-K4B128pm-r3 p1: agg=91.5 p50=1.429 err=0 shed=0 | acc cum=91/120=0.758 | 81, 1710 MHz, 150.42 W, 18202 MiB
+[15:27:03Z] nv-kchk-K4B128pm-r3 p2: agg=91.2 p50=1.438 err=0 shed=0 | acc cum=91/120=0.758 | 82, 1710 MHz, 150.21 W, 18202 MiB
+[15:27:18Z] nv-kchk-K5B128pm-r3 p1: agg=90.8 p50=1.490 err=0 shed=0 | acc cum=89/127=0.701 | 81, 1732 MHz, 150.69 W, 18202 MiB
+[15:27:24Z] nv-kchk-K5B128pm-r3 p2: agg=90.4 p50=1.496 err=0 shed=0 | acc cum=89/127=0.701 | 81, 1747 MHz, 150.98 W, 18202 MiB
+[15:27:38Z] nv-kchk-K6B128pm-r3 p1: agg=91.5 p50=1.439 err=0 shed=0 | acc cum=94/125=0.752 | 81, 1732 MHz, 150.69 W, 18202 MiB
+[15:27:44Z] nv-kchk-K6B128pm-r3 p2: agg=91.1 p50=1.445 err=0 shed=0 | acc cum=94/125=0.752 | 82, 1710 MHz, 150.73 W, 18202 MiB
+[15:27:44Z] ROUND nv-r3 done, releasing
+KRECHECK_DONE
+[15:27:44Z] ROUND q9-r1 hold acquired: d-K3B32:3:32:0 b-K3B128:3:128:0 s-K3B128pm:3:128:0.3 | 82, 1710 MHz, 150.73 W, 368 MiB
+[15:27:51Z] q9-d-K3B32-r1 p1: agg=214.4 p50=0.597 err=0 shed=0 | acc cum=84/120=0.700 | 81, 1762 MHz, 151.61 W, 7064 MiB
+[15:27:54Z] q9-d-K3B32-r1 p2: agg=213.6 p50=0.598 err=0 shed=0 | acc cum=84/120=0.700 | 82, 1717 MHz, 149.83 W, 7064 MiB
+[15:27:58Z] q9-b-K3B128-r1 p1: agg=233.5 p50=0.561 err=0 shed=0 | acc cum=87/120=0.725 | 81, 1717 MHz, 150.71 W, 7064 MiB
+[15:28:01Z] q9-b-K3B128-r1 p2: agg=232.2 p50=0.563 err=0 shed=0 | acc cum=87/120=0.725 | 82, 1695 MHz, 151.15 W, 7096 MiB
+[15:28:05Z] q9-s-K3B128pm-r1 p1: agg=233.3 p50=0.567 err=0 shed=0 | acc cum=88/101=0.871 | 81, 1762 MHz, 150.98 W, 7066 MiB
+[15:28:08Z] q9-s-K3B128pm-r1 p2: agg=233.8 p50=0.568 err=0 shed=0 | acc cum=88/101=0.871 | 82, 1702 MHz, 151.11 W, 7098 MiB
+[15:28:08Z] ROUND q9-r1 done, releasing
+[15:28:08Z] ROUND q9-r2 hold acquired: s-K3B128pm:3:128:0.3 b-K3B128:3:128:0 d-K3B32:3:32:0 | 82, 1702 MHz, 151.11 W, 368 MiB
+[15:28:12Z] q9-s-K3B128pm-r2 p1: agg=234.4 p50=0.567 err=0 shed=0 | acc cum=88/101=0.871 | 81, 1785 MHz, 151.18 W, 7066 MiB
+[15:28:15Z] q9-s-K3B128pm-r2 p2: agg=234.0 p50=0.568 err=0 shed=0 | acc cum=88/101=0.871 | 82, 1710 MHz, 151.25 W, 7098 MiB
+[15:28:19Z] q9-b-K3B128-r2 p1: agg=233.7 p50=0.562 err=0 shed=0 | acc cum=87/120=0.725 | 81, 1785 MHz, 151.06 W, 7064 MiB
+[15:28:22Z] q9-b-K3B128-r2 p2: agg=232.4 p50=0.564 err=0 shed=0 | acc cum=87/120=0.725 | 82, 1710 MHz, 151.04 W, 7096 MiB
+[15:28:27Z] q9-d-K3B32-r2 p1: agg=213.6 p50=0.599 err=0 shed=0 | acc cum=84/120=0.700 | 82, 1777 MHz, 151.30 W, 7064 MiB
+[15:28:29Z] q9-d-K3B32-r2 p2: agg=213.3 p50=0.599 err=0 shed=0 | acc cum=84/120=0.700 | 82, 1725 MHz, 151.04 W, 7064 MiB
+[15:28:29Z] ROUND q9-r2 done, releasing
+[15:28:29Z] ROUND q9-r3 hold acquired: d-K3B32:3:32:0 b-K3B128:3:128:0 s-K3B128pm:3:128:0.3 | 82, 1717 MHz, 148.51 W, 368 MiB
+[15:28:34Z] q9-d-K3B32-r3 p1: agg=213.8 p50=0.599 err=0 shed=0 | acc cum=84/120=0.700 | 81, 1785 MHz, 151.37 W, 7064 MiB
+[15:28:37Z] q9-d-K3B32-r3 p2: agg=212.2 p50=0.606 err=0 shed=0 | acc cum=84/120=0.700 | 83, 1732 MHz, 151.51 W, 7064 MiB
+[15:28:41Z] q9-b-K3B128-r3 p1: agg=233.3 p50=0.562 err=0 shed=0 | acc cum=87/120=0.725 | 82, 1687 MHz, 150.90 W, 7064 MiB
+[15:28:44Z] q9-b-K3B128-r3 p2: agg=233.2 p50=0.565 err=0 shed=0 | acc cum=87/120=0.725 | 83, 1717 MHz, 150.47 W, 7096 MiB
+[15:28:48Z] q9-s-K3B128pm-r3 p1: agg=234.2 p50=0.567 err=0 shed=0 | acc cum=88/101=0.871 | 82, 1710 MHz, 151.15 W, 7066 MiB
+[15:28:51Z] q9-s-K3B128pm-r3 p2: agg=233.3 p50=0.570 err=0 shed=0 | acc cum=88/101=0.871 | 84, 1725 MHz, 150.00 W, 7098 MiB
+[15:28:51Z] ROUND q9-r3 done, releasing
+Q9_CORE_DONE
+[15:40:11Z] ROUND nv-r1 hold acquired: c8def:3:32:0 c8win:3:128:0 | 79, 1912 MHz, 113.55 W, 368 MiB
+[15:41:00Z] nv-c8def-r1 p1: agg=91.7 p50=10.880 err=0 shed=0 | acc cum=88/108=0.815 | 82, 1777 MHz, 167.27 W, 23096 MiB
+[15:41:34Z] nv-c8def-r1 p2: agg=90.7 p50=11.329 err=0 shed=0 | acc cum=88/108=0.815 | 84, 1747 MHz, 166.87 W, 23096 MiB
+[15:42:15Z] nv-c8win-r1 p1: agg=97.4 p50=10.508 err=0 shed=0 | acc cum=89/117=0.761 | 84, 1710 MHz, 166.34 W, 23096 MiB
+[15:42:47Z] nv-c8win-r1 p2: agg=96.5 p50=10.599 err=0 shed=0 | acc cum=89/117=0.761 | 85, 1695 MHz, 166.02 W, 23096 MiB
+[15:42:48Z] ROUND nv-r1 done, releasing
+[15:46:36Z] ROUND nv-r2 hold acquired: c8win:3:128:0 c8def:3:32:0 | 64, 2010 MHz, 172.47 W, 368 MiB
+[15:47:17Z] nv-c8win-r2 p1: agg=99.6 p50=10.228 err=0 shed=0 | acc cum=89/117=0.761 | 76, 1770 MHz, 166.47 W, 23096 MiB
+[15:47:49Z] nv-c8win-r2 p2: agg=98.3 p50=10.423 err=0 shed=0 | acc cum=89/117=0.761 | 80, 1732 MHz, 168.19 W, 23096 MiB
+[15:48:32Z] nv-c8def-r2 p1: agg=91.6 p50=11.171 err=0 shed=0 | acc cum=88/108=0.815 | 81, 1740 MHz, 167.23 W, 23096 MiB
+[15:49:06Z] nv-c8def-r2 p2: agg=90.8 p50=11.353 err=0 shed=0 | acc cum=88/108=0.815 | 84, 1747 MHz, 166.61 W, 23096 MiB
+[15:49:06Z] ROUND nv-r2 done, releasing
+[15:49:17Z] ROUND nv-r3 hold acquired: c8def:3:32:0 c8win:3:128:0 | 78, 1672 MHz, 47.35 W, 368 MiB
+[15:49:59Z] nv-c8def-r3 p1: agg=91.4 p50=11.209 err=0 shed=0 | acc cum=88/108=0.815 | 82, 1747 MHz, 167.07 W, 23096 MiB
+[15:50:33Z] nv-c8def-r3 p2: agg=90.7 p50=11.373 err=0 shed=0 | acc cum=88/108=0.815 | 84, 1747 MHz, 166.54 W, 23128 MiB
+[15:51:14Z] nv-c8win-r3 p1: agg=97.4 p50=10.509 err=0 shed=0 | acc cum=89/117=0.761 | 83, 1702 MHz, 167.37 W, 23096 MiB
+[15:51:46Z] nv-c8win-r3 p2: agg=96.7 p50=10.536 err=0 shed=0 | acc cum=89/117=0.761 | 85, 1702 MHz, 165.19 W, 23096 MiB
+[15:51:46Z] ROUND nv-r3 done, releasing
+[15:51:54Z] ROUND nv-r1 hold acquired: lg512def:3:32:0 lg512win:3:128:0 | 81, 1822 MHz, 156.28 W, 368 MiB
+[15:52:26Z] nv-lg512def-r1 p1: agg=87.9 p50=5.873 err=0 shed=0 | acc cum=322/531=0.606 | 83, 1740 MHz, 166.83 W, 18168 MiB
+[15:52:50Z] nv-lg512def-r1 p2: agg=87.3 p50=5.911 err=0 shed=0 | acc cum=322/531=0.606 | 85, 1755 MHz, 166.85 W, 18168 MiB
+[15:53:20Z] nv-lg512win-r1 p1: agg=94.8 p50=5.407 err=0 shed=0 | acc cum=330/534=0.618 | 83, 1717 MHz, 165.81 W, 18168 MiB
+[15:53:42Z] nv-lg512win-r1 p2: agg=94.1 p50=5.451 err=0 shed=0 | acc cum=330/534=0.618 | 84, 1695 MHz, 165.32 W, 18168 MiB
+[15:53:42Z] ROUND nv-r1 done, releasing
+[16:02:00Z] ROUND nv-r2 hold acquired: lg512win:3:128:0 lg512def:3:32:0 | 83, 1957 MHz, 130.70 W, 368 MiB
+[16:02:33Z] nv-lg512win-r2 p1: agg=94.9 p50=5.410 err=0 shed=0 | acc cum=330/534=0.618 | 83, 1717 MHz, 166.05 W, 18168 MiB
+[16:02:55Z] nv-lg512win-r2 p2: agg=94.2 p50=5.453 err=0 shed=0 | acc cum=330/534=0.618 | 85, 1695 MHz, 165.77 W, 18168 MiB
+[16:03:27Z] nv-lg512def-r2 p1: agg=87.6 p50=5.891 err=0 shed=0 | acc cum=322/531=0.606 | 84, 1747 MHz, 166.95 W, 18168 MiB
+[16:03:51Z] nv-lg512def-r2 p2: agg=87.1 p50=5.930 err=0 shed=0 | acc cum=322/531=0.606 | 85, 1740 MHz, 166.56 W, 18168 MiB
+[16:03:51Z] ROUND nv-r2 done, releasing
+C8_GUARD_DONE
+[16:16:28Z] run-spec nv-embedded lever-on rc=0 PASS=9
+[16:16:52Z] run-spec nv-draft lever-on rc=0 PASS=9
+[16:17:02Z] ident-nv-K3B32 captured (1 bytes)
+[16:17:11Z] ident-nv-K3B128 captured (1 bytes)
+[16:17:21Z] ident-nv-K3B128pm captured (1 bytes)
+[16:17:26Z] ident-q9-K3B32 captured (1 bytes)
+[16:17:28Z] ident-q9-K3B128pm captured (1 bytes)
+[16:17:28Z] identity nv-K3B32 vs nv-K3B128: BYTE-IDENTICAL
+[16:17:28Z] identity nv-K3B32 vs nv-K3B128pm: BYTE-IDENTICAL
+[16:17:28Z] identity q9-K3B32 vs q9-K3B128pm: BYTE-IDENTICAL
+[16:17:46Z] serve-smoke rc=0 failed=0
+GATES_DONE
+[16:23:14Z] ident-nv-K3B32 captured (523 bytes)
+[16:23:23Z] ident-nv-K3B128 captured (523 bytes)
+[16:23:33Z] ident-nv-K3B128pm captured (523 bytes)
+[16:23:35Z] ident-q9-K3B32 captured (508 bytes)
+[16:23:38Z] ident-q9-K3B128pm captured (508 bytes)
+[16:23:38Z] identity nv-K3B32 vs nv-K3B128: BYTE-IDENTICAL (523 bytes)
+[16:23:38Z] identity nv-K3B32 vs nv-K3B128pm: BYTE-IDENTICAL (523 bytes)
+[16:23:38Z] identity q9-K3B32 vs q9-K3B128pm: BYTE-IDENTICAL (508 bytes)
+IDENT_DONE
+[16:23:38Z] TTFT probe hold acquired
+[16:23:54Z] ttft B32: {"label": "nv-K3-B32-stream", "n": 0, "ttft_first_chunk_s": null, "chunk_gap_p50_s": null, "chunks_per_resp": null}
+[16:24:10Z] ttft B128: {"label": "nv-K3-B128-stream", "n": 0, "ttft_first_chunk_s": null, "chunk_gap_p50_s": null, "chunks_per_resp": null}
+[16:24:10Z] TTFT_DONE
+[16:24:55Z] TTFT probe hold acquired
+[16:25:10Z] ttft B32: {"label": "nv-K3-B32-stream", "n": 3, "ttft_first_chunk_s": 0.4073510879970854, "chunk_gap_p50_s": 0.29696863899880555, "chunks_per_resp": 8}
+[16:25:26Z] ttft B128: {"label": "nv-K3-B128-stream", "n": 3, "ttft_first_chunk_s": 1.154393374999927, "chunk_gap_p50_s": 1.415355647000979, "chunks_per_resp": 2}
+[16:25:27Z] TTFT_DONE
+[16:29:20Z] ROUND nv-r1 hold acquired: bl-B32:3:32:0 bl-B64:3:64:0 bl-B128:3:128:0 bl-B256:3:256:0 | 54, 180 MHz, 10.19 W, 368 MiB
+[16:29:51Z] nv-bl-B32-r1 p1: agg=89.1 p50=5.877 err=0 shed=0 | acc cum=322/531=0.606 | 75, 1815 MHz, 167.29 W, 18168 MiB
+[16:30:15Z] nv-bl-B32-r1 p2: agg=88.7 p50=5.823 err=0 shed=0 | acc cum=322/531=0.606 | 79, 1740 MHz, 166.30 W, 18168 MiB
+[16:30:46Z] nv-bl-B64-r1 p1: agg=91.8 p50=5.611 err=0 shed=0 | acc cum=319/558=0.572 | 80, 1785 MHz, 166.47 W, 18168 MiB
+[16:31:09Z] nv-bl-B64-r1 p2: agg=91.2 p50=5.637 err=0 shed=0 | acc cum=319/558=0.572 | 82, 1770 MHz, 166.34 W, 18168 MiB
+[16:31:39Z] nv-bl-B128-r1 p1: agg=95.4 p50=5.377 err=0 shed=0 | acc cum=330/534=0.618 | 81, 1732 MHz, 166.14 W, 18168 MiB
+[16:32:01Z] nv-bl-B128-r1 p2: agg=94.9 p50=5.405 err=0 shed=0 | acc cum=330/534=0.618 | 83, 1717 MHz, 166.05 W, 18168 MiB
+[16:32:32Z] nv-bl-B256-r1 p1: agg=93.4 p50=5.592 err=0 shed=0 | acc cum=323/567=0.570 | 82, 1740 MHz, 165.89 W, 18168 MiB
+[16:32:54Z] nv-bl-B256-r1 p2: agg=92.9 p50=5.628 err=0 shed=0 | acc cum=323/567=0.570 | 83, 1717 MHz, 165.82 W, 18168 MiB
+[16:32:54Z] ROUND nv-r1 done, releasing
+[16:32:56Z] ROUND nv-r2 hold acquired: bl-B256:3:256:0 bl-B128:3:128:0 bl-B64:3:64:0 bl-B32:3:32:0 | 80, 1815 MHz, 70.01 W, 368 MiB
+[16:33:26Z] nv-bl-B256-r2 p1: agg=93.4 p50=5.596 err=0 shed=0 | acc cum=323/567=0.570 | 82, 1717 MHz, 165.43 W, 18168 MiB
+[16:33:49Z] nv-bl-B256-r2 p2: agg=92.8 p50=5.636 err=0 shed=0 | acc cum=323/567=0.570 | 83, 1710 MHz, 165.39 W, 18168 MiB
+[16:34:19Z] nv-bl-B128-r2 p1: agg=95.0 p50=5.400 err=0 shed=0 | acc cum=330/534=0.618 | 82, 1725 MHz, 165.69 W, 18168 MiB
+[16:34:41Z] nv-bl-B128-r2 p2: agg=94.5 p50=5.424 err=0 shed=0 | acc cum=330/534=0.618 | 84, 1702 MHz, 165.35 W, 18168 MiB
+[16:35:12Z] nv-bl-B64-r2 p1: agg=91.1 p50=5.649 err=0 shed=0 | acc cum=319/558=0.572 | 83, 1725 MHz, 166.34 W, 18168 MiB
+[16:35:35Z] nv-bl-B64-r2 p2: agg=90.5 p50=5.676 err=0 shed=0 | acc cum=319/558=0.572 | 84, 1755 MHz, 166.82 W, 18168 MiB
+[16:36:07Z] nv-bl-B32-r2 p1: agg=87.9 p50=5.871 err=0 shed=0 | acc cum=322/531=0.606 | 83, 1755 MHz, 167.11 W, 18168 MiB
+[16:36:31Z] nv-bl-B32-r2 p2: agg=87.2 p50=5.922 err=0 shed=0 | acc cum=322/531=0.606 | 84, 1747 MHz, 166.60 W, 18168 MiB
+[16:36:31Z] ROUND nv-r2 done, releasing
+[16:41:03Z] ROUND nv-r3 hold acquired: bl-B32:3:32:0 bl-B64:3:64:0 bl-B128:3:128:0 bl-B256:3:256:0 | 58, 2047 MHz, 48.23 W, 368 MiB
+[16:41:34Z] nv-bl-B32-r3 p1: agg=89.7 p50=5.774 err=0 shed=0 | acc cum=322/531=0.606 | 74, 1822 MHz, 167.22 W, 18168 MiB
+[16:41:58Z] nv-bl-B32-r3 p2: agg=88.9 p50=5.814 err=0 shed=0 | acc cum=322/531=0.606 | 79, 1785 MHz, 166.60 W, 18168 MiB
+[16:42:29Z] nv-bl-B64-r3 p1: agg=91.8 p50=5.609 err=0 shed=0 | acc cum=319/558=0.572 | 79, 1792 MHz, 166.35 W, 18168 MiB
+[16:42:52Z] nv-bl-B64-r3 p2: agg=91.2 p50=5.637 err=0 shed=0 | acc cum=319/558=0.572 | 82, 1732 MHz, 166.25 W, 18168 MiB
+[16:43:22Z] nv-bl-B128-r3 p1: agg=95.3 p50=5.381 err=0 shed=0 | acc cum=330/534=0.618 | 81, 1725 MHz, 166.01 W, 18168 MiB
+[16:43:44Z] nv-bl-B128-r3 p2: agg=94.8 p50=5.407 err=0 shed=0 | acc cum=330/534=0.618 | 83, 1717 MHz, 165.81 W, 18168 MiB
+[16:44:15Z] nv-bl-B256-r3 p1: agg=93.3 p50=5.600 err=0 shed=0 | acc cum=323/567=0.570 | 82, 1732 MHz, 165.49 W, 18168 MiB
+[16:44:37Z] nv-bl-B256-r3 p2: agg=92.9 p50=5.633 err=0 shed=0 | acc cum=323/567=0.570 | 83, 1717 MHz, 165.33 W, 18168 MiB
+[16:44:37Z] ROUND nv-r3 done, releasing
+BLADDER_DONE
+[16:51:01Z] run-spec q9-draft lever-on rc=0 PASS=9
