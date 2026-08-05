@@ -1,0 +1,17 @@
+chunk-invariance-gate: FAIL — pinned divergence now shows on only 0/2 prompts
+  the chunk-order class CHANGED without the door; re-root-cause before touching the gate
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+  raw log: /tmp/chunkinv-gate-J6EZj8.log
+GATE_EXIT=0
+# ANNOTATION (2026-08-05 19:4x, lane/chunkinv-flip first result):
+# - GATE_EXIT=0 above is WRONG as a gate status — it captured tee's exit through the pipe.
+#   The gate itself exited 1 (its --expect-variant default assertion broke).
+# - The SUBSTANTIVE verdict: with NO door env (MEMRA_PRIME_INVARIANT unset), both pinned
+#   prompts (97-tok turn1, 149-tok turn2) report "chunkinv verdict: CHUNK-INVARIANT —
+#   prefill logits bit-identical at every chunk size" across chunks 2048,64,32.
+# - That is the grain-free fix WORKING: the expect-variant gate FAILS precisely because the
+#   pinned divergence is gone without any door. Per the gate's own guidance, the gate arm
+#   flips to --expect-invariant as part of the default-flip evaluation.
+# - Lane verdict: FIRST RESULT = PASS (fix effective). Raw probe log preserved as
+#   first-result-raw-probe.log.
