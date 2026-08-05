@@ -195,6 +195,36 @@ unsafe extern "C" {
         stream: *mut core::ffi::c_void,
     ) -> i32;
 
+    // ---- Q1 accumulator instrument (cu/mmq_q8_0_f32acc.cu, lane/fp8-v3-gate) ----
+    // The Q8_0 MMQ floor's GEMM with the accumulator as its ONE free variable: arm S32 is the
+    // floor's `mma...s32.s8.s8.s32`, arm F32 is the same m16n8k32 shape and the same A/B/D fragment
+    // ABI with `mma...kind::f8f6f4...f32.e4m3.e4m3.f32` — the op cu/mmq_fp8_blk.cu accumulates in.
+    // Both take a PRE-QUANTIZED block_q8_1_mmq activation buffer, so the measurement is GEMM-only
+    // and cannot differ by a quantizer. Research instrument only: no dispatch seam, and neither arm's
+    // output is a numeric claim (see the TU header).
+    /// Activation-scratch bytes for the accumulator instrument (same padding rule as the floor).
+    pub fn memra_accprobe_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// ARM S32 — the floor's GEMM verbatim, s32 accumulate. Returns 0, 1, or 1000+cudaError.
+    pub fn memra_accprobe_gemm_s32(
+        w_q8_0_blocks: *const core::ffi::c_void,
+        act_q: *const core::ffi::c_void,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+    /// ARM F32 — byte-identical kernel, f32 accumulate over the e4m3 reading of the same bytes.
+    pub fn memra_accprobe_gemm_f32(
+        w_q8_0_blocks: *const core::ffi::c_void,
+        act_q: *const core::ffi::c_void,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+
     /// Bytes needed for the block_q8_1_mmq (D4) activation scratch for the Q4_0 MMQ path.
     pub fn memra_mmq_q4_0_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Run the Q4_0 int8-MMA MMQ prefill GEMM (MEMRA_PP_Q4MMQ). Nibbles dequant to int8 at
@@ -717,6 +747,64 @@ impl Engine {
             };
             if rc != 0 {
                 return Err(format!("memra_mmq_q8_0 rc={rc}").into());
+            }
+        }
+        Ok(y)
+    }
+
+    /// Accumulator-instrument bytes for a pre-quantized block_q8_1_mmq activation buffer
+    /// (cu/mmq_q8_0_f32acc.cu). The caller synthesizes that buffer itself — see `accprobe_gemm`.
+    pub fn accprobe_act_bytes(&self, in_f: usize, m: usize) -> usize {
+        unsafe { memra_accprobe_act_bytes(in_f as i32, m as i32) }
+    }
+
+    /// Run one arm of the Q1 accumulator instrument. `f32acc=false` is the Q8_0 MMQ floor's GEMM
+    /// verbatim (s32 accumulate); `f32acc=true` is the byte-identical kernel with the f8f6f4 f32
+    /// accumulate. `act_q` is a PRE-QUANTIZED block_q8_1_mmq buffer of at least
+    /// `accprobe_act_bytes(in_f, m)` bytes — keeping the quantizer out of the timed region is the
+    /// point, so this wrapper does not build it. Research instrument: the output is not a numeric
+    /// claim.
+    pub fn accprobe_gemm(
+        &self,
+        w_q8_0: &CudaSlice<u8>,
+        act_q: &CudaSlice<u8>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        f32acc: bool,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(in_f % 32 == 0, "accprobe requires in_f % 32 == 0, got {in_f}");
+        assert!(
+            act_q.len() >= self.accprobe_act_bytes(in_f, m),
+            "accprobe act_q too small: {} < {}",
+            act_q.len(),
+            self.accprobe_act_bytes(in_f, m)
+        );
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        {
+            let stream = self.gpu.stream();
+            let (w_p, _gw) = w_q8_0.device_ptr(&stream);
+            let (a_p, _ga) = act_q.device_ptr(&stream);
+            let (y_p, _gy) = y.device_ptr_mut(&stream);
+            let f = if f32acc {
+                memra_accprobe_gemm_f32
+            } else {
+                memra_accprobe_gemm_s32
+            };
+            let rc = unsafe {
+                f(
+                    w_p as *const core::ffi::c_void,
+                    a_p as *const core::ffi::c_void,
+                    y_p as *mut f32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 {
+                let arm = if f32acc { "f32" } else { "s32" };
+                return Err(format!("memra_accprobe_gemm_{arm} rc={rc}").into());
             }
         }
         Ok(y)

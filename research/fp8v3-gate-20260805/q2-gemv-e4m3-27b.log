@@ -1,0 +1,30 @@
+=== LOCK ACQUIRED 2026-08-05T14:10:24+03:00 ===
+--- Q2 m=1 GEMV, iters=200, 27B shapes ---
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 71, 217 MHz
+m=1 GEMV: native e4m3 (1.0 B/weight, qmatvec_e4m3_mmvq) vs Q8_0 MMVQ floor (1.0625 B/weight)
+DRAM-cold (rotated copies); interleaved e4m3,q8_0 per iter; median; ratio = t_q8_0/t_e4m3
+shape in->out                  cp    e4m3_us    q8_0_us     ratio  delta_pp e4m3_GB/s q8_0_GB/s
+q_proj 5120->12288             11      83.28      87.29   1.0481x     +4.81     755.4     765.8
+k/v_proj 5120->1024            64      15.11      15.56   1.0302x     +3.02     347.0     357.9
+o_proj 6144->5120              22      45.76      48.94   1.0695x     +6.95     687.5     683.0
+gate/up_proj 5120->17408        8     113.19     120.11   1.0612x     +6.12     787.5     788.4
+down_proj 17408->5120           8     114.26     122.35   1.0708x     +7.08     780.0     774.0
+square-ref 5120->5120          27      39.47      41.83   1.0598x     +5.98     664.2     665.9
+GEOMEAN ratio (q8_0/e4m3) over 6 shapes: 1.0565x  =>  delta_pp +5.65
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 73, 1740 MHz
+--- Q2 REPEAT (independent, same hold) ---
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  iters=200  shapes=27b  temp_in: 72, 1672 MHz
+m=1 GEMV: native e4m3 (1.0 B/weight, qmatvec_e4m3_mmvq) vs Q8_0 MMVQ floor (1.0625 B/weight)
+DRAM-cold (rotated copies); interleaved e4m3,q8_0 per iter; median; ratio = t_q8_0/t_e4m3
+shape in->out                  cp    e4m3_us    q8_0_us     ratio  delta_pp e4m3_GB/s q8_0_GB/s
+q_proj 5120->12288             11      83.13      87.05   1.0471x     +4.71     756.8     767.9
+k/v_proj 5120->1024            64      15.18      15.70   1.0342x     +3.42     345.4     354.9
+o_proj 6144->5120              22      45.35      48.43   1.0678x     +6.78     693.6     690.1
+gate/up_proj 5120->17408        8     113.03     119.91   1.0608x     +6.08     788.5     789.8
+down_proj 17408->5120           8     113.91     122.05   1.0715x     +7.15     782.5     775.9
+square-ref 5120->5120          27      39.40      41.77   1.0603x     +6.03     665.3     666.7
+GEOMEAN ratio (q8_0/e4m3) over 6 shapes: 1.0569x  =>  delta_pp +5.69
+byte-stream ceiling: 34/32 = 1.0625x  =>  +6.25pp if perfectly bandwidth-bound
+temp_out: 72, 1740 MHz
+=== LOCK RELEASE 2026-08-05T14:10:27+03:00 ===

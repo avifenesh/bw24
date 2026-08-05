@@ -214,3 +214,11 @@ path = "src/bin/spec_st_probe.rs"
 [[bin]]
 name = "plainbatch-margin-probe"
 path = "src/bin/plainbatch_margin_probe.rs"
+
+[[bin]]
+name = "accprobe-bench"
+path = "src/bin/accprobe_bench.rs"
+
+[[bin]]
+name = "gemv-e4m3-bench"
+path = "src/bin/gemv_e4m3_bench.rs"
