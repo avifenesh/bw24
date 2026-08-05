@@ -335,26 +335,6 @@ const FP_WINDOW: usize = 8;
 /// conversation); nominating on it would cross-link unrelated conversations into one session.
 const FP_MIN_SEGMENTS: usize = 3;
 
-/// A request's conversation identity, used ONLY to nominate a parked session for the exact
-/// token-diff resume test (`AffinityMatch`). Never authoritative over tokens.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum AffinityKey {
-    /// The client named its conversation (`session_id`/`user` body field, or `x-session-id`).
-    Explicit(String),
-    /// Structural fingerprint of the conversation's segment shape (rewrite-invariant).
-    Fingerprint(u64),
-}
-
-impl AffinityKey {
-    /// Log-friendly tier name.
-    fn tier(&self) -> &'static str {
-        match self {
-            AffinityKey::Explicit(_) => "explicit",
-            AffinityKey::Fingerprint(_) => "fingerprint",
-        }
-    }
-}
-
 /// FNV-1a over a token stream — a stable, allocation-free 64-bit mix. (Not a cryptographic
 /// hash and does not need to be: a collision costs one wasted exact-diff probe, never a
 /// wrong resume, and the pool it indexes is already tenant-scoped.)
@@ -369,27 +349,42 @@ fn fnv1a(seed: u64, toks: &[u32]) -> u64 {
     h
 }
 
-/// Structural fingerprint of a conversation: hash of the per-segment (head window, tail
-/// window) pairs, EXCLUDING each segment's interior.
+/// Structural fingerprint of a conversation: the CHAIN of per-segment boundary hashes, one
+/// entry per conversation segment in order, each hashing only that segment's (head window,
+/// tail window) — never its interior.
 ///
-/// WHY IT SURVIVES THE REWRITE. The rewrite class we must tolerate mutates the INTERIOR of
-/// prior assistant segments (a stripped `<think>` block is deleted text in the middle of a
-/// turn). Segment BOUNDARIES — where a turn starts, its role marker, its opening tokens, and
-/// its closing tokens — are stable across that rewrite, because the client re-renders the same
-/// template around the same turns. Hashing only the boundary windows therefore yields the same
-/// value before and after a think-strip, while any genuinely different conversation (different
-/// system prompt, different first user turn, different turn count) hashes differently.
+/// WHY A CHAIN, NOT ONE HASH. Turn N+1 of a conversation has strictly MORE segments than turn
+/// N (the previous answer plus a new user turn were appended), so a single whole-conversation
+/// digest can never match across turns. Identity is therefore a PREFIX relation over the
+/// chain (`fingerprint_affinity`): the parked session's conversation is an ancestor of this
+/// request's when their chains share a long-enough leading run.
+///
+/// WHY BOUNDARY WINDOWS. The rewrite class we must tolerate mutates the INTERIOR of prior
+/// assistant segments (a stripped `<think>` block is deleted text inside a turn). Hashing only
+/// each segment's first and last few tokens leaves those edits invisible while still separating
+/// genuinely different segments. Where a rewrite reaches into a head window too (a `<think>`
+/// tag can sit right after the role marker), the chain degrades GRACEFULLY instead of failing:
+/// that one segment's hash changes, the shared leading run simply ends earlier, and the
+/// candidate is still nominated on the stable prefix (system prompt + early turns, which no
+/// client rewrites). Nomination only has to be a good guess — `affinity_match` decides on bytes.
 ///
 /// SEGMENTATION on the raw-prompt path. The owner's client renders the chat template
 /// CLIENT-side and posts raw `/v1/completions`, so there is no `chat_turns` structure to walk:
-/// the worker sees one flat token stream. Segments are recovered from the token stream itself
-/// by splitting at the template's own turn-marker tokens (`special`, per the tokenizer) — the
-/// exact tokens a chat template emits at every turn boundary (`<|im_start|>`/`<|im_end|>` and
-/// friends). That makes the implicit tier work identically for client-rendered raw prompts and
-/// for server-rendered `/v1/chat/completions` traffic.
+/// the worker sees one flat token stream. Segments are recovered from the stream itself by
+/// splitting at the template's own turn-marker tokens (the tokenizer's control tokens — exactly
+/// what a chat template emits at every turn boundary: `<|im_start|>`/`<|im_end|>` and friends).
+/// The implicit tier therefore works identically for client-rendered raw prompts and for
+/// server-rendered `/v1/chat/completions` traffic.
 ///
-/// `is_boundary(tok) -> bool` reports whether a token is a template turn marker.
-fn conversation_fingerprint(toks: &[u32], is_boundary: &dyn Fn(u32) -> bool) -> Option<u64> {
+/// `is_boundary(tok)` reports whether a token is a template turn marker. `drop_live` excludes
+/// the trailing segment (a REQUEST's last segment is the turn being generated — new every turn
+/// by construction, so it must not contribute to identity; a PARKED session's committed stream
+/// has no such live tail and keeps every segment).
+fn conversation_fingerprint(
+    toks: &[u32],
+    is_boundary: &dyn Fn(u32) -> bool,
+    drop_live: bool,
+) -> Vec<u64> {
     // Split into segments at boundary tokens. The boundary token itself joins the segment it
     // opens, so a segment's head window carries its own role marker.
     let mut segs: Vec<(usize, usize)> = Vec::new();
@@ -403,24 +398,26 @@ fn conversation_fingerprint(toks: &[u32], is_boundary: &dyn Fn(u32) -> bool) -> 
     if start < toks.len() {
         segs.push((start, toks.len()));
     }
-    if segs.len() < FP_MIN_SEGMENTS {
-        return None;
+    if drop_live && !segs.is_empty() {
+        segs.pop();
     }
-    // The LAST segment is the live turn being generated — its content is new every turn by
-    // construction, so it never contributes to conversation identity.
-    let segs = &segs[..segs.len() - 1];
-    if segs.len() < FP_MIN_SEGMENTS - 1 {
-        return None;
-    }
-    let mut h = fnv1a(0xcbf29ce484222325, &[segs.len() as u32]);
-    for &(lo, hi) in segs {
-        let seg = &toks[lo..hi];
-        let head = &seg[..FP_WINDOW.min(seg.len())];
-        let tail = &seg[seg.len().saturating_sub(FP_WINDOW)..];
-        h = fnv1a(h, head);
-        h = fnv1a(h, tail);
-    }
-    Some(h)
+    segs.iter()
+        .map(|&(lo, hi)| {
+            let seg = &toks[lo..hi];
+            let head = &seg[..FP_WINDOW.min(seg.len())];
+            let tail = &seg[seg.len().saturating_sub(FP_WINDOW)..];
+            fnv1a(fnv1a(0xcbf29ce484222325, head), tail)
+        })
+        .collect()
+}
+
+/// Length of the leading run two fingerprint chains share. `>= FP_MIN_SEGMENTS` is the
+/// nomination bar: below it the shared run is a generic opener (a bare system prompt is
+/// byte-identical across every fresh conversation with the same client), and nominating on it
+/// would cross-link unrelated conversations. Markerless raw prompts produce a 1-segment chain
+/// and so can never clear the bar — non-chat callers keep the plain prefix probes untouched.
+fn fingerprint_affinity(a: &[u64], b: &[u64]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
 /// Verdict of the EXACT token diff run against an affinity-nominated parked session. Identity
@@ -3042,8 +3039,16 @@ mod tests {
         }
         v
     }
-    fn fp(toks: &[u32]) -> Option<u64> {
-        super::conversation_fingerprint(toks, &is_marker)
+    /// Fingerprint chain of a REQUEST (the live turn is excluded from identity).
+    fn fp(toks: &[u32]) -> Vec<u64> {
+        super::conversation_fingerprint(toks, &is_marker, true)
+    }
+    /// Fingerprint chain of a PARKED session's committed stream (no live tail to drop).
+    fn fp_parked(toks: &[u32]) -> Vec<u64> {
+        super::conversation_fingerprint(toks, &is_marker, false)
+    }
+    fn shared(a: &[u64], b: &[u64]) -> usize {
+        super::fingerprint_affinity(a, b)
     }
     /// A body long enough that head and tail windows do not overlap (so interior edits are
     /// genuinely invisible to the fingerprint rather than trivially absent).
@@ -3070,13 +3075,45 @@ mod tests {
         assert!(!after.starts_with(&before[..before.len() - 1]),
                 "the rewrite must break plain prefix-extension (else the old probe would hit)");
         assert_eq!(fp(&before), fp(&after));
-        assert!(fp(&before).is_some());
+        assert!(fp(&before).len() >= super::FP_MIN_SEGMENTS);
+    }
+
+    #[test]
+    fn fingerprint_nominates_the_parked_session_across_a_rewritten_turn() {
+        // END TO END on the lane's actual case. Parked session committed turns 1-2 of a
+        // conversation; the next request re-sends that history with the assistant turn's
+        // interior stripped AND a new user turn appended. Plain prefix-extension is broken,
+        // but the fingerprint chains share their whole leading run -> nominated.
+        let (sys, user1, user2, live) = (body(1, 24), body(2, 24), body(4, 24), body(9, 8));
+        let mut asst1 = body(3, 40);
+        let parked = convo(&[&sys, &user1, &asst1]);
+        asst1.drain(super::FP_WINDOW..asst1.len() - super::FP_WINDOW);
+        let request = convo(&[&sys, &user1, &asst1, &user2, &live]);
+        let n = shared(&fp(&request), &fp_parked(&parked));
+        assert_eq!(n, 3, "system + user1 + rewritten assistant1 all match");
+        assert!(n >= super::FP_MIN_SEGMENTS, "clears the nomination bar");
+    }
+
+    #[test]
+    fn fingerprint_degrades_gracefully_when_a_rewrite_reaches_a_head_window() {
+        // A think-strip can start right after the role marker, inside the head window. That
+        // segment's hash changes — but identity is a PREFIX relation, so the stable opener
+        // (system + early user turns, which no client rewrites) still nominates. Nomination
+        // is a guess; affinity_match decides on bytes.
+        let (sys, user1, user2, live) = (body(1, 24), body(2, 24), body(4, 24), body(9, 8));
+        let asst1 = body(3, 40);
+        let parked = convo(&[&sys, &user1, &asst1, &user2]);
+        let mut wrecked = asst1.clone();
+        wrecked.drain(..super::FP_WINDOW); // rewrite eats the head window too
+        let request = convo(&[&sys, &user1, &wrecked, &user2, &live]);
+        let n = shared(&fp(&request), &fp_parked(&parked));
+        assert_eq!(n, 2, "shared run ends at the damaged segment, not at zero");
     }
 
     #[test]
     fn fingerprint_ignores_the_live_turn() {
-        // The last segment is the turn being generated — new every turn by construction. Two
-        // consecutive turns of one conversation share a fingerprint.
+        // A request's last segment is the turn being generated — new every turn by
+        // construction. Two consecutive turns of one conversation share a chain.
         let (sys, user1, asst1) = (body(1, 24), body(2, 24), body(3, 24));
         let turn_a = convo(&[&sys, &user1, &asst1, &body(7, 12)]);
         let turn_b = convo(&[&sys, &user1, &asst1, &body(8, 30)]);
@@ -3085,37 +3122,37 @@ mod tests {
 
     #[test]
     fn fingerprint_separates_different_conversations() {
-        // Different system prompt, different first user turn, and different turn COUNT must
-        // all hash apart — affinity must never cross-link unrelated conversations.
+        // A different system prompt or a different first user turn must not clear the
+        // nomination bar — affinity must never cross-link unrelated conversations.
         let (sys, user1, asst1, live) = (body(1, 24), body(2, 24), body(3, 24), body(9, 8));
-        let base = fp(&convo(&[&sys, &user1, &asst1, &live])).unwrap();
-        let other_sys = fp(&convo(&[&body(5, 24), &user1, &asst1, &live])).unwrap();
-        let other_user = fp(&convo(&[&sys, &body(6, 24), &asst1, &live])).unwrap();
-        let more_turns =
-            fp(&convo(&[&sys, &user1, &asst1, &body(4, 24), &body(5, 24), &live])).unwrap();
-        assert_ne!(base, other_sys);
-        assert_ne!(base, other_user);
-        assert_ne!(base, more_turns);
+        let base = fp(&convo(&[&sys, &user1, &asst1, &live]));
+        let other_sys = fp(&convo(&[&body(5, 24), &user1, &asst1, &live]));
+        let other_user = fp(&convo(&[&sys, &body(6, 24), &asst1, &live]));
+        assert_eq!(shared(&base, &other_sys), 0, "different system prompt: nothing shared");
+        assert_eq!(shared(&base, &other_user), 1, "only the system prompt is shared");
+        assert!(shared(&base, &other_user) < super::FP_MIN_SEGMENTS, "below the bar");
     }
 
     #[test]
     fn fingerprint_declines_short_generic_openers() {
-        // A bare system prompt + first user turn is the SAME opener for every fresh
-        // conversation with this client. Nominating on it would cross-link unrelated
-        // conversations, so the implicit tier declines (None) below FP_MIN_SEGMENTS.
+        // A bare system prompt (+ first user turn) is the SAME opener for every fresh
+        // conversation with this client, so its shared run must stay under the bar.
         let sys = body(1, 24);
-        assert_eq!(fp(&convo(&[&sys])), None);
-        assert_eq!(fp(&convo(&[&sys, &body(2, 24)])), None);
-        // a real multi-turn conversation does get an identity.
-        assert!(fp(&convo(&[&sys, &body(2, 24), &body(3, 24), &body(9, 8)])).is_some());
+        let a = fp(&convo(&[&sys, &body(2, 24)]));
+        let b = fp(&convo(&[&sys, &body(7, 24)]));
+        assert!(shared(&a, &b) < super::FP_MIN_SEGMENTS);
+        // a real multi-turn conversation does clear it.
+        let long = convo(&[&sys, &body(2, 24), &body(3, 24), &body(9, 8)]);
+        assert!(shared(&fp(&long), &fp(&long)) >= super::FP_MIN_SEGMENTS);
     }
 
     #[test]
     fn fingerprint_handles_a_prompt_with_no_markers() {
-        // Raw non-chat completions (no template markers at all) have no segment structure:
-        // one segment, which is also the live turn. No identity, no affinity — the plain
-        // prefix probes still serve those callers exactly as before.
-        assert_eq!(fp(&toks(512)), None);
+        // Raw non-chat completions (no template markers) have no segment structure: a
+        // 1-segment chain, which for a request is also the live turn -> empty. Never clears
+        // the bar, so those callers keep the plain prefix probes exactly as before.
+        assert!(fp(&toks(512)).is_empty());
+        assert!(shared(&fp(&toks(512)), &fp_parked(&toks(512))) < super::FP_MIN_SEGMENTS);
     }
 
     #[test]
