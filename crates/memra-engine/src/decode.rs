@@ -1745,6 +1745,14 @@ impl HybridModel {
         Ok((graph, plan, seg_end))
     }
 
+    /// Measurement door for `graph_session_recapture` (graph-allocfree-probe): the capture
+    /// path timed WITHOUT the prompt prime. Same call the live step() makes at a
+    /// kernel-class crossing.
+    pub fn graph_session_recapture_pub(&self, e: &Engine, sess: &mut GraphSession)
+                                       -> Result<(), Box<dyn std::error::Error>> {
+        self.graph_session_recapture(e, sess)
+    }
+
     /// Session recapture at a kernel-class boundary (called by GraphSession::step).
     /// The mask node (when present) re-bakes the SAME stable buffer — contents carry over.
     pub(crate) fn graph_session_recapture(&self, e: &Engine, sess: &mut GraphSession)

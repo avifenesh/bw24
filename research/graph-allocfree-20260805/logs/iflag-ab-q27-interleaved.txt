@@ -1,0 +1,27 @@
+=== rep1 flag=auto_free ===
+launch(async) per step: median 48.1 us  (raw ["48.3", "48.1", "47.8"])
+decode tok/s (session step): median 81.10  (raw ["79.30", "81.12", "81.10"])
+SUMMARY iflag=auto_free launch_us=48.1 tps=81.10 cap_ms=700.2
+=== rep1 flag=upload ===
+=== rep1 flag=priority ===
+launch(async) per step: median 47.7 us  (raw ["47.8", "47.7", "47.6"])
+decode tok/s (session step): median 81.05  (raw ["79.29", "81.10", "81.05"])
+SUMMARY iflag=priority launch_us=47.7 tps=81.05 cap_ms=700.8
+=== rep2 flag=auto_free ===
+launch(async) per step: median 46.4 us  (raw ["46.9", "46.2", "46.4"])
+decode tok/s (session step): median 81.04  (raw ["78.96", "81.08", "81.04"])
+SUMMARY iflag=auto_free launch_us=46.4 tps=81.04 cap_ms=700.6
+=== rep2 flag=upload ===
+=== rep2 flag=priority ===
+launch(async) per step: median 47.0 us  (raw ["50.9", "47.0", "46.8"])
+decode tok/s (session step): median 81.05  (raw ["79.26", "81.07", "81.05"])
+SUMMARY iflag=priority launch_us=47.0 tps=81.05 cap_ms=700.7
+=== rep3 flag=auto_free ===
+launch(async) per step: median 47.3 us  (raw ["47.1", "47.3", "47.4"])
+decode tok/s (session step): median 81.03  (raw ["76.84", "81.07", "81.03"])
+SUMMARY iflag=auto_free launch_us=47.3 tps=81.03 cap_ms=700.8
+=== rep3 flag=upload ===
+=== rep3 flag=priority ===
+launch(async) per step: median 46.6 us  (raw ["46.6", "46.6", "46.8"])
+decode tok/s (session step): median 81.03  (raw ["79.28", "81.07", "81.03"])
+SUMMARY iflag=priority launch_us=46.6 tps=81.03 cap_ms=703.2

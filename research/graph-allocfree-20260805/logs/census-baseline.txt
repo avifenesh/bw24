@@ -1,0 +1,31 @@
+# Baseline node census, generic GraphSession capture (decode_step_dc_cap_masked)
+# pod RTX PRO 6000 Blackwell (97887 MiB), tree fcfe3837 + Q1 probe, LD_LIBRARY_PATH=/usr/local/cuda-13.1/compat
+# cmd: MEMRA_GRAPH_CENSUS=1 ./target/release/graph-session-gate <model> --steps 96
+
+=== q27 Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf (qwen35, 64 layers) ===
+loaded qwen35 (64 layers); steps=96
+[graph-census] segment t_kv 49..=95 fa_plan mains: 16
+[graph-census] {"CU_GRAPH_NODE_TYPE_KERNEL": 1031, "CU_GRAPH_NODE_TYPE_MEMCPY": 48, "CU_GRAPH_NODE_TYPE_MEMSET": 48, "CU_GRAPH_NODE_TYPE_MEM_ALLOC": 1589, "CU_GRAPH_NODE_TYPE_MEM_FREE": 1589}
+[graph-census] segment t_kv 96..=145 fa_plan mains: 16
+[graph-census] {"CU_GRAPH_NODE_TYPE_KERNEL": 1031, "CU_GRAPH_NODE_TYPE_MEMCPY": 48, "CU_GRAPH_NODE_TYPE_MEMSET": 48, "CU_GRAPH_NODE_TYPE_MEM_ALLOC": 1589, "CU_GRAPH_NODE_TYPE_MEM_FREE": 1589}
+gate (session vs generate_graph, 96 tokens): PASS
+perf: session 80.5 tok/s vs eager 75.2 tok/s (+7.0%)
+ALL GREEN: graph-session gate
+
+TOTAL q27 = 1031 K + 48 MEMCPY + 48 MEMSET + 1589 ALLOC + 1589 FREE = 4305 nodes
+  mem nodes = 1589+1589+48 = 3226 (74.9% of all nodes)
+
+=== q9 /root/pilot/q9base-Q8_0.gguf (qwen35, 32 layers) ===
+loaded qwen35 (32 layers); steps=96
+[graph-census] segment t_kv 49..=95 fa_plan mains: 8
+[graph-census] {"CU_GRAPH_NODE_TYPE_KERNEL": 479, "CU_GRAPH_NODE_TYPE_MEMCPY": 24, "CU_GRAPH_NODE_TYPE_MEMSET": 24, "CU_GRAPH_NODE_TYPE_MEM_ALLOC": 797, "CU_GRAPH_NODE_TYPE_MEM_FREE": 797}
+
+TOTAL q9 = 479 + 24 + 24 + 797 + 797 = 2121 nodes
+  mem nodes = 797+797+24 = 1618 (76.3%)
+
+NOTE vs AUDIT item 1a: the audit's receipt baseline was "826-node step" and "~144 mem
+nodes/decode token". Both are WRONG for this path/model: the real q27 step is 4305 nodes
+with 3226 mem nodes. The audit's 144 = 3 memsets x 48 layers assumed the fa-partials
+memsets were the mem-node population; measured, MEMSET is only 48 nodes (0.75/layer, not
+3/layer — most fa calls hit the pooled arm whose memsets are the 3-per-call ones, and only
+some layers land there), while the dominant population is ALLOC/FREE pairs at ~25/layer.
