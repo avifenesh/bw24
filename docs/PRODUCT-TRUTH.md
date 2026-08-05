@@ -325,12 +325,18 @@ unit's price (`research/hw-buy-20260802/REPORT.md`).
   Blackwell (rented pod); the owned build-out targets the same silicon."
 
 **Stale-text hazard:** the pre-override 2x5090 recommendation still sits un-struck inside
-the same files (`research/hw-growth-rethink-20260803/ASSESSMENT.md` §0 lines 39-41,
-`research/hw-buy-20260802/REPORT.md` "First-box recommendation"). Only the appended
-OWNER OVERRIDE section supersedes them. Also stale in the same direction: `CLAUDE.md:45`,
-`CONTRIBUTING.md:107`, `HANDOVER.md:249`, `research/benchmarks.md:9`,
-`research/8bit-decision-20260803/DECISION.md:5` — all still call the 5090 "the deployment
-and final performance target."
+the two hardware studies (`research/hw-growth-rethink-20260803/ASSESSMENT.md` §0 lines
+39-41, `research/hw-buy-20260802/REPORT.md` "First-box recommendation"). Only the appended
+OWNER OVERRIDE section supersedes them — they are left as-is by design, because a research
+dir is an append-only record of what was recommended on its date. Do not read a
+first-box recommendation out of either file.
+
+*Fixed 2026-08-05 (lane/product-truth):* the five files that called the local 5090 "the
+deployment and final performance target" have been rescoped to "measuring and gating rig" —
+`CLAUDE.md`, `CONTRIBUTING.md`, `HANDOVER.md` (plus a header warning that it is an
+append-only log, not a copy source), `research/benchmarks.md` (rig/target correction under
+its llama-freeze banner), `research/8bit-decision-20260803/DECISION.md` (superseded-target
+note), `research/per-expert-quant/README.md`.
 
 ---
 
@@ -731,3 +737,22 @@ This file is reconciled, not appended. When a lane moves a product number:
 3. If a claim became false, move it to §10 rather than deleting it — a recognizable stale
    claim is cheaper than a silent one.
 4. Same commit. Not a follow-up.
+
+### 12.1 What the 2026-08-05 reconciliation changed, by file
+
+The lane that created this file also corrected the surfaces that had gone stale. Recorded
+here so a future reader can tell "already reconciled" from "never checked."
+
+| File | Commit | What changed |
+|---|---|---|
+| `docs/PRODUCT-TRUTH.md` (new) | `96fa6701` | this file |
+| `research/darklanes-website-spec-20260804/SPEC.md` | `a47b07fa` | claim-by-claim corrections, §2a wording rules, §5A lab-name brief, §7.0 two-surface split + content mapping, §16 CHANGELOG for the build-agent |
+| `.../EVIDENCE-REPO.md`, `.../BLOG-EVIDENCE.md` | `881ccf31` | rig labels, N values, pre-fix labels, refuted-explanation warnings, honest counterweights per post |
+| `CLAUDE.md` | `e9b2c2d0` | the product-claims rule (this file is the only source; same-commit obligation) |
+| `README.md`, `docs/SERVING.md`, `docs/RELEASING.md` | `dbe12cb3` | exactness/isolation wording scoped, FP8 rig-labeled, constrained 99.4% scoped to the plain lane, serve-gap + cold-TTFT gaps added, 5/9-crates publish history |
+| `docs/PERFORMANCE.md`, `tools/update-perf-board.py` | `8628bbc2` | llama-freeze + rig-label banners, "Standing" refreshed, spine heading retitled, serve-gap section, generated footers carry the frozen-reference sentence |
+| lab-name genericization (11 hits) + 5090-target rescope (6 files) | `6c2a7e73` | see the commit body |
+
+Not touched by design: `research/hw-growth-rethink-20260803/ASSESSMENT.md` and
+`research/hw-buy-20260802/REPORT.md` keep their pre-override recommendations (append-only
+records — §3 explains how to read them), and every `PERF-*` marker block stays generated.
