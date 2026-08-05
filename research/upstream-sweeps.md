@@ -113,3 +113,181 @@ _flags doctrine; parity items get a one-line note; the jsonl is the record._
 
 _Review protocol: anything testable gets ported behind a seam + A/B'd per the_
 _flags doctrine; parity items get a one-line note; the jsonl is the record._
+
+## Sweep 2026-08-03T21:57:39Z (since 2026-07-27T06:17:01Z)
+
+### llama.cpp commits (decode-relevant, CUDA)
+- add rdna3.5, and 3 to mmq configs so they can be tuned independently. (#26199)
+- chat : add qwen3 specialized parser (#26252)
+- conversion: fix Qwen2.5-Omni mmproj conversion regression (#26262)
+- CUDA: Add backend sampler for penalties sampler (#25262)
+- CUDA: add Q2_0 support (#25707)
+- cuda: extract Q2_0 elements via __byte_perm (#25603)
+- CUDA: Fix data-races when reusing SMEM in block_reduce (#26385)
+- DeepseekV4 MTP + DSpark (#25784)
+- ggml-cuda: add chunked SSD matmul for Mamba-2 prefill acceleration (#22675)
+- ggml-cuda: Allow transpose-free gemmv computation (#26171)
+- ggml-cuda : disable MMQ on devices with less than 48 KiB shared memory (#26141)
+- ggml: use dynamic allocation for split graph inputs (#22789)
+- graph : fix unused input tensors in minimax m3 graph (#26519)
+- model: MTP support for Qwen3-Next (#25589)
+- model : support MTP in GLM-4.7-Flash (#24868)
+- Remove custom cpu op from the M3 graph, express with stock ops (#26297)
+- Support rotated kv cache quant (#26180)
+
+### vllm-project/vllm releases
+- (none)
+
+### sgl-project/sglang releases
+- (none)
+
+_Review protocol: anything testable gets ported behind a seam + A/B'd per the_
+_flags doctrine; parity items get a one-line note; the jsonl is the record._
+
+## Sweep 2026-08-05T12:20:53Z (since 2026-08-03T21:57:39Z)
+
+_Frame: self-competition (llama benching stopped 2026-08-03); upstreams are idea mines._
+_Filter: sm_120/Blackwell, FP8/FP4 (FP8-ST program = priority 1), MTP/spec-decode_
+_(MTP-p2 lane), chunked-prefill determinism (open chunk-order reduction-stability_
+_finding), session/prefix affinity, batch-invariance._
+
+### llama.cpp commits (decode-relevant, CUDA)
+- #26605 — fit: include NextN/MTP layers in auto VRAM fitting (alloc crash with
+  `--n-cpu-moe=0`). CARE: MTP-p2 must account for draft-layer VRAM in memra's budget
+  fitting; check our accounting before the lane merges. lever-queue: no (checklist item).
+- #26389 — server: spec-decode counters on /metrics, incl. per-draft-position accepted
+  counter (vLLM schema). CARE: dogfood found short-ctx sampled acceptance 0.55 vs 0.73 —
+  per-position acceptance telemetry in memra-serve /metrics turns that from a posthoc dig
+  into a live gauge. lever-queue: YES (serve, small).
+- #26510 — speculative: refactor common_speculative_init config dedup. SKIP: code hygiene only.
+- #26524 — samplers: drop "full-context window" from history-based penalizers (backend
+  sampler init-order constraint). SKIP for the mechanism; NOTE: llama continues moving
+  samplers GPU-side (#25262 family) — same direction as our lsampler.
+- #26531/#26577 — loader: allow tensor reshape during load + dflash wo_a fix. SKIP: loader flexibility.
+- #7bd8282c3 #26510 / #26618 / #26254 / mtmd batch — SKIP: conversion, TTS, multimodal.
+- PR #24364 (OPEN, updated 2026-08-05) — force NVFP4 W4A8 path for W4A16_NVFP4 layers on
+  Blackwell via new `GGML_HINT_NO_QUANT_SRC1` hint (GGUF metadata-driven, mul_mat +
+  mul_mat_id); measured quality gain vs native W4A4, cites W4A4-hard-for-small-LLMs.
+  CARE: converges exactly with FP8-ST — FP4 weights x FP8 activations as the
+  quality-safe alternative to W4A4; bears directly on nvfp4-strict lane arm design.
+  lever-queue: YES (priority — track the PR, steal the W4A8 framing).
+
+### vllm-project/vllm commits
+- #40372 (merged) — batch-invariant NVFP4 MoE via cutlass: invariance pinned with static
+  asserts in the .cu + a dedicated bs1-vs-bsN test so nobody breaks it silently. CARE:
+  the *pattern* — treat batch-invariance as a gated property with asserts + tests, not a
+  posthoc observation. Adopt for memra's chunk-order stability work. lever-queue: YES.
+- #38561 (closed for rebase, not rejected) — batch-invariant chunked prefill for
+  mamba/hybrid: force chunk splits ONLY at mamba chunk boundaries + align prefix-cache
+  entries to the same grain. CARE: DIRECT hit on our open chunk-order
+  reduction-stability finding — vLLM independently hit reduction-order instability
+  across chunk sizes and fixed it by constraining split points to a fixed grain.
+  lever-queue: YES (top candidate).
+- #45683 (open) — deterministic MoE combine under VLLM_BATCH_INVARIANT: fixed-root
+  reduce+scatter instead of routing-dependent reduce_scatterv. CARE: more evidence
+  reduction-order instability is a live upstream problem (cross-rank flavor); memra is
+  single-GPU so the fix itself is N/A. lever-queue: no (evidence note).
+- #50992 — KV-offload ARC batch eviction was quadratic (rescan from head per evicted
+  block); monotonic iterators + deferred mutations = 16-81x on eviction batches. CARE:
+  dogfood found F5 evict-realloc on 12/12 requests — audit memra's host-cache/SLRU
+  eviction for the same rescan shape while fixing F5. lever-queue: YES (pairs with F5).
+- #48048 — first-class request-level `session_id` (HTTP X-Session-ID + engine plumbing),
+  explicitly built for KV/prefix affinity consumers. CARE: session/prefix affinity for
+  memra-serve (owner dogfoods multi-turn agentic); a session key is the cheap
+  prerequisite for prefix-cache pinning. lever-queue: YES (serve, medium).
+- #49969 — DSpark top-k Markov projection: select top-k from base logits once, apply the
+  sequential per-step draft bias only to those candidates, scatter into dense row,
+  sampling path unchanged. CARE: draft-cost pattern for MTP-p2 — restrict per-step
+  draft-side correction to a candidate set instead of full vocab. lever-queue: YES.
+- #50911 — fused non-causal TokenSpeed MLA for DSpark verify. SKIP: MLA-specific.
+- #49792 — SM100 CuTeDSL fused query kernel (DSA fused_q). SKIP: model/arch-specific.
+- #48861 — NVFP4 quant out_dtype must match model dtype, not torch default. SKIP: their-stack bug.
+- #50323 — CI: fail evals when NaNs appear in logits. NOTE: cheap evidence-discipline
+  gate, matches our battery philosophy. lever-queue: no.
+
+### sgl-project/sglang commits
+- #33063 — trtllm_mha decode: stop allocating per-layer scratch inside the decode CUDA
+  graph — 3 fill launches/layer baked into every replay, AND they sat between PDL-linked
+  kernels so the PDL dependent-launch chain signalled a FillFunctor instead of the real
+  consumer. CARE: memra graph-decode + PDL on sm_120 — audit capture for allocs/fills
+  inside the graph and for PDL chain breakage. lever-queue: YES (top candidate).
+- #33306 — avoid TRTLLM prefill output copy: kernel writes directly into the
+  preallocated piecewise-graph output buffer via `out=`. CARE: same audit for memra
+  prefill outputs — any epilogue copy into a graph buffer is free meat. lever-queue: yes (small).
+- #32575 — build empty-prefix last_loc sentinel on-device: inline `torch.tensor([-1])`
+  per fresh request = pageable H2D + stream sync draining the in-flight forward. CARE:
+  audit memra-serve batch-prep for host-materialized scalars/masks; the F5/prime-chunk
+  work touches exactly this region. lever-queue: yes (audit item).
+- #33545 — optimistic prefill with L2 hierarchical cache + write-back. NOTE: prefix-cache
+  tiering direction; memra single-box, low priority. lever-queue: no.
+- #16072-adjacent SGLang #33427/#33598 — post-capture KV sizing + clearer reservation
+  logs. SKIP: parity, memra sizes before capture.
+- #30206 (merged this window) — capture legal multi-request prefill CUDA graph batches.
+  SKIP: their piecewise-prefill bug.
+- #81c7a54ec — sm_100f (family) instead of sm_100a for sgl-kernel. NOTE: family-arch
+  flag now load-bearing upstream; memra stays sm_120a per doctrine. SKIP.
+
+### flashinfer-ai/flashinfer commits
+- #4210 — remove NVFP4 TMA input padding copy: TMA tensor map describes physical M rows,
+  G2S TMA out-of-bounds zero-fill covers padded scale-layout tiles — kills the
+  non-128-aligned-M copy cliff (212µs -> 59µs at M~32k, B200). CARE: FP8-ST/NVFP4
+  prefill activation-quant path + the prime-chunk/prefill wall — odd-M chunks are
+  exactly where padded staging copies bite; the OOB-zero-fill trick is HW-portable to
+  sm_120 TMA. lever-queue: YES (top candidate).
+- #4263 — 64-bit row addressing in per-token NVFP4 quantizer (int32 overflow at large
+  M*K). CARE: one-line audit of memra quantizer index math at 27B prefill shapes. lever-queue: audit.
+- #3523 — sm120 groupwise GEMM called cudaGetDeviceProperties (~1.7ms, synchronous) per
+  invocation with dead results. CARE: grep memra host launch paths for per-call device
+  queries. lever-queue: audit.
+- #4202 — fp8 e5m2 output in rmsnorm_quant / fused_add_rmsnorm_quant. NOTE: fused
+  norm->FP8-quant epilogue is the FP8-ST activation-side lever; they now cover both
+  e4m3/e5m2. lever-queue: yes (FP8-ST reference impl).
+- cake_kda / delta-rule / MxInt4 MoE family — SKIP: model- or SM100-specific.
+
+### NVIDIA/TensorRT-LLM commits
+- #17234 — opt-in pinned staging for weight-load H2D: pageable H2D degrades to a ~260µs
+  per-work-item driver polling crawl on GB300 (36min-4h loads). PARITY: memra spill
+  doctrine already mandates bounded pinned host buffers — this is the receipt for why.
+  lever-queue: no (doctrine confirmed).
+- #16072 — pre-allocate CUDA-graph padding dummies during warmup; lazy alloc under KV
+  saturation silently dropped graph coverage for the process lifetime. CARE: verify
+  memra graph-decode preallocates padding resources at warmup, and that a failed graph
+  path is loud, not a silent eager fallback. lever-queue: yes (gate item).
+- #17159 — reject NaN top_p/min_p/temperature in SamplingParams. CARE: fold NaN
+  validation into the lsampler top_p/min_p truncation bugfix already queued from
+  dogfood. lever-queue: yes (rides the existing fix).
+- #17172 — per-request seed in TorchSampler. PARITY: memra sampled-regime gates already
+  seeded. SKIP.
+- #16957 — TriAttention KV-cache compression (training-free decode-time eviction, ICML
+  2026): score evictable region every beta tokens, keep budget, compact in place. NOTE:
+  research file for long-context serve; quality-affecting, not a near lever. lever-queue: no.
+- #17106 — enable KV block reuse for flashinfer backend. SKIP: parity.
+- #16558 — DSA indexer k-cache only for owning layers. SKIP: model-specific.
+
+### Ranked shortlist (lever candidates, with receipts)
+1. **Chunk-boundary-pinned prefill invariance** (vLLM #38561 + #45683 + #40372): two
+   independent vLLM lanes hit reduction-order instability (chunked prefill across chunk
+   sizes; MoE combine across routing) and both fixes are the same shape — constrain the
+   reduction segmentation to a fixed grain, then pin the property with static asserts +
+   a bs/chunk-invariance test. Direct answer to our open chunk-order
+   reduction-stability finding: align memra chunk split points to a fixed grain and add
+   the invariance gate to the battery.
+2. **Decode-graph scratch + PDL-chain audit** (SGLang #33063 + TRT-LLM #16072): fill
+   kernels allocated inside graph capture replay forever AND break PDL dependent-launch
+   chains; padding dummies allocated lazily silently kill graph coverage under load.
+   memra runs graph-decode + PDL on sm_120 — one afternoon audit, high odds of found
+   money on the felt decode path (the dogfood deficit).
+3. **TMA OOB-zero-fill for odd-M prefill quant** (FlashInfer #4210): 3.6x on
+   non-128-aligned M by deleting the padded staging copy and letting G2S TMA zero-fill.
+   Priority-1 filter match (FP8/FP4 prefill); attacks the prime-chunk/prefill wall
+   named in the dogfood head-to-head.
+4. **W4A8 as the quality-safe NVFP4 activation path** (llama.cpp PR #24364, open): FP4
+   weights x FP8 activations beats native W4A4 on quality with receipts; converges with
+   FP8-ST (we already have e4m3 activation kernels) and reframes an nvfp4-strict arm.
+5. **Spec-decode acceptance telemetry + draft-cost top-k** (llama.cpp #26389 + vLLM
+   #49969): per-position acceptance counters on /metrics make the 0.55-vs-0.73 short-ctx
+   acceptance finding a live gauge; DSpark's restrict-draft-correction-to-top-k pattern
+   is portable to MTP-p2's per-step draft cost.
+
+_Review protocol: anything testable gets ported behind a seam + A/B'd per the_
+_flags doctrine; parity items get a one-line note; the jsonl is the record._
