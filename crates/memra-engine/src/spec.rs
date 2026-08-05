@@ -4046,10 +4046,26 @@ impl HybridModel {
                     if perturb_buf.is_none() {
                         perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?);
                     }
-                    // stats for the last used col: reuse col_stats when it covers it, else compute.
-                    let (mx, th, _z) = if !col_stats.is_empty() {
-                        *col_stats.last().unwrap()
-                    } else {
+                    // STATS MUST COME FROM THIS COLUMN (bug fix 2026-08-05, lane/sampler-
+                    // truncation-fix; receipts research/sampfix-20260805/). The old code reused
+                    // `col_stats.last()` here, which is ALWAYS the wrong row: the gathered set
+                    // covers verify columns 0..=(base+k_round-2) (rows pushed as base+j-1), while
+                    // the full-accept bonus samples column base+k_round-1 — exactly ONE PAST the
+                    // last gathered column, in both base arms. `th` is a threshold in e-units of
+                    // its OWN row's max, so feeding a neighbour's (row_max, th) into
+                    // gumbel_perturb_filtered mis-scales every e0 = exp((x-row_max)/T). When the
+                    // donor column's peak is higher by more than T*ln(1/th), EVERY id fails
+                    // `e0 >= th`, the whole perturbed row becomes -3.4e38, and the 2-pass argmax
+                    // falls through to its smallest-index tie-break => token id 0 ("!") spliced
+                    // mid-word. Fragility is ordered by how large th is: min_p pins th = min_p
+                    // (0.05 => trigger at delta > 2.4 at T=0.8, fires constantly), top_p's
+                    // mass-boundary th is smaller, top_k's k-th-largest th smaller still — which
+                    // is why the head-to-head matrix saw min_p and top_p corrupt while top_k-only
+                    // stayed clean. The pure-temp default regime is immune (th == 0 masks nothing,
+                    // and row_max is unused once nothing is masked), so this fix is a byte-level
+                    // no-op for the untruncated serve default. One extra one-block filter_stats
+                    // per full-accept round is the whole cost.
+                    let (mx, th) = {
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
                         let cb0 = col_buf.as_ref().unwrap();
@@ -4057,7 +4073,7 @@ impl HybridModel {
                             cb0, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d, n_vocab, 1,
                             sp_temp, sp.top_k, sp.top_p, sp.min_p,
                         )?;
-                        (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0])
+                        (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0])
                     };
                     let pb = perturb_buf.as_mut().unwrap();
                     let cb2 = col_buf.as_ref().unwrap();
