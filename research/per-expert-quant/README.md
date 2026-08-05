@@ -7,7 +7,7 @@ research measurement, calibration, and public evaluation happen on the provision
 The local RTX 5090 rig remains this lane's default-flip gate: runtime defaults are not flipped until
 the completed code and artifacts pass the same correctness, memory, and throughput gates there.
 (The *deployment* target moved — owner override 2026-08-03 makes RTX PRO 6000 Blackwell class the
-owned trajectory and the local 5090 Laptop a proof rig; see `docs/PRODUCT-TRUTH.md` §3.)
+owned trajectory and the local 5090 Laptop a proof rig; see `docs/PERFORMANCE.md` §Rigs.)
 
 Mmap remains the default and correctness fallback, not the throughput endpoint. The cold G7e result
 and bounded explicit-read promotion probe are recorded in

@@ -46,7 +46,7 @@ the other, and report spill performance separately from model-quality comparison
   evidence, not a default-flip decision, and re-run correctness, memory, and throughput gates on
   the 5090 before shipping any runtime default. (Note the *deployment* target moved — owner
   override 2026-08-03 makes RTX PRO 6000 Blackwell class the owned trajectory, and the local
-  5090 Laptop is a proof rig, not the final performance target. See `docs/PRODUCT-TRUTH.md` §3.)
+  5090 Laptop is a proof rig, not the final performance target. See `docs/PERFORMANCE.md` §Rigs.)
 - GGUF remains memra's primary runtime and delivery format. Hy3 safetensors are a pinned source for
   this quantization study, and per-expert repack directories are experimental artifacts, not a
   format pivot. Put spill/cache improvements in shared paths and preserve GGUF gates and behavior.
@@ -99,32 +99,11 @@ This does not cover the GitHub repo social-preview image (the OG thumbnail used 
 shares) — GitHub has no API for that field, it's a manual upload in Settings → Social preview,
 and isn't worth automating at this update cadence.
 
-## Product claims: `docs/PRODUCT-TRUTH.md` is the only source
+## Product docs are out of scope here
 
-Anything **product-facing** — website copy, landing pages, pricing, blog posts,
-gateway/marketplace applications (OpenRouter, HF Inference Providers), README marketing prose,
-social posts, partner material — is written from `docs/PRODUCT-TRUTH.md`, **never** from a
-`research/<lane>/` directory. Research dirs are append-only lab records: each is correct as of
-its own date and goes stale silently. PRODUCT-TRUTH is the reconciled view, and every number
-in it carries its receipt path, date, rig label, and protocol caveat.
-
-Rule, same shape as the perf-board rule above: **any commit that moves a product-facing number,
-target, capability, or gap MUST update `docs/PRODUCT-TRUTH.md` in the same commit.** Not a
-follow-up. If a claim became false, move it to the correction ledger (§10) rather than deleting
-it — a recognizable stale claim is cheaper than a silently vanished one. If a claim is not in
-that file, it is not cleared for publication: add it there first, with its receipt.
-
-Why this exists: it already failed once. On 2026-08-05 a website build-agent followed the
-product docs, which had been written from research dirs four days earlier, and built the wrong
-product — wrong throughput numbers, wrong target platform, claims scoped wider than their gates.
-The failure was staleness, not overclaim, and no single lane was at fault; that is precisely why
-the fix has to be a reconciled file plus a same-commit rule rather than more care.
-
-Three claim classes that burned us and stay pinned in that file: performance numbers need their
-**rig label** (the same cell is 5-12% different on another board, and no PRO 6000 is owned —
-they are rented pods), determinism claims need their **object** (serve-vs-serve at c=1 vs c=16,
-not identity against a tokenwise oracle), and the honest-gaps section is **required content on
-any surface that publishes the wins**.
+Product, business, and go-to-market docs live in the private product repo
+(`~/projects/darklanes`), where every product decision is recorded. This repo documents the
+engine only.
 
 ## Correctness discipline
 

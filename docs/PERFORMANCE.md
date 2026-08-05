@@ -31,13 +31,105 @@ competitor denominator).
 > labeled a dogfood diagnostic, not board material). memra makes **no interactive-latency
 > superiority claim** while that stands.
 
-> **Rig labels are load-bearing.** The tracked boards here are two rigs only: an **RTX 5090
+> **Rig labels are load-bearing.** The *tracked boards* here are two rigs only: an **RTX 5090
 > Laptop** (82 SM — the local rig, and the only owned GPU) and **rented H100 80 GB pods**.
-> RTX PRO 6000 Blackwell Workstation numbers (188 SM, rented pods) are *not* in these
-> boards — they live in [`docs/PRODUCT-TRUTH.md`](PRODUCT-TRUTH.md) §2.1 with their own rig
-> label, and mixing them with a 5090 cell is a 2x-class error. Anything product-facing
-> (site copy, pricing, gateway applications, posts) is written from PRODUCT-TRUTH, not from
-> this document or a `research/` dir.
+> RTX PRO 6000 Blackwell Workstation cells (188 SM, rented pods) are deliberately *not* in
+> those boards — they have their own section below, with their own rig label, because mixing
+> a 188-SM cell with an 82-SM cell is a 2x-class error. The registry of every rig that
+> produced a number in this repo is [Rigs](#rigs--what-was-measured-on-what) directly below.
+
+## Rigs — what was measured on what
+
+Every number in this repo belongs to exactly one of these. A cell moved to another rig is a
+different number, not the same number re-measured: the same kernel is 5-12% apart between the
+two PRO 6000 pod classes and roughly 2x apart between a 188-SM and an 82-SM board.
+
+| Rig label | Hardware | Owned? | What it produces |
+|---|---|---|---|
+| **RTX 5090 Laptop** | GB203, 82 SM, 858 GB/s, local | **The only owned GPU** | The tracked 5090 board; the default-flip gate — no runtime default ships without re-running correctness/memory/throughput here |
+| `pro6000wk-runpod` | RTX PRO 6000 Blackwell Workstation 96 GB, 188 SM, 600 W, clocks pinned 2865 MHz, zero throttle | Rented pod | The 27B serving cells below |
+| `pro6000wk-runpod-community` | Same SKU, community-tier pod | Rented pod | Dev/iteration. Runs **5-11% slower** than the prod pod — never quote a community absolute next to a prod absolute; use relative deltas within one pod |
+| `rig2x5090-serve` | vast.ai 2x RTX 5090 32 GB (single card used) | Rented | The official-FP8 checkpoint lane. Also the multi-card measurement platform and the small-SKU serving-shape reference |
+| rented H100 80 GB | 8x / 3x / 1x HBM3 pods | Rented | The H100 board, the replica fleet, QoS lanes, endurance |
+| AWS G7e | PRO 6000 Server Edition | Rented | Hy3 spill / quantization research (`docs/HY3-SPILL.md`) |
+
+**No datacenter or desktop card is owned.** Any sentence about running on a PRO 6000 needs
+the word "rented" or "pod" in it. The owned build-out targets that same silicon class
+(owner override 2026-08-03, RTX PRO 6000 Blackwell class homogeneous rather than 2x5090 —
+`research/hw-growth-rethink-20260803/ASSESSMENT.md` §"OWNER OVERRIDE"); nothing is purchased,
+so *"measured on RTX PRO 6000 Blackwell (rented pod)"* is the only accurate present tense.
+The local 5090 Laptop is the **measuring and gating rig**, not the final performance target;
+2x5090 is dead as an owned purchase but alive and load-bearing as a rental platform. Two
+hardware studies (`research/hw-growth-rethink-20260803/`, `research/hw-buy-20260802/`) still
+carry their pre-override 2x5090 first-box recommendation un-struck, by design — a research
+dir records what was recommended on its date. Do not read a first-box recommendation out of
+either file.
+
+## The 27B serving board (RTX PRO 6000, rented pod)
+
+Rig `pro6000wk-runpod`, date **2026-08-04**, commit `2299ee0f`, temp max 43 C, zero throttle.
+Two artifacts, both Qwen3.6-27B, interleaved in one session: **nv** =
+`Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf` (15.7 GB), **q8** = `Qwen3.6-27B-Q8_0.gguf` (28.6 GB).
+Receipts: [`research/pro6000-prod-20260804/`](../research/pro6000-prod-20260804/), journal
+`pro6000wk-runpod.jsonl`.
+
+| Cell | Value | Protocol |
+|---|---|---|
+| Spec decode (MTP) K=3, nv, **bare CLI** | **186.7 tok/s** | N=5 process reps, median. 2.17x the same-run plain 86.20 |
+| Spec decode K=3, nv, **through the serve surface** at c=1 | **170.5 tok/s** | N=5 median, server restarted per K, 0 err / 0 shed |
+| Plain decode tg128, nv / q8 | 86.8 / 52.6 tok/s | N=5 medians |
+| Aggregate at c=8, nv / q8 | **420.6** / 308.7 tok/s | N=3 passes, median; p50 2.42 s, 64 ok / 0 shed / 0 err per pass. Spec off, plain batched serve |
+| TTFT cold, nv / q8 | **0.182** / 0.156 s | N=5 with per-rep `cache_salt`; median of reps 2-5, rep 1 excluded as one-time session warmup |
+| TTFT warm (prefix hit), nv / q8 | 0.003 / 0.004 s | reps 2-5; 61x the cold number |
+| Prefill pp512, nv / q8 | 4118 / 4591 tok/s | N=5, arms interleaved within every rep |
+| Q8 96 GB residency lever | +57% agg at c=16/32 (486 vs 310 tok/s, p50 6.61 → 4.21 s), 63.7 GB resident | `q8rp/` |
+
+Caveats that travel with these cells:
+
+- **c=8 is the knee; saturation is not a win.** c8 420.6 → c16 421.9 → c32 423.0 is flat
+  *while p50 doubles at every step* (2.43 → 4.84 → 9.67 s). The journal's own word for
+  c16/c32 is "queueing, not throughput." c=32 is not a throughput ceiling.
+- **The TTFT protocol trap.** An unsalted repeat request hits the prefix cache, so a TTFT
+  number measured without a fresh `cache_salt` is a warm number wearing a cold label. Cold
+  and warm are always stated separately.
+- **4118 and 4591 are two different artifacts**, not two configs of one.
+- **Never present a single rep as the headline.** 170.6188 is the r4 rep; the N=5 median is
+  170.55. 421.18 is the p1 pass; the N=3 median is 420.57.
+
+Gate battery on that rig: `kernel-check` **ALL GREEN** naked (184 `OK`) and model-backed on
+real 27B weights (263 `OK`); `run-gen` argmax **MATCH** both artifacts; `run-spec`
+self-consistency **PASS** at K=1,2,3. **Do not say "K=1..8" about this rig** — the prod board
+ran K=1..3 as a gate plus K=4/5 as perf cells. The full K=1..8 PASS battery lives on the
+community board, on the NVFP4-MTP artifact
+(`research/q27-deepdive-20260805/logs/gate-key48-runspec-K1to8.log`); Q8_0 cannot run it at
+all (no MTP head, `RUNSPEC-Q8 rc=2`). The accurate form is "K=1..8 self-consistency is a
+standing gate, run on the MTP-capable artifact."
+
+### Official FP8 checkpoint — the 2.6x spec cell (a different rig)
+
+Rig `rig2x5090-serve`, date **2026-08-04**, CUDA 13.0.1 / nvcc 13.0.88. Model: the official
+`Qwen/Qwen3.6-27B-FP8` safetensors checkpoint (29 GB, e4m3, `weight_block_size [128,128]`,
+407 block-128 scale grids). Receipts:
+[`research/fp8ship-20260804/official/`](../research/fp8ship-20260804/official/).
+
+| Arm | tok/s | vs plain |
+|---|---|---|
+| ST plain | 48.99 | — |
+| **ST spec, the checkpoint's own embedded MTP head** | **128.06** | **2.61x** |
+| ST spec + own-trim drafter | 136.75 | 2.79x |
+| ST e4m3 resident | 48.99 | flat *by construction* |
+
+N=5 medians per arm, SSE `/v1/chat/completions`, greedy, max_tokens 128, pp512-class prompt,
+fresh `cache_salt` per request with `cached_tokens=0` verified every rep, arms sequential in
+one session, 32-44 C. Bit-identity on the official artifact: argmax 365==365, maxdiff 0.0 x3,
+prefill logit vectors **bit-identical 993280/993280 bytes**. Load wall 843.9 → 291.6 s =
+**2.89x** (N=3 interleaved).
+
+The e4m3 arm is flat *because* every tensor on this checkpoint is block-128 and falls through
+to the Q8_0 path — the win here is load time, not tok/s. Spec **triples TTFT** on this arm
+(0.170 → 0.466 s). The GGUF Q8_0 reference row (53.63) is cross-protocol and cross-day, not
+apples-to-apples. **There is no official-FP8 measurement on any PRO 6000** — do not merge the
+two boards.
 
 ## Standing (2026-08-05)
 

@@ -2,7 +2,7 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on memra next (bw24 in sections dated before the 2026-08-01 public rename). Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly. Sections below the newest CURRENT STATE block are dated history — the H100 lane's authoritative running ledger is [ARCHITECTURE-H100.md](ARCHITECTURE-H100.md)._
 
-> **Do not write product-facing copy from this file.** It is an append-only work log: every dated section is true as of its own date and goes stale silently (the dated 2026-07-03 line "target rig RTX 5090 Laptop" at the bottom of the history is the canonical example — the 5090 Laptop is still the measuring and gating rig, but the *deployment* target moved to RTX PRO 6000 Blackwell class on 2026-08-03). The reconciled, publishable view of numbers, targets, capabilities, and gaps is [docs/PRODUCT-TRUTH.md](docs/PRODUCT-TRUTH.md).
+> **Do not quote this file as current.** It is an append-only work log: every dated section is true as of its own date and goes stale silently (the dated 2026-07-03 line "target rig RTX 5090 Laptop" at the bottom of the history is the canonical example — the 5090 Laptop is still the measuring and gating rig, but the *deployment* target moved to RTX PRO 6000 Blackwell class on 2026-08-03). For current numbers with their rig labels, read [docs/PERFORMANCE.md](docs/PERFORMANCE.md); for the serve contract and its stated gaps, [docs/SERVING.md](docs/SERVING.md).
 
 ## CURRENT STATE (2026-08-04, v0.69.0)
 

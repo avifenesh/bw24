@@ -6,10 +6,11 @@ rate-limit headers, graceful drain), safetensors/FP8 checkpoint serving, cross-r
 prompt caching with per-tenant `cache_salt` isolation, and the honestly-stated numeric
 edges of batched serving.
 
-> Numbers here are engineering receipts, each labeled with its rig. Publishing any of them
-> (site copy, pricing, gateway applications, posts) goes through
-> [docs/PRODUCT-TRUTH.md](PRODUCT-TRUTH.md) — the reconciled product view, which also
-> carries the honest-gaps section that must ship alongside any win.
+> Numbers here are engineering receipts, each labeled with its rig — see
+> [Rigs](PERFORMANCE.md#rigs--what-was-measured-on-what) for what each label is. A number
+> without its rig label is not a number: the same cell moves 5-12% between two pods of the
+> same SKU and ~2x between a 188-SM and an 82-SM board. The open gaps stated below travel
+> with the wins.
 
 memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
 placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
@@ -503,3 +504,38 @@ pp512 probe greedy-emits `"\n"` + EOS at 2 tokens where the tokenwise stream wri
 within contract, but real. `MEMRA_PRIME_TOKENWISE=1` pins the oracle stream at prefill
 cost; the run-gen `batched-prime` gate line + the `prime-gate` battery bound the class
 (structured divergence fails hard, near-tie flips are reported).
+
+### Chunked prefill is not reduction-order-stable (2026-08-05)
+
+A sharper statement of the same class, found while building serve-smoke check 10:
+**changing only the prefill chunk split changes greedy output.** Arms were the same four
+recorded prompts with a per-turn `cache_salt` (so nothing resumes — every request primes
+cold), `MEMRA_AFFINITY=0`, varying only `MEMRA_PRIME_CHUNK`:
+
+| prompt tokens | 2048 vs 64 | 2048 vs 32 |
+|---|---|---|
+| 48 | identical | identical |
+| 97 | identical | **differs @ char 45** |
+| 149 | **differs @ char 172** | **differs @ char 52** |
+| 195 | identical | identical |
+
+A different split changes the reduction order in the prefill GEMMs, perturbs logits in the
+last bits, and flips a near-tie argmax — no reuse required, and 149 tokens is far too short
+for a long-window explanation. Every resume tier inherits this by construction: a resume
+primes `[rewind boundary .. end]` as its own chunk sequence rather than one full prime.
+
+Two consequences with teeth:
+
+1. **No gate anywhere in the repo may assert byte-equality between two prefills of the same
+   prompt at different chunk boundaries.** serve-smoke check 10 deliberately does not assert
+   resumed == cold; it asserts what session affinity actually owns (determinism of the resume
+   path across servers, plus liveness). Wiring the naive assertion would have planted a
+   permanently-red gate and blamed affinity for the prefill's reduction order.
+2. `MEMRA_PRIME_CHUNK` is a documented machine-config knob, so **two rigs with different
+   values already produce different greedy text on the same prompt.** Any exactness statement
+   is scoped to one configuration.
+
+Whether to make chunked prefill reduction-order-stable (a fixed accumulation order
+independent of the split) is open, and is not the affinity lane's item. Reproducer + raw rows:
+`research/session-affinity-20260805/chunk-order-probe.py` and `chunk-order.jsonl` (12 rows =
+3 chunk sizes x 4 prompts, each with its text; under two minutes on the 9B).

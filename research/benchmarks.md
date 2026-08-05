@@ -13,8 +13,9 @@
 > longer "q27 on 2x desktop 5090": the 2026-08-03 owner override makes **RTX PRO 6000
 > Blackwell class, homogeneous** the owned trajectory, and 2x5090 survives only as a
 > **rented measurement platform** and small-SKU shape reference. First-SKU prod numbers are
-> measured on rented PRO 6000 pods and live in `docs/PRODUCT-TRUTH.md` §2.1/§3 — never mix
-> them with a 5090 cell (188 SM vs 82 SM). Self-competition still means "beat our own
+> measured on rented PRO 6000 pods and live in `docs/PERFORMANCE.md` under "The 27B serving
+> board" with the rig registry above it — never mix them with a 5090 cell (188 SM vs 82 SM).
+> Self-competition still means "beat our own
 > numbers"; just not on the card this title names.
 
 Goal (user): beat **vLLM + SGLang + llama.cpp** on **prefill, decode, AND overall**.

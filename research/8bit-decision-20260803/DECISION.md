@@ -7,12 +7,12 @@ desktop RTX 5090 (sm_120a, 32 GB + 1.79 TB/s GDDR7 per card).
 
 > **Superseded target, 2026-08-03 (same day, later): the owned deployment trajectory is RTX
 > PRO 6000 Blackwell class, homogeneous — 2x desktop 5090 was rejected as a purchase on
-> scaling-continuity grounds** (`docs/PRODUCT-TRUTH.md` §3). 2x5090 remains the *rented*
+> scaling-continuity grounds** (`docs/PERFORMANCE.md` §Rigs). 2x5090 remains the *rented*
 > measurement platform, so the shape arithmetic below still applies to that rental; read
 > "the deployment target" here as "the 2x5090 measurement shape". The format verdict itself
-> (which 8-bit) is unaffected by the card choice. Also note the open conflict recorded in
-> PRODUCT-TRUTH §4: this document's "Q8_0 serves now" bridge vs the owner's FP8-ST-before-
-> 3.8-day-one direction — which format ships day one is an open owner call.
+> (which 8-bit) is unaffected by the card choice. Also note the open conflict: this
+> document's "Q8_0 serves now" bridge vs the owner's FP8-ST-before-3.8-day-one direction —
+> which format ships day one is an open owner call, not settled here.
 
 Repo-evidence + literature only — NO GPU runs in this lane
 (rigs busy). Every number carries a file:line or URL; missing data is named as a measurement,
