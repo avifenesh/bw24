@@ -22,8 +22,15 @@
 # beyond the pinned one. Run with --expect-invariant to gate the MEMRA_PRIME_INVARIANT=1
 # door, which is where byte-identity is the claim.
 #
-# TEETH: --canary flips the expectation and requires the OPPOSITE verdict, so the gate is
-# verified able to fail. CI runs both directions.
+# TEETH: --canary INJECTS A BREAK (it does not merely relabel the expectation) and requires
+# the gate's assertion to FAIL, proving the gate can fail. Under --expect-variant the canary
+# turns the invariance door ON — a rig with the door on is chunk-INVARIANT, so the
+# expect-variant assertion must break. Under --expect-invariant the canary turns the door OFF.
+# NOTE (trap, hit twice on this lane): a canary that flips only the EXPECTED label re-runs the
+# identical configuration, so it passes exactly when the default gate passes and fails exactly
+# when it fails — perfectly correlated, therefore worthless as a teeth check. The canary must
+# change the WORLD, not the label. (Earlier vacuous shape: a single --chunks value, which has
+# nothing to compare and always reported CHUNK-INVARIANT.)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 PROBE=./target/release/concat-prime-probe
@@ -56,8 +63,14 @@ for p in $PROMPTS; do
 done
 
 LOG=$(mktemp /tmp/chunkinv-gate-XXXXXX.log)
+# The assertion under test is always EXPECT. The canary does not change the assertion — it
+# changes the WORLD (door on/off), so a working gate must report FAIL on the canary run.
+WANT="$EXPECT"
+DOOR=off
+[ "$WANT" = invariant ] && DOOR=on
+[ "$CANARY" = 1 ] && { [ "$DOOR" = on ] && DOOR=off || DOOR=on; }
 ENVX=()
-[ "$EXPECT" = invariant ] && ENVX=(MEMRA_PRIME_INVARIANT=1 MEMRA_PRIME_GRAIN=32)
+[ "$DOOR" = on ] && ENVX=(MEMRA_PRIME_INVARIANT=1 MEMRA_PRIME_GRAIN=32)
 
 rc_all=0
 saw_variant=0
@@ -74,23 +87,34 @@ if grep -q "chunkinv verdict: \*\*\* CHUNK-DEPENDENT" "$LOG"; then saw_variant=1
 [ $saw_invariant -eq 0 ] && [ $saw_variant -eq 0 ] && {
     echo "chunk-invariance-gate: FAIL (no verdict line in probe output — probe contract changed)"
     tail -10 "$LOG"; exit 1; }
-
-# what the run actually showed
+# ANY diverging prompt makes the run variant: under --expect-invariant every pinned prompt must
+# be exact, so one CHUNK-DEPENDENT verdict among N must not be masked by the others.
 if [ $saw_variant -eq 1 ]; then GOT=variant; else GOT=invariant; fi
-WANT="$EXPECT"
-[ "$CANARY" = 1 ] && { [ "$WANT" = variant ] && WANT=invariant || WANT=variant; }
+# expect-variant additionally requires that the pinned divergence still shows on BOTH prompts —
+# a partial disappearance is a silent behavior change, which is exactly what this gate guards.
+if [ "$WANT" = variant ] && [ "$CANARY" = 0 ]; then
+    nvar=$(grep -c "chunkinv verdict: \*\*\* CHUNK-DEPENDENT" "$LOG")
+    npr=$(set -- $PROMPTS; echo $#)
+    [ "$nvar" -lt "$npr" ] && {
+        echo "chunk-invariance-gate: FAIL — pinned divergence now shows on only $nvar/$npr prompts"
+        echo "  the chunk-order class CHANGED without the door; re-root-cause before touching the gate"
+        grep -E "chunkinv verdict" "$LOG" | sed 's/^/    /'; echo "  raw log: $LOG"; exit 1; }
+fi
 
-echo "chunk-invariance-gate: expect=$WANT got=$GOT chunks=$CHUNKS model=$(basename "$MODEL")"
+echo "chunk-invariance-gate: assert=$WANT door=$DOOR got=$GOT canary=$CANARY chunks=$CHUNKS model=$(basename "$MODEL")"
 grep -E "^ *(2048|64|32|chunkinv verdict)" "$LOG" | sed 's/^/    /'
 if [ "$GOT" = "$WANT" ]; then
     if [ "$CANARY" = 1 ]; then
-        echo "chunk-invariance-gate: CANARY UNEXPECTEDLY MATCHED — the gate cannot fail; FIX THE GATE"
+        # the injected break did NOT move the verdict => the assertion is insensitive to the
+        # very mechanism it claims to guard, so a real regression would also slip through.
+        echo "chunk-invariance-gate: CANARY UNEXPECTEDLY MATCHED — flipping the door did not change"
+        echo "  the verdict, so this assertion cannot detect the mechanism. FIX THE GATE. (log $LOG)"
         rc_all=1
     else
         echo "chunk-invariance-gate: PASS (raw log $LOG)"
     fi
 elif [ "$CANARY" = 1 ]; then
-    echo "chunk-invariance-gate: PASS (canary correctly diverged — gate has teeth; raw log $LOG)"
+    echo "chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log $LOG)"
 else
     echo "chunk-invariance-gate: FAIL — chunk-order behavior CHANGED (wanted $WANT, got $GOT)."
     if [ "$WANT" = variant ]; then
