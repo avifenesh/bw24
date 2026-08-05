@@ -419,7 +419,8 @@ static __global__ void mul_mat_q_fp8_blk(
     const int it = blockIdx.x;   // out-row tile; scale grid ROW == (it*mmq_y)>>7 (mmq_y | FP8_BLK)
 
     const int offset_y     = (jt * mmq_x) * (sizeof(block_e4m3_mmq) / sizeof(int));
-    const int offset_dst   = jt * mmq_x * stride_col_dst + it * mmq_y;
+    // 64-bit offset_dst (audit Q7, 2026-08-05): wraps at n_tokens*out_f >= 2^31 — see mmq_q8_0.cu.
+    const int64_t offset_dst = (int64_t) jt * mmq_x * stride_col_dst + (int64_t) it * mmq_y;
     const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
     const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
 
