@@ -1,0 +1,92 @@
+base=0 k_round=1 gathered=[] bonus_col=0 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+base=0 k_round=2 gathered=[0] bonus_col=1 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+base=0 k_round=3 gathered=[0, 1] bonus_col=2 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+    reject n_acc=2 gi=1 col=1 MATCH=True
+base=0 k_round=4 gathered=[0, 1, 2] bonus_col=3 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+    reject n_acc=2 gi=1 col=1 MATCH=True
+    reject n_acc=3 gi=2 col=2 MATCH=True
+base=0 k_round=5 gathered=[0, 1, 2, 3] bonus_col=4 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+    reject n_acc=2 gi=1 col=1 MATCH=True
+    reject n_acc=3 gi=2 col=2 MATCH=True
+    reject n_acc=4 gi=3 col=3 MATCH=True
+base=0 k_round=6 gathered=[0, 1, 2, 3, 4] bonus_col=5 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+    reject n_acc=2 gi=1 col=1 MATCH=True
+    reject n_acc=3 gi=2 col=2 MATCH=True
+    reject n_acc=4 gi=3 col=3 MATCH=True
+    reject n_acc=5 gi=4 col=4 MATCH=True
+base=0 k_round=7 gathered=[0, 1, 2, 3, 4, 5] bonus_col=6 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+    reject n_acc=2 gi=1 col=1 MATCH=True
+    reject n_acc=3 gi=2 col=2 MATCH=True
+    reject n_acc=4 gi=3 col=3 MATCH=True
+    reject n_acc=5 gi=4 col=4 MATCH=True
+    reject n_acc=6 gi=5 col=5 MATCH=True
+base=0 k_round=8 gathered=[0, 1, 2, 3, 4, 5, 6] bonus_col=7 bonus_in_gathered=False
+    reject n_acc=0 gi=last_col_stats col=last_col_logits MATCH=True
+    reject n_acc=1 gi=0 col=0 MATCH=True
+    reject n_acc=2 gi=1 col=1 MATCH=True
+    reject n_acc=3 gi=2 col=2 MATCH=True
+    reject n_acc=4 gi=3 col=3 MATCH=True
+    reject n_acc=5 gi=4 col=4 MATCH=True
+    reject n_acc=6 gi=5 col=5 MATCH=True
+    reject n_acc=7 gi=6 col=6 MATCH=True
+base=1 k_round=1 gathered=[0] bonus_col=1 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+base=1 k_round=2 gathered=[0, 1] bonus_col=2 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+base=1 k_round=3 gathered=[0, 1, 2] bonus_col=3 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+    reject n_acc=2 gi=2 col=2 MATCH=True
+base=1 k_round=4 gathered=[0, 1, 2, 3] bonus_col=4 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+    reject n_acc=2 gi=2 col=2 MATCH=True
+    reject n_acc=3 gi=3 col=3 MATCH=True
+base=1 k_round=5 gathered=[0, 1, 2, 3, 4] bonus_col=5 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+    reject n_acc=2 gi=2 col=2 MATCH=True
+    reject n_acc=3 gi=3 col=3 MATCH=True
+    reject n_acc=4 gi=4 col=4 MATCH=True
+base=1 k_round=6 gathered=[0, 1, 2, 3, 4, 5] bonus_col=6 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+    reject n_acc=2 gi=2 col=2 MATCH=True
+    reject n_acc=3 gi=3 col=3 MATCH=True
+    reject n_acc=4 gi=4 col=4 MATCH=True
+    reject n_acc=5 gi=5 col=5 MATCH=True
+base=1 k_round=7 gathered=[0, 1, 2, 3, 4, 5, 6] bonus_col=7 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+    reject n_acc=2 gi=2 col=2 MATCH=True
+    reject n_acc=3 gi=3 col=3 MATCH=True
+    reject n_acc=4 gi=4 col=4 MATCH=True
+    reject n_acc=5 gi=5 col=5 MATCH=True
+    reject n_acc=6 gi=6 col=6 MATCH=True
+base=1 k_round=8 gathered=[0, 1, 2, 3, 4, 5, 6, 7] bonus_col=8 bonus_in_gathered=False
+    reject n_acc=0 gi=0 col=0 MATCH=True
+    reject n_acc=1 gi=1 col=1 MATCH=True
+    reject n_acc=2 gi=2 col=2 MATCH=True
+    reject n_acc=3 gi=3 col=3 MATCH=True
+    reject n_acc=4 gi=4 col=4 MATCH=True
+    reject n_acc=5 gi=5 col=5 MATCH=True
+    reject n_acc=6 gi=6 col=6 MATCH=True
+    reject n_acc=7 gi=7 col=7 MATCH=True
+
+full-accept bonus col outside the gathered set: 16/16 arms (16 = 2 base x 8 k_round)
+reject-path index mismatches: 0/72
+=== AUDIT OK: the full-accept bonus was the ONLY cross-row stats site; every reject index resolves to its own column ===
