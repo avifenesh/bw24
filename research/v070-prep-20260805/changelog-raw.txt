@@ -1,0 +1,45 @@
+Changes since v0.69.0:
+
+## Performance
+- H3 — solo serve sessions ride the m=1 fused trunk (+8.33% decode-only at c=1)
+- Q8_0 dense-FFN gate+up m=1 fusion + SM-gated CUDA-graph budget key — q27 deep-dive phase-1 levers
+
+## Features
+- session-affinity docs + serve-smoke check 10 + the N=3 TTFT curve (slice 7)
+- tools/merge-lora.py — LoRA -> merged BF16 HF checkpoint (loop gap #1)
+- MEMRA_AFFINITY rollback seam + the byte-identity harness (slice 5)
+- affinity resume — turn checkpoint + rewind, wired into admit (slice 4)
+- plumb the explicit affinity key from both HTTP bodies (slice 2)
+- session-affinity keys + exact resume diff (slice 1, CPU)
+- API-key management — multi-key tenant auth (lane/api-keys)
+
+## Fixes
+- local-ci runs decode-batch-gate — the serving tick's exactness was guarded off-battery
+- serve-smoke check 10 gates what affinity OWNS — chunked prefill is not reduction-order-stable (slice 8)
+- turn checkpoint sat one token PAST the prompt end — affinity was inert
+- fingerprint must be a segment CHAIN, not one digest
+- serve-smoke gains a sampled-truncation matrix — the greedy-only battery could not see this bug
+- F5 slice 2 — right-size ladder hardening: fallible embed residency + transient-reserve probe on new landings
+- top_p/min_p injected id-0 tokens — full-accept bonus used a neighbour column's filter stats
+- F5 spec-pool thrash — learned evict-first on VRAM-tight misses + right-size ladder on genuine alloc failure
+- resumable per-crate publish — the v0.69.0 first publish shipped 5/9 crates then 429'd on crates.io's new-crate burst limit, and the all-or-nothing 'cargo publish --workspace' rerun hard-failed on 'already exists' instead of resuming. Publish now goes per-crate in dependency order, skips versions already live (registry API), waits out 429s (620s, 6 attempts), and workflow_dispatch gains a publish=true recovery door. RELEASING.md updated
+
+## Documentation
+- v0.70 pre-release sweep — retire the pre-fix serve c=1 gap text, surface API keys + affinity in the README, catalog decode-batch-gate in the battery descriptions
+- catalog MEMRA_SERVE_B1FAST, re-provenance MEMRA_GS_MIN, scope the isolation contract
+- engine-only scope — product docs move out to the private product repo
+- reconcile the merged #71 session-affinity lane into the truth surfaces
+- SPEC §16.4 — name the repo docs the build-agent may now trust
+- PRODUCT-TRUTH — close the two remaining 'needs fixing' notes now that the fixes landed
+- PRODUCT-TRUTH — record what the reconciliation fixed (§12.1) and narrow the stale-text hazard list
+- genericize the lab name and un-stale the 5090-as-deployment-target text
+- PERFORMANCE.md — llama-freeze banner, rig labels, the open serve gap
+- un-stale the user-facing docs against docs/PRODUCT-TRUTH.md
+- product claims come from docs/PRODUCT-TRUTH.md, updated in the same commit
+- correct the evidence inventory and blog source material against PRODUCT-TRUTH
+- correct the website spec against PRODUCT-TRUTH + fold in the three owner decisions
+- PRODUCT-TRUTH.md — one reconciled source for every product-facing claim
+- API-keys auth section (SERVING.md) + MEMRA_API_KEYS flag entry (FLAGS.md); tools/apikeys-gate.sh live battery
+- darklanes launch website spec — full build brief for the implementing agent
+
+Boards + reproduction artifacts: https://huggingface.co/Avifenesh/memra-bench · full experiment log in research/tune-data/
