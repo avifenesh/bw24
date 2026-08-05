@@ -8,9 +8,10 @@
 
 From-scratch LLM inference engine in Rust + CUDA — no frameworks, no ggml. Built for
 single-GPU serving on RTX 50-series Blackwell (sm_120a), every kernel written and tuned
-against measured hardware limits. Exactness is the contract: speculative, graph-replay,
-and batched serving output is gated token-identical to plain decode — speed never changes
-what the model says.
+against measured hardware limits. Exactness is the contract: every kernel is bit-audited
+against a CPU reference, speculative and graph-replay decode are gated token-identical to
+plain decode, and batched serving is gated byte-identical to the same request served alone
+— speed never changes what the model says.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/avifenesh/memra/main/tools/install.sh | sh  # prebuilt, checksum-verified
@@ -110,9 +111,12 @@ the same machine:
 ![memra on the RTX 5090](docs/perf-card.svg)
 
 The deployment bar for shipping a new model as supported: best-vs-best end-to-end at or
-above 1.1x llama.cpp on every prompt class on the target rig. Cells below it are tracked
-as open gaps, never hidden. Every tracked cell (wins, losses, and gaps), mechanism notes,
-and flip history: [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+above 1.1x on every prompt class on the measuring rig. Cells below it are tracked as open
+gaps, never hidden. The llama.cpp denominators are **frozen reference points** recorded
+through 2026-08-03 — head-to-head benching stopped that day (owner call) and forward work
+is self-competition, so treat the ratios above as regression anchors rather than a live
+scoreboard. Every tracked cell (wins, losses, and gaps), mechanism notes, and flip
+history: [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Supported models
 
@@ -149,18 +153,27 @@ speculative serving, `/metrics`. OpenAI tool calling (`tools`/`tool_choice`, str
 `tool_calls` deltas, `role:"tool"` turns) rides the model's own chat template — zero engine
 changes. Constrained decoding (`response_format` `json_object`/`json_schema`) applies the
 grammar mask on device and keeps every fast path — device sampling, CUDA-graph decode,
-speculative serving — at 99.4% of unconstrained speed. Cross-request prompt caching serves
+speculative serving — available under constraint, at 99.4% of unconstrained speed on the
+plain decode lane (the speculative lane pays more: 79%). Cross-request prompt caching serves
 repeated prompt prefixes without recomputing
 them, reports the split as `usage.prompt_tokens_details.cached_tokens` on every response,
 and namespaces all reuse per tenant via the request-level `cache_salt` field (vLLM-style).
 The gateway-facing surface is complete for OpenRouter-style listing: `/v1/models` with
 per-model metadata, `X-RateLimit-*` headers on every response, and graceful drain on
 SIGTERM (in-flight requests finish, new ones get a 503 + `Retry-After`). Official FP8
-safetensors checkpoints serve directly — block-128 weights load bit-exact and speculative
-decoding runs out of the box on the checkpoint's own MTP head, no GGUF conversion step.
+safetensors checkpoints serve directly — block-128 weights load bit-exact (dequantized onto
+the Q8_0 arm; the win is a 2.89x faster load, not faster decode) and speculative decoding
+runs out of the box on the checkpoint's own MTP head, no GGUF conversion step. GGUF remains
+the primary delivery format and Q8_0 the shipping 8-bit arm; the FP8-native compute paths
+are implemented, bit-exact, and default off until they clear the deployment bar
+([docs/FLAGS.md](docs/FLAGS.md)).
 The contract: greedy serving is isolated-identical under concurrent load — a request's
-tokens never depend on its co-arrivals, and spec-decode serving is gated token-identical
-against the plain-decode oracle. Multi-GPU boxes serve as a replica fleet:
+output tokens are byte-identical whether it arrives alone or inside a full batch, gated by
+replaying the same prompts at c=1 and c=16 against the same server and byte-comparing every
+stream. (That is the scoped claim; it is not an identity claim against a single-token
+reference decode — the batched-plain path has a documented, bounded near-tie flip class, and
+speculative decode is gated self-consistent per `run-spec` K=1..8 on MTP-capable artifacts.)
+Multi-GPU boxes serve as a replica fleet:
 **1,477 tok/s** managed on 3×H100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
 
 ## What's inside
@@ -196,12 +209,22 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
 - Gemma plain margins are thin at the DRAM wall (1.02–1.06x); one spec cell at 0.98x.
 - Hy3 spill serves at 5.13 tok/s (N=3 median), tuning toward 10
   ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
+- The serve surface is currently slower than the naked CLI at c=1 — −11.74% on a Q8_0 27B
+  cell, −8.66% on the NVFP4 speculative path. Cause is known, not inferred: the serve worker
+  routes B=1 through the batched decode step, which has no CUDA-graph door and misses the
+  m=1 dense-FFN dispatch fusion. Open lane.
+- Cold time-to-first-token on short turns trails llama.cpp on the local laptop rig
+  (0.53 s vs 0.19 s, same model file, N=5 interleaved) alongside short-agentic decode and
+  raw prefill, while long-generation sampled decode leads by +17%. Three causes identified
+  (per-request session realloc under VRAM pressure, the prefill wall, short-context
+  acceptance 0.55 vs 0.73); lanes open.
 
 ## Requirements and limits
 
-- NVIDIA RTX 50-series (sm_120a, primary target RTX 5090 Laptop), H100 (sm_90a), B200
-  (sm_100a, compile-gated), or Ada (sm_89, portable eval). Other GPUs compile untuned —
-  use llama.cpp or mistral.rs there.
+- NVIDIA RTX 50-series (sm_120a — the primary optimized target; the tracked 5090 boards are
+  measured on an RTX 5090 Laptop, and RTX PRO 6000 Blackwell Workstation numbers come from
+  rented pods), H100 (sm_90a), B200 (sm_100a, compile-gated), or Ada (sm_89, portable eval).
+  Other GPUs compile untuned — use llama.cpp or mistral.rs there.
 - H100 (sm_90a) support: the arch auto-detects at build (`MEMRA_CUDA_ARCH` overrides),
   Hopper-only kernel promotions are compile-gated so the naked sm_120a build stays
   byte-identical, and `tools/validate-h100.sh` is the one-command gate battery. Evidence

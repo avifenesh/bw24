@@ -57,9 +57,12 @@ That's it. Two workflows fire on the tag:
   `publish-update` scopes.
 - Add it as the repo secret `CARGO_REGISTRY_TOKEN` (Settings → Secrets and variables →
   Actions). The publish workflow fails with a pointed error if it's missing.
-- The first tagged publish claims all nine `memra-*` crate names (verified available
-  2026-08-04, `research/crates-release-20260804/`). `memra-probe` stays unpublished
-  (`publish = false` — dev spike).
+- Nine `memra-*` crate names are publishable (verified available 2026-08-04,
+  `research/crates-release-20260804/`); `memra-probe` stays unpublished (`publish = false`
+  — dev spike). Note the v0.69.0 first publish landed **5 of 9** before crates.io's
+  new-crate burst limit returned 429 — which is why the workflow is now per-crate and
+  resumable (skip-if-live + backoff + the `publish=true` dispatch door). Do not state "all
+  nine crates are live" from this doc; check the registry.
 - Publishing is irreversible (yank ≠ delete): the tag must already have passed the on-rig
   gate battery like any release.
 
