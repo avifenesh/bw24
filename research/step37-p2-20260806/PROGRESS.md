@@ -92,13 +92,77 @@ Three things worth naming because each is a live footgun, not boilerplate:
 
 `cargo test -p memra-gguf --lib`: **70 passed, 0 failed.**
 
-### Confirmed GAP, not yet fixed: `deepseek-v3` pretokenizer
+---
 
-`tokenizer.ggml.pre = deepseek-v3`. `crates/memra-tokenizer/src/lib.rs:578-589` dispatches only
-`"qwen35"`/`"qwen2"` and **silently falls through to `split_qwen35`** for anything else. The
-upstream deepseek-v3 regex set is materially different from qwen2's (CJK character class,
-`\p{N}{1,3}` digit grouping, a distinct punctuation+letter class) — `llama-vocab.cpp:318-326` vs
-`:373-381`. Phase-1 listed this as "VERIFY"; it is a real gap and will produce wrong token ids.
+## Increment 2 — `deepseek-v3` pre-tokenizer (2026-08-06)
+
+`tokenizer.ggml.pre = deepseek-v3` was a confirmed real gap: the dispatch in
+`crates/memra-tokenizer/src/lib.rs` handled only `qwen35`/`qwen2` and **silently fell through to
+`split_qwen35`** for everything else. Now implemented and wired.
+
+Upstream has **no** custom splitter for this pre-type — it runs three regexes through generic
+`std::regex` (`llama-vocab.cpp:318-325`, `LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM`):
+
+```
+1. \p{N}{1,3}
+2. [一-龥぀-ゟ゠-ヿ]+
+3. [!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+
+   |[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+
+   | ?[\p{P}\p{S}]+[\r\n]* |\s*[\r\n]+ |\s+(?!\S) |\s+
+```
+
+`split_deepseek_v3` in `crates/memra-tokenizer/src/unicode.rs` is a hand-written equivalent:
+llama.cpp's collapsed-text representation (one byte per codepoint; non-ASCII → 0x0B whitespace
+stand-in or a 0xD0-0xD5 category byte) plus the three ordered passes, each subdividing the
+previous pass's offsets with `unicode_regex_split_stl`'s gap-emission behavior. Two upstream
+details that are load-bearing and easy to miss: pass 3 runs on the **collapsed** text so `\s` is
+std::regex's ASCII-only `\s` (every non-ASCII whitespace codepoint is already 0x0B), and pass 2
+runs on the **codepoint** text (non-ASCII literals, no `\p{}` class → upstream takes the wregex
+branch, not the collapsed one).
+
+**How it is verified.** Not by eyeballing: `research/step37-p2-20260806/pretok-ref-deepseek-v3.py`
+is an independent implementation of the same upstream algorithm executed by a **different regex
+engine** (Python `re`), reading the codepoint-class table out of memra's own `unicode_data.rs` so
+classification is identical by construction and only the *split algorithm* is under test. The
+67-case corpus (English, contractions, digit runs of every length mod 3, CJK/hiragana/katakana
+incl. the exact `龥`/`぀` range bounds, Cyrillic/Greek/Arabic, combining marks, NBSP, emoji,
+punct/symbol runs, whitespace/newline/CRLF runs, end-of-string lookahead edges) round-trips
+byte-exact through the Rust port. Reference output committed at
+`raw/pretok-deepseek-v3-reference-20260806.txt`.
+
+**A bug found in the reference while building it** (worth recording because it would have
+produced a *confidently wrong* ground truth): the first version regex-scraped all `(0x..,0x..)`
+pairs out of `unicode_data.rs`, which also swept `UNICODE_MAP_LOWERCASE` and overwrote the flag
+table with lowercase-map entries — every non-ASCII letter mis-classified, `naïve` splitting as
+`['na','ïve']`. Now bounded per array with length assertions (2273 ranges, 25 whitespace cpts).
+
+The measured divergences from `split_qwen35` — i.e. exactly what the fall-through was getting
+wrong on Step-3.7-Flash input — are pinned per mechanism in
+`deepseek_v3_differs_from_qwen35_per_mechanism`:
+
+| input | deepseek-v3 (correct) | qwen35 (what we were doing) |
+|---|---|---|
+| `12345678901234` | `123 456 789 012 34` | one token per digit |
+| `日本語のテスト、カタカナ` | `日本語のテスト` `、` `カタカナ` | `日本語のテスト` `、カタカナ` |
+| ` 中文` | ` ` `中文` | ` 中文` |
+| `▁escaped▁space` | `▁` `escaped` `▁` `space` | `▁escaped` `▁space` |
+| ` symbols ~ ^` | ` symbols` ` ` `~` ` ^` | ` symbols` ` ~` ` ^` |
+| `-abc1` | `-abc` `1` | (no alt-1 counterpart) |
+
+Digit grouping alone changes the tokenization of essentially every numeric span, so this was not
+a corner case — it would have shifted ids across ordinary agentic/code traffic.
+
+Also: the dispatch now **warns once** on any unknown `tokenizer.ggml.pre` instead of silently
+falling back (`warn_unsupported_pre`). Silence is how an unimplemented pre-tokenizer masquerades
+as a model-quality problem.
+
+`cargo test -p memra-tokenizer`: **14 lib + 3 llama-parity tests pass** (the parity suite,
+which checks memra's ids against `llama-tokenize` on a real model, is unaffected).
+
+Still open on the tokenizer: byte-check Step-3.7-Flash ids against HF `apply_chat_template` on
+the box once the artifact is loadable, and the StepFun chat-template dialect
+(reasoning_effort, forced-open `<think>\n`, `<function=X><parameter=Y>` tools, tool_response
+role) in `chat.rs`.
 
 ---
 
@@ -111,7 +175,8 @@ upstream deepseek-v3 regex set is materially different from qwen2's (CJK charact
 | `step35` config parse + per-layer accessors + tests | DONE |
 | `attention.head_count` array panic | FIXED |
 | `attn_out_gate()` deny-list mis-split | FIXED |
-| `deepseek-v3` pretokenizer | GAP, open |
+| `deepseek-v3` pretokenizer | DONE (cross-checked vs an independent engine) |
+| unknown-`pre` silent fallback | now warns once |
 | loader: `attn_gate.weight` on the full-attn path | open |
 | forward: `step35_geom`, SWA 3:1, dual rope, half-rotary, gate epilogue, clamp | open |
 | chat template (StepFun ChatML dialect) | open |

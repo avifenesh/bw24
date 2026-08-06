@@ -544,6 +544,21 @@ impl Tokenizer {
         frags
     }
 
+    /// One-shot warning for a `tokenizer.ggml.pre` we have no exact split for. Silence here is
+    /// how an unimplemented pre-tokenizer becomes a wrong-token-ids bug that looks like a model
+    /// quality problem instead of a loader problem.
+    fn warn_unsupported_pre(pre: &str) {
+        use std::sync::OnceLock;
+        static WARNED: OnceLock<()> = OnceLock::new();
+        let pre = pre.to_string();
+        WARNED.get_or_init(move || {
+            eprintln!(
+                "memra-tokenizer: WARNING unsupported tokenizer.ggml.pre '{pre}' — falling back \
+                 to the qwen35 pre-tokenizer split. Token ids will NOT be exact for this model."
+            );
+        });
+    }
+
     /// Core BPE over one raw-text fragment (`llm_tokenizer_bpe_session::tokenize`).
     fn bpe_tokenize(&self, text: &str, output: &mut Vec<u32>) {
         if self.spm_style {
@@ -574,17 +589,21 @@ impl Tokenizer {
             }
             return;
         }
-        // 1) pre-tokenizer split (qwen35), then 2) GPT-2 byte-encode each word.
+        // 1) pre-tokenizer split, then 2) GPT-2 byte-encode each word.
         let words: Vec<String> = match self.pre.as_str() {
             "qwen35" => unicode::split_qwen35(text),
+            // Step-3.5/3.7-Flash and the DeepSeek-V3 family
+            // (llama.cpp LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM). Materially different from qwen2:
+            // \p{N}{1,3} digit grouping, an isolated CJK/kana pass, and \p{P}/\p{S}-only runs.
+            "deepseek-v3" => unicode::split_deepseek_v3(text),
+            // The closely-related qwen2 family: llama.cpp's qwen2 regex differs from qwen35's
+            // only in [\p{L}\p{M}]+ vs \p{L}+, which the qwen35 state machine covers.
+            "qwen2" => unicode::split_qwen35(text),
+            // Anything else is unsupported and would not be integer-exact. Warn once rather
+            // than silently mis-tokenizing (the deepseek-v3 fall-through was exactly this bug).
             other => {
-                // Fall back to qwen35 split for the closely-related qwen2 family;
-                // anything else is unsupported and would not be integer-exact.
-                if other == "qwen2" {
-                    unicode::split_qwen35(text)
-                } else {
-                    unicode::split_qwen35(text)
-                }
+                Self::warn_unsupported_pre(other);
+                unicode::split_qwen35(text)
             }
         };
 
