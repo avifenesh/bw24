@@ -39,6 +39,10 @@
 /// controllers (the sidecar shape) can share them.
 pub(crate) mod auth;
 pub(crate) mod constrained;
+/// Inference-liveness state (lane/serve-hardening, gaps G5 + G24): the worker heartbeat every
+/// health answer is derived from, the Xid/GPU-fault watcher, and the sd_notify half of the
+/// systemd contract. Process liveness is NOT inference liveness — this module is the difference.
+pub(crate) mod health;
 pub(crate) mod lanes { pub use memra_lanes::*; }
 mod toolcall;
 mod worker;
@@ -79,6 +83,10 @@ struct AppState {
     /// per-tenant in-flight gauge (lane/api-keys): keyed by tenant id, same RAII life as
     /// the lane gauge — drives per-key rate-limit overrides + their headers.
     tenant_inflight: TenantGauge,
+    /// inference liveness (lane/serve-hardening, G5): the GPU worker's heartbeat + phase +
+    /// fault latches, shared with the worker thread and the Xid watcher. /health, /livez and
+    /// /readyz read ONLY this — never "the process is up".
+    health: health::SharedHealth,
 }
 
 // ---- rate-limit headers (serve-tail lane, 2026-08-04; gap-scan F12) ----
@@ -681,6 +689,94 @@ fn bad_request(message: &str, param: Option<&str>) -> Response {
     error_response(StatusCode::BAD_REQUEST, message, "invalid_request_error", param)
 }
 
+// ---- engine-fault taxonomy -> HTTP (lane/serve-hardening, G6) --------------------------
+//
+// WHAT THIS REPLACES. Every worker failure — CUDA errors, VRAM exhaustion, admission sheds,
+// tokenizer failures, graph faults — used to funnel into ONE line: `bad_request(&msg, None)`,
+// i.e. HTTP 400 invalid_request_error. That is wrong in both directions and both directions
+// cost money:
+//   * a client SDK never retries a 400 (openai-python retries 408/409/429/>=500 only), so a
+//     transient capacity blip became a hard user-visible failure with no retry;
+//   * a router cannot tell "your request was malformed" from "my GPU fell over", so it keeps
+//     sending traffic to a broken box instead of failing over.
+// The class now comes from the PRODUCER (worker.rs::EngineError), not from re-guessing at the
+// HTTP layer, with exactly one deliberate text rule (`is_cuda_oom` -> Overloaded).
+//
+// THE RETRY CONTRACT, verified against the client code rather than the docs:
+//   * `Retry-After` is INTEGER seconds (RFC 9110 §10.2.3 delay-seconds — a float here is
+//     simply unparseable), and openai-python ABANDONS the retry entirely if the value exceeds
+//     its MAX_RETRY_AFTER_DELAY of 120 s. litellm honors the header only for 0 < v <= 60.
+//     So every value memra emits is an integer and <= 60.
+//   * `retry-after-ms` is read FIRST by openai-python, which lets us express sub-second
+//     backoff to SDKs that support it while the integer header stays correct for everyone
+//     else. Both are sent; they agree.
+//   * `x-should-retry: false` is openai-python's explicit override, used where retrying is
+//     provably pointless (a 400-class fault), so a client that retries by status alone does
+//     not hammer a request that can never succeed.
+const RETRY_AFTER_S_RATE_LIMIT: u64 = 2;   // QoS shed: the lane's own budget window
+const RETRY_AFTER_S_OVERLOADED: u64 = 5;   // VRAM/capacity: needs a session to finish first
+
+/// Status + OpenAI `type` + `code` for one engine error class.
+fn class_http(class: worker::ErrClass) -> (StatusCode, &'static str, Option<&'static str>) {
+    use worker::ErrClass as C;
+    match class {
+        C::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request_error", None),
+        C::ContextLength => (StatusCode::BAD_REQUEST, "invalid_request_error",
+                             Some("context_length_exceeded")),
+        C::ModelNotFound => (StatusCode::BAD_REQUEST, "invalid_request_error",
+                             Some("model_not_found")),
+        C::RateLimit => (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", Some("rate_limit_exceeded")),
+        C::Overloaded => (StatusCode::SERVICE_UNAVAILABLE, "server_error", Some("overloaded")),
+        C::Engine => (StatusCode::INTERNAL_SERVER_ERROR, "server_error", Some("engine_error")),
+    }
+}
+
+/// Retry-After seconds for a class, or None when retrying cannot help.
+fn class_retry_after_s(class: worker::ErrClass) -> Option<u64> {
+    use worker::ErrClass as C;
+    match class {
+        C::RateLimit => Some(RETRY_AFTER_S_RATE_LIMIT),
+        C::Overloaded => Some(RETRY_AFTER_S_OVERLOADED),
+        // An engine fault is not time-bounded: this process may need to be restarted. Say
+        // nothing rather than promise a window we cannot honor — the SDK's own exponential
+        // backoff (500s are retryable by default) is the honest behavior here.
+        C::Engine | C::InvalidRequest | C::ContextLength | C::ModelNotFound => None,
+    }
+}
+
+/// The JSON body for an engine error, shared by the blocking and the streaming paths so a
+/// client sees the SAME object either way.
+fn engine_error_body(e: &worker::EngineError) -> serde_json::Value {
+    let (_, etype, code) = class_http(e.class);
+    error_body(&e.message, etype, e.param, code)
+}
+
+/// Full HTTP response for an engine error: status, OpenAI body, and the retry headers.
+fn engine_error_response(e: &worker::EngineError) -> Response {
+    let (status, _, _) = class_http(e.class);
+    let mut resp = (status, Json(engine_error_body(e))).into_response();
+    let h = resp.headers_mut();
+    match class_retry_after_s(e.class) {
+        Some(secs) => {
+            // Integer seconds, always <= 60 by construction (see the contract note above).
+            let secs = secs.min(60);
+            if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                h.insert(axum::http::header::RETRY_AFTER, v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&(secs * 1000).to_string()) {
+                h.insert("retry-after-ms", v);
+            }
+        }
+        None if status.is_client_error() => {
+            // A malformed request, an unknown model, an over-long prompt: retrying the
+            // identical bytes cannot succeed. Say so explicitly.
+            h.insert("x-should-retry", axum::http::HeaderValue::from_static("false"));
+        }
+        None => {}
+    }
+    resp
+}
+
 fn stop_reason_to_finish(r: &str) -> &'static str {
     match r {
         "Eos" | "Callback" => "stop",
@@ -930,10 +1026,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let models = parse_models_config();
     eprintln!("[server] starting; models config = {models:?}");
 
+    // Inference-liveness state (G5). Created BEFORE the worker so the whole weight load is
+    // observable as PHASE_LOADING rather than as a gap: /livez and /readyz answer honestly
+    // from the first accepted connection, which is what a supervisor's Type=notify +
+    // WatchdogSec contract and a load balancer's readiness probe both need.
+    let health_state = health::WorkerHealth::new();
+    // GPU-fault watchers (G24) start before the load too: an Xid that fires DURING a 120 s
+    // weight load is exactly the case a post-load watcher misses. spawn_gpu_watch owns the
+    // Xid tail as well (one call, two threads).
+    health::spawn_gpu_watch(health_state.clone());
+    health::spawn_sd_watchdog(health_state.clone());
+
     // Spawn the GPU worker thread and block until every model is loaded (or it fails).
-    let (cmd_tx, model_names, caps, metrics) = match worker::spawn(models) {
+    let (cmd_tx, model_names, caps, metrics) = match worker::spawn(models, health_state.clone()) {
         Ok(v) => v,
-        Err(err) => { eprintln!("[server] FATAL: worker init failed: {err}"); std::process::exit(1); }
+        Err(err) => {
+            eprintln!("[server] FATAL: worker init failed: {err}");
+            health_state.mark_dead(format!("worker init failed: {err}"));
+            health::sd_notify(&format!("STATUS=worker init failed: {err}"));
+            std::process::exit(1);
+        }
     };
     eprintln!("[server] worker ready; serving models: {model_names:?}");
 
@@ -944,10 +1056,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|d| d.as_secs()).unwrap_or(0),
         inflight: Arc::new(Default::default()),
         tenant_inflight: Arc::new(Default::default()),
+        health: health_state.clone(),
     };
     let inflight_handle = state.inflight.clone();
     let app = Router::new()
-        .route("/health", get(health))
+        // /health is the historical name (every memra script polls it) and stays the
+        // LIVENESS probe; /livez + /readyz are the k8s-doctrine split (healthz deprecated
+        // upstream at v1.16). Readiness ≠ liveness: draining or a not-yet-loaded model
+        // takes the box out of ROTATION without asking a supervisor to kill it.
+        .route("/health", get(health_live))
+        .route("/livez", get(health_live))
+        .route("/readyz", get(health_ready))
         .route("/models", get(list_models))
         .route("/v1/models", get(list_models_v1))
         .route("/v1/completions", post(completions))
@@ -959,6 +1078,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("MEMRA_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     eprintln!("[server] listening on http://{addr}");
+    // READY=1 only AFTER the models are resident and the socket is bound — the whole point of
+    // Type=notify is that "started" means "can serve". A no-op when NOTIFY_SOCKET is unset
+    // (i.e. every non-systemd run), so it costs nothing outside a unit.
+    health::sd_notify("READY=1\nSTATUS=serving");
     // GRACEFUL DRAIN (gap-scan F11): SIGTERM flips the drain flag (new completion
     // requests 503 immediately; /health reports "draining"), then the shutdown future
     // resolves once every in-flight request finished (the HTTP-layer gauge — streams
@@ -979,6 +1102,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             sigterm.recv().await;
             DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+            // STOPPING=1 + EXTEND_TIMEOUT_USEC: tell systemd the stop is deliberate and how
+            // long the drain may legitimately take, so TimeoutStopSec does not SIGKILL a
+            // healthy drain mid-stream (audit's systemd section).
+            health::sd_notify(&format!(
+                "STOPPING=1\nSTATUS=draining\nEXTEND_TIMEOUT_USEC={}",
+                (drain_deadline_s() + 5) * 1_000_000));
             let n: usize = inflight.iter()
                 .map(|c| c.load(std::sync::atomic::Ordering::SeqCst)).sum();
             eprintln!("[server] SIGTERM: draining ({n} in flight, deadline {}s)",
@@ -1076,11 +1205,71 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
     ]
 }
 
-async fn health(State(st): State<AppState>) -> impl IntoResponse {
-    // "draining" = the LB/orchestrator not-ready signal (gap-scan F11): the process is
-    // finishing in-flight work and will exit; route new traffic elsewhere.
-    let status = if draining() { "draining" } else { "ok" };
-    Json(json!({ "status": status, "models": *st.models }))
+/// Shared body for both probes: the honest state, plus the numbers that explain it.
+fn health_payload(st: &AppState, status: &str, detail: Option<&str>) -> serde_json::Value {
+    let s = st.health.snapshot();
+    let mut v = json!({
+        "status": status,
+        "models": *st.models,
+        "worker": {
+            "phase": health::phase_name(s.phase),
+            "beat_age_ms": s.beat_age_ms,
+            "tick_max_ms": s.tick_max_ms,
+            "stall_threshold_ms": s.stall_threshold_ms,
+            "generation": s.generation,
+            "xid_warnings": s.xid_warns,
+        },
+    });
+    if let Some(d) = detail {
+        v["detail"] = json!(d);
+    }
+    v
+}
+
+/// LIVENESS (`/health`, `/livez`) — INFERENCE liveness, not process liveness (G5).
+///
+/// WHAT CHANGED AND WHY. The old handler returned 200 whenever the HTTP task was scheduled:
+/// a panicked GPU worker, a wedged GPU, a poisoned CUDA context — all reported "ok" forever,
+/// on a box that answered nothing. Now the answer is derived ONLY from worker state: a
+/// heartbeat the scheduler loop stamps every iteration, the panic/GPU fault latches, and the
+/// load phase.
+///
+/// 503 (dead / GPU-faulted / stalled / still loading) is deliberately a
+/// SUPERVISOR-ACTIONABLE signal — the only recovery for a sticky CUDA fault is restarting the
+/// process, so this endpoint is what makes `Restart=on-failure` + a liveness probe work.
+///
+/// DRAINING stays **200**: a drain is a healthy, deliberate shutdown, and answering 503 here
+/// would invite a supervisor to kill the process in the middle of finishing in-flight
+/// streams. Rotation is `/readyz`'s job — that is the whole reason the two are separate.
+async fn health_live(State(st): State<AppState>) -> impl IntoResponse {
+    if draining() {
+        // "draining" = the LB/orchestrator not-ready signal (gap-scan F11): the process is
+        // finishing in-flight work and will exit; route new traffic elsewhere.
+        return (StatusCode::OK, Json(health_payload(&st, "draining", None))).into_response();
+    }
+    match st.health.live() {
+        Ok(()) => (StatusCode::OK, Json(health_payload(&st, "ok", None))).into_response(),
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE,
+                     Json(health_payload(&st, "unhealthy", Some(&why)))).into_response(),
+    }
+}
+
+/// READINESS (`/readyz`) — "should this instance receive traffic right now?"
+///
+/// Ready = model loaded AND worker alive AND not draining. Unready is NOT a request for a
+/// restart: draining and still-loading are both perfectly healthy states that simply must not
+/// be routed to. k8s doctrine (`/livez` + `/readyz`; `healthz` deprecated at v1.16), and ahead
+/// of both vLLM (no readiness endpoint) and TGI (single `/health`).
+///
+/// Queue pressure deliberately does NOT flip readiness: memra's interactive lane queues FIFO
+/// and never sheds, so a deep queue is work in progress, not unreadiness. Capacity backpressure
+/// belongs on the request path as 429/503 (G6), where a client can act on it.
+async fn health_ready(State(st): State<AppState>) -> impl IntoResponse {
+    match st.health.ready(draining()) {
+        Ok(()) => (StatusCode::OK, Json(health_payload(&st, "ready", None))).into_response(),
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE,
+                     Json(health_payload(&st, "not_ready", Some(&why)))).into_response(),
+    }
 }
 
 /// Flat serving counters + engine-truth step latency percentiles.
@@ -1198,6 +1387,15 @@ async fn yield_metrics(State(st): State<AppState>) -> impl IntoResponse {
 /// Dark lanes (judge/harvest) can be SHED at admission — surface that as HTTP 429 +
 /// Retry-After before committing to a streaming response. Interactive never sheds, so it
 /// skips the peek (its first token may be legitimately far away; don't hold headers).
+///
+/// WHY THE PEEK MATTERS MORE THAN IT LOOKS (audit §OpenRouter uptime): once the first byte of
+/// a 200 is written, the response is COMMITTED — a router cannot fail over, and a mid-stream
+/// death counts against uptime. Catching an admission refusal here converts a would-be
+/// mid-stream failure into a clean pre-header 429/503 that the client's own retry handles.
+///
+/// The 429 body now goes through `engine_error_body` (G6). It used to be
+/// `{"error": "<string>"}` — a BARE STRING where every OpenAI SDK expects an object, which
+/// made shed errors render as a blank message in every client that parses the standard shape.
 async fn peek_shed(
     lane: lanes::Lane,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
@@ -1206,11 +1404,11 @@ async fn peek_shed(
         return Ok(rx);
     }
     match rx.recv().await {
-        Some(Event::Error(e)) if e.starts_with("shed:") => Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            [(axum::http::header::RETRY_AFTER, "2")],
-            Json(json!({ "error": e })),
-        ).into_response()),
+        // Any pre-first-token failure — a shed, a rejected admission, a load fault — is
+        // answered as a normal HTTP error with its own class instead of being smuggled into a
+        // stream. Classification is the producer's (worker::EngineError), so this no longer
+        // string-matches a "shed:" prefix that only ever existed as an in-band sentinel.
+        Some(Event::Error(e)) => Err(engine_error_response(&e)),
         first => {
             let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
             if let Some(ev) = first {
@@ -1765,15 +1963,26 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                     }
                     break;
                 }
-                Event::Error(msg) => {
+                Event::Error(err) => {
+                    // MID-STREAM FAILURE (G6). The response status is already 200 and the
+                    // headers are gone, so there is no status code left to change: the ONLY
+                    // honest signal is an error object in the stream followed by closing the
+                    // connection. Both happen here — the `break` ends the generator, which
+                    // drops the SSE body and closes.
+                    //
+                    // The class-derived type/code now travels with it (previously hardcoded
+                    // "server_error" for every cause, so a client could not tell an
+                    // out-of-VRAM from a context-length mistake once streaming had begun).
                     if chat || openai_compat() {
                         // OpenAI clients only parse `data:` lines — a named `event: error`
                         // reads as a silent hang. Error object as the final data chunk.
-                        let payload = error_body(&msg, "server_error", None, None).to_string();
+                        let payload = engine_error_body(&err).to_string();
                         yield Ok(SseEvent::default().data(payload));
                         yield Ok(SseEvent::default().data("[DONE]".to_string()));
                     } else {
-                        let payload = json!({ "error": msg }).to_string();
+                        // Native (non-OpenAI) surface keeps its named `error` event: its
+                        // clients are memra's own tools, which do parse named events.
+                        let payload = engine_error_body(&err).to_string();
                         yield Ok(SseEvent::default().event("error").data(payload));
                     }
                     break;
@@ -1927,12 +2136,21 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                     prompt_tokens: n_prompt, cached_tokens: n_cached, elapsed_s,
                 }).into_response();
             }
-            Event::Error(msg) => {
-                return bad_request(&msg, None);
+            Event::Error(err) => {
+                // G6: the class decides the status. This single line used to be
+                // `bad_request(&msg, None)` — every CUDA fault, VRAM exhaustion and admission
+                // shed reported as 400 invalid_request_error, which no SDK retries.
+                return engine_error_response(&err);
             }
         }
     }
-    error_response(StatusCode::INTERNAL_SERVER_ERROR, "worker closed stream", "server_error", None)
+    // The worker's Event channel closed without a Done or an Error: the worker thread is gone
+    // (panicked and unrecoverable, or shutting down). 503 + Retry-After, not 500: this is a
+    // process-level condition the supervisor is already acting on, and a client's retry may
+    // well land on a restarted process.
+    let e = worker::EngineError::overloaded(
+        "worker closed the stream without completing (worker restart in progress)");
+    engine_error_response(&e)
 }
 
 #[cfg(test)]
@@ -2469,7 +2687,7 @@ mod tests {
     #[tokio::test]
     async fn stream_worker_error_is_a_data_chunk_not_a_named_event() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(Event::Error("boom".into())).unwrap();
+        tx.send(Event::Error(worker::EngineError::engine("boom"))).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
             .into_response();
@@ -2482,13 +2700,14 @@ mod tests {
         let err: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(err["error"]["message"], "boom");
         assert_eq!(err["error"]["type"], "server_error");
+        assert_eq!(err["error"]["code"], "engine_error");
         assert_eq!(lines.last(), Some(&"[DONE]"));
     }
 
     #[tokio::test]
     async fn error_bodies_use_the_openai_object_shape() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(Event::Error("unknown model \"x\"".into())).unwrap();
+        tx.send(Event::Error(worker::EngineError::model_not_found("unknown model \"x\""))).unwrap();
         drop(tx);
         let response = blocking_response(rx, "m".into(), true, Vec::new(), None,
                                          Envelope::new(true)).await;
@@ -2498,8 +2717,142 @@ mod tests {
         // {"error": {message, type, param, code}} — the object every OpenAI SDK parses.
         assert_eq!(payload["error"]["message"], "unknown model \"x\"");
         assert_eq!(payload["error"]["type"], "invalid_request_error");
-        assert!(payload["error"].get("param").is_some());
-        assert!(payload["error"].get("code").is_some());
+        assert_eq!(payload["error"]["param"], "model");
+        assert_eq!(payload["error"]["code"], "model_not_found");
+    }
+
+    // ---- G6 taxonomy (lane/serve-hardening) --------------------------------------------
+    //
+    // The mapping is the deliverable, so it is asserted class by class rather than through
+    // one happy-path example. Before this lane EVERY row below answered 400
+    // invalid_request_error, which no OpenAI-compatible SDK retries.
+
+    fn retry_after(resp: &Response) -> Option<String> {
+        resp.headers().get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()).map(str::to_string)
+    }
+
+    #[test]
+    fn taxonomy_maps_every_class_to_its_status_and_code() {
+        use worker::{EngineError as E, ErrClass as C};
+        let cases: Vec<(worker::EngineError, StatusCode, &str, &str)> = vec![
+            (E::invalid_param("bad json", "response_format"),
+             StatusCode::BAD_REQUEST, "invalid_request_error", ""),
+            (E::context_length("prompt (9000 tok) >= context cap (8192)"),
+             StatusCode::BAD_REQUEST, "invalid_request_error", "context_length_exceeded"),
+            (E::model_not_found("unknown model \"nope\""),
+             StatusCode::BAD_REQUEST, "invalid_request_error", "model_not_found"),
+            (E::rate_limit("lane judge is at capacity, retry"),
+             StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", "rate_limit_exceeded"),
+            (E::overloaded("no VRAM for a new session"),
+             StatusCode::SERVICE_UNAVAILABLE, "server_error", "overloaded"),
+            (E::engine("graph step failed: launch error"),
+             StatusCode::INTERNAL_SERVER_ERROR, "server_error", "engine_error"),
+        ];
+        for (err, want_status, want_type, want_code) in cases {
+            let (status, etype, code) = class_http(err.class);
+            assert_eq!(status, want_status, "{:?}", err);
+            assert_eq!(etype, want_type, "{:?}", err);
+            if !want_code.is_empty() {
+                assert_eq!(code, Some(want_code), "{:?}", err);
+            }
+            // the rendered body agrees with the mapping
+            let body = engine_error_body(&err);
+            assert_eq!(body["error"]["message"], err.message);
+            assert_eq!(body["error"]["type"], want_type);
+        }
+        // and no class is silently missing from the match
+        for c in [C::InvalidRequest, C::ContextLength, C::ModelNotFound,
+                  C::RateLimit, C::Overloaded, C::Engine] {
+            let (s, t, _) = class_http(c);
+            assert!(s.is_client_error() || s.is_server_error(), "{c:?} -> {s}");
+            assert!(!t.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_cuda_oom_message_is_capacity_503_not_a_500() {
+        // The one deliberate text rule: the driver's own OOM text promotes an engine fault to
+        // Overloaded, because the box ran out of VRAM (a retryable capacity condition) rather
+        // than hitting a bug. Same predicate the step-OOM park path uses, so the two paths
+        // cannot disagree about what an OOM is.
+        let e = worker::EngineError::engine(
+            "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")");
+        let resp = engine_error_response(&e);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn retry_headers_follow_the_sdk_contract() {
+        // openai-python reads retry-after-ms FIRST, then retry-after, and ABANDONS the retry
+        // if the delay exceeds 120 s; litellm honors retry-after only for 0 < v <= 60. So:
+        // integer seconds, <= 60, with a matching millisecond twin.
+        for e in [worker::EngineError::rate_limit("shed"),
+                  worker::EngineError::overloaded("no VRAM")] {
+            let resp = engine_error_response(&e);
+            let ra = retry_after(&resp).expect("retryable class must carry Retry-After");
+            let secs: u64 = ra.parse().expect("Retry-After must be integer delay-seconds");
+            assert!(secs > 0 && secs <= 60, "Retry-After {secs}s outside the honored window");
+            let ms = resp.headers().get("retry-after-ms").unwrap().to_str().unwrap();
+            assert_eq!(ms.parse::<u64>().unwrap(), secs * 1000, "the two headers disagree");
+            assert!(resp.headers().get("x-should-retry").is_none(),
+                    "a retryable class must not say x-should-retry: false");
+        }
+    }
+
+    #[test]
+    fn unfixable_client_errors_say_x_should_retry_false() {
+        // Retrying the identical bytes cannot succeed, and a client that retries on status
+        // alone would hammer for nothing. openai-python honors this override explicitly.
+        for e in [worker::EngineError::model_not_found("unknown model \"x\""),
+                  worker::EngineError::context_length("prompt too long"),
+                  worker::EngineError::invalid_param("bad", "messages")] {
+            let resp = engine_error_response(&e);
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(resp.headers().get("x-should-retry").unwrap(), "false");
+            assert!(retry_after(&resp).is_none(), "a 400 must not promise a retry window");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_worker_channel_is_503_not_500() {
+        // The worker thread died (panicked, unrecoverable) mid-request: the Event channel
+        // closes with neither Done nor Error. The client's retry may land on a restarted
+        // process, so this is capacity-class with a window — not a bare 500.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        drop(tx);
+        let resp = blocking_response(rx, "m".into(), true, Vec::new(), None,
+                                     Envelope::new(true)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("5"));
+    }
+
+    #[tokio::test]
+    async fn a_dark_lane_shed_is_429_with_an_openai_object_body() {
+        // peek_shed used to answer `{"error": "<string>"}` — a bare string where every SDK
+        // expects an object, which renders as a blank message client-side.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Error(worker::EngineError::rate_limit(
+            "lane judge shed: interactive p99 over budget, retry"))).unwrap();
+        let resp = peek_shed(lanes::Lane::Judge, rx).await
+            .err().expect("a shed must not be forwarded into the stream");
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["error"].is_object(), "bare-string error body: {payload}");
+        assert_eq!(payload["error"]["type"], "rate_limit_error");
+        assert!(payload["error"]["message"].as_str().unwrap().contains("shed"));
+    }
+
+    #[tokio::test]
+    async fn interactive_never_peeks_so_its_first_token_is_not_held() {
+        // Interactive does not shed, and its first token may legitimately be seconds away —
+        // the peek would hold headers for nothing.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Error(worker::EngineError::rate_limit("would-be shed"))).unwrap();
+        assert!(peek_shed(lanes::Lane::Interactive, rx).await.is_ok());
     }
 
     #[test]
@@ -2719,17 +3072,32 @@ mod tests {
 
     /// Fake GPU worker: consumes Generate commands and answers each with one Token +
     /// Done — handler-level tests (headers, drain) without a GPU or a loaded model.
+    ///
+    /// It also drives the SAME health handle the real worker does (mark_ready at "load"
+    /// completion, beat_busy per iteration), which is what lets the /health and /readyz tests
+    /// exercise the real handlers instead of a mock.
     fn fake_worker_state() -> AppState {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        let health = health::WorkerHealth::new();
+        let h = health.clone();
         std::thread::spawn(move || {
+            h.mark_ready();
             while let Ok(Cmd::Generate(req)) = cmd_rx.recv() {
+                h.beat_busy();
                 let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
                 let _ = req.tx.send(Event::Done {
                     stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 1, n_cached: 0,
                     elapsed_s: 0.01, spec: None,
                 });
+                h.set_phase(health::PHASE_IDLE);
             }
         });
+        // The spawn above is the "load"; wait for its ready stamp so a health assertion is not
+        // racing the thread start (the real path blocks on ready_tx for the same reason).
+        for _ in 0..2000 {
+            if health.live().is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         AppState {
             cmd_tx,
             models: Arc::new(vec!["m".into()]),
@@ -2738,6 +3106,7 @@ mod tests {
             started: 1,
             inflight: Arc::new(Default::default()),
             tenant_inflight: Arc::new(Default::default()),
+            health,
         }
     }
 
@@ -2911,11 +3280,20 @@ mod tests {
         assert!(resp.headers().contains_key("retry-after"));
         assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
                    "rejected requests must not hold slots");
-        // /health flips to "draining" (the LB not-ready signal).
-        let resp = health(State(st.clone())).await.into_response();
+        // /health flips to "draining" but stays 200 — a drain is a HEALTHY shutdown, and 503
+        // here would invite a supervisor to SIGKILL a process that is finishing streams.
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK, "a drain must not look like a liveness fault");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(payload["status"], "draining");
+        // Rotation is /readyz's job: unready while draining, so the LB stops sending.
+        let resp = health_ready(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "not_ready");
+        assert!(payload["detail"].as_str().unwrap().contains("draining"));
         DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
         // flag cleared: requests admit again (the gate is the flag, nothing latent).
         let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
@@ -2923,6 +3301,70 @@ mod tests {
                 "model": "m", "messages": [{"role": "user", "content": "t"}]
             })).unwrap())).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ---- G5: /health reports INFERENCE liveness, not process liveness -------------------
+
+    #[tokio::test]
+    async fn health_is_green_only_while_the_worker_is_alive() {
+        // /readyz reads the process-global DRAINING flag, which the drain test toggles —
+        // serialize against it or this races (measured: an interleaved run saw 503 here).
+        let _l = DRAIN_LOCK.lock().unwrap();
+        let st = fake_worker_state();
+        // loaded + alive: 200 ok, and the payload explains WHY (phase + heartbeat age vs the
+        // threshold), so an operator reading a green never has to guess.
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["worker"]["phase"], "idle");
+        assert!(payload["worker"]["stall_threshold_ms"].as_u64().unwrap() > 0);
+        let ready = health_ready(State(st.clone())).await.into_response();
+        assert_eq!(ready.status(), StatusCode::OK);
+
+        // THE REGRESSION THIS PINS. Kill inference the way a panic does — the health handle
+        // is marked dead, the HTTP task keeps running, the process is entirely fine. The old
+        // handler returned `{"status":"ok"}` here, forever, on a box answering nothing.
+        st.health.mark_dead("worker thread panicked: test-injected");
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE,
+                   "a dead worker MUST NOT report a healthy liveness");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "unhealthy");
+        // the cause is QUOTED, not inferred — the panic text travels to the operator
+        assert!(payload["detail"].as_str().unwrap().contains("test-injected"),
+                "cause not surfaced: {payload}");
+        let ready = health_ready(State(st.clone())).await.into_response();
+        assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE, "dead is also not ready");
+
+        // Latency of the flip: a fault latch, not a timeout — no staleness threshold to wait
+        // out, which is what makes this usable as a k8s livenessProbe.
+        st.health.mark_ready();
+        assert_eq!(health_live(State(st.clone())).await.into_response().status(),
+                   StatusCode::OK, "mark_ready must clear the latch (a successful respawn)");
+    }
+
+    #[tokio::test]
+    async fn a_wedged_gpu_flips_health_even_though_the_worker_thread_is_fine() {
+        // G24: Xid 119/120 hangs nvidia-smi and emits no Xid line; the watcher's probe
+        // timeout is the alarm. The worker thread may still be looping (blocked in a driver
+        // call), so the heartbeat alone would never catch this — the GPU latch does.
+        let st = fake_worker_state();
+        assert_eq!(health_live(State(st.clone())).await.into_response().status(), StatusCode::OK);
+        st.health.mark_gpu_fault("nvidia-smi probe exceeded 10s deadline (GSP hang class)");
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["detail"].as_str().unwrap().contains("probe exceeded"));
+        // A GPU fault survives mark_ready deliberately: a respawned worker on a wedged card
+        // is not recovery, and only a fresh process (new CUDA context) can be.
+        st.health.mark_ready();
+        assert_eq!(health_live(State(st.clone())).await.into_response().status(),
+                   StatusCode::SERVICE_UNAVAILABLE,
+                   "a GPU fault must not be cleared by an in-process respawn");
     }
 
     #[test]
