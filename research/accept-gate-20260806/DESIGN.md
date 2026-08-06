@@ -71,6 +71,12 @@ mood. This is measured, not assumed, at three levels:
 - **Cross-context reproduction**: the references minted here reproduce the f8f4 lane's OFF arm
   in **all 6 cells**, identical counts *and* identical text sha256, across a different worktree,
   a different ctx (8192 vs 16384) and a different time of day.
+- **Across 18 commits of engine change**: merging `restructure/public-split` in (which had
+  advanced past this lane's base with the batched PP-2 stage split, `pp.rs`, `run_gen.rs`'s argmax
+  calibration, `worker.rs`, and two nvcc-resolution build fixes) and rebuilding, all 6 cells still
+  reproduce byte-identically and `--teeth` still inverts — `logs/postmerge-full-matrix.log`,
+  `logs/postmerge-teeth.log`. A pinned reference that has not been shown to reproduce on the
+  branch it merges into is not a reference.
 
 That last point is worth stating plainly: acceptance and greedy text at temp 0 are **not** drift
 quantities. Unlike tok/s, they carry no thermal or clock dependence, so a FAIL here is never
@@ -171,5 +177,19 @@ tools/fast-gate/accept-cells.tsv          cell registry (6 cells: 2 models x 3 p
 tools/fast-gate/accept-refs/*.ref|.text   pinned references (counts, cfg fingerprint, sha, text)
 research/accept-gate-20260806/logs/       teeth receipts (both directions) + battery log
 ```
+
+Log index:
+
+| Log | What it receipts |
+|---|---|
+| `teeth-naked.log` | `--full --control` on the naked build: GATE-RC=0, 6/6 PASS, 6/6 control boots byte-identical |
+| `teeth-f8f4.log` | `MEMRA_MMQ_F8F4=1 --full`: GATE-RC=1 |
+| `teeth-f8f4-q27.log` | the same, q27 re-run in a clean window after a neighbor lane's OOM |
+| `teeth-flag.log` | the `--teeth` inverted-verdict path itself: TEETH-FLAG-RC=0 |
+| `battery-local-ci.log` | the full battery with the arm wired: BATTERY-RC=0 |
+| `postmerge-full-matrix.log` | 6/6 PASS after merging 18 upstream commits and rebuilding |
+| `postmerge-teeth.log` | `--teeth` still inverts on the merged build |
+| `reverify-after-loop-refactor.log` | the boot/shutdown wait-loop rewrite re-run, not just re-parsed |
+| `<cell>[.ctl].measure.log` | per-cell raw measurement stderr (measure + control boot) |
 
 Nothing in this lane changes published numbers, so the perf board is deliberately untouched.
