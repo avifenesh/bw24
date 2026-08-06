@@ -1385,23 +1385,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let wd = e.htod_bytes(&w)?;
             iq4xs_gate(&e, &wd, in_f, out_f, row_bytes, "synth", &mut fails)?;
         }
-        // real KAT trunk tensor (first 2-D IQ4_XS with in_f%256==0, out_f>=128).
+        // real trunk tensor (first 2-D IQ4_XS with in_f%256==0, out_f>=128). KAT-Coder preferred
+        // (the tensor this arm was calibrated on); Step-3.7-Flash IQ4_XS as fallback so the box
+        // that serves the step35 SKU can run this section at all — it holds no KAT copy, and
+        // IQ4_XS is the SHIPPING dtype of that SKU's trunk, so skipping here means the oracle
+        // never sees the very bytes it will decode in production. `kc_model` matches basenames,
+        // and the step artifact is a 3-shard split, so name shard 1 explicitly: GgufFile::open
+        // discovers the siblings and `tensor_data` is shard-relative (memra-gguf/src/lib.rs:369),
+        // so a tensor living in any shard reads correctly from this handle.
         {
             use memra_gguf::{GgufFile, GgmlType};
             let kat = kc_model("iq4xs-mmq", "Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf",
                 &["/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf"],
-                &gguf_arg);
+                &gguf_arg)
+            .or_else(|| kc_model("iq4xs-mmq", "Step-3.7-flash-IQ4_XS-00001-of-00003.gguf",
+                &["/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf"],
+                &gguf_arg));
             if let Some(path) = kat.as_deref() {
                 let g = GgufFile::open(path)?;
-                if let Some(t) = g.tensors.iter().find(|t| {
+                // Which artifact fed the oracle belongs IN the label: trunk tensor names collide
+                // across models (every arch has blk.0.ffn_down.weight), so a bare tensor name
+                // makes two different runs' log lines indistinguishable.
+                let who = std::path::Path::new(path).file_name()
+                    .map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                match g.tensors.iter().find(|t| {
                     t.ggml_type == GgmlType::IQ4_XS && t.ne.len() == 2
                         && t.ne[0] as usize % 256 == 0 && t.ne[1] >= 128
                 }) {
-                    let (in_f, out_f) = (t.ne[0] as usize, t.ne[1] as usize);
-                    let raw = g.tensor_data(t);
-                    let row_bytes = raw.len() / out_f;
-                    let wd = e.htod_bytes(raw)?;
-                    iq4xs_gate(&e, &wd, in_f, out_f, row_bytes, &t.name, &mut fails)?;
+                    Some(t) => {
+                        let (in_f, out_f) = (t.ne[0] as usize, t.ne[1] as usize);
+                        let raw = g.tensor_data(t);
+                        let row_bytes = raw.len() / out_f;
+                        let wd = e.htod_bytes(raw)?;
+                        iq4xs_gate(&e, &wd, in_f, out_f, row_bytes,
+                                   &format!("{who} {}", t.name), &mut fails)?;
+                    }
+                    // A resolved-but-unusable artifact used to fall through in total silence,
+                    // which reads in the log exactly like a section that passed. Say so.
+                    None => println!("KC-SKIP [iq4xs-mmq] {who}: resolved but holds no 2-D IQ4_XS \
+                                      tensor with in_f%256==0 and out_f>=128 (synthetic arm still ran)"),
                 }
             }
         }
