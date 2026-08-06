@@ -1,0 +1,67 @@
+=== serve-smoke A-doorshut-speconn: env[] ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+A-doorshut-speconn: 0 failed checks
+=== serve-smoke B-pp2-speconn: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1] ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+B-pp2-speconn: 0 failed checks
+=== serve-smoke C-pp2-nospec: env[MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_SERVE_SPEC=0] ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+C-pp2-nospec: 0 failed checks
+=== serve-smoke D-doorshut-nospec: env[MEMRA_SERVE_SPEC=0] ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+D-doorshut-nospec: 0 failed checks
+
+==== fail sets ====
+-- A-doorshut-speconn:
+-- B-pp2-speconn:
+-- C-pp2-nospec:
+-- D-doorshut-nospec:
+-- ADDED BY THE SPLIT WITH SPEC ON, B minus A (must be empty):
+-- ADDED BY SPEC OVER THE SPLIT, B minus C:
+-- refusal text anywhere in arm B (must be absent):
+(absent — the verify refusal is lifted on the serving path)
+arm B: split CONFIRMED live — [pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+control: door-shut arm shows NO transport banner (the liveness check reads zero)
+-- spec liveness markers in arm B's server stdout:
+[spec-acc] ctx=18 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=53 burst=9/15 cum=34/42=0.810
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 18; 1 parked, 18 prompt tokens; model smoke)
+[spec-acc] ctx=18 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=50 burst=12/18 cum=35/42=0.833
+script-detected failures: 0

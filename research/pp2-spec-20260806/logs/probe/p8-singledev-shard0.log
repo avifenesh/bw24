@@ -1,0 +1,36 @@
+loaded qwen35 (32 layers); steps=8 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=OFF(all-primary) streams=per-stage
+ppspec mode: T=[2] rounds=8 reps=2 (split arm)
+-- T=2: reference recorded (8 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+[verify-split T=2 rep0] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=0.15216614
+[verify-split T=2 rep0] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=0.04897
+[verify-split T=2 rep0] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=8.461358e-36
+[verify-split T=2 rep0] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=-3.6370442
+[verify-split h_seed T=2 rep0] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-2.2916267 pp=-0.06485449
+[verify-split T=2 rep0] MISMATCH step 2 row 0: 248320/248320 logits differ, first @[0] ref=6.18012 pp=2.1425796
+[verify-split h_seed T=2 rep0] MISMATCH step 2 row 0: 4096/4096 logits differ, first @[0] ref=-10.591036 pp=-2.2916267
+[verify-split h_seed T=2 rep0] MISMATCH step 3 row 0: 4096/4096 logits differ, first @[0] ref=-3.7023222 pp=0.36915198
+[verify-split h_seed T=2 rep0] MISMATCH step 4 row 0: 4096/4096 logits differ, first @[0] ref=-11.840309 pp=4.596189
+[verify-split h_seed T=2 rep0] MISMATCH step 5 row 0: 4096/4096 logits differ, first @[0] ref=0.3012581 pp=-0.22475229
+pp gate FAIL [verify-split T=2 rep0]: 16 rows mismatched of 3973120 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=0.15216614)
+pp gate FAIL [verify-split h_seed T=2 rep0]: 7 rows mismatched of 32768 f32 compared (first @ step 1 row 0 idx 0: ref=-2.2916267 pp=-0.06485449)
+[verify-split T=2 rep1] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=0.81652015
+[verify-split T=2 rep1] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=-0.0031083436
+[verify-split h_seed T=2 rep1] MISMATCH step 0 row 0: 4096/4096 logits differ, first @[0] ref=-2.2991757 pp=-0.2031812
+[verify-split T=2 rep1] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=4.868927
+[verify-split T=2 rep1] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=5.363611
+[verify-split h_seed T=2 rep1] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-2.2916267 pp=-3.011982
+[verify-split T=2 rep1] MISMATCH step 2 row 0: 248320/248320 logits differ, first @[0] ref=6.18012 pp=4.868927
+[verify-split h_seed T=2 rep1] MISMATCH step 2 row 0: 4096/4096 logits differ, first @[0] ref=-10.591036 pp=-0.59571016
+[verify-split h_seed T=2 rep1] MISMATCH step 3 row 0: 4096/4096 logits differ, first @[0] ref=-3.7023222 pp=0.91384506
+[verify-split h_seed T=2 rep1] MISMATCH step 4 row 0: 4096/4096 logits differ, first @[0] ref=-11.840309 pp=-10.699422
+pp gate FAIL [verify-split T=2 rep1]: 16 rows mismatched of 3973120 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=0.81652015)
+pp gate FAIL [verify-split h_seed T=2 rep1]: 8 rows mismatched of 32768 f32 compared (first @ step 0 row 0 idx 0: ref=-2.2991757 pp=-0.2031812)
+[verify-unsplit@ppncache T=2] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=4.729828
+[verify-unsplit@ppncache T=2] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=5.2099204
+[verify-unsplit@ppncache T=2] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=2.158543
+[verify-unsplit@ppncache T=2] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=6.27319
+[verify-unsplit@ppncache T=2] MISMATCH step 2 row 0: 248320/248320 logits differ, first @[0] ref=6.18012 pp=6.6671953
+pp gate FAIL [verify-unsplit@ppncache T=2]: 16 rows mismatched of 3973120 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=4.729828)
+ppspec mode verdict: 5 failing arm(s); stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=OFF(all-primary) streams=per-stage
+Error: "decode-batch-gate --mode ppspec FAILED"

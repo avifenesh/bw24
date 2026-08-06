@@ -1,0 +1,32 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (65 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   47 tok in 1.072s = 43.85 tok/s (gen-only; this run's prime 0.017s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55]
+
+[generate_spec K=1] 48 tok in 1.639s = 28.67 tok/s (0.65x vs generate; this run's prime 0.013s)
+  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 48 tok in 2.048s = 22.95 tok/s (0.52x vs generate; this run's prime 0.013s)
+  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 48 tok in 2.270s = 20.71 tok/s (0.47x vs generate; this run's prime 0.013s)
+  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 48 tok in 2.671s = 17.60 tok/s (0.40x vs generate; this run's prime 0.013s)
+  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 48 tok in 3.293s = 14.27 tok/s (0.33x vs generate; this run's prime 0.013s)
+  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 48 tok in 3.544s = 13.26 tok/s (0.30x vs generate; this run's prime 0.013s)
+  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 48 tok in 4.043s = 11.63 tok/s (0.27x vs generate; this run's prime 0.013s)
+  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 48 tok in 4.396s = 10.69 tok/s (0.24x vs generate; this run's prime 0.013s)
+  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
