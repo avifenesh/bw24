@@ -3435,6 +3435,26 @@ __device__ __forceinline__ void e4m3_mmvq_batched_row(
         const uint4* w16 = (const uint4*)(wrow + blk * 32);
         uint4 w01 = w16[0], w23 = w16[1];                 // weight bytes read ONCE for all columns
         unsigned wu[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        // DEQUANT-HOIST (lane/rp-on-st, 2026-08-06): e4m3 -> f32 depends only on the WEIGHT,
+        // never on the activation column, so it belongs outside the column loop. It used to sit
+        // inside it, which made the batched kernel do the conversion MCOLS times per k32 block:
+        // at MCOLS=16 that is 16x the e4m3x2_to_f32x2 work for one set of weight bytes, and it
+        // turned "weight-read-once" into "weight-read-once, weight-CONVERT-sixteen-times". The
+        // whole point of the batched tier is amortizing per-weight work across columns, and the
+        // conversion is per-weight work. dp4a classes (Q8_0 and friends) never had this problem
+        // because their dequant IS the integer dot product.
+        // EXACTNESS: bit-identity is preserved by construction — same values, same `bs`
+        // accumulation order over k, same fmaf/warp_reduce_sum sequence. Only the point of
+        // evaluation moves, and float conversion is not order-dependent. kernel-check's
+        // E4M3-BATCHED cells (m=2..8,9,12,16, both shapes) hold bit-bad=0.
+        float wf[32];
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
+            float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
+            wf[k * 4 + 0] = wlo.x; wf[k * 4 + 1] = wlo.y;
+            wf[k * 4 + 2] = whi.x; wf[k * 4 + 3] = whi.y;
+        }
         #pragma unroll
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
@@ -3445,13 +3465,11 @@ __device__ __forceinline__ void e4m3_mmvq_batched_row(
             float bs = 0.0f;
             #pragma unroll
             for (int k = 0; k < 8; k++) {
-                float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
-                float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
                 int a = au[k];
-                bs = fmaf(wlo.x, (float)(signed char)(a & 0xff), bs);
-                bs = fmaf(wlo.y, (float)(signed char)((a >> 8) & 0xff), bs);
-                bs = fmaf(whi.x, (float)(signed char)((a >> 16) & 0xff), bs);
-                bs = fmaf(whi.y, (float)(a >> 24), bs);
+                bs = fmaf(wf[k * 4 + 0], (float)(signed char)(a & 0xff), bs);
+                bs = fmaf(wf[k * 4 + 1], (float)(signed char)((a >> 8) & 0xff), bs);
+                bs = fmaf(wf[k * 4 + 2], (float)(signed char)((a >> 16) & 0xff), bs);
+                bs = fmaf(wf[k * 4 + 3], (float)(a >> 24), bs);
             }
             acc[c] = fmaf(ad[(size_t)c * nblk + blk], bs, acc[c]);
         }
@@ -3701,6 +3719,18 @@ __device__ __forceinline__ void e4m3_blk_mmvq_batched_row(
         uint4 w01 = w16[0], w23 = w16[1];            // weight bytes read ONCE for all columns
         unsigned wu[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
         const float s = srow[blk >> 2];              // scale line read ONCE for all columns
+        // DEQUANT-HOIST (lane/rp-on-st, 2026-08-06): same fix as e4m3_mmvq_batched_row — the
+        // e4m3 -> f32 conversion is per-WEIGHT, not per-column, so running it inside the column
+        // loop cost MCOLS x the conversion work for one weight fetch (16x at the b16 tier).
+        // Bit-identity holds by construction: same values, same order, only hoisted.
+        float wf[32];
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
+            float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
+            wf[k * 4 + 0] = wlo.x; wf[k * 4 + 1] = wlo.y;
+            wf[k * 4 + 2] = whi.x; wf[k * 4 + 3] = whi.y;
+        }
         #pragma unroll
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
@@ -3711,13 +3741,11 @@ __device__ __forceinline__ void e4m3_blk_mmvq_batched_row(
             float bs = 0.0f;
             #pragma unroll
             for (int k = 0; k < 8; k++) {
-                float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
-                float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
                 int a = au[k];
-                bs = fmaf(wlo.x, (float)(signed char)(a & 0xff), bs);
-                bs = fmaf(wlo.y, (float)(signed char)((a >> 8) & 0xff), bs);
-                bs = fmaf(whi.x, (float)(signed char)((a >> 16) & 0xff), bs);
-                bs = fmaf(whi.y, (float)(a >> 24), bs);
+                bs = fmaf(wf[k * 4 + 0], (float)(signed char)(a & 0xff), bs);
+                bs = fmaf(wf[k * 4 + 1], (float)(signed char)((a >> 8) & 0xff), bs);
+                bs = fmaf(wf[k * 4 + 2], (float)(signed char)((a >> 16) & 0xff), bs);
+                bs = fmaf(wf[k * 4 + 3], (float)(a >> 24), bs);
             }
             // IDENTICAL fold to e4m3_blk_row_dot: s * ad[blk] first, then one fmaf into acc.
             acc[c] = fmaf(s * ad[(size_t)c * nblk + blk], bs, acc[c]);
