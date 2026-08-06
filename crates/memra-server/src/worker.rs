@@ -3187,11 +3187,17 @@ fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
 
 /// Per-model decode chunk width. MEMRA_DECODE_BATCH_CAP (explicit door) wins; otherwise
 /// models that qualify for the EXACT-16 tier (decode_batch_exact16_ok — every matmul has
-/// a bit-exact b16-class kernel; Q8_0 needs the q8rp mirror) default to chunk 16, the
-/// measured winner on the 5090 (+12% aggregate over chunk 8 at 32 seqs, same mirror
-/// config — research/batched-tick-inc3-20260801/chunksweep.log); everything else keeps
-/// the chunk-8 exactness tier. Isolation contract unchanged either way (gate2
-/// bit-strength PASS at both widths).
+/// a bit-exact b16-class kernel) default to chunk 16, the measured winner on the 5090
+/// (+12% aggregate over chunk 8 at 32 seqs — research/batched-tick-inc3-20260801/
+/// chunksweep.log); everything else keeps the chunk-8 exactness tier. Isolation contract
+/// unchanged either way (gate2 bit-strength PASS at both widths).
+///
+/// The Q8_0 q8rp-mirror precondition was REMOVED 2026-08-06 (lane/rp-on-st): Q8_0's b16
+/// twin existed only in `_rp` form, which made a bandwidth mirror a *correctness*
+/// prerequisite for the tier. With `qmatvec_q8_0_mmvq_b16` (base layout) plus b16 twins
+/// for NVFP4 / Q4_K / Q5_K, the predicate — an ALL over ~500 matmuls — finally admits
+/// real MIXED checkpoints. Before that, one missing class refused the whole model, so
+/// chunk 16 was unreachable for every shipped artifact, GGUF and FP8-ST alike.
 fn chunk_cap_for(lm: &LoadedModel) -> usize {
     if let Some(c) = std::env::var("MEMRA_DECODE_BATCH_CAP").ok().and_then(|v| v.parse().ok()) {
         return usize::clamp(c, 1, 32);

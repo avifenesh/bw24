@@ -1,0 +1,11 @@
+[q8rp] split-plane decode mirrors built: 96 tensors
+loaded Qwen35 from safetensors (64 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+fp8-mmq dispatches after prefill: 0  (hook entries=0 gate_off=0 no_operand=0 bad_shape=0 bad_scale=0 nan=0)
+residency census (2D matmul weights, resident container):
+       Q8_0:   96 tensors     23.906 MiB
+      NVFP4:  193 tensors   9862.031 MiB
+    F8_E4M3:  208 tensors   6880.000 MiB
+      TOTAL:  497 tensors  16765.938 MiB
+verify-prefill argmax=1178  decode argmax=1178  logit maxdiff=0.000e0  MATCH
+fp8-mmq dispatches: 0
