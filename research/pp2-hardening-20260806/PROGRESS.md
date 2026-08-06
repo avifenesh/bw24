@@ -151,9 +151,54 @@ Notes worth keeping:
 - The quarantine plumbing behaves exactly as designed on new silicon: the NOTE fires on
   `singledev`, `dev0101`, and `dev0011`; no arm silently ran an unsound placement.
 
-### Flake-arm repro on P2P silicon (the open quarantine question)
+### Flake-arm repro on P2P silicon — **the flake does NOT reproduce on this pair**
 
-The ~0.5% cross-device pipelined flake (1 failure in ~190 runs) was minted on
-**NVSwitch H100s / non-P2P 5090s**. Running x40 cross-device pipelined + x20 same-device on
-this native-P2P pair to see whether it reproduces here. Driver `run-pp2-soak.sh`, receipts
-`logs/soak/`. (Result below when it lands.)
+Both quarantines in `research/m2-pp8-20260802/RESULTS.md` were minted on **8xH100 SXM /
+NVSwitch** (the 5090 rig has one GPU, so `devices=0,0` there is the degenerate case). Two
+questions, both answered on-target. Drivers `run-pp2-soak.sh` + `run-pp2-forced.sh`,
+receipts `logs/soak/`, one log per run.
+
+| Soak arm | Placement | H100 record | **PRO 6000 pair result** |
+|---|---|---|---|
+| cross-device pipelined | `dev01`, x40 | ~1 FAIL in ~190 (~0.5%), root cause open | **40/40 PASS, 0 FAIL** |
+| cross-device serial | `dev01`, x40 | clean | **40/40 PASS, 0 FAIL** |
+| same-device serial | singledev, x20 | clean | **20/20 PASS**, quarantine NOTE 20/20 |
+| **same-device pipelined, FORCED** | `MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1`, x20 | **13/20 PASS, 7/20 FAIL (35% flake)** | **20/20 PASS, 0 FAIL** |
+
+**The forced-arm row is the headline.** The 35%-flake placement — 2+ stage streams on one
+device, refused by default since 2026-08-02 — ran **20/20 bit-identical** here, serial and
+pipelined both. Under the H100-measured p=0.35 failure rate, 20 consecutive clean runs has
+probability `0.65^20 = 2.1e-4`. So the H100 failure *rate* is **statistically refuted on
+this silicon** (p < 0.001); this is not "we got lucky."
+
+What that does and does not license:
+
+- **It does NOT unquarantine anything.** The root cause named in the M2 write-up is real and
+  code-visible: `Engine` owns lazily-grown stable-pointer scratch pools (`fa_part_pool`,
+  `argmax_partials`, `fa_vf16_scratch`) that are single-stream-safe by design, and the
+  same-device pipelined placement runs two stage streams through concurrently. A race whose
+  window closed on different silicon is still a race — clocks, kernel durations, and SM
+  counts differ, and this box's cards are *idle-clocked at P8 between runs*. Absence of
+  failure in 20 runs is **not** absence of the unsound surface. Wrong-logits-fast stays
+  un-shipped.
+- **It DOES change the risk picture for the arm this lane actually needs.** The cross-device
+  pipelined arm — one device per stage, which is exactly the PP-2-on-a-pair serving shape —
+  now carries **40/40 clean on target silicon** on top of the H100's ~189/190. The single
+  H100 cross-device flake remains recorded evidence that the mechanism is reachable
+  cross-device at low probability; nothing here refutes it (40 runs cannot see a 0.5% event
+  with confidence — P(0 failures | p=0.005, n=40) = 0.82, so this soak is simply not
+  powered to detect it). **Honest statement: the cross-device flake is neither reproduced
+  nor excluded; the same-device 35% rate IS excluded.**
+- **Consequence for the bill:** the deferred-pipelined arm (the 1.87x prize) is still not
+  serving-default-cleared, and this lane does not clear it. But the blocker is now
+  explicitly a *root-cause* requirement (fix the shared-Engine scratch surface, or prove per
+  stage-stream isolation), not "we don't know if it happens on our hardware."
+
+### Why the flake window likely differs here (mechanism note, not a claim)
+
+The M2 bisect found `MEMRA_PDL=0` went 20/20 clean and PDL narrowed but did not eliminate
+the window — i.e. programmatic dependent launch widens the race. PDL's early-launch overlap
+scales with how long a kernel's tail leaves the SMs partly idle, and both the SM count
+(H100 SXM 132 vs PRO 6000's Blackwell config) and the per-kernel durations at q9's shape
+differ. A narrower window on this silicon is consistent with the recorded mechanism. Not
+measured here; recorded so nobody reads "20/20 clean" as "the bug was H100-specific."
