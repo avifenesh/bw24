@@ -86,7 +86,12 @@ spec-headroom fix). Its own teeth: `--teeth` forces the admission reserve to 16 
 verdict must invert. It also closed a map hole where `crates/memra-server/` diffs mapped to
 no gate at all.
 
-A fifth landed 2026-08-06: `accept` (`tools/accept-gate.sh` — the **served-spec acceptance +
+`amargin` / `amarginc` landed 2026-08-06 (`tools/argmax-margin-gate.sh`, + its `--canary` teeth):
+run-gen's prefill-vs-decode argmax assert calibrated against the **top-2 margin at the deciding
+position**, because a near-tie flip and a real cache bug are the same red until you measure the
+margin (see `research/q8-argmax-20260806/`).
+
+Also 2026-08-06: `accept` (`tools/accept-gate.sh` — the **served-spec acceptance +
 long-text** assertion). It exists because the battery was *provably* blind to a class:
 `research/f8f4-flip-20260806/` receipted a kernel arm that moved served greedy text in 4 of 6
 regime cells at temperature 0 and moved spec acceptance up to −9.5pp while **every gate above
