@@ -1,0 +1,35 @@
+[server] starting; models config = [("q", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q": 65 layers, eos=248046
+[worker] q: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q"]
+[server] listening on http://127.0.0.1:8203
+[meter] admit id=chatcmpl-cdd14eb970a6eae26865d3a71c588401 tenant=default lane=interactive model="q"
+[worker] observed session VRAM cost for "q": 336MB (admission gate = 2x)
+[spec-acc] ctx=36 burst=81/144 cum=81/144=0.562
+[meter] admit id=chatcmpl-a76f21a401335c08b3ef95e82b73d174 tenant=default lane=interactive model="q"
+[spec-acc] ctx=166 burst=22/54 cum=103/198=0.520
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-5a5f1f9598913c2d7b4fb9236bd3241a tenant=default lane=interactive model="q"
+[spec-acc] ctx=206 burst=1/3 cum=104/201=0.517
+[worker] spec-affinity: declined (empty suffix; 1 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-366d0a17e3340bb97486a89b7a39ab68 tenant=default lane=interactive model="q"
+[spec-acc] ctx=208 burst=1/3 cum=105/204=0.515
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-921722ae802a975f563fbae3ebc352b5 tenant=default lane=interactive model="q"
+[spec-acc] ctx=210 burst=3/3 cum=108/207=0.522
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-217f6348e814f2cd0d87911cea621f4d tenant=default lane=interactive model="q"
+[spec-acc] ctx=214 burst=3/3 cum=111/210=0.529
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

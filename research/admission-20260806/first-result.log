@@ -1,0 +1,39 @@
+# ADMISSION YIELD — first receipt (2026-08-06, local 5090, lane/admission-latency)
+
+Cell: q27 nv + draft, MEMRA_SPEC_K=3, MEMRA_SPEC_BURST=128, one 512-tok background
+request streaming, second request's first-text measured (ttft-probe, N=3, stream greedy
+128 tok). One flock hold, both arms back-to-back. Driver: run-first-result.sh; raw
+points: logs/points-first-result.jsonl; server logs: logs/first-B128-{on,off}.server.log.
+
+| arm                       | contended first text (median of 3) | runs (s)              |
+|---------------------------|------------------------------------|-----------------------|
+| fix-on  (MEMRA_ADMIT_YIELD default) | 1.30s                    | 1.30, 1.57, 0.89      |
+| fix-off (MEMRA_ADMIT_YIELD=0)       | 1.61s                    | 2.05, 1.61, 0.14      |
+
+fix-off reproduces the sse-cadence VERDICT's 1.67s class (2.05/1.61 contended runs; the
+0.14 run landed after the 512-tok background request finished — an uncontended tail run,
+same harness shape as the VERDICT's N=3).
+
+VERDICT ON RECEIPT: movement, but NOT 0.6s-class. The yield removes only the
+pre-admission wait (PENDING_ADMITS ends the in-flight burst at a round boundary,
+~0.3-0.35s here). ANALYSIS (once): after the newcomer admits, the tick's spec phase (a)
+steps sessions in index order — the BACKGROUND session bursts FIRST, and with the gauge
+back at 0 it runs its whole next B128 burst (~1.2-1.3s at ~27ms/round) before the
+newcomer's first burst (prime + first round + first flush) ever runs. The residual 1.3s
+IS that full peer burst, not admission.
+
+ITERATION (once): COLD-FIRST spec ordering — phase (a) steps sessions that have emitted
+nothing yet (generated.is_empty(), per-request) before any mid-generation peer. Stable
+sort (FIFO within cold/warm classes); session order across independent sessions is
+content-neutral (each owns its cache/scratch). Gated behind the same MEMRA_ADMIT_YIELD
+seam. Re-measured, same cell, same harness (run-iter1.sh; logs/points-iter1.jsonl):
+
+| arm                                | contended first text (median of 3) | runs (s)          |
+|------------------------------------|------------------------------------|-------------------|
+| yield+coldfirst ON                 | 0.149s                             | 0.111, 0.149, 0.151 |
+| yield OFF (coldfirst still active*) | 1.44s                             | 0.74, 1.44, 1.63  |
+
+*the iter1 yield=0 arm ran the pre-gate build where the sort applied unconditionally;
+the committed code gates BOTH pieces behind MEMRA_ADMIT_YIELD, so off = full pre-lane
+behavior. Receipt verdict: 1.61s -> 0.149s — PAST the 0.6s bar, contended first-text
+at B128 now matches the solo class (sse-cadence solo: 0.124s). FULL EVAL proceeds.

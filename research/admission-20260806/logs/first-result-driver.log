@@ -1,0 +1,4 @@
+[01:21:48Z] first-result hold acquired
+[01:22:06Z] contended B128 yield=1: {"label": "nv-K3-B128-contended-yield1", "n": 3, "ttft_first_chunk_s": 1.3018484509957489, "chunk_gap_p50_s": 0.027118099002109375, "chunks_per_resp": 37}
+[01:22:24Z] contended B128 yield=0: {"label": "nv-K3-B128-contended-yield0", "n": 3, "ttft_first_chunk_s": 1.609393672006263, "chunk_gap_p50_s": 0.027469695003674133, "chunks_per_resp": 37}
+[01:22:24Z] FIRST_RESULT_DONE

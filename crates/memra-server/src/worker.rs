@@ -163,6 +163,17 @@ pub enum Cmd {
     Generate(Box<Request>),
 }
 
+/// Pending-admission gauge (lane/admission-latency, 2026-08-06): the HTTP handler increments
+/// it right before sending `Cmd::Generate`; the worker decrements at pop (`handle_cmd`). A
+/// spec burst polls it at every round boundary (the sse-cadence on_commit hook) and ENDS the
+/// burst early when a request is waiting — the tick loop re-checks admission, so a newcomer's
+/// wait stops scaling with MEMRA_SPEC_BURST (B128 held admits a whole ~1.3s burst out).
+/// Burst size is content-neutral (spec-levers battery): the early exit moves WHEN control
+/// returns, never what tokens say. Saturating decrement: a direct-channel sender that never
+/// incremented (tests) must not underflow the gauge.
+pub static PENDING_ADMITS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Serving counters + engine-truth step latency, published every 32nd tick.
 #[derive(Clone, Default)]
 pub struct Metrics {
@@ -1470,17 +1481,35 @@ pub fn run(
                     }
                 }
             }
-            // (a) spec bursts
-            for i in 0..active.len() {
+            // (a) spec bursts — COLD-FIRST (admission-latency, 2026-08-06): a session that
+            // has emitted nothing yet (fresh admit / pool resume, `generated` is per-request)
+            // bursts BEFORE any mid-generation peer. Without this, the admission yield only
+            // moved the wait: the newcomer admitted at tick top, then the background session
+            // (lower index) ran its whole NEXT B128 burst (~1.2s) before the newcomer's
+            // prime ever flushed (first-result.log: fix-on 1.30s vs fix-off 1.61s — the
+            // residual IS that peer burst). With it: 0.149s median (iter1 receipt). Stable
+            // sort: FIFO within cold and warm classes; session order across independent
+            // sessions is content-neutral (each owns its cache/scratch — greedy byte-identity
+            // gates verify). Shares the MEMRA_ADMIT_YIELD=0 rollback seam: off restores the
+            // full pre-lane behavior (index order + full-burst holds) in one flag.
+            let mut spec_order: Vec<usize> = (0..active.len())
+                .filter(|&i| active[i].spec.is_some())
+                .collect();
+            let admit_yield_on = {
+                static Y: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *Y.get_or_init(|| std::env::var("MEMRA_ADMIT_YIELD").as_deref() != Ok("0"))
+            };
+            if admit_yield_on {
+                spec_order.sort_by_key(|&i| !active[i].generated.is_empty());
+            }
+            for i in spec_order {
                 if finished.contains(&i) { continue; }
-                if active[i].spec.is_some() {
-                    match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
-                        Ok(true) => {}
-                        Ok(false) => finished.push(i),
-                        Err(err) => {
-                            let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
-                            finished.push(i);
-                        }
+                match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
+                    Ok(true) => {}
+                    Ok(false) => finished.push(i),
+                    Err(err) => {
+                        let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                        finished.push(i);
                     }
                 }
             }
@@ -1968,6 +1997,15 @@ fn handle_cmd(
     order: &[String],
     queue: &mut std::collections::VecDeque<Box<Request>>,
 ) {
+    // Pending-admit gauge (admission yield): the request is now in the worker's hands
+    // (queued or rejected below) — the tick-top admission phase runs before the next burst,
+    // so no in-flight burst needs to yield for it anymore. Saturating: a direct-channel
+    // sender that never incremented (tests) must not underflow.
+    let _ = PENDING_ADMITS.fetch_update(
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+        |v| v.checked_sub(1),
+    );
     match cmd {
         Cmd::Generate(req) => {
             if !loaded.contains_key(&req.model) {
@@ -2950,6 +2988,16 @@ fn step_session(
         // chunk boundaries change. finish_reason/usage still ride Event::Done, unchanged.
         // MEMRA_SSE_PER_BURST=1 = rollback seam (restores one-event-per-burst emission).
         let per_burst_emit = std::env::var("MEMRA_SSE_PER_BURST").as_deref() == Ok("1");
+        // ADMISSION YIELD (lane/admission-latency, 2026-08-06): a request that arrives while
+        // a burst is in flight used to wait the WHOLE burst out before the worker's tick-top
+        // admission phase could even see it — contended first-text scaled with
+        // MEMRA_SPEC_BURST (0.57s at B32, 1.67s at B128; sse-cadence VERDICT). The round-
+        // boundary flush below now returns a continue-verdict: `false` (a request is waiting
+        // in the cmd channel, PENDING_ADMITS > 0) ends the burst at the current round exactly
+        // as if burst-count had been reached — burst size is content-neutral (spec-levers
+        // battery), so this moves WHEN control returns, never what tokens say.
+        // MEMRA_ADMIT_YIELD=0 = rollback seam (restores full-burst holds).
+        let admit_yield = std::env::var("MEMRA_ADMIT_YIELD").as_deref() != Ok("0");
         let mut vis: Vec<u32> = s.generated.clone();
         let mut cursor = s.emitted_bytes;
         let mut eos_seen = false;
@@ -2957,9 +3005,14 @@ fn step_session(
         let flush_tx = s.tx.clone();
         let eos_ids = s.params.eos.clone();
         let tok_ref = &lm.tok;
-        let mut flush_cb = |slice: &[u32]| {
-            if eos_seen {
-                return; // post-EOS tokens are never visible (accounting happens post-burst)
+        let mut flush_cb = |slice: &[u32]| -> bool {
+            // Continue-verdict polled at EVERY round boundary (even empty/post-EOS flushes).
+            let keep = !admit_yield
+                || PENDING_ADMITS.load(std::sync::atomic::Ordering::Acquire) == 0;
+            if per_burst_emit || eos_seen || slice.is_empty() {
+                // poll-only boundary: rollback seam / post-EOS (tokens never visible;
+                // accounting happens post-burst) / nothing new committed this round.
+                return keep;
             }
             let mut last_id = 0u32;
             for &t in slice {
@@ -2971,7 +3024,7 @@ fn step_session(
                 last_id = t;
             }
             if !send_ok {
-                return; // client already gone — keep the cursor honest, stop sending
+                return keep; // client already gone — keep the cursor honest, stop sending
             }
             let decoded = tok_ref.decode_bytes_special(&vis, true);
             let delta = utf8_delta(&decoded, &mut cursor);
@@ -2980,9 +3033,10 @@ fn step_session(
             {
                 send_ok = false;
             }
+            keep
         };
-        let on_commit: Option<&mut dyn FnMut(&[u32])> =
-            if per_burst_emit { None } else { Some(&mut flush_cb) };
+        let on_commit: Option<&mut dyn FnMut(&[u32]) -> bool> =
+            if per_burst_emit && !admit_yield { None } else { Some(&mut flush_cb) };
         let (burst, d, a) = match s.constraint.as_mut() {
             Some(c) => {
                 let mut g = crate::constrained::SpecGrammar::new(c, lm.eos_id);

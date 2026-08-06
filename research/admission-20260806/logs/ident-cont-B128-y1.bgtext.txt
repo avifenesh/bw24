@@ -1,0 +1,36 @@
+Here's a thinking thinking sequence
+
+1.  **Deconstruct the user's request:**
+    *   Topic: History of GPU computing.
+    *   Length: At least 800 words.
+    *   Style: Very detailed essay.
+
+2.  **Initial brainstorming and outlining (Mental Sketch):**
+    *   *What is GPU computing?* It's using Graphics Processing Units for general-purpose computation, not just graphics.
+    *   *Key phases:*
+        *   Origins: GPUs for graphics only.
+        *   Early experiments: "GPGPU" hacks, fixed-function pipelines.
+        *   The Turning Point: Programmable shaders, NVIDIA's CUDA, ATI/AMD's OpenCL.
+        *   Maturation: Unified memory, AI boom, data centers.
+        *   Current/Future: AI dominance, specialized architectures.
+    *   *Key players:* NVIDIA, AMD, Intel, Apple (briefly), Khronos Group.
+    *   *Key technologies:* CUDA, OpenCL, Vulkan, Tensor Cores, Ray Tracing (maybe less relevant to general compute, but good context).
+
+3.  **Drafting - Section by Section (with word count monitoring):**
+
+    *   *Introduction:*
+        *   Define GPU. Contrast with CPU.
+        *   Thesis: The evolution from dedicated graphics accelerators to the backbone of modern high-performance computing and AI.
+        *   *Keywords:* Parallelism, throughput, GPGPU.
+
+    *   *Early Days (1990s - Early 2000s):*
+        *   3Dfx Voodoo, NVIDIA RIVA, GeForce 256.
+        *   Focus on rasterization, fixed-function pipelines.
+        *   The "hack" era: Using texture buffers for math.
+        *   *Detail:* Mention the limitation of fixed-function. Developers had to map math problems to graphics APIs (OpenGL/DirectX) in creative ways.
+
+    *   *The Shift to Programmability (Mid-2000s):*
+        *   NVIDIA GeForce 8 series (CUDA architecture precursor).
+        *   ATI Radeon X1000 series.
+        *   Introduction of vertex and pixel shaders.
+        *   *Crucial moment:* NVIDIA's CUDA (Compute Unified Device Architecture) in 2007. This is the big one. It

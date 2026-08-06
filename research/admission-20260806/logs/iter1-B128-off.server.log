@@ -1,0 +1,27 @@
+[server] starting; models config = [("q", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q": 65 layers, eos=248046
+[worker] q: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q"]
+[server] listening on http://127.0.0.1:8203
+[meter] admit id=chatcmpl-a5bc60248c5f6cc13917112bc3863378 tenant=default lane=interactive model="q"
+[worker] observed session VRAM cost for "q": 336MB (admission gate = 2x)
+[spec-acc] ctx=30 burst=83/132 cum=83/132=0.629
+[meter] admit id=chatcmpl-3d2ec21cb1f175243762b4071f9eefdd tenant=default lane=interactive model="q"
+[spec-acc] ctx=158 burst=83/138 cum=166/270=0.615
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-58d7fa9f5d052ff69c28381f73fcd1be tenant=default lane=interactive model="q"
+[spec-acc] ctx=287 burst=81/144 cum=247/414=0.597
+[worker] spec-affinity: declined (empty suffix; 1 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-194f7ce14300f11fb7b1d05ac4fbf2c1 tenant=default lane=interactive model="q"
+[spec-acc] ctx=416 burst=73/162 cum=320/576=0.556
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

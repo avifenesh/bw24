@@ -1,0 +1,56 @@
+[01:39:13Z] P1 contended hold acquired (56)
+[01:39:35Z] P1 contended B32 yield=1: {"label": "contended-B32-y1", "n": 5, "ttft_first_chunk_s": 0.12316879499849165, "chunk_gap_p50_s": 0.02757442550137057, "chunks_per_resp": 37}
+[01:39:59Z] P1 contended B32 yield=0: {"label": "contended-B32-y0", "n": 5, "ttft_first_chunk_s": 0.541340019000927, "chunk_gap_p50_s": 0.02782529699834413, "chunks_per_resp": 37}
+[01:40:15Z] P1 contended B128 yield=1: {"label": "contended-B128-y1", "n": 5, "ttft_first_chunk_s": 0.15177690499695018, "chunk_gap_p50_s": 0.02740237649777555, "chunks_per_resp": 37}
+[01:40:39Z] P1 contended B128 yield=0: {"label": "contended-B128-y0", "n": 5, "ttft_first_chunk_s": 1.6012028109980747, "chunk_gap_p50_s": 0.027594732495344942, "chunks_per_resp": 37}
+[01:40:39Z] P1_DONE
+[01:40:39Z] P2 solo hold acquired
+[01:41:01Z] P2 solo B32 yield=1: {"label": "solo-B32-y1", "n": 5, "ttft_first_chunk_s": 0.12399394100066274, "chunk_gap_p50_s": 0.02753013200344867, "chunks_per_resp": 89}
+[01:41:22Z] P2 solo B128 yield=1: {"label": "solo-B128-y1", "n": 5, "ttft_first_chunk_s": 0.12447991399676539, "chunk_gap_p50_s": 0.027571231497859117, "chunks_per_resp": 89}
+[01:41:43Z] P2 solo B128 yield=0: {"label": "solo-B128-y0", "n": 5, "ttft_first_chunk_s": 0.12418711700593121, "chunk_gap_p50_s": 0.027603948998148553, "chunks_per_resp": 89}
+[01:41:43Z] P2_DONE
+[01:41:57Z] P3 c1-B128-y1-r1 p1: agg=101.4 p50=1.301 err=0 [76, 1762 MHz]
+[01:42:02Z] P3 c1-B128-y1-r1 p2: agg=100.7 p50=1.308 err=0 [78, 1747 MHz]
+[01:42:16Z] P3 c1-B128-y0-r1 p1: agg=101.4 p50=1.301 err=0 [76, 1762 MHz]
+[01:42:22Z] P3 c1-B128-y0-r1 p2: agg=100.8 p50=1.308 err=0 [77, 1747 MHz]
+[01:42:35Z] P3 c1-B128-y1-r2 p1: agg=101.4 p50=1.301 err=0 [76, 1770 MHz]
+[01:42:41Z] P3 c1-B128-y1-r2 p2: agg=100.8 p50=1.308 err=0 [77, 1747 MHz]
+[01:42:55Z] P3 c1-B128-y0-r2 p1: agg=101.4 p50=1.301 err=0 [76, 1762 MHz]
+[01:43:00Z] P3 c1-B128-y0-r2 p2: agg=100.9 p50=1.307 err=0 [78, 1747 MHz]
+[01:43:14Z] P3 c1-B32-y1-r1 p1: agg=93.5 p50=1.401 err=0 [77, 1800 MHz]
+[01:43:20Z] P3 c1-B32-y1-r1 p2: agg=93.2 p50=1.405 err=0 [78, 1800 MHz]
+[01:43:35Z] P3 c1-B32-y0-r1 p1: agg=93.5 p50=1.401 err=0 [76, 1800 MHz]
+[01:43:41Z] P3 c1-B32-y0-r1 p2: agg=93.0 p50=1.413 err=0 [77, 1755 MHz]
+[01:44:11Z] P3 c8-B128-y1-r1 p1: agg=96.5 p50=2.722 err=0 [80, 1725 MHz]
+[01:44:32Z] P3 c8-B128-y1-r1 p2: agg=96.3 p50=2.745 err=0 [82, 1717 MHz]
+[01:45:02Z] P3 c8-B128-y0-r1 p1: agg=99.4 p50=10.318 err=0 [82, 1717 MHz]
+[01:45:23Z] P3 c8-B128-y0-r1 p2: agg=98.7 p50=10.381 err=0 [83, 1710 MHz]
+[01:45:54Z] P3 c8-B128-y1-r2 p1: agg=94.8 p50=2.759 err=0 [82, 1717 MHz]
+[01:46:16Z] P3 c8-B128-y1-r2 p2: agg=95.0 p50=2.777 err=0 [84, 1702 MHz]
+[01:46:45Z] P3 c8-B128-y0-r2 p1: agg=99.2 p50=10.351 err=0 [83, 1717 MHz]
+[01:47:07Z] P3 c8-B128-y0-r2 p2: agg=98.5 p50=10.420 err=0 [84, 1702 MHz]
+[01:47:39Z] P3 c8-B32-y1-r1 p1: agg=88.6 p50=10.832 err=0 [83, 1747 MHz]
+[01:48:03Z] P3 c8-B32-y1-r1 p2: agg=87.7 p50=10.969 err=0 [85, 1755 MHz]
+[01:48:34Z] P3 c8-B32-y0-r1 p1: agg=91.6 p50=11.354 err=0 [83, 1755 MHz]
+[01:48:57Z] P3 c8-B32-y0-r1 p2: agg=90.8 p50=11.430 err=0 [85, 1710 MHz]
+[01:48:57Z] P3_DONE
+[01:49:07Z] P4 ident-solo-B128-y1 captured (522 bytes)
+[01:49:16Z] P4 ident-solo-B128-y0 captured (522 bytes)
+[01:49:26Z] P4 ident-solo-B32-y1 captured (522 bytes)
+[01:49:35Z] P4 ident-solo-B32-y0 captured (522 bytes)
+[01:49:47Z] P4 ident-cont-B128-y1 captured (522 bytes)
+[01:50:04Z] P4 ident-cont-B128-y0 captured (522 bytes)
+[01:50:05Z] P4 identity solo-B128-y1 vs solo-B128-y0: BYTE-IDENTICAL
+[01:50:05Z] P4 identity solo-B32-y1 vs solo-B32-y0: BYTE-IDENTICAL
+[01:50:05Z] P4 identity solo-B32-y1 vs solo-B128-y1: BYTE-IDENTICAL
+[01:50:05Z] P4 identity cont-B128-y1 vs cont-B128-y0: BYTE-IDENTICAL
+[01:50:05Z] P4 identity solo-B128-y1 vs cont-B128-y1: BYTE-IDENTICAL
+[01:50:05Z] P4 identity BG(cont-y1) vs BG(cont-y0): BYTE-IDENTICAL
+[01:50:05Z] P4_DONE
+[01:50:32Z] P5 run-spec nv+draft B128 rc=0 PASS=9
+[01:50:49Z] P5 serve-smoke rc=0 failed=0
+[01:51:01Z] P5 decode-batch-gate config B=8: ALL GREEN
+[01:51:08Z] P5 decode-batch-gate strict B=4: ALL GREEN
+[01:51:11Z] P5 cargo test -p memra-server rc=0 test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s 
+[01:51:11Z] FULL_EVAL_DONE
+FULL_EVAL_DONE
