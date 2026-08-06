@@ -1,0 +1,48 @@
+=== MTP drafter panic backtrace 20260806T212127Z
+=== commit: lane/step37-p2 @ d316162c — synced 2026-08-06T21:10:25Z
+lock acquired 2026-08-06T21:21:27Z
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[mtp-draft] loading external MTP draft: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, head_vocab=128896 (full)
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers, nextn=0)
+prompt tokens: [55]
+
+[generate]   3 tok in 0.155s = 19.39 tok/s (gen-only; this run's prime 0.012s)
+  tokens: [14, 223, 18, 90]
+[spec] stream_on=false env=false samp=false dg=false captured=false active=false session=false replay=false
+
+thread 'main' (83015) panicked at /home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/src/driver/safe/core.rs:1917:32:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0:     0x6430c85d9c28 - <<std[1e3c4ec04c5261a9]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[37f591cfbe66b0b1]::fmt::Display>::fmt
+   1:     0x6430c85ef9ba - core[37f591cfbe66b0b1]::fmt::write
+   2:     0x6430c85de9f2 - <std[1e3c4ec04c5261a9]::sys::stdio::unix::Stderr as std[1e3c4ec04c5261a9]::io::Write>::write_fmt
+   3:     0x6430c85bb696 - std[1e3c4ec04c5261a9]::panicking::default_hook::{closure#0}
+   4:     0x6430c85d4071 - std[1e3c4ec04c5261a9]::panicking::default_hook
+   5:     0x6430c85d422b - std[1e3c4ec04c5261a9]::panicking::panic_with_hook
+   6:     0x6430c85bb784 - std[1e3c4ec04c5261a9]::panicking::panic_handler::{closure#0}
+   7:     0x6430c85b0799 - std[1e3c4ec04c5261a9]::sys::backtrace::__rust_end_short_backtrace::<std[1e3c4ec04c5261a9]::panicking::panic_handler::{closure#0}, !>
+   8:     0x6430c85bc17d - __rustc[6ef78fba13ac776c]::rust_begin_unwind
+   9:     0x6430c85f00dc - core[37f591cfbe66b0b1]::panicking::panic_fmt
+  10:     0x6430c85f00a2 - core[37f591cfbe66b0b1]::panicking::panic
+  11:     0x6430c85efe59 - core[37f591cfbe66b0b1]::option::unwrap_failed
+  12:     0x6430c8499325 - <memra_engine[9e1e84eaf1d18458]::Engine>::copy_into
+  13:     0x6430c836e5bf - <memra_engine[9e1e84eaf1d18458]::hybrid::HybridModel>::full_attn_verify
+  14:     0x6430c8386e55 - <memra_engine[9e1e84eaf1d18458]::hybrid::HybridModel>::decode_step_t_core_stream
+  15:     0x6430c8377ebe - <memra_engine[9e1e84eaf1d18458]::hybrid::HybridModel>::generate_spec_inner2
+  16:     0x6430c836b222 - <memra_engine[9e1e84eaf1d18458]::hybrid::HybridModel>::generate_spec
+  17:     0x6430c82f1b10 - run_spec[3e890ad881cb5265]::main
+  18:     0x6430c82f39f3 - std[1e3c4ec04c5261a9]::sys::backtrace::__rust_begin_short_backtrace::<fn() -> core[37f591cfbe66b0b1]::result::Result<(), alloc[24b8200b0946867]::boxed::Box<dyn core[37f591cfbe66b0b1]::error::Error>>, core[37f591cfbe66b0b1]::result::Result<(), alloc[24b8200b0946867]::boxed::Box<dyn core[37f591cfbe66b0b1]::error::Error>>>
+  19:     0x6430c82f3b91 - std[1e3c4ec04c5261a9]::rt::lang_start::<core[37f591cfbe66b0b1]::result::Result<(), alloc[24b8200b0946867]::boxed::Box<dyn core[37f591cfbe66b0b1]::error::Error>>>::{closure#0}
+  20:     0x6430c85d2c07 - std[1e3c4ec04c5261a9]::rt::lang_start_internal
+  21:     0x6430c82f3545 - main
+  22:     0x7994d222a1ca - <unknown>
+  23:     0x7994d222a28b - __libc_start_main
+  24:     0x6430c82ea755 - _start
+  25:                0x0 - <unknown>
+exit=101
+lock released 2026-08-06T21:22:02Z
+=== done 2026-08-06T21:22:02Z

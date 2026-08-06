@@ -1,0 +1,79 @@
+=== step37-p2 MTP drafter gate 20260806T212902Z
+=== commit: lane/step37-p2 @ 348a5787 — synced 2026-08-06T21:24:36Z
+=== trunk:  /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+=== draft:  /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+lock acquired 2026-08-06T21:29:02Z
+
+########## G4a: drafter attach, K=1, n=8 ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[mtp-draft] loading external MTP draft: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, head_vocab=128896 (full)
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers, nextn=0)
+prompt tokens: [55]
+
+[generate]   7 tok in 0.337s = 20.78 tok/s (gen-only; this run's prime 0.013s)
+  tokens: [14, 223, 18, 90, 18, 55, 14, 223]
+
+[generate_spec K=1] 8 tok in 1.528s = 4.58 tok/s (0.22x vs generate; this run's prime 0.013s)
+  acceptance: 0/7 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+=== SELF-CONSISTENCY PASS ===
+run-spec K=1 exit=0
+
+########## G4b: run-spec K=1..8, n=32, text prompt ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[mtp-draft] loading external MTP draft: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, head_vocab=128896 (full)
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers, nextn=0)
+text prompt (110 chars) -> 19 tokens
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+
+[generate]   31 tok in 1.881s = 16.48 tok/s (gen-only; this run's prime 0.506s)
+  tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 12740, 16846, 1055, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 11, 832, 396, 3586, 12846, 477, 21121]
+
+[generate_spec K=1] 32 tok in 5.917s = 5.24 tok/s (0.32x vs generate; this run's prime 0.506s)
+  acceptance: 0/31 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=2] 32 tok in 7.535s = 4.11 tok/s (0.25x vs generate; this run's prime 0.508s)
+  acceptance: 0/62 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=3] 32 tok in 9.508s = 3.26 tok/s (0.20x vs generate; this run's prime 0.506s)
+  acceptance: 0/93 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=4] 32 tok in 11.493s = 2.70 tok/s (0.16x vs generate; this run's prime 0.512s)
+  acceptance: 0/124 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=5] 32 tok in 13.538s = 2.29 tok/s (0.14x vs generate; this run's prime 0.508s)
+  acceptance: 0/155 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=6] 32 tok in 15.559s = 1.99 tok/s (0.12x vs generate; this run's prime 0.508s)
+  acceptance: 0/186 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=7] 32 tok in 17.147s = 1.81 tok/s (0.11x vs generate; this run's prime 0.506s)
+  acceptance: 0/217 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+[generate_spec K=8] 32 tok in 19.948s = 1.55 tok/s (0.09x vs generate; this run's prime 0.506s)
+  acceptance: 0/248 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+=== SELF-CONSISTENCY PASS ===
+run-spec K=1..8 exit=0
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-06T21:32:07Z
+=== gate rc=0
+=== done 2026-08-06T21:32:07Z

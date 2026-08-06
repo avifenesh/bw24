@@ -823,9 +823,33 @@ impl MtpHead {
             );
         }
 
-        // Draft lm_head: the file's own output.weight (+ shared_head_norm / output_norm). For
-        // FR-Spec this is [n_embd, draft_vocab] with draft_vocab << n_vocab.
-        let head = load_t(e, &src, "output.weight")?;
+        // Draft lm_head. PREFERENCE ORDER IS THE ARTIFACT'S, NOT OURS (upstream step35.cpp:553
+        // `layer.nextn.shared_head_head ? ... : model.output`): a NextN block owns its OWN head,
+        // and only a file that omits it falls back to the file-level `output.weight`.
+        //
+        // MEASURED ON THE SHIPPED ARTIFACT (Step3.7-flash-mtp-Q8_0.gguf, byte hashes in
+        // research/step37-p2-20260806/raw/draft-head-tensor-hashes-20260807.txt): the file carries
+        // BOTH, they are DIFFERENT matrices, and the three MTP blocks' heads differ from each
+        // other too —
+        //     output.weight                        sha 3eec5831…  <- the TRUNK lm_head, re-quantized
+        //     blk.45.nextn.shared_head_head.weight sha c90b907b…  <- block 45's own head
+        //     blk.46 …                             sha a22d2957…
+        //     blk.47 …                             sha 4b21e137…
+        // The tell: this file's top-level `output_norm.weight` is BYTE-IDENTICAL to the trunk
+        // artifact's (both sha d7526f44…), i.e. the top level is a copy of the trunk's output
+        // stack, present so the draft gguf stands alone. Reading it as the draft head projects
+        // the MTP block's hidden through the TRUNK's head — coherent-looking drafts the verify
+        // never accepts. Receipt: acceptance 0/248 across K=1..8 with self-consistency PASS
+        // (raw/mtp-draft-20260806T212902Z.log) — the exact failure class run_spec.rs's
+        // "acceptance == 0 with identical output" WARNING exists to catch.
+        //
+        // FR-Spec drafts (trimmed [n_embd, draft_vocab] + d2t) publish the trimmed head as the
+        // file-level `output.weight` and carry no `nextn.shared_head_head`, so they keep the
+        // fallback — hence preference, not replacement.
+        let head = match load_opt(e, &src, &p("nextn.shared_head_head.weight"))? {
+            Some(t) => t,
+            None => load_t(e, &src, "output.weight")?,
+        };
         let head_norm = match load_opt(e, &src, &p("nextn.shared_head_norm.weight"))? {
             Some(t) => Some(t),
             None => load_opt(e, &src, "output_norm.weight")?,
@@ -897,7 +921,12 @@ impl MtpHead {
             None
         };
         eprintln!(
-            "[mtp-draft] external draft head: blk.{n}, head_vocab={}{}{}",
+            "[mtp-draft] external draft head: blk.{n}, source={}, head_vocab={}{}{}",
+            if src.has(&p("nextn.shared_head_head.weight")) {
+                "nextn.shared_head_head"
+            } else {
+                "output.weight"
+            },
             head.out_features(),
             if d2t.is_some() {
                 " (trimmed, d2t map)"
@@ -1199,7 +1228,16 @@ impl HybridModel {
                                            cfg.attn_gate_separate())?,
                     ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
-                    shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
+                    // `nextn.shared_head_head` is the name the convert script and upstream both
+                    // use (LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD -> "blk.%d.nextn.shared_head_head");
+                    // `nextn.shared_head` is a name no shipped artifact carries, so this arm was
+                    // silently always-None and every embedded-MTP model fell back to the trunk
+                    // `self.output` in `mtp_head_forward_dev` op 12. Harmless for qwen35-family
+                    // heads that genuinely tie to the trunk head; wrong for any artifact that
+                    // ships its own — which the StepFun step35 drafter does (see `load_draft`).
+                    // Keep the old name as a fallback so nothing that did match still does.
+                    shared_head_head: load_opt(e, src, &p("nextn.shared_head_head.weight"))?
+                        .or(load_opt(e, src, &p("nextn.shared_head.weight"))?),
                     d2t: None,
                     geom: None,
                     // EMBEDDED MTP block: same file, so its own arrays cover index `n`.
