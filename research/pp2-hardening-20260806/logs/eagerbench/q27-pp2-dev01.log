@@ -1,0 +1,16 @@
+ppn-bench M2 config: stages=2 devices=0,1 splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=5 model=/scratch-models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+stage fence: [0, 32, 64] over 64 layers
+{"arm":"serial-pp","rep":0,"g":128,"ms":1690.299,"us_per_tok":13205.46,"tok_s":75.73}
+{"arm":"pipelined-pp","rep":0,"g":128,"ms":883.862,"us_per_tok":6905.17,"tok_s":144.82}
+{"arm":"serial-pp","rep":1,"g":128,"ms":1690.586,"us_per_tok":13207.70,"tok_s":75.71}
+{"arm":"pipelined-pp","rep":1,"g":128,"ms":883.843,"us_per_tok":6905.03,"tok_s":144.82}
+{"arm":"serial-pp","rep":2,"g":128,"ms":1690.372,"us_per_tok":13206.03,"tok_s":75.72}
+{"arm":"pipelined-pp","rep":2,"g":128,"ms":883.825,"us_per_tok":6904.88,"tok_s":144.83}
+{"arm":"serial-pp","rep":3,"g":128,"ms":1689.700,"us_per_tok":13200.78,"tok_s":75.75}
+{"arm":"pipelined-pp","rep":3,"g":128,"ms":883.843,"us_per_tok":6905.03,"tok_s":144.82}
+{"arm":"serial-pp","rep":4,"g":128,"ms":1690.137,"us_per_tok":13204.19,"tok_s":75.73}
+{"arm":"pipelined-pp","rep":4,"g":128,"ms":883.886,"us_per_tok":6905.36,"tok_s":144.82}
+---- medians (us/token over 128 gen steps, N=5 reps, interleaved) ----
+serial-pp: median 13205.46 us/tok (75.73 tok/s)  all=[13200.78, 13204.19, 13205.46, 13206.03, 13207.7]
+pipelined-pp: median 6905.03 us/tok (144.82 tok/s)  all=[6904.88, 6905.03, 6905.03, 6905.17, 6905.36]

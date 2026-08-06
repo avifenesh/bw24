@@ -335,6 +335,30 @@ impl HybridModel {
         // tick's only steady-state D2H — one per chunk, none per seq.
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
+        // ---- PP DOOR: FAIL CLOSED (pp2-hardening 2026-08-06) ------------------------------
+        // This body has NO pp arm: it walks lo=0..n_layers on the primary engine's stream,
+        // with no stage split, no boundary, and no `rt.enter()`. The only pp-awareness below
+        // is the `pp_cuts().is_none()` term in the B=1 fast-path condition, whose effect is
+        // the OPPOSITE of a guard — it disables the fast path and drops into this full-trunk
+        // body. So with the door open and a cross-device placement, every projection for the
+        // remote stages' layers was read over PCIe, per step, silently: measured 7.4 vs
+        // 208.9 tok/s at B=1 (28x), 47.4 vs 657.0 at B=8 (13.9x) on a PRO 6000 pair over
+        // Gen5 x16 P2P. Nothing failed or warned, because peer reads return identical bytes
+        // and all three `decode-batch-gate` gates PASS on that config — the failure mode is
+        // performance, and a green exactness battery hid it. Receipts + the SHARD=0 isolation
+        // arm: `research/pp2-hardening-20260806` (RESULTS.jsonl, logs/batchcost/).
+        //
+        // Matches the deferred-pipelined arm's precedent (decode.rs: refuse the unsound
+        // placement loudly, with a measurement override). Escape hatches, in preference
+        // order: MEMRA_PP_SHARD=0 (weights all home — restores full speed, costs the
+        // capacity that PP-2 exists for), or drop the pp door for batched serving. The
+        // override below exists so this lane's successors can bench the peer-read arm.
+        crate::pp::refuse_unsplit_if_remote(
+            "decode_step_batch",
+            "stage-split the batched trunk (open bill item — start by extracting a \
+             decode_batch_layers(lo..hi) seam), or serve single-stream over the eager pp \
+             arm (decode_step_h), which IS split",
+        )?;
         // ---- H3: B=1 FAST-PATH (serve-path phase 2, 2026-08-05) ----------------------------
         // At b_n==1 every projection below calls `matmul_pre(.., b_n)` with m=1, which is
         // ALREADY the m=1 mmvq dispatch — so the m=1 *kernel family* was never the gap. What

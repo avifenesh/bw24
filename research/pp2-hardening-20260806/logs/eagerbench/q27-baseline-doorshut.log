@@ -1,0 +1,8 @@
+ppn-bench M2 config: stages=OFF devices=default(primary) splits=default(even) shard=per-stage streams=per-stage P=32 G=128 reps=5 model=/scratch-models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+{"arm":"serial-off","rep":0,"g":128,"ms":1685.864,"us_per_tok":13170.81,"tok_s":75.93}
+{"arm":"serial-off","rep":1,"g":128,"ms":1683.582,"us_per_tok":13152.98,"tok_s":76.03}
+{"arm":"serial-off","rep":2,"g":128,"ms":1683.514,"us_per_tok":13152.45,"tok_s":76.03}
+{"arm":"serial-off","rep":3,"g":128,"ms":1682.653,"us_per_tok":13145.72,"tok_s":76.07}
+{"arm":"serial-off","rep":4,"g":128,"ms":1681.323,"us_per_tok":13135.33,"tok_s":76.13}
+---- medians (us/token over 128 gen steps, N=5 reps, interleaved) ----
+serial-off: median 13152.45 us/tok (76.03 tok/s)  all=[13135.33, 13145.72, 13152.45, 13152.98, 13170.81]
