@@ -1,0 +1,30 @@
+BUILD EXIT=0
+   Compiling memra-engine v0.71.0 (/root/bw24-q8a/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 1.06s
+=== VERIFY: the calibrated diagnostic on the real failing pair 2026-08-06T15:08:02+00:00 ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+[gate] top-2 margin: prefill 0.0307 decode 0.0999 | config spread at these ids 0.2117 -> NEAR-TIE class (the spread covers the margin; run tools/argmax-margin-gate.sh to see this position's margin against the prompt's own distribution)
+assertion `left == right` failed: decode-step diverges from prefill at the last position (see the [gate] lines above for the near-tie-vs-defect diagnosis; a wide-margin flip means a cache/threading/kernel bug, a margin inside the config spread is the documented cross-config drift class)
+
+=== GATE: amargin on the 27B Q8_0 (window 12), 188-SM pod ===
+  EXIT=0
+argmax-margin-gate: model=Qwen3.6-27B-Q8_0.gguf prompt=board-2048.txt window=12 canary=0
+  explained pos=2047 margin=0.0307 < delta=0.2117
+  SUMMARY flips=1 bad=0
+  PASS: every prefill/decode argmax flip is explained by a margin the config spread covers
+  raw: research/q8-argmax-20260806/gate-Qwen3.6-27B-Q8_0-board-2048.log
+
+=== GATE canary on the 27B Q8_0 ===
+  EXIT=0
+argmax-margin-gate: model=Qwen3.6-27B-Q8_0.gguf prompt=board-2048.txt window=12 canary=1
+  [canary] injected a WIDE-margin flip (pos 9999, margin 5.0000, delta 0.1000)
+           — a disagreement the config spread cannot explain; must be rejected
+  explained pos=2047 margin=0.0307 < delta=0.2117
+  UNEXPLAINED pos=9999 margin=5.0000 delta=0.1000
+  TOO-MANY-FLIPS 2 > 1
+  SUMMARY flips=2 bad=2
+  CANARY PASS: the injected wide-margin flip broke the assertion as required (teeth)
+  raw: research/q8-argmax-20260806/gate-Qwen3.6-27B-Q8_0-board-2048.canary.log
+########## VERIFY DONE 2026-08-06T15:10:34+00:00 ##########
