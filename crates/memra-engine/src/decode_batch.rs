@@ -93,7 +93,7 @@ impl HybridModel {
     pub fn decode_batch_exact16_ok(&self) -> bool {
         fn ok(w: &crate::model::GpuTensor) -> bool {
             match w {
-                crate::model::GpuTensor::Quant { qtype, rp4, .. } =>
+                crate::model::GpuTensor::Quant { qtype, .. } =>
                     *qtype == crate::QT_Q4_0 || *qtype == crate::QT_Q6_K
                     || *qtype == crate::QT_F8_E4M3
                     // BLOCK-128 FP8-ST (lane/rp-on-st, 2026-08-06): admitted now that the class
@@ -113,28 +113,70 @@ impl HybridModel {
                     // GGUF models, which is a behavior change on the primary format — hence the
                     // full decode-batch config+strict battery on both.
                     || *qtype == crate::QT_NVFP4
-                    || (*qtype == crate::QT_Q8_0 && rp4.is_some()),
+                    // Q4_K (lane/rp-on-st): named by MEMRA_EXACT16_WHY as the 9B NVFP4 GGUF's
+                    // refusing class (`L0.wqkv qtype=1`) — mixed NVFP4 checkpoints keep Q4_K
+                    // attention. Now has base + _rp b16.
+                    || *qtype == crate::QT_Q4_K
+                    // Q5_K (lane/rp-on-st): the FOURTH class the diagnostic named on the same 9B
+                    // GGUF (`L0.wqkv_gate qtype=3`). A shipped mixed checkpoint spreads ~500
+                    // matmuls over four/five classes, and this predicate is an ALL — so chunk 16
+                    // was unreachable for every real artifact until every class had a b16.
+                    || *qtype == crate::QT_Q5_K
+                    // Q8_0 NO LONGER requires the mirror (rp4): it has a base b16 too, so the
+                    // tier is reachable at zero VRAM. Named by the diagnostic as the FP8-ST
+                    // refusal — `L0.ssm_beta qtype=0 rp4=false`, a 23.9 MiB residual class that
+                    // was gating chunk 16 for a 16.4 GiB checkpoint.
+                    || *qtype == crate::QT_Q8_0,
                 _ => false,
             }
         }
+        // WHY-NOT DIAGNOSTIC (lane/rp-on-st, 2026-08-06): this predicate is a bare bool over
+        // ~500 tensors, so a refusal produced only `B=16 > cap 8 with no exact tier ... refused`
+        // with no way to tell WHICH class refused. That cost this lane two wrong hypotheses (the
+        // rp mirror, then e4m3-only) before the NVFP4 gap was found. MEMRA_EXACT16_WHY=1 names
+        // the first refusing tensor + its qtype. Diagnostic-only per flags doctrine; default off,
+        // zero cost when unread.
+        let why = std::env::var("MEMRA_EXACT16_WHY").is_ok();
+        macro_rules! chk {
+            ($t:expr, $label:expr) => {{
+                let r = ok($t);
+                if !r && why {
+                    // qtype = -1 means the tensor is NOT Quant at all (a float/BF16/F16
+                    // container), which the tier can never admit — a distinct diagnosis from
+                    // "quantized, but in a class with no b16 kernel".
+                    let (qt, rp4) = match $t {
+                        crate::model::GpuTensor::Quant { qtype, rp4, .. } => (*qtype, rp4.is_some()),
+                        _ => (-1, false),
+                    };
+                    eprintln!("[exact16] REFUSED by {} qtype={qt} rp4={rp4}", $label);
+                }
+                r
+            }};
+        }
         if self.cfg.m3.is_some() || self.is_gemma4_e4b() || self.cfg.gemma4.is_some() {
+            if why { eprintln!("[exact16] REFUSED by architecture (m3/gemma4)"); }
             return false;
         }
-        self.layers.iter().all(|l| {
+        self.layers.iter().enumerate().all(|(li, l)| {
             let mix_ok = match &l.mixer {
-                Mixer::Full(fa) => [&fa.wq, &fa.wk, &fa.wv, &fa.wo].into_iter().all(ok),
-                Mixer::Linear(la) => [&la.wqkv, &la.wqkv_gate, &la.ssm_beta,
-                                      &la.ssm_alpha, &la.ssm_out].into_iter().all(ok),
+                Mixer::Full(fa) => chk!(&fa.wq, format!("L{li}.wq")) && chk!(&fa.wk, format!("L{li}.wk"))
+                    && chk!(&fa.wv, format!("L{li}.wv")) && chk!(&fa.wo, format!("L{li}.wo")),
+                Mixer::Linear(la) => chk!(&la.wqkv, format!("L{li}.wqkv"))
+                    && chk!(&la.wqkv_gate, format!("L{li}.wqkv_gate"))
+                    && chk!(&la.ssm_beta, format!("L{li}.ssm_beta"))
+                    && chk!(&la.ssm_alpha, format!("L{li}.ssm_alpha"))
+                    && chk!(&la.ssm_out, format!("L{li}.ssm_out")),
                 // MLA rides its own increment-4 arm; never admitted to the exact-16 tier here.
-                Mixer::Mla(_) => false,
+                Mixer::Mla(_) => { if why { eprintln!("[exact16] REFUSED by L{li} MLA mixer"); } false }
             };
             let ffn_ok = match &l.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } =>
-                    [ffn_gate, ffn_up, ffn_down].into_iter().all(ok),
-                crate::hybrid::Ffn::Moe(_) => false,
+                    chk!(ffn_gate, format!("L{li}.ffn_gate")) && chk!(ffn_up, format!("L{li}.ffn_up"))
+                    && chk!(ffn_down, format!("L{li}.ffn_down")),
+                crate::hybrid::Ffn::Moe(_) => { if why { eprintln!("[exact16] REFUSED by L{li} MoE ffn"); } false }
             };
             mix_ok && ffn_ok
-        }) && ok(&self.output)
+        }) && chk!(&self.output, "output".to_string())
     }
 
     /// H3 rollback/A-B seam (serve-path phase 2): `MEMRA_SERVE_B1FAST=0` sends B=1 back

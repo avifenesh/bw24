@@ -5567,12 +5567,13 @@ impl Engine {
             // is present (rp4) — the mirror pick below then routes to the _rp family.
             // QT_F8_E4M3 joins unconditionally (lane/rp-on-st): its b16 IS the base kernel,
             // because the native e4m3 row layout is already aligned and needs no mirror.
-            // NVFP4 joins unconditionally too (lane/rp-on-st): base + _rp b16 twins both exist,
-            // so either residency layout has its aligned form at this width.
-            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, rp4, .. }
+            // NVFP4/Q4_K/Q8_0 all join unconditionally now (lane/rp-on-st): each has base + _rp
+            // b16 twins, so either residency layout has its aligned form at this width. Q8_0's
+            // old `rp4.is_some()` precondition is GONE — the mirror is a bandwidth lever, not the
+            // exact tier's admission ticket (it was refusing FP8-ST over 23.9 MiB of ssm_beta).
+            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, .. }
                 if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || *qtype == QT_F8_E4M3
-                    || *qtype == QT_NVFP4
-                    || (*qtype == QT_Q8_0 && rp4.is_some()));
+                    || *qtype == QT_NVFP4 || *qtype == QT_Q4_K || *qtype == QT_Q5_K || *qtype == QT_Q8_0);
             if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
@@ -5753,12 +5754,11 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            // b16 tier: Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's b16 exists ONLY as the
-            // split-plane _rp twin (qmatvec_q8_0_mmvq_b16_rp — the q8rp mirror lane was built
-            // for the m<=16 family, hybrid.rs), so Q8_0 joins iff the mirror is present (mrp).
-            // NVFP4/F8_E4M3 b16: base + _rp twins (lane/rp-on-st) — no mirror precondition.
+            // b16 tier: every class routed here now has base + _rp b16 kernels (Q4_0/Q6_K
+            // pre-existing; NVFP4/Q4_K/Q8_0-base/F8_E4M3 added lane/rp-on-st 2026-08-06), so
+            // there is no mirror precondition left — `mrp` still selects the LAYOUT below.
             && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_NVFP4
-                || qtype == QT_F8_E4M3 || (qtype == QT_Q8_0 && mrp)) {
+                || qtype == QT_Q4_K || qtype == QT_Q5_K || qtype == QT_F8_E4M3 || qtype == QT_Q8_0) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
@@ -5846,11 +5846,10 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note); e4m3's
-            // b16 is the base kernel (its native layout is already aligned — no mirror needed);
-            // NVFP4 has BOTH (base + _rp), so it joins on either layout (lane/rp-on-st).
+            // Every b16 class has base + _rp twins after lane/rp-on-st (see matmul_pre's note):
+            // no mirror precondition, `rp` selects the layout only.
             && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
-                || qtype == QT_NVFP4 || (qtype == QT_Q8_0 && rp)) {
+                || qtype == QT_NVFP4 || qtype == QT_Q4_K || qtype == QT_Q5_K || qtype == QT_Q8_0) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -5898,7 +5897,7 @@ impl Engine {
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
             && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
-                || qtype == QT_NVFP4 || (qtype == QT_Q8_0 && rp)) {
+                || qtype == QT_NVFP4 || qtype == QT_Q4_K || qtype == QT_Q5_K || qtype == QT_Q8_0) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -7526,13 +7525,22 @@ impl Engine {
         Some(match (qtype, mcols) {
             (QT_Q8_0, 2) => "qmatvec_q8_0_mmvq_b2", (QT_Q8_0, 4) => "qmatvec_q8_0_mmvq_b4",
             (QT_Q8_0, 8) => "qmatvec_q8_0_mmvq_b8",
-            // rp-ONLY tier: qmatvec_q8_0_mmvq_b16 has no base twin — the mcols==16 dispatch
-            // appends _rp, and every caller gates Q8_0 m>8 on the q8rp mirror being present.
+            // b16 now has BOTH forms (lane/rp-on-st, 2026-08-06). It used to be rp-ONLY, which
+            // made the q8rp mirror the exact-16 tier's admission ticket for any model carrying a
+            // single Q8_0 matmul — measured as the FP8-ST refusal (`L0.ssm_beta qtype=0
+            // rp4=false`, 96 t / 23.9 MiB = 0.143% of resident weight). The mirror stays a
+            // BANDWIDTH lever on Q8_0-dominant GGUFs; it is no longer a correctness prerequisite.
             (QT_Q8_0, 16) => "qmatvec_q8_0_mmvq_b16",
             (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_b2", (QT_Q4_K, 4) => "qmatvec_q4_K_mmvq_b4",
             (QT_Q4_K, 8) => "qmatvec_q4_K_mmvq_b8",
+            // b16 base + _rp (lane/rp-on-st): the 9B NVFP4 GGUF's blocker — real NVFP4 GGUFs keep
+            // Q4_K attention next to NVFP4 MLP, and the tier's predicate is an ALL.
+            (QT_Q4_K, 16) => "qmatvec_q4_K_mmvq_b16",
             (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",
             (QT_Q5_K, 8) => "qmatvec_q5_K_mmvq_b8",
+            // b16 base only (lane/rp-on-st): Q5_K has no rp twins at any width, so there is
+            // nothing to mirror. Named by the diagnostic as `L0.wqkv_gate qtype=3` on the 9B.
+            (QT_Q5_K, 16) => "qmatvec_q5_K_mmvq_b16",
             (QT_Q6_K, 2) => "qmatvec_q6_K_mmvq_b2", (QT_Q6_K, 4) => "qmatvec_q6_K_mmvq_b4",
             (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8", (QT_Q6_K, 16) => "qmatvec_q6_K_mmvq_b16",
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",

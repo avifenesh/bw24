@@ -3188,6 +3188,22 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_b8(
         int in_f, int out_f, int m, long row_bytes) {
     q8_0_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// mcols=16 BASE twin (lane/rp-on-st, 2026-08-06). Until now Q8_0's b16 existed ONLY as the
+// split-plane `_rp` form, which made the q8rp mirror the exact-16 tier's admission ticket for
+// ANY model carrying a single Q8_0 matmul. On the FP8-ST 27B that is a bad trade measured
+// precisely: the diagnostic named `L0.ssm_beta qtype=0 rp4=false` as the refusing tensor, and the
+// whole residual Q8_0 class there is 96 tensors / 23.906 MiB = 0.143% of resident 2D weight —
+// so admission was costing a mirror walk over the trunk to serve the tier's least significant
+// bytes. The mirror's real justification is BANDWIDTH on a Q8_0-dominant GGUF (the 34 B stride's
+// sector overfetch, H100 ncu 2026-07-26); it was never meant to be a correctness prerequisite.
+// This base form removes that coupling: the tier is now reachable at zero VRAM on any layout.
+// Same q8_0_mmvq_batched_row body the b2/b4/b8 kernels run -> bit-identical per (token,row).
+extern "C" __global__ void qmatvec_q8_0_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q8_0_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ----- FUSED Q8_0 BATCHED matvec PAIR/TRIPLE (verify t=2-4 trunk launch-fusion, MEMRA_SPEC_FUSED_T,
 // lane/close35b): the m=1 fused2/fused3 block-offset split applied to the batched weight-resident
@@ -3828,6 +3844,17 @@ extern "C" __global__ void qmatvec_q4_K_mmvq_b8(
         int in_f, int out_f, int m, long row_bytes) {
     q4k_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// mcols=16 (lane/rp-on-st, 2026-08-06) — the 9B NVFP4 GGUF's exact-16 blocker, named by the
+// MEMRA_EXACT16_WHY diagnostic as `L0.wqkv qtype=1 rp4=false`. Real NVFP4 GGUFs are MIXED: the
+// MLP is NVFP4 while the attention/linear-attn projections stay Q4_K, and the tier's predicate is
+// an ALL over every matmul — so Q4_K refused chunk 16 on a model nobody would call a "Q4_K model".
+// Same q4k_mmvq_batched body as b2/b4/b8 -> bit-identical per (token,row) to the m=1 mmvq.
+extern "C" __global__ void qmatvec_q4_K_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4k_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ----- Q5_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded 5-bit wpack. -----
 template<int MCOLS>
@@ -3908,6 +3935,19 @@ extern "C" __global__ void qmatvec_q5_K_mmvq_b8(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q5k_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// mcols=16 (lane/rp-on-st, 2026-08-06). The FOURTH class the exact-16 diagnostic named, on the
+// same 9B NVFP4 GGUF: `L0.wqkv_gate qtype=3`. This is the pattern the lane found — a real mixed
+// checkpoint spreads its ~500 matmuls over four or five quant classes (NVFP4 MLP, Q4_K qkv, Q5_K
+// gate, Q6_K output, Q8_0 ssm), and the tier's predicate is an ALL, so chunk 16 was unreachable
+// for EVERY shipped artifact until every class had a b16. Q5_K never mirrors (no rp twins exist
+// for it at any width), so the base form is the whole requirement here. Same q5k_mmvq_batched
+// body as b2/b4/b8 -> bit-identical per (token,row) to the m=1 mmvq.
+extern "C" __global__ void qmatvec_q5_K_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q5k_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ----- Q6_K batched. Per-group reusable: d, scales, 8 decoded signed wpack. Symmetric (no min). -----
@@ -8492,6 +8532,18 @@ extern "C" __global__ void qmatvec_q4_K_mmvq_b8_rp(
         int in_f, int out_f, int m, long row_bytes) {
     (void)row_bytes;
     q4k_mmvq_batched_rp<8>(W, aq, ad, y, in_f, out_f, m);
+}
+// mcols=16 split-plane twin (lane/rp-on-st, 2026-08-06). LAYOUT law, same as NVFP4's: the b16
+// dispatch pins variant="rp" whenever the weight is a split-plane mirror, so a Q4_K b16 without
+// this twin would miss the symbol on any mirrored k-quant trunk — and routing split-plane bytes
+// through the GGUF-layout b16 would decode garbage. Body = the q4k_mmvq_batched_rp template the
+// b2/b4/b8 rp kernels run -> bit-identical per (token,row).
+extern "C" __global__ void qmatvec_q4_K_mmvq_b16_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    q4k_mmvq_batched_rp<16>(W, aq, ad, y, in_f, out_f, m);
 }
 template<int MCOLS>
 __device__ __forceinline__ void q6k_mmvq_batched_rp(

@@ -1,0 +1,99 @@
+=== kernel-check naked ===
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=64 Tkv=192: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=100 Tkv=100: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=37 Tkv=297: bitdiff=0 OK
+kvq q8_0 K round-trip: rel=3.99e-3 OK
+kvq q5_1 V round-trip: rel=1.35e-2 OK
+kvq q5_1 5th-bit boundary: maxerr=3.78e-4 (d~5.00e-2) OK
+kv append rows-vs-loop bit-identity (T=7, t0=3): k_mismatch=0 v_mismatch=0 OK
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+moe cache-HIT bit-identity (stage==cache): OK
+router batch-twin bit-identity (real q35 router, 32 m-points 1..2048): mism=0 OK
+router batch-twin m-invariance (rows vs plain m=2048 prefix): mism=0 OK
+moe async-prefetch ordering + protected victim: OK
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [5x128] bytes=680 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [6x160] bytes=1020 bad=0 OK
+
+ALL GREEN: kernels match CPU reference.
+=== kernel-check with 9B NVFP4 GGUF (Q4_K + NVFP4 cells) ===
+KQRP blk.0.attn_qkv.weight [Q4_K] m=1 mmvq_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=2 mcols=2 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=3 mcols=4 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=4 mcols=4 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=5 mcols=8 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=8 mcols=8 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=9 mcols=16 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=12 mcols=16 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=16 mcols=16 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=1 mmvq_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=2 mcols=2 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=3 mcols=4 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=4 mcols=4 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=5 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=8 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=9 mcols=16 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=12 mcols=16 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=16 mcols=16 batched_rp: bit-bad=0 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0] m=9 mcols=16: bit-bad=0/288 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0 rp] m=9 mcols=16: bit-bad=0/288 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0] m=12 mcols=16: bit-bad=0/384 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0 rp] m=12 mcols=16: bit-bad=0/384 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0] m=16 mcols=16: bit-bad=0/512 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0 rp] m=16 mcols=16: bit-bad=0/512 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K] m=9 mcols=16: bit-bad=0/73728 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K rp] m=9 mcols=16: bit-bad=0/73728 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K] m=12 mcols=16: bit-bad=0/98304 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K rp] m=12 mcols=16: bit-bad=0/98304 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K] m=16 mcols=16: bit-bad=0/131072 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K rp] m=16 mcols=16: bit-bad=0/131072 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4] m=9 mcols=16: bit-bad=0/110592 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4 rp] m=9 mcols=16: bit-bad=0/110592 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4] m=12 mcols=16: bit-bad=0/147456 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4 rp] m=12 mcols=16: bit-bad=0/147456 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4] m=16 mcols=16: bit-bad=0/196608 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4 rp] m=16 mcols=16: bit-bad=0/196608 OK
+ALL GREEN: kernels match CPU reference.

@@ -2641,12 +2641,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("KQRP {tname} [{:?}] m=1 mmvq_rp: bit-bad={bad} {}", t.ggml_type,
                          if bad == 0 { "OK" } else { fails += 1; "FAIL" });
             }
-            // batched rp twins vs GGUF-layout batched: bit-identical (b16 tier is q6_K-only).
-            let tiers: &[(usize, usize)] = if gt == memra_engine::QT_Q6_K {
-                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (12, 16)]
-            } else {
-                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8)]
-            };
+            // batched rp twins vs GGUF-layout batched: bit-identical. b16 now covers Q4_K too
+            // (lane/rp-on-st, 2026-08-06: qmatvec_q4_K_mmvq_b16{,_rp}) — Q4_K was the 9B NVFP4
+            // GGUF's exact-16 blocker, since mixed NVFP4 checkpoints keep Q4_K attention.
+            let tiers: &[(usize, usize)] =
+                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (9, 16), (12, 16), (16, 16)];
             for &(mm, mcols) in tiers {
                 let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -2655,6 +2654,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let bad = yref.iter().zip(&yrp).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
                 println!("KQRP {tname} [{:?}] m={mm} mcols={mcols} batched_rp: bit-bad={bad} {}", t.ggml_type,
                          if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+    // --- EXACT-16 TIER b16 PINS for Q8_0 and Q4_K (lane/rp-on-st, 2026-08-06). The KQRP cells
+    // above compare rp-layout against GGUF-layout at the SAME width; this compares b16 against
+    // the m=1 mmvq launch, which is the tier's actual contract (`decode_batch_exact16_ok` promises
+    // per-(token,row) bit-identity to isolated m=1 decode). Both layouts, because production runs
+    // both: a mirrored trunk (q8rp / kqrp) takes the _rp b16, a naked one takes the base b16.
+    // These two classes were the measured refusals — MEMRA_EXACT16_WHY named `L0.ssm_beta qtype=0`
+    // on the FP8-ST 27B and `L0.wqkv qtype=1` on the 9B NVFP4 GGUF. ---
+    if let Some(path) = gguf_arg.clone() {
+        use memra_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        // Q5_K included and mirror-free: it has no rp twins at any width, so its b16 arm below
+        // runs the base layout only (`build_kq_rp4_raw` covers Q4_K/Q6_K).
+        let want: [(GgmlType, i32); 3] = [
+            (GgmlType::Q8_0, memra_engine::QT_Q8_0), (GgmlType::Q4_K, memra_engine::QT_Q4_K),
+            (GgmlType::Q5_K, memra_engine::QT_Q5_K),
+        ];
+        for (gtype, gt) in want {
+            let t = match g.tensors.iter().find(|t| t.ggml_type == gtype && t.ne.len() == 2
+                                                 && t.ne[0] % 256 == 0 && t.ne[1] >= 4) {
+                Some(t) => t, None => continue,
+            };
+            let tname = t.name.clone();
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            let mir = if gt == memra_engine::QT_Q8_0 { Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?) }
+                      else if gt == memra_engine::QT_Q5_K { None }   // no rp twins exist for Q5_K
+                      else { Some(e.build_kq_rp4_raw(&wd, in_f, out_f, gt)?) };
+            for mm in [9usize, 12, 16] {
+                let arms: Vec<(bool, &_)> = match &mir {
+                    Some(m) => vec![(false, &wd), (true, m)],
+                    None => vec![(false, &wd)],
+                };
+                for (rp, w) in arms {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 173) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(w, &xd, mm, in_f, out_f, gt, row_bytes, rp)?)?;
+                    let yb = e.dtoh(&e.qmatvec_batched_raw(w, &xd, mm, in_f, out_f, gt, row_bytes, 16, rp)?)?;
+                    let bad = yref.iter().zip(&yb).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                    println!("B16-TIER {tname} [{:?}{}] m={mm} mcols=16: bit-bad={}/{} {}",
+                             t.ggml_type, if rp { " rp" } else { "" }, bad, yref.len(),
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
             }
         }
     }

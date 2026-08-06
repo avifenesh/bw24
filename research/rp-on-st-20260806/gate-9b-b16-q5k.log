@@ -1,0 +1,70 @@
+### md5: 0b6b50ec1494b3b01a01c0511c6cb511  target/release/decode-batch-gate ed268fdaa29c39f640b41219bc2de142  target/release/kernel-check
+=== kernel-check (9B NVFP4 GGUF: all b16 classes) ===
+KQRP blk.0.attn_qkv.weight [Q4_K] m=9 mcols=16 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=12 mcols=16 batched_rp: bit-bad=0 OK
+KQRP blk.0.attn_qkv.weight [Q4_K] m=16 mcols=16 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=9 mcols=16 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=12 mcols=16 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=16 mcols=16 batched_rp: bit-bad=0 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0] m=9 mcols=16: bit-bad=0/288 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0 rp] m=9 mcols=16: bit-bad=0/288 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0] m=12 mcols=16: bit-bad=0/384 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0 rp] m=12 mcols=16: bit-bad=0/384 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0] m=16 mcols=16: bit-bad=0/512 OK
+B16-TIER blk.0.ssm_alpha.weight [Q8_0 rp] m=16 mcols=16: bit-bad=0/512 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K] m=9 mcols=16: bit-bad=0/73728 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K rp] m=9 mcols=16: bit-bad=0/73728 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K] m=12 mcols=16: bit-bad=0/98304 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K rp] m=12 mcols=16: bit-bad=0/98304 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K] m=16 mcols=16: bit-bad=0/131072 OK
+B16-TIER blk.0.attn_qkv.weight [Q4_K rp] m=16 mcols=16: bit-bad=0/131072 OK
+B16-TIER blk.0.attn_gate.weight [Q5_K] m=9 mcols=16: bit-bad=0/36864 OK
+B16-TIER blk.0.attn_gate.weight [Q5_K] m=12 mcols=16: bit-bad=0/49152 OK
+B16-TIER blk.0.attn_gate.weight [Q5_K] m=16 mcols=16: bit-bad=0/65536 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4] m=9 mcols=16: bit-bad=0/110592 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4 rp] m=9 mcols=16: bit-bad=0/110592 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4] m=12 mcols=16: bit-bad=0/147456 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4 rp] m=12 mcols=16: bit-bad=0/147456 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4] m=16 mcols=16: bit-bad=0/196608 OK
+NVFP4-B16 blk.0.ffn_gate.weight [NVFP4 rp] m=16 mcols=16: bit-bad=0/196608 OK
+ALL GREEN: kernels match CPU reference.
+=== NV9 config B=16 (exact-16 tier) ===
+loaded qwen35 (32 layers); steps=16 batch=16
+gate1 seed 0: agreement all 16 steps
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2: agreement all 16 steps
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5: agreement all 16 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=16 vs isolated batched-B=1, bit-checked, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=16 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+=== NV9 config B=12 ===
+loaded qwen35 (32 layers); steps=16 batch=12
+gate1 seed 0: agreement all 16 steps
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2: agreement all 16 steps
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5: agreement all 16 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=12 vs isolated batched-B=1, bit-checked, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=12 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+=== NV9 strict B=4 (equalized) ===
+loaded qwen35 (32 layers); steps=16 batch=4
+gate1 seed 0: agreement all 16 steps
+gate1 (B=1 bit-identity vs decode_step_h, 16 steps, 1 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated decode_step_h, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+### DONE 13:06:12
