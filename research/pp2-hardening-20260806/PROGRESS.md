@@ -495,3 +495,32 @@ Shape of the work, in the order it has to happen:
 
 Estimated shape: item 1 is the bulk; given a `decode_batch_layers` seam, spec's own PP wiring
 is days, not weeks. Not started this lane.
+
+---
+
+## Phase 1b — the DAILY model gated too: q27 over PP-2, **GREEN**
+
+Phase 1 used q9 deliberately (same vehicle M1/M2 were minted on = cross-rig comparable).
+But the model that would actually serve on this pair is the 27B, and its shape differs in
+ways the gates care about: **64 layers instead of 32** (fence `[0,32,64]`, so twice the
+per-stage depth), a different quant mix (NVFP4 + Q4_K_M), and a trailing MTP head that
+`pp::new_cache` maps to the last stage. Receipts `logs/q27gate/`, driver
+`run-pp2-q27gate.sh`, all under the shared GPU lock.
+
+| Gate | Config | Verdict |
+|---|---|---|
+| `ppn-gate` N=2 **dev01** | serial + pipelined | **PASS BIT-IDENTICAL** both arms, 48 steps, fence [0,32,64] |
+| `ppn-gate` N=2 **dev10** (reversed) | serial + pipelined | **PASS BIT-IDENTICAL** both arms |
+| `ppn-gate` N=2 singledev | serial | **PASS BIT-IDENTICAL** (pipelined quarantine-skipped, as designed) |
+| `run-gen` door SHUT | 16 prompt / 8 gen | **MATCH** `prefill argmax=220 decode argmax=220` |
+| `run-gen` door OPEN `stages=2 devices=0,1` | 16/8 | **MATCH** `prefill argmax=220 decode argmax=220` — *identical argmax to the door-shut run* |
+
+48 steps x 248,320 f32 logits per arm, every bit compared against the door-off reference.
+The two `run-gen` rows are the end-to-end statement the serving decision needs: the daily
+model generates the **same tokens** whether it runs on one card or split across two, and its
+`logit maxdiff` vs the internal reference is byte-for-byte the same value (2.457e-1) in both
+— i.e. PP-2 introduces exactly zero additional deviation, not merely a small one.
+
+**With this, PP-2 exactness on the target pair is gated on both the comparison vehicle (q9)
+and the deployment vehicle (q27), in both placement orders.** The 192 GB assessment's
+mandatory-before-listing item is discharged for the model that would ship.
