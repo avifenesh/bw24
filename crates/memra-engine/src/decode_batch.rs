@@ -353,22 +353,12 @@ impl HybridModel {
         // order: MEMRA_PP_SHARD=0 (weights all home — restores full speed, costs the
         // capacity that PP-2 exists for), or drop the pp door for batched serving. The
         // override below exists so this lane's successors can bench the peer-read arm.
-        if crate::pp::pp_sharded_cross_device()
-            && std::env::var("MEMRA_PP_ALLOW_UNSPLIT_BATCH").as_deref() != Ok("1")
-        {
-            return Err(
-                "decode_step_batch: refused with the ppN door open across 2+ devices — the \
-                 batched trunk has no stage split, so it would walk ALL layers on the primary \
-                 stream and peer-read every remote stage's weights each step (measured 28x \
-                 slower at B=1, 13.9x at B=8 on a PRO 6000 pair; research/pp2-hardening-20260806). \
-                 Exactness is unaffected, which is why the gates pass and this must refuse. \
-                 Use MEMRA_PP_SHARD=0 (all weights home on the primary — full speed, no \
-                 capacity win), or close the pp door for batched serving, or use the eager \
-                 pp arm (decode_step_h). MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for \
-                 measurement."
-                    .into(),
-            );
-        }
+        crate::pp::refuse_unsplit_if_remote(
+            "decode_step_batch",
+            "stage-split the batched trunk (open bill item — start by extracting a \
+             decode_batch_layers(lo..hi) seam), or serve single-stream over the eager pp \
+             arm (decode_step_h), which IS split",
+        )?;
         // ---- H3: B=1 FAST-PATH (serve-path phase 2, 2026-08-05) ----------------------------
         // At b_n==1 every projection below calls `matmul_pre(.., b_n)` with m=1, which is
         // ALREADY the m=1 mmvq dispatch — so the m=1 *kernel family* was never the gap. What

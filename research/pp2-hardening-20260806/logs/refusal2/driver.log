@@ -1,0 +1,47 @@
+######## dc-1-doorshut
+exit=0
+Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=5 (n_vocab=248320)
+######## dc-2-dev01-sharded
+exit=1
+Error: "decode_step_dc: refused with the ppN door open across 2+ devices — this path has no pp stage split, so it would walk ALL layers on one stream and peer-read every remote stage's weights each step (measured 28x slower at B=1, 13.9x at B=8 on a PRO 6000 pair over PCIe Gen5 x16 P2P; research/pp2-hardening-20260806). Exactness is unaffected — peer reads return identical bytes and the exactness gates PASS on this config — which is exactly why it must refuse instead of being caught by a gate. Fixes, in order: use the eager pp arm (decode_step_h), which IS stage-split; or MEMRA_PP_SHARD=0 (all weights home on the primary — full speed, forfeits the capacity PP-2 exists for); or close the pp door. MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for measurement."
+######## dc-3-dev01-override
+exit=0
+Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=5 (n_vocab=248320)
+######## dc-4-dev01-noshard
+exit=0
+Phase-2 gate PASS: 256 steps decode_step_dc == decode_step (BIT-IDENTICAL), buckets=5 (n_vocab=248320)
+######## gr-1-doorshut
+exit=0
+Phase-3 gate PASS: 256 steps generate_graph == decode_step (BIT-IDENTICAL), buckets=13 captures=2
+######## gr-2-dev01-sharded
+exit=1
+Error: "decode_step_dc: refused with the ppN door open across 2+ devices — this path has no pp stage split, so it would walk ALL layers on one stream and peer-read every remote stage's weights each step (measured 28x slower at B=1, 13.9x at B=8 on a PRO 6000 pair over PCIe Gen5 x16 P2P; research/pp2-hardening-20260806). Exactness is unaffected — peer reads return identical bytes and the exactness gates PASS on this config — which is exactly why it must refuse instead of being caught by a gate. Fixes, in order: use the eager pp arm (decode_step_h), which IS stage-split; or MEMRA_PP_SHARD=0 (all weights home on the primary — full speed, forfeits the capacity PP-2 exists for); or close the pp door. MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for measurement."
+######## sp-1-doorshut
+exit=0
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+  acceptance: 17/32 = 53.1%   self-consistency: PASS (identical to generate)
+  acceptance: 19/36 = 52.8%   self-consistency: PASS (identical to generate)
+  acceptance: 20/48 = 41.7%   self-consistency: PASS (identical to generate)
+######## sp-2-dev01-sharded
+exit=1
+Error: "decode_step_dc: refused with the ppN door open across 2+ devices — this path has no pp stage split, so it would walk ALL layers on one stream and peer-read every remote stage's weights each step (measured 28x slower at B=1, 13.9x at B=8 on a PRO 6000 pair over PCIe Gen5 x16 P2P; research/pp2-hardening-20260806). Exactness is unaffected — peer reads return identical bytes and the exactness gates PASS on this config — which is exactly why it must refuse instead of being caught by a gate. Fixes, in order: use the eager pp arm (decode_step_h), which IS stage-split; or MEMRA_PP_SHARD=0 (all weights home on the primary — full speed, forfeits the capacity PP-2 exists for); or close the pp door. MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for measurement."
+######## sp-3-dev01-override
+exit=0
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+  acceptance: 17/32 = 53.1%   self-consistency: PASS (identical to generate)
+  acceptance: 19/36 = 52.8%   self-consistency: PASS (identical to generate)
+  acceptance: 20/48 = 41.7%   self-consistency: PASS (identical to generate)
+######## rg-1-ppn-gate-dev01
+exit=0
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+######## rg-2-rungen-doorshut
+exit=0
+prefill argmax=561  decode argmax=561  logit maxdiff=2.751e-1  MATCH
+######## rg-3-batch-doorshut
+exit=0
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+REFUSAL2_DONE

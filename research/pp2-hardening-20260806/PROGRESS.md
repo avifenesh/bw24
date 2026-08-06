@@ -437,6 +437,65 @@ that remains the weeks-class item below. The value is that a serving deployment 
 reach 3.5% of baseline with a green battery, which is the failure mode this box was rented to
 find.
 
+### Item 4b: the audit found FOUR paths with the same hole — the guard is now shared
+
+After shipping the batch refusal I audited the other paths the docs called "unwired", and
+the answer is worse than the batch finding alone: **`grep -c 'pp_cuts\|pp::'` returns 0 for
+`spec.rs`, `graph_update.rs`, and `prime_graph.rs`.** Not "wired incorrectly" — literally
+zero pp-awareness. Every one of them walks `for (il, layer) in self.layers.iter()` on a
+single stream:
+
+| path | trunk walk | pp-awareness before this lane |
+|---|---|---|
+| `decode_step_batch` | `decode_batch.rs:514` | one term that DISABLED the B=1 fast path |
+| `decode_step_dc` (device-counter decode) | `decode.rs:1277` | none |
+| `decode_step_dc_cap*` (graph capture) | captures the dc chain | none |
+| `decode_step_t_core_stream` (spec verify) | `spec.rs:1359` | none |
+
+So the same 28x cliff was reachable through four doors, three of which nothing in the repo
+had noticed. The fix is one helper, `pp::refuse_unsplit_if_remote(path, alt)`, called from
+each — deliberately **not** four copies, because a per-path copy is precisely how the next
+path added gets missed. Each call site passes its own `alt` string so the error names the
+working alternative for *that* loop (eager pp arm for dc; "stage-split the batched trunk
+first" for spec, since verify is a batched T=K+1 forward).
+
+Placement notes worth keeping:
+
+- **`decode_step_dc`'s guard sits BEFORE the gemma4 delegate**, because the gemma4 dc twin
+  has the same unsplit shape.
+- **The spec guard is on `decode_step_t_core_stream`, the funnel**, not on the five public
+  wrappers (`decode_step_t`, `_h`, `_h_emb`, `_h_emb_dev`, `_core`) — all of them land
+  there, so a future wrapper inherits the guard instead of forgetting it.
+- **Graph and spec coverage turned out to be transitive**, and the gate proved it rather
+  than assuming it: both `graph-decode-gate` and `run-spec` refuse with
+  `"decode_step_dc: refused ..."` — the graph path captures the dc chain, and spec's draft
+  loop reaches dc before verify. The verify guard is still worth having (a spec arm that
+  bypassed dc would otherwise be silently uncovered), but the *observed* refusal comes from
+  dc in both cases. Recording which guard actually fires, since a future refactor that
+  moves dc out of those paths would silently drop their protection.
+
+#### Gate battery, 12 arms (`logs/refusal2/`, driver `run-pp2-refusal2.sh`)
+
+| # | Path / config | Expected | Result |
+|---|---|---|---|
+| dc-1 | `decode-dc-gate` door shut | PASS | **PASS BIT-IDENTICAL**, 256 steps, buckets=5 |
+| dc-2 | `decode-dc-gate` dev01 sharded | **REFUSE** | **exit=1** `decode_step_dc: refused ...` |
+| dc-3 | dc-2 + `ALLOW_UNSPLIT_BATCH=1` | PASS | **PASS BIT-IDENTICAL**, 256 steps |
+| dc-4 | dc-2 + `MEMRA_PP_SHARD=0` | PASS | **PASS BIT-IDENTICAL**, 256 steps |
+| gr-1 | `graph-decode-gate` door shut | PASS | **PASS BIT-IDENTICAL**, 256 steps, buckets=13 captures=2 |
+| gr-2 | `graph-decode-gate` dev01 sharded | **REFUSE** | **exit=1** (refuses at dc — transitive) |
+| sp-1 | `run-spec` K=4 door shut | PASS | **self-consistency PASS all 4 rounds** (82.4/53.1/52.8/41.7% acceptance) |
+| sp-2 | `run-spec` K=4 dev01 sharded | **REFUSE** | **exit=1** (refuses at dc — transitive) |
+| sp-3 | sp-2 + `ALLOW_UNSPLIT_BATCH=1` | PASS | **self-consistency PASS all 4 rounds**, identical acceptance to sp-1 |
+| rg-1 | `ppn-gate` N=2 dev01 | untouched | **PASS BIT-IDENTICAL** serial + pipelined |
+| rg-2 | `run-gen` door shut | untouched | **MATCH** argmax=561 |
+| rg-3 | `decode-batch-gate` door shut | untouched | **gate1+2+3 PASS** |
+
+`sp-3` vs `sp-1` is the arm that proves the override is exactly a door and not a behavior
+change: identical acceptance rates (14/17, 17/32, 19/36, 20/48) and identical
+self-consistency verdicts with the guard bypassed. Combined with Item 4's 8 arms, the
+fail-closed change is gated on **20 arms across 5 binaries, 0 unexpected results**.
+
 ---
 
 ## What is left of the PP-2 serving bill
@@ -461,9 +520,11 @@ Ordered by what a serving deployment on this pair actually needs:
 3. **Spec/MTP over PP-2** — brief, not built (Item 5 below). This is the arm that *monetizes*
    the 1.905x, because draft tokens are the legitimate way to fill the deferred window in
    single-stream serving.
-4. **dc/graph over PP-2** — both still "run unsplit, silently", same class of bug the batch
-   path had. Neither is audited. `decode_step_dc` and the graph-capture path should get the
-   same fail-closed treatment (cheap) before anyone measures them on a pair.
+4. ~~**dc/graph over PP-2** — fail-closed treatment~~ **DONE this lane (Item 4b)**: dc,
+   graph capture, and spec verify all now refuse. What remains for these three is the same
+   as for batch — actually *splitting* them, which for dc/graph means a per-stage captured
+   subgraph per boundary (graph capture across two devices' streams is its own research
+   question, not a wiring job) and for spec means item 3.
 5. **`build.rs` nvcc resolution** — resolve from `PATH`/`CUDA_HOME` before the pinned
    `/usr/local/cuda-13.1`. Cost me the first build on this box; will cost the next lane too.
 

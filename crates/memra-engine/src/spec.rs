@@ -1323,6 +1323,18 @@ impl HybridModel {
         mut ckpt: Option<&mut VerifyCkpt>,
         stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>,
     ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        // PP DOOR: fail closed (pp2-hardening 2026-08-06). This is the single funnel every
+        // verify forward reaches (decode_step_t / _h / _h_emb / _h_emb_dev / _core all land
+        // here), and its trunk walk is unsplit on one stream — so a sharded cross-device
+        // placement would peer-read every remote layer's weights on every spec round.
+        // Guarding the funnel rather than the five public wrappers is deliberate: a new
+        // wrapper inherits the guard instead of forgetting it.
+        crate::pp::refuse_unsplit_if_remote(
+            "decode_step_t (spec verify)",
+            "spec over PP-2 is an open bill item — it needs the batched trunk stage-split \
+             first (verify is a batched T=K+1 forward); until then run spec on one device, \
+             or serve non-spec over the eager pp arm",
+        )?;
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;

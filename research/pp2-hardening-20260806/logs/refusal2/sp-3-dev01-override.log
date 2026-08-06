@@ -1,0 +1,32 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [16, 8, 4]
+
+[generate]   31 tok in 4.294s = 7.22 tok/s (gen-only; this run's prime 0.018s)
+  tokens: [17, 15, 10746, 17, 15, 760, 4, 17, 15, 3446, 4, 17, 15, 95552, 4, 17, 15, 18319, 4, 17, 15, 10746, 17, 15, 16, 24, 24, 24, 12, 15, 16, 12]
+
+[generate_spec K=1] 32 tok in 3.359s = 9.23 tok/s (1.28x vs generate; this run's prime 0.018s)
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 4.067s = 7.62 tok/s (1.06x vs generate; this run's prime 0.018s)
+  acceptance: 17/32 = 53.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 3.792s = 8.17 tok/s (1.13x vs generate; this run's prime 0.018s)
+  acceptance: 19/36 = 52.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 4.751s = 6.52 tok/s (0.90x vs generate; this run's prime 0.018s)
+  acceptance: 20/48 = 41.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 5.512s = 5.62 tok/s (0.78x vs generate; this run's prime 0.018s)
+  acceptance: 21/60 = 35.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 6.236s = 4.97 tok/s (0.69x vs generate; this run's prime 0.018s)
+  acceptance: 22/72 = 30.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 6.968s = 4.45 tok/s (0.62x vs generate; this run's prime 0.018s)
+  acceptance: 22/84 = 26.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 12.433s = 2.49 tok/s (0.35x vs generate; this run's prime 0.018s)
+  acceptance: 22/96 = 22.9%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

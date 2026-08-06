@@ -234,6 +234,38 @@ pub fn pp_sharded_cross_device() -> bool {
     }
 }
 
+/// The shared fail-closed guard for EVERY decode path that has no pp stage split.
+/// Returns `Err` iff `pp_sharded_cross_device()` — i.e. the caller would walk the whole
+/// trunk on one stream while some layers' weights live on another device, peer-reading
+/// them every step. `path` names the refusing function so the operator knows which loop
+/// they hit; `alt` names the working alternative for that loop.
+///
+/// One helper rather than four copies because the audit found FOUR paths with the same
+/// hole (`decode_step_batch`, `decode_step_dc`, the graph capture that wraps dc, and
+/// `decode_step_t*` verify), and a per-path copy is how one gets missed on the next
+/// addition. Override: `MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` (one door for all of them —
+/// they are the same measurement question).
+pub fn refuse_unsplit_if_remote(path: &str, alt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if pp_sharded_cross_device()
+        && std::env::var("MEMRA_PP_ALLOW_UNSPLIT_BATCH").as_deref() != Ok("1")
+    {
+        return Err(format!(
+            "{path}: refused with the ppN door open across 2+ devices — this path has no pp \
+             stage split, so it would walk ALL layers on one stream and peer-read every \
+             remote stage's weights each step (measured 28x slower at B=1, 13.9x at B=8 on \
+             a PRO 6000 pair over PCIe Gen5 x16 P2P; research/pp2-hardening-20260806). \
+             Exactness is unaffected — peer reads return identical bytes and the exactness \
+             gates PASS on this config — which is exactly why it must refuse instead of \
+             being caught by a gate. Fixes, in order: {alt}; or MEMRA_PP_SHARD=0 (all \
+             weights home on the primary — full speed, forfeits the capacity PP-2 exists \
+             for); or close the pp door. MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for \
+             measurement."
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
 /// pipelining seed). Default OFF — scheduling structure only, never math. Read per step
 /// so gates can A/B in-process.

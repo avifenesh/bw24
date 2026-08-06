@@ -1264,6 +1264,18 @@ impl HybridModel {
         if self.is_gemma4_e4b() {
             return Err("e4b has no device-counter decode step (dc/graph unwired)".into());
         }
+        // PP DOOR: fail closed (pp2-hardening 2026-08-06). Same hole the batched path had —
+        // the dc walk below is `for (il, layer) in self.layers.iter().enumerate()` on one
+        // stream, with no stage split, so a sharded cross-device placement would peer-read
+        // every remote layer's weights per step. Sits BEFORE the gemma4 delegate because
+        // that twin has the same unsplit shape. The graph-capture path (`decode_step_dc_cap*`)
+        // is covered transitively: it captures this same kernel chain, and its drivers reach
+        // dc first — but a future capture path that does NOT is why the guard is a shared
+        // helper (`pp::refuse_unsplit_if_remote`) rather than four copies.
+        crate::pp::refuse_unsplit_if_remote(
+            "decode_step_dc",
+            "use the eager pp arm (decode_step_h), which IS stage-split",
+        )?;
         if self.cfg.gemma4.is_some() {
             return self.gemma4_decode_step_dc(e, token_d, pos_d, embd_gpu, embd_qt,
                                               embd_row_bytes, cache, n_vocab, None);
