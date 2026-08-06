@@ -3443,6 +3443,22 @@ extern "C" __global__ void qmatvec_e4m3_mmvq_b8(
         int in_f, int out_f, int m, long row_bytes) {
     e4m3_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// b16 tier (lane/rp-on-st, 2026-08-06): the SAME e4m3_mmvq_batched template at MCOLS=16 — the
+// exact-16 serve tier's admission ticket for the per-tensor FP8-ST class. This is the e4m3
+// analogue of qmatvec_q8_0_mmvq_b16_rp: on Q8_0 the b16 kernel exists only in the split-plane
+// (rp) layout, which is WHY Q8_0 needs the q8rp mirror to reach chunk 16. e4m3 needs no mirror
+// at all — its native row-major layout is ALREADY aligned (row_bytes == in_f, 1 B/weight, so
+// every 32-weight block is a 32 B-aligned pair of LDG.128s; there is no 34 B GGUF stride to
+// un-skew and hence no coalescing deficit for a mirror to fix). Per (token,row) the body is
+// e4m3_mmvq_batched_row VERBATIM, so this is BIT-IDENTICAL to the grid.y=m mmvq launch it
+// replaces — identical fmaf chain, identical warp_reduce_sum, one weight read for up to 16
+// columns instead of 16 full weight re-reads.
+extern "C" __global__ void qmatvec_e4m3_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    e4m3_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ----- FUSED F8-E4M3 BATCHED pair/triple (verify + serve-tick tiers, lane/fp8-decode-v1): the m=1
 // fused2/fused3 block-offset split applied to the batched weight-resident tier, mirroring
@@ -3606,6 +3622,101 @@ extern "C" __global__ void qmatvec_e4m3_blk_mmvq(
     // No `ws` epilogue: the block class's per-tensor scale IS 1.0 by the layout contract (the
     // dispatch refuses anything else), and every scale factor is already folded per k128 above.
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
+// ----- BLOCK-128 e4m3 BATCHED family (lane/rp-on-st, 2026-08-06). The comment on the kernel above
+// noted "there is deliberately NO batched _b2/_b4/_b8 twin for this class yet: the m=2..15 tiers
+// fall to the grid.y=m form, which is the exact m=1 program per column (rare tier; exactness over
+// bandwidth)". That tradeoff was correct while the block-128 class was a single-stream decode lane.
+// It is WRONG for serving: at serve concurrency the batched decode tick runs m = chunk width on
+// EVERY projection of EVERY layer, so "weight re-read m times" is the steady-state path, not a rare
+// tier — a 16x weight-traffic multiplier on the most bandwidth-bound part of the forward.
+//
+// Same weight-read-once structure as every other batched twin: the 32 e4m3 weight bytes and the
+// row's scale line are loaded ONCE per (row, k32-block) and reused across all MCOLS activation
+// columns. Per (token,row) the arithmetic is e4m3_blk_row_dot's chain VERBATIM — same lane-strided
+// blk walk, same fmaf order, same `srow[blk >> 2] * adrow[blk]` fold, same warp_reduce_sum — so
+// each column is BIT-IDENTICAL to the grid.y=m launch and hence to the m=1 decode launch. That is
+// the exact property the exact-16 tier's admission requires.
+template<int MCOLS>
+__device__ __forceinline__ void e4m3_blk_mmvq_batched_row(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ srow,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int o) {
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    float acc[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        const uint4* w16 = (const uint4*)(wrow + blk * 32);
+        uint4 w01 = w16[0], w23 = w16[1];            // weight bytes read ONCE for all columns
+        unsigned wu[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        const float s = srow[blk >> 2];              // scale line read ONCE for all columns
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int4* aq16 = (const int4*)(arow + blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int au[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            float bs = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
+                float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
+                int a = au[k];
+                bs = fmaf(wlo.x, (float)(signed char)(a & 0xff), bs);
+                bs = fmaf(wlo.y, (float)(signed char)((a >> 8) & 0xff), bs);
+                bs = fmaf(whi.x, (float)(signed char)((a >> 16) & 0xff), bs);
+                bs = fmaf(whi.y, (float)(a >> 24), bs);
+            }
+            // IDENTICAL fold to e4m3_blk_row_dot: s * ad[blk] first, then one fmaf into acc.
+            acc[c] = fmaf(s * ad[(size_t)c * nblk + blk], bs, acc[c]);
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a = warp_reduce_sum(acc[c]);
+        if (lane == 0) y[(size_t)c * out_f + o] = a;   // no ws epilogue (scale == 1.0 by contract)
+    }
+}
+template<int MCOLS>
+__device__ __forceinline__ void e4m3_blk_mmvq_batched(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ blk_scales,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int scale_cols) {
+    int o = blockIdx.x * MEMRA_MMVQ_ROWS + (int)threadIdx.y;
+    if (o >= out_f) return;
+    e4m3_blk_mmvq_batched_row<MCOLS>(W, aq, ad, blk_scales + (size_t)(o >> 7) * scale_cols,
+                                     y, in_f, out_f, m, row_bytes, o);
+}
+extern "C" __global__ void qmatvec_e4m3_blk_mmvq_b2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ blk_scales,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int scale_cols) {
+    e4m3_blk_mmvq_batched<2>(W, aq, ad, blk_scales, y, in_f, out_f, m, row_bytes, scale_cols);
+}
+extern "C" __global__ void qmatvec_e4m3_blk_mmvq_b4(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ blk_scales,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int scale_cols) {
+    e4m3_blk_mmvq_batched<4>(W, aq, ad, blk_scales, y, in_f, out_f, m, row_bytes, scale_cols);
+}
+extern "C" __global__ void qmatvec_e4m3_blk_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ blk_scales,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int scale_cols) {
+    e4m3_blk_mmvq_batched<8>(W, aq, ad, blk_scales, y, in_f, out_f, m, row_bytes, scale_cols);
+}
+extern "C" __global__ void qmatvec_e4m3_blk_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, const float* __restrict__ blk_scales,
+        float* __restrict__ y, int in_f, int out_f, int m, long row_bytes, int scale_cols) {
+    e4m3_blk_mmvq_batched<16>(W, aq, ad, blk_scales, y, in_f, out_f, m, row_bytes, scale_cols);
 }
 
 // ----- Q4_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded wpack. Per-column: act + dp4a

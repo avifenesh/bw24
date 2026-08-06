@@ -96,6 +96,13 @@ impl HybridModel {
                 crate::model::GpuTensor::Quant { qtype, rp4, .. } =>
                     *qtype == crate::QT_Q4_0 || *qtype == crate::QT_Q6_K
                     || *qtype == crate::QT_F8_E4M3
+                    // BLOCK-128 FP8-ST (lane/rp-on-st, 2026-08-06): admitted now that the class
+                    // has a b16 batched kernel (`qmatvec_e4m3_blk_mmvq_b16`), bit-identical per
+                    // (token,row) to its m=1 launch. Before that kernel existed this class fell to
+                    // the grid.y=m form at every width — still EXACT, so the tier's correctness
+                    // bar was met, but it re-read the weight m times, which is why admitting it
+                    // without the kernel would have been a throughput trap rather than a win.
+                    || *qtype == crate::QT_F8_E4M3_BLK
                     || (*qtype == crate::QT_Q8_0 && rp4.is_some()),
                 _ => false,
             }

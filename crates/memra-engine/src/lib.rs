@@ -5565,8 +5565,11 @@ impl Engine {
             // b16 tier (2026-07-11, spec K>7): Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's
             // b16 exists only as the split-plane _rp twin, so it joins iff the q8rp mirror
             // is present (rp4) — the mirror pick below then routes to the _rp family.
+            // QT_F8_E4M3 joins unconditionally (lane/rp-on-st): its b16 IS the base kernel,
+            // because the native e4m3 row layout is already aligned and needs no mirror.
             let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, rp4, .. }
-                if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || (*qtype == QT_Q8_0 && rp4.is_some()));
+                if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || *qtype == QT_F8_E4M3
+                    || (*qtype == QT_Q8_0 && rp4.is_some()));
             if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
@@ -5838,8 +5841,10 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note).
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
+            // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note); e4m3's
+            // b16 is the base kernel (its native layout is already aligned — no mirror needed).
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
+                || (qtype == QT_Q8_0 && rp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -5886,7 +5891,8 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
+                || (qtype == QT_Q8_0 && rp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -7023,6 +7029,56 @@ impl Engine {
         Ok(())
     }
 
+    /// BLOCK-128 e4m3 BATCHED matvec (lane/rp-on-st, 2026-08-06): the weight-read-once twin of
+    /// `qmatvec_e4m3_blk_mmvq` for m=2..16. Per (token,row) BIT-IDENTICAL to the grid.y=m launch
+    /// (same fmaf chain, same per-k32 `s * ad` fold, same warp reduce), so it inherits the
+    /// decode-exactness contract while reading the weight ONCE for up to `mcols` columns instead
+    /// of `m` times. `mcols` must be one of {2,4,8,16} and satisfy `mcols >= m`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_e4m3_blk_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>,
+                                         ad: &CudaSlice<f32>, scales: &CudaSlice<f32>,
+                                         m: usize, in_f: usize, out_f: usize, row_bytes: usize,
+                                         scale_cols: usize, mcols: usize)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;   // matches MEMRA_MMVQ_ROWS in qmatvec.cu
+        debug_assert!(mcols >= m, "blk batched: mcols {mcols} < m {m}");
+        let name = match mcols {
+            2 => "qmatvec_e4m3_blk_mmvq_b2",
+            4 => "qmatvec_e4m3_blk_mmvq_b4",
+            8 => "qmatvec_e4m3_blk_mmvq_b8",
+            16 => "qmatvec_e4m3_blk_mmvq_b16",
+            _ => return Err(format!("qmatvec_e4m3_blk_mmvq_batched: no kernel for mcols {mcols}").into()),
+        };
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let f = self.func(name);
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32).div_ceil(ROWS_PER_BLOCK), 1, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb, sc) =
+            (in_f as i32, out_f as i32, m as i32, row_bytes as i64, scale_cols as i32);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(scales).arg(&mut y)
+         .arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&sc);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Test entry for the kernel_check exactness gate: the block-128 e4m3 batched MMVQ from raw
+    /// bytes with an internal q8_1 quantize (mirrors `qmatvec_batched_raw`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_e4m3_blk_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>,
+                                        scales: &CudaSlice<f32>, m: usize, in_f: usize,
+                                        out_f: usize, row_bytes: usize, scale_cols: usize,
+                                        mcols: usize)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        self.qmatvec_e4m3_blk_mmvq_batched(bytes, &aq, &ad, scales, m, in_f, out_f, row_bytes,
+                                           scale_cols, mcols)
+    }
+
     /// Test entry for the kernel_check exactness gate: the block-128 e4m3 MMVQ from raw bytes with
     /// an internal q8_1 quantize (mirrors `qmatvec_mmvq_raw`).
     #[allow(clippy::too_many_arguments)]
@@ -7091,6 +7147,18 @@ impl Engine {
         use crate::model::GpuTensor;
         if let GpuTensor::Quant { bytes, qtype, row_bytes, blk: Some(g), .. } = w {
             if *qtype == QT_F8_E4M3_BLK {
+                // BATCHED tier m=2..16 (lane/rp-on-st): weight read ONCE for up to mcols columns
+                // instead of m grid.y re-reads. Bit-identical per (token,row) to the grid.y=m form
+                // below, so the decode-exactness contract is preserved at every width. Gated by
+                // the same seams the other batched families honor (MEMRA_NO_BATCHED, MEMRA_B8) so
+                // one rollback door covers every dtype's batched tier.
+                if (2..=16).contains(&m) && std::env::var("MEMRA_NO_BATCHED").is_err()
+                    && (m <= 4 || Self::b8_enabled()) {
+                    let mcols = Self::batched_mcols(m);
+                    return Ok(Some(self.qmatvec_e4m3_blk_mmvq_batched(
+                        bytes, aq, ad, &g.scales, m, w.in_features(), w.out_features(),
+                        *row_bytes, g.cols, mcols)?));
+                }
                 return Ok(Some(self.qmatvec_e4m3_blk_mmvq(
                     bytes, aq, ad, &g.scales, m, w.in_features(), w.out_features(),
                     *row_bytes, g.cols)?));
@@ -7465,6 +7533,10 @@ impl Engine {
             (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
             (QT_F8_E4M3, 2) => "qmatvec_e4m3_mmvq_b2", (QT_F8_E4M3, 4) => "qmatvec_e4m3_mmvq_b4",
             (QT_F8_E4M3, 8) => "qmatvec_e4m3_mmvq_b8",
+            // b16 tier (lane/rp-on-st): e4m3 needs NO split-plane mirror to reach it — its native
+            // row-major layout is already 32B-aligned per k32 block, so the base kernel IS the
+            // aligned form. Contrast Q8_0, whose b16 exists only as the `_rp` twin (hence q8rp).
+            (QT_F8_E4M3, 16) => "qmatvec_e4m3_mmvq_b16",
             (QT_Q4_0, 2) => "qmatvec_q4_0_mmvq_b2", (QT_Q4_0, 4) => "qmatvec_q4_0_mmvq_b4",
             (QT_Q4_0, 8) => "qmatvec_q4_0_mmvq_b8", (QT_Q4_0, 16) => "qmatvec_q4_0_mmvq_b16",
             _ => return None,

@@ -2252,8 +2252,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("E4M3-MMVQ synth [{in_f}x{out_f}] m={mm}: rel={rel:.2e} m1-bits={bits_ok} {}",
                          if ok { "OK" } else { fails += 1; "FAIL" });
             }
-            // (3) batched twins vs grid.y=m mmvq: bit-exact.
-            for mm in 2..=8usize {
+            // (3) batched twins vs grid.y=m mmvq: bit-exact. Widths 2..=8 plus the b16 tier
+            // (lane/rp-on-st: qmatvec_e4m3_mmvq_b16 — the exact-16 serve chunk's kernel).
+            for mm in [2usize, 3, 4, 5, 6, 7, 8, 9, 12, 16] {
                 let mcols = memra_engine::Engine::batched_mcols(mm);
                 let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 163) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -2545,6 +2546,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                               rms_rel={rms_rel:.2e} bit-bad={bits_bad}/{} m1-bits={m1_bits} \
                               q8-lossless={q8_lossless} nan={nan} {}",
                              want.len(), if ok { "OK" } else { fails += 1; "FAIL" });
+                    // (4b) BATCHED twins vs the grid.y=m form (lane/rp-on-st): the weight-read-once
+                    // b2/b4/b8/b16 kernels must be BIT-IDENTICAL per (token,row) to the launch
+                    // above — that bit-identity is exactly what admits this class to the exact-16
+                    // serve tier, so it is gated, not argued. m=16 is included because chunk 16 is
+                    // the tier this kernel family exists to unlock.
+                    if (2..=16).contains(&mm) {
+                        let mcols = memra_engine::Engine::batched_mcols(mm);
+                        let yb = e.dtoh(&e.qmatvec_e4m3_blk_batched_raw(
+                            &wd, &xd, &scd, mm, in_f, out_f, in_f, scols, mcols)?)?;
+                        let bb = got.iter().zip(&yb)
+                            .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        println!("E4M3-BLK-BATCHED {arm} [{in_f}x{out_f}] m={mm} b{mcols}: \
+                                  bit-bad={bb}/{} {}",
+                                 got.len(), if bb == 0 { "OK" } else { fails += 1; "FAIL" });
+                    }
                 }
             }
         }
