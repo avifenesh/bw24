@@ -1,0 +1,14 @@
+model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+prompt=research/e2e/prompts/p2-code-medium.txt K=3 ngen=128
+
+ARM OFF: N=5  acceptance distinct=['89/117'] (DETERMINISTIC)
+  acc  [76.1, 76.1, 76.1, 76.1, 76.1]
+  tps  [90.51, 90.39, 87.09, 90.61, 90.6]  median=90.51
+  clocks 1620-1852 MHz  temp 54-77 C  sc=['PASS']  rc=[0]
+ARM ON: N=5  acceptance distinct=['87/120'] (DETERMINISTIC)
+  acc  [72.5, 72.5, 72.5, 72.5, 72.5]
+  tps  [88.17, 88.04, 88.3, 88.35, 88.34]  median=88.30
+  clocks 1552-1635 MHz  temp 66-77 C  sc=['PASS']  rc=[0]
+
+DELTA: acceptance 76.1% -> 72.5% = -3.6pp   spec tok/s median 90.51 -> 88.30 = -2.4%
+appended 1 row -> research/f8f4-flip-20260806/RESULTS.jsonl
