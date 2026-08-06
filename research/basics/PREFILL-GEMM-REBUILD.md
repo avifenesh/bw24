@@ -32,6 +32,37 @@
 > `mma.sync.aligned.m16n8k64.kind::mxf4nvf4.block_scale` (block scales as hardware MMA operands —
 > the only door that changes the issue interval itself).
 >
+> **PHASE-2 CORRECTION 2026-08-06 — both remaining candidates are now CLOSED, and the
+> "latency exposure" reading two paragraphs up is REFUTED.** Receipts:
+> `research/prefill-ilp-20260806/VERDICT.md` + `RESULTS.jsonl`.
+> - **The 16-cycle interval is the PIPE's, not the instruction's.** Measured on-device with two
+>   independent instruments (`clock64` per-CTA and full-GPU `cudaEvent`, agreeing to 0.4%):
+>   `m16n8k16.s8`, `m16n8k64.mxf4nvf4.4X` and `m16n8k32.mxf8f6f4` **all** issue at **16.06
+>   cyc/warp-MMA**. An NACC=1..16 sweep floors flat from NACC=2, so 16.06 is an *issue interval*,
+>   and NACC=1 exposes true MMA latency at **27-29 cyc** — fully hidden by **two** independent
+>   accumulators. At the shipped 8 warps/CTA the pipe measures 31.8-32.0 cyc/MMA = 2 x 16 =
+>   **100% issue-saturated**. So the idle tensor cycles are **NOT** latency exposure, and
+>   "more warps / more in-flight MMAs" is closed by mechanism, not just by flat config sweeps.
+> - **Intra-warp ILP: refuted at its premise.** `cuobjdump -sass` on the shipped
+>   `mul_mat_q_nvfp4_w4a8<128,128,1,0,1>`: all **256** IMMAs accumulate into **RZ** (0 matches for
+>   a register accumulator) — there is no dependent chain to break, and a warp already owns 4
+>   independent C tiles. Plus 252/255 regs with **six of eight** siblings already spilling, so
+>   wider C (+16 regs) or fragment double-buffering (+32) forces spills.
+> - **mxf4nvf4: real, 4x confirmed, ALREADY BUILT, blocked on precision.** The instruction is
+>   exposed on sm_120a, NVFP4's UE4M3-per-16 matches `scale_vec::4X` with **zero weight repack**,
+>   and the paper 4x is exact (**measured 3.989x** MAC-rate: 618.5 TFLOP/s vs 155.0 TOP/s s8). But
+>   `cu/mmq_fp4.cu` already implements it behind `MEMRA_MMQ=1`, measuring **1.9685x e2e** on q27
+>   pp512 (N=15 interleaved). ptxas proves k64 accepts `e2m1 x e2m1` **only** → this door requires
+>   FP4 activations, so its exactness block (`research/w4a4-rescue-20260803/`) is **structural to
+>   the operand grammar**, not an implementation gap.
+> - Also superseded: the "219 is sparsity-enabled so dense is 109.5 and the kernel is at 80.9% of
+>   dense peak" inference. **Measured dense s8 peak is 155.0 TOP/s** → the live kernel sits at
+>   **57.2%** of measured dense peak.
+>
+> **Net: prefill is done as a kernel-engineering target.** Same-instruction headroom is a few
+> percent and the cheap levers are spent; the only 2x is the FP4-activation door, which is a
+> **quality** deliverable (accuracy recovery), not a kernel one.
+>
 > Kept below for the reasoning record — the alternative-rejection analysis in §1
 > (CUTLASS-SM120, marlin, TMA) is still sound and still worth reading.
 
