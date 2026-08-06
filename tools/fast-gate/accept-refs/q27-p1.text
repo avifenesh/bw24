@@ -1,0 +1,21 @@
+The function should return a class that can be instantiated and used to perform the operations.
+
+<think>
+
+</think>
+
+```python
+from typing import Optional, TypeVar, Generic, Iterator
+
+T = TypeVar('T')
+
+
+class DoublyLinkedList(Generic[T]):
+    """A doubly-linked list implementation with insert, delete, and reverse operations."""
+
+    class _Node(Generic[T]):
+        """Internal node class for the doubly-linked list."""
+
+        __slots__ = ('data', 'prev', 'next')
+
+        def __init__(self, data: T, prev: Optional['_Node[T]'] = None

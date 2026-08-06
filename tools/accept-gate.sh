@@ -79,7 +79,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 CELLS_TSV=tools/fast-gate/accept-cells.tsv
 REFS=tools/fast-gate/accept-refs
-PORT="${MEMRA_ACCEPT_PORT:-8181}"
+PORT="${MEMRA_ACCEPT_PORT:-8317}"
 KEY=acceptgate
 LOGDIR="${MEMRA_ACCEPT_LOGDIR:-/tmp/accept-gate-$(date +%Y%m%d-%H%M%S)}"
 
@@ -138,6 +138,21 @@ if [ "$PIN" = 1 ]; then
 fi
 
 # ---------- server lifecycle (one boot per model+draft+K+ctx group) ----------
+# PRE-FLIGHT PORT GUARD (found the hard way on this lane's first pin run): the rig's idle
+# llama-server happened to hold 8181, so /health answered INSTANTLY ("up in 0s") from a foreign
+# process, our own server was never waited for, and all six cells failed with HTTP 500 from a
+# server that does not speak this API. Had that foreign process instead answered 200 with a
+# plausible body, the gate would have measured SOMEONE ELSE'S MODEL and pinned it. An occupied
+# port is therefore a hard abort, never a wait: we cannot prove the responder is ours.
+port_busy() { ss -tln 2>/dev/null | grep -q "[:.]$PORT "; }
+if port_busy; then
+    echo "accept-gate: FAIL — port $PORT is already LISTENing before we start a server."
+    ss -tlnp 2>/dev/null | grep "[:.]$PORT " | sed 's/^/    /'
+    echo "  Refusing to run: a foreign responder on our port can answer /health and be measured"
+    echo "  as if it were the model under test (this lane's first pin run hit exactly that)."
+    echo "  Free the port or set MEMRA_ACCEPT_PORT=<free port>."
+    exit 1
+fi
 SPID=""
 serve_up() { # serve_up <model> <draft> <k> <ctx> <tag>
     local model=$1 draft=$2 k=$3 ctx=$4 tag=$5
@@ -150,7 +165,17 @@ serve_up() { # serve_up <model> <draft> <k> <ctx> <tag>
     SPID=$!
     local i
     for i in $(seq 1 180); do
-        curl -sf -H "Authorization: Bearer $KEY" "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && return 0
+        if curl -sf -H "Authorization: Bearer $KEY" "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+            # Belt and braces on top of the pre-flight guard: the healthy responder must BE our
+            # child. A racing process that grabbed the port after the pre-flight check would
+            # otherwise get measured as the model under test.
+            if ! ss -tlnp 2>/dev/null | grep "[:.]$PORT " | grep -q "pid=$SPID,"; then
+                echo "  FAIL: port $PORT answers /health but is NOT owned by our server (pid $SPID)"
+                ss -tlnp 2>/dev/null | grep "[:.]$PORT " | sed 's/^/      /'
+                return 1
+            fi
+            return 0
+        fi
         kill -0 "$SPID" 2>/dev/null || { echo "  server died during boot (log $LOGDIR/server-$tag.log)"; return 1; }
         sleep 2
     done
