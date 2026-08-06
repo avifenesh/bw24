@@ -585,3 +585,33 @@ model generates the **same tokens** whether it runs on one card or split across 
 **With this, PP-2 exactness on the target pair is gated on both the comparison vehicle (q9)
 and the deployment vehicle (q27), in both placement orders.** The 192 GB assessment's
 mandatory-before-listing item is discharged for the model that would ship.
+
+---
+
+## Lane summary (2026-08-06)
+
+**Commits** (branch `lane/pp2-hardening`, off `restructure/public-split` @ 4b4dc7b1):
+
+| hash | what |
+|---|---|
+| `816bdf47` | Phase 0 — box provisioned, P2P transport verdict measured |
+| `2a0e2d48` | Phase 1 — 13-arm PP gate battery green, first ever on a PRO 6000 pair |
+| `7b5cbebc` | the H100 35% same-device flake does not reproduce (20/20 forced, p<0.001) |
+| `37dd6586` | the batch path FAILS OPEN (the finding) |
+| `5fa3193a` | 1.905x deferred-pipelined on q27 + the 28x batch cost measured |
+| `5f011708` | `decode_step_batch` fails closed (the fix) |
+| `3980562e` | q27 exactness gated — the deployment model, both placements |
+| `c9910eca` | the same hole in dc / graph / spec verify, one shared guard |
+
+**Bill status:** transport CLOSED (already shipped, measured 13-14x over a bounce at
+boundary payload). Exactness GREEN on both vehicles, both placements, N=2 and N=4.
+Capacity PP-2 costs 0.4%. The 1.9x pipelined prize transfers but is gated behind
+spec-or-batch over PP-2. Four fail-open paths now refuse. Remaining: stage-split the
+batched trunk (weeks; spec's prerequisite), root-cause the shared-Engine scratch race,
+then spec over PP-2.
+
+**Not done / not claimed:** batched decode over PP-2 does not work — it refuses loudly
+instead of silently costing 28x, which is a different and smaller claim. The cross-device
+pipelined flake is neither reproduced nor excluded (80 runs cannot see a 0.5% event). No
+runtime default moved, and per CLAUDE.md the 5090 remains the default-flip gate — nothing
+here is a default-flip decision.
