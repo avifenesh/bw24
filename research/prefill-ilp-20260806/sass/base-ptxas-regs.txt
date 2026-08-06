@@ -1,0 +1,63 @@
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi0ELb0ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 190 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi0ELb1ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 188 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi0ELb0ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 190 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi0ELb1ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 188 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi1ELb0ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    80 bytes stack frame, 76 bytes spill stores, 76 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 80 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi1ELb1ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    88 bytes stack frame, 84 bytes spill stores, 84 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 88 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi1ELb0ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 180 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_f8f4ILi128ELi128ELi1ELb1ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 180 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi0ELb0ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi0ELb1ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    32 bytes stack frame, 28 bytes spill stores, 28 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 32 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi0ELb0ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi0ELb1ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    16 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 16 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi1ELb0ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    32 bytes stack frame, 28 bytes spill stores, 28 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 32 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi1ELb1ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 8 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi1ELb0ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 252 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi128ELi1ELb1ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi64ELi2ELb0ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    40 bytes stack frame, 40 bytes spill stores, 40 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 40 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi64ELi2ELb1ELb0EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    48 bytes stack frame, 44 bytes spill stores, 44 bytes spill loads
+ptxas info    : Used 255 registers, used 1 barriers, 48 bytes cumulative stack size
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi64ELi2ELb0ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z20mul_mat_q_nvfp4_w4a8ILi128ELi64ELi2ELb1ELb1EEvPKcS1_PKiPfiiiiiif' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 254 registers, used 1 barriers
+ptxas info    : Compiling entry function '_Z27quantize_mmq_q8_1_d4_kernelPKfPvllli' for 'sm_120a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 0 barriers
