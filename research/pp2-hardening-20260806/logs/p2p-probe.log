@@ -1,0 +1,24 @@
+devices=2
+dev0 name="NVIDIA RTX PRO 6000 Blackwell Server Edition" cc=12.0 pciBus=32:00.0 busWidth=512bit totalMem=102.0GB
+dev1 name="NVIDIA RTX PRO 6000 Blackwell Server Edition" cc=12.0 pciBus=33:00.0 busWidth=512bit totalMem=102.0GB
+--- canAccessPeer ---
+canAccessPeer 0->1 = 1
+canAccessPeer 1->0 = 1
+peer_enabled=1
+--- bandwidth: bytes, uni_p2p_GBs, bidir_p2p_GBs, bounce_GBs (host-staged D2H+H2D) ---
+BW 4096 3.239 3.103 0.276
+BW 12288 10.213 9.387 0.751
+BW 16384 13.352 12.655 0.954
+BW 65536 45.757 49.549 3.857
+BW 262144 53.827 105.451 11.019
+BW 1048576 56.022 107.691 20.059
+BW 4194304 56.584 108.119 25.599
+BW 16777216 56.226 107.133 27.499
+BW 67108864 55.481 106.075 28.002
+BW 268435456 54.533 104.596 28.153
+--- latency: bytes, p2p_us, bounce_us (mean of 5000) ---
+LAT 4096 6.560 14.531
+LAT 12288 6.828 16.432
+LAT 16384 7.017 17.217
+LAT 65536 7.654 16.833
+DONE
