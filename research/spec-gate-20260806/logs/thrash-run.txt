@@ -1,0 +1,46 @@
+cycle 1/6
+  [  0.00s] cyc1-LOW-c2: fired 2
+  [  6.00s] cyc1-HIGH-c6: fired 6
+cycle 2/6
+  [ 12.00s] cyc2-LOW-c2: fired 2
+  [ 18.00s] cyc2-HIGH-c6: fired 6
+cycle 3/6
+  [ 24.00s] cyc3-LOW-c2: fired 2
+  [ 30.01s] cyc3-HIGH-c6: fired 6
+cycle 4/6
+  [ 36.01s] cyc4-LOW-c2: fired 2
+  [ 42.01s] cyc4-HIGH-c6: fired 6
+cycle 5/6
+  [ 48.01s] cyc5-LOW-c2: fired 2
+  [ 54.01s] cyc5-HIGH-c6: fired 6
+cycle 6/6
+  [ 60.01s] cyc6-LOW-c2: fired 2
+  [ 66.01s] cyc6-HIGH-c6: fired 6
+{
+  "cycles": 6,
+  "low_c": 2,
+  "high_c": 6,
+  "phase_s": 6.0,
+  "load_crossings": 12,
+  "ticks": 1600,
+  "ticks_with_spec": 62,
+  "demotions": 12,
+  "demote_at_generated": [
+    1,
+    1,
+    1,
+    33,
+    1,
+    1,
+    1,
+    33,
+    1,
+    33,
+    1,
+    33
+  ],
+  "admit_batched_events": 24,
+  "demotions_per_tick": 0.0075,
+  "verdict_O_load_not_O_ticks": "PASS"
+}
+THRASH_DONE

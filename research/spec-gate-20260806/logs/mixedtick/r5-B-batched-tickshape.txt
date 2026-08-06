@@ -1,0 +1,1 @@
+ticks=2568 spec_present=0 ready_present=1554 MIXED=0

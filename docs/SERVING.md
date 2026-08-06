@@ -59,10 +59,29 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   `GraphSession` replay amortized the same launch overhead this removes outright, so with the
   fast path in place the door is a net loss at every length measured out to mt=1024 and
   `MEMRA_GS_MIN=384` must NOT be lowered (FLAGS §serve; `research/servepath-p2-20260805/`).
-- **Spec fast lane:** MTP speculative serving is a single-stream latency tier — 1.82x plain
-  serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
-  c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
-  `research/spec-serving-20260801/`).
+- **Spec fast lane, now CONCURRENCY-GATED inside one process** (lane/spec-gate, 2026-08-07 —
+  this supersedes the "run spec and bulk as separate server processes" guidance): MTP
+  speculative serving is a single-stream latency tier — 1.82x plain serving at c=1 on the 27B
+  (131.8 vs 72.5 tok/s) — and plain batching overtakes between c=2 and c=4 because the spec
+  path is a serial burst QUEUE, not a contended one (phase (a) steps each spec session's whole
+  burst in a host loop; phase (c) excludes spec rows from batched decode). Pooling the verify
+  is REFUTED at a 16-column exact-kernel width ceiling (`research/spec-scaling-20260806/`), so
+  the answer is scheduling policy: **one server now admits spec only while `active+1 <= 2` and
+  DEMOTES live spec sessions into the batched phase at `active >= 4`**, with `active==3` a
+  hysteresis band and demotion one-way per session. The handoff is a real cache transfer
+  (`(cache, next_pred)` into the session's cache + `device_next`, a carried pending flushed
+  first) and is byte-exact for greedy: a session demoted mid-generation emits a stream
+  byte-identical to one batched from the start. Measured q9 on the 5090, N=5 interleaved: the
+  gated curve tracks spec at c=1-2 (251.2 tok/s, 1.81x over batched) and batched at c=4-8
+  (504.7 tok/s, 2.03x over always-spec), with per-stream p50 at c=8 equal to batched's 1.963s
+  rather than spec's 3.973s. Sampled and constrained spec sessions do not demote (their
+  `next_pred` is a greedy/unmasked argmax) and stay on the serial path, bounded by the admit
+  ceiling. One residual, disclosed: a first-wave TTFT p95 transient (0.423s vs never-spec's
+  0.017s at c=4) confined to the at-most-`LOW` sessions admitted before a load ramp — p50
+  matches never-spec; set `MEMRA_SPEC_GATE_LOW=0` to never admit spec if cold-ramp p95
+  outweighs c=1 throughput. Flags: `MEMRA_SPEC_GATE` (rollback seam),
+  `MEMRA_SPEC_GATE_LOW`/`_HIGH`. Receipts: `research/spec-serving-20260801/`,
+  `research/spec-gate-20260806/`.
 - **The plain-serve c=1 gap (task #70) is closed by the fast path above — with one cell
   pending re-measure and one still open.** Phase 1 measured serve c=1 trailing the naked
   CLI **−11.74%** on a Q8_0 27B cell (`memra-server` 46.09 tok/s, N=3 median, vs `run-gen`
@@ -82,6 +101,22 @@ Greedy serving is **isolated-identical under concurrent load at defaults**: a re
 output tokens are byte-identical whether it arrives alone or inside a full batch. This is
 gated, not assumed — the serve gate replays the same prompts at c=1 and c=16 and
 byte-compares every stream.
+
+**Read the gate's exact scope before quoting the contract as unconditional.** The gate runs
+16 prompts at **96 max_tokens** with all sessions arriving together, i.e. at *equal* depth.
+Outside that shape the guarantee is not established, and lane/spec-gate has a receipt for
+where it stops holding: a 768-token greedy request diverged from its own solo reference at
+byte 1347 (≈ token **331**) when it shared batched decode with sessions **staggered to
+different depths**, and on a second run the divergence moved to byte 2379 — the byte moving
+between runs is itself the proof that the loaded configuration is nondeterministic. Spec was
+OFF and the gate lane's code was absent, so this is pre-existing, not a regression:
+`fa_decode_batch_seqs_v4` carries a single `split_keys` for sessions at different depths (the
+LADDER-RUNG STRADDLE law `fa_decode_rows` documents for the row axis), and the batched-linear
+tier selection changes with B. So the honest statement of the contract today is: **byte-identical
+at equal depth, gated to 96 tokens; long staggered-depth batches are an open gap**
+(receipts `research/spec-gate-20260806/logs/exact/`, arm `REF_LOAD`). It is also why that lane
+had to test its demotion handoff at a pinned batch shape (`MEMRA_SPEC_DEMOTE_AT`) rather than by
+triggering it with load — under load, no comparison isolates the property under test.
 
 The contract is over **tokens**, not over the FP program that produces them, and since
 2026-08-05 (`MEMRA_SERVE_B1FAST`, serve-path phase 2) a solo tick deliberately runs a

@@ -1,0 +1,31 @@
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   31 tok in 0.226s = 137.34 tok/s (gen-only; this run's prime 0.007s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924]
+
+[generate_spec K=1] 32 tok in 0.179s = 172.86 tok/s (1.26x vs generate; this run's prime 0.007s)
+  acceptance: 15/17 = 88.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.167s = 185.66 tok/s (1.35x vs generate; this run's prime 0.007s)
+  acceptance: 18/26 = 69.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.182s = 169.91 tok/s (1.24x vs generate; this run's prime 0.007s)
+  acceptance: 20/36 = 55.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.207s = 149.93 tok/s (1.09x vs generate; this run's prime 0.007s)
+  acceptance: 21/44 = 47.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.210s = 147.39 tok/s (1.07x vs generate; this run's prime 0.007s)
+  acceptance: 21/50 = 42.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.237s = 130.55 tok/s (0.95x vs generate; this run's prime 0.007s)
+  acceptance: 21/60 = 35.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.267s = 116.08 tok/s (0.85x vs generate; this run's prime 0.007s)
+  acceptance: 21/70 = 30.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.314s = 98.72 tok/s (0.72x vs generate; this run's prime 0.007s)
+  acceptance: 21/80 = 26.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

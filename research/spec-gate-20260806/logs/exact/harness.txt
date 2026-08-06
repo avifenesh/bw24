@@ -1,0 +1,31 @@
+[REF] 3122 stream bytes, completion_tokens=768
+[SPEC] 3122 stream bytes, completion_tokens=768
+[DEMOTE] 3113 stream bytes, completion_tokens=768
+[REF_LOAD] 3061 stream bytes, completion_tokens=768
+[DEMOTE_SOLO] 3122 stream bytes, completion_tokens=768
+{
+  "control_spec_prefix_of_ref_or_ref_prefix_of_spec": "PASS (shared prefix byte-identical)",
+  "control_overshoot_tokens": 0,
+  "demotion_fired_on_target": "YES at generated=118 of 768 tokens",
+  "PRIMARY_demote_solo_forced_at": "[129]",
+  "PRIMARY_demote_solo_vs_ref_solo": "PASS (byte-identical)",
+  "baseline_batchshape_solo_vs_loaded": "DIVERGES at byte 1347 \u2014 batch-vs-solo decode is NOT bit-identical (pre-existing)",
+  "demote_vs_refload_shared_prefix": "FAIL at byte 522",
+  "demote_vs_refload_byte_identical": "FAIL",
+  "demote_vs_refload_len": "ref_load 3061B / demote 3113B",
+  "demote_vs_ref_solo": "FAIL at byte 522 (see baseline above)",
+  "tokens": {
+    "REF": 768,
+    "SPEC": 768,
+    "DEMOTE": 768,
+    "REF_LOAD": 768,
+    "DEMOTE_SOLO": 768
+  }
+}
+FIRST DIVERGENCE (demote vs REF_LOAD (loaded, nondeterministic)) at byte 522:
+  A ...b' arithmetic, latency consequences, hysteresis for mode thrash.\n\n2.  **Initial Knowledge Retrieval & Structuring:**\n    *   *What is Speculat'
+  B ...b' arithmetic, latency consequences, hysteresis for mode thrash.\n\n2.  **Define the Core Concepts:**\n    *   *Speculative Decoding:* Generating'
+FIRST DIVERGENCE (REF solo vs REF_LOAD (pre-existing baseline)) at byte 1347:
+  A ...b'arget). In a multi-session context, it often means batching the draft and verification steps together.\n        2.  **Batched Decode Step:** '
+  B ...b'arget). In a multi-session context, it often means batching the draft tokens and verifying them together.\n        2.  **Batched Decode Step:'
+EXACTNESS_OK

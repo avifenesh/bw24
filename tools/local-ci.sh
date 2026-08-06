@@ -19,6 +19,11 @@
 # correctness stage runs wherever a GPU + at least one model exists. Set
 # MEMRA_MODELS_DIR to your model root (default /data/ai-ml/hf-models).
 #
+# MEMRA_CI_DIRTY_WAIT (default 600s): how long a cell waits for a co-resident GPU process
+# to leave before recording its row as window_clean=false. Latched after the first cell
+# that outwaits it — a permanently-co-resident process (an owner service holding an idle
+# CUDA context) must not turn the perf stage into an unbounded hang.
+#
 # Window discipline (recorded per row, enforced where it can be): no other compute
 # process on the GPU (co-resident engines spill experts and read 10x low), host load
 # sane, power profile noted (pin it with gpu-full-power on|off — profiles pair fairly
@@ -273,8 +278,32 @@ run_cell() {
     done
     if window_free_now; then break; fi
     if [ "$cell_try" = 1 ]; then
-        echo "  $id: window went DIRTY mid-cell — waiting + retrying once"
-        while ! window_free_now; do sleep 40; done
+        # BOUNDED wait, LATCHED once (2026-08-07, lane/spec-gate). This loop used to be
+        # `while ! window_free_now; do sleep 40; done` — unbounded, so a PERSISTENT
+        # co-resident deadlocked the whole perf stage and made the honest fallback two
+        # lines below (record with window_clean=false) unreachable. Hit for real: the
+        # owner's hermes-gateway.service holds a 394 MiB idle CUDA context 24/7 on this
+        # box, 0% GPU util, and is not a lane's job to kill — the battery sat in that
+        # loop through 31b-plain-short and produced no rows at all. A gate that hangs
+        # forever is worse than one that records an honestly-labeled row.
+        #
+        # Latched, because the wait is only worth paying for a TRANSIENT joiner: once one
+        # cell has proven the co-resident outlasts the wait, every later cell skips
+        # straight to the labeled retry instead of re-paying it (10 cells x 600 s of
+        # pure sleeping is not a gate, it is a hang with progress output).
+        if [ "${PERSISTENT_CORESIDENT:-0}" = 1 ]; then
+            echo "  $id: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false"
+        else
+            local wait_left="${MEMRA_CI_DIRTY_WAIT:-600}"
+            echo "  $id: window went DIRTY mid-cell — waiting up to ${wait_left}s + retrying once"
+            while ! window_free_now && [ "$wait_left" -gt 0 ]; do
+                sleep 20; wait_left=$((wait_left - 20))
+            done
+            if ! window_free_now; then
+                PERSISTENT_CORESIDENT=1
+                echo "  $id: co-resident did not leave in ${MEMRA_CI_DIRTY_WAIT:-600}s — treating it as persistent; rows from here are window_clean=false"
+            fi
+        fi
     else
         echo "  $id: DIRTY twice — recording with window_clean=false"
         WINDOW_CLEAN=false

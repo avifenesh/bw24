@@ -1,0 +1,1323 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8318
+[meter] admit id=chatcmpl-0d4c246cce536d376d13674f4d1c8c6a tenant=default lane=interactive model="q9"
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-0f8af56c0c208c484b2b96c951e45bc6 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[worker] observed session VRAM cost for "q9": 101MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-1e65bb1480dee9ae9621f543354de712 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-20aea014609de14a402660280d67f6fa tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-5a2820d7291269067d7a6a82fbecdd4b tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-04437370948c710c469be8aa26ee169c tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-7aa4d0a05c0363c8647039c43c197b4f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-9caa946453ee08fdb6e591b0b0f91bbd tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-1ef1f02b55660badeca58fa59c03c076 tenant=default lane=interactive model="q9"
+[spec-acc] ctx=328 burst=3/3 cum=72/99=0.727
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=332 burst=16/21 cum=88/120=0.733
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-5534fa225cfcda14da3386b602693e27 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-98122d0aaefe3d0899d993a92701eefe tenant=default lane=interactive model="q9"
+[spec-acc] ctx=294 burst=1/3 cum=50/57=0.877
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=296 burst=19/39 cum=69/96=0.719
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-e138c617be7919ce1d8b81aa9f2b1c26 tenant=default lane=interactive model="q9"
+[spec-acc] ctx=259 burst=3/3 cum=27/27=1.000
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=263 burst=23/30 cum=50/57=0.877
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=296 burst=19/39 cum=69/96=0.719
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-b672b55c773153c3629e9e2a0456d96f tenant=default lane=interactive model="q9"
+[spec-acc] ctx=294 burst=1/3 cum=50/57=0.877
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=296 burst=19/39 cum=69/96=0.719
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-93ea883572931257b1b8778ff6b4b15e tenant=default lane=interactive model="q9"
+[spec-acc] ctx=259 burst=3/3 cum=27/27=1.000
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=263 burst=23/30 cum=50/57=0.877
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=296 burst=19/39 cum=69/96=0.719
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[tick] act=2 int=2 priming=0 ready=0 spec=2 demoted=0 decode_ms=0.0
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-522375ff3d2973c880ed8b5690c783a9 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-06bee8615be53c6c13f05c1b331440e1 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-021293174b579a8dae21a45fe5cea325 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-96c08b675010ca4afaf8e9bc6e3853f5 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d0f67551b0f74cf38622226fb2341236 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[prime-batch] B=2 tokens=452 in 103.1ms
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model q9)
+[tick] act=4 int=4 priming=0 ready=2 spec=2 demoted=0 decode_ms=9.5
+[spec-gate] demoted session to batched decode: 4 active >= HIGH=4 (model q9, committed 259, generated 33)
+[spec-gate] demoted session to batched decode: 4 active >= HIGH=4 (model q9, committed 259, generated 33)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[meter] admit id=chatcmpl-24e0093ece3c03accda88cfab5bc8699 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-3c49f786ac9c045da152c72f7be34de3 tenant=default lane=interactive model="q9"
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.9
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[meter] admit id=chatcmpl-605caf887eda6008cb72dc12cdd7edbe tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4620ed61fd9ee17db9fdebc8a611b753 tenant=default lane=interactive model="q9"
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.8
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[meter] admit id=chatcmpl-0f4d5165d8088e340f9955c27d3c36e2 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c9946669c0ba43d2954170b3e769e0c1 tenant=default lane=interactive model="q9"
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.9
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[meter] admit id=chatcmpl-5bb35090562cbd18db05a96d682a7201 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c3a359d081de3361df7f978750b7c36f tenant=default lane=interactive model="q9"
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.8
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[meter] admit id=chatcmpl-d5be01e73cf74ee8e5a916c2481e765b tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-fb89941603da881b4ce438c1837c6a5c tenant=default lane=interactive model="q9"
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.1
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.9
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[meter] admit id=chatcmpl-35f76ad9b5f84ce21880f5b1c8ad4be6 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-9f78d2019cd68c552a531ebe2c2be734 tenant=default lane=interactive model="q9"
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.8
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=2 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.1
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.8
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.8
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=8.9
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=2 spec=0 demoted=2 decode_ms=9.0
+[tick] act=2 int=2 priming=0 ready=0 spec=0 demoted=2 decode_ms=0.0
+[meter] admit id=chatcmpl-466ce25912d43c1d996b3f36790afa25 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=2 decode_ms=0.0
+[meter] admit id=chatcmpl-b277a9c369eb1cedbc66c1ca8e764aec tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-eda5eb9c557f3766713e3f8cb6bca827 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-0909ede501229f8e4cc297abc327b4d7 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-6086f834e83a2d07adda1a3e3a02d77d tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-17dd59ab2745e9a1d20c61e2e1cc808d tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-bd924264d812788889c06344ad06361c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-5c45d30e59fb8547b3f69b5daf7eeac4 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b978af412c5b22a0705a6808b3865d20 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[tick] act=8 int=8 priming=0 ready=6 spec=2 demoted=2 decode_ms=14.9
+[spec-gate] demoted session to batched decode: 8 active >= HIGH=4 (model q9, committed 259, generated 33)
+[spec-gate] demoted session to batched decode: 8 active >= HIGH=4 (model q9, committed 259, generated 33)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.5
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[meter] admit id=chatcmpl-582154b674b65511a5d35a67db818ecb tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-de1176d5ff57cde63e951b276984f6ac tenant=default lane=interactive model="q9"
+[tick] act=8 int=8 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.0
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.7
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[meter] admit id=chatcmpl-c066d9776c5cb22b260c35e13d80da61 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-695d500248d6d6f8c9c05da31f422bff tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-247e2caffc9c1145725c4e15815bbbaf tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b2f0d69a6c378e7259592c76b6113fe7 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-f63cd36a60d65c7abc66844ef234e3e5 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-17baf2b33ab3c1618e93e7ac73a27b52 tenant=default lane=interactive model="q9"
+[tick] act=8 int=8 priming=0 ready=2 spec=0 demoted=4 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=16.6
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.6
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[meter] admit id=chatcmpl-c92b3dd8a2e1eba53c423044e64f3754 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-6771350a7ff1a60a4a033e78a0a0295b tenant=default lane=interactive model="q9"
+[tick] act=8 int=8 priming=0 ready=6 spec=0 demoted=4 decode_ms=12.9
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.8
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.9
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.9
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[meter] admit id=chatcmpl-29adb06877f5b28e785b070f588fac28 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4e462286a59c907ea1b99214ab565722 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-f8b486b35950a58d737b929f583e202c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-5841e3726947b4ce5bb0eede5a7ca65d tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-05f00d8ca47bbd3f4444bb8e7ebd5cff tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b88de1b16fdb3e57fa080bcbca8892ab tenant=default lane=interactive model="q9"
+[tick] act=8 int=8 priming=0 ready=2 spec=0 demoted=4 decode_ms=8.9
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=16.5
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[meter] admit id=chatcmpl-60533714927341c8bbe4934d16d2d557 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-61f4524a4f92a60296aab3c3fac1007d tenant=default lane=interactive model="q9"
+[tick] act=8 int=8 priming=0 ready=6 spec=0 demoted=4 decode_ms=12.9
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.7
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.8
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[meter] admit id=chatcmpl-3d71ec9827721026cd866c664a148ed4 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-34abd9d005499d0e2e4c506a949cca8f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-15c83d573c7b0107881eee9d92266b1f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c83cfc28a798a5c13a2e09da767e086d tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-781d0be8ae74452d8fc9655256be11ac tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-37f1ead1f8a2a735cb59d314f8c1d0d6 tenant=default lane=interactive model="q9"
+[tick] act=8 int=8 priming=0 ready=2 spec=0 demoted=4 decode_ms=8.9
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=16.6
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=14.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.0
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.4
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.1
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.2
+[tick] act=8 int=8 priming=0 ready=8 spec=0 demoted=4 decode_ms=15.3
+[tick] act=8 int=8 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=4 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=0 spec=0 demoted=4 decode_ms=0.0
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
