@@ -1,0 +1,18 @@
+=== lane/step-draft loud-drafter gates 20260806T234236Z
+=== commit: 97d0bd75 on lane/step-draft
+=== rig: NVIDIA GeForce RTX 5090 Laptop GPU
+=== model: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+=== draft: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf
+lock acquired 2026-08-07T02:42:36+03:00
+########## ARM A: '+draft' attaches, no warning ##########
+  SKIP: A: card busy (another tenant holds VRAM) — arm not run
+########## ARM B: non-step35, no drafter -> quiet ##########
+  SKIP: B: card busy (another tenant holds VRAM) — arm not run
+########## ARM C: bad drafter path -> refuse to start ##########
+  FAIL: C: died of trunk OOM, not the refusal under test — card is shared, arm INVALID
+########## ARM D: missing drafter path -> parse-time refusal ##########
+  ok: D: refused to start on a nonexistent drafter path
+  ok: D: cause is quoted and names the DRAFTER (not the trunk)
+  ok: D: refused BEFORE any GPU/model work
+lock released 2026-08-07T02:42:44+03:00
+=== FAILS=1
