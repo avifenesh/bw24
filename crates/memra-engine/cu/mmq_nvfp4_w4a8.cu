@@ -84,6 +84,13 @@
 #endif
 #define CUDA_QUANTIZE_BLOCK_SIZE_MMQ 128
 
+// CEILING PROBE, default OFF. -DMEMRA_MMQ_FOLD_CEILING=1 collapses the per-k01 f32 scale-fold
+// in vec_dot_nvfp4_w4a8_mma to an s32 add so the fold's inner-loop cost can be measured as an
+// upper bound. NUMERICALLY WRONG when on — diagnostics only, never a shippable arm.
+#ifndef MEMRA_MMQ_FOLD_CEILING
+#define MEMRA_MMQ_FOLD_CEILING 0
+#endif
+
 // FP4 e2m1 reconstruction LUT (ggml-common.h kvalues_mxfp4 == kvalues_fp4).
 __constant__ int8_t kvalues_mxfp4[16] = { 0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12 };
 
@@ -444,6 +451,12 @@ static __device__ __forceinline__ void vec_dot_nvfp4_w4a8_mma(
     tile_A A[ntx][8];
     float  dA[ntx][tile_C::ne / 2][8];
 
+#if MEMRA_MMQ_FOLD_CEILING
+    // Ceiling-probe s32 accumulator: same element count as the f32 `sum` slice this call
+    // touches, so register pressure tracks the real kernel.
+    int s32acc[(mmq_x / (ntx * tile_C::J)) * ntx * tile_C::ne] = {0};
+#endif
+
 #pragma unroll
     for (int n = 0; n < ntx; ++n) {
 #pragma unroll
@@ -486,14 +499,48 @@ static __device__ __forceinline__ void vec_dot_nvfp4_w4a8_mma(
                 mma(C[0], A[n][k01 / 4 + 0], B[0]);
                 mma(C[1], A[n][k01 / 4 + 1], B[1]);
 
+#if MEMRA_MMQ_FOLD_CEILING
+                // CEILING PROBE ONLY — NUMERICALLY WRONG, never a shippable arm.
+                // Measures the upper bound of every fold-removal lever by keeping the MMA
+                // chain and the smem feed byte-identical while collapsing the per-k01 f32
+                // scale-fold (2 s32->f32 converts + 2 scale muls + 1 dB mul + 1 add per
+                // accumulator element) to a single s32 add. dA/dB stay LOADED (so the feed
+                // and register pressure are unchanged) but are consumed once outside the
+                // k-loop, so nvcc cannot hoist the loads away.
+                // If pp512 does not move here, no fold lever can pay and the lane must go
+                // to the mxf4nvf4 block-scale MMA instead.
+#pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    s32acc[(j0 / tile_C::J + n) * tile_C::ne + l] += C[0].x[l] + C[1].x[l];
+                }
+#else
 #pragma unroll
                 for (int l = 0; l < tile_C::ne; ++l) {
                     sum[(j0 / tile_C::J + n) * tile_C::ne + l] +=
                         dB[l % 2] * (C[0].x[l] * dA[n][l / 2][k01 / 4 + 0] + C[1].x[l] * dA[n][l / 2][k01 / 4 + 1]);
                 }
+#endif
             }
         }
     }
+
+#if MEMRA_MMQ_FOLD_CEILING
+    // Drain the probe accumulator into `sum` ONCE (outside the k-loop), folding one dA and
+    // one dB so both scale loads stay live. Cost is O(1) per call vs the O(MMQ_TILE_NE_K/8)
+    // the real fold pays, so the measured delta is the fold's inner-loop cost.
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += ntx * tile_C::J) {
+#pragma unroll
+        for (int n = 0; n < ntx; ++n) {
+#pragma unroll
+            for (int l = 0; l < tile_C::ne; ++l) {
+                const int s = (j0 / tile_C::J + n) * tile_C::ne + l;
+                sum[s] += ((float) s32acc[s]) * dA[n][l / 2][0]
+                        * y_df[(j0 + tile_C::get_j(l % 2)) * MMQ_TILE_Y_K];
+            }
+        }
+    }
+#endif
 }
 
 // ======================= mmq_write_back_mma (mmq.cuh:3214) =======================

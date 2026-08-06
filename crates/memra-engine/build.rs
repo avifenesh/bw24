@@ -188,6 +188,13 @@ fn main() {
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_Y_W4A8");
         let w4a8_y = std::env::var("MEMRA_MMQ_Y_W4A8").ok();
+        // CEILING PROBE (not a tune seam, NOT shippable): MEMRA_MMQ_FOLD_CEILING=1 rebuilds
+        // the NVFP4 W4A8 MMQ with the per-k01 f32 scale-fold collapsed to an s32 add, to
+        // measure the upper bound of every fold-removal lever. Output is NUMERICALLY WRONG
+        // by construction — argmax/exactness gates WILL fail under it, by design. Receipts:
+        // research/prefill-gemm-20260806/.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_FOLD_CEILING");
+        let w4a8_fold_ceiling = std::env::var("MEMRA_MMQ_FOLD_CEILING").ok();
         // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
         // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
         // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
@@ -249,6 +256,7 @@ fn main() {
             if mmq_src.ends_with("mmq_nvfp4_w4a8.cu") {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
+                if let Some(v) = &w4a8_fold_ceiling { args.push(format!("-DMEMRA_MMQ_FOLD_CEILING={v}")); }
             }
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
