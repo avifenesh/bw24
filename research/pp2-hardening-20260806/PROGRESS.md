@@ -160,7 +160,7 @@ receipts `logs/soak/`, one log per run.
 
 | Soak arm | Placement | H100 record | **PRO 6000 pair result** |
 |---|---|---|---|
-| cross-device pipelined | `dev01`, x40 | ~1 FAIL in ~190 (~0.5%), root cause open | **40/40 PASS, 0 FAIL** |
+| cross-device pipelined | `dev01`, x40 + x40 (two batches) | ~1 FAIL in ~190 (~0.5%), root cause open | **80/80 PASS, 0 FAIL** |
 | cross-device serial | `dev01`, x40 | clean | **40/40 PASS, 0 FAIL** |
 | same-device serial | singledev, x20 | clean | **20/20 PASS**, quarantine NOTE 20/20 |
 | **same-device pipelined, FORCED** | `MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1`, x20 | **13/20 PASS, 7/20 FAIL (35% flake)** | **20/20 PASS, 0 FAIL** |
@@ -185,8 +185,8 @@ What that does and does not license:
   pipelined arm — one device per stage, which is exactly the PP-2-on-a-pair serving shape —
   now carries **40/40 clean on target silicon** on top of the H100's ~189/190. The single
   H100 cross-device flake remains recorded evidence that the mechanism is reachable
-  cross-device at low probability; nothing here refutes it (40 runs cannot see a 0.5% event
-  with confidence — P(0 failures | p=0.005, n=40) = 0.82, so this soak is simply not
+  cross-device at low probability; nothing here refutes it (80 runs cannot see a 0.5% event
+  with confidence — P(0 failures | p=0.005, n=80) = 0.67, so this soak is simply not
   powered to detect it). **Honest statement: the cross-device flake is neither reproduced
   nor excluded; the same-device 35% rate IS excluded.**
 - **Consequence for the bill:** the deferred-pipelined arm (the 1.87x prize) is still not
@@ -202,3 +202,81 @@ scales with how long a kernel's tail leaves the SMs partly idle, and both the SM
 (H100 SXM 132 vs PRO 6000's Blackwell config) and the per-kernel durations at q9's shape
 differ. A narrower window on this silicon is consistent with the recorded mechanism. Not
 measured here; recorded so nobody reads "20/20 clean" as "the bug was H100-specific."
+
+---
+
+## Phase 2 — the serving bill
+
+### Item 1: P2P transport arm — **CLOSED, already shipped** (Phase 0 receipt)
+
+The task brief asked to "wire/enable the direct-copy arm in pp.rs where the host-staged path
+exists." **There is no host-staged path in `pp.rs` to replace.** `PpNRt::tx` (pp.rs:569)
+selects transport per boundary: `memcpy_dtod` when the boundary is same-device, and
+`cudarc::driver::result::memcpy_peer_async` with explicit src/dst contexts when it crosses.
+Peer access + `cuMemPoolSetAccess` are granted between every distinct device pair at
+`PpNRt::build`. On this pair `canAccessPeer` is 1 both ways, so the cross arm is live and is
+what all 13 Phase-1 gates and all 80 cross-device soak runs exercised. Measured advantage
+over the bounce a non-P2P box would need: **13-14x at boundary payload** (Phase 0 table).
+No work item. Note for the record: the host-staged bounce in issue-#67 class was a *5090*
+problem, and the correct conclusion is that it never needs building for owned PRO 6000
+hardware.
+
+### Item 2: batched decode over PP-2 — **the real finding: the door is not unwired, it is
+### SILENTLY WRONG-SHAPED (fails open, not closed)**
+
+The assessment and the `pp.rs` header both say batch/dc/graph/spec are "unwired" and that
+`warn_unwired_once` fires. **Both are wrong about the batch path.** Ground truth from the
+source:
+
+- `warn_unwired_once` has exactly **two** call sites, and both are gemma4-specific:
+  `decode.rs:615` (gemma4-e4b eager) and `hybrid_forward.rs:6462` (gemma4 eager N>2).
+  **Neither is on the batched path.**
+- `decode_step_batch`'s only pp-awareness is `decode_batch.rs:361` — `pp_cuts(...).is_none()`
+  as one condition among six gating the **B=1 fast path**. Its effect is the opposite of a
+  guard: with the pp door open it *disables* the B=1 fast path and falls through into the
+  batched body, which then runs the **entire trunk** (`for (il, layer) in
+  self.layers.iter().enumerate()`, decode_batch.rs:514, `lo=0..n_layers`) on the **primary
+  engine's stream**, with no stage split, no boundary, and no `rt.enter()`.
+- Under `MEMRA_PP_DEVICES=0,1` with sharding on (the default), stage 1's weights **are on
+  dev1**. So the batched body dereferences dev1 weights from a dev0 kernel — legal, because
+  `PpNRt::build` granted peer + pool access — and every projection for the back half of the
+  model streams over PCIe per step.
+
+**Probe result (`logs/batchprobe/`, `run-pp2-batchprobe.sh`): every arm PASSES.**
+
+| `decode-batch-gate` arm (q9, 32 steps, --mode config) | gate1 | gate2 | gate3 |
+|---|---|---|---|
+| door SHUT B=4 (baseline) | PASS (0/6 early draws) | PASS | PASS |
+| door OPEN `stages=2` singledev B=4 | PASS | PASS | PASS |
+| **door OPEN `stages=2` dev01 SHARDED B=4** | **PASS** | **PASS** | **PASS** |
+| door OPEN dev01 B=1 | PASS | PASS | PASS |
+
+**This is the dangerous answer.** Peer reads return identical bytes, so exactness is
+genuinely preserved — the gates are not lying, and there is no correctness bug to fix. But
+that means:
+
+1. **Nothing fails, warns, or refuses.** A serving deployment that opens the pp door and
+   serves batched traffic gets *silently* the worst of both worlds: half the weights read
+   over PCIe every step, zero pipeline parallelism, and a green exactness battery. The
+   quarantine discipline that protects the pipelined arm (a loud `Err` with a full
+   explanation, decode.rs:977) has **no counterpart on the batch path**.
+2. **The docs understate the bill in one direction and overstate it in another.** Batched
+   decode over PP-2 is not "an arm that doesn't exist yet and errors if you try" — it is an
+   arm that *runs*, passes gates, and quietly costs performance. That is worse than unwired.
+3. **The fix has two halves and they are not the same size.** (a) A refusal — make
+   `decode_step_batch` fail closed under an open pp door with device placement, matching the
+   pipelined arm's precedent. Small, mechanical, gate-able today. (b) The actual wiring —
+   stage-split the batched trunk. That is the weeks-class item, and it is real work:
+   `decode_step_batch`'s body is a single 250-line `lo=0..n_layers` loop over a
+   pointer-table (`lin_base`/`attn_base`, built once for all B across all layers,
+   decode_batch.rs:447-500) plus a batched `pos_d` vector; splitting it means per-stage
+   pointer tables, per-stage `pos_d`, an `[B, n_embd]` boundary (16 KB x B — where the
+   Phase-0 bidir 105 GB/s number starts to matter), and per-stage engines threaded through
+   ~15 `e.` call sites. The eager arm got a clean `decode_layers_eager(e, x, lo, hi, ...)`
+   seam to reuse; **the batched body has no equivalent `lo..hi` helper** — that extraction is
+   the first increment of any real wiring.
+
+Cost of the silent peer-read is being measured now (interleaved A/B/C/D, rep-major, N=5:
+door-shut / door-open-singledev / door-open-dev01-sharded / door-open-dev01-SHARD=0), so the
+refusal recommendation lands with a number attached rather than an assertion. Driver
+`run-pp2-batchcost.sh`, receipts `logs/batchcost/`.
