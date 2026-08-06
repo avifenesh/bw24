@@ -1,0 +1,20 @@
+### serve-smoke (already OK, skipped)
+### decode-batch-gate config B=8 (NVFP4)
+dbg config ALL GREEN
+### decode-batch-gate strict B=4 equalized (NVFP4)
+dbg strict ALL GREEN
+### kernel-check
+ALL GREEN: kernels match CPU reference.
+### run-spec K=1..8 (q9+draft)
+  acceptance: 21/50 = 42.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.264s = 117.35 tok/s (0.95x vs generate; this run's prime 0.008s)
+  acceptance: 21/60 = 35.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.298s = 104.04 tok/s (0.84x vs generate; this run's prime 0.008s)
+  acceptance: 21/70 = 30.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.454s = 68.26 tok/s (0.55x vs generate; this run's prime 0.008s)
+  acceptance: 21/80 = 26.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

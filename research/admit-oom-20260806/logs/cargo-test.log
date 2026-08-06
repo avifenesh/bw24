@@ -1,0 +1,12 @@
+test worker::tests::fingerprint_declines_short_generic_openers ... ok
+test worker::tests::fingerprint_handles_a_prompt_with_no_markers ... ok
+test worker::tests::fingerprint_degrades_gracefully_when_a_rewrite_reaches_a_head_window ... ok
+test worker::tests::fingerprint_ignores_the_live_turn ... ok
+test worker::tests::fingerprint_nominates_the_parked_session_across_a_rewritten_turn ... ok
+test worker::tests::fingerprint_separates_different_conversations ... ok
+test worker::tests::fingerprint_survives_an_assistant_interior_rewrite ... ok
+test worker::tests::prefix_cache_default_namespace_preserves_single_tenant_behavior ... ok
+test worker::tests::prefix_cache_eviction_large_pool_flush_smoke ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
