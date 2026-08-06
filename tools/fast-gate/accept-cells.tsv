@@ -1,0 +1,42 @@
+# accept-gate cell registry (tools/accept-gate.sh). TAB-separated.
+#   id	model	draft	prompt	spec-k	ctx	tier(smoke|full)	ngen
+#
+# A CELL IS A SERVED CONFIG, not a model. The law this registry encodes
+# (research/f8f4-flip-20260806/MATRIX.md): the acceptance sign follows
+# (model x drafter x prompt), NOT the model — it INVERTED between the GGUF's embedded MTP head
+# and the production regime drafter on the same two models the same day. So every row names the
+# artifact's REAL production drafter (attached via MEMRA_MODELS "+draft", which REPLACES the
+# embedded head at load) and its real serve K. A bare-head number is not evidence about a served
+# config and has no row here.
+#
+# spec-k: the K the artifact actually SERVES (both production servers default K=3 —
+# worker.rs:3251 MEMRA_SPEC_K default, and tools/serve-examples/serve-qwen36-27b-memra leaves it
+# at the default). Gating a K the config never serves would measure an unserved path.
+#
+# ctx: deliberately SMALL (8192) compared to the 128k production window. This gate asserts
+# acceptance + text exactness, which are ctx-independent at these prompt lengths (the longest
+# prompt here is ~5.4k tokens), and a 128k session costs ~4.1GB of KV plus a slow boot for zero
+# added assertion strength. The 128k window has its own gates (serve-smoke, serve-stress).
+#
+# ngen: >=100 BY CONTRACT. The blind spot this gate closes is that the token goldens stop at 20
+# and the receipted greedy divergences landed at generated index 22 and 38. 128 is ~6.4x the
+# golden window and comfortably past both. Never lower a cell below 100.
+#
+# tier: `smoke` cells run in the DEFAULT battery arm (local-ci keeps it near ~3 min: ONE model,
+# ONE K, one prompt — the q27 p1 cell, which is the cell the receipted arm move is loudest on:
+# rounds 42->43, drafted 126->129, accepted 85->85, text sha fddd52f5->33d69474). `full` cells
+# run under --full and add the second model (q9, whose regime cell carried the worst -9.5pp) and
+# the prompt-length axis (28 / 1845 / 5411 prompt tokens) — acceptance is prompt-dependent, so a
+# one-length matrix would be the weakest version of this gate.
+#
+# --- q27: Qwen3.6-27B NVFP4+MTP + daily regime drafter (the owner's default engine, port 8002).
+#     504/866 NVFP4 tensors — one of only 2 of 12 gate models the f8f4 arm can even reach.
+q27-p1	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf	research/e2e/prompts/p1-code-short.txt	3	8192	smoke	128
+q27-p2	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf	research/e2e/prompts/p2-code-medium.txt	3	8192	full	128
+q27-p3	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf	/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf	research/e2e/prompts/p3-agentic-long-v3.txt	3	8192	full	128
+# --- q9: Qwen3.5-9B NVFP4+MTP + its regime drafter (114/668 NVFP4; the other reachable model).
+#     q9-p1 is the -9.5pp cell: acceptance 0.7236 -> 0.6288 under the arm, with the OFF==OFF2
+#     control green — i.e. the arm, not box drift.
+q9-p1	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf	research/e2e/prompts/p1-code-short.txt	3	8192	full	128
+q9-p2	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf	research/e2e/prompts/p2-code-medium.txt	3	8192	full	128
+q9-p3	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf	research/e2e/prompts/p3-agentic-long-v3.txt	3	8192	full	128
