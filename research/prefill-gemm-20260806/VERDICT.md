@@ -263,14 +263,42 @@ cycles are **MMA latency exposure from thin warp parallelism**, and the FMA (25.
 (20.63%) pipes run *concurrently inside that exposure, for free*. Removing concurrent work
 from a latency-exposed pipe recovers only the sliver that was genuinely serialized.
 
+> **⚠ CORRECTED BY PHASE 2 (2026-08-06) — the "latency exposure" half of that paragraph is
+> WRONG; the conclusion it supports is right for a different reason.** Receipts:
+> `research/prefill-ilp-20260806/VERDICT.md`.
+> Phase 2 measured the interval directly (two instruments, `clock64` per-CTA + full-GPU
+> `cudaEvent`, agreeing to 0.4%) with an **NACC=1..16 ILP control**:
+> - cycles/warp-MMA **floors flat at 16.06 from NACC=2 through NACC=16** — so it is an issue
+>   interval, confirmed.
+> - **NACC=1 exposes the real latency: 27.1 cyc (s8) / 29.1 (block-scale)** — and **two**
+>   independent accumulators already hide it completely. This kernel has **four**.
+> - At the shipped 8 warps/CTA the pipe measures **31.8-32.0 cyc/MMA = 2 warps x 16** =
+>   **100% issue-saturated**.
+>
+> So the idle tensor-pipe cycles are **not** latency exposure and **not** thin warp parallelism —
+> the pipe is *issue-bound*, and the FMA/ALU work co-issues in the gaps between issue slots. The
+> practical consequence is the same "removing concurrent work buys almost nothing" (+3.17% stands),
+> but the mechanism matters: it means **more warps, more CTAs, and more per-warp accumulators are
+> all closed by mechanism**, not merely flat in a config sweep. And 16.00 is **the GB203 tensor
+> pipe's interval, not `m16n8k16.s8`'s**: `m16n8k64.mxf4nvf4` and `m16n8k32.mxf8f6f4` measure the
+> same 16.06 — which is exactly why the wider-K door is worth a real 4x (measured 3.989x).
+
 **LESSON: `pct_of_peak_sustained` pipe utilization is not a speedup ceiling.** Convert to
 cycles-per-instruction and check the issue interval before quoting any `1/utilization` figure.
 This lane quoted 1.656x in good faith and it was worth 1.041x.
 
-Corollary worth noting: at **88.6 TOP/s**, if the 219 TOP/s figure is the sparsity-enabled
-number then the dense s8 peak is 109.5 and this kernel is already at **80.9% of dense peak** —
-which is consistent with a 3% fold ceiling and inconsistent with any "40% of peak, so 2.5x
-available" reading.
+**LESSON 2 (added by phase 2): a cycles-per-instruction number is not an issue interval until an
+ILP control says so.** 16.00 alone cannot distinguish "the pipe's issue interval" from
+"latency / accumulators-in-flight" — sweep the independent-accumulator count and see whether it
+floors or halves. Skipping that control is precisely how this section arrived at a latency story
+for an issue-saturated pipe.
+
+~~Corollary worth noting: at **88.6 TOP/s**, if the 219 TOP/s figure is the sparsity-enabled
+number then the dense s8 peak is 109.5 and this kernel is already at **80.9% of dense peak**~~
+— **SUPERSEDED by phase 2's direct measurement: dense s8 peak is 155.0 TOP/s** (full-GPU
+`cudaEvent`, 82 CTAs x 256 thr, best of 5, clocks locked), so the live kernel sits at **57.2% of
+measured dense peak**. Do not infer a dense peak by halving a nameplate figure — measure it. The
+"3% fold ceiling" conclusion is unaffected (it was measured independently).
 
 ---
 
@@ -310,6 +338,33 @@ available" reading.
     Note the profile is *hostile* to it — DRAM 8-10%, `long_scoreboard` 0.04 — so it should be
     ceiling-probed, not built on faith.
   - **Owner call requested** on which of these gets the next dispatch.
+
+> **PHASE 2 ANSWERED BOTH, AND BOTH ARE CLOSED (2026-08-06).** Dispatched as `lane/prefill-ilp`;
+> receipts `research/prefill-ilp-20260806/VERDICT.md` + `RESULTS.jsonl`. Neither needed a kernel
+> build — one died to SASS, one to ptxas plus a microbench.
+>
+> 1. **Intra-warp ILP — REFUTED AT ITS PREMISE.** All **256** IMMAs in the shipped
+>    `mul_mat_q_nvfp4_w4a8<128,128,1,0,1>` accumulate into **RZ** (`grep 'IMMA' | grep -v ', RZ ;'`
+>    = 0 matches). There is no dependent chain to break: the source already declares `tile_C C[2]`
+>    fresh inside the `n`-loop with `ntx=2`, so a warp owns **4 independent C tiles** per k01 step —
+>    and the NACC control shows **2 already saturate**. Register budget forbids it independently
+>    (252/255 regs, **six of eight** siblings already spilling; wider C = +16, fragment
+>    double-buffer = +32). The instruction accounting closes exactly (256 IMMA / 16 ldmatrix /
+>    1024 I2FP + 1024 FFMA), so the audit is complete rather than sampled.
+> 2. **mxf4nvf4 — real, 4x confirmed, ALREADY BUILT, blocked on precision.** Exposed on sm_120a
+>    (`OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X`); NVFP4's UE4M3-per-16 matches `scale_vec::4X` with
+>    **zero weight repack**; the paper 4x is exact (**measured 3.989x**, 618.5 TFLOP/s). But
+>    `cu/mmq_fp4.cu` **already implements it** behind `MEMRA_MMQ=1` and measures **1.9685x e2e** on
+>    q27 pp512 (N=15 interleaved, 2591.2 vs 1316.3 tok/s). ptxas proves k64 accepts `e2m1 x e2m1`
+>    **only**, so the door *requires* FP4 activations and its exactness block
+>    (`research/w4a4-rescue-20260803/`) is **structural to the operand grammar** — which is why
+>    four kernel revisions could not fix it and why k=0 diverges too.
+> 3. **The Marlin x-stage card is closed too**, without probing it: a restructure that changes
+>    *when bytes arrive* cannot help a pipe measured at **100% issue-saturated**.
+>
+> **Revised re-aim: prefill is DONE as a kernel-engineering target.** Same-instruction headroom is
+> a few percent and the cheap levers are spent. The only remaining 2x is FP4-activation accuracy
+> recovery — a **quality** deliverable, not a kernel one. That is the open owner call now.
 
 ### Measurement note that is itself a finding
 
