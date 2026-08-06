@@ -1,0 +1,15 @@
+
+
+<think>
+Here's a thinking process:
+
+1.  **Understand User Goal**: The user wants to refactor a Rust HTTP server (using `axum` and `tokio`) to add graceful shutdown. Specifically:
+   - Catch `SIGTERM`/`SIGINT`
+   - Stop accepting new requests
+   - Drain in-flight sessions with a 30-second deadline
+   - Exit cleanly
+   - Show complete modified sections with explanations.
+
+2.  **Analyze Current Code**:
+   - Uses `axum::serve(listener, app).await?;`
+   - Runs on `

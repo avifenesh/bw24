@@ -114,3 +114,15 @@ amarginc	cmd	tools/argmax-margin-gate.sh	--canary	-	-
 # CUDA_ERROR_OUT_OF_MEMORY) into 64/64 paced. ~2 min (server load + ~60s burst). Its teeth arm
 # lives in local-ci's doc, not here: `tools/serve-stress-gate.sh --teeth`.
 sstress	cmd	tools/serve-stress-gate.sh	-	-	-
+
+# accept: SERVED-SPEC ACCEPTANCE + LONG-TEXT assertion (lane/accept-gate, 2026-08-06). Closes
+# the blind spot receipted in research/f8f4-flip-20260806: every probe above is either a
+# 20-token golden or an in-arm self-consistency check, so a change that moves served greedy text
+# at generated index 22+ AND moves spec acceptance by -9.5pp passes all of them. Worse, a
+# --refresh-goldens after such a change silently re-pins the new arm. This probe asserts exact
+# (rounds, drafted, accepted) counts + the full text sha256 to ngen=128 at the PRODUCTION serve
+# config (real regime drafter, real serve K) — the drafter matters because the acceptance sign
+# follows (model x drafter x prompt) and INVERTED between the bare MTP head and the regime
+# drafter on the same models the same day. Smoke tier here (q27-p1, ~1 min); the 6-cell matrix
+# is `--full`. Teeth: `tools/accept-gate.sh --teeth` (MEMRA_MMQ_F8F4=1 must FAIL it).
+accept	cmd	tools/accept-gate.sh	-	-	-

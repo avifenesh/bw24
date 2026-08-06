@@ -1,0 +1,14 @@
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 q27-p2 q27-p3 q9-p1 q9-p2 q9-p3 (--full matrix)
+   arm env: MEMRA_MMQ_F8F4=unset
+   logs: /tmp/accept-gate-20260806-184802
+  -- skipping (no drafter at /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/nonexistent-drafter.gguf) — cells: q27-p1 q27-p2 q27-p3
+-- server: Qwen3.5-9B-NVFP4-MTP-GGUF.gguf + draft-9b-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 2s
+  q9-p1: PASS (rounds=41 drafted=123 accepted=89 accept=0.7236, 131 tok text sha-identical)
+  q9-p2: PASS (rounds=49 drafted=147 accepted=79 accept=0.5374, 129 tok text sha-identical)
+  q9-p3: PASS (rounds=46 drafted=138 accepted=81 accept=0.5870, 128 tok text sha-identical)
+
+accept-gate: 3 pass, 0 fail, 0 unpinned, 3 skip
+  PARTIAL COVERAGE: 3 cell(s) skipped for missing artifacts — this green speaks
+  only for the 3 cell(s) that ran. Stage the missing artifacts before a tag.

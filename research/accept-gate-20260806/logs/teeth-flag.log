@@ -1,0 +1,28 @@
+=== accept-gate --teeth flag path (inverted verdict; smoke tier = q27-p1 only) ===
+[when] 2026-08-06T18:03:27+03:00
+[commit] d20789bdfae04c0d9a175a54e8c6ca61d071fc5c
+[expect] the flag sets MEMRA_MMQ_F8F4=1 itself and INVERTS the verdict: FAILs => exit 0
+[gpu-apps] 144655, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+[gpu-apps] 1175867, ./target/release/argmax-margin-probe, 10306 MiB
+
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 (smoke tier; --full for the matrix)
+   arm env: MEMRA_MMQ_F8F4=1  [--teeth: verdict INVERTED, must FAIL]
+   logs: /tmp/ag-teethflag
+-- server: Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf + draft-daily-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 8s
+  q27-p1: FAIL — 4 assertion(s):
+      spec.rounds: pinned 42 -> got 43
+      spec.drafted: pinned 126 -> got 129
+      text sha256: pinned 8fcb13e8f3347340 -> got 33d69474edad2d10
+      completion_tokens: pinned 128 -> got 129
+      acceptance 0.6746 -> 0.6589 (-1.57pp)   <- clock-independent; a ratio, so this is real, not drift
+      TEXT DIVERGES at char 208 (~word 30; pinned len 537, got 508)
+        common:  ..."ional, TypeVar, Generic, Iterator\n\nT = TypeVar('T')\n\n\nclass "
+        pinned:  'DoublyLinkedList(Generic[T]):\n    """A doubly-linked list implementati'
+        got:     '_Node(Generic[T]):\n    """Internal node for the doubly-linked list."""'
+        NOTE: this divergence is at/past the 20-token golden window — the token goldens are BLIND to it. That blindness is why this gate exists.
+
+accept-gate: TEETH OK (1 cell(s) FAILED under MEMRA_MMQ_F8F4=1 — the gate detects
+  the receipted acceptance/text move that the 20-token goldens are blind to).
+TEETH-FLAG-RC=0 (0 = teeth confirmed: the gate detected the broken arm)

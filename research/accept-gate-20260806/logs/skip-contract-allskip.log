@@ -1,0 +1,8 @@
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 q27-p2 q27-p3 q9-p1 q9-p2 q9-p3 (--full matrix)
+   arm env: MEMRA_MMQ_F8F4=unset
+   logs: /tmp/accept-gate-20260806-184819
+  -- skipping (no model at /nonexistent/models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf) — cells: q9-p1 q9-p2 q9-p3
+  -- skipping (no model at /nonexistent/models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf) — cells: q27-p1 q27-p2 q27-p3
+
+accept-gate: SKIP (no cell artifacts present on this rig: 6 cell(s))

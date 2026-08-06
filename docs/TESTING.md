@@ -10,7 +10,7 @@ merge/tag bar — a fast-gate green is a *keep going* signal, never a *ship* sig
 |---|---|---|---|
 | 0 | seconds (~2 s kernel-check scoped + build) | workspace compile + kernel-check scoped to the touched sections | every edit-compile loop |
 | 1 | ~1–2 min | tier 0 + golden-token argmax probe on ONE model per affected kernel class (+ one single-K spec probe when the diff touches the spec pipeline) | before every dev-loop commit |
-| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), `--perf` cell battery | **every merge, every tag** (unchanged) |
+| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), accept-gate (`tools/accept-gate.sh` — exact served-spec acceptance counts + a 128-token text sha at the production drafter/K, wired 2026-08-06; smoke cell by default, `--full` for the 6-cell matrix, `MEMRA_CI_ACCEPT=0` skips), `--perf` cell battery | **every merge, every tag** (unchanged) |
 
 Entry point:
 
@@ -84,7 +84,38 @@ completes well-formed with a live worker and no OOM lines; it is the *concurrenc
 contract, which no exactness golden can see, and the regression proof for the admission
 spec-headroom fix). Its own teeth: `--teeth` forces the admission reserve to 16 MB and the
 verdict must invert. It also closed a map hole where `crates/memra-server/` diffs mapped to
-no gate at all. The `k27` argmax probe pins `MEMRA_FA_SPLIT=8` in its
+no gate at all.
+
+`amargin` / `amarginc` landed 2026-08-06 (`tools/argmax-margin-gate.sh`, + its `--canary` teeth):
+run-gen's prefill-vs-decode argmax assert calibrated against the **top-2 margin at the deciding
+position**, because a near-tie flip and a real cache bug are the same red until you measure the
+margin (see `research/q8-argmax-20260806/`).
+
+Also 2026-08-06: `accept` (`tools/accept-gate.sh` — the **served-spec acceptance +
+long-text** assertion). It exists because the battery was *provably* blind to a class:
+`research/f8f4-flip-20260806/` receipted a kernel arm that moved served greedy text in 4 of 6
+regime cells at temperature 0 and moved spec acceptance up to −9.5pp while **every gate above
+stayed green in both arms**. Three structural reasons: the token goldens stop at 20 tokens and
+both divergences landed at generated index 22 and 38; `--refresh-goldens` after such a change
+would have silently re-pinned the new arm; and nothing compared accepted-draft *counts*, which
+are spec throughput. `run-spec` self-consistency cannot see it either — it asserts spec == plain
+*within one arm*, which both arms satisfy.
+
+So `accept` asserts, at the **production serve config** (the artifact's real regime drafter
+attached via `MEMRA_MODELS "+draft"`, its real serve K, driven through the server): exact
+`(rounds, drafted, accepted)` integers — temperature 0 makes drafting deterministic, so these are
+hard numbers, not a band — plus the full generated text sha256 to `ngen=128`, 6.4× past the
+golden window. The drafter is load-bearing: the acceptance sign follows (model × drafter ×
+prompt) and *inverted* between the GGUF's embedded MTP head and the regime drafter on the same
+models the same day, so a bare-head number is not evidence about a served config. References
+live in `tools/fast-gate/accept-refs/<cell>.{ref,text}`; cells in
+`tools/fast-gate/accept-cells.tsv`. `--pin` is the only writer and **refuses on a dirty
+`crates/` with no `--force`** — pinning references beside an uncommitted kernel change is exactly
+the receipted failure mode. Its teeth: `tools/accept-gate.sh --teeth` sets `MEMRA_MMQ_F8F4=1` and
+the verdict must invert (proven both directions, `research/accept-gate-20260806/`); `--control`
+re-measures in a second independent server boot, which is what licenses the single-shot read.
+
+The `k27` argmax probe pins `MEMRA_FA_SPLIT=8` in its
 env column so its golden is rig-portable across the 82-vs-188-SM `fa_split_keys` rung
 (lane/k27-divergence — a near-tie flip class, not a defect; `k27div-probe` is the
 cross-rig teacher-forced localizer).
@@ -203,10 +234,14 @@ Two holes in this stage were closed by that same red (2026-08-06):
 
 - **Serving surface** (`crates/memra-server/`): run `tools/serve-smoke.sh` (fast-gate prints
   the pointer when the diff touches it).
-- **Acceptance drift**: invisible to every exactness gate by construction (decode and verify
-  shift together) — only the tier-2 perf battery's per-cell acceptance verdicts catch it.
-  Acceptance is a ratio and therefore clock-independent: an acceptance FAIL is real evidence,
-  unlike a tok/s FAIL (below).
+- **Acceptance drift**: invisible to every *exactness* gate by construction (decode and verify
+  shift together, so spec still equals plain). Two things catch it, and they are not
+  interchangeable: the tier-2 perf battery's per-cell acceptance verdicts (a rolling-median
+  tripwire), and `accept-gate` (an **exact-integer assertion** against a pinned reference at the
+  production serve config, tier 2 + `kind=cmd`). Acceptance is a ratio and therefore
+  clock-independent: an acceptance FAIL is real evidence, unlike a tok/s FAIL (below).
+  fast-gate's tier-1 probes still do not see it — a spec-pipeline or NVFP4-prefill diff maps
+  `accept`, but running it costs a server boot, so it lands at tier 2.
 - **H100/sm_90a lane**: `tools/validate-h100.sh` on an H100, per its own laws.
 - **Cross-model blast radius**: tier 1 probes one model per kernel class; the full per-model
   matrix runs at tier 2.
