@@ -4,6 +4,10 @@
 #
 #   tools/argmax-margin-gate.sh [<model.gguf>] [--prompt <file>] [--window N]
 #                              [--max-flips N] [--margin-floor F] [--canary]
+#                              [--logdir DIR]
+#
+# Raw logs land in $MEMRA_GATE_LOGDIR (default $TMPDIR/memra-argmax-margin-gate), NOT in the
+# tracked research dir — this runs every battery. Use --logdir research/<lane>/ to keep one.
 #
 # WHY THIS GATE EXISTS (research/q8-argmax-20260806/VERDICT.md)
 # ------------------------------------------------------------
@@ -73,6 +77,7 @@ while [ $# -gt 0 ]; do
         --window)       WINDOW="$2"; shift 2 ;;
         --max-flips)    MAX_FLIPS="$2"; shift 2 ;;
         --margin-floor) MARGIN_FLOOR="$2"; shift 2 ;;
+        --logdir)       MEMRA_GATE_LOGDIR="$2"; shift 2 ;;
         --canary)       CANARY=1; shift ;;
         *)              echo "unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -94,7 +99,11 @@ fi
 [ -f "$PROMPT" ] || { echo "argmax-margin-gate: SKIP (prompt $PROMPT missing)"; exit 0; }
 [ -x "$PROBE" ] || { echo "argmax-margin-gate: SKIP (build target/release/argmax-margin-probe to enable)"; exit 0; }
 
-D=research/q8-argmax-20260806; mkdir -p "$D"
+# Logs go to a scratch dir, NOT into the tracked research dir: this gate runs on every
+# fast-gate invocation, and writing under research/ made each battery run dirty the worktree
+# (and committed the canary's .injected scratch table once already). Point --logdir at the
+# lane dir when you want a receipt to keep. Same convention as chunk-invariance-gate.sh.
+D="${MEMRA_GATE_LOGDIR:-${TMPDIR:-/tmp}/memra-argmax-margin-gate}"; mkdir -p "$D"
 LOG="$D/gate-$(basename "${MODEL%.gguf}")-$(basename "${PROMPT%.txt}")$([ $CANARY = 1 ] && echo .canary).log"
 
 echo "argmax-margin-gate: model=$(basename "$MODEL") prompt=$(basename "$PROMPT") window=$WINDOW canary=$CANARY"
@@ -102,6 +111,17 @@ echo "argmax-margin-gate: model=$(basename "$MODEL") prompt=$(basename "$PROMPT"
 "$PROBE" "$MODEL" "$PROMPT" "$WINDOW" > "$LOG" 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then
+    # A VRAM shortage says nothing about argmax margins. On a shared rig another lane can hold
+    # the card (seen live: "Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, ...)" with 21.6 GB held
+    # by a concurrent job), and failing the exactness battery for that is a flake, not a find.
+    # SKIP with the cause QUOTED — an inferred cause is not a cause (CLAUDE.md evidence rules).
+    if grep -qaE 'CUDA_ERROR_OUT_OF_MEMORY|out of memory' "$LOG"; then
+        echo "argmax-margin-gate: SKIP (GPU out of memory — not an exactness signal)"
+        grep -aE 'CUDA_ERROR_OUT_OF_MEMORY|out of memory' "$LOG" | head -2 | sed 's/^/  quoted: /'
+        nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader 2>/dev/null \
+            | sed 's/^/  concurrent-GPU: /'
+        exit 0
+    fi
     echo "  FAIL: probe exited $rc"; tail -20 "$LOG"; exit 1
 fi
 
