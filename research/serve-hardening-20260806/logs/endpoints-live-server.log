@@ -9,17 +9,17 @@
 [prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [server] worker ready; serving models: ["probe"]
 [server] listening on http://127.0.0.1:8099
-[meter] admit id=chatcmpl-0435f170ee6feaafcde84759300f268b tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-7960bc8143c44bc4b8e838902612381b tenant=default lane=interactive model="probe"
 [worker] observed session VRAM cost for "probe": 101MB (admission gate = 2x)
 [spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
-[meter] admit id=chatcmpl-a3f1dfa7bc72ab86d1bba31dd018b65a tenant=default lane=interactive model="nope"
-[meter] admit id=chatcmpl-04ff16bf4545ca381783ae7fed8c80b9 tenant=default lane=interactive model="probe"
-[meter] admit id=chatcmpl-da665c1489bc0efdf30dcbf9996d4258 tenant=default lane=harvest model="probe"
-[meter] admit id=chatcmpl-177895f1a63e15bc4af60738b1f7e81c tenant=default lane=harvest model="probe"
-[meter] admit id=chatcmpl-bbdb15742730d4a5f9cb2b6996c00125 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-a588b90a22ce05125e1a0abce032bfc3 tenant=default lane=interactive model="nope"
+[meter] admit id=chatcmpl-120c1de07d0772caa0ab402ac08d5a4b tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-f4eef16630ff1287d32c2e28820e3b3b tenant=default lane=harvest model="probe"
+[meter] admit id=chatcmpl-473c8c502d2065b4dba528535c597289 tenant=default lane=harvest model="probe"
+[meter] admit id=chatcmpl-e72db27faf8310ca36286f4ceb9ca35c tenant=default lane=interactive model="probe"
 [worker] spec-affinity: declined (history diverged at 3 of checkpoint 13; 1 parked, 16 prompt tokens; model probe)
 [spec-acc] ctx=16 burst=6/6 cum=6/6=1.000
-[meter] admit id=chatcmpl-e95f47fda68759afbdaaadf21b403643 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-24ebd077f9ec071fce46e8e1ef9d8f6d tenant=default lane=interactive model="probe"
 [worker] spec-affinity: declined (no room (session ctx 256 < need 984); 2 parked, 20 prompt tokens; model probe)
 [spec-acc] ctx=20 burst=23/27 cum=23/27=0.852
 [spec-acc] ctx=53 burst=23/33 cum=46/60=0.767

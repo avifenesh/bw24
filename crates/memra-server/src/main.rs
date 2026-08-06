@@ -206,13 +206,24 @@ fn drain_deadline_s() -> u64 {
 
 /// 503 for a request that arrived during drain: OpenAI error object + Retry-After
 /// (the drain window — by then this instance is gone and its replacement is up).
+///
+/// Goes through the SAME retry contract as every engine-fault class (G6): a `code` clients can
+/// branch on, the `retry-after-ms` twin openai-python reads FIRST, and the value clamped to
+/// 60 s because litellm ignores anything above that and openai-python abandons the retry past
+/// 120 s. It predates the taxonomy and was the one 503 on the surface still emitting a bare
+/// `Retry-After` with no code and no ms twin — i.e. a client that trusted `retry-after-ms`
+/// exclusively saw no window at all on the most predictable outage memra has.
 fn drain_response() -> Response {
-    let mut resp = error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "server is draining (shutdown in progress); retry",
-        "server_error", None);
-    if let Ok(v) = axum::http::HeaderValue::from_str(&drain_deadline_s().to_string()) {
-        resp.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+    let mut resp = (StatusCode::SERVICE_UNAVAILABLE,
+        Json(error_body("server is draining (shutdown in progress); retry",
+                        "server_error", None, Some("draining")))).into_response();
+    let secs = drain_deadline_s().min(60);
+    let h = resp.headers_mut();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+        h.insert(axum::http::header::RETRY_AFTER, v);
+    }
+    if let Ok(v) = axum::http::HeaderValue::from_str(&(secs * 1000).to_string()) {
+        h.insert("retry-after-ms", v);
     }
     resp
 }
@@ -3268,10 +3279,20 @@ mod tests {
                 "model": "m", "messages": [{"role": "user", "content": "t"}]
             })).unwrap())).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(resp.headers().contains_key("retry-after"));
+        // The drain 503 obeys the same retry contract as every taxonomy class: an integer
+        // Retry-After <= 60, the retry-after-ms twin openai-python reads FIRST (its absence
+        // was a real gap — a client trusting only the ms header saw NO window on memra's most
+        // predictable outage), both agreeing, and a `code` clients can branch on.
+        let ra = resp.headers()["retry-after"].to_str().unwrap().to_string();
+        let ra_s: u64 = ra.parse().expect("Retry-After must be integer delay-seconds");
+        assert!(ra_s > 0 && ra_s <= 60, "Retry-After {ra_s}s is outside the honored window");
+        let ra_ms: u64 = resp.headers()["retry-after-ms"].to_str().unwrap().parse().unwrap();
+        assert_eq!(ra_ms, ra_s * 1000, "the two retry headers must agree");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(payload["error"]["message"].as_str().unwrap().contains("draining"));
+        assert_eq!(payload["error"]["type"], "server_error");
+        assert_eq!(payload["error"]["code"], "draining");
         let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "prompt": "t"

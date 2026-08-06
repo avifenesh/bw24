@@ -28,16 +28,28 @@ is scheduled".
 | GPU fault latched | 503 | `unhealthy` | fatal Xid or a probe that hung |
 | draining | **200** | `draining` | a drain is a healthy deliberate shutdown; 503 here invites a SIGKILL mid-stream |
 
-Body:
+Bodies, captured from the wire (`logs/endpoints-live.txt`, `logs/worker-death.txt` — not
+illustrative):
 
-```json
-{"status":"ok","models":["main"],
- "worker":{"phase":"idle","beat_age_ms":12,"tick_max_ms":263,
-           "stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+```
+GET /health   200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":63,
+                   "tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+GET /health   503 {"status":"unhealthy","models":["probe"],"worker":{"phase":"dead",...},
+                   "detail":"worker thread panicked: <the panic payload, quoted>"}
+GET /health   200 {"status":"draining","models":["probe"],"worker":{"phase":"busy",
+                   "beat_age_ms":126,"tick_max_ms":253,...}}
+GET /readyz   503 {"status":"not_ready",...,"detail":"draining (shutdown in progress)"}
 ```
 
 `detail` is added on a red, carrying the **quoted** cause (the panic payload text, or the GPU
 watcher's reason) — not an inferred one.
+
+`PHASE_LOADING` is deliberately **not** reachable over HTTP on a first load: `main` binds the
+listener only after `worker::spawn` returns ready, so the load window is connection-refused
+rather than 503. k8s probes and `serve-fleet.sh` treat refused and 503 identically, so the
+verdict is the same either way. It IS reachable during a **respawn** (socket already bound,
+worker reloading weights) — which is the case that matters, since that is when a bound port
+must not be reported ready.
 
 ### `/readyz` (new)
 
@@ -100,6 +112,13 @@ about what an OOM is.
 | step / prefill / batch-step error | **400** | **500** | `server_error` | `engine_error` | none |
 | graph promote / graph step failed | **400** | **500** | `server_error` | `engine_error` | none |
 | constraint mask / advance failed | **400** | **500** | `server_error` | `engine_error` | none |
+| new request during a drain | 503, bare `Retry-After`, no code | 503 | `server_error` | `draining` | `Retry-After: 30`, `retry-after-ms: 30000` |
+
+The drain row is a gap this lane found while probing, not a pre-existing plan: `drain_response`
+predates the taxonomy and was the last 503 on the surface emitting a bare `Retry-After` with no
+`code` and no `retry-after-ms` twin — so a client that reads only the ms header (openai-python
+reads it **first**) saw no window at all on memra's single most predictable outage. It now goes
+through the same contract, clamped to 60 s.
 
 Decisions worth stating, because each was a fork:
 
@@ -300,6 +319,59 @@ liveness-200 / readiness-503 split.
 
 ---
 
-## 7. Gates
+## 7. Live verification (on the wire, not in a test harness)
+
+Unit tests pin this lane against a **fake** worker. That is not sufficient evidence for code
+whose entire job is "notice that the real GPU worker died", and this lane already proved why:
+the first supervisor deadlocked startup with a fully loaded model and an unbound socket, and no
+unit test could have seen it. So both halves are also probed against a real CUDA worker, by two
+committed scripts whose raw output is in `logs/`:
+
+* **`probe-endpoints.sh`** → `logs/endpoints-live.txt` (+ `logs/endpoints-live-server.log`).
+  Endpoint payloads during load / ready / drain, the reachable G6 arms (unknown model,
+  over-context prompt, dark-lane shed on both the blocking and streaming surfaces), streaming
+  still intact, the drain split, the exit code, and the G24 watcher's startup lines.
+* **`probe-worker-death.sh`** → `logs/worker-death.txt` (+ two server logs). The G5 ladder end
+  to end, via `MEMRA_PANIC_AFTER` (fault-injection door, `docs/FLAGS.md §Server`).
+
+Each script states the knob it uses and why an arm is reachable, because two arms are only
+reachable with help: `MEMRA_CTX=256` makes an over-context prompt possible at all (the model's
+own 262,144 cap is not reachable with a test prompt), and `MEMRA_LANE_MAX_HARVEST=0` makes the
+dark-lane shed deterministic instead of dependent on a live SLO breach — the same
+`EngineError::rate_limit`, the same 429 path. Engine-fault (500) arms are **not** forced: faking
+a CUDA fault would prove nothing about a real one, so those stay unit-pinned.
+
+Measured results:
+
+| arm | result |
+|---|---|
+| load window | connection refused on all three routes (bind follows load, §1) |
+| ready | `/health` `/livez` 200 `ok`, `/readyz` 200 `ready`, worker block populated |
+| unknown model | 400 `invalid_request_error` / `model_not_found` / `param:"model"` / `x-should-retry: false` |
+| over-context prompt | 400 `context_length_exceeded` / `param:"messages"` / `x-should-retry: false`, message quotes both numbers (`prompt (410 tok) >= context cap (256)`) |
+| dark-lane shed | 429 `rate_limit_error` / `rate_limit_exceeded`, `Retry-After: 2` + `retry-after-ms: 2000`; **429 pre-header on the streaming surface too** |
+| worker panic | `/health` `/livez` 503 `unhealthy`, `/readyz` 503 `not_ready`, all three carrying the quoted panic payload in `detail`, within ~200 ms of the panic |
+| respawn | weights reloaded, `generation` 0 → 1, back to 200, and the respawned worker served a real completion (200) |
+| request in the dead window | **served by the respawn** — the supervisor owns the command `Receiver` across restarts, so a queued request survived rather than erroring |
+| `MEMRA_WORKER_RESPAWN=0` | process exit **70** (EX_SOFTWARE), port refused afterward — vs the pre-lane behavior, a permanently-200 `/health` in front of a box serving nothing |
+| drain | `/health` `/livez` 200 `draining`, `/readyz` 503 `not_ready`, new completion 503 `draining` + `Retry-After: 30`, the in-flight 900-token generation completed, exit 0 |
+| G24 startup | `Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)`, `every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]` |
+
+Two assumptions the wire corrected, recorded because both were wrong in the first draft:
+
+1. **A drain is observable on fresh connections, not only pooled ones.** axum stops accepting
+   when its shutdown *future* resolves, and memra's future **is** the drain loop — so the
+   listener keeps accepting for the whole drain window. That is what makes the 503-on-a-new-
+   completion path real rather than test-only.
+2. **The panic injection had to be one-shot per process.** `n_completed` is per-`run()`, so a
+   per-run trigger re-fired on the respawned worker's first request: the respawn reloaded, went
+   green with `generation:1`, then panicked again and exited 70 — leaving "did the recovery
+   actually serve traffic?" unanswerable. (Also: the very first probe run pointed at port 8181
+   and diligently reported the owner's `llama-server` 404s as memra's. The script now refuses a
+   port that is already in LISTEN.)
+
+---
+
+## 8. Gates
 
 See `GATES.md` for verdicts and `logs/` for the raw output of each.

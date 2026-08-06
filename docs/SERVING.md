@@ -288,7 +288,7 @@ every iteration, plus a phase:
 
 | worker phase | `/health` | why |
 |---|---|---|
-| `loading` | 503 | weights are not resident; the process answers nothing yet |
+| `loading` | 503 | weights are not resident; the process answers nothing yet. On a FIRST load the port is not bound yet (bind follows the load), so a probe sees connection-refused — the same verdict for k8s and `serve-fleet.sh`. This state is reached over HTTP during a **respawn**, which is the case that matters |
 | `idle` | 200 at any beat age | the worker blocks in `rx.recv()` — an idle server legitimately stamps nothing for hours, and a naive age check would call every quiet server dead |
 | `busy` | 200 while the beat advances, 503 past `MEMRA_HEALTH_STALL_S` (120s) | work in flight must make progress; the bound covers a max-context prefill tick (see FLAGS for the derivation) |
 | `dead` / fault latched | 503 immediately | worker panic or fatal Xid — a latch, not a timeout, so the flip is instant |
@@ -312,6 +312,13 @@ health dead with the quoted panic payload, then ONE respawn is attempted with ba
 (`MEMRA_WORKER_RESPAWN`), and failing that the process exits **70** so the supervisor
 restarts it whole. One attempt, deliberately — CUDA errors are sticky per process, so a
 respawn loop against a poisoned context produces a box that looks alive and serves nothing.
+Proved on a real CUDA worker, not only in tests (`MEMRA_PANIC_AFTER` fault injection,
+`research/serve-hardening-20260806/logs/worker-death.txt`): panic → 503 on all three routes
+with the quoted payload in `detail` within ~200 ms → weights reloaded → `generation` 0 → 1 →
+the respawned worker served a real completion; with `MEMRA_WORKER_RESPAWN=0` the process
+exited 70 and the port went refused. A request that arrived during the dead window was
+**served by the respawn** — the supervisor owns the command channel across restarts, so
+queued work survives a worker death.
 
 **GPU faults (`MEMRA_GPU_WATCH`).** A watcher thread tails Xid lines (`/dev/kmsg`, falling
 back to `journalctl -k -f`) and latches unhealthy on the fatal classes
@@ -335,6 +342,7 @@ class now comes from the producer:
 | dark-lane QoS shed (`x-lane` judge/harvest over budget) | 429 | `rate_limit_error` | `rate_limit_exceeded` | `Retry-After: 2` + `retry-after-ms: 2000` |
 | out of VRAM / step-OOM past its park budget / worker restarting | 503 | `server_error` | `overloaded` | `Retry-After: 5` + `retry-after-ms: 5000` |
 | step, prefill, graph or constraint fault | 500 | `server_error` | `engine_error` | none (not time-bounded) |
+| new request arriving during a drain | 503 | `server_error` | `draining` | `Retry-After: MEMRA_DRAIN_S` (≤60) + matching `retry-after-ms` |
 
 Unknown model is a deliberate **400, not 404**: OpenRouter's uptime math counts 404s
 against the provider and excludes 400s, and the `code` is what clients branch on either
