@@ -1,0 +1,75 @@
+########## q8-argmax ARMS 2026-08-06T14:41:07+00:00 commit 3d34b4e4abc3fadcb691185cb152b11885014a50  lane/q8-argmax base (origin/restructure/public-split)  rsynced 2026-08-06T17:35:29+03:00 ##########
+run-gen md5: 4f9228667cc1724fc8029767ba71c5e7  /root/bw24-q8a/target/release/run-gen
+artifact md5: 985893c8fdff2fb46095853462608c1e  /root/models/Qwen3.6-27B-Q8_0.gguf
+prompt md5: 806a1d9c9d19a47fe014738912c64d0f  /root/bw24-q8a/research/e2e/prompts/board-2048.txt
+
+[wait] clean 2MiB
+=== ARM A1-repro-tip  2026-08-06T14:41:44+00:00  :: env MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+thread 'main' (782404) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM A2-repro-tip-rerun  2026-08-06T14:42:31+00:00  :: env MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+thread 'main' (782426) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM B1-fa-split8  2026-08-06T14:43:17+00:00  :: env MEMRA_FA_SPLIT=8 MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=266  logit maxdiff=3.806e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[266]=12.5445 | decode: l[332]=12.7190 l[266]=12.7767
+thread 'main' (782448) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM B2-fa-split16  2026-08-06T14:44:04+00:00  :: env MEMRA_FA_SPLIT=16 MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+thread 'main' (782472) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM B3-fa-split1  2026-08-06T14:44:50+00:00  :: env MEMRA_FA_SPLIT=1 MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+thread 'main' (782482) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM C1-q80g2-off  2026-08-06T14:45:36+00:00  :: env MEMRA_Q80_G2=0 MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+thread 'main' (782492) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM C2-fast0  2026-08-06T14:46:23+00:00  :: env MEMRA_FAST=0 MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.672e-1  MISMATCH
+[gate] prefill: l[332]=12.9411 l[485]=12.7990 | decode: l[332]=12.6596 l[485]=12.6772
+thread 'main' (782516) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM C3-prime-chunk-off  2026-08-06T14:48:03+00:00  :: env MEMRA_PRIME_CHUNK=100000 MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=332  decode argmax=485  logit maxdiff=4.659e-1  MISMATCH
+[gate] prefill: l[332]=12.8352 l[485]=12.8045 | decode: l[332]=12.6235 l[485]=12.7234
+thread 'main' (782603) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+[wait] clean 2MiB
+=== ARM D1-nv-same-prompt  2026-08-06T14:48:49+00:00  :: env MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf ===
+  EXIT=0
+prefill argmax=332  decode argmax=332  logit maxdiff=3.537e-1  MATCH
+batched-prime argmax=332  tokenwise argmax=332  logit maxdiff=3.610e-1  MATCH
+
+[wait] clean 2MiB
+=== ARM D2-q9q8-same-prompt  2026-08-06T14:49:28+00:00  :: env MEMRA_NGEN=32 MEMRA_PROMPT_FILE=/root/bw24-q8a/research/e2e/prompts/board-2048.txt /root/bw24-q8a/target/release/run-gen /root/pilot/q9base-Q8_0.gguf ===
+  EXIT=101
+prefill argmax=485  decode argmax=332  logit maxdiff=4.621e-1  MISMATCH
+[gate] prefill: l[485]=14.3215 l[332]=14.3007 | decode: l[485]=14.1884 l[332]=14.3395
+thread 'main' (782631) panicked at crates/memra-engine/src/bin/run_gen.rs:896:5:
+
+########## ARMS DONE 2026-08-06T14:49:44+00:00 ##########
