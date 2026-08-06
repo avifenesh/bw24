@@ -3798,16 +3798,55 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
             loop {
                 let (models, m, h) = (models.clone(), m2.clone(), h2.clone());
                 // A fresh ready channel per attempt; only the FIRST one is the caller's.
+                //
+                // THE VERDICT MUST BE RELAYED CONCURRENTLY, NOT AFTER `run` RETURNS. `run`
+                // sends its load verdict and then blocks in the scheduler for the life of the
+                // process — so reading `rrx` on this thread after `catch_unwind` deadlocks the
+                // whole server: main blocks in `ready_rx.recv()`, never binds the socket, and
+                // the box loads the model and then answers nothing. (Found by serve-smoke,
+                // which timed out waiting for /health with the worker log showing a fully
+                // loaded model — the exact failure class this lane exists to remove, so it is
+                // fitting that the gate caught it.)
                 let (rtx, rrx) = std::sync::mpsc::channel();
+                let caller = ready_tx.take();
+                let load_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (lf, hr) = (load_failed.clone(), h2.clone());
+                let relay = std::thread::Builder::new()
+                    .name("memra-worker-ready".into())
+                    .spawn(move || {
+                        let verdict = rrx.recv()
+                            .unwrap_or_else(|_| Err("worker died during init".into()));
+                        if let Err(why) = &verdict {
+                            lf.store(true, std::sync::atomic::Ordering::SeqCst);
+                            hr.mark_dead(format!("model load failed: {why}"));
+                        }
+                        // Only the first attempt has a caller waiting; a respawn's verdict is
+                        // observable on /health (phase + generation) instead.
+                        if let Some(tx) = caller {
+                            let _ = tx.send(verdict);
+                        }
+                    });
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run(models, &rx, rtx, m, h)
                 }));
-                // Forward this attempt's ready/err verdict to the original caller once.
-                if let Some(tx) = ready_tx.take() {
-                    let _ = tx.send(rrx.recv().unwrap_or_else(
-                        |_| Err("worker died during init".into())));
-                }
+                // `run` has returned, so its `rtx` is dropped and the relay cannot block.
+                if let Ok(t) = relay { let _ = t.join(); }
                 match outcome {
+                    Ok(()) if load_failed.load(std::sync::atomic::Ordering::SeqCst) => {
+                        // Not a shutdown: the model load itself failed, so `run` returned
+                        // without ever entering the scheduler.
+                        if attempt == 0 {
+                            // The caller (main) got the error and reports it as a startup
+                            // FATAL — do not race it with an exit code of our own.
+                            return;
+                        }
+                        eprintln!("[worker] FATAL: respawn attempt {attempt} could not reload \
+                                   the models — exiting the process so the supervisor can \
+                                   restart it whole");
+                        crate::health::sd_notify("STATUS=respawn load failed; exiting");
+                        std::io::stderr().flush().ok();
+                        std::process::exit(EXIT_WORKER_UNRECOVERABLE);
+                    }
                     Ok(()) => {
                         // Clean scheduler exit = the command channel closed (shutdown).
                         h2.set_phase(crate::health::PHASE_DEAD);
