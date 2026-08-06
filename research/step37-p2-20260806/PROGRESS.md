@@ -727,3 +727,95 @@ these are single runs, N=1, stated as such):
 - `[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8` — step35's GQA ratio (96/8 on
   SWA layers) exceeds the v4 decode family's smem capacity, so the v3 lane serves. A named
   capability gap for whoever tunes this SKU, recorded here so it is not rediscovered.
+
+## Increment 11 — the exactness battery on the box: PP-2 is BIT-IDENTICAL, and the base artifact has no drafter
+
+`raw/gates-pp2-20260806T200323Z.log`, one bounded `flock -w 1800` window on the shared box
+(`lock acquired 2026-08-06T20:03:23Z` … `lock released 2026-08-06T20:05:21Z`, 118 s), against
+`fdca2df3+dcgate`. Three gates, all output quoted below verbatim.
+
+### G1 — `ppn-gate <model> 2 8 16`: PASS, both arms
+
+```
+stage fence: [0, 22, 45] over 45 layers
+ppn gate PASS [serial]: 24 steps (8 prime + 16 gen) BIT-IDENTICAL logits (n_vocab=128896,
+      fence=[0, 22, 45]; stages=2 streams=per-stage overlap=0 devices=0,1
+      splits=default(even) shard=per-stage)
+ppn gate PASS [pipelined]: 24 steps (8 prime + 16 gen) BIT-IDENTICAL logits (n_vocab=128896, …)
+ppn-gate exit=0
+```
+
+This is the gate that makes the PP-2 boot a *correctness* result and not just a "it ran". Both the
+serial `decode_step` walk and the `decode_step_h_ppn_deferred` pipelined arm (3 tokens in flight,
+overlap forced) reproduce the door-OFF reference's 128896 f32 logits **bit for bit** at all 24
+steps. Per ppn_gate.rs's own header the reference runs the unsplit walk against the SAME sharded
+placement, so this is specifically a test of the *seam* — the `cudaMemcpyPeerAsync` handoff at
+layer 22 — not of placement.
+
+Read together with the split-GGUF fix: the merged tensor table routes every read to the owning
+shard, and PP-2's cross-device carrier moves activations across the fence, and the composition is
+exact. Both of this session's fixes are now covered by a bit-identity gate, not just by a boot.
+
+### G2 — `run-gen`, 19-token prompt, 64 tokens: MATCH, both argmax gates
+
+```
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740,
+      62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=1.444e0  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=1.097e0  MATCH
+prefill 19 tok in 0.4956s = 38.3 tok/s (pp19)
+generated 64 tokens in 3.961s = 16.16 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.499s)
+run-gen exit=0
+```
+
+The second line is new relative to the boot (which ran an 8-token prompt): **batched-prime vs
+tokenwise** also MATCHes, i.e. the windowed-SWA prefill path and the one-token-at-a-time path agree
+on this artifact at pp19. Output text stayed on-task and clean through 64 tokens:
+
+> `A CPU pipeline breaks instruction execution into stages (fetch, decode, execute, memory,
+> write-back) so that several instructions are processed simultaneously, increasing throughput.
+> One hazard is a data hazard, …`
+
+Note the token id `0` leading the prompt: `add_bos_token=true` and BOS is `<|begin of sentence|>`
+id 0, which is what the deepseek-v3 pre-tokenizer path is supposed to emit — consistent with
+`raw/pretok-deepseek-v3-reference-20260806.txt`.
+
+The two throughput numbers above are **N=1 bring-up receipts on a shared box, not perf claims**
+(and the box's other tenant is the pp2-hardening lane — cross-run comparison would be invalid
+anyway). They are recorded only because a gate log that omits its own timings is harder to
+reproduce. The steady-state MoE line differs from the boot's (96.1% / 47.3 MB per decode token
+here vs 89.0% / 133.5 MB on the 32-token boot) for the obvious reason — a longer run amortizes the
+cold-stage — which is itself the argument that this SKU's serving story is dominated by the spill
+tier.
+
+### G3 — `run-spec` K=1..8: refused, and the refusal is correct
+
+```
+loaded step35 (45 layers, nextn=0)
+ERROR: model has no MTP/NextN head (nextn_predict_layers=0, no blk.N.nextn.eh_proj).
+      generate_spec is unavailable for this file.
+run-spec exit=2
+```
+
+Not a failure of the lane — a fact about the artifact. StepFun ships the MTP head as a **separate
+file**, so the base `Step-3.7-flash-IQ4_XS-*.gguf` carries `nextn_predict_layers=0` and there is
+nothing to draft with. The K=1..8 self-consistency gate is therefore **not yet applicable** and
+becomes applicable exactly when sequence item 5 (drafter wiring) lands; it is not being skipped.
+
+The drafter that must attach (`raw/gguf-header-stepfun-mtp-q8-20260802.txt`,
+`Step3.7-flash-mtp-Q8_0.gguf`, 3,707,276,416 B, sha `469a8166…`): `step35.block_count=48`,
+`nextn_predict_layers=3`, three chained NextN blocks numbered **45, 46, 47** — each a full
+`{enorm, hnorm, eh_proj[8192,4096], attn_*, ffn_*, shared_head_norm, shared_head_head[4096,128896]}`
+set. Two structural facts already visible in the header that the wiring must handle:
+
+1. `MtpHead::load_draft` computes its block index as `n = dcfg.n_layer - dcfg.nextn_predict_layers`
+   = 48 - 3 = **45**, which is exactly the first NextN block. So the existing external-draft path
+   addresses the right block with no arithmetic change — but it loads **one** head, ignoring 46/47.
+   Depth >1 for this SKU is a separate decision, not a free consequence of attaching the file.
+2. The head names the shared head `blk.N.nextn.shared_head_head.weight`, while `load_draft` reads
+   the draft's own top-level `output.weight` (present here, `[4096, 128896]` Q8_0) — and the
+   *embedded* loader at hybrid.rs:1078 looks for `nextn.shared_head.weight`, a name this file does
+   **not** use. Recorded so the mapping is checked against the header, not assumed.
+
+Battery bookkeeping: `=== battery rc=0`, and `nvidia-smi` at lock release reported `0, 0 MiB` /
+`1, 0 MiB` — the process exited clean and left the cards free for the co-tenant lane.
