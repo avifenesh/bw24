@@ -587,6 +587,27 @@ fn serve_spec_enabled() -> bool {
     *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// Admission transient-reserve override in BYTES (lane/admit-oom, 2026-08-06). This exists for
+/// exactly one reason: the c=64 stress gate's TEETH arm. A gate that can only be observed
+/// passing proves nothing, so `tools/serve-stress-gate.sh --teeth` forces the reserve tiny
+/// (MEMRA_ADMIT_RESERVE_MB=16) and asserts the RED comes back — if the deliberately-broken
+/// setting still passes, the gate is not measuring what it claims to measure. It is a
+/// diagnostics/teeth door under the flags doctrine, never a tuning knob: the winning value is
+/// the default and needs no flag.
+fn admit_reserve_override() -> Option<usize> {
+    static O: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *O.get_or_init(|| {
+        std::env::var("MEMRA_ADMIT_RESERVE_MB").ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(|mb| {
+                eprintln!("[admit-oom] WARN: MEMRA_ADMIT_RESERVE_MB={mb} overrides the \
+                           {}MB transient reserve (teeth/diagnostics door — NOT a tuning knob)",
+                          SPEC_SHRINK_RESERVE / (1 << 20));
+                mb * (1 << 20)
+            })
+    })
+}
+
 /// STEP-OOM PARK budget (lane/admit-oom, 2026-08-06): how many times a session may be parked
 /// back to the queue after a step-time CUDA OOM before the failure is reported honestly.
 /// A transient collision (a peer's capture arena landing in the same tick) clears as soon as
@@ -1364,20 +1385,52 @@ pub fn run(
                     let reserve = if serve_spec_enabled()
                         && loaded.get(&req.model).is_some_and(|lm| lm.model.mtp.is_some())
                     {
-                        SPEC_SHRINK_RESERVE
+                        admit_reserve_override().unwrap_or(SPEC_SHRINK_RESERVE)
                     } else {
                         cost
                     };
+                    // EFFECTIVE free, not driver `free`: `mem_get_info` cannot see blocks the
+                    // async pool holds mapped-but-not-live (Engine::new pins RELEASE_THRESHOLD
+                    // to u64::MAX), yet the next alloc is satisfied from exactly those bytes,
+                    // so a `free`-only read can only ever UNDER-count headroom — the wrong
+                    // direction for a gate that queues real work.
+                    //
+                    // This term is LOAD-BEARING, and its own diagnostic explains why it looks
+                    // small. Without it (first fixed build) a c=64 burst deferred on 36 ticks
+                    // and crawled at `1 active, free 902MB` through the back half of the run:
+                    // each retire returned its session KV to the pool, driver `free` never
+                    // moved, so the gate saw a full card while the pool sat on the space. With
+                    // it: 5 defers, 59 active sustained, queue never deeper than 4.
+                    // Measured pool-cached is then only 34-89 MB — precisely BECAUSE admission
+                    // keeps refilling the slots, so nothing accumulates unclaimed. The term is
+                    // small exactly when it is doing its job, and large when it is missing.
+                    // (fix-run2-server.log vs fix-pool-run{1,2}-server.log.)
+                    //
+                    // The same diagnostic line independently confirms the cost fit this gate is
+                    // built on: at 59 active the pool reports res 22783MB / used 22749MB
+                    // (reserved ~= used, i.e. genuinely live, nothing hiding), which against
+                    // 5540 MiB of weights is 292 MB per live session — the control fit said
+                    // 286 MiB, from a completely different measurement.
+                    let free = free.saturating_add(engine.pool_cached_bytes());
                     if free < cost.saturating_add(reserve) {
                         // Pacing receipt: the defer path used to be SILENT, which is why the
                         // pre-fix red read as "all 64 admitted then all 64 died" with no
                         // visible back-pressure. One line per tick (not per deferred request)
                         // keeps a 64-client burst readable.
                         if vram_defers == 0 {
-                            eprintln!("[admit-oom] VRAM defer: {} active, free {:.0}MB < \
-                                       cost {:.0}MB + reserve {:.0}MB — queueing (FIFO)",
+                            let (res, used) = engine.pool_reserved_used();
+                            let parked: usize = spec_reuse.values().map(|v| v.len()).sum();
+                            eprintln!("[admit-oom] VRAM defer: {} active, effective free \
+                                       {:.0}MB (driver + {:.0}MB pool-cached) < cost {:.0}MB \
+                                       + reserve {:.0}MB — queueing (FIFO) \
+                                       [pool res {:.0}MB used {:.0}MB; parked spec sessions {}; \
+                                       plain reuse {}; queue {}]",
                                       active.len(), free as f64 / 1e6,
-                                      cost as f64 / 1e6, reserve as f64 / 1e6);
+                                      engine.pool_cached_bytes() as f64 / 1e6,
+                                      cost as f64 / 1e6, reserve as f64 / 1e6,
+                                      res as f64 / 1e6, used as f64 / 1e6, parked,
+                                      reuse.values().map(|v| v.len()).sum::<usize>(),
+                                      queue.len() + requeue.len());
                         }
                         vram_defers += 1;
                         requeue.push_back(req);   // waits (FIFO), never rejected
