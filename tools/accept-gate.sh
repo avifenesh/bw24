@@ -163,8 +163,9 @@ serve_up() { # serve_up <model> <draft> <k> <ctx> <tag>
     MEMRA_SPEC_K="$k" \
         target/release/memra-server > "$LOGDIR/server-$tag.log" 2>&1 &
     SPID=$!
-    local i
-    for i in $(seq 1 180); do
+    local tries=180
+    while [ "$tries" -gt 0 ]; do
+        tries=$((tries-1))
         if curl -sf -H "Authorization: Bearer $KEY" "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
             # Belt and braces on top of the pre-flight guard: the healthy responder must BE our
             # child. A racing process that grabbed the port after the pre-flight check would
@@ -184,7 +185,10 @@ serve_up() { # serve_up <model> <draft> <k> <ctx> <tag>
 serve_down() {
     [ -n "$SPID" ] || return 0
     kill "$SPID" 2>/dev/null
-    local i; for i in $(seq 1 60); do kill -0 "$SPID" 2>/dev/null || break; sleep 1; done
+    # bounded wait for a graceful exit (the 16G artifact takes seconds to release VRAM;
+    # SIGKILLing immediately leaves the next boot fighting for memory)
+    local left=60
+    while [ "$left" -gt 0 ] && kill -0 "$SPID" 2>/dev/null; do sleep 1; left=$((left-1)); done
     kill -9 "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
     SPID=""; sleep 2
 }
