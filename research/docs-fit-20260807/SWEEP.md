@@ -12,6 +12,18 @@ on this base, and — after cross-checking an audit against the step37 receipts 
 error I had myself written into an earlier commit in this lane**. Each is recorded below rather
 than quietly corrected.
 
+Three passes, because the first one read prose and the later ones read the artifact. Pass 1 worked
+from the assignment's change list. Pass 2 read every gate wrapper's argument parsing and refusal
+logic instead of its description. Pass 3 read the serve code paths behind each documented contract.
+Passes 2 and 3 found 16 further drifts, including the two inverted statements — a doc audit that
+only reads docs cannot find a sentence whose negation is the code.
+
+Totals: **34 drifts fixed** (13 first-pass + 5 FLAGS.md + 2 cross-doc + 6 TESTING.md + 10 SERVING.md
+including the code's own stale module header), **4 deferred with reason**, **6 owner calls**.
+Two of the fixes are corrections to statements that were **inverted** rather than merely stale
+(accept-gate's `--force`, the SSE error shape) — those are the ones that would have cost a reader
+real time.
+
 ## Fixed (13)
 
 | # | Surface | Drift | Fix | Commit |
@@ -83,6 +95,96 @@ Found by diffing `env::var("MEMRA_*")` read sites against the catalog rather tha
   on this shape, not a measured PP-2 result. The acceptance profile itself needed no caveat —
   measured single-GPU.
 
+### Second audit pass — TESTING.md against the gate scripts (6 more, `8874ecd5`)
+
+Method: read every gate wrapper's argument parsing and refusal logic instead of its README prose.
+
+- **A sentence had accept-gate's central law exactly inverted.** TESTING.md said the gate "refuses
+  on a dirty `crates/` with no `--force`". `accept-gate.sh:120` says, verbatim,
+  `There is deliberately no --force here.` The refusal is unconditional and that is the entire
+  point of the gate — a `--force` door would let the accept battery certify a tree that is not the
+  tree. Fixed, and the second `--pin` guard documented too: it also refuses if
+  `MEMRA_MMQ_F8F4`, `MEMRA_MMQ_F8F4_PLAIN`, `MEMRA_MMQ_FP8BLK_PLAIN`, `MEMRA_FAST`, or
+  `MEMRA_PRIME_F32CHUNK0` is set in the environment, because a pinned arm inherited from the shell
+  is a FALSE GREEN with no visible cause.
+- **`--tier 2` did not run what three documents said it ran.** `local-ci.sh` does **not** run the
+  `run-spec` K=1..8 sweep, and `--tier 2` does not run perf — the `--perf` mention was removed
+  from the tier row and the spec claim corrected to what the script does (one gemma-gate
+  stream-agreement check). See the owner call below: this is a doctrine-vs-reality gap, not a
+  wording nit.
+- **`--probes` was undocumented as the only non-FALSE-GREEN path for a clean tree** and the only
+  way to reach the `amargin`, `amarginc`, `e4b`, and `kat` probes at all.
+- **`amargin`'s advertised `--window 24` is not what runs**: the wrapper passes 12. Documented as
+  the effective value with the discrepancy named.
+- **Missing gates added**: `pp2-gate` to the PP-N table, plus `serve-st-gate`, `apikeys-gate`, and
+  `serve-stress-gate`; validate-h100's graph lane named explicitly; the chunk-invariance gate's
+  flags listed.
+
+### Third audit pass — SERVING.md against the serve code (10 more, `b67a6304` + `fe02d817`)
+
+- **The compatibility contract described `MEMRA_COMPAT`-gated behavior as unconditional.** The
+  sentence "mid-stream worker errors arrive as a final `data:` error chunk + `[DONE]`, never a
+  named SSE event" holds only on the OpenAI-shape surface: both the terminator and the error shape
+  are gated `if chat || openai_compat()` (`main.rs:1966, 2007`), and `openai_compat()`
+  (`main.rs:624-632`) is true only for `MEMRA_COMPAT=openai` or unset-plus-`MEMRA_API_KEY`. On a
+  native-default server a streaming `/v1/completions` emits a named `event: error` and
+  `event: done` with **no `data: [DONE]`** — the exact opposite, and a silent hang for an SDK
+  waiting on the sentinel. Added as a precondition naming the gate, both shapes, and the fact that
+  the shipped unit sets `MEMRA_COMPAT=openai` so a *deployed* server does match the section.
+  Highest-severity find of this pass: the failure mode is a client that hangs rather than errors.
+- **A fourth 503 shape was undocumented and sits outside the retry contract** (`main.rs:1741`,
+  `1819`): `cmd_tx.send()` failing yields `"worker unavailable"` / `server_error` with
+  `code: null`, no `Retry-After`, no `retry-after-ms`, no `x-should-retry` (`error_response` passes
+  `code: None`; the header attaches only on `is_client_error()`). Precisely the transient condition
+  where retry is correct. Added as a taxonomy row + paragraph, documented **as-is** rather than as
+  fixed — see the owner call.
+- **The respawn paragraph gave neither the backoff nor the two exits.** Backoff is `2 * attempt`
+  seconds (`worker.rs:3917`) = 2 s at the default max of 1, and **two** paths reach exit 70 with
+  different `sd_notify` STATUS lines: budget exhausted (`worker unrecoverable; exiting`,
+  `worker.rs:3910`) vs a respawn whose weight reload failed (`respawn load failed; exiting`,
+  `worker.rs:3886`) — the second is not a panic and exits rather than looping. An operator reading
+  `systemctl status` needs the distinction. Exit 70 named as sysexits `EX_SOFTWARE` against the
+  exit-1 startup FATALs.
+- **The GPU-fault probe had no interval.** `MEMRA_GPU_WATCH_S` default 60 (`health.rs:322-325`),
+  and the code's own comment calls "checks every 60 s" a *published detection commitment* — so it
+  is documented as a stated fact about the instrumentation, not a free knob.
+- **The health body was listed as its `worker.*` fields only.** Real shape is
+  `{status, models, worker:{...}}` plus top-level `detail` on a red (`health_payload`,
+  `main.rs:1235-1253`), and `status` has different vocabularies per route:
+  `ok`/`draining`/`unhealthy` on `/health`-`/livez`, `ready`/`not_ready` on `/readyz`.
+- **No route table existed** — routes appeared only as prose made them relevant, so `GET /models`
+  was invisible. All nine added (`main.rs:1093-1101`) with the bind default, and `/models` marked
+  as **not** a `/v1/models` alias: it is the plain `{"data":[{"id":"<alias>"}]}` listing with no
+  `context_length`/`architecture`/`pricing`, and it is what `serve-smoke` asserts.
+- **The systemd unit's couplings were doc-invisible.** The unit's own comments are good, but a
+  reader who copies and edits it had no doc-side statement of which values are tied to server-side
+  defaults. Three break *silently*, i.e. only during a failure: `WatchdogSec=180` must exceed
+  `MEMRA_HEALTH_STALL_S=120` (else systemd restarts a healthy server mid-prefill),
+  `TimeoutStopSec=60` must exceed `MEMRA_DRAIN_S=30` (else a correct drain is SIGKILLed),
+  `TimeoutStartSec=600` must exceed the ~120 s cold load. Added as a table, with
+  `StartLimitIntervalSec/Burst=3600/4` and *why* systemd's 10 s/5 defaults **cannot trip here**
+  (5 starts do not fit in 10 s at ~120 s each → infinite restart loop instead of a failed unit),
+  the `RestartSec`/`RestartSteps`/`RestartMaxDelaySec` ramp + its systemd ≥ 254 requirement, and
+  `OOMPolicy=kill` with its reason (default `stop` can leave a worker-less process that accepts
+  connections and serves nothing). Plus `Type=notify`'s `READY=1` meaning, the CAP_SYSLOG /
+  `kernel.dmesg_restrict` Xid-visibility door, and why the unit is deliberately not
+  `ProtectSystem=strict`.
+- **"the decode-batch gate battery (gate1-3, gate3c lean-vs-full)" conflated modes with gates.**
+  `validate-h100.sh` runs `decode-batch-gate` **twice** (`--mode config --batch 8`; `--mode strict
+  --batch 4` under `MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1`), each running gate1/gate2/gate3 — and
+  `gate3c` is gate3's third **sub-check**, not a fourth gate. Gate3 prints ONE PASS/FAIL line
+  covering (a) device-argmax == host-argmax, (b) sampled B=N == B=1, (c) lean-vs-full, so the
+  sub-check names surface only on failure and a green line is the only evidence (c) ran. Also
+  stated that `--mode pp`/`ppspec` SKIP gate1/2/3 by design (`decode_batch_gate.rs:154-171` returns
+  before them) and that neither PP mode is wired into `validate-h100.sh`.
+- **Rate-limit headers are documented `X-RateLimit-*` but emitted lowercase**
+  (`main.rs:270-272`). Harmless per RFC 9110, but a client parsing into a case-sensitive dict must
+  key on `x-ratelimit-*`. Noted inline rather than restyling.
+- **The code's own module header described the pre-serve-hardening server** (`main.rs:8-13`): four
+  endpoints of nine, no `/livez`, no `/readyz`, no `/yield/metrics`, and a `/health` body with no
+  `worker` object. Rewritten to the real set, pointing at `router()` as the authority. The only
+  non-`.md` edit in this lane, and comment-only.
+
 ## Deferred, with reason (4)
 
 1. **`lane/spec-gate` / concurrency-gated spec scheduler — NOT ON THIS BASE.** The brief flagged
@@ -120,6 +222,20 @@ Found by diffing `env::var("MEMRA_*")` read sites against the catalog rather tha
   dev01-vs-dev10 split, and dev10 is the placement that goes fatal at c=4 with spec on.
   Documented; a fix is a code lane.
 - **Whether "#87" should appear in the docs** (see Deferred 2).
+- **`local-ci.sh` does not run the `run-spec` K=1..8 sweep that three documents name as a standing
+  merge gate.** CLAUDE.md, CONTRIBUTING.md, and TESTING.md all name `run-spec` K=1..8
+  self-consistency as one of the three gates; `local-ci.sh --tier 2` runs a single gemma-gate
+  stream-agreement check instead. The docs now say what the script does, so nobody reads a green
+  battery as K=1..8 evidence — but the consequence has to be stated plainly: **"the battery ran" is
+  not evidence K=1..8 passed; quote the `run-spec` log.** Closing the gap is a tools change (wire
+  the sweep into tier 2, or rename the tier so the doctrine gate is visibly separate).
+- **Four registered fast-gate probes are dispatched by no `map.tsv` row, including DEFAULT**:
+  `amargin`, `amarginc`, `e4b`, `kat`. They are reachable only via an explicit `--probes` list, so
+  a default `fast-gate` run silently skips them. Documented; wiring them is a tools change.
+- **Give the bare 503 a `code` and a retry pair.** The `cmd_tx.send()` failure path is the one
+  transient 503 with nothing for a client to branch on. `code: "overloaded"` + `Retry-After: 5` +
+  `retry-after-ms: 5000` would put it inside the contract the rest of the taxonomy already keeps.
+  Server change, not a docs change — documented as-is rather than described as fixed.
 
 ## Caveats deliberately written into the docs
 
