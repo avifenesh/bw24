@@ -1,0 +1,1 @@
+{"admitted":64,"completed":56,"tokens_out":7737,"step_p50_ms":8.97855281829834,"step_p99_ms":15.344642639160156,"prompt_tokens_in":14464,"cached_tokens_in":14238,"prefix_cache_hits":63,"prefix_cache_entries":1,"prefix_cache_bytes":58242048}
