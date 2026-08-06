@@ -1,0 +1,5 @@
+argmax-margin-gate: model=Qwen3.6-27B-Q8_0.gguf prompt=board-2048.txt window=12 canary=0
+  explained pos=2047 margin=0.0307 < delta=0.2117
+  SUMMARY flips=1 bad=0
+  PASS: every prefill/decode argmax flip is explained by a margin the config spread covers
+  raw: research/q8-argmax-20260806/gate-Qwen3.6-27B-Q8_0-board-2048.log
