@@ -2167,10 +2167,15 @@ impl HybridModel {
         }
         // QWEN DC-EAGER route (2026-07-15, MEMRA_QWEN_DC=0 seam — mirror of generate_with's
         // serving loop; see the note there. The graph route probed −11% first.)
+        // step35 is EXCLUDED: this route calls `decode_step_dc`, whose full-attn arm refuses
+        // step35 by design (SWA layers need a token-OFFSET KV view the dc kernels' len_d-derived
+        // t_kv cannot express). Without this gate the door opens for any greedy model and the
+        // refusal surfaces as a user-visible generate() error — the first PP-2 boot of
+        // Step-3.7-Flash died exactly there, AFTER a clean load and an argmax MATCH.
         static QWEN_DC2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let qwen_dc = *QWEN_DC2.get_or_init(||
             std::env::var("MEMRA_QWEN_DC").as_deref() != Ok("0"));
-        if qwen_dc && max_new > 0
+        if qwen_dc && max_new > 0 && self.cfg.step35.is_none()
             && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
@@ -2446,10 +2451,18 @@ impl HybridModel {
         // kernels. Greedy + no-penalty only (sampling needs host logits).
         // (The CUDA-graph route was probed first and read −11%: the replay's dc-fa family
         // + capture rungs lag the tuned eager lanes; jsonl 2026-07-15.)
+        // step35 is EXCLUDED here for the same reason as the `generate` mirror above: every route
+        // inside this door (`decode_step_dc` and the `graph_decode_loop` capture) reaches
+        // `full_attn_decode_dc_inner`, which refuses step35 because its SWA layers read a
+        // token-OFFSET KV view the dc kernels cannot express. step35 takes the host-logits eager
+        // loop at the bottom of this function (`decode_step` -> `step35_decode_attn`), which is
+        // the supported decode for this arch. Removing this gate requires a windowed dc fa_decode
+        // plus a per-layer-n_head capture, not a flag.
         static QWEN_DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let qwen_dc = *QWEN_DC.get_or_init(||
             std::env::var("MEMRA_QWEN_DC").as_deref() != Ok("0"));
         if qwen_dc && sampler.is_greedy() && sampler.penalty_last_n() == 0 && budget > 0
+            && self.cfg.step35.is_none()
             && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);

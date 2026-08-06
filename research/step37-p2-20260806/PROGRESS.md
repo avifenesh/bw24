@@ -656,3 +656,74 @@ per-tensor fill bytes, so a wrong-shard read is caught **by value**, not merely 
 `cargo check --workspace --all-targets`: clean. `gguf-inspect` now prints `shards=N` with a
 per-shard tensor count and path, and its data-bounds check runs per shard against that shard's real
 file size (one global max would be meaningless once offsets are per-shard).
+
+## Increment 10 — FIRST PP-2 BOOT: Step-3.7-Flash generates on both cards
+
+Three boots, each failing on a different real bug, the third clean. All three logs are committed
+(`raw/pp2boot-20260806T{193536,195322,195954}Z.log`) because the first two are the evidence for
+the two fixes.
+
+### Boot 2 (after the split-GGUF fix): the whole model loads
+
+```
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB
+      (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prefill argmax=6776  decode argmax=6776  logit maxdiff=3.702e-1  MATCH
+Error: "step35 has no device-counter/graph decode arm (SWA needs an offset KV view the dc
+        kernels cannot express) — use the eager decode"
+```
+
+`experts 101.07GB` (was 44.12GB) confirms the split fix at the byte level, and the prefill/decode
+argmax already MATCHED. The failure was **this lane's own refusal, reached by a door that never
+checked the arch.**
+
+### The second bug: two DC-eager doors with no arch gate
+
+`b13738ed`/earlier work put a deliberate, loud refusal in `full_attn_decode_dc_inner`
+(decode.rs:1899) — step35's SWA layers read a token-OFFSET KV view that the dc kernels' `len_d`-
+derived `t_kv` cannot express, so running the generic geometry would be silently wrong. Correct
+refusal. But the two QWEN DC-EAGER doors that *call* it — `generate` (decode.rs:2173) and
+`generate_with` (decode.rs:2452) — gate on `MEMRA_QWEN_DC != 0` + greedy + no-penalty and
+**nothing else**. Every greedy step35 generation walked straight into the refusal, so a correct
+internal guard surfaced as a user-visible `generate()` error *after* a clean load and an argmax
+MATCH.
+
+Fixed by adding `self.cfg.step35.is_none()` to both doors, which routes step35 to the host-logits
+eager loop at the bottom of `generate_with` (`decode_step` -> `full_attn_decode_pre` ->
+`step35_decode_attn`, decode.rs:2631) — the supported decode for this arch. Note what this is NOT:
+it is not a flag and not a widening of the refusal. Opening the dc door for step35 still requires a
+windowed dc `fa_decode` plus a per-layer-`n_head` capture.
+
+### Boot 3: PASS
+
+```
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt tokens: [0, 65106, 1205, 260, 28499, 6632, 344, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=3.702e-1  MATCH
+generated 32 tokens in 1.589s = 20.14 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.134s)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=89.0% | 133.5 MB/decode-token
+      (vs 2678 MB/token Stage-1 => 20.1x less PCIe)
+run-gen exit=0 after 42s
+```
+
+Output text, coherent and on-topic:
+
+> `# 2.2.2 Pipeline Hazards` / `A pipeline stage is said to have a hazard when the instruction in
+> the stage cannot proceed in the normal`
+
+**The mission-critical claim is now measured, not assumed: this model boots PP-2 and generates.**
+97.78 GiB of weights across two 96GB cards, `stage0=dev0 stage1=dev1`, peer + default-pool access
+granted on all pairs, per-stage weight homes from the sharded loader.
+
+Two facts worth carrying, neither of them a perf claim (perf is the pp2-hardening lane's job —
+these are single runs, N=1, stated as such):
+
+- The model does **not** go resident even on 2x96GB: `101.07GB experts + 3.92GB trunk vs 100.88GB
+  free` -> SLRU cache. So the PP-2 serving path for this SKU is a *spill* path, and the MoE cache
+  is load-bearing rather than incidental. Its steady state on this 32-token run was 89.0% hit-rate
+  / 133.5 MB per decode token.
+- `[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8` — step35's GQA ratio (96/8 on
+  SWA layers) exceeds the v4 decode family's smem capacity, so the v3 lane serves. A named
+  capability gap for whoever tunes this SKU, recorded here so it is not rediscovered.
