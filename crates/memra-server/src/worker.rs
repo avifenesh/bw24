@@ -2477,7 +2477,10 @@ fn admit(
         if let Some(i) = px.lookup(&pool_key, &prompt) {
             let restored = {
                 let e = &px.entries[&pool_key][i];
-                match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+                // `pp::new_cache`, not `Cache::new` — stage-owned KV under an open ppN door
+                // (see the session-cache site below for the full reason). `prefix_restore`
+                // then copies plane-by-plane into whatever device each layer landed on.
+                match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
                     Ok(mut c) => match prefix_restore(engine, &mut c, e) {
                         Ok(()) => Ok(ReuseEntry {
                             fed: e.toks.clone(),
@@ -2820,17 +2823,25 @@ fn admit(
         }
     }
     // legacy tokenwise cache only when the spec path did NOT take the session (spec owns its own).
+    //
+    // STAGE-OWNED KV (pp2-batch 2026-08-06): `pp::new_cache`, not `Cache::new`. With the ppN
+    // door shut it IS `Cache::new` (one branch, same allocations); with the door open across
+    // devices it allocates each layer's KV/recurrent state through the engine of the STAGE that
+    // runs that layer, and adds the cache-birth barrier. Allocating a serving cache on the
+    // primary under an open door would leave every remote stage peer-reading its OWN cache
+    // every step — the same silent-PCIe class as unsharded weights (13.9-28x on a PRO 6000
+    // pair), and invisible to exactness gates because peer reads are byte-exact.
     let cache = match (&spec, cache) {
         (Some(_), c) => c,        // reuse hit carried a cache? keep it parked as-is (rare; None normally)
         (None, Some(c)) => Some(c),
-        (None, None) => match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+        (None, None) => match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
             Ok(c) => Some(c),
             Err(err) => {
                 // headroom discipline: the prefix cache yields before a session errors.
                 let evicted = px.evict_all();
                 if evicted > 0 {
                     eprintln!("[prefix-cache] evicted {evicted} entries after cache alloc failure; retrying");
-                    match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+                    match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
                         Ok(c) => Some(c),
                         Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
                     }
