@@ -33,6 +33,8 @@ Q9=/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
 BIN=target/release
 FAILS=0
 
+# The wide-width arm already PASSED (B=12/16 bit-identical under the cap16 door); kept in the
+# script so the receipt is reproducible.
 # ---- (2) wide-width seam, both arms on the non-exact measurement tier -----------------
 echo "=== wide-width B=12,16 under MEMRA_DECODE_BATCH_CAP=16 (dev01) ==="
 if ! env MEMRA_PP_DEVICES=0,1 MEMRA_DECODE_BATCH_CAP=16 \
@@ -50,16 +52,34 @@ A_EXIT=${PIPESTATUS[0]}
 sleep 5
 
 echo "=== serve-smoke B: door OPEN stages=2 devices=0,1 (THE Step-SKU config) ==="
-MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
+# MEMRA_SERVE_SPEC=0 IS LOAD-BEARING, and finding out why is a result of this lane. q9 carries
+# an embedded MTP head, so serving self-specs by DEFAULT and every request funnels through
+# `decode_step_t`, which still fails closed (spec.rs:1332). Measured, not inferred — the
+# repro's HTTP 400 body:
+#   "step error: decode_step_t (spec verify): refused with the ppN door open across 2+ devices"
+# with the server log confirming the split loaded ([pp] cross-device transport banner, 33
+# layers). So batched PP-2 serving is real TODAY only on the non-spec path; spec-over-PP2 needs
+# the verify trunk stage-split (the T=K+1 batched forward), which this lane's seam now makes
+# reachable but does not itself do. Arm A runs spec-on because that is its own default baseline;
+# the set-difference is still apples-to-apples on every check spec does not gate.
+MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_SERVE_SPEC=0 \
   bash tools/serve-smoke.sh "$Q9" /nonexistent-draft.gguf 2>&1 | tee "$OUT/serve-smoke-pp2-dev01.log"
 B_EXIT=${PIPESTATUS[0]}
+# Control: the SAME non-spec config with the door SHUT. Without it, arm B's fail set conflates
+# "the split broke it" with "MEMRA_SERVE_SPEC=0 broke it" — one variable per comparison.
+echo "=== serve-smoke C: door SHUT, MEMRA_SERVE_SPEC=0 (the non-spec control) ==="
+MEMRA_SERVE_SPEC=0 \
+  bash tools/serve-smoke.sh "$Q9" /nonexistent-draft.gguf 2>&1 | tee "$OUT/serve-smoke-nospec-doorshut.log"
+C_EXIT=${PIPESTATUS[0]}
 
 echo; echo "==== serve-smoke deltas ===="
-echo "door-shut failed checks: $A_EXIT | pp2-dev01 failed checks: $B_EXIT"
-echo "-- door-shut fail set:"; grep -h "  FAIL:" "$OUT/serve-smoke-doorshut.log" | sort > "$OUT/failset-doorshut.txt"; cat "$OUT/failset-doorshut.txt"
-echo "-- pp2 fail set:";      grep -h "  FAIL:" "$OUT/serve-smoke-pp2-dev01.log" | sort > "$OUT/failset-pp2.txt";     cat "$OUT/failset-pp2.txt"
-echo "-- ADDED BY THE SPLIT (must be empty):"
-comm -13 "$OUT/failset-doorshut.txt" "$OUT/failset-pp2.txt" | tee "$OUT/failset-added.txt"
+echo "A door-shut spec-on: $A_EXIT failed | B pp2 nospec: $B_EXIT failed | C door-shut nospec: $C_EXIT failed"
+echo "-- A (door-shut, spec on) fail set:"; grep -h "  FAIL:" "$OUT/serve-smoke-doorshut.log" | sort > "$OUT/failset-doorshut.txt"; cat "$OUT/failset-doorshut.txt"
+echo "-- B (pp2, nospec) fail set:";        grep -h "  FAIL:" "$OUT/serve-smoke-pp2-dev01.log" | sort > "$OUT/failset-pp2.txt";     cat "$OUT/failset-pp2.txt"
+echo "-- C (door-shut, nospec) CONTROL fail set:"; grep -h "  FAIL:" "$OUT/serve-smoke-nospec-doorshut.log" | sort > "$OUT/failset-nospec.txt"; cat "$OUT/failset-nospec.txt"
+# THE verdict: B vs C, the single-variable comparison (both non-spec; only the split differs).
+echo "-- ADDED BY THE SPLIT, B minus C (must be empty):"
+comm -13 "$OUT/failset-nospec.txt" "$OUT/failset-pp2.txt" | tee "$OUT/failset-added.txt"
 [ -s "$OUT/failset-added.txt" ] && { echo "FAIL: the split ADDED serve-smoke failures"; FAILS=$((FAILS+1)); }
 # Proof the split was actually LIVE in arm B (not silently door-shut): the server log must
 # carry the cross-device transport banner. A green run without it proves nothing.
