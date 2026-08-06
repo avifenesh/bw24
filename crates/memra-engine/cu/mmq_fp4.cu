@@ -180,6 +180,10 @@ namespace ggml_cuda_mma {
     }
 
     // NVFP4 block-scale MMA: mma.sync.m16n8k64.kind::mxf4nvf4.block_scale.scale_vec::4X (UE4M3 scales).
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+    //   16.06 cyc/warp-MMA, 619.2 TFLOP/s = 3.99x the int8-k16 rate and THE FASTEST form on sm_120.
+    //   The scale_vec::2X ue8m0 variant measures identically (619.1), so the granularity choice is
+    //   free. ptxas REJECTS m16n8k128 mxf4nvf4 -- nothing deeper exists. OPTIMAL, no swap available.
     static __device__ __forceinline__ void mma_block_scaled_fp4_nvfp4(
             tile<16, 8, float> & D, const tile<16, 8, int> & A, const tile<8, 8, int> & B,
             uint32_t a_scale, uint32_t b_scale) {

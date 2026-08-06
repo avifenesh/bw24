@@ -142,6 +142,10 @@ namespace ggml_cuda_mma {
             : "l"(xs));
     }
 
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+    //   16.06 cyc/warp-MMA, 309.7 TOP/s = the FASTEST int8 form on sm_120. The pipe is K-FREE
+    //   (m16n8k16.s8 costs the same 16.06 cyc for HALF the MACs), so k32 is the right depth and
+    //   ptxas rejects m16n8k64.s8 -- there is nothing deeper. OPTIMAL, no swap available.
     // int8 MMA (mma.cuh, Ampere+ path): D(s32) += A(s8) * B(s8).
     static __device__ __forceinline__ void mma(
             tile<16, 8, int> & D, const tile<16, 8, int> & A, const tile<8, 8, int> & B) {

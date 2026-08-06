@@ -353,6 +353,14 @@ __device__ __forceinline__ void sk_ldm16x16(unsigned (&r)[4], const __half* base
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
         : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "l"(p));
 }
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   32.03 cyc/warp-MMA, 77.8 TFLOP/s -- the f32-accumulate throttle: half the 155.2 TFLOP/s the
+//   f16-accumulate form reaches (flash_attn.cu:974). NO equal-math swap: ptxas rejects f16
+//   m16n8k32 and bf16 .block_scale alike (isa_sibling_check.cu), so no deeper-K sibling exists.
+//   f16-accumulate would double the rate but is a NUMERIC change -- and unlike attention's P@V
+//   (bounded, post-softmax, 0<=p<=1), this is a full FFN GEMM whose f32 `c` accumulates over the
+//   whole in_f reduction, where f16 accumulate would overflow/lose mantissa. Verdict:
+//   NOT-APPLICABLE (no equal-math sibling; the accumulator is load-bearing here).
 __device__ __forceinline__ void sk_mma(float (&c)[4], const unsigned (&a)[4], unsigned b0, unsigned b1){
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"

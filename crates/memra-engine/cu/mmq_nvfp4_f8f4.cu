@@ -36,6 +36,15 @@ static __device__ __forceinline__ uint16_t cvt_e4m3x2(float lo, float hi) {
 }
 
 // Plain-kind f8f6f4 MMA, e4m3 x e4m3, f32 accumulate (CUTLASS SM120_16x8x32_TN form).
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   32.03 cyc/warp-MMA = the SLOW form; kind::mxf8f6f4.block_scale.scale_vec::1X @ ue8m0
+//   (0x7F7F7F7F identity) computes the bit-identical product at 16.06 = 1.994x. This is the
+//   FOURTH site of the same defect the audit's two prior fixes closed (mmq_fp8_blk.cu:256,
+//   mmq_nvfp4_w4a8.cu:1099). Verdict: DEAD-DOOR -- left as-is deliberately. This function is
+//   UNCALLED: the file's only live exports are memra_mmq_nvfp4_f8f4_act_bytes and
+//   memra_mmq_nvfp4_f8f4_quantize_act (the e4m3 activation quantizer); the actual f8f4 GEMM
+//   tile lives in mmq_nvfp4_w4a8.cu, which already runs the fast form. Fixing this changes no
+//   emitted instruction. If this function is ever wired to a kernel, SWAP IT FIRST.
 // A = 16x32 weights (e4m3 containers), B = 32x8 activations, D/C = f32 16x8.
 static __device__ __forceinline__ void mma_f8f4_16x8x32(
         float * __restrict__ d, const uint32_t * __restrict__ a, const uint32_t * __restrict__ b) {

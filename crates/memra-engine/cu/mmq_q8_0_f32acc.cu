@@ -148,6 +148,10 @@ namespace memra_accprobe_mma {
     }
 
     // ---- ARM S32: the floor's MMA, verbatim. D(s32) += A(s8) * B(s8). ----
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+    //   16.06 cyc/warp-MMA, 309.7 TOP/s = fastest int8 form; nothing deeper exists (ptxas rejects
+    //   m16n8k64.s8). OPTIMAL. This whole file is probe-only (bin accprobe_bench, never a serving
+    //   path) -- see the MMA FORM block on the F32 arm below, which is where the rate mattered.
     static __device__ __forceinline__ void mma_s32(
             int * __restrict__ d, const int * __restrict__ a, const int b0, const int b1) {
         asm("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
@@ -177,6 +181,12 @@ namespace memra_accprobe_mma {
     //
     // ACCPROBE_F32_PLAIN=1 (build-time, -DMEMRA_ACCPROBE_PLAIN_MMA) reproduces the ORIGINAL plain-form
     // arm — keep it: the published delta belongs to that arm and its receipts must stay reproducible.
+    //
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md — the rates quoted above
+    // were re-measured independently by the repo-wide audit (12 forms, 3 reruns, SASS-census verified)
+    // and CONFIRMED: plain 32.03, block_scale 16.06, s8-k32 16.06. Default arm = the fast one.
+    // Verdict: OPTIMAL (default), and the plain arm behind MEMRA_ACCPROBE_PLAIN_MMA is a deliberate
+    // receipt-reproduction door, not a rate defect.
 #define MEMRA_ACCPROBE_UE8M0_ONE 0x7F7F7F7Fu   // four ue8m0 bytes, each 2^0
     static __device__ __forceinline__ void mma_f32(
             float * __restrict__ d, const int * __restrict__ a, const int b0, const int b1) {

@@ -206,6 +206,14 @@ namespace ggml_cuda_mma {
     }
 
     // int8 MMA (mma.cuh:920, Ampere+): D(s32) += A(16x4 s8) * B(8x4 s8), m16n8k16.
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+    //   16.06 cyc/warp-MMA, 155.2 TOP/s. The int8 pipe is K-FREE on sm_120: m16n8k32.s8 costs the
+    //   SAME 16.06 cyc for 2x the MACs (309.7 TOP/s), so this k16 form runs at HALF the available
+    //   int8 rate. SWAP-AVAILABLE but NOT a drop-in here: x_df carries a DISTINCT UE4M3 scale every
+    //   16 k-values (written per-`sub` at :284/:432, read as dA[..][k01/4] at :482), so one k32 MMA
+    //   would sum two differently-scaled halves inside the s32 accumulator before the fold. Needs
+    //   the scale fold restructured, not one line. Tile-level price if legalized: 1.42x measured
+    //   (research/ptx-audit-20260806/logs/k16-vs-k32-tileloop.log), 71% of the 1.997x bound.
     static __device__ __forceinline__ void mma(
             tile<16, 8, int> & D, const tile<16, 4, int> & A, const tile<8, 4, int> & B) {
         asm("mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 {%0, %1, %2, %3}, {%4, %5}, {%6}, {%0, %1, %2, %3};"
@@ -1073,6 +1081,11 @@ static __constant__ float memra_e2m1_f32[16] =
 // f8f4-check tolerances, and its argmax lineage are unchanged by construction.
 //
 // MEMRA_MMQ_F8F4_PLAIN=1 is the rollback seam back to the 1.00x plain form.
+//
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md — independently
+// re-measured by the repo-wide audit (12 forms, 3 reruns, SASS census): plain 32.03, block_scale
+// 16.06, and the same 2x holds for e2m1 operands (the KIND carries the cost, not the operand
+// format). Verdict: OPTIMAL (default arm is the fast form); the plain arm is a rollback seam.
 #define MEMRA_F8F4_UE8M0_ONE 0x7F7F7F7Fu   // four ue8m0 bytes, each 2^0
 
 static __device__ __forceinline__ void memra_mma_f8f4(
