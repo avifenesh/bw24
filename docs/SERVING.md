@@ -404,7 +404,9 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
   plan's config), `architecture` (`modality`, `tokenizer`, `instruct_type` — probed at
   spawn from the model itself, not hardcoded), and an OR-convention `pricing` stub.
   Unknowns are honest `null`s, never guesses.
-- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` on both
+- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` (emitted
+  lowercase on the wire, as HTTP/2 requires; capitalized here by convention — a client
+  parsing headers into a case-sensitive dict must key on `x-ratelimit-*`) on both
   completion routes with concurrency-slot semantics — a per-lane atomic gauge whose
   RAII slot rides the SSE stream to completion, so `Remaining` is truthful for the
   whole life of a stream. Sheds carry `429 + Retry-After`; `MEMRA_RL_RESET_S` is the
@@ -496,6 +498,31 @@ so the probe runs as a killed-on-deadline child and its own timeout
 (`MEMRA_GPU_PROBE_TIMEOUT_S`) is the alarm. Health reads only atomics, so a hung
 `nvidia-smi` can never block a health answer. A GPU fault survives a worker respawn: a new
 thread on a wedged card is not recovery.
+
+**The supervision contract (`deploy/systemd/memra-server.service`) has three couplings you can
+break silently.** The unit is an example to copy, but these are not stylistic choices — each is
+sized against a server-side default, and changing one side alone produces a unit that looks
+correct and misbehaves only during a failure:
+
+| directive | value | the coupling |
+|---|---|---|
+| `WatchdogSec` | 180 | MUST exceed `MEMRA_HEALTH_STALL_S` (default 120). The heartbeat that feeds `/health` also feeds systemd, so a watchdog under the legitimate-stall bound restarts a *healthy* server mid-prefill. Raise both together if you raise `MEMRA_MAX_SESSIONS` or the context |
+| `TimeoutStopSec` | 60 | MUST exceed `MEMRA_DRAIN_S` (default 30), or systemd SIGKILLs a drain that is finishing streams correctly. The server also sends `EXTEND_TIMEOUT_USEC`; the static floor covers a build that does not |
+| `TimeoutStartSec` | 600 | MUST exceed the slowest cold load (~120 s measured for a 27B NVFP4 from page cache; cold NVMe on a large bank is slower). Startup silence is a load, not a hang |
+| `StartLimitIntervalSec` / `StartLimitBurst` | 3600 / 4 | systemd's defaults (10 s / 5) are sized for millisecond daemons and **cannot trip at all** here — 5 starts do not fit in 10 s when each start takes ~120 s, so a crash loop restarts forever instead of failing the unit for a human. 4 starts per hour ≈ "if it cannot survive four full loads, page someone" |
+| `RestartSec` / `RestartSteps` / `RestartMaxDelaySec` | 10 / 4 / 160 | a card that just threw an Xid needs the driver to settle; a tight loop makes recovery less likely. The ramp needs systemd ≥ 254 — on older systemd delete the last two lines and keep the flat 10 s |
+| `OOMPolicy` | `kill` | the default `stop` reaps only the offending process, and the kernel OOM killer can take out ONE thread — classically the worker — leaving a process that accepts connections and can never serve them, which is the exact invisible death this lane removes. **Host memory only**: CUDA OOM is the 503 above, never a process kill |
+
+Two more worth knowing before you deploy. `Type=notify` + `NotifyAccess=main` means `READY=1`
+fires after the models load **and** the socket binds — `systemctl start` returning is a real
+readiness signal, which is why `TimeoutStartSec` must be generous. And Xid visibility can be
+silently absent: `kernel.dmesg_restrict=1` makes `/dev/kmsg` root-only, so an unprivileged unit
+sees Xids only through `journalctl`; grant `AmbientCapabilities=CAP_SYSLOG` +
+`CapabilityBoundingSet=CAP_SYSLOG` or accept the fallback to the probe-hang and ECC/remap
+detectors, which need no kernel log. The watcher logs which source it got, so this is never a
+silent downgrade. The unit is deliberately **not** `ProtectSystem=strict` — model paths,
+`/dev/nvidia*`, and the CUDA cache need real filesystem access, and a wrong sandbox fails at
+load time looking like a model bug.
 
 **Error taxonomy.** Every engine failure used to be `400 invalid_request_error` — which no
 OpenAI SDK retries, and which a router cannot distinguish from a malformed request. The
@@ -881,8 +908,18 @@ gone: B128 buys +8.4% (c=1) / +8.5% (c=8) and now trails B32's contended first t
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are
 cataloged in [FLAGS.md §7](FLAGS.md) under "Serving (memra-server)"; fleet topology knobs
 (`GPUS`, `REPLICAS_PER_GPU`, `CAP`, ports, health cadence) are env-overridable at the top of
-`tools/serve-fleet.sh`. The exactness contract holds under batching: the decode-batch gate
-battery (gate1-3, gate3c lean-vs-full) runs inside `tools/validate-h100.sh`.
+`tools/serve-fleet.sh`. The exactness contract holds under batching: `decode-batch-gate` runs
+inside `tools/validate-h100.sh` **twice** — `--mode config --batch 8` (the default-env battery,
+fused tier live in the reference) and `--mode strict --batch 4` under the equalized composition
+(`MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1`). Each invocation runs gate1 (B=1 vs `decode_step_h`),
+gate2 (per-seq isolation — batchmates must not change your stream), and gate3, whose three
+sub-checks are (a) device-argmax == host-argmax of the same row, (b) sampled draws at B=N ==
+the same metas at B=1, and (c) `gate3c`, lean-vs-full logits identity. **`gate3c` is a
+sub-check of gate3, not a fourth gate** — gate3 prints one PASS/FAIL line covering all three,
+so a green line is the only signal that (c) ran; the sub-check names surface in the output only
+when one fails. The stage-split modes (`--mode pp`, `--mode ppspec`) SKIP gate1/2/3 by design —
+they are single-device jurisdiction — and neither PP mode is wired into `validate-h100.sh`; PP
+exactness has its own invocations (see [TESTING.md](TESTING.md)).
 
 ## First-token cross-config drift (batched prime) — stated honestly
 
