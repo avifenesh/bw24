@@ -1,0 +1,108 @@
+== q9  Qwen3.5-9B: 8 full-attn / 25 linear layers ==
+  per-token KV (trunk):        14848 B/tok
+  per-token KV (draft scratch): 1856 B/tok
+  per-token KV (spec session):  16704 B/tok = 16.31 KiB/tok
+  fixed recurrent per session:  102.3 MiB (25 x 4.09 MiB)
+
+--- q9 c=8 / MEASURED shape (3623 prompt, 192 gen) / MEMRA_CTX=8192 / 5090-24GB: prefix=3500 tail=123 gen=192 ctx_alloc=8192 c=8 card=24463 MiB
+  per-session alloc: 232.8 MiB (ctx KV 130.5 + recurrent 102.3)
+  total KV alloc (c=8):          1862.8 MiB =  7.61% of card
+  prefix duplication (c-1 copies):  390.3 MiB =  1.60% of card
+  ladder slack (alloc-used):        557.8 MiB =  2.28% of card
+
+--- q9 c=16 / MEASURED 4k shape / MEMRA_CTX=8192 / 96GB: prefix=3500 tail=123 gen=192 ctx_alloc=8192 c=16 card=98304 MiB
+  per-session alloc: 232.8 MiB (ctx KV 130.5 + recurrent 102.3)
+  total KV alloc (c=16):          3725.5 MiB =  3.79% of card
+  prefix duplication (c-1 copies):  836.3 MiB =  0.85% of card
+  ladder slack (alloc-used):       1115.6 MiB =  1.13% of card
+
+--- q9 c=32 / MEASURED 4k shape / MEMRA_CTX=8192 / 96GB: prefix=3500 tail=123 gen=192 ctx_alloc=8192 c=32 card=98304 MiB
+  per-session alloc: 232.8 MiB (ctx KV 130.5 + recurrent 102.3)
+  total KV alloc (c=32):          7451.0 MiB =  7.58% of card
+  prefix duplication (c-1 copies): 1728.4 MiB =  1.76% of card
+  ladder slack (alloc-used):       2231.2 MiB =  2.27% of card
+
+--- q9 c=8 / 8k prefix / right-sized / 5090-24GB: prefix=8100 tail=120 gen=256 ctx_alloc=8484 c=8 card=24463 MiB
+  per-session alloc: 237.5 MiB (ctx KV 135.2 + recurrent 102.3)
+  total KV alloc (c=8):          1900.0 MiB =  7.77% of card
+  prefix duplication (c-1 copies):  903.2 MiB =  3.69% of card
+  ladder slack (alloc-used):          1.0 MiB =  0.00% of card
+
+--- q9 c=16 / 8k prefix / right-sized / 96GB: prefix=8100 tail=120 gen=256 ctx_alloc=8484 c=16 card=98304 MiB
+  per-session alloc: 237.5 MiB (ctx KV 135.2 + recurrent 102.3)
+  total KV alloc (c=16):          3799.9 MiB =  3.87% of card
+  prefix duplication (c-1 copies): 1935.5 MiB =  1.97% of card
+  ladder slack (alloc-used):          2.0 MiB =  0.00% of card
+
+--- q9 c=32 / 8k prefix / right-sized / 96GB: prefix=8100 tail=120 gen=256 ctx_alloc=8484 c=32 card=98304 MiB
+  per-session alloc: 237.5 MiB (ctx KV 135.2 + recurrent 102.3)
+  total KV alloc (c=32):          7599.9 MiB =  7.73% of card
+  prefix duplication (c-1 copies): 4000.1 MiB =  4.07% of card
+  ladder slack (alloc-used):          4.1 MiB =  0.00% of card
+
+--- q9 c=16 / 8k prefix / MEMRA_CTX=32768 omitted-max / 96GB: prefix=8100 tail=120 gen=256 ctx_alloc=32768 c=16 card=98304 MiB
+  per-session alloc: 624.3 MiB (ctx KV 522.0 + recurrent 102.3)
+  total KV alloc (c=16):          9989.5 MiB = 10.16% of card
+  prefix duplication (c-1 copies): 1935.5 MiB =  1.97% of card
+  ladder slack (alloc-used):       6191.6 MiB =  6.30% of card
+
+--- q9 c=32 / 8k prefix / MEMRA_CTX=32768 omitted-max / 96GB: prefix=8100 tail=120 gen=256 ctx_alloc=32768 c=32 card=98304 MiB
+  per-session alloc: 624.3 MiB (ctx KV 522.0 + recurrent 102.3)
+  total KV alloc (c=32):         19979.0 MiB = 20.32% of card
+  prefix duplication (c-1 copies): 4000.1 MiB =  4.07% of card
+  ladder slack (alloc-used):      12383.2 MiB = 12.60% of card
+
+--- q9 c=16 / 32k prefix / right-sized / 96GB: prefix=32000 tail=120 gen=256 ctx_alloc=33000 c=16 card=98304 MiB
+  per-session alloc: 628.0 MiB (ctx KV 525.7 + recurrent 102.3)
+  total KV alloc (c=16):         10048.6 MiB = 10.22% of card
+  prefix duplication (c-1 copies): 7646.5 MiB =  7.78% of card
+  ladder slack (alloc-used):        159.0 MiB =  0.16% of card
+
+--- q9 c=32 / 32k prefix / right-sized / 96GB: prefix=32000 tail=120 gen=256 ctx_alloc=33000 c=32 card=98304 MiB
+  per-session alloc: 628.0 MiB (ctx KV 525.7 + recurrent 102.3)
+  total KV alloc (c=32):         20097.3 MiB = 20.44% of card
+  prefix duplication (c-1 copies): 15802.7 MiB = 16.08% of card
+  ladder slack (alloc-used):        318.1 MiB =  0.32% of card
+
+== k27 Qwen3.6-27B: 16 full-attn / 49 linear layers ==
+  per-token KV (trunk):        29696 B/tok
+  per-token KV (draft scratch): 1856 B/tok
+  per-token KV (spec session):  31552 B/tok = 30.81 KiB/tok
+  fixed recurrent per session:  299.7 MiB (49 x 6.12 MiB)
+
+--- k27 c=16 / MEASURED 4k shape / MEMRA_CTX=8192 / 96GB: prefix=3500 tail=123 gen=192 ctx_alloc=8192 c=16 card=98304 MiB
+  per-session alloc: 546.2 MiB (ctx KV 246.5 + recurrent 299.7)
+  total KV alloc (c=16):          8739.9 MiB =  8.89% of card
+  prefix duplication (c-1 copies): 1579.7 MiB =  1.61% of card
+  ladder slack (alloc-used):       2107.3 MiB =  2.14% of card
+
+--- k27 c=32 / MEASURED 4k shape / MEMRA_CTX=8192 / 96GB: prefix=3500 tail=123 gen=192 ctx_alloc=8192 c=32 card=98304 MiB
+  per-session alloc: 546.2 MiB (ctx KV 246.5 + recurrent 299.7)
+  total KV alloc (c=32):         17479.8 MiB = 17.78% of card
+  prefix duplication (c-1 copies): 3264.8 MiB =  3.32% of card
+  ladder slack (alloc-used):       4214.6 MiB =  4.29% of card
+
+--- k27 c=16 / 8k prefix / right-sized / 96GB: prefix=8100 tail=120 gen=256 ctx_alloc=8484 c=16 card=98304 MiB
+  per-session alloc: 555.0 MiB (ctx KV 255.3 + recurrent 299.7)
+  total KV alloc (c=16):          8880.5 MiB =  9.03% of card
+  prefix duplication (c-1 copies): 3656.0 MiB =  3.72% of card
+  ladder slack (alloc-used):          3.9 MiB =  0.00% of card
+
+--- k27 c=32 / 8k prefix / right-sized / 96GB: prefix=8100 tail=120 gen=256 ctx_alloc=8484 c=32 card=98304 MiB
+  per-session alloc: 555.0 MiB (ctx KV 255.3 + recurrent 299.7)
+  total KV alloc (c=32):         17760.9 MiB = 18.07% of card
+  prefix duplication (c-1 copies): 7555.7 MiB =  7.69% of card
+  ladder slack (alloc-used):          7.7 MiB =  0.01% of card
+
+--- k27 c=16 / 32k prefix / right-sized / 96GB: prefix=32000 tail=120 gen=256 ctx_alloc=33000 c=16 card=98304 MiB
+  per-session alloc: 1292.7 MiB (ctx KV 993.0 + recurrent 299.7)
+  total KV alloc (c=16):         20683.6 MiB = 21.04% of card
+  prefix duplication (c-1 copies): 14443.4 MiB = 14.69% of card
+  ladder slack (alloc-used):        300.4 MiB =  0.31% of card
+
+--- k27 c=32 / 32k prefix / right-sized / 96GB: prefix=32000 tail=120 gen=256 ctx_alloc=33000 c=32 card=98304 MiB
+  per-session alloc: 1292.7 MiB (ctx KV 993.0 + recurrent 299.7)
+  total KV alloc (c=32):         41367.1 MiB = 42.08% of card
+  prefix duplication (c-1 copies): 29849.6 MiB = 30.36% of card
+  ladder slack (alloc-used):        600.8 MiB =  0.61% of card
+

@@ -1,0 +1,92 @@
+[server] starting; models config = [("stress", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "stress" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] stress: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "stress": 33 layers, eos=248046
+[worker] stress: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] stress: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["stress"]
+[server] listening on http://127.0.0.1:8179
+[meter] admit id=chatcmpl-451e80df1d4e733622ca532334a9c657 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-bd54a8e65e160c463d4da8ca2acfa0cd tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d3c3ebc03a5307eec1f776e53fdc7e5e tenant=default lane=interactive model="stress"
+[worker] observed session VRAM cost for "stress": 201MB (admission gate = 2x)
+[meter] admit id=chatcmpl-7bf5a35c70d6ee0039c741257b81ec6d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-cf7f9eaf114c6eb7692410f754c60f3d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c92408a4c5a9b5ab265fc828b7e5f79b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-eee8e915f6e79b989a5dba26df3a0dbe tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-27ce11eb967b91081ee8fa4fc5591574 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-1a338290f0f5b4a058dbbb6a9c7314eb tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d1cd44b8c18b182ad5b79dee699f3659 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-244edabbe1b595d79829c3cd83b9af09 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-fac56263e6bf379ce055efc1c7a974b1 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-188497d7643ae8a0b0df459b5ebfaaa4 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-cb755c20e866bcd45f2cd0a98b9cd0fb tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-55b9245691180d1594aedc1d5f40a740 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-55a22ee6ca97445f3c9327a18f86d515 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-bdde09647d2a93995bbb412956c806a7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c020a0ad094a4bd3d796feb98520b35a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-7c8353b5b0ebaef121952e0efb947989 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b023491b5f6120c804e2aba4248d8d41 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-244501730e4841cd7c5ada027fb856dd tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-cb4195df692e7c4da338a2a8a9185265 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a9f199bf27f680397a10fea50ba199d0 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-86cb4debc8af558358ab07586c6aa90e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c80f8dd6714968afbda043e89a149eab tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-bd13d1a52fbfcaf2c125554c522932b2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a1322f12579e1f59ba951a22d5125aa2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-f977cb5cb29ec4683f54f377190a5484 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-98fc2c7cc59a2bbfccb8240518aa40c5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-9cc1b2e68d81b4b235f77b4fc2901ce5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-00d9b5b074f3449ba2e434e7c8b52ebe tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-8afc7db53f3bed2b7822a718aba1b3da tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-303b0af2c7b216a435e58795d08530e0 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6b78bf6c9179b487a223b9e5d3ab5524 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-253b54523d68e70279f202bfb2cd019c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-51ca1376acaadcf04380bb4fc692322f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-5bbb96d0311ca3cce6f5b356c2569d72 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-9f5b2aceaf9eb926a20c3e27ba538d89 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-8d2c56958cc49864f1e22d3781eec07c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-520d2e0f6d88f03afd0e076d3b1fbd28 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-cc2f64f62e8384fbcbfb7f0a3ac1360f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b5fff071f69fd376e89d5fa3651dd1b3 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-365c8f1d1a5319f0760c9d6ba3e7fe43 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-283b4c6e0f5c900d5794945f99492075 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a21131db6ba0ef1fd15ca3e64cf4a664 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6ddf8b04a7367131932075bf1f25f1dc tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-48efe9dde07dbc9965f0b06a014275ca tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-2c31cbbf40e099b47fde2f771948dc3a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-831d7badf011af47350b93c7eba9a06a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-1c24579edc87343be376cd0a5f1d5b91 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-37ee3f68ced2f775b4219c6d226e46cf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-87aa3002161d204e79bcb88ce1b17cf3 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a3b0081248517e0dc46551840103ff5c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-40a7715c5e545501db1048c2d72a3738 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-eef3acafe74275682b6fe3544969aed6 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-3d7df1ca1537ad3143fc5c224be8bac8 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-65b3d599f97d3258fb6b89165a16efce tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-527fbb683cbaea2acab615ab7cb8f546 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-eb07b9b9eee0ad0076963cc26015fc97 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d0d65a38489f1c74b8b3fe8db6151a2d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-38a2dc740bcf4cfbe280e267712b3060 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e85fbd5afd4e5ec7cbace04222deabbf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e47a4e71f0744f09bf3d44082ef282d2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-2e88e9c55999af06355b7710109a268e tenant=default lane=interactive model="stress"
+[spec-acc] ctx=55 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=57 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=54 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=56 burst=18/39 cum=18/39=0.462
+[spec-acc] ctx=53 burst=22/27 cum=22/27=0.815
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

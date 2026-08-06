@@ -1,0 +1,70 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8178
+[meter] admit id=chatcmpl-50baeb99cdba716c64f7acb21ddff86e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d0ccf8cdb1d2e7749bf81cbf41ec7f4f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b9fd3a0544649c8a5bf870ec9bd1bd90 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4e3d48ac08d9fa29e4fb245067c82268 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-38ab98461740cac31b93f1679b9d11ce tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b9362b56f4934846c1db5ae215c7e76c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-ebb3a41a3b6b0a1a8af5bcd2abb7a797 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b8c5fde50896cb711f6175f0d5c8ffba tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 235MB (admission gate = 2x)
+[spec-acc] ctx=3623 burst=24/30 cum=24/30=0.800
+[spec-acc] ctx=3623 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=3623 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=3623 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=3623 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=3624 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=3624 burst=20/33 cum=20/33=0.606
+[spec-acc] ctx=3624 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=3656 burst=18/42 cum=39/72=0.542
+[spec-acc] ctx=3656 burst=19/39 cum=39/72=0.542
+[spec-acc] ctx=3656 burst=19/39 cum=40/69=0.580
+[spec-acc] ctx=3658 burst=20/39 cum=44/69=0.638
+[spec-acc] ctx=3655 burst=20/33 cum=41/63=0.651
+[spec-acc] ctx=3657 burst=18/39 cum=41/69=0.594
+[spec-acc] ctx=3657 burst=23/33 cum=46/63=0.730
+[spec-acc] ctx=3656 burst=16/45 cum=39/72=0.542
+[spec-acc] ctx=3689 burst=25/27 cum=64/99=0.646
+[spec-acc] ctx=3689 burst=23/24 cum=62/96=0.646
+[spec-acc] ctx=3689 burst=21/33 cum=61/102=0.598
+[spec-acc] ctx=3692 burst=22/27 cum=66/96=0.688
+[spec-acc] ctx=3687 burst=22/27 cum=63/90=0.700
+[spec-acc] ctx=3689 burst=21/30 cum=62/99=0.626
+[spec-acc] ctx=3692 burst=22/33 cum=68/96=0.708
+[spec-acc] ctx=3688 burst=21/30 cum=60/102=0.588
+[spec-acc] ctx=3724 burst=23/27 cum=87/126=0.690
+[spec-acc] ctx=3721 burst=25/27 cum=87/123=0.707
+[spec-acc] ctx=3722 burst=21/36 cum=82/138=0.594
+[spec-acc] ctx=3724 burst=21/39 cum=87/135=0.644
+[spec-acc] ctx=3719 burst=23/27 cum=86/117=0.735
+[spec-acc] ctx=3721 burst=23/27 cum=85/126=0.675
+[spec-acc] ctx=3726 burst=24/24 cum=92/120=0.767
+[spec-acc] ctx=3720 burst=23/24 cum=83/126=0.659
+[spec-acc] ctx=3757 burst=22/33 cum=109/159=0.686
+[spec-acc] ctx=3756 burst=22/27 cum=109/150=0.727
+[spec-acc] ctx=3756 burst=23/27 cum=105/165=0.636
+[spec-acc] ctx=3759 burst=23/27 cum=110/162=0.679
+[spec-acc] ctx=3752 burst=22/27 cum=108/144=0.750
+[spec-acc] ctx=3754 burst=24/24 cum=109/150=0.727
+[spec-acc] ctx=3759 burst=22/27 cum=114/147=0.776
+[spec-acc] ctx=3752 burst=22/27 cum=105/153=0.686
+[spec-acc] ctx=3791 burst=16/21 cum=125/180=0.694
+[spec-acc] ctx=3788 burst=20/24 cum=129/174=0.741
+[spec-acc] ctx=3789 burst=18/24 cum=123/189=0.651
+[spec-acc] ctx=3792 burst=17/24 cum=127/186=0.683
+[spec-acc] ctx=3784 burst=23/27 cum=131/171=0.766
+[spec-acc] ctx=3787 burst=18/27 cum=127/177=0.718
+[spec-acc] ctx=3791 burst=16/21 cum=130/168=0.774
+[spec-acc] ctx=3784 burst=22/24 cum=127/177=0.718
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
