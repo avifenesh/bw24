@@ -59,7 +59,18 @@
 //! readback stream) drains the last stage, whose TX-wait chain transitively drains all.
 //!
 //! Scope: plain eager decode only (generic arm N-stage; gemma4 arm 2-stage). NOT wired:
-//! batch/dc/graph/spec loops and the gemma4-E4B eager arm (`warn_unwired_once` fires).
+//! batch/dc/graph/spec loops and the gemma4-E4B eager arm.
+//!
+//! CORRECTION (pp2-hardening 2026-08-06): this header used to add "(`warn_unwired_once`
+//! fires)" to that list, which was wrong. `warn_unwired_once` has exactly two call sites
+//! and BOTH are gemma4-specific (decode.rs, hybrid_forward.rs) — the batch/dc/graph/spec
+//! loops never warned. Worse, the batched loop did not merely run unsplit: it walked the
+//! whole trunk on the primary stream and, under a sharded cross-device placement,
+//! peer-read every remote stage's weights each step — 28x slower at B=1 with all three
+//! `decode-batch-gate` gates PASSING (peer reads are byte-exact, so only perf broke).
+//! `decode_step_batch` now FAILS CLOSED in that regime via `pp_sharded_cross_device()`
+//! (`MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` = measurement override). "Unwired" for dc/graph/spec
+//! still means "runs unsplit, silently" — audit each before trusting it on a pair.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -188,6 +199,37 @@ pub fn pp_multi_stream_same_device() -> bool {
             v.sort_unstable();
             v.dedup();
             v.len() < n // repeated device = shared-device streams
+        }
+    }
+}
+
+/// True iff the ppN door is open AND the placement spans 2+ DISTINCT devices AND the
+/// per-stage sharded loader is on — i.e. some layers' weights live on a device other than
+/// the primary. Any path that walks the WHOLE trunk on one stream in this regime reads
+/// those weights over PCIe every step. Env-only read (callable pre-runtime).
+///
+/// Measured cost of doing that (pp2-hardening 2026-08-06, 2x RTX PRO 6000, PCIe Gen5 x16
+/// P2P, decode-batch-bench q9, N=5 interleaved, `research/pp2-hardening-20260806`):
+/// **B=1 7.4 vs 208.9 tok/s (28x), B=4 29.8 vs 491.3 (16.5x), B=8 47.4 vs 657.0 (13.9x)**.
+/// The same sweep with `MEMRA_PP_SHARD=0` (weights all home) returns 178.5/491.1/656.6 —
+/// identical to the single-device door-open arm — so the entire cliff is the peer read,
+/// not the door and not the placement plumbing. Exactness is NOT the issue: peer reads
+/// return identical bytes and every `decode-batch-gate` gate PASSED on this config, which
+/// is precisely why it needs a refusal rather than a gate.
+pub fn pp_sharded_cross_device() -> bool {
+    let stages_open = std::env::var("MEMRA_PP_STAGES")
+        .map(|v| v.parse::<usize>().map(|n| n >= 2).unwrap_or(false))
+        .unwrap_or(false);
+    if !stages_open || pp_shard_off() {
+        return false;
+    }
+    match pp2_devices_env() {
+        None => false, // no placement: every stage is the primary device, nothing remote
+        Some(s) => {
+            let mut v: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+            v.sort_unstable();
+            v.dedup();
+            v.len() >= 2
         }
     }
 }

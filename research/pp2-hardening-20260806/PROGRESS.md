@@ -389,3 +389,109 @@ this pair over PP-2). Rules honored on my side:
   grew to 54 GB en route to ~105 GB. Headroom is fine for both lanes (my models total 21 GB
   and are already staged), but a *third* lane staging a 100 GB-class artifact would not fit.
   Flagged per directive; not blocking.
+
+---
+
+## Item 4: the refusal — **SHIPPED with a gate** (code change, not a recommendation)
+
+`decode_step_batch` now **fails closed** when the ppN door is open across 2+ distinct
+devices with the sharded loader on. Three pieces:
+
+- **`pp.rs::pp_sharded_cross_device()`** — env-only predicate (open door AND `MEMRA_PP_SHARD`
+  not 0 AND `MEMRA_PP_DEVICES` naming 2+ distinct devices), i.e. exactly "some layers' weights
+  live on a device other than the primary". Deliberately NOT the same predicate as
+  `pp_multi_stream_same_device()`: that one guards a *race*, this one guards a *cliff*, and
+  their true-sets are near-complements (`0,0` is unsafe for the pipelined arm and fine here;
+  `0,1` is the reverse).
+- **`decode_batch.rs`** — refusal at the top of `decode_step_batch_sampled_lean_masked`, with
+  the measured numbers, the three escapes, and the receipt path inline in the `Err` string, so
+  an operator who trips it does not need to find this file.
+  `MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` overrides for measurement (the batchcost arm above must
+  stay reproducible).
+- **`pp.rs` module header + `docs/FLAGS.md`** — the "`warn_unwired_once` fires" claim for
+  batch/dc/graph/spec is corrected in place, since that sentence is what made the fail-open
+  behavior look accounted-for.
+
+### Gate battery for the refusal (`logs/refusal/`, driver `run-pp2-refusal.sh`)
+
+Both halves gated: it fires where it must, and it does not fire anywhere else.
+
+| # | Config | Expected | Result |
+|---|---|---|---|
+| 1 | door SHUT | PASS | **gate1+2+3 PASS**, 0/6 early draws |
+| 2 | door OPEN `stages=2`, no placement (singledev) | PASS — not cross-device | **gate1+2+3 PASS** |
+| 3 | door OPEN `stages=2 devices=0,1` SHARDED | **REFUSE** | **exit=1, full `Err` text** |
+| 4 | #3 + `MEMRA_PP_SHARD=0` (documented escape) | PASS | **gate1+2+3 PASS** |
+| 5 | #3 + `MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` (override) | PASS | **gate1+2+3 PASS** |
+| 6 | door OPEN `devices=0,0` (repeated device) | PASS — same-device, nothing remote | **gate1+2+3 PASS** |
+| 7 | regression: `ppn-gate` N=2 dev01 (the eager pp arm) | untouched | **PASS BIT-IDENTICAL both arms**, 48 steps |
+| 8 | regression: `kernel-check` | untouched | **ALL GREEN**, 0 FAIL lines |
+
+Arm 6 is the one that would catch an over-broad predicate (`0,0` names two devices textually
+but places nothing remotely); arm 5 keeps this lane's own measurement reproducible; arm 7
+proves the change did not leak into the arm that actually works.
+
+**What this does and does not fix.** It converts a silent 28x into a loud error with three
+named escapes — that is the whole claim. It does **not** make batched decode work over PP-2;
+that remains the weeks-class item below. The value is that a serving deployment can no longer
+reach 3.5% of baseline with a green battery, which is the failure mode this box was rented to
+find.
+
+---
+
+## What is left of the PP-2 serving bill
+
+Ordered by what a serving deployment on this pair actually needs:
+
+1. **Stage-split the batched trunk** (weeks-class, the real item). `decode_step_batch`'s body
+   is one `lo=0..n_layers` loop over pointer tables (`lin_base`/`attn_base`, built once for all
+   B across all layers, `decode_batch.rs:447-500`) plus a batched `pos_d`. Splitting it needs
+   per-stage pointer tables, per-stage `pos_d`, an `[B, n_embd]` boundary (16 KB x B — where
+   Phase 0's 105 GB/s bidir number starts to matter, and where the P2P-vs-bounce gap becomes
+   structural rather than noise), and per-stage engines threaded through ~15 `e.` call sites.
+   **First increment: extract a `decode_batch_layers(e, .., lo, hi, ..)` seam.** The eager arm
+   had `decode_layers_eager` to reuse; the batched body has no equivalent, and every later
+   increment depends on that extraction.
+2. **Root-cause the shared-Engine scratch race** — the only thing between the deferred arm and
+   a serving default. Named surface: `Engine`'s lazily-grown stable-pointer pools
+   (`fa_part_pool`, `argmax_partials`, `fa_vf16_scratch`) are single-stream-safe by design and
+   the pipelined arm runs 2+ stage streams through them. Either isolate per stage-stream or
+   prove they cannot alias. This lane refuted the H100 *rate* (20/20 forced-clean, p<0.001) but
+   an unsound surface is not a fixed one, and 80 runs cannot see a 0.5% event.
+3. **Spec/MTP over PP-2** — brief, not built (Item 5 below). This is the arm that *monetizes*
+   the 1.905x, because draft tokens are the legitimate way to fill the deferred window in
+   single-stream serving.
+4. **dc/graph over PP-2** — both still "run unsplit, silently", same class of bug the batch
+   path had. Neither is audited. `decode_step_dc` and the graph-capture path should get the
+   same fail-closed treatment (cheap) before anyone measures them on a pair.
+5. **`build.rs` nvcc resolution** — resolve from `PATH`/`CUDA_HOME` before the pinned
+   `/usr/local/cuda-13.1`. Cost me the first build on this box; will cost the next lane too.
+
+### Item 5: spec/MTP over PP-2 — the brief (not built, per "don't sink days")
+
+Why it is the highest-value remaining perf item and not just another wiring job: the deferred
+window's 1.905x needs token t+1 enqueued before token t's logits land, which plain
+autoregressive decode structurally cannot do — but speculative decode **already has** the next
+K tokens (the draft proposes them). So spec-over-PP2 is the one arm where the measured 1.9x is
+reachable in real single-stream serving. The artifact already carries an MTP head.
+
+Shape of the work, in the order it has to happen:
+
+1. **Draft placement decision.** The MTP/NextN layers map to the LAST stage today
+   (`pp::new_cache`'s trailing-layer rule). For spec that means the draft runs on stage N-1
+   while the verify trunk starts on stage 0 — a full boundary hop per draft token, but also
+   natural draft/verify overlap on two devices. The alternative (draft on stage 0) makes
+   drafting local but serializes against the trunk. **Neither is measured; this is the
+   experiment, not a foregone conclusion.**
+2. **Verify is a batched forward of K+1 tokens** — so it lands on item 1 above. Spec-over-PP2
+   cannot ship before the batched trunk is stage-split. That ordering is the point of this
+   brief: item 1 is not optional infrastructure, it is spec's prerequisite.
+3. **Rollback/accept state crosses stages.** Accept length is decided at the last stage (where
+   the lm head is) but rollback touches every stage's KV. Today's spec loop assumes one engine
+   owns all caches. Needs a stage-fan-out accept/rollback, event-ordered like `tx`/`rx`.
+4. **Gate before perf, as always:** `run-spec` K=1..8 self-consistency over the door, plus a
+   PP-2-vs-1-GPU accepted-token-stream identity check. A spec arm that changes acceptance is
+   changing math, not scheduling.
+
+Estimated shape: item 1 is the bulk; given a `decode_batch_layers` seam, spec's own PP wiring
+is days, not weeks. Not started this lane.
