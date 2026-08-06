@@ -1,0 +1,2 @@
+index, memory.used [MiB], temperature.gpu, clocks.current.sm [MHz], power.draw [W]
+0, 368 MiB, 56, 180 MHz, 12.03 W
