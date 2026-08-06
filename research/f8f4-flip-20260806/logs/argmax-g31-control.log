@@ -1,0 +1,27 @@
+[start] 2026-08-06T17:03:17+03:00
+[commit] 1dd58cc8275fad445f611530c303b30f607af994
+[model] /data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf
+[ngen] 20
+[prompt] <ids file: /home/avifenesh/projects/wt-f8f4flip/research/gemma4-bringup/e4b-chat-watercycle-ids.txt>
+[extra] <none>
+[gpu] 1852 MHz, 58
+=== ARM OFF 1852 MHz, 58, 0 %
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+loaded gemma4 (60 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=818  decode argmax=818  logit maxdiff=8.285e-1  MATCH
+batched-prime argmax=818  tokenwise argmax=818  logit maxdiff=8.285e-1  MATCH
+prefill 19 tok in 0.0789s = 240.8 tok/s (pp19)
+generated 20 tokens in 0.528s = 37.88 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.079s) [stop: MaxNew]
+tokens: [818, 1813, 8881, 563, 506, 8906, 1657, 684, 837, 1813, 12489, 699, 506, 10824, 236858, 236751, 3761, 531, 506, 11661]
+[rc=0] ARM OFF done
+=== ARM ON 1800 MHz, 61, 0 %
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+loaded gemma4 (60 trunk layers; optional MTP skipped)
+prompt tokens: [2, 105, 2364, 107, 155122, 506, 1813, 8881, 21485, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+prefill argmax=818  decode argmax=818  logit maxdiff=8.285e-1  MATCH
+batched-prime argmax=818  tokenwise argmax=818  logit maxdiff=8.285e-1  MATCH
+prefill 19 tok in 0.0789s = 240.7 tok/s (pp19)
+generated 20 tokens in 0.526s = 38.02 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.079s) [stop: MaxNew]
+tokens: [818, 1813, 8881, 563, 506, 8906, 1657, 684, 837, 1813, 12489, 699, 506, 10824, 236858, 236751, 3761, 531, 506, 11661]
+[rc=0] ARM ON done

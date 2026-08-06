@@ -1,0 +1,10 @@
+model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+prompt=/home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/pp512.txt
+
+ARM OFF: N=15  median 4438.1  [4435.5 .. 4441.5]  spread 0.14%
+  clocks 1852-1852 MHz  temp 54-55 C  rc=[0, 0, 0]
+ARM ON: N=15  median 5097.2  [5008.8 .. 5100.4]  spread 1.80%
+  clocks 1792-1852 MHz  temp 53-60 C  rc=[0, 0, 0]
+
+RATIO ON/OFF = 1.1485x   ranges DO NOT OVERLAP
+appended 1 row -> research/f8f4-flip-20260806/RESULTS.jsonl

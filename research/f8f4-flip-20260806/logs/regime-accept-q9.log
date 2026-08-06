@@ -1,0 +1,68 @@
+[start] 2026-08-06T17:24:28+03:00
+[commit] ae03a145be44505f95fc9768361217665819b2b2
+[model] /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[draft] /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf (REGIME draft — replaces the embedded MTP head)
+[bin] /home/avifenesh/projects/wt-f8f4flip/target/release/memra-server
+[ctx] 16384
+[spec K] 3
+[port] 8117
+[prompts] /home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/p2-code-medium.txt /home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/p1-code-short.txt /home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/p3-agentic-long-v3.txt
+[proto] one server per arm, temperature 0 (greedy), max_tokens 128, serial OFF/ON/OFF
+[gpu] 1852 MHz, 56
+=== PASS 1 ARM OFF  2026-08-06T17:24:28+03:00  1852 MHz, 56
+--- prompt p2-code-medium.txt
+USAGE {"prompt_tokens": 1845, "completion_tokens": 129, "elapsed_s": 1.083938911} SPEC {"rounds": 49, "drafted": 147, "accepted": 79, "acceptance_rate": 0.5374149659863946}
+TEXT_SHA bd392e248f7d13dc
+TEXT_HEAD '\n\nHere is the refactored code with graceful shutdown implemented.\n\n### Key Changes\n1.  **Signal Handling**: Added `tokio'
+[curl rc=0]
+--- prompt p1-code-short.txt
+USAGE {"prompt_tokens": 28, "completion_tokens": 131, "elapsed_s": 0.584434245} SPEC {"rounds": 41, "drafted": 123, "accepted": 89, "acceptance_rate": 0.7235772357723578}
+TEXT_SHA 27c6f8ab6e247ec6
+TEXT_HEAD '"""\n\nfrom typing import List, Optional, Any\n\n\nclass Node:\n    def __init__(self, data: Any):\n        self.data = data\n  '
+[curl rc=0]
+--- prompt p3-agentic-long-v3.txt
+USAGE {"prompt_tokens": 5411, "completion_tokens": 128, "elapsed_s": 1.925906356} SPEC {"rounds": 46, "drafted": 138, "accepted": 81, "acceptance_rate": 0.5869565217391305}
+TEXT_SHA 7dda5f07814d499e
+TEXT_HEAD '\n\n=== TASK ===\nDiagnose the crash. Walk through the likely cause given the selector registration log right before it, th'
+[curl rc=0]
+=== metrics ARM OFF
+{"admitted":3,"completed":3,"tokens_out":0,"step_p50_ms":0.0,"step_p99_ms":0.0,"prompt_tokens_in":7284,"cached_tokens_in":0,"prefix_cache_hits":0,"prefix_cache_entries":0,"prefix_cache_bytes":0,"spec":{"m":{"rounds":136,"drafted":408,"accepted":249,"acceptance_rate":0.6102941176470589,"tokens_per_round":2.8308823529411766,"pos_drafted":[136,136,136],"pos_accepted":[111,82,56],"accept_rate_per_pos":[0.8161764705882353,0.6029411764705882,0.4117647058823529]}}}
+[done] pass 1 ARM OFF
+=== PASS 2 ARM ON  2026-08-06T17:24:37+03:00  1852 MHz, 59
+--- prompt p2-code-medium.txt
+USAGE {"prompt_tokens": 1845, "completion_tokens": 131, "elapsed_s": 1.045410953} SPEC {"rounds": 50, "drafted": 150, "accepted": 80, "acceptance_rate": 0.5333333333333333}
+TEXT_SHA a21ca3d81b889946
+TEXT_HEAD '\n\nHere is the refactored code with graceful shutdown implemented.\n\n### Key Changes\n1.  **`shutdown_tx`**: Added a `tokio'
+[curl rc=0]
+--- prompt p1-code-short.txt
+USAGE {"prompt_tokens": 28, "completion_tokens": 128, "elapsed_s": 0.612594949} SPEC {"rounds": 44, "drafted": 132, "accepted": 83, "acceptance_rate": 0.6287878787878788}
+TEXT_SHA 648971afce2f0a10
+TEXT_HEAD '"""\n\nfrom typing import List, Optional, Any\n\n\nclass Node:\n    def __init__(self, data: Any):\n        self.data = data\n  '
+[curl rc=0]
+--- prompt p3-agentic-long-v3.txt
+USAGE {"prompt_tokens": 5411, "completion_tokens": 129, "elapsed_s": 1.776592688} SPEC {"rounds": 46, "drafted": 138, "accepted": 82, "acceptance_rate": 0.5942028985507246}
+TEXT_SHA f216c55af3916a07
+TEXT_HEAD '\n\n=== TASK ===\nDiagnose the crash. Walk through the likely cause given the selector registration log right before it, th'
+[curl rc=0]
+=== metrics ARM ON
+{"admitted":3,"completed":3,"tokens_out":0,"step_p50_ms":0.0,"step_p99_ms":0.0,"prompt_tokens_in":7284,"cached_tokens_in":0,"prefix_cache_hits":0,"prefix_cache_entries":0,"prefix_cache_bytes":0,"spec":{"m":{"rounds":140,"drafted":420,"accepted":245,"acceptance_rate":0.5833333333333334,"tokens_per_round":2.75,"pos_drafted":[140,140,140],"pos_accepted":[107,81,57],"accept_rate_per_pos":[0.7642857142857142,0.5785714285714286,0.40714285714285714]}}}
+[done] pass 2 ARM ON
+=== PASS 3 ARM OFF2  2026-08-06T17:24:47+03:00  1852 MHz, 60
+--- prompt p2-code-medium.txt
+USAGE {"prompt_tokens": 1845, "completion_tokens": 129, "elapsed_s": 1.087544209} SPEC {"rounds": 49, "drafted": 147, "accepted": 79, "acceptance_rate": 0.5374149659863946}
+TEXT_SHA bd392e248f7d13dc
+TEXT_HEAD '\n\nHere is the refactored code with graceful shutdown implemented.\n\n### Key Changes\n1.  **Signal Handling**: Added `tokio'
+[curl rc=0]
+--- prompt p1-code-short.txt
+USAGE {"prompt_tokens": 28, "completion_tokens": 131, "elapsed_s": 0.583740622} SPEC {"rounds": 41, "drafted": 123, "accepted": 89, "acceptance_rate": 0.7235772357723578}
+TEXT_SHA 27c6f8ab6e247ec6
+TEXT_HEAD '"""\n\nfrom typing import List, Optional, Any\n\n\nclass Node:\n    def __init__(self, data: Any):\n        self.data = data\n  '
+[curl rc=0]
+--- prompt p3-agentic-long-v3.txt
+USAGE {"prompt_tokens": 5411, "completion_tokens": 128, "elapsed_s": 1.923908268} SPEC {"rounds": 46, "drafted": 138, "accepted": 81, "acceptance_rate": 0.5869565217391305}
+TEXT_SHA 7dda5f07814d499e
+TEXT_HEAD '\n\n=== TASK ===\nDiagnose the crash. Walk through the likely cause given the selector registration log right before it, th'
+[curl rc=0]
+=== metrics ARM OFF2
+{"admitted":3,"completed":3,"tokens_out":0,"step_p50_ms":0.0,"step_p99_ms":0.0,"prompt_tokens_in":7284,"cached_tokens_in":0,"prefix_cache_hits":0,"prefix_cache_entries":0,"prefix_cache_bytes":0,"spec":{"m":{"rounds":136,"drafted":408,"accepted":249,"acceptance_rate":0.6102941176470589,"tokens_per_round":2.8308823529411766,"pos_drafted":[136,136,136],"pos_accepted":[111,82,56],"accept_rate_per_pos":[0.8161764705882353,0.6029411764705882,0.4117647058823529]}}}
+[done] pass 3 ARM OFF2

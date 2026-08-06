@@ -1,0 +1,68 @@
+[start] 2026-08-06T17:21:54+03:00
+[commit] ae03a145be44505f95fc9768361217665819b2b2
+[model] /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[draft] /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf (REGIME draft — replaces the embedded MTP head)
+[bin] /home/avifenesh/projects/wt-f8f4flip/target/release/memra-server
+[ctx] 16384
+[spec K] 3
+[port] 8117
+[prompts] /home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/p2-code-medium.txt /home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/p1-code-short.txt /home/avifenesh/projects/wt-f8f4flip/research/e2e/prompts/p3-agentic-long-v3.txt
+[proto] one server per arm, temperature 0 (greedy), max_tokens 128, serial OFF/ON/OFF
+[gpu] 1852 MHz, 56
+=== PASS 1 ARM OFF  2026-08-06T17:21:54+03:00  1852 MHz, 56
+--- prompt p2-code-medium.txt
+USAGE {"prompt_tokens": 1845, "completion_tokens": 128, "elapsed_s": 2.819672979} SPEC {"rounds": 42, "drafted": 126, "accepted": 85, "acceptance_rate": 0.6746031746031746}
+TEXT_SHA fddd52f56f8e0f0f
+TEXT_HEAD "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Goal**: The user wants to refactor a Rust HTTP server (using"
+[curl rc=0]
+--- prompt p1-code-short.txt
+USAGE {"prompt_tokens": 28, "completion_tokens": 128, "elapsed_s": 1.5058823719999999} SPEC {"rounds": 42, "drafted": 126, "accepted": 85, "acceptance_rate": 0.6746031746031746}
+TEXT_SHA 8fcb13e8f3347340
+TEXT_HEAD 'The function should return a class that can be instantiated and used to perform the operations.\n\n<think>\n\n</think>\n\n```p'
+[curl rc=0]
+--- prompt p3-agentic-long-v3.txt
+USAGE {"prompt_tokens": 5411, "completion_tokens": 131, "elapsed_s": 5.575153474} SPEC {"rounds": 39, "drafted": 117, "accepted": 91, "acceptance_rate": 0.7777777777777778}
+TEXT_SHA 0905f3fc0220917e
+TEXT_HEAD "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze the User Input:**\n   - **Files Provided:** `Lib/selectors.py` and `L"
+[curl rc=0]
+=== metrics ARM OFF
+{"admitted":2,"completed":2,"tokens_out":0,"step_p50_ms":0.0,"step_p99_ms":0.0,"prompt_tokens_in":1873,"cached_tokens_in":0,"prefix_cache_hits":0,"prefix_cache_entries":0,"prefix_cache_bytes":0,"spec":{"q27":{"rounds":84,"drafted":252,"accepted":170,"acceptance_rate":0.6746031746031746,"tokens_per_round":3.0238095238095237,"pos_drafted":[84,84,84],"pos_accepted":[71,59,40],"accept_rate_per_pos":[0.8452380952380952,0.7023809523809523,0.47619047619047616]}}}
+[done] pass 1 ARM OFF
+=== PASS 2 ARM ON  2026-08-06T17:22:16+03:00  1852 MHz, 62
+--- prompt p2-code-medium.txt
+USAGE {"prompt_tokens": 1845, "completion_tokens": 128, "elapsed_s": 2.585321742} SPEC {"rounds": 42, "drafted": 126, "accepted": 85, "acceptance_rate": 0.6746031746031746}
+TEXT_SHA fddd52f56f8e0f0f
+TEXT_HEAD "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Goal**: The user wants to refactor a Rust HTTP server (using"
+[curl rc=0]
+--- prompt p1-code-short.txt
+USAGE {"prompt_tokens": 28, "completion_tokens": 129, "elapsed_s": 1.513475123} SPEC {"rounds": 43, "drafted": 129, "accepted": 85, "acceptance_rate": 0.6589147286821705}
+TEXT_SHA 33d69474edad2d10
+TEXT_HEAD 'The function should return a class that can be instantiated and used to perform the operations.\n\n<think>\n\n</think>\n\n```p'
+[curl rc=0]
+--- prompt p3-agentic-long-v3.txt
+USAGE {"prompt_tokens": 5411, "completion_tokens": 131, "elapsed_s": 4.854793541} SPEC {"rounds": 38, "drafted": 114, "accepted": 92, "acceptance_rate": 0.8070175438596491}
+TEXT_SHA 0905f3fc0220917e
+TEXT_HEAD "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze the User Input:**\n   - **Files Provided:** `Lib/selectors.py` and `L"
+[curl rc=0]
+=== metrics ARM ON
+{"admitted":2,"completed":2,"tokens_out":0,"step_p50_ms":0.0,"step_p99_ms":0.0,"prompt_tokens_in":1873,"cached_tokens_in":0,"prefix_cache_hits":0,"prefix_cache_entries":0,"prefix_cache_bytes":0,"spec":{"q27":{"rounds":85,"drafted":255,"accepted":170,"acceptance_rate":0.6666666666666666,"tokens_per_round":3.0,"pos_drafted":[85,85,85],"pos_accepted":[71,59,40],"accept_rate_per_pos":[0.8352941176470589,0.6941176470588235,0.47058823529411764]}}}
+[done] pass 2 ARM ON
+=== PASS 3 ARM OFF2  2026-08-06T17:22:37+03:00  1852 MHz, 63
+--- prompt p2-code-medium.txt
+USAGE {"prompt_tokens": 1845, "completion_tokens": 128, "elapsed_s": 2.823687786} SPEC {"rounds": 42, "drafted": 126, "accepted": 85, "acceptance_rate": 0.6746031746031746}
+TEXT_SHA fddd52f56f8e0f0f
+TEXT_HEAD "\n\n<think>\nHere's a thinking process:\n\n1.  **Understand User Goal**: The user wants to refactor a Rust HTTP server (using"
+[curl rc=0]
+--- prompt p1-code-short.txt
+USAGE {"prompt_tokens": 28, "completion_tokens": 128, "elapsed_s": 1.500056681} SPEC {"rounds": 42, "drafted": 126, "accepted": 85, "acceptance_rate": 0.6746031746031746}
+TEXT_SHA 8fcb13e8f3347340
+TEXT_HEAD 'The function should return a class that can be instantiated and used to perform the operations.\n\n<think>\n\n</think>\n\n```p'
+[curl rc=0]
+--- prompt p3-agentic-long-v3.txt
+USAGE {"prompt_tokens": 5411, "completion_tokens": 131, "elapsed_s": 5.570998343} SPEC {"rounds": 39, "drafted": 117, "accepted": 91, "acceptance_rate": 0.7777777777777778}
+TEXT_SHA 0905f3fc0220917e
+TEXT_HEAD "\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze the User Input:**\n   - **Files Provided:** `Lib/selectors.py` and `L"
+[curl rc=0]
+=== metrics ARM OFF2
+{"admitted":2,"completed":2,"tokens_out":0,"step_p50_ms":0.0,"step_p99_ms":0.0,"prompt_tokens_in":1873,"cached_tokens_in":0,"prefix_cache_hits":0,"prefix_cache_entries":0,"prefix_cache_bytes":0,"spec":{"q27":{"rounds":84,"drafted":252,"accepted":170,"acceptance_rate":0.6746031746031746,"tokens_per_round":3.0238095238095237,"pos_drafted":[84,84,84],"pos_accepted":[71,59,40],"accept_rate_per_pos":[0.8452380952380952,0.7023809523809523,0.47619047619047616]}}}
+[done] pass 3 ARM OFF2

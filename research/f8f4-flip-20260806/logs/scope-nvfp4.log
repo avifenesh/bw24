@@ -1,0 +1,35 @@
+/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+  tensors=866 nvfp4=504 [F8F4-REACHABLE]
+  NVFP4=504 F32=360 Q5_K=2
+  e.g. blk.0.attn_gate.weight[5120, 6144], blk.0.attn_qkv.weight[5120, 10240], blk.0.ffn_down.weight[17408, 5120], blk.0.ffn_gate.weight[5120, 17408]
+/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+  tensors=668 nvfp4=114 [F8F4-REACHABLE]
+  F32=410 NVFP4=114 Q8_0=50 Q5_K=44 Q4_K=43 BF16=6 Q6_K=1
+  e.g. token_embd.weight[4096, 248320], blk.0.ffn_down.weight[12288, 4096], blk.0.ffn_gate.weight[4096, 12288], blk.0.ffn_up.weight[4096, 12288]
+/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+  tensors=753 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  F32=368 Q8_0=259 IQ3_S=78 IQ4_XS=39 Q6_K=4 Q3_K=2 BF16=2 Q4_K=1
+/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf
+  tensors=833 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  F32=422 Q4_0=410 Q6_K=1
+/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+  tensors=667 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  F32=338 Q4_0=328 Q6_K=1
+/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf
+  tensors=666 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  Q4_0=342 F32=321 Q6_K=2 F16=1
+/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf
+  tensors=658 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  F32=392 Q4_0=265 Q6_K=1
+/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf
+  tensors=733 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  F32=361 Q8_0=251 IQ3_S=78 IQ4_XS=39 Q6_K=4
+/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
+  tensors=427 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  Q8_0=250 F32=177
+/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf
+  tensors=733 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  Q4_K=371 F32=301 Q6_K=61
+/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf
+  tensors=733 nvfp4=0 [no-nvfp4 (seam unreachable)]
+  F32=361 IQ4_XS=262 Q8_0=94 Q5_K=10 Q6_K=6

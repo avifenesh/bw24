@@ -1,0 +1,54 @@
+[start] 2026-08-06T17:18:43+03:00
+[commit] ae03a145be44505f95fc9768361217665819b2b2
+[gate] tools/chunk-invariance-gate.sh (probe target/release/concat-prime-probe)
+[gpu] 1852 MHz, 55, 0 %
+=== chunkinv Qwen3.5-9B-NVFP4-MTP-GGUF OFF  env=[none] args=[/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf]  1852 MHz, 55
+chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-xtesVv.log)
+[rc=0] chunkinv Qwen3.5-9B-NVFP4-MTP-GGUF OFF done
+=== chunkinv Qwen3.5-9B-NVFP4-MTP-GGUF ON  env=[MEMRA_MMQ_F8F4=1] args=[/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf]  1717 MHz, 64
+chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-jTVAlu.log)
+[rc=0] chunkinv Qwen3.5-9B-NVFP4-MTP-GGUF ON done
+=== chunkinv Qwen3.6-27B-NVFP4-Q4_K_M-mtp OFF  env=[none] args=[/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf]  1717 MHz, 65
+chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-Rkv2CD.log)
+[rc=0] chunkinv Qwen3.6-27B-NVFP4-Q4_K_M-mtp OFF done
+=== chunkinv Qwen3.6-27B-NVFP4-Q4_K_M-mtp ON  env=[MEMRA_MMQ_F8F4=1] args=[/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf]  1717 MHz, 68
+chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-TXjVkT.log)
+[rc=0] chunkinv Qwen3.6-27B-NVFP4-Q4_K_M-mtp ON done
+=== chunkinv canary q9 ON  env=[MEMRA_MMQ_F8F4=1] args=[/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --canary]  1807 MHz, 64
+chunk-invariance-gate: assert=invariant legacy-seam=on got=variant canary=1 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.498e-1 | - | identical
+         32 | DIFFER |            32 | 6.011e-1 | - | step 42
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 5.266e-1 | - | step 16
+         32 | DIFFER |            32 | 7.646e-1 | - | identical
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/chunkinv-gate-t4bpRG.log)
+[rc=0] chunkinv canary q9 ON done

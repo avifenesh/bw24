@@ -34,8 +34,19 @@ if [ "${MEMRA_SKIP_PERF_CI:-0}" != "1" ]; then
             echo "pre-push: engine files touched but no perf-ci rows exist. Run: tools/local-ci.sh --perf"
             exit 1
         else
-            newest_commit=$(git log -1 --format=%ct "$range"..HEAD -- crates/ 2>/dev/null || echo 0)
-            newest_row=$(stat -c %Y "$ci")
+            # `git log -1 --format=%ct <range> -- crates/` EXITS 0 WITH EMPTY OUTPUT when
+            # history simplification prunes the pathspec (e.g. the crates/ changes in the
+            # range arrived through a merge), so `|| echo 0` never fires and the comparison
+            # below got an empty operand: dash printed "[: Illegal number:" and — because the
+            # failing `[` is a condition, not a command — the gate SILENTLY SKIPPED instead of
+            # blocking. Fail-open in a push gate is the rot mode the H100 lane's law 3 warns
+            # about, so both operands are defaulted explicitly. (Found 2026-08-06 when a
+            # research-only push tripped the message; that push was correctly exempt anyway.)
+            newest_commit=$(git log -1 --format=%ct "$range"..HEAD -- crates/ 2>/dev/null || true)
+            newest_row=$(stat -c %Y "$ci" 2>/dev/null || true)
+            newest_commit=${newest_commit:-0}
+            # An unreadable perf-ci row must not read as "infinitely fresh" -> 0 blocks.
+            newest_row=${newest_row:-0}
             if [ "$newest_row" -lt "$newest_commit" ]; then
                 echo "pre-push: engine files touched after the last perf-ci battery."
                 echo "Run: tools/local-ci.sh --perf   (or --perf-quick for the 31B subset)"
