@@ -1,6 +1,41 @@
 # PREFILL-GEMM-REBUILD — the path to beat llama pp512
 
-Status: PLAN (read-only research complete; no code changed this workflow).
+> **SUPERSEDED 2026-08-06 — Phases 1-4 below are refuted. Do not build them.**
+> Receipts: `research/prefill-gemm-20260806/VERDICT.md` + `RESULTS.jsonl`.
+>
+> This doc edits `cu/qmatvec_gemm.cu` → `qmatvec_gemm_kernel<QT>`. **That kernel no longer runs
+> on either deployment-class model.** The vendored llama MMQ suite is default-on and carries
+> **78.0%** of q27 NVFP4 pp512 and **77.1%** of q9 (`mul_mat_q_nvfp4_w4a8<128,128,1,0,1>` in
+> `cu/mmq_nvfp4_w4a8.cu`). Vendoring *already delivered* this doc's Phase-1 pass criteria:
+> bank conflicts **6.79M** (target was 41.8M → <5M) and tensor pipe **60.38%** (target was
+> 5.3% → >20%, so 3.0x past the bar).
+>
+> The measured bound on the kernel that *does* run is **not** the one diagnosed in §0. It is
+> **math-pipe throttle** from the f32 scale-fold in `vec_dot_nvfp4_w4a8_mma`:
+> `math_pipe_throttle` 1.25 dominant, `long_scoreboard` 0.04, DRAM 8-10%, occupancy 16.66
+> achieved vs 16.67 theoretical, 6.13 FMA + 5.42 ALU per warp-MMA, 88.6 TOP/s = 40.5% of the
+> 219 TOP/s s8 peak. The K-stride pad (Phase 1) would chase a 0.22-weight `mio_throttle` stall
+> while the 1.25-weight one goes untouched; the TMA probe (Phase 4) has an 8-10% DRAM slice to
+> attack and a cp.async arm already exists behind `MEMRA_PP_PIPE=1`.
+>
+> The fold-removal lever that profile suggested has ALSO been measured and refuted: a probe that
+> **deletes** the f32 fold moved q27 pp512 by **+3.17%** (1395.2 → 1439.4, N=15/arm interleaved),
+> against a derived ceiling of 1.447x e2e — **the ncu arithmetic overpredicted 16x**. Do not build
+> s32-chained accumulation. `1/pipe_utilization` is not a speedup ceiling: tensor-pipe cycles per
+> warp-MMA is **exactly 16.00**, the `m16n8k16.s8` hardware issue interval, so the idle pipe cycles
+> are MMA **latency exposure** at 2 warps/scheduler — the FMA/ALU pipes co-issue inside it for free.
+>
+> The real bound is that issue interval. `m16n8k32` is architecturally unavailable (NVFP4's UE4M3
+> scale per 16 elements caps one accumulate's K span at 16 — which is why `C[0]`/`C[1]` are separate
+> accumulators). Remaining candidates, all requiring a ceiling probe *before* any build: intra-warp
+> ILP (more independent accumulators per warp), and
+> `mma.sync.aligned.m16n8k64.kind::mxf4nvf4.block_scale` (block scales as hardware MMA operands —
+> the only door that changes the issue interval itself).
+>
+> Kept below for the reasoning record — the alternative-rejection analysis in §1
+> (CUTLASS-SM120, marlin, TMA) is still sound and still worth reading.
+
+Status: SUPERSEDED (was: PLAN — read-only research complete; no code changed this workflow).
 Target config: RTX 5090 Laptop, sm_120a / GB203, 82 SMs, 1536 thr/SM, 65536 regs/SM, ~99KB opt-in smem/SM, 847 GB/s achieved BW. TC peaks: FP16 117, int8 219, block-FP8 (mxf8f6f4) 381, block-FP4 (mxf4nvf4) 762 TFLOP/s.
 Measured starting point: prefill pp512 = 2090 tok/s. GEMMs = 58% of prefill. SSM/attn cluster = ~27%.
 
