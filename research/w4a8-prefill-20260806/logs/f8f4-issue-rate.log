@@ -1,0 +1,19 @@
+180 MHz, 54
+# device NVIDIA GeForce RTX 5090 Laptop GPU SMs=82 (clock LOCKED 1860 via nvidia-smi -lgc)
+
+## CONTROL -- NACC sweep, 1 CTA of 4 warps (1 warp/scheduler), clock64 cyc/warp-MMA
+# flat across NACC => pipe ISSUE INTERVAL; halving as NACC doubles => latency/NACC
+# NACC         s8.k16   f8f4plain.k32   mxf8blksc.k32   f8f4e2m1A.k32
+  1           27.1252         34.5115         29.0835         34.5010
+  2           16.1298         32.0342         17.1292         32.0427
+  4           16.0649         32.0172         16.0724         32.0171
+  8           16.0617         32.0318         16.0593         32.0295
+  16          16.0308         32.0159         16.0296         32.0148
+
+## FULL-GPU wall clock (grid=82 CTAs x 256 thr = 8 warps/CTA, the SHIPPED shape; NACC=8, best of 5)
+# MACs/warp-MMA: s8.k16=2048, all k32 forms=4096
+# form                                   ms   cyc/MMA@1860      T(FL)OP/s      vs s8
+  m16n8k16.s8.s8.s32                  0.567        16.0925          155.3      1.000x
+  f8f6f4 PLAIN e4m3xe4m3              1.133        32.1686          155.4      1.001x
+  mxf8f6f4 blkscale e2m1xe4m3         0.569        16.1424          309.6      1.994x
+  f8f6f4 PLAIN e2m1xe4m3              1.132        32.1386          155.5      1.001x
