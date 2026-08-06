@@ -1,0 +1,35 @@
+Changes since v0.70.0:
+
+## Performance
+- SLRU on_hit goes O(1) — intrusive doubly-linked segments replace the per-hit VecDeque scan (audit Q5)
+- MEMRA_GRAPH_WARMUPS default 2->1 — winners are defaults. Recapture -41.4% q27 (52.6->30.8ms) / -39.2% q9 (19.4->11.8ms), decode +1.07%/+1.11%, capture+prime -20.4/-6.4ms on the 5090 (N=5 adjacent pairs, 5/5 pairwise wins every quantity; pod re-mint -38/-41% agrees — the lever is eager-step wall, SM-count-invariant). Warmup 2's address-stability job is guarded structurally (balanced in-graph alloc/free pairs, retire-on-grow pools, capture-retain) and was arbitrated ADVERSARIALLY, not by gate-sweep luck: graph-warmup-stress x10 pool-growth cycles both directions + overlap arm (live-session drop + forced recapture over freed blocks), bit-identity vs eager (the #68 class corrupts without faulting), GREEN q9+q27; canary caught. =2 stays as the rollback seam. Gate wired into local-ci (MEMRA_CI_GWSTRESS=0 skips) + fast-gate (gwstress probe, graph-path + DEFAULT rows; wiring proven: tier1 PASS 34s). Post-flip battery naked-env: kernel-check GREEN, graph-decode+graph-session PASS both models, run-gen MATCH both, run-spec K=1..8 PASS, serve-smoke 0 failed. Receipts + VERDICT: research/graph-warmups-5090-20260805/
+- the block-128 native prefill route becomes the DEFAULT — per-operand-source gating, not one flag
+- route block-128 prefill through the per-block MMQ tile — the regression becomes a +0.83% gain
+- vectorize the block-128 -> Q8_0 dequant kernel — 2.38x, and it was the whole prefill regression
+- MEMRA_GRAPH_WARMUPS door — capture warmup is 80% of recapture, and cutting it to 1 beats the entire mem-node ceiling
+
+## Features
+- SSE round-cadence streaming for spec bursts — first receipt 0.12s vs 1.15s first-text at B128
+- grain-free chunk invariance BY DEFAULT — rollback seam + flipped gate + prime-path instruments
+- block-128 native residency survives the hybrid V-head reorder — 144 of the 27B's 208 FP8 projections
+- native block-128 e4m3 decode — qmatvec_e4m3_blk_mmvq + the QT_F8_E4M3_BLK residency arm
+
+## Fixes
+- cold-first spec ordering — the newcomer's prime bursts before any mid-generation peer
+- admission yield — a pending admit ends the in-flight spec burst at the round boundary
+- PrefixCache O(log E) recency-index eviction, policy-identical (audit Q3)
+- loud + resettable graph fallbacks; graph-step errors surface honestly (audit Q2)
+- 64-bit offset_dst in all 11 vendored MMQ launchers (audit Q7)
+
+## Configuration
+- kill the SUPERSEDED MEMRA_PRIME_INVARIANT/MEMRA_PRIME_GRAIN door — the grain-free chunk-invariance fix (lane/chunkinv-flip) made the default path chunk-invariant with no door, so per the flags doctrine the interim pin-the-boundary seam dies at v0.71: dispatch arm removed (prime_invariant/prime_grain + the chunk override in prime_cache), FLAGS.md rows dropped, SERVING.md notes the removal. MEMRA_PRIME_F32CHUNK0 (the real rollback seam + gate canary) and MEMRA_PRIME_CHUNK (pure memory knob) stay. Record: research/chunk-invariance-20260805/VERDICT.md + research/chunkinv-flip-20260805/
+- refresh q9/k27 goldens at the grain-free battery-green point 869e0fcc
+
+## Documentation
+- v0.71 pre-release sweep vs the pile — README serving paragraph gains the felt-latency arc (round-cadence SSE + admission yield: solo 0.12s / contended 0.12-0.15s) and the exactness contract now claims chunk-size-invariance (one canonical greedy output per prompt, chunkinv-gated); known-gaps TTFT bullet updated honestly (latency stack fixes listed, head-to-head NOT re-run — benching stopped); SERVING.md gains the felt-TTFT arc section (both fixes, receipts, the B32-vs-B128 owner call) and the split-stable section header corrected to FIXED state; PERFORMANCE.md serve-board prose gains the outdated-TTFT-rows caveat + the frozen-head-to-head amendment + the locked-clock law (never mix locked and free-clock denominators); TESTING.md/CONTRIBUTING battery lists name the three new gates (chunkinv/chunkinvc, gwstress, the k27 FA_SPLIT=8 pin); FLAGS.md MEMRA_FA_SPLIT row documents the SM-count rung + FLIP-NEARTIE verdict + k27div-probe
+- back-propagate the phase-2 corrections into the phase-1 verdict and the plan doc
+- mark PREFILL-GEMM-REBUILD superseded — its target kernel does not run
+- chunk invariance is the DEFAULT contract — FLAGS/SERVING/fast-gate registry updated for the grain-free flip
+- catalog the Q1 graph-capture doors (§4 diagnostics)
+
+Boards + reproduction artifacts: https://huggingface.co/Avifenesh/memra-bench · full experiment log in research/tune-data/
