@@ -708,17 +708,22 @@ impl HybridModel {
         // scratch.cap, length from the device len_d) so eager drafts match graph drafts
         // bit-for-bit at any t_kv (the parity gate). Host len mirrored here (the dc append
         // advances only the device counter).
-        let attn_out = match &mtp.mixer {
-            Mixer::Full(fa) => {
+        let attn_out = match (&mtp.mixer, mtp.step35.as_ref()) {
+            // step35 MTP block: PER-LAYER geometry + a separate head-wise gate + an SWA window,
+            // none of which the dc launcher can express (see `mtp_step35_attn`). Host-len arm.
+            // Advances BOTH the host len and the device counter itself (unlike the dc arm,
+            // whose host-side mirror the caller does).
+            (Mixer::Full(fa), Some(g)) => self.mtp_step35_attn(e, fa, g, &a_norm, &pos_d, scratch)?,
+            (Mixer::Full(fa), None) => {
                 let out =
                     self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch, mtp.geom.as_ref())?;
                 scratch.kv.len += 1;
                 out
             }
-            Mixer::Linear(_) => {
+            (Mixer::Linear(_), _) => {
                 panic!("MTP block is full-attn in qwen35; linear MTP not supported")
             }
-            Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
+            (Mixer::Mla(_), _) => crate::hybrid::mla_forward_unimplemented(),
         };
 
         // op 7: x1 = inpSA + attn_out
@@ -747,7 +752,13 @@ impl HybridModel {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
                 let mut act = e.zeros(n_ff)?;
-                Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
+                // step35: a DENSE FFN reads the per-layer SHEXP clamp (upstream's one `build_ffn`
+                // serves the dense MLP and the shared expert off `swiglu_clamp_shexp` —
+                // llama-graph.cpp:1751), resolved for the MTP block's OWN index. Every other arch
+                // passes None, which is `ffn_act`'s dispatch verbatim.
+                Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                  mtp.step35.as_ref().and_then(|s| s.clamp_shexp),
+                                  &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
             // MTP head is a distinct block — key its experts under a separate layer index (u16::MAX)
@@ -790,6 +801,106 @@ impl HybridModel {
         // Chain recurrence hand-over: pre-norm h_nextn (default) or post-norm final_h
         // (MEMRA_SPEC_HPOST — llama.cpp #24025's t_h_nextn is taken AFTER the head norm).
         Ok((logits, if spec_hpost() { final_h } else { h_nextn }))
+    }
+
+    /// step35 MTP-block attention, T=1, on the scratch KV — the EAGER-ONLY twin of
+    /// `mtp_full_attn_dc`. Three things force a separate arm rather than a geometry parameter on
+    /// the dc path, and all three are properties of this arch's MTP block:
+    ///
+    /// 1. **The SWA window.** Block 45 is an SWA-type block (`sliding_window_pattern[45]=true`,
+    ///    window 512). Windowed decode in memra is a token-aligned VIEW OFFSET into the quantized
+    ///    cache (the gemma4 R6 / `step35_decode_attn` pattern: keys carry absolute rope and the
+    ///    mask is purely positional, so one query at `len-1` attending the last `win` rows IS the
+    ///    windowed result). `fa_decode_dc` takes the key count from a DEVICE counter and always
+    ///    starts at row 0 — it cannot express a nonzero offset, so a windowed dc arm would need a
+    ///    new kernel. That is deliberately not built here: see the CUDA-graph note below.
+    /// 2. **Per-layer head count.** 96 q heads over 8 KV (GQA 12) at this block, vs the trunk's 64
+    ///    on its full-attn layers. The trunk cfg's `n_head` scalar is the MAX over layers, and the
+    ///    trunk ARTIFACT's per-layer arrays stop at index 44 — so the count must come from the
+    ///    resolved `Step35MtpGeom`, never from `cfg`.
+    /// 3. **The separate head-wise gate.** `blk.45.attn_gate.weight [n_embd, 96]` produces one
+    ///    sigmoid scalar per head (broadcast over head_dim) — `attn_head_gate`, not the qwen35
+    ///    fused-into-wq `q_gate_split` form the dc arm handles.
+    ///
+    /// WHY EAGER-ONLY IS NOT A GAP TODAY: `graph_draft` requires `trunk_dense`, and this SKU's
+    /// trunk is a 288-expert MoE, so the graph draft is already off for every step35 model — the
+    /// eager chain IS the served path. `mtp_head_forward_cap` refuses step35 explicitly rather
+    /// than silently capturing a window-less (wrong past `win` draft rows) graph.
+    ///
+    /// Unlike the dc arm this advances BOTH the host `kv.len` and the device counter, so the
+    /// caller must not mirror.
+    fn mtp_step35_attn(
+        &self,
+        e: &Engine,
+        fa: &FullAttnLayer,
+        g: &crate::hybrid::Step35MtpGeom,
+        h: &CudaSlice<f32>,
+        pos_d: &CudaSlice<i32>,
+        scratch: &mut MtpScratch,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (nh, nkv, hd) = (g.n_head, g.n_head_kv, self.cfg.head_dim_k as usize);
+        let eps = self.cfg.rms_eps;
+        let scale = 1.0 / (hd as f32).sqrt(); // step35.cpp:255 kq_scale
+        let n_embd = self.cfg.n_embd as usize;
+        let gw = fa.attn_gate.as_ref()
+            .ok_or("step35 MTP block is missing attn_gate.weight (head-wise attention gate)")?;
+
+        let (q0, k0, v0, gt) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
+            && e.uses_q8_1_fast(&fa.wv) && e.uses_q8_1_fast(gw)
+        {
+            let (hq, hdq) = e.quantize_q8_1(h, 1, n_embd)?;
+            let (a, b, c) = match e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hdq)? {
+                Some(t3) => t3,
+                None => (e.matmul_pre(&fa.wq, &hq, &hdq, h, 1)?,
+                         e.matmul_pre(&fa.wk, &hq, &hdq, h, 1)?,
+                         e.matmul_pre(&fa.wv, &hq, &hdq, h, 1)?),
+            };
+            (a, b, c, e.matmul_pre(gw, &hq, &hdq, h, 1)?)
+        } else {
+            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?,
+             e.matmul(&fa.wv, h, 1)?, e.matmul(gw, h, 1)?)
+        };
+
+        let mut q = e.uninit(nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh, eps)?;
+        let mut k = e.uninit(nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv, eps)?;
+        // `rope_freqs.weight` (llama3 factors) applies to the FULL-attn layers ONLY; SWA passes
+        // null (llama-hparams / step35.cpp). Block 45 is SWA, so `ff` is None there — but read
+        // the resolved flag, not the constant, so an all-full sibling stays correct.
+        let ff = if g.swa { None } else {
+            self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, g.n_rot, nh, nkv, 1, g.rope_base, 1.0, ff)?;
+
+        // Append at the HOST slot, then re-stamp the device counter: the eager chain has the
+        // length on the host anyway, and the windowed view below needs it there to compute the
+        // offset. The device counter is kept in lockstep so `mtp_kv_fill`'s `set_i32_one` and any
+        // dc-family consumer of this scratch still agree.
+        let kv = &mut scratch.kv;
+        assert!(kv.len < scratch.cap, "step35 MTP scratch overflow ({} >= {})", kv.len, scratch.cap);
+        e.append_kv_quantized(&k, &v0, &mut kv.k, &mut kv.v, kv.len,
+                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes, false)?;
+        kv.len += 1;
+        e.set_i32_one(&mut kv.len_d, kv.len as i32)?;
+        // SWA view offset (see note 1). The draft chain is short (k+2 rows), but the scratch is
+        // PERSISTENT across rounds — `mtp_kv_fill` leaves one row per committed token behind, so
+        // `kv.len` tracks absolute position and crosses 512 in any real generation. The window is
+        // therefore live, not theoretical.
+        let (off, t_kv) = if g.swa && kv.len > g.window {
+            (kv.len - g.window, g.window)
+        } else {
+            (0, kv.len)
+        };
+        let k_view = e.view_u8_range(&kv.k, off * kv.k_tok_bytes, (off + t_kv) * kv.k_tok_bytes);
+        let v_view = e.view_u8_range(&kv.v, off * kv.v_tok_bytes, (off + t_kv) * kv.v_tok_bytes);
+        let mut attn = e.uninit(nh * hd)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                          kv.k_tok_bytes, kv.v_tok_bytes, false)?;
+
+        let mut ag = e.uninit(nh * hd)?;
+        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, 1)?;
+        Ok(e.matmul(&fa.wo, &ag, 1)?)
     }
 
     /// MTP-block full attention, T=1, on the scratch KV (BOTH draft paths — eager and graph):
@@ -989,6 +1100,7 @@ impl HybridModel {
             .geom
             .as_ref()
             .map(|g| g.n_head_kv)
+            .or(mtp.step35.as_ref().map(|s| s.n_head_kv))
             .unwrap_or(cfg.n_head_kv as usize);
         let head_dim = cfg.head_dim_k as usize;
         let mut k = e.matmul(&fa.wk, &a_norm, t)?;
@@ -1003,17 +1115,27 @@ impl HybridModel {
             eps,
         )?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(
-            &mut k,
-            &pos_d,
-            head_dim,
-            rope_dims,
-            n_head_kv,
-            t,
-            cfg.rope_freq_base,
-            1.0,
-        )?;
+        // step35: rotary width AND base are per-layer, and the MTP block's values come from the
+        // resolved `Step35MtpGeom` — NOT from `cfg.rope_dim_count`/`cfg.rope_freq_base`, which
+        // carry the arch defaults (128 / 5e6, i.e. the FULL-attn layers' base). Getting this wrong
+        // writes K rows the attention arm then re-derives at a different theta: correct-looking
+        // output with dead acceptance, invisible to the exactness gates.
+        let (rope_dims, rope_base, ff) = match mtp.step35.as_ref() {
+            Some(s) => (
+                s.n_rot,
+                s.rope_base,
+                if s.swa { None } else {
+                    self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+                },
+            ),
+            None => (cfg.rope_dim_count as usize, cfg.rope_freq_base, None),
+        };
+        match ff {
+            Some(f) => e.rope_neox_ff(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, t,
+                                      rope_base, 1.0, f)?,
+            None => e.rope_neox(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, t,
+                                rope_base, 1.0)?,
+        }
 
         let kv = &mut scratch.kv;
         for i in 0..t {
@@ -1090,6 +1212,19 @@ impl HybridModel {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
+        // step35 REFUSAL (deliberate, named): the graph body's attention is `mtp_full_attn_dc`,
+        // whose device-counter key bound always starts at row 0 — it cannot express this block's
+        // SWA view offset, so a captured chain would silently attend OUTSIDE the window once the
+        // persistent scratch passes 512 rows. Nothing is lost today: `graph_draft` also requires
+        // `trunk_dense`, and step35's trunk is a 288-expert MoE, so the eager chain
+        // (`mtp_head_forward_dev` -> `mtp_step35_attn`) is the served path. Returning Err (not a
+        // panic) is what the two capture sites and the round-stream capture already handle by
+        // degrading to eager / stream-off.
+        if mtp.step35.is_some() {
+            return Err("step35 has no captured draft chain (fa_decode_dc cannot express the MTP \
+                        block's SWA view offset; same root cause as the dc decode refusal) — the \
+                        eager draft chain serves this arch".into());
+        }
         // student inner width (see mtp_head_forward_dev) — interface dims stay n_embd.
         let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let eps = cfg.rms_eps;
@@ -1373,10 +1508,15 @@ impl HybridModel {
             // (row-indexed kernel — the T-row launch is the per-row m=1 program, kernel-check
             // pins bit-identity vs rms_norm_decode -> quantize_q8_1). Kills the standalone
             // quantize launch(es) + the f32 h HBM round-trip that decode never pays.
+            // step35 (Full mixer) is the third case that needs f32 `h`: its verify arm is a
+            // per-ROW replay of the eager decode mixer, whose `pre_q` contract is a single row —
+            // a T-row q8_1 pair cannot be handed to it, and re-deriving per-row q8_1 from the f32
+            // rows is exactly the dispatch being mirrored. Keep step35 on the unfused arm.
             let lin_q8_only = match &layer.mixer {
                 Mixer::Linear(la) => {
                     (t >= 3 || (t == 2 && spec_m2())) && e.uses_q8_1_fast(&la.ssm_out)
                 }
+                Mixer::Full(_) if self.cfg.step35.is_some() => false,
                 _ => true,
             };
             // NOTE decode.rs's take()-first lesson: take the pending pair BEFORE branching so
@@ -2173,6 +2313,78 @@ impl HybridModel {
         ))
     }
 
+    /// step35 SPEC-VERIFY attention over T query tokens — a per-row REPLAY of the eager
+    /// `step35_decode_attn`.
+    ///
+    /// WHY A REPLAY AND NOT A BATCHED TWIN. The verify's whole job is to be bit-identical to what
+    /// the eager decode would have computed for the same tokens; that is what makes greedy spec
+    /// decode exact (run-spec asserts token identity for K=1..8). Every other verify arm in this
+    /// file earns that identity by carefully mirroring dispatch (`matmul_decode_exact` to force
+    /// MMVQ at any m, per-layer `ffn_fuse` mirroring, per-row `fa_decode` key bounds). step35
+    /// stacks FOUR more per-layer degrees of freedom on top of that — per-layer `n_head`
+    /// (64 full / 96 SWA), per-layer rotary width (64 full / 128 SWA), per-layer rope base, and a
+    /// SEPARATE `attn_gate` tensor whose projection shares the attn-normed input — and its SWA
+    /// layers attend through a token-OFFSET view whose offset is a function of the ABSOLUTE
+    /// position of each query row. A batched twin would have to reproduce all of that AND the
+    /// per-row offset in one launch; the offset alone rules out the existing rows kernels (they
+    /// take one `base_len`, not a per-row offset).
+    ///
+    /// So this arm calls the eager path itself, once per row, on the same cache. Identity is then
+    /// true BY CONSTRUCTION rather than by mirroring: row r runs exactly the kernel sequence that
+    /// eager decode step r runs (same projections, same q8_1 fusion decision, same append, same
+    /// view arithmetic, same `fa_decode_kvmod`, same gate), because it IS that code. Cost: T x the
+    /// eager decode mixer instead of one batched pass — the same trade the generic arm's `else`
+    /// per-row loop already accepts when `fa_rows_eligible` says no. Correctness first; a batched
+    /// step35 twin is a perf lane's job and must be gated against this arm.
+    ///
+    /// The `h_q8` pre-quantized pair from the caller's fused norm is NOT forwarded: it is a
+    /// T-row buffer and `step35_decode_attn`'s `pre_q` contract is one row. Instead each row's
+    /// f32 `h` slice is handed over and the callee re-derives its own q8_1 exactly as eager decode
+    /// does (`quantize_q8_1(h, 1, n_embd)`) — which is the dispatch being mirrored. Callers that
+    /// took the fused arm therefore MUST still pass a live `h`; `step35_verify` asserts that.
+    #[allow(clippy::too_many_arguments)]
+    fn step35_verify(
+        &self,
+        e: &Engine,
+        fa: &FullAttnLayer,
+        h: &CudaSlice<f32>,
+        h_q8: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+        t: usize,
+        cache: &mut Cache,
+        il: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        // The fused (h-less) attn-norm arm hands `h` as a zero-length placeholder. This arm needs
+        // the f32 rows, so the caller must not take that lever for step35 — enforced at the call
+        // site by the `Mixer::Full(_) if self.cfg.step35.is_some() => false` arm of
+        // `lin_q8_only` in `decode_step_t_core_stream`, and asserted here so a future caller
+        // cannot regress it into silently reading an empty buffer.
+        assert_eq!(
+            h.len(),
+            t * n_embd,
+            "step35_verify needs the f32 attn-normed rows ([t*n_embd]); the caller took the \
+             fused q8-only norm arm (h_q8={}) — step35 must stay on the unfused arm",
+            h_q8.is_some()
+        );
+        // Per-layer head count: 64 on full-attn layers, 96 on SWA (step35_geom(il).2).
+        let nh = self.cfg.n_head_at(il as u32) as usize;
+        let hd = self.cfg.head_dim_k as usize;
+        let mut out = vbuf(e, t * nh * hd)?; // each row fully written by the copy below
+        for r in 0..t {
+            // Absolute position of this query row. `cache.pos` is the committed length at round
+            // start and every row before r has already been appended by this loop, so the r-th
+            // verify token sits at cache.pos + r — the same position eager decode would give it.
+            let pos_d = e.htod_i32(&[(cache.pos + r) as i32])?;
+            let mut h_row = vbuf(e, n_embd)?; // fully written by copy_view_into
+            e.copy_view_into(&mut h_row, 0, &h.slice(r * n_embd..(r + 1) * n_embd), n_embd)?;
+            // THE eager decode mixer: appends this row's K/V at kvl.len, advances it, then
+            // attends over the (SWA-offset) view. Post-`wo`, same contract as this fn returns.
+            let o = self.step35_decode_attn(e, fa, il, &h_row, None, &pos_d, cache)?;
+            e.copy_into(&mut out, r * nh * hd, &o, nh * hd)?;
+        }
+        Ok(out)
+    }
+
     /// Full-attention mixer over T query tokens with a GROWING resident KV (verify path, §D.3).
     /// Appends the T new K/V columns to cache.kv[il] then attends causally over [0..len) via
     /// fa_prefill. Token-major [T, kv_dim] projection layout == cache row layout (single copy).
@@ -2189,13 +2401,19 @@ impl HybridModel {
         il: usize,
         stream_ctr: Option<&CudaSlice<i32>>,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        // step35: the decode-exact verify needs its own twin (per-layer n_head, partial rope,
-        // the SWA offset view, and the head-wise gate). Refuse rather than run the generic
-        // geometry — a verify that silently computes different attention than decode defeats
-        // the whole self-consistency gate.
+        // step35: the generic geometry below is wrong for this arch (per-layer n_head, partial
+        // per-layer rope, the SWA offset view, and a SEPARATE head-wise gate tensor), so it takes
+        // its own arm. A verify that silently computes different attention than decode defeats the
+        // whole self-consistency gate, so the arm is a per-row REPLAY of `step35_decode_attn`
+        // rather than a batched twin — see `step35_verify` for why that is the exactness-correct
+        // shape and not laziness.
         if self.cfg.step35.is_some() {
-            return Err("step35 has no spec-verify attention arm yet (needs the decode-exact \
-                        twin of step35_decode_attn at t>1)".into());
+            if stream_ctr.is_some() {
+                return Err("step35 has no ROUND-STREAM verify arm (the device-counter _dc twins \
+                            cannot express the SWA offset KV view; same root cause as the dc \
+                            decode refusal) — run spec without the stream arm".into());
+            }
+            return self.step35_verify(e, fa, h, h_q8, t, cache, il);
         }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;

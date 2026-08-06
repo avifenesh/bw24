@@ -114,6 +114,18 @@ pub(crate) fn load_ffn(
         // gemma4 DENSE variants (31B/E4B): the arch is MoE-capable but the file ships no
         // expert tensors at all — tensor presence decides.
         || (cfg.gemma4.is_some() && !src.has(&p("ffn_gate_exps.weight"))
+            && !src.has(&p("ffn_gate_up_exps.weight")))
+        // A NextN/MTP BLOCK can be DENSE inside a MoE trunk. Step-3.7-Flash's standalone drafter
+        // (Step3.7-flash-mtp-Q8_0.gguf) ships blk.45/46/47 with `ffn_gate/up/down.weight` and NO
+        // `ffn_gate_inp`/`ffn_*_exps`, while the same file's config declares expert_count=288 (it
+        // carries the TRUNK's hparams) — so the MoE arm's `load_t("ffn_gate_exps.weight")` would
+        // fail on a perfectly well-formed file. Scoped to `il >= n_trunk` and gated on tensor
+        // presence: only an MTP block can take this door, so no trunk MoE layer's dispatch can
+        // shift. (qwen35's MTP block IS MoE and keeps the MoE arm — it ships the expert slabs.)
+        || (cfg.nextn_predict_layers > 0
+            && il >= cfg.n_layer.saturating_sub(cfg.nextn_predict_layers)
+            && src.has(&p("ffn_gate.weight"))
+            && !src.has(&p("ffn_gate_exps.weight"))
             && !src.has(&p("ffn_gate_up_exps.weight")));
     Ok(
         if let Some(moe) = cfg.moe.as_ref().filter(|_| !dense_override) {
@@ -644,6 +656,57 @@ pub struct MtpHead {
     /// stay at n_embd, so the trunk/verify interface is unchanged. Selected by the presence of
     /// `blk.N.nextn.out_up.weight` in a MEMRA_MTP_DRAFT file.
     pub geom: Option<DraftGeom>,
+    /// step35: the DRAFT BLOCK's RESOLVED per-layer geometry (`None` for every arch whose
+    /// geometry is uniform). Without it the head forward would use the trunk's max-derived
+    /// scalars and compute wrong attention — and the failure mode is plausible-but-wrong drafts
+    /// (tanked acceptance, correct output), exactly what the exactness gates cannot see.
+    pub step35: Option<Step35MtpGeom>,
+}
+
+/// step35 MTP-block geometry, RESOLVED at load time from the file that actually carries the
+/// block's own `Step35Config` arrays.
+///
+/// Why resolved and not "look it up per forward from the model's cfg": Step-3.7-Flash ships MTP
+/// as a SEPARATE GGUF, and the two files disagree about which layers exist. The trunk artifact
+/// declares `block_count=45` / `nextn_predict_layers=0`, so its per-layer arrays hold 45 entries
+/// (0..=44) and `Step35Config::n_head(45)` falls off the end into the `.last()` fallback — index
+/// 44, which is a FULL-attn layer at 64 heads. The draft file declares `block_count=48` /
+/// `nextn=3` and its arrays' index 45 is the truth: SWA, 96 heads (matching that file's
+/// `blk.45.attn_q.weight [4096, 12288]` = 96*128 and `blk.45.attn_gate.weight [4096, 96]`).
+/// Receipt: `research/step37-bringup-20260802/raw/gguf-header-stepfun-mtp-q8-20260802.txt` plus
+/// the tail dump in `research/step37-p2-20260806/raw/` — `head_count[43..48] = [96, 64, 96, 96,
+/// 96]`, `sliding_window_pattern[43..48] = [True, False, True, True, True]`.
+#[derive(Debug, Clone)]
+pub struct Step35MtpGeom {
+    /// Block index inside the file that carries it (45 for Step-3.7-Flash). Diagnostics only.
+    pub il: u32,
+    pub n_head: usize,    // 96 on Step-3.7-Flash's MTP block (SWA-type)
+    pub n_head_kv: usize, // 8
+    pub n_rot: usize,     // 128 (SWA keeps the unhalved rotary width)
+    pub rope_base: f32,   // 1e4 (SWA base, not the trunk's 5e6 global)
+    pub swa: bool,        // true
+    pub window: usize,    // 512
+    /// This block's `swiglu_clamp_shexp` limit. The MTP block's FFN is a DENSE SwiGLU, and
+    /// upstream's one `build_ffn` serves both the dense MLP and the shared expert off the
+    /// SHEXP array (llama-graph.cpp:1751) — so a dense MTP block keys off shexp, not exp.
+    /// 0.0 (`None`) on Step-3.7-Flash's block 45; live (16.0) only on trunk layers 43-44.
+    pub clamp_shexp: Option<f32>,
+}
+
+impl Step35MtpGeom {
+    /// Resolve block `il`'s geometry from the `Step35Config` of the file that OWNS that block.
+    pub fn resolve(s: &memra_gguf::config::Step35Config, il: u32) -> Self {
+        Step35MtpGeom {
+            il,
+            n_head: s.n_head(il) as usize,
+            n_head_kv: s.n_head_kv(il) as usize,
+            n_rot: s.n_rot(il) as usize,
+            rope_base: s.rope_base(il),
+            swa: s.is_swa(il),
+            window: s.sliding_window as usize,
+            clamp_shexp: s.clamp_shexp(il),
+        }
+    }
 }
 
 /// Draft-head geometry override for a distilled (narrower) student block.
@@ -690,7 +753,67 @@ impl MtpHead {
             dcfg.head_dim_k, main_cfg.head_dim_k,
             "draft head_dim != model head_dim"
         );
-        if !student {
+        // step35: geometry is PER-LAYER, so "same shape as the trunk" is the wrong question — the
+        // draft block at il=45 is an SWA-type block (96 q heads, 128 rotary dims, rope base 1e4)
+        // while the trunk's full-attn layers are 64/64/5e6. Resolve the block's geometry from the
+        // DRAFT FILE's own arrays (the trunk artifact's arrays stop at index 44 — see
+        // `Step35MtpGeom`'s note) and verify it against the block's real tensor shapes. The dims
+        // that must still agree with the trunk are the INTERFACE ones (n_embd, head_dim, KV width).
+        let step35 = match (main_cfg.step35.as_ref(), dcfg.step35.as_ref()) {
+            (Some(_), Some(s)) => {
+                let g = Step35MtpGeom::resolve(s, n);
+                // ne is inner-fastest: ne[0] = in_features, ne[1] = out_features for a [in, out] 2D.
+                let out_f = |t: &str| -> Option<usize> {
+                    src.find(&p(t)).and_then(|v| v.ne.get(1).copied()).map(|x| x as usize)
+                };
+                let hd = dcfg.head_dim_k as usize;
+                let wq_out = out_f("attn_q.weight")
+                    .ok_or("step35 draft block has no attn_q.weight")?;
+                assert_eq!(
+                    wq_out, g.n_head * hd,
+                    "step35 draft blk.{n}: attn_q out {wq_out} != n_head({}) * head_dim({hd}) — \
+                     the draft file's head_count array disagrees with its own tensors",
+                    g.n_head
+                );
+                // The SEPARATE head-wise gate is [n_embd, n_head_l] — one scalar per head. Its
+                // width is the second independent witness of this block's head count.
+                let wg_out = out_f("attn_gate.weight")
+                    .ok_or("step35 draft block has no attn_gate.weight (head-wise gate)")?;
+                assert_eq!(
+                    wg_out, g.n_head,
+                    "step35 draft blk.{n}: attn_gate out {wg_out} != n_head({})", g.n_head
+                );
+                // The draft attends its OWN scratch, but `MtpScratch::new` sizes those rows from
+                // the TRUNK cfg's `n_head_kv` (for step35, the max over its per-layer array).
+                // Compare against exactly that value, not a per-layer accessor.
+                assert_eq!(
+                    g.n_head_kv, main_cfg.n_head_kv as usize,
+                    "step35 draft blk.{n} KV heads {} != trunk n_head_kv {} — the MTP scratch \
+                     rows are sized from the trunk cfg, so a differing draft KV width would \
+                     write past the row",
+                    g.n_head_kv, main_cfg.n_head_kv
+                );
+                eprintln!(
+                    "[mtp-draft] step35 MTP geometry blk.{n}: n_head={} n_head_kv={} n_rot={} \
+                     rope_base={:.0} swa={} window={}",
+                    g.n_head, g.n_head_kv, g.n_rot, g.rope_base, g.swa, g.window
+                );
+                Some(g)
+            }
+            (Some(_), None) => {
+                return Err(format!(
+                    "MEMRA_MTP_DRAFT points at a non-step35 GGUF (arch {:?}) but the model is \
+                     step35 — the draft block's per-layer geometry is unknowable from the trunk \
+                     config (its arrays stop at the trunk's last layer)",
+                    g.arch()
+                ).into())
+            }
+            (None, Some(_)) => {
+                return Err("MEMRA_MTP_DRAFT is a step35 draft but the model is not step35".into())
+            }
+            (None, None) => None,
+        };
+        if step35.is_none() && !student {
             // The head forward runs with the MAIN model's cfg — the draft block must be the
             // same shape or the forward is garbage.
             assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
@@ -805,6 +928,7 @@ impl MtpHead {
             shared_head_head: Some(head),
             d2t,
             geom,
+            step35,
         })
     }
 }
@@ -1078,6 +1202,8 @@ impl HybridModel {
                     shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
                     d2t: None,
                     geom: None,
+                    // EMBEDDED MTP block: same file, so its own arrays cover index `n`.
+                    step35: cfg.step35.as_ref().map(|s| Step35MtpGeom::resolve(s, n)),
                 }),
                 false => None, // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }

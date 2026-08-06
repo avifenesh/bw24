@@ -310,6 +310,71 @@ pub fn write_step35_meta_only(path: &Path) -> std::io::Result<()> {
     w.write(path)
 }
 
+/// Step-3.7-Flash STANDALONE MTP/drafter metadata-only GGUF, pinned to the real
+/// `Step3.7-flash-mtp-Q8_0.gguf` header — receipt
+/// `research/step37-bringup-20260802/raw/gguf-header-stepfun-mtp-q8-20260802.txt` (43 KVs, 55
+/// tensors) plus the per-layer array tails dumped on the box
+/// (`head_count[43..48] = [96, 64, 96, 96, 96]`,
+/// `sliding_window_pattern[43..48] = [true, false, true, true, true]`,
+/// `swiglu_clamp_exp[43..48] = [7, 7, 0, 0, 0]`, `swiglu_clamp_shexp[43..48] = [16, 16, 0, 0, 0]`).
+///
+/// The point of a SEPARATE fixture: this file declares `block_count=48` and
+/// `nextn_predict_layers=3`, so its arrays cover indices 0..=47 and index 45 (the first MTP block)
+/// is authoritative. The TRUNK fixture's arrays stop at 44 — asking it about layer 45 falls into
+/// `Step35Config`'s `.last()` fallback and answers with layer 44's FULL-attn shape. That
+/// divergence is what `Step35MtpGeom` exists to prevent, and what the paired unit test pins.
+pub fn write_step35_mtp_meta_only(path: &Path) -> std::io::Result<()> {
+    let mut w = GgufWriter::new();
+    let a = |s: &str| format!("step35.{s}");
+    const N: usize = 48; // 45 trunk + 3 chained NextN blocks (45/46/47)
+    w.kv("general.architecture", MetaW::Str("step35"));
+    w.kv("general.type", MetaW::Str("model"));
+    w.kv("general.name", MetaW::Str("Model"));
+    w.kv("general.size_label", MetaW::Str("3.5B"));
+    w.kv(&a("block_count"), MetaW::U32(N as u32));
+    w.kv(&a("nextn_predict_layers"), MetaW::U32(3));
+    w.kv(&a("context_length"), MetaW::U32(262_144));
+    w.kv(&a("embedding_length"), MetaW::U32(4096));
+    w.kv(&a("feed_forward_length"), MetaW::U32(11264));
+    // Same 3:1 pattern extended over 48: `il % 4 == 0` is full, so 44 is FULL and 45/46/47 SWA.
+    w.kv(&a("attention.head_count"), MetaW::ArrU32(step35_head_counts(N)));
+    w.kv(&a("attention.head_count_kv"), MetaW::ArrU32(vec![8; N]));
+    w.kv(&a("attention.sliding_window_pattern"), MetaW::ArrBool(step35_swa_pattern(N)));
+    w.kv(&a("attention.key_length"), MetaW::U32(128));
+    w.kv(&a("attention.value_length"), MetaW::U32(128));
+    w.kv(&a("attention.layer_norm_rms_epsilon"), MetaW::F32(1e-5));
+    w.kv(&a("attention.sliding_window"), MetaW::U32(512));
+    w.kv(&a("rope.freq_base"), MetaW::F32(5_000_000.0));
+    w.kv(&a("rope.freq_base_swa"), MetaW::F32(10_000.0));
+    // The drafter file carries the TRUNK's MoE hparams even though its own blocks are DENSE —
+    // the reason `load_ffn` needs an MTP-block-scoped dense override.
+    w.kv(&a("expert_count"), MetaW::U32(288));
+    w.kv(&a("expert_used_count"), MetaW::U32(8));
+    w.kv(&a("expert_feed_forward_length"), MetaW::U32(1280));
+    w.kv(&a("expert_shared_feed_forward_length"), MetaW::U32(1280));
+    w.kv(&a("expert_weights_scale"), MetaW::F32(3.0));
+    w.kv(&a("expert_weights_norm"), MetaW::Bool(true));
+    w.kv(&a("expert_gating_func"), MetaW::U32(2));
+    w.kv(&a("leading_dense_block_count"), MetaW::U32(3));
+    w.kv(&a("moe_every_n_layers"), MetaW::U32(1));
+    // Clamps live on 43/44 only — the MTP blocks are unclamped.
+    let mut cexp = vec![0.0f32; N];
+    cexp[43] = 7.0;
+    cexp[44] = 7.0;
+    let mut cshexp = vec![0.0f32; N];
+    cshexp[43] = 16.0;
+    cshexp[44] = 16.0;
+    w.kv(&a("swiglu_clamp_exp"), MetaW::ArrF32(cexp));
+    w.kv(&a("swiglu_clamp_shexp"), MetaW::ArrF32(cshexp));
+    w.kv("tokenizer.ggml.model", MetaW::Str("gpt2"));
+    w.kv("tokenizer.ggml.pre", MetaW::Str("deepseek-v3"));
+    w.kv("tokenizer.ggml.bos_token_id", MetaW::U32(0));
+    w.kv("tokenizer.ggml.eos_token_id", MetaW::U32(128_007));
+    w.kv("tokenizer.ggml.padding_token_id", MetaW::U32(1));
+    w.kv("tokenizer.ggml.add_bos_token", MetaW::Bool(true));
+    w.write(path)
+}
+
 /// Write the glm-dsa micro fixture: `MICRO` dims, deterministic random weights, every tensor
 /// name/shape of DESIGN.md §3.1. Layer 0 = dense FFN + FULL indexer; layer 1 = MoE FFN + shared
 /// indexer (NO indexer tensors — the GLM-5.2 partial-indexer property early loaders broke on);
@@ -637,6 +702,88 @@ mod tests {
         assert!(!c.attn_out_gate(),
             "step35 wq carries NO fused [q|gate]; a true here mis-splits wq 2x out of bounds");
         assert!(c.attn_gate_separate(), "blk.N.attn_gate.weight [n_embd, n_head_l] is a tensor");
+    }
+
+    /// Parse-arm gate for the STANDALONE Step-3.7-Flash MTP/drafter GGUF, and the specific trap
+    /// that made `Step35MtpGeom` necessary: Step-3.7-Flash ships MTP as a SEPARATE file, and the
+    /// two files disagree about which layers exist. Asking the TRUNK config about the drafter's
+    /// block index does not error — `Step35Config`'s accessors fall back to `.last()`, i.e. the
+    /// trunk's layer 44, which is a FULL-attn 64-head layer with 64 rotary dims at base 5e6. Every
+    /// one of those is wrong for the drafter block, and the failure mode is drafts that are
+    /// plausible but low-acceptance: correct output (the verify arbitrates), silently worse speed.
+    /// No exactness gate can see it, so it is pinned here.
+    #[test]
+    fn parse_step35_mtp_drafter_metadata_and_trunk_fallback_trap() {
+        let pm = tmp("step35-mtp-meta");
+        write_step35_mtp_meta_only(&pm).unwrap();
+        let gm = GgufFile::open(&pm).unwrap();
+        let dcfg = ModelConfig::from_gguf(&gm);
+        std::fs::remove_file(&pm).ok();
+
+        let pt = tmp("step35-trunk-meta");
+        write_step35_meta_only(&pt).unwrap();
+        let gt = GgufFile::open(&pt).unwrap();
+        let tcfg = ModelConfig::from_gguf(&gt);
+        std::fs::remove_file(&pt).ok();
+
+        // The drafter file's own accounting: 48 blocks, 3 of them NextN -> first MTP block = 45.
+        assert_eq!(dcfg.n_layer, 48, "the drafter file's block_count includes the trunk numbering");
+        assert_eq!(dcfg.nextn_predict_layers, 3);
+        let n = dcfg.n_layer - dcfg.nextn_predict_layers;
+        assert_eq!(n, 45, "MTP blocks are 45/46/47");
+
+        // Interface dims agree across the two files — this is what makes attaching legal at all.
+        assert_eq!(dcfg.n_embd, tcfg.n_embd);
+        assert_eq!(dcfg.head_dim_k, tcfg.head_dim_k);
+        assert_eq!(dcfg.n_head_kv, tcfg.n_head_kv, "the MTP scratch rows are sized from the trunk");
+
+        let ds = dcfg.step35.as_ref().expect("drafter parses Step35Config");
+        let ts = tcfg.step35.as_ref().expect("trunk parses Step35Config");
+        assert_eq!(ds.head_count.len(), 48, "drafter arrays cover 0..=47");
+        assert_eq!(ts.head_count.len(), 45, "trunk arrays stop at 44 — the whole point");
+
+        // TRUTH, from the file that owns the block. Cross-checked against the real header's
+        // tensor shapes: blk.45.attn_q.weight [4096, 12288] = 96*128, attn_gate [4096, 96].
+        assert!(ds.is_swa(45), "blk.45 is an SWA-type block (pattern[45] = true)");
+        assert_eq!(ds.n_head(45), 96);
+        assert_eq!(ds.n_head_kv(45), 8);
+        assert_eq!(ds.n_rot(45), 128, "SWA keeps the unhalved rotary width");
+        assert!((ds.rope_base(45) - 1e4).abs() < 1e-3, "SWA base, not the 5e6 global");
+        assert_eq!(ds.clamp_exp(45), None, "the MTP blocks are unclamped");
+        assert_eq!(ds.clamp_shexp(45), None);
+        // The other two chained blocks are the same shape.
+        for il in [46u32, 47] {
+            assert!(ds.is_swa(il));
+            assert_eq!(ds.n_head(il), 96, "blk.{il}");
+            assert_eq!(ds.n_rot(il), 128, "blk.{il}");
+        }
+        // And layer 44 really is the FULL-attn one in this file too (so the fallback below lands
+        // on a genuinely different geometry, not a coincidence of the fixture).
+        assert!(!ds.is_swa(44));
+        assert_eq!(ds.n_head(44), 64);
+
+        // THE TRAP, and it is worse than a single wrong value: `Step35Config`'s two out-of-range
+        // fallbacks are DIFFERENT policies, so the trunk config answers about layer 45 with a
+        // geometry that is not any real layer.
+        //   * `is_swa` -> `unwrap_or(true)` (documented: every 3.7 MTP block is SWA-type), so the
+        //     window/rope questions accidentally come out RIGHT...
+        assert!(ts.is_swa(45), "is_swa's out-of-range fallback is `true`");
+        assert_eq!(ts.n_rot(45), 128, "...so the rotary width happens to match the truth");
+        assert!((ts.rope_base(45) - 1e4).abs() < 1e-3, "...and so does the base");
+        //   * ...but `n_head` -> `.last()`, i.e. the trunk's layer 44, which is a FULL-attn layer.
+        //     The result claims to be an SWA block with a full-attn head count.
+        assert!(!ts.is_swa(44), "the trunk's last layer is FULL-attn");
+        assert_eq!(ts.n_head(45), 64, "n_head's `.last()` fallback answers layer 44's 64");
+        assert_ne!(ts.n_head(45), ds.n_head(45), "the true count is 96 — a 1.5x shape error");
+        assert_ne!(tcfg.n_head_at(45), ds.n_head(45), "ModelConfig's accessor inherits the trap");
+        // Concretely, that mismatch is a projection-shape error, not a tuning nit: the real
+        // blk.45.attn_q.weight is [4096, 12288] = 96*128, so a 64-head reader builds q/attn
+        // buffers of 8192 and reads the wrong rows for 32 heads' worth of the output.
+        assert_eq!(ds.n_head(45) as usize * dcfg.head_dim_k as usize, 12288);
+        assert_ne!(ts.n_head(45) as usize * tcfg.head_dim_k as usize, 12288);
+        // The global scalar is no escape hatch either: it is the max over layers (96 here), which
+        // happens to match this block but would not on a sibling whose MTP block is full-attn.
+        assert_eq!(tcfg.n_head, 96);
     }
 
     /// The REAL artifact shape: the 2026-06 unsloth GLM-5.2 GGUF ships WITHOUT
