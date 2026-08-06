@@ -107,10 +107,53 @@ removed in CUDA 13.x — dropped the derived theoretical-BW print.)
 
 ---
 
-## Phase 1 — PP-2 state of the world on target silicon: IN PROGRESS
+## Phase 1 — PP-2 gate battery on target silicon: **GREEN, 0 failures**
 
-Vehicle: Qwen3.5-9B-NVFP4-MTP (5.7 GB) staged first as the fast gate vehicle (it is the
-model both M1 `pp2-gate` and M2 `ppn-gate` receipts were minted on — same-vehicle comparison
-across rigs), then the daily q27.
+Vehicle: Qwen3.5-9B-NVFP4-MTP (5.7 GB, n_layers 32, n_vocab 248320) — the same model class
+the M1 `pp2-gate` and M2 `ppn-gate` receipts were minted on, so this is a same-vehicle
+cross-rig comparison. Staged to `/scratch-models` on the box's local root NVMe.
+Driver: `run-pp2-gates.sh` (committed here), receipts `logs/gates/`.
 
-(rolling — updated as gates land)
+**This is the FIRST time the PP gates have ever run on an RTX PRO 6000 pair.** Prior
+receipts: M1/M2 on 8xH100 NVSwitch, single-GPU degenerate on the 5090. The 192 GB
+assessment named this as mandatory-before-listing. It is now done.
+
+| Gate | Config | Verdict |
+|---|---|---|
+| `kernel-check` (full battery) | naked | **ALL GREEN — kernels match CPU reference**, 0 FAIL lines |
+| `pp-transport-smoke` | 2 devices | **PASS** — canAccessPeer 1/1, peer-arm bytediff=0, 4 boundary roundtrips bytediff=0 |
+| `ppn-gate` N=2 singledev | serial | **PASS BIT-IDENTICAL** 48 steps (pipelined correctly skipped — quarantine NOTE fires) |
+| `ppn-gate` N=2 **dev01** | serial + pipelined | **PASS BIT-IDENTICAL** both arms |
+| `ppn-gate` N=2 **dev10** (reversed placement) | serial + pipelined | **PASS BIT-IDENTICAL** both arms |
+| `ppn-gate` N=2 dev01 `SHARD=0` | serial + pipelined | **PASS BIT-IDENTICAL** both arms (bring-up peer-read placement) |
+| `ppn-gate` N=2 dev01 `OVERLAP=1` | serial + pipelined | **PASS BIT-IDENTICAL** both arms |
+| `ppn-gate` N=2 dev01 `SPLITS=5` (off-center) | serial + pipelined | **PASS BIT-IDENTICAL** both arms |
+| `ppn-gate` N=2 `STREAMS=0` (inc-1 seam) | serial | **PASS BIT-IDENTICAL** (pipelined skipped by design) |
+| `ppn-gate` N=4 `dev=0,1,0,1` | serial | **PASS BIT-IDENTICAL** fence [0,8,16,24,32] |
+| `ppn-gate` N=4 `dev=0,0,1,1` | serial | **PASS BIT-IDENTICAL** |
+| `pp2-gate` legacy singledev | M1 semantics | **PASS BIT-IDENTICAL** |
+| `pp2-gate` legacy dev01 | M1 semantics | **PASS BIT-IDENTICAL** |
+| `run-gen` naked argmax (door shut) | q9 | **MATCH** (`prefill argmax=268 decode argmax=268`) |
+
+`script-detected failures: 0`.
+
+Notes worth keeping:
+- **Exactness vs single-GPU is proven the strong way, not the weak way.** `ppn-gate`'s
+  method is not "PP-2 output looks like 1-GPU output" — it records full `n_vocab` f32 logits
+  per step with the door OFF, then replays the identical token stream with the door ON and
+  compares every f32 *bit*. 48 steps x 248,320 logits, zero differing bits, on every arm.
+- **Both placement orders pass.** `dev01` and `dev10` are not symmetric in the engine (stage
+  0 owns the embed table + `pos_d`, the last stage owns `output_norm` + lm head, and the
+  primary engine's device is a third variable). `dev10` had never been gated; it passes.
+- **N=4 over 2 cards works on the serial arm** — the 2-stages-per-card shape a deeper split
+  on a pair would take. Its pipelined arm is correctly refused by the same-device quarantine
+  (2+ stage streams on one device), which is the right behavior, not a gap in this shape.
+- The quarantine plumbing behaves exactly as designed on new silicon: the NOTE fires on
+  `singledev`, `dev0101`, and `dev0011`; no arm silently ran an unsound placement.
+
+### Flake-arm repro on P2P silicon (the open quarantine question)
+
+The ~0.5% cross-device pipelined flake (1 failure in ~190 runs) was minted on
+**NVSwitch H100s / non-P2P 5090s**. Running x40 cross-device pipelined + x20 same-device on
+this native-P2P pair to see whether it reproduces here. Driver `run-pp2-soak.sh`, receipts
+`logs/soak/`. (Result below when it lands.)

@@ -1,0 +1,5 @@
+ppn-gate M2 config: stages=4 streams=per-stage overlap=0 devices=0,0,1,1 splits=default(even) shard=per-stage
+[pp] cross-device transport: stage0=dev0 stage1=dev0 stage2=dev1 stage3=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+stage fence: [0, 8, 16, 24, 32] over 32 layers
+ppn gate NOTE: pipelined arm skipped (2+ stage streams on one device is quarantined — repro'd 35% flake, research/m2-pp8-20260802/RESULTS.md; MEMRA_PP_FORCE_SAME_DEV_PIPELINED=1 forces for soak measurement)
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 8, 16, 24, 32]; stages=4 streams=per-stage overlap=0 devices=0,0,1,1 splits=default(even) shard=per-stage)

@@ -1,0 +1,4 @@
+ppn-gate M2 config: stages=2 streams=OFF(inc1 seam) overlap=0 devices=default(primary) splits=default(even) shard=per-stage
+stage fence: [0, 16, 32] over 32 layers
+ppn gate NOTE: pipelined arm skipped (MEMRA_PP_STREAMS=0 is serial-only)
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=OFF(inc1 seam) overlap=0 devices=default(primary) splits=default(even) shard=per-stage)
