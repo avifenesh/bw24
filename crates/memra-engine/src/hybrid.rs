@@ -717,6 +717,29 @@ pub struct DraftGeom {
     pub out_up: GpuTensor, // [d_inner -> n_embd]: carrier + head input up-projection
 }
 
+/// Which tensor is the DRAFT lm_head, for a standalone NextN/MTP draft GGUF whose block index is
+/// `n`. Preference order is the artifact's, not ours — upstream step35.cpp:553 is
+/// `layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output`.
+///
+/// Split out of `MtpHead::load_draft` purely so it is unit-testable: the loader needs a CUDA
+/// device and a multi-GB file, while the failure this guards is invisible to every exactness gate
+/// (a wrong head still produces CORRECT output — the verify arbitrates — it just accepts nothing).
+/// `has` is the tensor-presence predicate (`src.has`).
+pub fn draft_head_tensor(has: impl Fn(&str) -> bool, n: u32) -> String {
+    let own = format!("blk.{n}.nextn.shared_head_head.weight");
+    if has(&own) {
+        return own;
+    }
+    // Legacy name kept as a probe so anything that ever matched it still does; no shipped
+    // artifact or upstream mapping uses it (see the `load_draft` note).
+    let legacy = format!("blk.{n}.nextn.shared_head.weight");
+    if has(&legacy) {
+        return legacy;
+    }
+    // FR-Spec / tied-head drafts: the file-level head IS the draft head.
+    "output.weight".to_string()
+}
+
 impl MtpHead {
     /// Load an MTP/NextN head from a STANDALONE draft GGUF (MEMRA_MTP_DRAFT override). The draft
     /// file carries ONLY the NextN block (blk.N.nextn.* glue + attn/ffn) plus its own lm_head
@@ -846,10 +869,11 @@ impl MtpHead {
         // FR-Spec drafts (trimmed [n_embd, draft_vocab] + d2t) publish the trimmed head as the
         // file-level `output.weight` and carry no `nextn.shared_head_head`, so they keep the
         // fallback — hence preference, not replacement.
-        let head = match load_opt(e, &src, &p("nextn.shared_head_head.weight"))? {
-            Some(t) => t,
-            None => load_t(e, &src, "output.weight")?,
-        };
+        // Name choice is factored into `draft_head_tensor` so it is testable WITHOUT a GPU or a
+        // 3.5 GB artifact (this whole function needs both). Getting it wrong is invisible to
+        // every exactness gate, so the choice itself is pinned by a unit test.
+        let head_name = draft_head_tensor(|t| src.has(t), n);
+        let head = load_t(e, &src, &head_name)?;
         let head_norm = match load_opt(e, &src, &p("nextn.shared_head_norm.weight"))? {
             Some(t) => Some(t),
             None => load_opt(e, &src, "output_norm.weight")?,
@@ -920,13 +944,14 @@ impl MtpHead {
         } else {
             None
         };
+        // Log the name WITHOUT the blk.{n}. prefix (already printed) so the line reads
+        // `source=nextn.shared_head_head` vs `source=output.weight` — the one-glance receipt
+        // that the head choice went the right way on this artifact.
+        let blk_prefix = format!("blk.{n}.");
+        let head_src = head_name.strip_prefix(&blk_prefix).unwrap_or(&head_name);
         eprintln!(
             "[mtp-draft] external draft head: blk.{n}, source={}, head_vocab={}{}{}",
-            if src.has(&p("nextn.shared_head_head.weight")) {
-                "nextn.shared_head_head"
-            } else {
-                "output.weight"
-            },
+            head_src,
             head.out_features(),
             if d2t.is_some() {
                 " (trimmed, d2t map)"
@@ -1824,5 +1849,103 @@ impl HybridModel {
         }
         let x = self.embd.gather(n_embd, tokens);
         Ok(e.htod(&x)?)
+    }
+}
+
+#[cfg(test)]
+mod draft_head_tests {
+    use super::draft_head_tensor;
+
+    /// Names present in the real Step-3.7-Flash MTP drafter (Step3.7-flash-mtp-Q8_0.gguf), as
+    /// enumerated by the on-disk byte probe in
+    /// research/step37-p2-20260806/raw/draft-head-tensor-hashes-20260807.txt.
+    /// Both candidate heads exist in that file with IDENTICAL [4096, 128896] Q8_0 shape, so no
+    /// shape or dtype check can distinguish them — only the sha256 of the payload could, and it
+    /// showed them to be different matrices (blk.45 head c90b907b… vs output.weight 3eec5831…).
+    const STEP37_DRAFTER: &[&str] = &[
+        "output.weight",
+        "output_norm.weight",
+        "token_embd.weight",
+        "blk.45.nextn.shared_head_norm.weight",
+        "blk.45.nextn.shared_head_head.weight",
+        "blk.46.nextn.shared_head_head.weight",
+        "blk.47.nextn.shared_head_head.weight",
+    ];
+
+    fn present(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |t: &str| names.contains(&t)
+    }
+
+    /// THE REGRESSION. Reading `output.weight` off this drafter cost acceptance 0/248 across
+    /// K=1..8 with self-consistency PASS at every K — correct output, dead speculation, no gate
+    /// red (raw/mtp-draft-20260806T212902Z.log). The drafter's top-level output stack is a
+    /// re-quantized COPY OF THE TRUNK'S (its output_norm is byte-identical to the trunk's,
+    /// d7526f44…), so it is the standalone-decode head, not the MTP head. Preferring
+    /// blk.45.nextn.shared_head_head took K=1 to 14/18 = 77.8%
+    /// (raw/mtp-draft-PASS-20260806T215132Z.log).
+    #[test]
+    fn step37_drafter_prefers_the_blocks_own_nextn_head_over_file_level_output() {
+        assert_eq!(
+            draft_head_tensor(present(STEP37_DRAFTER), 45),
+            "blk.45.nextn.shared_head_head.weight"
+        );
+    }
+
+    /// Each NextN block owns a DIFFERENT head (c90b907b / a22d2957 / 4b21e137 — a shared head
+    /// would have collided), so the name must be built from the block index, never hardcoded.
+    /// This is what multi-block chaining (45->46->47) will index when it lands.
+    #[test]
+    fn each_nextn_block_selects_its_own_head() {
+        for n in 45..=47u32 {
+            assert_eq!(
+                draft_head_tensor(present(STEP37_DRAFTER), n),
+                format!("blk.{n}.nextn.shared_head_head.weight")
+            );
+        }
+    }
+
+    /// FR-Spec / tied-head drafts publish the (possibly vocab-trimmed) head as the file-level
+    /// `output.weight` and ship no nextn head. They must keep working — hence preference, not
+    /// replacement.
+    #[test]
+    fn draft_without_a_nextn_head_falls_back_to_file_level_output() {
+        let fr_spec: &[&str] = &["output.weight", "output_norm.weight", "d2t.weight"];
+        assert_eq!(draft_head_tensor(present(fr_spec), 45), "output.weight");
+    }
+
+    /// The legacy `nextn.shared_head` probe sits between the two: no shipped artifact and no
+    /// upstream mapping uses it (upstream is LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD ->
+    /// "blk.%d.nextn.shared_head_head"), but anything that ever matched it still must, and it
+    /// must never win over the real name.
+    #[test]
+    fn legacy_shared_head_is_probed_but_loses_to_shared_head_head() {
+        let legacy_only: &[&str] = &["output.weight", "blk.45.nextn.shared_head.weight"];
+        assert_eq!(
+            draft_head_tensor(present(legacy_only), 45),
+            "blk.45.nextn.shared_head.weight"
+        );
+
+        let both: &[&str] = &[
+            "output.weight",
+            "blk.45.nextn.shared_head.weight",
+            "blk.45.nextn.shared_head_head.weight",
+        ];
+        assert_eq!(
+            draft_head_tensor(present(both), 45),
+            "blk.45.nextn.shared_head_head.weight"
+        );
+    }
+
+    /// A drafter whose nextn head belongs to a DIFFERENT block must not be borrowed: asking for
+    /// block 45 in a file that only carries 46/47 falls back rather than silently mismatching
+    /// the geometry the trunk verified against.
+    #[test]
+    fn a_different_blocks_nextn_head_is_never_borrowed() {
+        let wrong_block: &[&str] = &[
+            "output.weight",
+            "blk.46.nextn.shared_head_head.weight",
+            "blk.47.nextn.shared_head_head.weight",
+        ];
+        assert_eq!(draft_head_tensor(present(wrong_block), 45), "output.weight");
     }
 }
