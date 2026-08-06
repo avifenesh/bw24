@@ -22,8 +22,18 @@ back at 0 it runs its whole next B128 burst (~1.2-1.3s at ~27ms/round) before th
 newcomer's first burst (prime + first round + first flush) ever runs. The residual 1.3s
 IS that full peer burst, not admission.
 
-ITERATION (once): extend the round-boundary yield — a burst also ends early while a
-PEER active session has not emitted its first token yet (generated.is_empty()). Bounded
-to the first-emission window: once every active session has emitted, bursts run full
-length (steady-state c=8 throughput untouched except the admission transient). Re-measure
-same cell after.
+ITERATION (once): COLD-FIRST spec ordering — phase (a) steps sessions that have emitted
+nothing yet (generated.is_empty(), per-request) before any mid-generation peer. Stable
+sort (FIFO within cold/warm classes); session order across independent sessions is
+content-neutral (each owns its cache/scratch). Gated behind the same MEMRA_ADMIT_YIELD
+seam. Re-measured, same cell, same harness (run-iter1.sh; logs/points-iter1.jsonl):
+
+| arm                                | contended first text (median of 3) | runs (s)          |
+|------------------------------------|------------------------------------|-------------------|
+| yield+coldfirst ON                 | 0.149s                             | 0.111, 0.149, 0.151 |
+| yield OFF (coldfirst still active*) | 1.44s                             | 0.74, 1.44, 1.63  |
+
+*the iter1 yield=0 arm ran the pre-gate build where the sort applied unconditionally;
+the committed code gates BOTH pieces behind MEMRA_ADMIT_YIELD, so off = full pre-lane
+behavior. Receipt verdict: 1.61s -> 0.149s — PAST the 0.6s bar, contended first-text
+at B128 now matches the solo class (sse-cadence solo: 0.124s). FULL EVAL proceeds.

@@ -1487,13 +1487,21 @@ pub fn run(
             // moved the wait: the newcomer admitted at tick top, then the background session
             // (lower index) ran its whole NEXT B128 burst (~1.2s) before the newcomer's
             // prime ever flushed (first-result.log: fix-on 1.30s vs fix-off 1.61s — the
-            // residual IS that peer burst). Stable sort: FIFO within cold and warm classes;
-            // session order across independent sessions is content-neutral (each owns its
-            // cache/scratch — greedy byte-identity gates verify).
+            // residual IS that peer burst). With it: 0.149s median (iter1 receipt). Stable
+            // sort: FIFO within cold and warm classes; session order across independent
+            // sessions is content-neutral (each owns its cache/scratch — greedy byte-identity
+            // gates verify). Shares the MEMRA_ADMIT_YIELD=0 rollback seam: off restores the
+            // full pre-lane behavior (index order + full-burst holds) in one flag.
             let mut spec_order: Vec<usize> = (0..active.len())
                 .filter(|&i| active[i].spec.is_some())
                 .collect();
-            spec_order.sort_by_key(|&i| !active[i].generated.is_empty());
+            let admit_yield_on = {
+                static Y: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *Y.get_or_init(|| std::env::var("MEMRA_ADMIT_YIELD").as_deref() != Ok("0"))
+            };
+            if admit_yield_on {
+                spec_order.sort_by_key(|&i| !active[i].generated.is_empty());
+            }
             for i in spec_order {
                 if finished.contains(&i) { continue; }
                 match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
