@@ -47,6 +47,10 @@ name = "k27div-probe"
 path = "src/bin/k27div_probe.rs"
 
 [[bin]]
+name = "argmax-margin-probe"
+path = "src/bin/argmax_margin_probe.rs"
+
+[[bin]]
 name = "kernel-check"
 path = "src/bin/kernel_check.rs"
 
