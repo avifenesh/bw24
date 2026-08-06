@@ -283,6 +283,17 @@ pub fn batch_pp_on() -> bool {
     std::env::var("MEMRA_BATCH_PP").as_deref() != Ok("0")
 }
 
+/// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).
+/// Default ON — with the ppN door open the verify forward (`decode_step_t_core_ppn`) takes its
+/// own stage split exactly as the eager and batched steps do. Setting 0 sends verify back through
+/// the unsplit trunk walk, which under a sharded cross-device placement is then caught by
+/// `refuse_unsplit_if_remote` (the 28x peer-read regime) rather than running silently. Exists so
+/// the bit-identity gate can A/B split vs unsplit IN ONE PROCESS against the same loaded weights
+/// — read per verify call, never memoized, for that reason.
+pub fn spec_pp_on() -> bool {
+    std::env::var("MEMRA_SPEC_PP").as_deref() != Ok("0")
+}
+
 /// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
 /// pipelining seed). Default OFF — scheduling structure only, never math. Read per step
 /// so gates can A/B in-process.

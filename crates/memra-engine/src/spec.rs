@@ -1323,17 +1323,29 @@ impl HybridModel {
         mut ckpt: Option<&mut VerifyCkpt>,
         stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>,
     ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        // PP DOOR: fail closed (pp2-hardening 2026-08-06). This is the single funnel every
-        // verify forward reaches (decode_step_t / _h / _h_emb / _h_emb_dev / _core all land
-        // here), and its trunk walk is unsplit on one stream — so a sharded cross-device
-        // placement would peer-read every remote layer's weights on every spec round.
-        // Guarding the funnel rather than the five public wrappers is deliberate: a new
-        // wrapper inherits the guard instead of forgetting it.
+        // PP DOOR (lane/pp2-spec 2026-08-06): the verify trunk now takes its OWN stage split,
+        // exactly as the eager and batched steps do. This is the single funnel every verify
+        // forward reaches (decode_step_t / _h / _h_emb / _h_emb_dev / _core all land here), so
+        // wiring it here wires the whole spec surface — the draft/accept/commit machinery above
+        // is untouched.
+        //
+        // History: pp2-hardening (2026-08-06) made this funnel FAIL CLOSED, because its trunk
+        // walk was unsplit on one stream and a sharded cross-device placement peer-read every
+        // remote layer's weights on every spec round (measured 13.9-28x on the batched twin).
+        // The refusal below survives to cover the residue — MEMRA_SPEC_PP=0, MEMRA_PP_STREAMS=0,
+        // or a placement whose PpNRt fails to build — so a config that would still walk the
+        // whole trunk on one stream refuses instead of regressing 28x.
+        if let Some(fence) = crate::pp::pp_cuts(self.layers.len()) {
+            if !crate::pp::pp2_streams_off() && crate::pp::spec_pp_on() {
+                return self.decode_step_t_core_ppn(
+                    e, tokens, pos0, cache, embd_dev, ckpt.take(), stream, &fence,
+                );
+            }
+        }
         crate::pp::refuse_unsplit_if_remote(
             "decode_step_t (spec verify)",
-            "spec over PP-2 is an open bill item — it needs the batched trunk stage-split \
-             first (verify is a batched T=K+1 forward); until then run spec on one device, \
-             or serve non-spec over the eager pp arm",
+            "drop MEMRA_SPEC_PP=0 / MEMRA_PP_STREAMS=0 so the verify trunk takes its OWN stage \
+             split (decode_step_t_core_ppn); or run spec on one device",
         )?;
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -1352,7 +1364,7 @@ impl HybridModel {
         };
 
         // embed T tokens -> [T, n_embd] token-major (device gather on the spec hot loop)
-        let mut x = match (stream, embd_dev) {
+        let x = match (stream, embd_dev) {
             (Some((vtok, _)), Some((g, qt, rb))) => {
                 e.embed_gather_device_td(g, vtok, t, n_embd, qt, rb)?
             }
@@ -1360,6 +1372,203 @@ impl HybridModel {
             _ => e.htod(&self.embd.gather(n_embd, tokens))?,
         };
 
+        // TRUNK WALK: layers [0, n_layers) through the SAME range-scoped subgraph the PP-N
+        // stage split calls per stage (`verify_layers`) — one code path, so the split cannot
+        // drift from the unsplit dispatch mirroring. lane/pp2-spec 2026-08-06.
+        let x = self.verify_layers(
+            e, x, 0, self.layers.len(), &pos_d, t, cache, ckpt.take(), stream,
+        )?;
+
+        let mut hn = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode
+        e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
+        // stream: the device pos counter owns position; host mirror reconciles at drain.
+        if stream.is_none() {
+            cache.pos += t;
+        }
+        // Hidden stack for seeds/refresh-fills: pre-norm x (default) or post-norm hn (HPOST).
+        Ok((logits, if spec_hpost() { hn } else { x }))
+    }
+
+    /// THE VERIFY TRUNK OVER PP-N (lane/pp2-spec 2026-08-06): `decode_step_t_core_stream`'s walk
+    /// as N stage subgraphs, each on its own engine/stream (and, under `MEMRA_PP_DEVICES`, its own
+    /// device), with a `[T, n_embd]` boundary transfer between them. T = K+1 (the verify batch),
+    /// so this is the batched-boundary shape the pp2-batch lane's grow-only slots already handle
+    /// (`tx(b, x, t*n_embd)`; the slot grows to the high-water T and the transport moves exactly
+    /// the payload).
+    ///
+    /// Structure is `decode_step_batch_ppn`'s, which is `decode_step_h_ppn`'s. FOUR THINGS ARE
+    /// PER-STAGE and each for a measured reason (see `decode_step_batch_ppn`'s header for the
+    /// receipts):
+    ///
+    /// 1. THE ENGINE (`rt.engine(s, e)`) — `Engine` owns lazily-grown stable-pointer scratch
+    ///    (`fa_part_pool`, `fa_vf16_scratch`, `argmax_partials`) that is single-stream-safe BY
+    ///    DESIGN. Two stage streams through one Engine is the 2026-08-02 shared-scratch race
+    ///    (35% flake, nondeterministic all-logits divergence). `PpNRt::build` gives every stage
+    ///    s>0 its own Engine even on the primary device; honouring it here is what scopes the
+    ///    pools. The verify path allocates MORE of that scratch than eager decode does (FA at
+    ///    m=T, and the per-layer `GdnStash` retains), so this is load-bearing, not inherited.
+    ///
+    /// 2. `pos_d` — each stage uploads its OWN copy of the T rope positions on ITS stream, so the
+    ///    buffer is allocated, consumed and freed on one stream. In `stream` mode that means each
+    ///    stage runs its own `pos_iota` over the SHARED device counter (`pos_ctr`): the counter is
+    ///    read-only during the forward (the round's `inc`/`copy_add` happen outside it), so every
+    ///    stage derives the identical iota, and each stage's own output buffer is stream-local.
+    ///
+    /// 3. THE EMBED lives with stage 0 (`self.embd` / `embd_gpu` are host/primary-side; the
+    ///    sharded loader leaves the table with stage 0 by construction).
+    ///
+    /// 4. THE HEAD (`output_norm` + `output`) runs on the LAST stage — the sharded loader uploaded
+    ///    both through that stage's engine (`hybrid.rs`: `e_head = layer_engine(e, n_trunk,
+    ///    n_trunk-1)`), so reading them anywhere else is a peer read of the biggest tensor in the
+    ///    model, every round.
+    ///
+    /// WHAT STAYS ON THE PRIMARY, deliberately: the returned logits and hidden stack `x`. Both are
+    /// last-stage-allocated device buffers, and every consumer (the device argmax walk, the accept
+    /// kernels, `spec_seed_gather`, the ckpt rebuild in `commit_verified_prefix`) reads them
+    /// through the primary context by UVA — the same read the batched serving epilogue's
+    /// `last_logits_dev` park does. Those consumers are per-round O(T x n_vocab) and O(n_embd),
+    /// not per-layer, so they are not the 28x class; splitting them is a separate lane.
+    ///
+    /// The MTP HEAD (draft side) is NOT split: it is one block, it lives wherever the loader put
+    /// it (`load_mtp` uses the primary engine), and it is ~1-2 GB against the trunk's tens. Draft
+    /// placement is measured, not assumed — see `research/pp2-spec-20260806`.
+    ///
+    /// EXACTNESS: PP-N adds ZERO deviation. Each stage runs the SAME kernels on the SAME bytes in
+    /// the same order via the SAME `verify_layers` the unsplit body calls; the only change is
+    /// where the residual is materialized, and the boundary is a straight f32 copy (dtod
+    /// same-device / `cudaMemcpyPeerAsync` cross-device, no conversion). So the split MUST be
+    /// BIT-IDENTICAL to the unsplit verify at the same T, in both placement orders. Gate:
+    /// `decode-batch-gate --mode ppspec`. Acceptance counts are a DERIVED consequence — greedy
+    /// accept argmaxes these logits, so bit-identical logits force identical accept walks; the
+    /// `run-spec` K=1..8 arm checks that end-to-end rather than trusting the implication.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_step_t_core_ppn(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+        mut ckpt: Option<&mut VerifyCkpt>,
+        stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>,
+        fence: &[usize],
+    ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        assert!(
+            !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
+            "decode_step_t_core_ppn covers the hybrid non-gemma4 verify trunk only \
+             (the gemma4 arms have their own decode_step_t twins)"
+        );
+        let rt = crate::pp::PpNRt::get(e)?;
+        let n_st = fence.len() - 1;
+        assert_eq!(
+            rt.n_stages(), n_st,
+            "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
+        );
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let t = tokens.len();
+        let payload = t * n_embd;
+
+        // Per-stage rope positions: in host mode the same [T] iota each stage uploads itself; in
+        // stream mode each stage's own `pos_iota` over the shared read-only device counter.
+        let stage_pos = |es: &Engine| -> Result<CudaSlice<i32>, Box<dyn std::error::Error>> {
+            match stream {
+                Some((_, ctr)) => {
+                    let mut p = es.alloc_uninit::<i32>(t)?;
+                    es.pos_iota(ctr, &mut p, t)?;
+                    Ok(p)
+                }
+                None => {
+                    let pos_vec: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+                    es.htod_i32(&pos_vec)
+                }
+            }
+        };
+
+        // ---- STAGE 0: embed (the table lives with stage 0) + layers [0, fence[1]) + TX ----
+        let mut slot = {
+            let _st0 = rt.enter(0);
+            let e0 = rt.engine(0, e);
+            let pos_d = stage_pos(e0)?;
+            let x = match (stream, embd_dev) {
+                (Some((vtok, _)), Some((g, qt, rb))) => {
+                    e0.embed_gather_device_td(g, vtok, t, n_embd, qt, rb)?
+                }
+                (None, Some((g, qt, rb))) => e0.embed_gather_device_t(g, tokens, n_embd, qt, rb)?,
+                _ => e0.htod(&self.embd.gather(n_embd, tokens))?,
+            };
+            let x = self.verify_layers(
+                e0, x, fence[0], fence[1], &pos_d, t, cache, ckpt.as_deref_mut(), stream,
+            )?;
+            rt.tx(0, &x, payload)?
+            // x + pos_d drop here: freed stream-ordered on stage-0's stream after use.
+        };
+
+        // ---- MIDDLE STAGES: RX boundary s-1 -> range -> TX boundary s ----
+        for s in 1..n_st - 1 {
+            let _st = rt.enter(s);
+            let es = rt.engine(s, e);
+            let pos_d = stage_pos(es)?;
+            let x = rt.rx(s - 1, slot, payload)?;
+            let x = self.verify_layers(
+                es, x, fence[s], fence[s + 1], &pos_d, t, cache, ckpt.as_deref_mut(), stream,
+            )?;
+            slot = rt.tx(s, &x, payload)?;
+        }
+
+        // ---- LAST STAGE: RX + final range + output_norm + lm head ----
+        let _stl = rt.enter(n_st - 1);
+        let el = rt.engine(n_st - 1, e);
+        let pos_d = stage_pos(el)?;
+        let x = rt.rx(n_st - 2, slot, payload)?;
+        let x = self.verify_layers(
+            el, x, fence[n_st - 1], fence[n_st], &pos_d, t, cache, ckpt.as_deref_mut(), stream,
+        )?;
+
+        let mut hn = vbuf(el, payload)?; // fully written by rms_norm_decode
+        el.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let logits = el.matmul_decode_exact(&self.output, &hn, t)?;
+        // stream: the device pos counter owns position; host mirror reconciles at drain.
+        if stream.is_none() {
+            cache.pos += t;
+        }
+        Ok((logits, if spec_hpost() { hn } else { x }))
+    }
+
+    /// PP-N STAGE SUBGRAPH of the verify trunk: layers `[lo, hi)` of `decode_step_t_core_stream`'s
+    /// walk, verbatim. Enters with a MATERIALIZED `[T, n_embd]` residual (no pending fusion pair
+    /// carried in from outside the range) and exits with the range's final residual materialized
+    /// (the trailing add executed) — exactly the `decode_layers_eager(lo, hi)` contract, T rows
+    /// instead of one.
+    ///
+    /// EXTRACTED (lane/pp2-spec 2026-08-06) rather than duplicated: `decode_step_t_core_stream` IS
+    /// the single funnel every verify forward reaches, and its per-layer dispatch MIRRORING (norm
+    /// fusion per layer, the t>=3/spec_m2 batched-linear window, the fused-q8 FFN chain, the
+    /// decode-exact projections) is what makes verify bit-identical to eager decode. A second copy
+    /// for the split arm is how those mirrors drift apart on the next lever. The unsplit body now
+    /// calls this with `(0, n_layers)`, so the whole-trunk path and every stage range run the SAME
+    /// code — there is no "split version" of the verify math.
+    ///
+    /// Bit-identity of a cut rests on the same kernel-check-pinned identity the eager arm's cut
+    /// does — `add_rms_norm_q8_1 == add then rms_norm_q8_1` at nrows=T — because the ONLY thing a
+    /// fence changes is that the cross-layer fusion carry breaks at `hi-1` and is re-materialized
+    /// as an explicit `add`. `decode-batch-gate --mode ppspec` verifies end-to-end on real weights.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_layers(
+        &self,
+        e: &Engine,
+        mut x: CudaSlice<f32>,
+        lo: usize,
+        hi: usize,
+        pos_d: &CudaSlice<i32>,
+        t: usize,
+        cache: &mut Cache,
+        mut ckpt: Option<&mut VerifyCkpt>,
+        stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
         // CROSS-LAYER ADD+NORM FUSION (lane/vt-fixes fix 2, mirroring decode_step_h's
         // launch-arc form): layer il's post-FFN residual add (x2 = x1 + ffn_out) and layer
         // il+1's attn_norm(+quantize) are consecutive row-wise ops — ONE add_rms_norm_q8_1
@@ -1368,7 +1577,8 @@ impl HybridModel {
         // residual the next layer needs) as its `res` output. Falls back to the separate add
         // when the next layer is off the fused-q8 path.
         let mut pending: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
-        for (il, layer) in self.layers.iter().enumerate() {
+        for il in lo..hi {
+            let layer = &self.layers[il];
             // DISPATCH-MIRRORED attn-input RMSNorm (FP-order lesson #8): eager decode fuses the
             // 1024-thread rms_norm_q8_1 ONLY when every mixer projection is q8_1-fast; layers with
             // Float projections (ssm_beta/ssm_alpha on layers 1/2/4 of the 9B NVFP4 GGUF) take the
@@ -1427,7 +1637,7 @@ impl HybridModel {
 
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => {
-                    self.full_attn_verify(e, fa, &h, h_q8_ref, &pos_d, t, cache, il,
+                    self.full_attn_verify(e, fa, &h, h_q8_ref, pos_d, t, cache, il,
                                           stream.map(|(_, c)| c))?
                 }
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
@@ -1624,24 +1834,15 @@ impl HybridModel {
             // kernel-check-pinned at nrows=T). Non-fused next layers add explicitly above.
             pending = Some((x1, ffn_out));
         }
-        // final layer's add (no next norm to fuse with — output_norm is f32-out)
+        // RANGE's final add (no next norm INSIDE the range to fuse with; for the
+        // whole-trunk call that is the last layer, whose next norm is output_norm — f32-out).
         if let Some((x1p, f1p)) = pending.take() {
             let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
             e.add(&x1p, &f1p, &mut x2, t * n_embd)?;
             x = x2;
         }
-
-        let mut hn = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode
-        e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
-        // stream: the device pos counter owns position; host mirror reconciles at drain.
-        if stream.is_none() {
-            cache.pos += t;
-        }
-        // Hidden stack for seeds/refresh-fills: pre-norm x (default) or post-norm hn (HPOST).
-        Ok((logits, if spec_hpost() { hn } else { x }))
+        Ok(x)
     }
-
     /// BATCHED linear-attn verify (T=K+1): the whole layer in ~10 launches instead of T x the
     /// T=1 decode chain (T x ~12 launches + T weight reads of the four projections). The GDN
     /// recurrence itself is inherently sequential — gdn_scan_s128 runs its internal t-loop with
@@ -2515,7 +2716,13 @@ impl HybridModel {
         max_ctx: usize,
     ) -> Result<SpecSession, Box<dyn std::error::Error>> {
         Ok(SpecSession {
-            cache: Cache::new(e, &self.cfg, max_ctx)?,
+            // STAGE-OWNED KV (lane/pp2-spec 2026-08-06): `pp::new_cache`, not `Cache::new`. This
+            // is the SERVING spec-session path, and with the ppN door open across two cards a
+            // primary-homed cache makes every remote stage peer-read its OWN KV on every verify
+            // round — the wrong-card class already fixed on the two batched serving paths
+            // (worker.rs 2483 / 2837). With the door shut `new_cache` IS `Cache::new` (same
+            // branch, same allocations), so single-device behavior is byte-unchanged.
+            cache: crate::pp::new_cache(e, &self.cfg, max_ctx)?,
             scratch: MtpScratch::new(
                 e,
                 &self.cfg,
@@ -2863,7 +3070,9 @@ impl HybridModel {
                 )
             }
             None => {
-                own_cache = Cache::new(e, &self.cfg, max_ctx)?;
+                // STAGE-OWNED KV (lane/pp2-spec 2026-08-06) — see `new_session`. Door shut =
+                // `Cache::new` verbatim.
+                own_cache = crate::pp::new_cache(e, &self.cfg, max_ctx)?;
                 // Persistent scratch = max_ctx rows (~2KB/token quantized).
                 own_scratch = MtpScratch::new(
                     e,
@@ -5071,7 +5280,8 @@ impl HybridModel {
         let n_embd = self.cfg.n_embd as usize;
         let t_total = tokens.len();
         assert!(t_total >= 8, "corpus too short ({t_total} tokens)");
-        let mut cache = Cache::new(e, &self.cfg, t_total + k + 8)?;
+        // STAGE-OWNED KV (lane/pp2-spec 2026-08-06) — see `new_session`. Door shut = `Cache::new`.
+        let mut cache = crate::pp::new_cache(e, &self.cfg, t_total + k + 8)?;
         let mut scratch = MtpScratch::new(
             e,
             &self.cfg,
