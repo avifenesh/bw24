@@ -1,0 +1,368 @@
+=== accprobe MMA-form A/B  2026-08-06T17:06:32+03:00 ===
+host: avifenesh  gpu: NVIDIA GeForce RTX 5090 Laptop GPU
+blksc md5: ddd1594e3b02c944ad64513d7326d194
+plain md5: dfefa1d6866b8918bb0743d92db6c103
+concurrent compute-apps at start:
+pid, used_gpu_memory [MiB]
+144655, 332 MiB
+--- dist=wide m=512 reps=9 pair=1 arm=blksc ---
+56, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.5989      0.6301    0.950x       -5.0       107.6       102.2
+k/v_proj 5120->1024               0.1165      0.1212    0.962x       -3.8        46.1        44.3
+o_proj 6144->5120                 0.2798      0.2881    0.971x       -2.9       115.1       111.8
+gate/up_proj 5120->17408          0.8732      0.9464    0.923x       -7.7       104.5        96.4
+down_proj 17408->5120             0.7920      0.8591    0.922x       -7.8       115.2       106.2
+square-ref 5120->5120             0.2379      0.2452    0.970x       -3.0       112.8       109.5
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9495x  =>  delta_pp -5.1
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=wide m=512 pair=1
+--- dist=wide m=512 reps=9 pair=1 arm=plain ---
+57, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.7616      0.6328    1.204x      +20.4        84.6       101.8
+k/v_proj 5120->1024               0.1515      0.1219    1.243x      +24.3        35.4        44.1
+o_proj 6144->5120                 0.3569      0.2899    1.231x      +23.1        90.2       111.1
+gate/up_proj 5120->17408          1.0875      0.9454    1.150x      +15.0        83.9        96.5
+down_proj 17408->5120             1.0165      0.8733    1.164x      +16.4        89.8       104.5
+square-ref 5120->5120             0.3006      0.2463    1.220x      +22.0        89.3       109.0
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2016x  =>  delta_pp +20.2
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=wide m=512 pair=1
+--- dist=wide m=512 reps=9 pair=2 arm=blksc ---
+58, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.5987      0.6303    0.950x       -5.0       107.6       102.2
+k/v_proj 5120->1024               0.1160      0.1208    0.960x       -4.0        46.3        44.4
+o_proj 6144->5120                 0.2800      0.2884    0.971x       -2.9       115.0       111.7
+gate/up_proj 5120->17408          0.8754      0.9442    0.927x       -7.3       104.3        96.7
+down_proj 17408->5120             0.7941      0.8652    0.918x       -8.2       114.9       105.5
+square-ref 5120->5120             0.2375      0.2446    0.971x       -2.9       113.0       109.7
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9492x  =>  delta_pp -5.1
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=wide m=512 pair=2
+--- dist=wide m=512 reps=9 pair=2 arm=plain ---
+57, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.7607      0.6302    1.207x      +20.7        84.7       102.2
+k/v_proj 5120->1024               0.1515      0.1213    1.249x      +24.9        35.4        44.3
+o_proj 6144->5120                 0.3577      0.2896    1.235x      +23.5        90.1       111.2
+gate/up_proj 5120->17408          1.0857      0.9485    1.145x      +14.5        84.1        96.2
+down_proj 17408->5120             1.0132      0.8702    1.164x      +16.4        90.1       104.9
+square-ref 5120->5120             0.3000      0.2454    1.223x      +22.3        89.5       109.4
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2033x  =>  delta_pp +20.3
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=wide m=512 pair=2
+--- dist=wide m=512 reps=9 pair=3 arm=blksc ---
+58, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.6002      0.6307    0.952x       -4.8       107.3       102.1
+k/v_proj 5120->1024               0.1164      0.1211    0.962x       -3.8        46.1        44.3
+o_proj 6144->5120                 0.2802      0.2897    0.967x       -3.3       115.0       111.2
+gate/up_proj 5120->17408          0.8732      0.9400    0.929x       -7.1       104.5        97.1
+down_proj 17408->5120             0.7918      0.8630    0.917x       -8.3       115.3       105.8
+square-ref 5120->5120             0.2371      0.2438    0.972x       -2.8       113.2       110.1
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9496x  =>  delta_pp -5.0
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=wide m=512 pair=3
+--- dist=wide m=512 reps=9 pair=3 arm=plain ---
+58, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.7616      0.6313    1.206x      +20.6        84.6       102.1
+k/v_proj 5120->1024               0.1518      0.1212    1.252x      +25.2        35.4        44.3
+o_proj 6144->5120                 0.3583      0.2906    1.233x      +23.3        89.9       110.8
+gate/up_proj 5120->17408          1.0846      0.9485    1.143x      +14.3        84.2        96.2
+down_proj 17408->5120             1.0154      0.8698    1.167x      +16.7        89.9       104.9
+square-ref 5120->5120             0.3012      0.2450    1.229x      +22.9        89.1       109.5
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2046x  =>  delta_pp +20.5
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=wide m=512 pair=3
+--- dist=wide m=6257 reps=5 pair=1 arm=blksc ---
+61, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                6.6037      6.9661    0.948x       -5.2       119.2       113.0
+k/v_proj 5120->1024               0.5705      0.5877    0.971x       -2.9       115.0       111.6
+o_proj 6144->5120                 3.1634      3.3075    0.956x       -4.4       124.4       119.0
+gate/up_proj 5120->17408          9.7077     10.8355    0.896x      -10.4       114.9       102.9
+down_proj 17408->5120             9.1049     10.1834    0.894x      -10.6       122.5       109.5
+square-ref 5120->5120             2.6581      2.7776    0.957x       -4.3       123.4       118.1
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9365x  =>  delta_pp -6.3
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=wide m=6257 pair=1
+--- dist=wide m=6257 reps=5 pair=1 arm=plain ---
+62, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                8.6455      6.9802    1.239x      +23.9        91.1       112.8
+k/v_proj 5120->1024               0.7346      0.5907    1.244x      +24.4        89.3       111.1
+o_proj 6144->5120                 4.1607      3.3095    1.257x      +25.7        94.6       118.9
+gate/up_proj 5120->17408         12.3492     10.8281    1.140x      +14.0        90.3       103.0
+down_proj 17408->5120            11.9476     10.1950    1.172x      +17.2        93.4       109.4
+square-ref 5120->5120             3.4842      2.7848    1.251x      +25.1        94.2       117.8
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2163x  =>  delta_pp +21.6
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=wide m=6257 pair=1
+--- dist=wide m=6257 reps=5 pair=2 arm=blksc ---
+63, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                6.6123      6.9733    0.948x       -5.2       119.1       112.9
+k/v_proj 5120->1024               0.5719      0.5891    0.971x       -2.9       114.7       111.4
+o_proj 6144->5120                 3.1645      3.3055    0.957x       -4.3       124.4       119.1
+gate/up_proj 5120->17408          9.7354     10.8024    0.901x       -9.9       114.6       103.3
+down_proj 17408->5120             9.1071     10.1920    0.894x      -10.6       122.5       109.4
+square-ref 5120->5120             2.6610      2.7768    0.958x       -4.2       123.3       118.1
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9378x  =>  delta_pp -6.2
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=wide m=6257 pair=2
+--- dist=wide m=6257 reps=5 pair=2 arm=plain ---
+61, 1830 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                8.6489      6.9760    1.240x      +24.0        91.0       112.9
+k/v_proj 5120->1024               0.7367      0.5913    1.246x      +24.6        89.1       111.0
+o_proj 6144->5120                 4.1640      3.3121    1.257x      +25.7        94.5       118.9
+gate/up_proj 5120->17408         12.3477     10.8240    1.141x      +14.1        90.3       103.0
+down_proj 17408->5120            11.9491     10.2350    1.167x      +16.7        93.3       109.0
+square-ref 5120->5120             3.4839      2.7856    1.251x      +25.1        94.2       117.8
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2161x  =>  delta_pp +21.6
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=wide m=6257 pair=2
+--- dist=wide m=6257 reps=5 pair=3 arm=blksc ---
+61, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                6.6203      6.9703    0.950x       -5.0       118.9       113.0
+k/v_proj 5120->1024               0.5720      0.5889    0.971x       -2.9       114.7       111.4
+o_proj 6144->5120                 3.1658      3.3063    0.958x       -4.2       124.3       119.1
+gate/up_proj 5120->17408          9.7250     10.8274    0.898x      -10.2       114.7       103.0
+down_proj 17408->5120             9.1079     10.1988    0.893x      -10.7       122.5       109.4
+square-ref 5120->5120             2.6562      2.7752    0.957x       -4.3       123.5       118.2
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9373x  =>  delta_pp -6.3
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=wide m=6257 pair=3
+--- dist=wide m=6257 reps=5 pair=3 arm=plain ---
+61, 1830 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=wide
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                8.6451      6.9721    1.240x      +24.0        91.1       112.9
+k/v_proj 5120->1024               0.7350      0.5922    1.241x      +24.1        89.3       110.8
+o_proj 6144->5120                 4.1619      3.3118    1.257x      +25.7        94.6       118.9
+gate/up_proj 5120->17408         12.3462     10.7998    1.143x      +14.3        90.3       103.3
+down_proj 17408->5120            11.9408     10.1890    1.172x      +17.2        93.4       109.5
+square-ref 5120->5120             3.4835      2.7780    1.254x      +25.4        94.2       118.1
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2170x  =>  delta_pp +21.7
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=wide m=6257 pair=3
+--- dist=mid m=512 reps=9 pair=1 arm=blksc ---
+61, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.5963      0.6279    0.950x       -5.0       108.0       102.6
+k/v_proj 5120->1024               0.1164      0.1212    0.960x       -4.0        46.1        44.3
+o_proj 6144->5120                 0.2796      0.2882    0.970x       -3.0       115.2       111.8
+gate/up_proj 5120->17408          0.8693      0.9452    0.920x       -8.0       105.0        96.6
+down_proj 17408->5120             0.7928      0.8653    0.916x       -8.4       115.1       105.5
+square-ref 5120->5120             0.2380      0.2434    0.978x       -2.2       112.8       110.3
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9486x  =>  delta_pp -5.1
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=mid m=512 pair=1
+--- dist=mid m=512 reps=9 pair=1 arm=plain ---
+61, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.7608      0.6307    1.206x      +20.6        84.7       102.1
+k/v_proj 5120->1024               0.1514      0.1207    1.254x      +25.4        35.5        44.5
+o_proj 6144->5120                 0.3565      0.2892    1.233x      +23.3        90.4       111.4
+gate/up_proj 5120->17408          1.0830      0.9444    1.147x      +14.7        84.3        96.6
+down_proj 17408->5120             1.0139      0.8671    1.169x      +16.9        90.0       105.3
+square-ref 5120->5120             0.3012      0.2450    1.229x      +22.9        89.1       109.6
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2059x  =>  delta_pp +20.6
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=mid m=512 pair=1
+--- dist=mid m=512 reps=9 pair=2 arm=blksc ---
+62, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.5983      0.6290    0.951x       -4.9       107.7       102.4
+k/v_proj 5120->1024               0.1159      0.1213    0.956x       -4.4        46.3        44.3
+o_proj 6144->5120                 0.2789      0.2872    0.971x       -2.9       115.5       112.2
+gate/up_proj 5120->17408          0.8699      0.9400    0.925x       -7.5       104.9        97.1
+down_proj 17408->5120             0.7904      0.8643    0.914x       -8.6       115.5       105.6
+square-ref 5120->5120             0.2368      0.2437    0.972x       -2.8       113.4       110.2
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9480x  =>  delta_pp -5.2
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=mid m=512 pair=2
+--- dist=mid m=512 reps=9 pair=2 arm=plain ---
+61, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.7622      0.6303    1.209x      +20.9        84.5       102.2
+k/v_proj 5120->1024               0.1514      0.1210    1.251x      +25.1        35.5        44.4
+o_proj 6144->5120                 0.3552      0.2887    1.231x      +23.1        90.7       111.6
+gate/up_proj 5120->17408          1.0834      0.9490    1.142x      +14.2        84.2        96.2
+down_proj 17408->5120             1.0137      0.8631    1.175x      +17.5        90.0       105.7
+square-ref 5120->5120             0.2991      0.2432    1.230x      +23.0        89.7       110.4
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2057x  =>  delta_pp +20.6
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=mid m=512 pair=2
+--- dist=mid m=512 reps=9 pair=3 arm=blksc ---
+60, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.5987      0.6294    0.951x       -4.9       107.6       102.4
+k/v_proj 5120->1024               0.1160      0.1210    0.959x       -4.1        46.3        44.4
+o_proj 6144->5120                 0.2790      0.2875    0.971x       -2.9       115.4       112.1
+gate/up_proj 5120->17408          0.8728      0.9382    0.930x       -7.0       104.6        97.3
+down_proj 17408->5120             0.7910      0.8618    0.918x       -8.2       115.4       105.9
+square-ref 5120->5120             0.2372      0.2446    0.970x       -3.0       113.1       109.7
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9495x  =>  delta_pp -5.0
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=mid m=512 pair=3
+--- dist=mid m=512 reps=9 pair=3 arm=plain ---
+63, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=512  reps=9  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                0.7617      0.6314    1.206x      +20.6        84.6       102.0
+k/v_proj 5120->1024               0.1511      0.1208    1.250x      +25.0        35.5        44.4
+o_proj 6144->5120                 0.3570      0.2899    1.231x      +23.1        90.2       111.1
+gate/up_proj 5120->17408          1.0844      0.9463    1.146x      +14.6        84.2        96.4
+down_proj 17408->5120             1.0142      0.8672    1.170x      +17.0        90.0       105.2
+square-ref 5120->5120             0.3005      0.2454    1.225x      +22.5        89.3       109.4
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2041x  =>  delta_pp +20.4
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=mid m=512 pair=3
+--- dist=mid m=6257 reps=5 pair=1 arm=blksc ---
+61, 1852 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                6.5887      6.9695    0.945x       -5.5       119.5       113.0
+k/v_proj 5120->1024               0.5713      0.5869    0.973x       -2.7       114.8       111.8
+o_proj 6144->5120                 3.1689      3.3081    0.958x       -4.2       124.2       119.0
+gate/up_proj 5120->17408          9.6777     10.8270    0.894x      -10.6       115.3       103.0
+down_proj 17408->5120             9.0923     10.1670    0.894x      -10.6       122.7       109.7
+square-ref 5120->5120             2.6673      2.7762    0.961x       -3.9       123.0       118.2
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9371x  =>  delta_pp -6.3
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=mid m=6257 pair=1
+--- dist=mid m=6257 reps=5 pair=1 arm=plain ---
+62, 1830 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                8.6476      6.9717    1.240x      +24.0        91.0       112.9
+k/v_proj 5120->1024               0.7354      0.5902    1.246x      +24.6        89.2       111.2
+o_proj 6144->5120                 4.1657      3.3132    1.257x      +25.7        94.5       118.8
+gate/up_proj 5120->17408         12.3391     10.7993    1.143x      +14.3        90.4       103.3
+down_proj 17408->5120            11.9405     10.1990    1.171x      +17.1        93.4       109.4
+square-ref 5120->5120             3.4881      2.7797    1.255x      +25.5        94.0       118.0
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2178x  =>  delta_pp +21.8
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=mid m=6257 pair=1
+--- dist=mid m=6257 reps=5 pair=2 arm=blksc ---
+62, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                6.5934      6.9741    0.945x       -5.5       119.4       112.9
+k/v_proj 5120->1024               0.5686      0.5880    0.967x       -3.3       115.4       111.6
+o_proj 6144->5120                 3.1724      3.3046    0.960x       -4.0       124.1       119.1
+gate/up_proj 5120->17408          9.6629     10.7998    0.895x      -10.5       115.4       103.3
+down_proj 17408->5120             9.0981     10.1900    0.893x      -10.7       122.6       109.5
+square-ref 5120->5120             2.6639      2.7771    0.959x       -4.1       123.1       118.1
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9360x  =>  delta_pp -6.4
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=mid m=6257 pair=2
+--- dist=mid m=6257 reps=5 pair=2 arm=plain ---
+62, 1830 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                8.6500      6.9713    1.241x      +24.1        91.0       112.9
+k/v_proj 5120->1024               0.7354      0.5898    1.247x      +24.7        89.2       111.2
+o_proj 6144->5120                 4.1628      3.3121    1.257x      +25.7        94.6       118.9
+gate/up_proj 5120->17408         12.3412     10.7856    1.144x      +14.4        90.4       103.4
+down_proj 17408->5120            11.9412     10.2301    1.167x      +16.7        93.4       109.0
+square-ref 5120->5120             3.4888      2.7832    1.254x      +25.4        94.0       117.9
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2174x  =>  delta_pp +21.7
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=mid m=6257 pair=2
+--- dist=mid m=6257 reps=5 pair=3 arm=blksc ---
+63, 1845 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                6.5926      6.9682    0.946x       -5.4       119.4       113.0
+k/v_proj 5120->1024               0.5695      0.5868    0.971x       -2.9       115.2       111.8
+o_proj 6144->5120                 3.1712      3.3074    0.959x       -4.1       124.1       119.0
+gate/up_proj 5120->17408          9.6671     10.8137    0.894x      -10.6       115.4       103.1
+down_proj 17408->5120             9.0995     10.2083    0.891x      -10.9       122.6       109.3
+square-ref 5120->5120             2.6689      2.7752    0.962x       -3.8       122.9       118.2
+GEOMEAN ratio (f32/s32) over 6 shapes: 0.9365x  =>  delta_pp -6.3
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=blksc dist=mid m=6257 pair=3
+--- dist=mid m=6257 reps=5 pair=3 arm=plain ---
+63, 1837 MHz
+GPU: NVIDIA GeForce RTX 5090 Laptop GPU  m=6257  reps=5  shapes=27b  dist=mid
+ACCUMULATOR INSTRUMENT: one kernel (cu/mmq_q8_0_f32acc.cu), one variable (s32 vs f32 MMA).
+interleaved f32,s32 per rep; median of reps; ratio = t_f32/t_s32; delta_pp = 100*(ratio-1)
+shape in->out                  f32acc_ms   s32acc_ms     ratio   delta_pp   f32_TFLOP   s32_TFLOP
+q_proj 5120->12288                8.6491      6.9730    1.240x      +24.0        91.0       112.9
+k/v_proj 5120->1024               0.7368      0.5916    1.245x      +24.5        89.1       110.9
+o_proj 6144->5120                 4.1634      3.3097    1.258x      +25.8        94.6       118.9
+gate/up_proj 5120->17408         12.3441     10.8086    1.142x      +14.2        90.4       103.2
+down_proj 17408->5120            11.9413     10.1829    1.173x      +17.3        93.4       109.5
+square-ref 5120->5120             3.4890      2.7785    1.256x      +25.6        94.0       118.1
+GEOMEAN ratio (f32/s32) over 6 shapes: 1.2182x  =>  delta_pp +21.8
+READ: delta_pp is what s32 accumulation is worth at fixed geometry — an UPPER BOUND on a v3.
+rc=0 arm=plain dist=mid m=6257 pair=3
+=== DONE 2026-08-06T17:06:59+03:00 ===

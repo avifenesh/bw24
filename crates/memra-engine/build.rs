@@ -220,6 +220,10 @@ fn main() {
         // research/rp-on-st-20260806/.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_FP8BLK_PLAIN");
         let fp8blk_plain = std::env::var("MEMRA_MMQ_FP8BLK_PLAIN").ok();
+        // RESEARCH-INSTRUMENT ARM (not a runtime flag): ACCPROBE_F32_PLAIN=1 — see the
+        // mmq_q8_0_f32acc.cu branch below.
+        println!("cargo:rerun-if-env-changed=ACCPROBE_F32_PLAIN");
+        let accprobe_plain = std::env::var("ACCPROBE_F32_PLAIN").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -277,6 +281,16 @@ fn main() {
             if mmq_src.ends_with("mmq_fp8_blk.cu") {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
                 if fp8blk_plain.as_deref() == Some("1") { args.push("-DMEMRA_FP8BLK_PLAIN_MMA".into()); }
+            }
+            // RESEARCH INSTRUMENT ARM: ACCPROBE_F32_PLAIN=1 rebuilds the fp8-v3-gate Q1 instrument's
+            // F32 arm with the ORIGINAL plain kind::f8f6f4 MMA. Needed to REPRODUCE the published
+            // +19.8/+20.2 delta_pp (research/fp8v3-gate-20260805/), which was measured with that
+            // form — and which is confounded, because the plain form issues at 32.02 cyc/warp-MMA
+            // against the S32 arm's 16.06, so "f32 vs s32 accumulate" moved the MMA interval too.
+            // The default arm now uses the block_scale form at the ue8m0 identity scale (bit-identical
+            // product, 16.06 cyc), which is what makes the instrument single-variable.
+            if mmq_src.ends_with("mmq_q8_0_f32acc.cu") {
+                if accprobe_plain.as_deref() == Some("1") { args.push("-DMEMRA_ACCPROBE_PLAIN_MMA".into()); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());
