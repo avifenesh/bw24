@@ -1,0 +1,23 @@
+   Compiling memra-engine v0.71.0 (/root/bw24-h7/crates/memra-engine)
+   Compiling memra-sampling v0.71.0 (/root/bw24-h7/crates/memra-sampling)
+   Compiling memra-validate v0.71.0 (/root/bw24-h7/crates/memra-validate)
+   Compiling memra-gguf v0.71.0 (/root/bw24-h7/crates/memra-gguf)
+   Compiling memra-probe v0.0.0 (/root/bw24-h7/crates/memra-probe)
+   Compiling memra-server v0.71.0 (/root/bw24-h7/crates/memra-server)
+   Compiling memra-lanes v0.71.0 (/root/bw24-h7/crates/memra-lanes)
+   Compiling memra-tokenizer v0.71.0 (/root/bw24-h7/crates/memra-tokenizer)
+   Compiling memra-runtime v0.71.0 (/root/bw24-h7/crates/memra-runtime)
+   Compiling memra-kv v0.71.0 (/root/bw24-h7/crates/memra-kv)
+warning: memra-engine@0.71.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+warning: variable does not need to be mutable
+    --> crates/memra-engine/src/bin/concat_prime_probe.rs:1070:17
+     |
+1070 |             let mut run_arm = |seam: &str| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+     |                 ----^^^^^^^
+     |                 |
+     |                 help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `memra-engine` (bin "concat-prime-probe") generated 1 warning (run `cargo fix --bin "concat-prime-probe" -p memra-engine` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 3m 43s

@@ -1,0 +1,19 @@
+[moe] resident-experts decision: experts 53.75GB + trunk 6.46GB vs free 100.62GB (expert budget 92.15GB) -> RESIDENT
+loaded qwen35moe (48 trunk layers; optional MTP skipped)
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.\n"
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13, 198]
+prefill argmax=15666  decode argmax=15666  logit maxdiff=6.060e-1  MATCH
+batched-prime argmax=15666  tokenwise argmax=15666  logit maxdiff=2.804e-1  MATCH
+prefill 28 tok in 0.0571s = 490.5 tok/s (pp28)
+generated 16 tokens in 0.145s = 110.72 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.056s) [stop: MaxNew]
+tokens: [15666, 25, 271, 248068, 271, 248069, 271, 71093, 12305, 198, 1445, 1259, 20409, 548, 1120, 31144]
+OUTPUT TEXT: "Answer:\n\n<think>\n\n</think>\n\n```python\nfrom __future__ import annotations"
+--- generated text ---
+Answer:
+
+<think>
+
+</think>
+
+```python
+from __future__ import annotations
