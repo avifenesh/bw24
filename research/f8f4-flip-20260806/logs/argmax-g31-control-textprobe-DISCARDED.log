@@ -1,0 +1,25 @@
+[start] 2026-08-06T17:00:11+03:00
+[commit] 1dd58cc8275fad445f611530c303b30f607af994
+[model] /data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf
+[ngen] 32
+[prompt] /home/avifenesh/projects/wt-f8f4flip/tools/fast-gate/prompts/probe.txt
+[extra] <none>
+[gpu] 1852 MHz, 59
+=== ARM OFF 1852 MHz, 59, 6 %
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+loaded gemma4 (60 trunk layers; optional MTP skipped)
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.\n"
+prompt tokens: [2, 818, 6310, 236772, 1071, 236772, 41973, 18922, 12489, 7710, 18710, 699, 57484, 5191, 1343, 69700, 4253, 68378, 1024, 191979, 1131, 4744, 6571, 236764, 1298, 147121, 1756, 3638, 52025, 30656, 1091, 236761, 7714, 5552, 563, 8434, 3075, 607, 506, 3496, 236764, 1547, 496, 11442, 15168, 740, 16239, 496, 1262, 236772, 79722, 21055, 236761, 54234, 236764, 2918, 684, 2918, 236764, 1217, 496, 11711, 236772, 1340, 236772, 156318, 41348, 67360, 532, 94517, 1061, 11848, 573, 496, 3161, 8369, 236764, 532, 8082, 837, 5552, 71601, 51534, 1056, 506, 7710, 4856, 32839, 4744, 6571, 236761, 107]
+prefill argmax=100  decode argmax=100  logit maxdiff=8.275e0  MATCH
+batched-prime argmax=100  tokenwise argmax=100  logit maxdiff=8.275e0  MISMATCH-STRUCTURED (tokenwise margin 0.8791)
+Error: "batched-prime last-position logits diverge structurally from the tokenwise reference"
+[rc=1] ARM OFF done
+=== ARM ON 1807 MHz, 60, 0 %
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+loaded gemma4 (60 trunk layers; optional MTP skipped)
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.\n"
+prompt tokens: [2, 818, 6310, 236772, 1071, 236772, 41973, 18922, 12489, 7710, 18710, 699, 57484, 5191, 1343, 69700, 4253, 68378, 1024, 191979, 1131, 4744, 6571, 236764, 1298, 147121, 1756, 3638, 52025, 30656, 1091, 236761, 7714, 5552, 563, 8434, 3075, 607, 506, 3496, 236764, 1547, 496, 11442, 15168, 740, 16239, 496, 1262, 236772, 79722, 21055, 236761, 54234, 236764, 2918, 684, 2918, 236764, 1217, 496, 11711, 236772, 1340, 236772, 156318, 41348, 67360, 532, 94517, 1061, 11848, 573, 496, 3161, 8369, 236764, 532, 8082, 837, 5552, 71601, 51534, 1056, 506, 7710, 4856, 32839, 4744, 6571, 236761, 107]
+prefill argmax=100  decode argmax=100  logit maxdiff=8.275e0  MATCH
+batched-prime argmax=100  tokenwise argmax=100  logit maxdiff=8.275e0  MISMATCH-STRUCTURED (tokenwise margin 0.8791)
+Error: "batched-prime last-position logits diverge structurally from the tokenwise reference"
+[rc=1] ARM ON done
