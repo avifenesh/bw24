@@ -33,8 +33,9 @@ as tarballs on each [release](https://github.com/avifenesh/memra/releases) — f
   ([research/](research/)).
 - **Use something else when** you have another GPU
   ([llama.cpp](https://github.com/ggml-org/llama.cpp),
-  [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need multi-GPU
-  tensor-parallel serving (vLLM, SGLang).
+  [mistral.rs](https://github.com/EricLBuehler/mistral.rs)) or need **tensor-parallel**
+  serving (vLLM, SGLang) — memra scales across GPUs by replica fleet or pipeline-parallel
+  PP-2, not by splitting a layer.
 
 ## Installation
 
@@ -140,10 +141,12 @@ campaign in [research/tune-data/](research/tune-data/).
 | Qwen-AgentWorld-35B-A3B | MoE | UD-IQ4_XS (avoid UD-Q4_K_M — its Q5_K expert mix sits outside fast-path coverage) | own-gen drafter | v0.66.0 |
 <!-- PERF-MODELS:END -->
 
-In bring-up (running end-to-end, not yet over the bar): **KAT-Coder-V2.5** (decode at
-llama parity, prefill gap open), **Hy3 Layer103.5 spill overlay** (5.13 tok/s served,
-tuning toward 10), **MiniMax-M3 REAP50** (loads + generates, router tuning open).
-Receipts and bring-up notes:
+In bring-up (running end-to-end, not yet over the bar): **Step-3.7-Flash** (`step35` arch —
+boots and generates across a rented PRO 6000 pair over PP-2; exactness gates green at the
+default config, with a receipted chunk-dependence defect and served-spec wiring still open),
+**KAT-Coder-V2.5** (decode at llama parity, prefill gap open), **Hy3 Layer103.5 spill
+overlay** (5.13 tok/s served, tuning toward 10), **MiniMax-M3 REAP50** (loads + generates,
+router tuning open). Receipts and bring-up notes:
 [docs/PERFORMANCE.md#bring-up-notes](docs/PERFORMANCE.md#bring-up-notes).
 
 ## Serving
@@ -186,13 +189,22 @@ reserve and proves the gate still catches it. Requests should send an explicit `
 The contract: greedy serving is isolated-identical under concurrent load — a request's
 output tokens are byte-identical whether it arrives alone or inside a full batch, gated by
 replaying the same prompts at c=1 and c=16 against the same server and byte-comparing every
-stream — and chunk-size-invariant: chunked prefill produces bit-identical logits across
-`MEMRA_PRIME_CHUNK` values (one canonical greedy output per prompt, gated by the chunkinv
-battery arm). (That is the scoped claim; it is not an identity claim against a single-token
-reference decode — the batched-plain path has a documented, bounded near-tie flip class, and
-speculative decode is gated self-consistent per `run-spec` K=1..8 on MTP-capable artifacts.)
-Multi-GPU boxes serve as a replica fleet:
-**1,477 tok/s** managed on 3×H100, chaos-tested ([docs/SERVING.md](docs/SERVING.md)).
+stream — and chunk-size-invariant on the shipped architectures: chunked prefill produces
+bit-identical logits across `MEMRA_PRIME_CHUNK` values (one canonical greedy output per
+prompt, gated by the chunkinv battery arm). (That is the scoped claim; it is not an identity
+claim against a single-token reference decode — the batched-plain path has a documented,
+bounded near-tie flip class, and speculative decode is gated self-consistent per `run-spec`
+K=1..8 on MTP-capable artifacts.) Chunk-invariance is a **per-architecture** property, not a
+universal one: the `step35` bring-up arch has a receipted chunk-dependence defect past its
+512-token sliding-attention window (fix pending — see
+[Known gaps](#known-gaps)).
+Multi-GPU boxes serve two ways: as a **replica fleet** (independent servers behind an
+admission proxy — **1,477 tok/s** managed on 3×H100, chaos-tested), or, for a model too
+large for one card, as a **pipeline-parallel pair** (PP-2) — one model split across two
+GPUs, batched decode bit-identical to the unsplit walk and the boundary transfer costing
+0.5–1.5% at B=4/8/16. PP-2 serving runs the **plain** (non-speculative) path today:
+`MEMRA_SERVE_SPEC=0` is required, because spec-over-PP-2 is exact but trips a sticky fatal
+CUDA illegal-address under concurrency ([docs/SERVING.md](docs/SERVING.md)).
 
 ## What's inside
 
@@ -208,8 +220,11 @@ Multi-GPU boxes serve as a replica fleet:
   layer class.
 - **CUDA-graph decode** — one replay per token, 4 bytes/token host traffic, per-session
   capture.
-- **Loaders** — GGUF (memory-mapped), safetensors (modelopt NVFP4 byte-exact; official
-  Qwen FP8 block-128 checkpoints load bit-exact).
+- **Loaders** — GGUF (memory-mapped, single-file or multi-shard `-00001-of-000NN` splits),
+  safetensors (modelopt NVFP4 byte-exact; official Qwen FP8 block-128 checkpoints load
+  bit-exact).
+- **Pipeline-parallel PP-2** — one model across two GPUs, per-stage weight/KV placement,
+  bit-identical batched decode, peer boundary transport at 0.5–1.5%.
 
 ## Correctness discipline
 
@@ -227,6 +242,18 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
 - Gemma plain margins are thin at the DRAM wall (1.02–1.06x); one spec cell at 0.98x.
 - Hy3 spill serves at 5.13 tok/s (N=3 median), tuning toward 10
   ([docs/HY3-SPILL.md](docs/HY3-SPILL.md)).
+- `step35` (Step-3.7-Flash, bring-up) prefill is **chunk-dependent past its 512-token SWA
+  window**: `MEMRA_PRIME_CHUNK` changes logits and generated text for prompts over ~512
+  tokens. The shipped default (4096) is self-consistent on a single rig, so a naked run is
+  reproducible, but two rigs at different chunk sizes can return different text. Reduced to a
+  closed form with a pre-registered 4/4 falsification battery; fix shape named, gate written
+  and red until it lands ([research/step37-p2-20260806/](research/step37-p2-20260806/)). The
+  shipped architectures are chunk-invariant and gated so.
+- Speculative decoding over PP-2 is exact (7/7 bit-identical arms) but **not shippable for
+  concurrent serving**: one placement is ~20x slow, the other trips a sticky
+  `CUDA_ERROR_ILLEGAL_ADDRESS` that kills the worker's CUDA context (100% of requests lost at
+  c=4). PP-2 serving therefore runs plain decode with `MEMRA_SERVE_SPEC=0`
+  ([research/pp2-spec-20260806/](research/pp2-spec-20260806/)).
 - The NVFP4 speculative serve path trails its bare-CLI twin (−8.66%, pre-fix measurement)
   — the spec tier's burst loop is a separate path from the solo fast path that closed the
   plain-serve c=1 gap (serve c=1 now runs the same m=1 fused trunk as the CLI, +5–8%
@@ -255,8 +282,11 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
   [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 - CUDA 13.1 (+12.8 dual-toolkit, [ARCHITECTURE.md](ARCHITECTURE.md)); Rust edition 2024;
   a GGUF or HF safetensors model.
-- One GPU per engine process — no tensor parallelism yet (pipeline-parallel seam merged,
-  default off); multi-GPU boxes serve as a replica fleet today.
+- No tensor parallelism. Multi-GPU boxes run either a replica fleet (one engine per GPU) or
+  **pipeline-parallel** PP-2 for a model that does not fit one card — real and gated for
+  plain batched serving, opt-in via `MEMRA_PP_STAGES`/`MEMRA_PP_DEVICES`, and requiring
+  `MEMRA_SERVE_SPEC=0` (speculative serving over PP-2 is exact but not yet shippable under
+  concurrency).
 - Moving research codebase; APIs and flags change without notice.
 
 ## Docs
