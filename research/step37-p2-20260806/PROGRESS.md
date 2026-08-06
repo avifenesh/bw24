@@ -1031,3 +1031,67 @@ across `memra-engine` (rustfmt 1.9.0-stable, no `rust-toolchain.toml` pin), and 
 `.github/workflows/ci.yml` nor `tools/hooks/pre-push` runs fmt or clippy. The lines this commit
 adds are fmt-clean; the surrounding drift predates it and is a rustfmt-version artifact, not a
 regression. Recorded, not touched.
+
+---
+
+## Sequence item 6 — kernel-check (model-backed) + chunk-invariance on PP-2
+
+One flock window on the box, 2026-08-06T22:15:50Z -> 22:18:52Z, cards verified `0, 0 MiB` at
+release. Raw: `raw/kc-chunkinv-20260806T221550Z.log` plus the two probe logs.
+
+**kernel-check: ALL GREEN, and now actually model-backed.** `kc_model` resolves oracle artifacts by
+exact basename, and the `iq4xs-mmq` section named only KAT-Coder — which this box does not have
+(`find / -name '*IQ4_XS*.gguf'` returns the step artifact and nothing else). So that section
+KC-SKIPped on a SKU whose entire trunk ships IQ4_XS: the oracle was skipping the one dtype it will
+decode in production. `e3e8577a` adds the step artifact as an `.or_else` fallback (the 3-shard split
+resolves fine — `GgufFile::open` finds siblings, `tensor_data` is shard-relative), so the arm now
+runs on the SKU's own bytes:
+
+    iq4xs-mmq [Step-3.7-flash-IQ4_XS-00001-of-00003.gguf token_embd.weight]
+      T=16 rel=5.67e-7 | T=64 rel=1.63e-4 | T=128 rel=1.88e-4 | T=512 rel=2.04e-4   all OK
+    ALL GREEN: kernels match CPU reference.   exit=0
+
+Same commit fixes two log-honesty holes in that section: the label now names the artifact (trunk
+tensor names collide across models), and a resolved-but-unusable artifact now prints KC-SKIP instead
+of falling through in silence that reads exactly like a pass.
+
+Worth noting for anyone sizing this: kernel-check is single-device by construction
+(`Engine::new(0)`) and mmaps ONE tensor rather than the model, so a 105 GB artifact runs the battery
+without PP at all.
+
+**chunk-invariance: G6a PASS — and it is the first chunkinv assertion that crosses a device
+boundary** (105 GB > 96 GB/card means PP-2 or nothing). Both pinned prompts, bit-identical logits,
+hidden rows (`first_div=-1`), and 32-step greedy streams at chunks {2048, 64, 32}.
+
+**Then the gate's own teeth-check fired, and it was right to.** Two gaps, both written up in
+`raw/chunkinv-step35-findings-20260807.txt`:
+
+**GAP 1 — the canary is inert on this arch.** `MEMRA_PRIME_F32CHUNK0` is read only inside
+`full_attn_prime_fa_dispatch` (`hybrid_forward.rs:1417`), but `full_attn_prime` diverts step35 to
+`step35_attn_prime` two lines earlier (`:1289-1291`). The canary sets an env var no code on this path
+reads, so both arms ran the identical configuration and `CANARY UNEXPECTEDLY MATCHED` is the honest
+report. There is no equivalent seam to flip because `step35_attn_pre_wo` was written grain-free from
+the start — no `base_len == 0` f32 special case ever existed to roll back. The gate's header already
+warns that a label-flipping canary is vacuous; the corollary this run establishes is that a
+*real-seam* canary is equally vacuous on any arch that does not route through that seam. Practical
+consequence: **the step35 arm of this gate has no demonstrated teeth today, so its PASS must not be
+read as regression-proof.**
+
+**GAP 2 — the more consequential one: the pinned prompts are shorter than the SWA window, so the
+gate compared one kernel against itself.** step35's prime attention selects between two different
+kernels, and the selector depends on chunk size (`hybrid_forward.rs:6820-6844`, `win=512`):
+`t_kv > win` takes `sdpa_naive_w_quantized_view` (the f32 floor, windowed mask required — no
+windowed FA stamp exists at head_dim 128), otherwise `fa_prefill_view_ws`. At T=96 and T=147, `t_kv`
+never exceeds 512, so **every chunk at every tested chunk size took `fa_prefill_view_ws`.**
+Byte-identity was close to guaranteed, and the property most at risk on this arch — that the two
+kernels agree — went untested. The split lives at T≈2000, where chunk 4096/2048 are pure `naive_w`
+while 512/64/32 are mixed. That is a chunk-dependent numeric *class*, the same family as the finding
+this gate was built for, and it is load-bearing here: 93.5:1 prefill-heavy traffic at a 128K ctx
+target makes multi-chunk prefill past 512 tokens the common case, not the tail. The code comment at
+`:6829-6830` asserting "same numeric class" is supported by G6a only *within* the window.
+
+Named next chunkinv work item: sweep prompts ≥ ~1.5K tokens over chunks {4096, 2048, 512, 64} and
+read the per-row maxdiff razor already built into `chunkinv` (a kernel-class edge shows an
+order-of-magnitude step at the boundary; GEMM fold noise is a flat band). Not a bring-up blocker —
+G6a is a real pass and kernel-check is ALL GREEN — but the coverage claim must not be overstated
+until it runs.

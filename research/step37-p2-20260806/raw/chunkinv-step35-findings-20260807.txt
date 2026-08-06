@@ -1,0 +1,106 @@
+# step37-p2 — chunk-invariance on step35 (Step-3.7-Flash IQ4_XS, PP-2): RESULT + TWO GATE GAPS
+# Raw: kc-chunkinv-20260806T221550Z.log (window), chunkinv-step35-invariant-...log (G6a probe),
+#      chunkinv-step35-canary-...log (G6b probe). One flock window, cards 0 MiB at release.
+# N: each arm is a deterministic bit-comparison (byte-identity — repetition is meaningless).
+
+=====================================================================================
+RESULT (G6a): step35 prefill IS chunk-invariant, first time asserted on this arch
+=====================================================================================
+    chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0
+      chunks=2048,64,32 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+         64 | EXACT | -1 | 0.000e0 | - | identical
+         32 | EXACT | -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+  (both pinned prompts, T=96 and T=147; 32 greedy steps each; MEMRA_PP_STAGES=2 devices 0,1)
+
+This is the first chunkinv assertion where the reduction crosses a DEVICE boundary (105GB > 96GB
+per card => PP-2 or nothing), and it holds bit-exactly. Good — but see GAP 2 for how much of the
+step35 prefill this actually covered.
+
+=====================================================================================
+GAP 1 — the canary is INERT on step35: its injection site is not on this arch's path
+=====================================================================================
+    chunk-invariance-gate: CANARY UNEXPECTEDLY MATCHED — flipping the legacy seam did not
+      change the verdict, so this assertion cannot detect the mechanism. FIX THE GATE.
+    chunkinv canary exit=1
+
+The gate's own teeth-check fired, correctly. Root cause is structural, not numeric:
+
+  hybrid_forward.rs:1289-1291   fn full_attn_prime(..) {
+                                    if self.cfg.step35.is_some() {
+                                        return self.step35_attn_prime(..);   // <-- diverts here
+                                    }
+  hybrid_forward.rs:1417            if base_len == 0 && MEMRA_PRIME_F32CHUNK0 == "1" { .. }
+
+MEMRA_PRIME_F32CHUNK0 is read ONLY inside `full_attn_prime_fa_dispatch`, which step35 never
+reaches — `full_attn_prime` returns to `step35_attn_prime` -> `step35_attn_pre_wo` two lines
+before the seam is consulted. So on this arch the canary sets an env var that no code reads, both
+arms run the identical configuration, and "canary matched" is the honest report of a gate that
+cannot see its own mechanism here.
+
+Note this is EXACTLY the vacuous-canary trap the gate's header already warns about
+(chunk-invariance-gate.sh:32-36, "a canary that flips only the EXPECTED label re-runs the
+identical configuration"). The trap generalizes: a canary that flips a REAL seam is still vacuous
+on any arch that does not route through that seam. The header's rule "the canary must change the
+WORLD, not the label" needs the corollary: *and the world it changes must be on the path under
+test*.
+
+Why step35 has no equivalent seam to flip: `step35_attn_pre_wo`'s prime arm (hybrid_forward.rs:
+6804-6846) was written grain-free from the start — it appends the chunk's rows into the quantized
+cache and attends through the cache view for EVERY chunk including chunk 0, with no base_len==0
+f32 special case to roll back. There is nothing to flip because the class edge was never built.
+That is the right design; it just means this gate's canary has no purchase, and the honest fix is
+a step35-specific injection rather than pretending the generic one applies.
+
+=====================================================================================
+GAP 2 — the pinned prompts are SHORTER THAN THE SWA WINDOW, so the arm split never fires
+=====================================================================================
+This is the more consequential finding. step35's prime attention picks between two DIFFERENT
+kernels, and the selector is a function of chunk size (hybrid_forward.rs:6820-6844):
+
+    off  = swa ? base_len.saturating_sub(win - 1) : 0        # win = 512
+    t_kv = base_len + t - off
+    if swa && t_kv > win  -> sdpa_naive_w_quantized_view   (f32 floor; windowed mask REQUIRED)
+    else                  -> fa_prefill_view_ws            (hd128 dequant-once FA)
+
+Both read the same cache bytes, but they are different kernels with different fold orders — the
+code comment claims "same numeric class", which G6a's byte-identity supports only over the range
+it exercised. Enumerating the dispatch over the pinned prompts:
+
+    T=96  chunk in {2048, 64, 32} -> 1/2/3 chunks, arm = fa_prefill_view_ws in EVERY chunk
+    T=147 chunk in {2048, 64, 32} -> 1/3/5 chunks, arm = fa_prefill_view_ws in EVERY chunk
+
+Because t_kv <= 512 throughout, `swa && t_kv > win` is false everywhere: every chunk at every
+tested chunk size takes the SAME kernel. The gate compared one arm against itself. Byte-identity
+was therefore nearly guaranteed, and the property most at risk on this arch — that the naive_w
+floor and the FA view agree — was never tested.
+
+Where the split actually lives (same arithmetic, T=2000):
+    chunk=4096 -> 1 chunk,  arms {naive_w}
+    chunk=2048 -> 1 chunk,  arms {naive_w}
+    chunk= 512 -> 4 chunks, arms {naive_w, fa_prefill_view_ws}   <-- MIXED
+    chunk=  64 -> 32 chunks, arms {naive_w, fa_prefill_view_ws}  <-- MIXED
+    chunk=  32 -> 63 chunks, arms {naive_w, fa_prefill_view_ws}  <-- MIXED
+At T=2000 the chunk size decides WHICH KERNEL computes a given row's attention. That is a
+chunk-dependent numeric class in the same family as the finding this gate was built for, and it is
+untested. It is also load-bearing for the SKU: traffic is 93.5:1 prefill-heavy and the honest ctx
+target is 128K, so multi-chunk prefill well past 512 tokens is the COMMON case, not the tail.
+
+Prediction, explicitly NOT yet measured: prompts >= ~1.5K tokens swept over
+chunks={4096,2048,512,64} are the configuration that can actually break this, and the maxdiff-step
+razor already built into `chunkinv` (per-row profile, boundary-localized step vs flat band) is the
+right instrument to tell a kernel-class edge from GEMM reduction-order noise.
+
+=====================================================================================
+WHAT IS AND IS NOT ESTABLISHED
+=====================================================================================
+ESTABLISHED: at T=96 and T=147 over chunks {2048,64,32}, step35 prefill on PP-2 is bit-identical
+  in logits, hidden rows, and 32-step greedy stream. Within-window prefill is chunk-invariant.
+NOT ESTABLISHED: (a) invariance across the naive_w / fa_prefill_view_ws boundary (needs T > ~600);
+  (b) that the two kernels are the same numeric class as the code comment asserts; (c) anything
+  about chunk sizes above 2048 or prompts at the 128K target; (d) that the gate would CATCH a
+  regression on this arch — GAP 1 says its canary is inert here, so today the step35 arm of this
+  gate has no demonstrated teeth.
+NOT DONE, named: the long-prompt sweep (GAP 2) and a step35-reachable canary seam (GAP 1). Neither
+  is a bring-up blocker — G6a is a real pass and kernel-check is ALL GREEN — but the gate's
+  coverage claim on this arch must not be overstated in the meantime.
