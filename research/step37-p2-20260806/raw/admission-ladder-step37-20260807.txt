@@ -1,0 +1,119 @@
+# step37-p2 sequence item 4b — ADMISSION LADDER SKETCH for Step-3.7-Flash on the PP-2 pair
+# 2026-08-07. Code constants read from crates/memra-server/src/worker.rs at 9f9d8321.
+# Byte budgets carried over from raw/kv-budget-pp2-20260806.txt (that file is the arithmetic;
+# this one is the SERVING policy that sits on top of it).
+#
+# SCOPE DISCIPLINE: this is a capacity/admission sketch, NOT a throughput claim. No tok/s
+# targets, no concurrency-vs-latency curves — those are the pp2-hardening lane's measurements.
+# Everything below is either (a) a constant quoted from the code, (b) arithmetic over
+# already-measured bytes, or (c) explicitly flagged as UNMEASURED.
+
+=====================================================================================
+1. THE CONSTANTS THE SERVER ACTUALLY ENFORCES (quoted, worker.rs @ 9f9d8321)
+=====================================================================================
+  MAX_ACTIVE                = 4          (:34)   concurrent live sessions; queue is FIFO
+                                                  and never rejects — over-cap work is PACED
+  MEMRA_CTX floor           = 8192       (:2372 ctx_floor) default serving ctx
+  SPEC_SHRINK_SLACK         = 64         (:301)  added to every session's ctx `need`
+  SPEC_SHRINK_RESERVE       = 1536 << 20 (:316)  = 1.5 GiB admission transient FLOOR
+  MEMRA_ADMIT_RESERVE_MB               (:600)  reserve override (test door; warns when set)
+  admission VRAM gate       free >= cost + reserve   (:1380-1390), where `reserve` is
+      SPEC_SHRINK_RESERVE for spec-capable models and `cost` for the plain path
+  spec_eligible                        (:2461) requires lm.model.mtp.is_some() among others
+  ctx_cap                              (:2372) match on (max_ctx, max_new); MAX_NEW_CTX_BOUNDED
+      grows to prompt + one serving ctx, capped at cfg.context_length
+  need = prompt + budget + SPEC_SHRINK_SLACK   (:2396)
+
+  Two of these interact with this SKU in a way no other served model has hit yet — see §3.
+
+=====================================================================================
+2. THE LADDER (per-card is the binding constraint, not pair-aggregate)
+=====================================================================================
+KV is allocated by the stage that OWNS the layer (memra-kv/src/lib.rs:253 `let e = pick(il)`),
+and weights are per-stage (pp.rs:518 "weight home: per-stage (sharded loader)"), so admission
+must be priced against ONE card's 95.59 GiB, not the 191.19 GiB pair.
+
+At the pp.rs default even cut (23/22 of 45 layers), memra-default KV (q8_0 K / q5_1 V,
+1856 B/tok/layer), all-45-layers-at-max_ctx allocation (the SWA ring, work item F, is NOT built):
+
+  per-session KV, stage 0 (23 layers)     per-session KV, stage 1 (22 layers)
+   8K ctx   0.33 GiB                       0.31 GiB
+  32K ctx   1.30 GiB                       1.25 GiB
+  128K ctx  5.21 GiB                       4.98 GiB
+  256K ctx 10.42 GiB                       9.97 GiB
+
+  Stage-0 weight+KV occupancy (weights ~48.9 GiB placeholder — see the CAVEAT below):
+    sessions x 128K:  1 -> 54.1   2 -> 59.3   3 -> 64.5   4 -> 69.7 GiB   of 95.59  ALL FIT
+    sessions x 256K:  1 -> 59.3   2 -> 69.7   3 -> 80.2   4 -> 90.6 GiB   of 95.59  FITS but
+                      the 4x256K row leaves 4.99 GiB for activations + the 1.5 GiB admission
+                      reserve + the MoE SLRU cache's staging buffers. That is the first row
+                      where the byte budget stops being comfortable, and it is UNMEASURED.
+
+  => At the honest 128K ctx target, MAX_ACTIVE=4 is NOT KV-bound on this box: four full-depth
+     128K sessions leave ~25.9 GiB on stage 0. The binding constraint at 128K is elsewhere
+     (activations + MoE spill bandwidth), not KV bytes.
+  => At 256K, MAX_ACTIVE=4 is byte-plausible but not byte-verified. Admission would land in the
+     `free >= cost + reserve` gate rather than the ctx math, which is the CORRECT failure
+     mode (queue and pace, never admit-then-OOM) but has not been exercised on this SKU.
+
+CAVEAT, unchanged from kv-budget-pp2: ~48.9 GiB/stage is the EVEN-LAYER-COUNT split, not the
+even BYTE split. 3 dense + 42 MoE layers means stage 0's layers are cheaper than stage 1's.
+The real per-stage weight bytes need the loader's tensor->layer map; every row above shifts by
+that delta. First-boot measurement, not asserted here.
+
+=====================================================================================
+3. TWO SERVING FINDINGS SPECIFIC TO THIS SKU (both are real, neither is fixed here)
+=====================================================================================
+
+(A) `spec_eligible` requires `lm.model.mtp.is_some()`, and this SKU's MTP head is a SEPARATE
+    GGUF. The trunk shards declare nextn_predict_layers=0, so a served trunk has mtp == None
+    and EVERY request on it is spec-ineligible — silently, with no log line. The engine-side
+    attach door is `MEMRA_MTP_DRAFT` (hybrid.rs:1214), which run-spec sets but the SERVER's
+    load path does not consult for this arch's two-file shape.
+    Consequence: Step-3.7-Flash served today runs plain decode only, and the 1.5 GiB
+    SPEC_SHRINK_RESERVE is never charged (the `reserve = cost` plain-path branch takes over).
+    Both halves of that are self-consistent, so nothing breaks — the model just silently
+    forgoes the MTP speedup that this lane's gate has now proven works (75% at K=1, G4a).
+    ACTION: wiring the server's `+draft` path to accept the standalone step35 drafter is the
+    named follow-up. It is a serve-surface change, deliberately NOT bundled into this
+    bring-up commit series.
+
+(B) The MoE residency decision is PP-BLIND in its numerator. build_dev_exps (hybrid.rs:244-280)
+    resolves `free` from the OWNING STAGE's engine (correct — layer_engine hands it the
+    per-stage engine, pp.rs:755), but it projects `exps` by summing EVERY `blk.*_exps.*`
+    tensor in the GGUF header (hybrid.rs:254-260) — the WHOLE MODEL's expert bytes, including
+    the layers that live on the OTHER card. Boot log receipt:
+        [moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB
+              (expert budget 94.96GB) -> SLRU cache
+    101.07GB is all 42 MoE layers; stage 0 only owns ~half of them. The comparison is
+    whole-model-bytes vs one-card-free.
+    On THIS SKU the verdict is right anyway (even half of 101.07GB against a 94.96GB budget is
+    a close call once KV and activations are charged, and the SLRU path is measurably healthy:
+    89.0% steady-state hit rate, 133.5 MB/decode-token vs the 2678 MB/token Stage-1 baseline
+    = 20.1x less PCIe, pp2boot-20260806T195954Z.log). So this is NOT a bug that changes
+    behavior here — it is a latent mis-projection that would wrongly spill a bank that FITS
+    per-stage on a wider PP split (N=4 on the same box, or a smaller MoE over 2 cards).
+    NOT FIXED in this lane: the fix is `sum only the layers this stage owns`, which needs
+    pp_cuts consulted inside build_dev_exps, and changing residency selection is a
+    perf-affecting change that belongs behind the pp2-hardening lane's A/B, not inside a
+    bring-up commit. Recorded here so it is not rediscovered.
+
+=====================================================================================
+4. RECOMMENDED SERVING DEFAULTS FOR THIS SKU (proposal, not a merged default)
+=====================================================================================
+  MEMRA_CTX        = 131072   (the honest ctx target; the 8192 floor is far below this SKU's
+                               128K claim, and ctx_cap's MAX_NEW_CTX_BOUNDED arm grows a
+                               session to prompt + one serving ctx — with a 93.5:1
+                               prefill-heavy profile the serving ctx IS the common case)
+  MAX_ACTIVE       = 4        (unchanged; §2 shows 4x128K is not KV-bound on this box)
+  KV format          default q8_0/q5_1 (no env) — fp8 costs +10% bytes for no measured gain here
+  MEMRA_MOE_RESIDENT unset    (the SLRU verdict is correct on this SKU, and 89% hit rate /
+                               20.1x PCIe reduction is the receipt)
+  reserve            unset    (SPEC_SHRINK_RESERVE's 1.5 GiB applies once (A) is wired; until
+                               then the plain-path `cost` branch is what runs)
+
+UNMEASURED, and therefore not defaults: activation/graph-pool peak at 128K and at 256K on this
+arch (45 layers x 96 SWA heads is not a rounding error); concurrent-session interference on the
+MoE SLRU cache (4 sessions sharing one 28493-slot cache will not hold a 89% hit rate — that
+number is single-session); and whether 256K is CORRECT at depth. All three are named in
+kv-budget-pp2-20260806.txt's own "WHAT THIS DOES NOT ESTABLISH" list and still stand.

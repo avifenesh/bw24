@@ -31,12 +31,17 @@ fn load_opt(
 /// regardless of the periodic interval — its GGUF carries attn_q/k/v, not ssm_*/attn_qkv).
 /// `mla` is the Arch gate: `Some` only for glm-dsa (cfg.mla) — every layer of an MLA model,
 /// INCLUDING its NextN/MTP block (dense MLA, no indexer), takes the Mla arm.
+///
+/// `sep_gate` = `ModelConfig::attn_gate_separate()`: load step35's separate head-wise
+/// `attn_gate.weight` onto the full-attn arm. It is passed in rather than read off a cfg so the
+/// MTP/draft call sites (which build a synthetic cfg) opt in explicitly.
 fn load_mixer_kind(
     e: &Engine,
     src: &dyn TensorSource,
     il: u32,
     kind: LayerKind,
     mla: Option<&MlaConfig>,
+    sep_gate: bool,
 ) -> Result<Mixer, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
     if let Some(m) = mla {
@@ -58,6 +63,14 @@ fn load_mixer_kind(
             wo: load_t(e, src, &p("attn_output.weight"))?,
             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
             k_norm: load_t(e, src, &p("attn_k_norm.weight"))?,
+            // step35: REQUIRED when the arch says so — a missing gate would silently drop the
+            // per-head sigmoid and produce plausible-but-wrong logits, so this is load_t not
+            // load_opt. Step-3.7-Flash ships it on all 45 blocks (width = that layer's n_head).
+            attn_gate: if sep_gate {
+                Some(load_t(e, src, &p("attn_gate.weight"))?)
+            } else {
+                None
+            },
         }),
         LayerKind::LinearAttention => Mixer::Linear(LinearAttnLayer {
             wqkv: load_t(e, src, &p("attn_qkv.weight"))?,
@@ -95,9 +108,24 @@ pub(crate) fn load_ffn(
         || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace)
         // glm-dsa: leading_dense_block_count layers (GLM-5.2: 3) are dense-FFN
         || cfg.mla.as_ref().is_some_and(|m| il < m.first_k_dense_replace)
+        // step35: leading_dense_block_count (Step-3.7-Flash: 3) — blocks 0-2 ship
+        // ffn_gate/up/down and NO ffn_gate_inp, so the MoE arm's load_t would fail.
+        || cfg.step35.as_ref().is_some_and(|s| il < s.first_k_dense_replace)
         // gemma4 DENSE variants (31B/E4B): the arch is MoE-capable but the file ships no
         // expert tensors at all — tensor presence decides.
         || (cfg.gemma4.is_some() && !src.has(&p("ffn_gate_exps.weight"))
+            && !src.has(&p("ffn_gate_up_exps.weight")))
+        // A NextN/MTP BLOCK can be DENSE inside a MoE trunk. Step-3.7-Flash's standalone drafter
+        // (Step3.7-flash-mtp-Q8_0.gguf) ships blk.45/46/47 with `ffn_gate/up/down.weight` and NO
+        // `ffn_gate_inp`/`ffn_*_exps`, while the same file's config declares expert_count=288 (it
+        // carries the TRUNK's hparams) — so the MoE arm's `load_t("ffn_gate_exps.weight")` would
+        // fail on a perfectly well-formed file. Scoped to `il >= n_trunk` and gated on tensor
+        // presence: only an MTP block can take this door, so no trunk MoE layer's dispatch can
+        // shift. (qwen35's MTP block IS MoE and keeps the MoE arm — it ships the expert slabs.)
+        || (cfg.nextn_predict_layers > 0
+            && il >= cfg.n_layer.saturating_sub(cfg.nextn_predict_layers)
+            && src.has(&p("ffn_gate.weight"))
+            && !src.has(&p("ffn_gate_exps.weight"))
             && !src.has(&p("ffn_gate_up_exps.weight")));
     Ok(
         if let Some(moe) = cfg.moe.as_ref().filter(|_| !dense_override) {
@@ -330,6 +358,17 @@ pub struct FullAttnLayer {
     pub wo: GpuTensor,
     pub q_norm: GpuTensor,
     pub k_norm: GpuTensor,
+    /// step35-class SEPARATE head-wise attention gate: `blk.N.attn_gate.weight [n_embd, n_head_l]`
+    /// where `n_head_l` is this layer's query-head count (64 full / 96 SWA on Step-3.7-Flash, so
+    /// the width VARIES per layer). Produces one pre-sigmoid scalar per head from the
+    /// post-attn_norm hidden state; the forward broadcasts sigmoid(gate) over head_dim and
+    /// multiplies attn_out before wo (upstream `step35.cpp:267-285`).
+    ///
+    /// `None` for every other arch. Do NOT confuse with `LinearAttnLayer::wqkv_gate`, which reads
+    /// the SAME tensor name on qwen35's SSM layers but is a different mechanism (a full-width
+    /// z-gate, not a per-head scalar), nor with the qwen35 FUSED gate packed inside wq that
+    /// `ModelConfig::attn_out_gate()` / `q_gate_split` handle.
+    pub attn_gate: Option<GpuTensor>,
 }
 
 /// Latent-KV geometry for one MLA layer, resolved at load from `MlaConfig` (glm-dsa). The KV
@@ -617,6 +656,57 @@ pub struct MtpHead {
     /// stay at n_embd, so the trunk/verify interface is unchanged. Selected by the presence of
     /// `blk.N.nextn.out_up.weight` in a MEMRA_MTP_DRAFT file.
     pub geom: Option<DraftGeom>,
+    /// step35: the DRAFT BLOCK's RESOLVED per-layer geometry (`None` for every arch whose
+    /// geometry is uniform). Without it the head forward would use the trunk's max-derived
+    /// scalars and compute wrong attention — and the failure mode is plausible-but-wrong drafts
+    /// (tanked acceptance, correct output), exactly what the exactness gates cannot see.
+    pub step35: Option<Step35MtpGeom>,
+}
+
+/// step35 MTP-block geometry, RESOLVED at load time from the file that actually carries the
+/// block's own `Step35Config` arrays.
+///
+/// Why resolved and not "look it up per forward from the model's cfg": Step-3.7-Flash ships MTP
+/// as a SEPARATE GGUF, and the two files disagree about which layers exist. The trunk artifact
+/// declares `block_count=45` / `nextn_predict_layers=0`, so its per-layer arrays hold 45 entries
+/// (0..=44) and `Step35Config::n_head(45)` falls off the end into the `.last()` fallback — index
+/// 44, which is a FULL-attn layer at 64 heads. The draft file declares `block_count=48` /
+/// `nextn=3` and its arrays' index 45 is the truth: SWA, 96 heads (matching that file's
+/// `blk.45.attn_q.weight [4096, 12288]` = 96*128 and `blk.45.attn_gate.weight [4096, 96]`).
+/// Receipt: `research/step37-bringup-20260802/raw/gguf-header-stepfun-mtp-q8-20260802.txt` plus
+/// the tail dump in `research/step37-p2-20260806/raw/` — `head_count[43..48] = [96, 64, 96, 96,
+/// 96]`, `sliding_window_pattern[43..48] = [True, False, True, True, True]`.
+#[derive(Debug, Clone)]
+pub struct Step35MtpGeom {
+    /// Block index inside the file that carries it (45 for Step-3.7-Flash). Diagnostics only.
+    pub il: u32,
+    pub n_head: usize,    // 96 on Step-3.7-Flash's MTP block (SWA-type)
+    pub n_head_kv: usize, // 8
+    pub n_rot: usize,     // 128 (SWA keeps the unhalved rotary width)
+    pub rope_base: f32,   // 1e4 (SWA base, not the trunk's 5e6 global)
+    pub swa: bool,        // true
+    pub window: usize,    // 512
+    /// This block's `swiglu_clamp_shexp` limit. The MTP block's FFN is a DENSE SwiGLU, and
+    /// upstream's one `build_ffn` serves both the dense MLP and the shared expert off the
+    /// SHEXP array (llama-graph.cpp:1751) — so a dense MTP block keys off shexp, not exp.
+    /// 0.0 (`None`) on Step-3.7-Flash's block 45; live (16.0) only on trunk layers 43-44.
+    pub clamp_shexp: Option<f32>,
+}
+
+impl Step35MtpGeom {
+    /// Resolve block `il`'s geometry from the `Step35Config` of the file that OWNS that block.
+    pub fn resolve(s: &memra_gguf::config::Step35Config, il: u32) -> Self {
+        Step35MtpGeom {
+            il,
+            n_head: s.n_head(il) as usize,
+            n_head_kv: s.n_head_kv(il) as usize,
+            n_rot: s.n_rot(il) as usize,
+            rope_base: s.rope_base(il),
+            swa: s.is_swa(il),
+            window: s.sliding_window as usize,
+            clamp_shexp: s.clamp_shexp(il),
+        }
+    }
 }
 
 /// Draft-head geometry override for a distilled (narrower) student block.
@@ -625,6 +715,29 @@ pub struct DraftGeom {
     pub n_head: usize,  // draft attention heads (head_dim = main head_dim)
     pub n_head_kv: usize,
     pub out_up: GpuTensor, // [d_inner -> n_embd]: carrier + head input up-projection
+}
+
+/// Which tensor is the DRAFT lm_head, for a standalone NextN/MTP draft GGUF whose block index is
+/// `n`. Preference order is the artifact's, not ours — upstream step35.cpp:553 is
+/// `layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output`.
+///
+/// Split out of `MtpHead::load_draft` purely so it is unit-testable: the loader needs a CUDA
+/// device and a multi-GB file, while the failure this guards is invisible to every exactness gate
+/// (a wrong head still produces CORRECT output — the verify arbitrates — it just accepts nothing).
+/// `has` is the tensor-presence predicate (`src.has`).
+pub fn draft_head_tensor(has: impl Fn(&str) -> bool, n: u32) -> String {
+    let own = format!("blk.{n}.nextn.shared_head_head.weight");
+    if has(&own) {
+        return own;
+    }
+    // Legacy name kept as a probe so anything that ever matched it still does; no shipped
+    // artifact or upstream mapping uses it (see the `load_draft` note).
+    let legacy = format!("blk.{n}.nextn.shared_head.weight");
+    if has(&legacy) {
+        return legacy;
+    }
+    // FR-Spec / tied-head drafts: the file-level head IS the draft head.
+    "output.weight".to_string()
 }
 
 impl MtpHead {
@@ -663,7 +776,67 @@ impl MtpHead {
             dcfg.head_dim_k, main_cfg.head_dim_k,
             "draft head_dim != model head_dim"
         );
-        if !student {
+        // step35: geometry is PER-LAYER, so "same shape as the trunk" is the wrong question — the
+        // draft block at il=45 is an SWA-type block (96 q heads, 128 rotary dims, rope base 1e4)
+        // while the trunk's full-attn layers are 64/64/5e6. Resolve the block's geometry from the
+        // DRAFT FILE's own arrays (the trunk artifact's arrays stop at index 44 — see
+        // `Step35MtpGeom`'s note) and verify it against the block's real tensor shapes. The dims
+        // that must still agree with the trunk are the INTERFACE ones (n_embd, head_dim, KV width).
+        let step35 = match (main_cfg.step35.as_ref(), dcfg.step35.as_ref()) {
+            (Some(_), Some(s)) => {
+                let g = Step35MtpGeom::resolve(s, n);
+                // ne is inner-fastest: ne[0] = in_features, ne[1] = out_features for a [in, out] 2D.
+                let out_f = |t: &str| -> Option<usize> {
+                    src.find(&p(t)).and_then(|v| v.ne.get(1).copied()).map(|x| x as usize)
+                };
+                let hd = dcfg.head_dim_k as usize;
+                let wq_out = out_f("attn_q.weight")
+                    .ok_or("step35 draft block has no attn_q.weight")?;
+                assert_eq!(
+                    wq_out, g.n_head * hd,
+                    "step35 draft blk.{n}: attn_q out {wq_out} != n_head({}) * head_dim({hd}) — \
+                     the draft file's head_count array disagrees with its own tensors",
+                    g.n_head
+                );
+                // The SEPARATE head-wise gate is [n_embd, n_head_l] — one scalar per head. Its
+                // width is the second independent witness of this block's head count.
+                let wg_out = out_f("attn_gate.weight")
+                    .ok_or("step35 draft block has no attn_gate.weight (head-wise gate)")?;
+                assert_eq!(
+                    wg_out, g.n_head,
+                    "step35 draft blk.{n}: attn_gate out {wg_out} != n_head({})", g.n_head
+                );
+                // The draft attends its OWN scratch, but `MtpScratch::new` sizes those rows from
+                // the TRUNK cfg's `n_head_kv` (for step35, the max over its per-layer array).
+                // Compare against exactly that value, not a per-layer accessor.
+                assert_eq!(
+                    g.n_head_kv, main_cfg.n_head_kv as usize,
+                    "step35 draft blk.{n} KV heads {} != trunk n_head_kv {} — the MTP scratch \
+                     rows are sized from the trunk cfg, so a differing draft KV width would \
+                     write past the row",
+                    g.n_head_kv, main_cfg.n_head_kv
+                );
+                eprintln!(
+                    "[mtp-draft] step35 MTP geometry blk.{n}: n_head={} n_head_kv={} n_rot={} \
+                     rope_base={:.0} swa={} window={}",
+                    g.n_head, g.n_head_kv, g.n_rot, g.rope_base, g.swa, g.window
+                );
+                Some(g)
+            }
+            (Some(_), None) => {
+                return Err(format!(
+                    "MEMRA_MTP_DRAFT points at a non-step35 GGUF (arch {:?}) but the model is \
+                     step35 — the draft block's per-layer geometry is unknowable from the trunk \
+                     config (its arrays stop at the trunk's last layer)",
+                    g.arch()
+                ).into())
+            }
+            (None, Some(_)) => {
+                return Err("MEMRA_MTP_DRAFT is a step35 draft but the model is not step35".into())
+            }
+            (None, None) => None,
+        };
+        if step35.is_none() && !student {
             // The head forward runs with the MAIN model's cfg — the draft block must be the
             // same shape or the forward is garbage.
             assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
@@ -673,9 +846,34 @@ impl MtpHead {
             );
         }
 
-        // Draft lm_head: the file's own output.weight (+ shared_head_norm / output_norm). For
-        // FR-Spec this is [n_embd, draft_vocab] with draft_vocab << n_vocab.
-        let head = load_t(e, &src, "output.weight")?;
+        // Draft lm_head. PREFERENCE ORDER IS THE ARTIFACT'S, NOT OURS (upstream step35.cpp:553
+        // `layer.nextn.shared_head_head ? ... : model.output`): a NextN block owns its OWN head,
+        // and only a file that omits it falls back to the file-level `output.weight`.
+        //
+        // MEASURED ON THE SHIPPED ARTIFACT (Step3.7-flash-mtp-Q8_0.gguf, byte hashes in
+        // research/step37-p2-20260806/raw/draft-head-tensor-hashes-20260807.txt): the file carries
+        // BOTH, they are DIFFERENT matrices, and the three MTP blocks' heads differ from each
+        // other too —
+        //     output.weight                        sha 3eec5831…  <- the TRUNK lm_head, re-quantized
+        //     blk.45.nextn.shared_head_head.weight sha c90b907b…  <- block 45's own head
+        //     blk.46 …                             sha a22d2957…
+        //     blk.47 …                             sha 4b21e137…
+        // The tell: this file's top-level `output_norm.weight` is BYTE-IDENTICAL to the trunk
+        // artifact's (both sha d7526f44…), i.e. the top level is a copy of the trunk's output
+        // stack, present so the draft gguf stands alone. Reading it as the draft head projects
+        // the MTP block's hidden through the TRUNK's head — coherent-looking drafts the verify
+        // never accepts. Receipt: acceptance 0/248 across K=1..8 with self-consistency PASS
+        // (raw/mtp-draft-20260806T212902Z.log) — the exact failure class run_spec.rs's
+        // "acceptance == 0 with identical output" WARNING exists to catch.
+        //
+        // FR-Spec drafts (trimmed [n_embd, draft_vocab] + d2t) publish the trimmed head as the
+        // file-level `output.weight` and carry no `nextn.shared_head_head`, so they keep the
+        // fallback — hence preference, not replacement.
+        // Name choice is factored into `draft_head_tensor` so it is testable WITHOUT a GPU or a
+        // 3.5 GB artifact (this whole function needs both). Getting it wrong is invisible to
+        // every exactness gate, so the choice itself is pinned by a unit test.
+        let head_name = draft_head_tensor(|t| src.has(t), n);
+        let head = load_t(e, &src, &head_name)?;
         let head_norm = match load_opt(e, &src, &p("nextn.shared_head_norm.weight"))? {
             Some(t) => Some(t),
             None => load_opt(e, &src, "output_norm.weight")?,
@@ -746,8 +944,14 @@ impl MtpHead {
         } else {
             None
         };
+        // Log the name WITHOUT the blk.{n}. prefix (already printed) so the line reads
+        // `source=nextn.shared_head_head` vs `source=output.weight` — the one-glance receipt
+        // that the head choice went the right way on this artifact.
+        let blk_prefix = format!("blk.{n}.");
+        let head_src = head_name.strip_prefix(&blk_prefix).unwrap_or(&head_name);
         eprintln!(
-            "[mtp-draft] external draft head: blk.{n}, head_vocab={}{}{}",
+            "[mtp-draft] external draft head: blk.{n}, source={}, head_vocab={}{}{}",
+            head_src,
             head.out_features(),
             if d2t.is_some() {
                 " (trimmed, d2t map)"
@@ -771,12 +975,14 @@ impl MtpHead {
             post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
                 .expect("draft NextN block needs post_attention_norm or ffn_norm"),
-            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref())?,
+            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref(),
+                                   dcfg.attn_gate_separate())?,
             ffn: load_ffn(e, &src, &dcfg, n, None)?,
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
             d2t,
             geom,
+            step35,
         })
     }
 }
@@ -794,6 +1000,15 @@ pub struct GemmaAux {
     pub e4b: Option<Gemma4E4bModel>,
 }
 
+/// step35 model-level auxiliaries. Deliberately NOT folded into `GemmaAux`: every gemma4 path
+/// does `gemma4_aux.as_ref().unwrap()` and would then also fire on a step35 model.
+pub struct Step35Aux {
+    /// `rope_freqs.weight [n_rot_full/2]` llama3-style freq factors. Upstream applies them to
+    /// FULL-attention layers ONLY (`rope_factors = is_swa ? nullptr : get_rope_factors(...)`,
+    /// step35.cpp:246) — the SWA layers pass a null factor pointer. Step-3.7-Flash ships [64] F32.
+    pub rope_freqs: Option<CudaSlice<f32>>,
+}
+
 pub struct HybridModel {
     pub cfg: ModelConfig,
     pub embd: EmbedHost,
@@ -805,6 +1020,8 @@ pub struct HybridModel {
     /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
     pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
     pub gemma4_aux: Option<GemmaAux>,
+    /// step35 (Step-3.7-Flash) model auxiliaries — `Some` iff `cfg.step35.is_some()`.
+    pub step35_aux: Option<Step35Aux>,
     /// PRIME ACTIVATION SLABS (piecewise-graph foundation, 2026-07-26): the layer loop's
     /// seven trunk transients live in RESIDENT per-model buffers instead of per-call pool
     /// allocs — kills ~224 alloc/free API calls per prime AND freezes the Lt GEMM operand
@@ -943,9 +1160,11 @@ impl HybridModel {
                             wo: load_t(e, src, &p("attn_output.weight"))?,
                             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
                             k_norm: load_t(e, src, &tp("attn_k_norm.weight"))?,
+                            attn_gate: None, // gemma4 has no separate head-wise gate
                         })
                     } else {
-                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref())?
+                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref(),
+                                        cfg.attn_gate_separate())?
                     }
                 },
                 ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
@@ -1030,12 +1249,24 @@ impl HybridModel {
                     post_attn_norm: load_opt(e, src, &p("post_attention_norm.weight"))?
                         .or(load_opt(e, src, &p("ffn_norm.weight"))?)
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
-                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref())?,
+                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref(),
+                                           cfg.attn_gate_separate())?,
                     ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
-                    shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
+                    // `nextn.shared_head_head` is the name the convert script and upstream both
+                    // use (LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD -> "blk.%d.nextn.shared_head_head");
+                    // `nextn.shared_head` is a name no shipped artifact carries, so this arm was
+                    // silently always-None and every embedded-MTP model fell back to the trunk
+                    // `self.output` in `mtp_head_forward_dev` op 12. Harmless for qwen35-family
+                    // heads that genuinely tie to the trunk head; wrong for any artifact that
+                    // ships its own — which the StepFun step35 drafter does (see `load_draft`).
+                    // Keep the old name as a fallback so nothing that did match still does.
+                    shared_head_head: load_opt(e, src, &p("nextn.shared_head_head.weight"))?
+                        .or(load_opt(e, src, &p("nextn.shared_head.weight"))?),
                     d2t: None,
                     geom: None,
+                    // EMBEDDED MTP block: same file, so its own arrays cover index `n`.
+                    step35: cfg.step35.as_ref().map(|s| Step35MtpGeom::resolve(s, n)),
                 }),
                 false => None, // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }
@@ -1267,6 +1498,22 @@ impl HybridModel {
                 suppress_d,
                 e4b,
             })
+        } else {
+            None
+        };
+        // step35: rope_freqs.weight [n_rot_full/2] — FULL-attn layers only (SWA passes null).
+        // Loaded by tensor presence, not required: the key is absent on a sibling without
+        // llama3-style scaling, and `None` is the correct "no factors" signal for rope_neox2.
+        let step35_aux = if cfg.step35.is_some() {
+            let rope_freqs = match src.find("rope_freqs.weight") {
+                Some(t) => Some(e.htod(&memra_gguf::dequant::dequantize(
+                    t.ggml_type,
+                    &t.bytes,
+                    t.ne.iter().product::<u64>() as usize,
+                ))?),
+                None => None,
+            };
+            Some(Step35Aux { rope_freqs })
         } else {
             None
         };
@@ -1543,6 +1790,7 @@ impl HybridModel {
             mtp,
             embd_gpu: std::sync::OnceLock::new(),
             gemma4_aux,
+            step35_aux,
             prime_slabs: std::sync::Mutex::new(None),
         };
         e.configure_moe_cache_layout(model.moe_cache_block_sizes());
@@ -1601,5 +1849,103 @@ impl HybridModel {
         }
         let x = self.embd.gather(n_embd, tokens);
         Ok(e.htod(&x)?)
+    }
+}
+
+#[cfg(test)]
+mod draft_head_tests {
+    use super::draft_head_tensor;
+
+    /// Names present in the real Step-3.7-Flash MTP drafter (Step3.7-flash-mtp-Q8_0.gguf), as
+    /// enumerated by the on-disk byte probe in
+    /// research/step37-p2-20260806/raw/draft-head-tensor-hashes-20260807.txt.
+    /// Both candidate heads exist in that file with IDENTICAL [4096, 128896] Q8_0 shape, so no
+    /// shape or dtype check can distinguish them — only the sha256 of the payload could, and it
+    /// showed them to be different matrices (blk.45 head c90b907b… vs output.weight 3eec5831…).
+    const STEP37_DRAFTER: &[&str] = &[
+        "output.weight",
+        "output_norm.weight",
+        "token_embd.weight",
+        "blk.45.nextn.shared_head_norm.weight",
+        "blk.45.nextn.shared_head_head.weight",
+        "blk.46.nextn.shared_head_head.weight",
+        "blk.47.nextn.shared_head_head.weight",
+    ];
+
+    fn present(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |t: &str| names.contains(&t)
+    }
+
+    /// THE REGRESSION. Reading `output.weight` off this drafter cost acceptance 0/248 across
+    /// K=1..8 with self-consistency PASS at every K — correct output, dead speculation, no gate
+    /// red (raw/mtp-draft-20260806T212902Z.log). The drafter's top-level output stack is a
+    /// re-quantized COPY OF THE TRUNK'S (its output_norm is byte-identical to the trunk's,
+    /// d7526f44…), so it is the standalone-decode head, not the MTP head. Preferring
+    /// blk.45.nextn.shared_head_head took K=1 to 14/18 = 77.8%
+    /// (raw/mtp-draft-PASS-20260806T215132Z.log).
+    #[test]
+    fn step37_drafter_prefers_the_blocks_own_nextn_head_over_file_level_output() {
+        assert_eq!(
+            draft_head_tensor(present(STEP37_DRAFTER), 45),
+            "blk.45.nextn.shared_head_head.weight"
+        );
+    }
+
+    /// Each NextN block owns a DIFFERENT head (c90b907b / a22d2957 / 4b21e137 — a shared head
+    /// would have collided), so the name must be built from the block index, never hardcoded.
+    /// This is what multi-block chaining (45->46->47) will index when it lands.
+    #[test]
+    fn each_nextn_block_selects_its_own_head() {
+        for n in 45..=47u32 {
+            assert_eq!(
+                draft_head_tensor(present(STEP37_DRAFTER), n),
+                format!("blk.{n}.nextn.shared_head_head.weight")
+            );
+        }
+    }
+
+    /// FR-Spec / tied-head drafts publish the (possibly vocab-trimmed) head as the file-level
+    /// `output.weight` and ship no nextn head. They must keep working — hence preference, not
+    /// replacement.
+    #[test]
+    fn draft_without_a_nextn_head_falls_back_to_file_level_output() {
+        let fr_spec: &[&str] = &["output.weight", "output_norm.weight", "d2t.weight"];
+        assert_eq!(draft_head_tensor(present(fr_spec), 45), "output.weight");
+    }
+
+    /// The legacy `nextn.shared_head` probe sits between the two: no shipped artifact and no
+    /// upstream mapping uses it (upstream is LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD ->
+    /// "blk.%d.nextn.shared_head_head"), but anything that ever matched it still must, and it
+    /// must never win over the real name.
+    #[test]
+    fn legacy_shared_head_is_probed_but_loses_to_shared_head_head() {
+        let legacy_only: &[&str] = &["output.weight", "blk.45.nextn.shared_head.weight"];
+        assert_eq!(
+            draft_head_tensor(present(legacy_only), 45),
+            "blk.45.nextn.shared_head.weight"
+        );
+
+        let both: &[&str] = &[
+            "output.weight",
+            "blk.45.nextn.shared_head.weight",
+            "blk.45.nextn.shared_head_head.weight",
+        ];
+        assert_eq!(
+            draft_head_tensor(present(both), 45),
+            "blk.45.nextn.shared_head_head.weight"
+        );
+    }
+
+    /// A drafter whose nextn head belongs to a DIFFERENT block must not be borrowed: asking for
+    /// block 45 in a file that only carries 46/47 falls back rather than silently mismatching
+    /// the geometry the trunk verified against.
+    #[test]
+    fn a_different_blocks_nextn_head_is_never_borrowed() {
+        let wrong_block: &[&str] = &[
+            "output.weight",
+            "blk.46.nextn.shared_head_head.weight",
+            "blk.47.nextn.shared_head_head.weight",
+        ];
+        assert_eq!(draft_head_tensor(present(wrong_block), 45), "output.weight");
     }
 }

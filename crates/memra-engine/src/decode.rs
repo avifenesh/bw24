@@ -202,6 +202,7 @@ impl HybridModel {
     /// BIT-IDENTICAL to matmul_pre(gate)+matmul_pre(up)+silu_mul+quantize_q8_1+matmul(down): same
     /// float silu*mul, same amax/127 q8_1 rounding, same dp4a/mmvq dot. Falls back to the f32 `act`
     /// + plain matmul(down) path whenever any of the three is off the fast path.
+    #[allow(clippy::too_many_arguments)]
     fn ffn_swiglu_decode(
         &self,
         e: &Engine,
@@ -211,16 +212,18 @@ impl HybridModel {
         z: &CudaSlice<f32>,
         n_embd: usize,
         n_ff: usize,
+        lim: Option<f32>,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         // M3 dense layers use swigluoai (clamped) — the silu_mul fused fast paths below encode
         // plain SiLU; route through ffn_act (macro-scales folded via matmul_pre) until clamped
-        // fused twins exist.
-        if self.cfg.m3.is_some() {
+        // fused twins exist. step35's per-layer `lim` is the same problem, same escape hatch:
+        // silu_mul_scaled / silu_mul_scaled_q8_1 have no clamped twin.
+        if self.cfg.m3.is_some() || lim.is_some() {
             let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
             let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
             let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
             let mut act = e.uninit(n_ff)?;
-            Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
+            Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0, lim, &mut act, n_ff)?;
             return Ok(e.matmul(ffn_down, &act, 1)?);
         }
         if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
@@ -317,7 +320,15 @@ impl HybridModel {
     pub(crate) fn mixer_in_q8_1_fast(&self, e: &Engine, mixer: &Mixer) -> bool {
         match mixer {
             Mixer::Full(fa) => {
-                e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv)
+                // step35 also projects its head-wise GATE from the same attn-normed input, so
+                // the fused (h-less) arm requires attn_gate on the q8_1 fast path too — without
+                // this the gate matmul would get a zero-length `h`.
+                let gate_ok = match &fa.attn_gate {
+                    Some(g) => e.uses_q8_1_fast(g),
+                    None => true,
+                };
+                gate_ok && e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
+                    && e.uses_q8_1_fast(&fa.wv)
             }
             Mixer::Linear(la) => {
                 e.uses_q8_1_fast(&la.wqkv)
@@ -475,8 +486,12 @@ impl HybridModel {
                 // cfg.m3: the fused-pre chain's silu_mul_scaled* epilogues are plain SiLU —
                 // M3's swigluoai must route through ffn_swiglu_decode's m3 arm (FAST-gate
                 // MISMATCH root cause #2, 2026-07-07: L0 dense FFN clamp skipped under FAST).
+                // step35: SAME failure shape, per LAYER. A dense FFN's limit is the SHEXP array
+                // (upstream's one build_ffn serves dense + shared expert, llama-graph.cpp:1751).
+                let lim = self.cfg.clamp_shexp_at(il as u32);
                 let fuse = std::env::var("MEMRA_NO_FUSE_NORMQ").is_err()
                     && self.cfg.m3.is_none()
+                    && lim.is_none()
                     && e.uses_q8_1_fast(ffn_gate)
                     && e.uses_q8_1_fast(ffn_up);
                 if fuse {
@@ -489,8 +504,8 @@ impl HybridModel {
                     let mut x1 = e.uninit(n_embd)?;
                     let mut z = e.uninit(n_embd)?;
                     e.add_rms_norm(x, mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
-                    let ffn_out =
-                        self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?;
+                    let ffn_out = self.ffn_swiglu_decode(
+                        e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff, lim)?;
                     Ok((x1, ffn_out))
                 }
             }
@@ -1889,6 +1904,14 @@ impl HybridModel {
         il: usize,
         cap_bucket_max: Option<usize>,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // step35 has no device-counter twin yet: the `_dc` family needs a windowed dc fa_decode
+        // (SWA layers read a token-OFFSET view, which the dc kernels' len_d-derived t_kv cannot
+        // express) plus a per-layer-n_head capture. Refuse loudly instead of silently running
+        // the generic geometry. The eager arm (`step35_decode_attn`) is the supported decode.
+        if self.cfg.step35.is_some() {
+            return Err("step35 has no device-counter/graph decode arm (SWA needs an offset KV \
+                        view the dc kernels cannot express) — use the eager decode".into());
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -2156,10 +2179,15 @@ impl HybridModel {
         }
         // QWEN DC-EAGER route (2026-07-15, MEMRA_QWEN_DC=0 seam — mirror of generate_with's
         // serving loop; see the note there. The graph route probed −11% first.)
+        // step35 is EXCLUDED: this route calls `decode_step_dc`, whose full-attn arm refuses
+        // step35 by design (SWA layers need a token-OFFSET KV view the dc kernels' len_d-derived
+        // t_kv cannot express). Without this gate the door opens for any greedy model and the
+        // refusal surfaces as a user-visible generate() error — the first PP-2 boot of
+        // Step-3.7-Flash died exactly there, AFTER a clean load and an argmax MATCH.
         static QWEN_DC2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let qwen_dc = *QWEN_DC2.get_or_init(||
             std::env::var("MEMRA_QWEN_DC").as_deref() != Ok("0"));
-        if qwen_dc && max_new > 0
+        if qwen_dc && max_new > 0 && self.cfg.step35.is_none()
             && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
@@ -2435,10 +2463,18 @@ impl HybridModel {
         // kernels. Greedy + no-penalty only (sampling needs host logits).
         // (The CUDA-graph route was probed first and read −11%: the replay's dc-fa family
         // + capture rungs lag the tuned eager lanes; jsonl 2026-07-15.)
+        // step35 is EXCLUDED here for the same reason as the `generate` mirror above: every route
+        // inside this door (`decode_step_dc` and the `graph_decode_loop` capture) reaches
+        // `full_attn_decode_dc_inner`, which refuses step35 because its SWA layers read a
+        // token-OFFSET KV view the dc kernels cannot express. step35 takes the host-logits eager
+        // loop at the bottom of this function (`decode_step` -> `step35_decode_attn`), which is
+        // the supported decode for this arch. Removing this gate requires a windowed dc fa_decode
+        // plus a per-layer-n_head capture, not a flag.
         static QWEN_DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let qwen_dc = *QWEN_DC.get_or_init(||
             std::env::var("MEMRA_QWEN_DC").as_deref() != Ok("0"));
         if qwen_dc && sampler.is_greedy() && sampler.penalty_last_n() == 0 && budget > 0
+            && self.cfg.step35.is_none()
             && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
@@ -2603,6 +2639,9 @@ impl HybridModel {
         cache: &mut Cache,
         il: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return self.step35_decode_attn(e, fa, il, h, pre_q, pos_d, cache);
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -2791,6 +2830,10 @@ impl HybridModel {
         caches: &mut [Cache],
         il: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return Err("step35 has no batched (m-stream) decode mixer — per-layer n_head, \
+                        partial rope and the SWA offset view need a step35 twin".into());
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;

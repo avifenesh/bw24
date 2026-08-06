@@ -8493,6 +8493,65 @@ impl Engine {
         )
     }
 
+    /// WINDOWED twin of `sdpa_naive_quantized_view` (step35 SWA prefill): dequant the KV byte
+    /// view into f32 workspaces with the SAME `fa_dequant_kv_ws_f32` launch, then run
+    /// `sdpa_naive_w` instead of `sdpa_naive`. `window == 0` is the unwindowed form (the kernel
+    /// treats a non-positive window as "no window mask"), so this is a strict superset of the
+    /// unwindowed function above and produces bit-identical output at window == 0.
+    ///
+    /// Why this exists: EVERY windowed FlashAttention stamp in flash_attn.cu is head_dim-256
+    /// only (`fa_prefill_w_f32` == `fa_prefill_f32_body<256>`, and the quantized-view windowed
+    /// twins likewise), while step35 is head_dim 128. Its SWA layers therefore have no windowed
+    /// FA path and take this f32 floor in v0 — same cache bytes, same numeric class as the
+    /// unwindowed quantized-view fallback, so the chunk-invariance contract holds on both.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdpa_naive_w_quantized_view(
+        &self,
+        q: &CudaSlice<f32>,
+        k: &cudarc::driver::CudaView<u8>,
+        v: &cudarc::driver::CudaView<u8>,
+        o: &mut CudaSlice<f32>,
+        head_dim: usize,
+        n_head: usize,
+        n_head_kv: usize,
+        t: usize,
+        t_kv: usize,
+        scale: f32,
+        causal: bool,
+        window: usize,
+        k_tok_bytes: usize,
+        v_tok_bytes: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kv_dim = n_head_kv * head_dim;
+        let mut kf = self.uninit(t_kv * kv_dim)?;
+        let mut vf = self.uninit(t_kv * kv_dim)?;
+        let f = self.func("fa_dequant_kv_ws_f32");
+        let total = (2 * t_kv * kv_dim) as u64;
+        let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (nblk.max(1), 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let (kv_dim_i, t_kv_i) = (kv_dim as i32, t_kv as i32);
+        let (k_tok_bytes_i, v_tok_bytes_i) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(k)
+            .arg(v)
+            .arg(&mut kf)
+            .arg(&mut vf)
+            .arg(&kv_dim_i)
+            .arg(&kv_dim_i)
+            .arg(&t_kv_i)
+            .arg(&k_tok_bytes_i)
+            .arg(&v_tok_bytes_i);
+        unsafe { b.launch(cfg)? };
+        self.sdpa_naive_w(
+            q, &kf, &vf, o, head_dim, n_head, n_head_kv, t, t_kv, scale, causal, window,
+        )
+    }
+
     /// Hand-written FlashAttention prefill (sm_120, FA-2 online softmax on validated mma.sync,
     /// head_dim 256 or 128 (template-stamped twins), GQA, causal). Replaces sdpa_naive for T>1.
     /// Q/K/V/O [head_dim, n_head(_kv), T].
@@ -11906,6 +11965,55 @@ impl Engine {
         let __s_b = self.gpu.stream();
         let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(g).arg(dst).arg(dst16).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// step35 (Step-3.7-Flash) SEPARATE head-wise attention gate: one scalar per query head,
+    /// broadcast over head_dim. `dst = a * sigmoid(g)` where `a`/`dst` are `[head_dim, n_head, T]`
+    /// (the `q_gate_split` layout) and `g` is the PRE-sigmoid `attn_gate` projection output in
+    /// token-major `[T, n_head]`. `dst16` is the optional fp16 operand for wo (None -> skipped).
+    ///
+    /// NOT interchangeable with `sig_mul_f16out`, which gates FULL WIDTH (qwen35 packs one gate
+    /// value per (head, dim) element inside wq). Using this for that, or that for this, silently
+    /// applies the wrong number of distinct gate values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_head_gate(&self, a: &CudaSlice<f32>, g: &CudaSlice<f32>,
+                          dst: &mut CudaSlice<f32>, dst16: Option<&mut CudaSlice<u8>>,
+                          head_dim: usize, n_head: usize, t: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("attn_head_gate_f32");
+        let cfg = LaunchConfig::for_num_elems((head_dim * n_head * t) as u32);
+        let (hd, nh, ti) = (head_dim as i32, n_head as i32, t as i32);
+        // nullable device pointer by value (0 = skip), same convention as `l2_norm_pp`.
+        let d16: u64 = match dst16 { Some(d) => self.addr_u8(d), None => 0 };
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(a).arg(g).arg(dst).arg(&d16).arg(&hd).arg(&nh).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// step35 CLAMPED SwiGLU: `dst = min(silu(gate*gs), limit) * clamp(up*us, +-limit)`.
+    /// Verbatim from llama.cpp `llama-graph.cpp:2146-2165` (routed, `swiglu_clamp_exp`) and
+    /// `:1751-1770` (shared, `swiglu_clamp_shexp`), non-DEEPSEEK4 branch.
+    ///
+    /// This is NOT `swigluoai_mul_scaled`: that one clamps the gate BEFORE swish and multiplies by
+    /// `(1 + clamp(up))`. Caller MUST check `limit > 1e-6` (upstream's eps gate) and use the plain
+    /// `silu_mul_scaled` path otherwise — at limit=0 this kernel would clamp every positive
+    /// activation to zero. On Step-3.7-Flash only layers 43 (7.0) and 44 (16.0) have a live limit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn swiglu_clamped_mul_scaled(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+                                     gs: f32, us: f32, limit: f32,
+                                     dst: &mut CudaSlice<f32>, n: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(limit > 1e-6, "swiglu_clamped needs a live limit; use silu_mul_scaled");
+        let f = self.func("swiglu_clamped_mul_scaled_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&gs).arg(&us).arg(&limit).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

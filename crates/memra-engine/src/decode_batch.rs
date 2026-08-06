@@ -554,6 +554,14 @@ impl HybridModel {
             !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
             "decode_step_batch v1 covers the hybrid non-gemma4 trunk only"
         );
+        // step35: the batched body below is the generic Full arm (uniform n_head, 128-dim rope
+        // everywhere, no window, no head-wise gate). B=1 already routed to the shared eager
+        // trunk above; B>1 has no step35 twin.
+        assert!(
+            self.cfg.step35.is_none(),
+            "decode_step_batch has no step35 arm at B>1 (per-layer n_head / partial rope / SWA \
+             offset view / head-wise gate) — B=1 rides the shared eager trunk"
+        );
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
 

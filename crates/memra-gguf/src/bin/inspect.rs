@@ -66,6 +66,15 @@ fn main() {
     println!("version={} alignment={} data_start={}", g.version, g.alignment, g.data_start);
     println!("metadata kv={} tensors={}", g.metadata.len(), g.tensors.len());
     println!("arch={:?}", g.arch());
+    // Split (multi-shard) models: `tensors` above is the MERGED table across every shard.
+    if g.n_shards() > 1 {
+        println!("shards={} (split model; tensor counts/bytes below are the merged total)",
+                 g.n_shards());
+        for i in 0..g.n_shards() {
+            let n = g.tensors.iter().filter(|t| t.shard == i).count();
+            println!("  shard {i}: {n} tensors  {}", g.shard_path(i).display());
+        }
+    }
 
     // Key hyperparams (Qwen3-style names; meta_arch tries {arch}.{suffix}).
     let hp = [
@@ -120,10 +129,16 @@ fn main() {
         }
     }
 
-    // Verify data section bounds: last tensor end must fit in the file.
-    if let Some(last) = g.tensors.iter().max_by_key(|t| t.offset + t.n_bytes) {
-        let end = g.data_start + last.offset + last.n_bytes;
-        println!("\nlast tensor data ends at byte {end}");
+    // Verify data section bounds: the last tensor of EACH shard must fit in that shard's file
+    // (offsets are per-shard, so one global max would be meaningless on a split model).
+    for i in 0..g.n_shards() {
+        if let Some(last) = g.tensors.iter().filter(|t| t.shard == i)
+            .max_by_key(|t| t.offset + t.n_bytes)
+        {
+            let (_s, end) = g.tensor_file_range(last);
+            let sz = std::fs::metadata(g.shard_path(i)).map(|m| m.len()).unwrap_or(0);
+            println!("\nshard {i} last tensor data ends at byte {end} (file size {sz})");
+        }
     }
 }
 

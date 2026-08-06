@@ -1,0 +1,378 @@
+=== step37-p2 kernel-check(model-backed) + chunkinv 20260806T221550Z
+=== commit: 
+=== trunk:  /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB
+lock acquired 2026-08-06T22:15:50Z
+
+########## G5: kernel-check model-backed (step35 IQ4_XS) ##########
+GPU: NVIDIA RTX PRO 6000 Blackwell Server Edition
+rms_norm     maxdiff=2.38e-7 OK
+sigmoid_dot  maxdiff=0.00e0 OK
+rms_norm_qkv_w4 (prefill rows) maxdiff=7.15e-7 OK
+add_rms_norm fused: res_mismatch=0 norm_mismatch=0 OK
+rms_norm_q8_1 fused (nrows=1): q_mismatch=0 d_mismatch=0 OK
+rms_norm_q8_1 fused (nrows=5): q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 fused: res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=2): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=4): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=5): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=8): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+l2_norm      maxdiff=2.98e-8 OK
+rope_neox    maxdiff=1.19e-7 OK
+silu_mul     maxdiff=2.98e-8 OK
+mask_logits_col: mismatch=0 argmax 458==458 OK (byte-identical)
+silu_mul_q8_1 fold: int8_mismatch=0 scale_mismatch=0 OK
+silu_mul_q8_1 batched (T=5): int8_mismatch=0 scale_mismatch=0 OK
+gated_rmsnorm_q8_1 (T=1): q_mismatch=0 d_mismatch=0 OK
+gated_rmsnorm_q8_1 (T=5): q_mismatch=0 d_mismatch=0 OK
+iq fused act+quant [silu in_f=768 n_pairs=33]: byte_mismatch=0/38016 OK
+iq fused act+quant [silu in_f=512 n_pairs=7]: byte_mismatch=0/4032 OK
+iq fused act+quant [gelu in_f=704 n_pairs=29]: byte_mismatch=0/33408 OK
+sdpa_naive   maxdiff=1.12e-8 OK
+ssm_conv1d   maxdiff=1.49e-8 OK
+ssm_conv1d fused: out_mismatch=0 state_mismatch=0 OK
+gdn_scan     maxdiff=1.40e-9 OK
+gdn_chunked  T=200 C= 32 vs f64-truth: out seq=3.93e-6/chunk=2.19e-5 state seq=9.18e-6/chunk=1.85e-5 OK
+gdn_chunked  T=200 C= 64 vs f64-truth: out seq=3.93e-6/chunk=3.44e-5 state seq=9.18e-6/chunk=1.50e-5 OK
+gdn_chunked  T=200 C=128 vs f64-truth: out seq=3.93e-6/chunk=4.21e-5 state seq=9.18e-6/chunk=9.56e-5 OK
+gdn_chunked  T= 17 C= 64 vs f64-truth: out seq=3.93e-6/chunk=1.97e-5 state seq=1.28e-5/chunk=2.61e-5 OK
+gdn_chunked  T=512 C= 64 vs f64-truth: out seq=4.22e-6/chunk=3.50e-5 state seq=1.21e-5/chunk=1.03e-4 OK
+qmatvec Q2_K synthetic Stage-A: rel=3.16e-7 OK
+qmatvec skip blk.0.ffn_gate.weight: IQ4_XS not in stage-A
+qmatvec skip blk.3.attn_q.weight: IQ4_XS not in stage-A
+qmatvec skip blk.0.attn_v.weight: Q5_K not in stage-A
+qmatvec output.weight [Q6_K] rel=7.90e-7 OK
+qmatvec skip token_embd.weight: IQ4_XS not in stage-A
+output.weight [Q6_K] fast vs Stage-A: rel=3.81e-3 OK
+KC-SKIP [dtype5] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [dtype5] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+GEMM output.weight [Q6_K] T=16: rel=6.64e-7 OK
+GEMM output.weight f16 T=16: rel=3.63e-3 OK
+GEMM output.weight [Q6_K] T=64: rel=6.60e-7 OK
+GEMM output.weight f16 T=64: rel=3.89e-3 OK
+GEMM output.weight [Q6_K] T=128: rel=6.60e-7 OK
+GEMM output.weight f16 T=128: rel=4.15e-3 OK
+GEMM output.weight [Q6_K] T=512: rel=6.59e-7 OK
+GEMM output.weight f16 T=512: rel=4.15e-3 OK
+f16g-sk (in=512 out=300 skew 1..300) grid-scan vs oracle: rel=1.73e-6 OK
+f16g-sk (in=512 out=300) visitor-hybrid(cross=64,deep-tail) vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-128 vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-32-deep-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-32-legacy-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk-tail (in=512 out=300) deep(64x3st) vs legacy(32x2st): maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192 skew 1..300) grid-scan vs oracle: rel=8.65e-7 OK
+f16g-sk (in=480 out=192) visitor-hybrid(cross=64,deep-tail) vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-128 vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-32-deep-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-32-legacy-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk-tail (in=480 out=192) deep(64x3st) vs legacy(32x2st): maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+KC-SKIP [f16g-kq-direct] ornith-1.0-35b-Q4_K_M.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [f16g-kq-direct] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+iq4xs-mmq [synth] T=16: rel=2.43e-7 OK
+iq4xs-mmq [synth] T=64: rel=2.39e-7 OK
+iq4xs-mmq [synth] T=128: rel=2.38e-7 OK
+iq4xs-mmq [synth] T=512: rel=1.70e-4 OK
+KC-SKIP [iq4xs-mmq] Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+iq4xs-mmq [Step-3.7-flash-IQ4_XS-00001-of-00003.gguf token_embd.weight] T=16: rel=5.67e-7 OK
+iq4xs-mmq [Step-3.7-flash-IQ4_XS-00001-of-00003.gguf token_embd.weight] T=64: rel=1.63e-4 OK
+iq4xs-mmq [Step-3.7-flash-IQ4_XS-00001-of-00003.gguf token_embd.weight] T=128: rel=1.88e-4 OK
+iq4xs-mmq [Step-3.7-flash-IQ4_XS-00001-of-00003.gguf token_embd.weight] T=512: rel=2.04e-4 OK
+KC-SKIP [nvfp4-gemm] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [nvfp4-gemm] Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [q8mmq-gemm] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [q4_0-mmq] gemma-4-12b-it-qat-q4_0.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [nvfp4-27b-shape] Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [q4_0-sk-arm] gemma-4-26B_q4_0-it.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+MMVQ output.weight [Q6_K] m=1: rel=1.80e-7 OK
+MMVQ output.weight [Q6_K] m=2: rel=1.80e-7 OK
+KC-SKIP [nvfp4-mmvq] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+E4M3-MMVQ synth [5120x512] m=1: rel=1.73e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=2: rel=1.73e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=5: rel=2.17e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=9: rel=2.17e-7 m1-bits=true OK
+E4M3-BATCHED synth [5120x512] m=2 b2: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=3 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=4 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=5 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=6 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=7 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=8 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-FUSED2 synth [5120x(512+320)] m=1: bit-bad=0 OK
+E4M3-FUSED3 synth [5120x(512+320+128)] m=1: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED3-T synth [5120x(512+320+128)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [5120x(512+320+128)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [5120x(512+320+128)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=5 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=6 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=7 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=8 b8: bit-bad=0 OK
+E4M3-MMVQ synth [2048x320] m=1: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=2: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=5: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=9: rel=2.10e-7 m1-bits=true OK
+E4M3-BATCHED synth [2048x320] m=2 b2: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=3 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=4 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=5 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=6 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=7 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=8 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-FUSED2 synth [2048x(320+224)] m=1: bit-bad=0 OK
+E4M3-FUSED3 synth [2048x(320+224+128)] m=1: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED3-T synth [2048x(320+224+128)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [2048x(320+224+128)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [2048x(320+224+128)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=5 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=6 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=7 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=8 b8: bit-bad=0 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=1: rms_rel=0.00e0 bit-bad=0/128 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=2: rms_rel=0.00e0 bit-bad=0/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=5: rms_rel=0.00e0 bit-bad=0/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=9: rms_rel=0.00e0 bit-bad=0/1152 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=1: rms_rel=2.09e-7 bit-bad=95/128 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=2: rms_rel=3.12e-7 bit-bad=189/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=5: rms_rel=6.28e-7 bit-bad=486/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=9: rms_rel=6.22e-7 bit-bad=884/1152 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=1: rms_rel=0.00e0 bit-bad=0/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=2: rms_rel=0.00e0 bit-bad=0/1024 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=5: rms_rel=0.00e0 bit-bad=0/2560 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=9: rms_rel=0.00e0 bit-bad=0/4608 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=1: rms_rel=1.52e-6 bit-bad=450/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=2: rms_rel=1.55e-6 bit-bad=914/1024 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=5: rms_rel=1.54e-6 bit-bad=2294/2560 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=9: rms_rel=1.52e-6 bit-bad=4122/4608 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=1: rms_rel=0.00e0 bit-bad=0/320 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=2: rms_rel=0.00e0 bit-bad=0/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=5: rms_rel=0.00e0 bit-bad=0/1600 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=9: rms_rel=0.00e0 bit-bad=0/2880 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=1: rms_rel=1.53e-6 bit-bad=271/320 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=2: rms_rel=1.60e-6 bit-bad=561/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=5: rms_rel=1.54e-6 bit-bad=1422/1600 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=9: rms_rel=1.52e-6 bit-bad=2565/2880 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=1: rms_rel=0.00e0 bit-bad=0/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=2: rms_rel=0.00e0 bit-bad=0/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=5: rms_rel=0.00e0 bit-bad=0/1280 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=9: rms_rel=0.00e0 bit-bad=0/2304 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=1: rms_rel=5.85e-7 bit-bad=222/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=2: rms_rel=6.16e-7 bit-bad=444/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=5: rms_rel=1.02e-6 bit-bad=1102/1280 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=9: rms_rel=1.03e-6 bit-bad=1976/2304 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=1: rms_rel=0.00e0 bit-bad=0/200 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=2: rms_rel=0.00e0 bit-bad=0/400 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=5: rms_rel=0.00e0 bit-bad=0/1000 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=9: rms_rel=0.00e0 bit-bad=0/1800 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=1: rms_rel=6.03e-7 bit-bad=161/200 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=2: rms_rel=6.20e-7 bit-bad=323/400 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=5: rms_rel=5.88e-7 bit-bad=792/1000 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=9: rms_rel=8.34e-7 bit-bad=1432/1800 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=1: rms_rel=0.00e0 bit-bad=0/1536 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=2: rms_rel=0.00e0 bit-bad=0/3072 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=5: rms_rel=0.00e0 bit-bad=0/7680 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=9: rms_rel=0.00e0 bit-bad=0/13824 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=1: rms_rel=1.50e-6 bit-bad=1374/1536 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=2: rms_rel=1.53e-6 bit-bad=2786/3072 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=5: rms_rel=1.82e-6 bit-bad=6932/7680 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=9: rms_rel=1.81e-6 bit-bad=12440/13824 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ code coverage: 254/254 legal e4m3 codes exercised (0x7F/0xFF excluded — refused by the residency NaN precondition) OK
+BATCHED blk.0.attn_v.weight [Q5_K] m=2 mcols=2: rel=0.00e0 OK
+BATCHED blk.0.attn_v.weight [Q5_K] m=3 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.attn_v.weight [Q5_K] m=4 mcols=4: rel=0.00e0 OK
+BATCHED blk.0.attn_v.weight [Q5_K] m=5 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_v.weight [Q5_K] m=6 mcols=8: rel=0.00e0 OK
+BATCHED blk.0.attn_v.weight [Q5_K] m=8 mcols=8: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=2 mcols=2: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=3 mcols=4: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=4 mcols=4: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=5 mcols=8: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=6 mcols=8: rel=0.00e0 OK
+BATCHED output.weight [Q6_K] m=8 mcols=8: rel=0.00e0 OK
+KQRP output.weight [Q6_K] m=1 mmvq_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=2 mcols=2 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=3 mcols=4 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=4 mcols=4 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=5 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=8 mcols=8 batched_rp: bit-bad=0 OK
+KQRP output.weight [Q6_K] m=12 mcols=16 batched_rp: bit-bad=0 OK
+KC-SKIP [nvfp4-batched] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [a6-split-plane(9b-fallback)] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+fa_prefill T=16 Tkv=16: rel=3.03e-3 OK
+fa_prefill T=64 Tkv=64: rel=3.03e-3 OK
+fa_prefill T=100 Tkv=100: rel=3.03e-3 OK
+fa_prefill T=256 Tkv=256: rel=3.03e-3 OK
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: SKIPPED (hp door numeric class)
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: SKIPPED (hp door numeric class)
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 0/262144 OK
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 0/409600 OK
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+fa_prefill_hd512 GQA nkv=4 (hp arm) T=64 Tkv=64: rel=5.09e-4 OK
+fa_prefill_hd512 GQA nkv=4 (hp arm) T=100 Tkv=100: rel=5.09e-4 OK
+fa_decode(KVQ) Tkv=64: rel=4.95e-2 OK
+fa_decode_vec_q(KVQ) Tkv=64: rel=4.95e-2 (scalar 4.95e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=64: rel=4.95e-2 (scalar 4.95e-2) OK
+fa_decode(KVQ) Tkv=128: rel=4.63e-2 OK
+fa_decode_vec_q(KVQ) Tkv=128: rel=4.75e-2 (scalar 4.63e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=128: rel=4.75e-2 (scalar 4.63e-2) OK
+fa_decode(KVQ) Tkv=257: rel=4.59e-2 OK
+fa_decode_vec_q(KVQ) Tkv=257: rel=4.67e-2 (scalar 4.59e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=257: rel=4.67e-2 (scalar 4.59e-2) OK
+fa_decode_rows vs per-row loop base=95 T=5: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=95 T=5: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=127 T=4: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=127 T=4: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=256 T=3: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=256 T=3: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=1000 T=5: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=1000 T=5: bitdiff=0 OK
+append_kv_seqs vs per-seq loop B=4: bytediff=0 OK
+fa_decode_seqs_v4 vs per-seq loop B=4 depths=[96, 128, 257, 511]: bitdiff=0 OK
+append_kv_seqs vs per-seq loop B=8: bytediff=0 OK
+fa_decode_seqs_v4 vs per-seq loop B=8 depths=[200, 200, 200, 200, 200, 200, 200, 200]: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=64 Tkv=192: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=100 Tkv=100: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=37 Tkv=297: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=32 vs CPU windowed oracle T=64 Tkv=192: rel=4.84e-7 OK
+sdpa_naive_w_quantized_view window=32 differs from unwindowed T=64 Tkv=192: changed=65536/65536 OK
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=100 Tkv=100: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=100 Tkv=100: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=48 vs CPU windowed oracle T=100 Tkv=100: rel=1.12e-7 OK
+sdpa_naive_w_quantized_view window=48 differs from unwindowed T=100 Tkv=100: changed=53248/102400 OK
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=37 Tkv=297: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=37 Tkv=297: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=64 vs CPU windowed oracle T=37 Tkv=297: rel=8.53e-7 OK
+sdpa_naive_w_quantized_view window=64 differs from unwindowed T=37 Tkv=297: changed=37888/37888 OK
+kvq q8_0 K round-trip: rel=3.99e-3 OK
+kvq q5_1 V round-trip: rel=1.35e-2 OK
+kvq q5_1 5th-bit boundary: maxerr=3.78e-4 (d~5.00e-2) OK
+kv append rows-vs-loop bit-identity (T=7, t0=3): k_mismatch=0 v_mismatch=0 OK
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+KC-SKIP [d2-cache-bit-identity] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [fast-router-batch] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+moe async-prefetch ordering + protected victim: OK
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [5x128] bytes=680 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [6x160] bytes=1020 bad=0 OK
+attn_head_gate [hd128 nh64 T1] maxdiff=1.19e-7 f16_mismatch=0 per_head_varies=6856/8192 OK
+attn_head_gate [hd128 nh64 T7] maxdiff=1.19e-7 f16_mismatch=0 per_head_varies=49025/57344 OK
+attn_head_gate [hd128 nh96 T1] maxdiff=1.19e-7 f16_mismatch=0 per_head_varies=10413/12288 OK
+attn_head_gate [hd128 nh96 T7] maxdiff=2.38e-7 f16_mismatch=0 per_head_varies=73647/86016 OK
+attn_head_gate dst16=None skip: f32_mismatch=0 OK
+swiglu_clamped [limit=7 gs=1 us=1] maxdiff=1.91e-6 clamped=3700/4096 OK
+swiglu_clamped [limit=7 gs=0.75 us=1.25] maxdiff=3.81e-6 clamped=3914/4096 OK
+swiglu_clamped [limit=16 gs=1 us=1] maxdiff=3.81e-6 clamped=3700/4096 OK
+swiglu_clamped [limit=16 gs=0.75 us=1.25] maxdiff=7.63e-6 clamped=3914/4096 OK
+swiglu_clamped != swigluoai by mechanism: up=-1_oai_zero=true up=-0.99_two_orders=true gate>limit_clamp_order=true up=0_no_linear=true OK
+
+ALL GREEN: kernels match CPU reference.
+kernel-check exit=0
+
+########## G6a: chunk-invariance, expect-invariant, PP-2 ##########
+chunk-invariance-gate: assert=invariant legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-kiMccT.log)
+chunkinv exit=0
+
+########## G6b: chunk-invariance CANARY (must FAIL the assertion) ##########
+chunk-invariance-gate: assert=invariant legacy-seam=on got=invariant canary=1 chunks=2048,64,32 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: CANARY UNEXPECTEDLY MATCHED — flipping the legacy seam did not
+  change the verdict, so this assertion cannot detect the mechanism. FIX THE GATE. (log /tmp/chunkinv-gate-9s1rkw.log)
+chunkinv canary exit=1
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-06T22:18:52Z
+=== gate rc=0
+=== done 2026-08-06T22:18:52Z

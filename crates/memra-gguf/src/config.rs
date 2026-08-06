@@ -18,6 +18,10 @@ pub enum Arch {
                   // 128-expert MoE + parallel shared FFN, gelu_tanh, softcap 30, layer_output_scale
     GlmDsa,       // GLM-5/5.2: MLA attention (latent KV, MQA decode) + DSA sparse indexer +
                   // deepseek-style MoE (sigmoid router + noaux_tc bias) + 1 NextN/MTP layer
+    Step35,       // StepFun Step-3.5/3.7-Flash: SWA(512) 3:1 + PER-LAYER q-head count (64 full /
+                  // 96 swa), head-wise attn gate (separate `attn_gate` tensor), dual rope base,
+                  // half-rotary on full layers, 288-expert sigmoid-router MoE + shared expert,
+                  // per-layer swiglu clamp arrays, 3 NextN/MTP blocks (shipped in a separate GGUF)
     Llama,
     Other(String),
 }
@@ -38,6 +42,9 @@ impl Arch {
             "hy3" => Arch::Hy3,
             "gemma4" => Arch::Gemma4,
             "glm-dsa" => Arch::GlmDsa,
+            // StepFun writes 3.5 AND 3.7-Flash under the same arch name (upstream llama.cpp
+            // `step35`, PR #23845/#19283 — 3.7 is the 196B-A11B sibling of 3.5).
+            "step35" => Arch::Step35,
             "llama" => Arch::Llama,
             other => Arch::Other(other.to_string()),
         }
@@ -69,12 +76,12 @@ impl Arch {
     /// hybrid shape end to end. "Not qwen35 hybrid" holds where it matters: zero SSM/linear layers.)
     pub fn is_hybrid(&self) -> bool {
         matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3 | Arch::Hy3 | Arch::Gemma4
-                     | Arch::GlmDsa)
+                     | Arch::GlmDsa | Arch::Step35)
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
         matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3 | Arch::Hy3
-                     | Arch::Gemma4 | Arch::GlmDsa)
+                     | Arch::Gemma4 | Arch::GlmDsa | Arch::Step35)
     }
     /// MiniMax-M3: sigmoid router (+e_score_correction_bias), gemma-norm, swigluoai clamp,
     /// Mixtral-style expert tensor names. Full attention v0 (MSA is bit-exact-degenerate <=2048
@@ -82,6 +89,8 @@ impl Arch {
     pub fn is_minimax(&self) -> bool { matches!(self, Arch::MinimaxM3) }
     /// Tencent HunYuan/Hunyuan Hy3 (`hy_v3` in HF config.json).
     pub fn is_hy3(&self) -> bool { matches!(self, Arch::Hy3) }
+    /// StepFun Step-3.5 / Step-3.7-Flash (GGUF arch `step35`).
+    pub fn is_step35(&self) -> bool { matches!(self, Arch::Step35) }
 }
 
 /// What kind of token-mixing a given layer performs.
@@ -160,6 +169,99 @@ pub struct Gemma4Config {
     /// tokenizer.ggml.suppress_tokens — ids the model card forbids at sampling (the 12B QAT
     /// ships two control ids); empty on 26B/31B/E4B. Masked to -inf before every argmax/sample.
     pub suppress_tokens: Vec<u32>,
+}
+
+/// StepFun Step-3.5/3.7-Flash (`step35`) per-layer geometry + block extras. Values in comments are
+/// the 3.7-Flash 196B-A11B artifact (official IQ4_XS GGUF header, receipt
+/// `research/step37-bringup-20260802/raw/gguf-header-stepfun-iq4xs-shard1-20260802.txt`).
+///
+/// Reference semantics: upstream llama.cpp `src/models/step35.cpp` (PR #23845, merged 2026-06-02)
+/// + `llama-hparams.cpp` `n_rot()`/`is_swa()`. Three things make this arch different from every
+/// arch memra already loads, and all three are per-LAYER:
+///   1. `n_head` is an ARRAY (64 on full-attn layers, 96 on SWA layers) — KV heads are uniform 8,
+///      so KV geometry is unaffected, but wq/wo/attn_gate out-features vary per layer.
+///   2. RoPE: dual base (5e6 full / 1e4 SWA) AND half-rotary on the FULL layers only
+///      (`n_rot_full = n_rot_full/2` = 64 of head_dim 128; SWA keeps the full 128).
+///      `rope_freqs.weight` (llama3 factors) applies to the FULL layers only — SWA passes null.
+///   3. The head-wise attention gate is a SEPARATE tensor `blk.N.attn_gate.weight [n_embd, n_head]`
+///      producing ONE sigmoid scalar per head (broadcast over head_dim), NOT the qwen35 form where
+///      the gate is fused into wq as a per-dim block. `ModelConfig::attn_out_gate()` must be false
+///      for this arch or the wq split reads 2x out of bounds.
+#[derive(Debug, Clone)]
+pub struct Step35Config {
+    /// Per-layer query-head count — `step35.attention.head_count` is an ARRAY (45 items: 64 on
+    /// full-attn layers, 96 on SWA layers). len == n_layer_total (the MTP GGUF carries 48).
+    pub head_count: Vec<u32>,
+    /// Per-layer KV-head count (`attention.head_count_kv`, uniform 8 on 3.7 — kept as an array
+    /// because the key IS an array in the artifact and a future sibling may vary it).
+    pub head_count_kv: Vec<u32>,
+    /// `attention.sliding_window_pattern` [bool; n_layer]: true = sliding-window layer.
+    /// 3.7-Flash is 3:1 — [false,true,true,true] repeating = 12 full (il%4==0) + 33 SWA.
+    pub swa_pattern: Vec<bool>,
+    pub sliding_window: u32,          // attention.sliding_window = 512
+    pub rope_base_global: f32,        // rope.freq_base = 5e6 (full-attn layers)
+    pub rope_base_swa: f32,           // rope.freq_base_swa = 1e4 (SWA layers)
+    /// Rotary dims on FULL-attn layers = head_dim_k/2 (64). Upstream halves `n_rot_full` in
+    /// `load_arch_hparams` AFTER the generic loader defaults it to `n_embd_head_k` (128).
+    pub rope_dims_full: u32,
+    /// Rotary dims on SWA layers = head_dim_k (128, unhalved — `n_rot_swa` is copied from
+    /// `n_rot_full` BEFORE the arch hook halves it, so SWA keeps the full width).
+    pub rope_dims_swa: u32,
+    /// `swiglu_clamp_exp` [f32; n_layer] — routed-expert SwiGLU clamp limit per layer.
+    /// Nonzero only on layers 43-44 of 3.7-Flash. Semantics (llama-graph.cpp:2146): the limit
+    /// applies when > 1e-6 as `up = clamp(up, -L, L); act = min(silu(gate), L); out = act * up`.
+    pub swiglu_clamp_exp: Vec<f32>,
+    /// `swiglu_clamp_shexp` [f32; n_layer] — same for the shared expert (llama-graph.cpp:1751).
+    pub swiglu_clamp_shexp: Vec<f32>,
+    // ---- MoE (deepseek-V3-class sigmoid router; the Hy3/M3/glm-dsa recipe verbatim) ----
+    pub sigmoid_routing: bool,        // expert_gating_func == 2; ABSENT defaults to sigmoid (BC)
+    pub routed_scaling_factor: f32,   // expert_weights_scale = 3.0
+    pub route_norm: bool,             // expert_weights_norm = true
+    pub first_k_dense_replace: u32,   // leading_dense_block_count = 3
+}
+
+impl Step35Config {
+    /// True when layer `il` is a sliding-window layer. Out-of-range indices (the MTP blocks of a
+    /// trunk-only GGUF) fall back to `true`: upstream's `is_swa_impl` array covers n_layer_all and
+    /// every 3.7 MTP block is SWA-type (blocks 45/46/47, none at il%4==0).
+    pub fn is_swa(&self, il: u32) -> bool {
+        self.swa_pattern.get(il as usize).copied().unwrap_or(true)
+    }
+    /// Query-head count for layer `il` (64 full / 96 SWA on 3.7-Flash).
+    pub fn n_head(&self, il: u32) -> u32 {
+        self.head_count.get(il as usize).copied()
+            .or_else(|| self.head_count.last().copied())
+            .expect("step35: attention.head_count array is empty")
+    }
+    /// KV-head count for layer `il` (uniform 8 on 3.7-Flash).
+    pub fn n_head_kv(&self, il: u32) -> u32 {
+        self.head_count_kv.get(il as usize).copied()
+            .or_else(|| self.head_count_kv.last().copied())
+            .expect("step35: attention.head_count_kv array is empty")
+    }
+    /// Rotary width for layer `il` — upstream `llama_hparams::n_rot(il)`:
+    /// `is_swa(il) ? n_rot_swa : n_rot_full` (128 SWA / 64 full on 3.7-Flash).
+    pub fn n_rot(&self, il: u32) -> u32 {
+        if self.is_swa(il) { self.rope_dims_swa } else { self.rope_dims_full }
+    }
+    /// RoPE base for layer `il` (1e4 SWA / 5e6 full).
+    pub fn rope_base(&self, il: u32) -> f32 {
+        if self.is_swa(il) { self.rope_base_swa } else { self.rope_base_global }
+    }
+    /// Routed-expert SwiGLU clamp for layer `il`, `None` when unset/<=eps (upstream uses a 1e-6
+    /// epsilon, not != 0.0 — a tiny nonzero limit must not silently clamp everything to ~0).
+    pub fn clamp_exp(&self, il: u32) -> Option<f32> {
+        self.swiglu_clamp_exp.get(il as usize).copied().filter(|&l| l > 1e-6)
+    }
+    /// Shared-expert SwiGLU clamp for layer `il`.
+    pub fn clamp_shexp(&self, il: u32) -> Option<f32> {
+        self.swiglu_clamp_shexp.get(il as usize).copied().filter(|&l| l > 1e-6)
+    }
+    /// Count of full-attention (non-SWA) layers over the trunk — the layers whose KV cache grows
+    /// unbounded with context. 12 on 3.7-Flash; the KV-budget arithmetic keys off this.
+    pub fn n_full_attn(&self, n_trunk: u32) -> u32 {
+        (0..n_trunk).filter(|&il| !self.is_swa(il)).count() as u32
+    }
 }
 
 /// DSA (DeepSeek Sparse Attention) lightning-indexer geometry (GLM-5.2). Parsed when the GGUF
@@ -252,6 +354,8 @@ pub struct ModelConfig {
     pub gemma4: Option<Gemma4Config>,
     // MLA extras — glm-dsa only (None for every other arch)
     pub mla: Option<MlaConfig>,
+    // Step-3.5/3.7-Flash extras — `step35` only (None for every other arch)
+    pub step35: Option<Step35Config>,
     // multi-token-predict / NextN
     pub nextn_predict_layers: u32,
     pub n_layer_total: u32,             // includes appended MTP layers
@@ -326,6 +430,89 @@ impl ModelConfig {
                 })
             } else { None };
 
+        // step35 (Step-3.5/3.7-Flash). Reference: upstream `src/models/step35.cpp`
+        // `load_arch_hparams` + `llama-model.cpp:1190-1235` (the generic n_rot defaulting that
+        // runs BEFORE the arch hook halves n_rot_full).
+        let step35 = if matches!(&arch, Arch::Step35) {
+            let arr_u = |k: &str| -> Vec<u32> {
+                match g.meta_arch(k) {
+                    Some(MetaValue::Array(a)) =>
+                        a.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                    // The key may legitimately be a SCALAR (upstream `get_key_or_arr` accepts
+                    // both, and a uniform-geometry sibling would write one) — broadcast it.
+                    Some(v) => match v.as_u64() {
+                        Some(x) => vec![x as u32; n_layer as usize],
+                        None => Vec::new(),
+                    },
+                    None => Vec::new(),
+                }
+            };
+            let arr_f = |k: &str| -> Vec<f32> {
+                match g.meta_arch(k) {
+                    Some(MetaValue::Array(a)) => a.iter().filter_map(|v| v.as_f32()).collect(),
+                    Some(v) => match v.as_f32() {
+                        Some(x) => vec![x; n_layer as usize],
+                        None => Vec::new(),
+                    },
+                    None => Vec::new(),
+                }
+            };
+            let head_count = arr_u("attention.head_count");
+            assert!(!head_count.is_empty(), "step35: attention.head_count missing");
+            // The array covers every block INCLUDING the MTP ones (the 3.7 trunk GGUF writes 45,
+            // the standalone MTP GGUF writes 48 = 45 trunk + 3 nextn). Short arrays are a
+            // mis-converted file — a silent last-value broadcast would give the wrong wq width.
+            assert!(head_count.len() as u32 >= n_layer,
+                "step35: attention.head_count has {} entries, need >= block_count {n_layer}",
+                head_count.len());
+            let swa_pattern: Vec<bool> = match g.meta_arch("attention.sliding_window_pattern") {
+                // The artifact writes a BOOL array (llama.cpp `get_key_or_arr` into is_swa_impl).
+                // `as_u64` maps Bool -> 0/1, so one reader covers bool and int serializations.
+                Some(MetaValue::Array(a)) =>
+                    a.iter().filter_map(|v| v.as_u64().map(|x| x != 0)).collect(),
+                // Scalar form = llama.cpp's n_pattern convention: layer il is SWA unless
+                // il % n_pattern == 0 (llama-hparams.cpp:11, set_swa_pattern).
+                Some(v) => match v.as_u64() {
+                    Some(np) if np > 0 =>
+                        (0..n_layer).map(|il| il as u64 % np != 0).collect(),
+                    _ => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            assert!(swa_pattern.len() as u32 >= n_layer,
+                "step35: attention.sliding_window_pattern has {} entries, need >= {n_layer}",
+                swa_pattern.len());
+            // Upstream: the generic loader sets n_rot_full = attention.key_length (128), copies
+            // n_rot_swa from it, THEN step35.cpp halves n_rot_full -> 64. So SWA = 128, full = 64.
+            let rope_dims_swa = u("rope.dimension_count").unwrap_or(head_dim_k);
+            Some(Step35Config {
+                head_count,
+                head_count_kv: {
+                    let kv = arr_u("attention.head_count_kv");
+                    assert!(kv.len() as u32 >= n_layer,
+                        "step35: attention.head_count_kv has {} entries, need >= {n_layer}",
+                        kv.len());
+                    kv
+                },
+                swa_pattern,
+                sliding_window: u("attention.sliding_window")
+                    .expect("step35: attention.sliding_window (SWA layers need a window)"),
+                rope_base_global: f("rope.freq_base").unwrap_or(10000.0),
+                // ABSENT => same as global (upstream get_key(..., false) leaves the copied value).
+                rope_base_swa: f("rope.freq_base_swa")
+                    .unwrap_or_else(|| f("rope.freq_base").unwrap_or(10000.0)),
+                rope_dims_full: rope_dims_swa / 2,
+                rope_dims_swa,
+                swiglu_clamp_exp: arr_f("swiglu_clamp_exp"),
+                swiglu_clamp_shexp: arr_f("swiglu_clamp_shexp"),
+                // expert_gating_func 2 = sigmoid; ABSENT defaults to sigmoid (step35.cpp:19-21).
+                sigmoid_routing: u("expert_gating_func").map(|v| v == 2).unwrap_or(true),
+                routed_scaling_factor: f("expert_weights_scale").unwrap_or(1.0),
+                route_norm: u("expert_weights_norm").map(|v| v != 0).unwrap_or(false),
+                first_k_dense_replace: u("leading_dense_block_count").unwrap_or(0),
+            })
+        } else { None };
+
         // glm-dsa MLA + DSA keys (RECEIPTS.md §5 — the exact set the llama.cpp converter writes).
         let mla = if matches!(&arch, Arch::GlmDsa) {
             let q_lora_rank = u("attention.q_lora_rank").expect("glm-dsa: attention.q_lora_rank");
@@ -397,8 +584,22 @@ impl ModelConfig {
             name: g.metadata.get("general.name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             n_layer,
             n_embd,
-            n_head: u("attention.head_count").expect("head_count"),
-            n_head_kv: u("attention.head_count_kv").unwrap_or_else(|| u("attention.head_count").unwrap()),
+            // `attention.head_count` is a SCALAR on every arch but step35, where it is a
+            // per-layer ARRAY (`as_u64` returns None on an Array, so the bare `.expect` would
+            // panic). For step35 the global scalar is the MAX over layers: it sizes shared
+            // scratch/workspace buffers, while every per-layer shape comes from
+            // `step35.n_head(il)`. Max (96, not the 64 of a full layer) so no buffer under-sizes.
+            n_head: u("attention.head_count").unwrap_or_else(|| {
+                step35.as_ref()
+                    .and_then(|s| s.head_count.iter().copied().max())
+                    .expect("head_count")
+            }),
+            n_head_kv: u("attention.head_count_kv")
+                .or_else(|| step35.as_ref().and_then(|s| s.head_count_kv.iter().copied().max()))
+                .unwrap_or_else(|| u("attention.head_count")
+                    .or_else(|| step35.as_ref()
+                        .and_then(|s| s.head_count.iter().copied().max()))
+                    .expect("head_count_kv fallback")),
             head_dim_k,
             head_dim_v,
             n_ff: u("feed_forward_length").unwrap_or(0),
@@ -418,6 +619,7 @@ impl ModelConfig {
             hy3: None,  // GGUF Hy3 metadata keys are a later arc (repack source first)
             gemma4,
             mla,
+            step35,
             nextn_predict_layers: nextn,
             n_layer_total: n_layer + nextn,
         }
@@ -528,6 +730,8 @@ impl ModelConfig {
             hy3,
             gemma4: None,   // ST gemma4 route: config wiring when that arc opens
             mla: None,      // GGUF-first arch (glm-dsa): HF/safetensors import is a later arc
+            step35: None,   // GGUF-first arch: the official prequantized GGUF is the artifact
+                            // (phase-1 §3.1 — no safetensors conversion in the bring-up path)
             // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; the 27B (dense hybrid)
             // uses `mtp_num_hidden_layers` (NVIDIA + local text ckpts) — same meaning, both = 1.
             nextn_predict_layers: c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
@@ -562,13 +766,26 @@ impl ModelConfig {
         (0..self.n_layer).filter(|&il| self.layer_kind(il) == LayerKind::FullAttention).count() as u32
     }
 
-    /// qwen35-class fused [q|gate] attention output gate: wq packs q AND a per-head sigmoid gate
+    /// qwen35-class FUSED [q|gate] attention output gate: wq packs q AND a per-head sigmoid gate
     /// (out = 2*n_head*head_dim) that `q_gate_split` separates. M3 and Hy3 have NO output gate —
     /// their wq out is exactly n_head*head_dim, and running the split would read 2x out of bounds.
     /// One predicate so every full-attn site (prefill/prime/decode/dc/spec) agrees.
+    ///
+    /// step35 is NOT in this class even though it HAS a head-wise gate: its gate is a separate
+    /// `blk.N.attn_gate.weight [n_embd, n_head]` tensor (one scalar per head, broadcast over
+    /// head_dim) and its wq out is exactly n_head*head_dim — see `attn_gate_separate()`. Running
+    /// the fused split on it would read 2x out of bounds, which is why this deny-list must name it.
     pub fn attn_out_gate(&self) -> bool {
         self.m3.is_none() && self.hy3.is_none() && self.gemma4.is_none() && self.mla.is_none()
+            && self.step35.is_none()
     }
+
+    /// step35-class SEPARATE head-wise attention gate: `blk.N.attn_gate.weight [n_embd, n_head_l]`
+    /// yields one pre-sigmoid scalar PER HEAD, broadcast across head_dim over the attention output
+    /// before wo (upstream `step35.cpp:267-285`: `attn_out * sigmoid(g_proj(attn_norm_out))`).
+    /// Distinct from `attn_out_gate()` (fused-in-wq, per-DIM) — the two are mutually exclusive.
+    /// Note the gate input is the POST-attn_norm hidden state (`cur`), not the raw residual.
+    pub fn attn_gate_separate(&self) -> bool { self.step35.is_some() }
 
     /// DeepSeek-V3-class sigmoid routing knobs, arch-agnostic: `Some((scaling_factor, route_norm))`
     /// when the router scores with sigmoid (+ optional selection bias via `exp_probs_b`), `None`
@@ -587,7 +804,72 @@ impl ModelConfig {
         if let Some(mla) = self.mla.as_ref() {
             if mla.sigmoid_routing { return Some((mla.routed_scaling_factor, mla.route_norm)); }
         }
+        // step35: sigmoid + exp_probs_b selection bias + expert_weights_scale 3.0 +
+        // expert_weights_norm true — the same DeepSeek-V3 recipe, different key names.
+        if let Some(s) = self.step35.as_ref() {
+            if s.sigmoid_routing { return Some((s.routed_scaling_factor, s.route_norm)); }
+        }
         None
+    }
+
+    /// Per-layer query-head count. Global scalar for every arch except step35, whose
+    /// `attention.head_count` is an array (64 on full-attn layers, 96 on SWA). Sites that build
+    /// wq/wo/attn_gate shapes or size per-head loops MUST use this, not the `n_head` field.
+    pub fn n_head_at(&self, il: u32) -> u32 {
+        match self.step35.as_ref() {
+            Some(s) => s.n_head(il),
+            None => self.n_head,
+        }
+    }
+
+    /// Per-layer KV-head count. gemma4 carries a per-layer array; step35's is uniform-8 but is
+    /// serialized as an array. Every other arch is the global scalar.
+    pub fn n_head_kv_at(&self, il: u32) -> u32 {
+        if let Some(g) = self.gemma4.as_ref() {
+            if let Some(&n) = g.head_count_kv.get(il as usize) { return n; }
+        }
+        if let Some(s) = self.step35.as_ref() { return s.n_head_kv(il); }
+        self.n_head_kv
+    }
+
+    /// True when layer `il` uses sliding-window attention. gemma4 and step35 carry an explicit
+    /// per-layer pattern; every other arch is unwindowed (returns false).
+    pub fn is_swa_at(&self, il: u32) -> bool {
+        if let Some(g) = self.gemma4.as_ref() {
+            return g.swa_pattern.get(il as usize).copied().unwrap_or(false);
+        }
+        if let Some(s) = self.step35.as_ref() { return s.is_swa(il); }
+        false
+    }
+
+    /// Per-layer ROUTED-expert SwiGLU clamp limit, `None` when the arch/layer has none.
+    /// step35-only today (`swiglu_clamp_exp`, live on layers 43-44 of 3.7-Flash).
+    pub fn clamp_exp_at(&self, il: u32) -> Option<f32> {
+        self.step35.as_ref().and_then(|s| s.clamp_exp(il))
+    }
+
+    /// Per-layer SHARED-expert SwiGLU clamp limit (`swiglu_clamp_shexp`).
+    pub fn clamp_shexp_at(&self, il: u32) -> Option<f32> {
+        self.step35.as_ref().and_then(|s| s.clamp_shexp(il))
+    }
+
+    /// True when ANY FFN branch on layer `il` needs the clamped SwiGLU form. This is the
+    /// FUSED-EPILOGUE DENY predicate: memra's fused SiLU epilogues (grouped-decode,
+    /// moe_pairs_silu_mul, the dev-path kernels) hardcode plain `silu(gate)*up`, so a layer
+    /// with a live clamp must fall through to the unfused `ffn_act_*` seam. Substituting the
+    /// plain form compiles, runs, and produces plausible-but-wrong logits — exactly the
+    /// failure mode `swiglu_clamped_mul_scaled_f32`'s kernel-check cell guards against.
+    pub fn swiglu_clamped_at(&self, il: u32) -> bool {
+        self.clamp_exp_at(il).is_some() || self.clamp_shexp_at(il).is_some()
+    }
+
+    /// True when the model has a live SwiGLU clamp on ANY layer — the cheap whole-model
+    /// question the no-`il` `ffn_act` seam asserts against (a clamped model reaching a seam
+    /// that cannot see `il` means the caller has to be migrated to `ffn_act_exp`/`_shexp`).
+    pub fn swiglu_clamped_anywhere(&self) -> bool {
+        self.step35.as_ref().is_some_and(|s| {
+            s.swiglu_clamp_exp.iter().chain(s.swiglu_clamp_shexp.iter()).any(|&l| l > 1e-6)
+        })
     }
 }
 

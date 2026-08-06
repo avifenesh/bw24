@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut h = e.zeros(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => model.full_attn(&e, fa, &h, &pos_d, t)?,
+                Mixer::Full(fa) => model.full_attn(&e, fa, &h, &pos_d, t, il)?,
                 Mixer::Linear(la) => model.linear_attn(&e, la, &h, t)?,
                 Mixer::Mla(_) => panic!("t2probe: MLA forward is increment 4"),
             };

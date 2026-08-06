@@ -1,0 +1,210 @@
+# step37-p2 — GAP 2 CLOSED, AND IT IS A REAL DEFECT: step35 prefill is CHUNK-DEPENDENT past the
+# SWA window. Not a gate bug, not a tolerance question — bit-level divergence with a greedy-text
+# consequence.
+# Raw: raw/chunkinv-long-20260806T222721Z.log. Repro: research/step37-p2-20260806/chunkinv-long-step35.sh
+# Box: 2x RTX PRO 6000 Server 96GB, PP-2 (MEMRA_PP_STAGES=2 devices 0,1). One flock window,
+# 22:27:21Z -> 22:32:23Z, cards 0 MiB at release.
+# N: deterministic bit-comparison per arm (byte-identity; repetition meaningless).
+
+=====================================================================================
+THE MEASUREMENT
+=====================================================================================
+prompt-pp512.txt   T=402   ref chunk=4096 argmax=128799 margin=0.925798
+    chunk | logits | first_div_pos | maxdiff | argmax | stream_div
+     2048 | EXACT  |            -1 | 0.000e0 |      - | identical
+      512 | EXACT  |            -1 | 0.000e0 |      - | identical
+       64 | EXACT  |            -1 | 0.000e0 |      - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+
+prompt-pp6257.txt  T=4883  ref chunk=4096 argmax=128799 margin=4.505838
+    chunk | logits | first_div_pos | maxdiff | argmax | stream_div
+     2048 | EXACT  |            -1 | 0.000e0 |      - | identical
+      512 | DIFFER |             0 | 1.813e0 |      - | step 6
+       64 | DIFFER |             0 | 1.813e0 |      - | step 6
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+
+The T=402 row is the control: same code, same prompt file family, entirely BELOW the window ->
+invariant, exactly as G6a reported. The defect needs T past the window to appear at all, which is
+precisely why the pinned T=96/147 prompts could never have found it.
+
+=====================================================================================
+THE MECHANISM — the arm arithmetic predicts the observed partition exactly
+=====================================================================================
+step35's prime attention picks per chunk (hybrid_forward.rs:6820-6844, win=512, SWA layers only —
+33 of 45; full-attn layers have swa=false and always take FA):
+
+    off  = swa ? base_len.saturating_sub(win - 1) : 0
+    t_kv = base_len + t - off
+    swa && t_kv > win  ->  sdpa_naive_w_quantized_view   (f32 windowed floor)
+    else               ->  fa_prefill_view_ws            (hd128 dequant-once FA)
+
+Enumerated at T=4883:
+    chunk=4096 ->  2 chunks, {naive_w: 2}                      PURE naive_w
+    chunk=2048 ->  3 chunks, {naive_w: 3}                      PURE naive_w
+    chunk= 512 -> 10 chunks, {FA: 1, naive_w: 9}   row0 arm=FA   MIXED
+    chunk=  64 -> 77 chunks, {FA: 8, naive_w: 69}  row0 arm=FA   MIXED
+At T=402:
+    every chunk size -> {FA: n}                                PURE FA
+
+So the measured partition is {4096, 2048} = pure naive_w = bit-identical to each other, versus
+{512, 64} = both carry an FA prefix = both diverge. The dividing line in the DATA is exactly the
+dividing line in the DISPATCH. First divergence is at row 0 (`first_div_pos = 0`), which is where
+the FA-vs-naive_w disagreement first occurs — chunk 0 is precisely the chunk whose arm differs.
+
+THE DECISIVE DETAIL: chunk=512 and chunk=64 diverge by the IDENTICAL maxdiff (1.813e0) and their
+greedy streams diverge at the SAME step (6), despite one running 10 chunks and the other 77. A
+GEMM/reduction-order effect scales with the number of partial sums — 10 vs 77 chunks landing on a
+bit-identical divergence value is not that. It is two configurations hitting the same CLASS edge:
+both compute row 0's attention with fa_prefill_view_ws while the reference computes it with
+sdpa_naive_w_quantized_view.
+
+Therefore the comment at hybrid_forward.rs:6829-6830 — "Same cache bytes, same numeric class as the
+unwindowed quantized-view fallback" — is FALSE as written. Same cache BYTES, yes. Same numeric
+CLASS, no: swapping between these two kernels moves the logits by 1.8 and changes generated text.
+
+=====================================================================================
+WHY THIS MATTERS FOR THE SKU (not academic)
+=====================================================================================
+* MEMRA_PRIME_CHUNK is documented as a machine-config/OOM knob (docs/FLAGS.md), i.e. something an
+  operator is invited to change per rig. On step35 it silently changes OUTPUT for any prompt past
+  ~512 tokens. Two rigs serving the same model with different chunk values return different text —
+  the exact failure class research/chunk-invariance-20260805 was built to eliminate, reappearing on
+  a new arch through a different door.
+* The traffic profile makes this the COMMON case, not the tail: 93.5:1 prefill-heavy with a 128K
+  honest ctx target. T=4883 is a short prompt by this SKU's standards.
+* The default chunk is 4096, so a naked single-rig run is self-consistent. The bug surfaces when
+  the knob is touched, when a rig sets it for memory reasons, or when prompt length crosses a chunk
+  count boundary — i.e. as a nondeterminism report from the field, which is the worst way to find it.
+* Note the additional constraint from the code's own doc note (hybrid_forward.rs:6773-6775): the
+  f32 sdpa_naive_w floor's shared memory is t_kv*4 bytes, so the naive_w arm requires
+  t_kv = win-1+t <= 12287. The arm is not free to be chosen arbitrarily large; a monolithic 32K
+  prime would exceed the 48 KiB dynamic-smem default. Any fix must respect that ceiling.
+
+=====================================================================================
+LOCALIZATION — and the CLOSED FORM the profile run forced
+=====================================================================================
+Raw: raw/chunkinv-profile-20260806T223524Z.log. One flock window 22:35:24Z -> 22:44:54Z, cards
+0 MiB at release. Three sections, all at T=4883.
+
+A. ref=4096 vs 2048,512,64 with --profile
+     2048 | EXACT  | per-row profile all-zero
+      512 | DIFFER | rows[0,512) maxdiff=2.886e2 | rows[512,4883) maxdiff=2.723e2 | step=0.9x
+       64 | DIFFER | rows[0,64)  maxdiff=1.075e2 | rows[64,4883)  maxdiff=2.886e2 | step=2.7x
+   The per-8-row bucket sequences for 512 and 64 are IDENTICAL, element for element, the whole
+   4883 rows (both begin 8.5e0 1.3e1 9.0e0 1.2e1 3.6e1 5.3e1 4.0e1 1.1e2 ...).
+B. ref=512 vs 64            ->  64 | EXACT | 0.000e0 | CHUNK-INVARIANT
+C. ref=1024 vs 768,600      ->  both EXACT | 0.000e0 | CHUNK-INVARIANT
+
+READ THE --profile HEADER'S RAZOR CAREFULLY HERE. It expects "near-zero before the first boundary,
+order-of-magnitude step after". That framing does NOT fit this defect, and forcing it would
+misreport the mechanism. The razor was written for the qwen-stack leak where chunk 0 was the
+CORRECT arm and later chunks degraded. Here it is INVERTED: chunk 0 is the arm that DIFFERS from
+the reference, so divergence is already present at row 0 and the split at cv_n lands in the middle
+of an already-diverged region (step=0.9x for 512 — essentially flat, not a step). `first_div_pos=0`
+is the honest signal; the step ratio is noise on this shape.
+
+MY PRIOR PAIRWISE EXPECTATION WAS WRONG, AND SECTION B REFUTED IT. The earlier draft of this file
+predicted 512 and 64 "should also differ pairwise — 1 FA chunk vs 8". They do NOT: section B is
+bit-identical. Working out why produced the actual invariant. The FA rows are not "one chunk" or
+"eight chunks" — they are a contiguous PREFIX, and its length is all that matters:
+
+    a chunk [b,e) has off = max(0, b-(win-1)), t_kv = e - off
+      b <= win-1  ->  off = 0,  t_kv = e     ->  FA iff e <= win
+      b >= win    ->  t_kv = t + (win-1) > win for any t >= 2   ->  always naive_w
+    => FA rows = [0, P)   with   P = c * floor(win/c)  for c <= win,   P = 0 for c > win
+
+P is the largest chunk-END that is <= win. Verified by exhaustive enumeration against the real
+loop (hybrid_forward.rs:461-474, INCLUDING the PRIME_MIN_T=16 tail merge at :470) for every
+c in [2,700] plus {768,1024,2048,4096} at T=4883: the formula reproduces the arm assignment exactly.
+    P(4096)=P(2048)=P(1024)=P(768)=P(600)=0      -> the pure-naive_w family, all mutually EXACT (A, C)
+    P(512)=P(64)=512                             -> same prefix -> mutually EXACT (B), both DIFFER from P=0 (A)
+The verdict depends ONLY on P. That single statement accounts for all nine measured arm-pairs
+across the two runs, and it is why 10 chunks and 77 chunks produce byte-identical output.
+
+RETRACTED, recorded so it is not re-derived: I briefly suspected a worse "tail hazard" in which the
+final row (the row that produces the logits) could land on the FA arm at the default chunk. It
+cannot. The PRIME_MIN_T merge absorbs any tail shorter than 16 into the previous chunk, and every
+non-first chunk has t >= 2 hence t_kv >= 513 > win. Enumeration over T in (512, 40000] at c=4096
+found ZERO such cases. The defect is confined to the prefix, and the default 4096 always has P=0.
+
+BREADTH, from the same enumeration: P differs across the chunk values {64,512,1024,2048,4096} for
+11488 of the first 12000 prompt lengths (95.7%), and the smallest affected T is 513 — one token past
+the window. Against the default 4096, chunk=64 first diverges at T=513 and chunk=512 at T=528.
+
+=====================================================================================
+THE CLOSED FORM PUT TO A FALSIFICATION TEST — 4/4, INCLUDING A ONE-TOKEN FLIP
+=====================================================================================
+Raw: raw/chunkinv-knife-20260806T224947Z.log. Repro: chunkinv-knife-step35.sh. One flock window
+22:49:47Z -> 22:55:54Z, cards 0 MiB at both ends. T=4883 throughout. The predictions were written
+into the script header BEFORE the run (they are in the committed script, not back-fitted).
+
+  PRED   pair                P values      predicted   MEASURED
+  1      ref=4096 vs 513     0  vs 0       EXACT       513 | EXACT  | -1  | 0.000e0 | identical
+  2      ref=4096 vs 512     0  vs 512     DIFFER      512 | DIFFER |  0  | 1.813e0 | step 6
+  3      ref=512  vs 384     512 vs 384    DIFFER      384 | DIFFER | 384 | 1.417e0 | step 13
+  4      ref=512  vs 256     512 vs 512    EXACT       256 | EXACT  | -1  | 0.000e0 | identical
+
+Why each one has teeth:
+  PRED-1+2 are a ONE-TOKEN KNIFE EDGE measured in a single process on a single clock: c=513 is
+    bit-identical to the 4096 default while c=512 diverges by 1.813e0 and changes greedy text at
+    step 6. Nothing about reduction order, chunk count (10 in both cases), tile shapes, or memory
+    layout is discontinuous between 512 and 513. The arm predicate is: 512 is the largest chunk
+    whose first chunk still ends at e <= win, so P jumps 512 -> 0. Only the kernel-selection
+    account survives this pair.
+  PRED-4 is the reduction-order control. c=256 uses TWENTY chunks against the reference's TEN —
+    double the partial-sum count and a completely different accumulation tree — yet is BIT-IDENTICAL
+    because both have P=512. Had divergence come from fold order, this pair had to differ. It did not.
+  PRED-3 blocks the lazy reading "small chunks are just noisy". 384 and 512 are both small chunks
+    with an FA prefix, so a noise account predicts they agree (or differ arbitrarily); the closed
+    form predicts they differ SPECIFICALLY because P=384 != P=512. They differ.
+
+BONUS PREDICTION, not fitted: the model implies first divergence sits at the first row where the two
+partitions disagree on the arm, i.e. first_div_pos = min(P_ref, P_arm).
+    ref=4096 vs 512: min(0,512)   = 0    measured 0     OK
+    ref=512  vs 384: min(512,384) = 384  measured 384   OK
+PRED-3's divergence starting at exactly row 384 — not row 0, not the chunk boundary 512 — is the
+sharpest single confirmation in the set: 384 is P(384), a number that only exists in this model.
+
+Also note the two DIFFER magnitudes are NOT equal (1.813e0 for a 512-vs-0 prefix gap, 1.417e0 for
+512-vs-384). Magnitude tracks how many rows change arm, which is again prefix arithmetic.
+
+=====================================================================================
+STATUS AND SCOPE DISCIPLINE
+=====================================================================================
+CONFIRMED: step35 prefill logits, hidden rows, and greedy text depend on MEMRA_PRIME_CHUNK for
+  T past the SWA window, with the kernel-selection mechanism identified, the arm enumeration
+  matching the observed partition exactly, and the dependence reduced to the closed form
+  P = c*floor(win/c) which predicts every measured pair (13 arm-pairs across three runs, 4/4 on a
+  pre-registered falsification battery including a one-token flip and a doubled-chunk-count control).
+NOT FIXED HERE, deliberately: the fix is a kernel-selection change on the served prefill path of
+  the launch SKU. That is perf-affecting and belongs in a reviewed lane with before/after prefill
+  numbers per research/benchmarks.md — not bundled into a bring-up receipt commit. This lane's job
+  is that the defect is FOUND, MEASURED, REPRODUCIBLE, and REDUCED TO A FORMULA, which it now is
+  (chunkinv-long-step35.sh, chunkinv-knife-step35.sh).
+
+  The closed form does, however, narrow the option set usefully for whoever takes it — recorded so
+  that work starts from the arithmetic rather than re-deriving it:
+  (a) FORCE naive_w on SWA layers whenever T > win, regardless of the chunk's own t_kv. This makes
+      P identically 0 for every chunk size, so the partition — and the output — stop depending on
+      MEMRA_PRIME_CHUNK. Correct-by-construction and it respects the t_kv <= 12287 smem ceiling
+      (that ceiling constrains chunk SIZE, which chunking already bounds; it is not violated by
+      changing which arm a chunk takes). Cost is confined to the first P rows of the prompt at
+      small chunk values — and at the DEFAULT 4096, P is already 0, so the default path's numbers
+      do not move at all. That last point matters: this option is free on the shipped default and
+      only pays where the knob is turned down.
+  (b) Give the FA view the windowed mask so one kernel serves both regimes. Strictly better if the
+      FA arm is faster, strictly more work, and it must be proven to reproduce the naive_w floor
+      bit-for-bit or it just relocates the class edge.
+  (c) Pin the arm to a chunk-INDEPENDENT predicate (e.g. on absolute position vs win rather than on
+      the chunk's t_kv). Equivalent to (a) in effect; (a) is the simplest spelling.
+  The measurement that arbitrates (a) vs (b) is prefill tok/s at chunk=4096 and at a small chunk on
+  this SKU, interleaved, N>=5 — the pp2-hardening lane's instrument, not this one's.
+
+  GATE CONSEQUENCE, for whoever fixes it: the fix is exactly what makes a step35 chunkinv assertion
+  meaningful, and the assertion is cheap and already written — chunkinv at T=4883 over
+  chunks 4096,513,512,256,64 must come back CHUNK-INVARIANT. Today it returns CHUNK-DEPENDENT, so
+  it cannot be added to the fast gate as a passing check yet; it belongs in the SAME commit as the
+  fix. Adding it earlier would land a known-red gate. (This also closes GAP 1 differently than
+  expected: the reason the canary was inert is that step35 never had a grain seam to flip, and once
+  (a) lands there is nothing to flip either — the correct assertion is naked chunk-invariance, not a
+  seam canary.)

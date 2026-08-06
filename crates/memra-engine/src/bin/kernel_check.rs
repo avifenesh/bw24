@@ -1385,23 +1385,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let wd = e.htod_bytes(&w)?;
             iq4xs_gate(&e, &wd, in_f, out_f, row_bytes, "synth", &mut fails)?;
         }
-        // real KAT trunk tensor (first 2-D IQ4_XS with in_f%256==0, out_f>=128).
+        // real trunk tensor (first 2-D IQ4_XS with in_f%256==0, out_f>=128). KAT-Coder preferred
+        // (the tensor this arm was calibrated on); Step-3.7-Flash IQ4_XS as fallback so the box
+        // that serves the step35 SKU can run this section at all — it holds no KAT copy, and
+        // IQ4_XS is the SHIPPING dtype of that SKU's trunk, so skipping here means the oracle
+        // never sees the very bytes it will decode in production. `kc_model` matches basenames,
+        // and the step artifact is a 3-shard split, so name shard 1 explicitly: GgufFile::open
+        // discovers the siblings and `tensor_data` is shard-relative (memra-gguf/src/lib.rs:369),
+        // so a tensor living in any shard reads correctly from this handle.
         {
             use memra_gguf::{GgufFile, GgmlType};
             let kat = kc_model("iq4xs-mmq", "Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf",
                 &["/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf"],
-                &gguf_arg);
+                &gguf_arg)
+            .or_else(|| kc_model("iq4xs-mmq", "Step-3.7-flash-IQ4_XS-00001-of-00003.gguf",
+                &["/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf"],
+                &gguf_arg));
             if let Some(path) = kat.as_deref() {
                 let g = GgufFile::open(path)?;
-                if let Some(t) = g.tensors.iter().find(|t| {
+                // Which artifact fed the oracle belongs IN the label: trunk tensor names collide
+                // across models (every arch has blk.0.ffn_down.weight), so a bare tensor name
+                // makes two different runs' log lines indistinguishable.
+                let who = std::path::Path::new(path).file_name()
+                    .map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                match g.tensors.iter().find(|t| {
                     t.ggml_type == GgmlType::IQ4_XS && t.ne.len() == 2
                         && t.ne[0] as usize % 256 == 0 && t.ne[1] >= 128
                 }) {
-                    let (in_f, out_f) = (t.ne[0] as usize, t.ne[1] as usize);
-                    let raw = g.tensor_data(t);
-                    let row_bytes = raw.len() / out_f;
-                    let wd = e.htod_bytes(raw)?;
-                    iq4xs_gate(&e, &wd, in_f, out_f, row_bytes, &t.name, &mut fails)?;
+                    Some(t) => {
+                        let (in_f, out_f) = (t.ne[0] as usize, t.ne[1] as usize);
+                        let raw = g.tensor_data(t);
+                        let row_bytes = raw.len() / out_f;
+                        let wd = e.htod_bytes(raw)?;
+                        iq4xs_gate(&e, &wd, in_f, out_f, row_bytes,
+                                   &format!("{who} {}", t.name), &mut fails)?;
+                    }
+                    // A resolved-but-unusable artifact used to fall through in total silence,
+                    // which reads in the log exactly like a section that passed. Say so.
+                    None => println!("KC-SKIP [iq4xs-mmq] {who}: resolved but holds no 2-D IQ4_XS \
+                                      tensor with in_f%256==0 and out_f>=128 (synthetic arm still ran)"),
                 }
             }
         }
@@ -3485,6 +3507,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- step35 SWA prefill: sdpa_naive_w_quantized_view (head_dim 128) ---------------------
+    // The windowed twin of sdpa_naive_quantized_view, added for step35's 33 SWA layers: every
+    // windowed FlashAttention stamp in flash_attn.cu is head_dim-256 only, so hd128 SWA prefill
+    // takes this f32 floor. Three contracts, all three from the commit that introduced it:
+    //   (1) window == 0 is BIT-identical to sdpa_naive_quantized_view (the documented
+    //       strict-superset claim: sdpa_naive_w_f32 treats window <= 0 as "no window mask").
+    //   (2) window >= t_kv is BIT-identical too — no key can be older than q_pos-(window-1).
+    //   (3) window < t_kv reproduces llama's LLAMA_SWA_TYPE_STANDARD mask (p1 - p0 >= n_swa
+    //       masked, i.e. t < q_pos - (window-1)), checked against a CPU oracle fed the
+    //       GPU-DEQUANTED f32 K/V so the quantized cache bytes drop out of the comparison,
+    //       AND asserted to actually DIFFER from the unwindowed output — a dropped/ignored
+    //       window argument would otherwise sail through (1) and (2).
+    // Cases cover a continuation chunk whose window is smaller than the chunk (the SWA
+    // chunk-prime shape: inside one chunk an early query must not see keys a trimmed view
+    // still holds), a fresh chunk, and a BK-unaligned tail.
+    {
+        let (hd, nh, nhkv) = (128usize, 8usize, 2usize);
+        let scale = 1.0f32 / (hd as f32).sqrt();
+        let (kv_dim_k, kv_dim_v) = (hd * nhkv, hd * nhkv);
+        let (kbb, vbb) = memra_engine::kv_blk_bytes();
+        let k_tok_bytes = (kv_dim_k / 32) * kbb;
+        let v_tok_bytes = (kv_dim_v / 32) * vbb;
+        // CPU windowed SDPA over EXACT f32 operands (same convention as sdpa_naive_w_f32:
+        // q_pos = (T_kv - T) + qt; causal t > q_pos masked; windowed t < q_pos-(win-1) masked).
+        let cpu_w = |q: &[f32], kf: &[f32], vf: &[f32], t: usize, tkv: usize, win: usize| -> Vec<f32> {
+            let mut o = vec![0f32; hd * nh * t];
+            for head in 0..nh {
+                let kvh = head / (nh / nhkv);
+                for qt in 0..t {
+                    let q_pos = ((tkv - t) + qt) as i64;
+                    let qv = &q[(qt * nh + head) * hd..][..hd];
+                    let mut sc = vec![0f32; tkv];
+                    for (tk, s) in sc.iter_mut().enumerate() {
+                        let kv = &kf[(tk * nhkv + kvh) * hd..][..hd];
+                        let mut a = 0.0f32; for d in 0..hd { a += qv[d] * kv[d]; }
+                        a *= scale;
+                        if tk as i64 > q_pos { a = -1e30; }
+                        if win > 0 && (tk as i64) < q_pos - (win as i64 - 1) { a = -1e30; }
+                        *s = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0f32; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nh + head) * hd..][..hd];
+                    for d in 0..hd {
+                        let mut a = 0.0f32;
+                        for tk in 0..tkv { a += sc[tk] * vf[(tk * nhkv + kvh) * hd + d]; }
+                        ov[d] = a;
+                    }
+                }
+            }
+            o
+        };
+        for (t, tkv, win) in [(64usize, 192usize, 32usize), (100, 100, 48), (37, 297, 64)] {
+            let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i+5)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+            let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
+            let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
+            for tok in 0..tkv {
+                let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
+            }
+            let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
+            // (1) window == 0 vs the unwindowed function: BIT identity.
+            let mut o_unw = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_quantized_view(&qd,&kview,&vview,&mut o_unw,hd,nh,nhkv,t,tkv,scale,true,
+                                        k_tok_bytes,v_tok_bytes)?;
+            let mut o_w0 = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_w_quantized_view(&qd,&kview,&vview,&mut o_w0,hd,nh,nhkv,t,tkv,scale,true,
+                                          0,k_tok_bytes,v_tok_bytes)?;
+            let a = e.dtoh(&o_unw)?; let b0 = e.dtoh(&o_w0)?;
+            let bd0 = a.iter().zip(&b0).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("sdpa_naive_w_quantized_view(window=0) vs unwindowed T={t} Tkv={tkv}: bitdiff={bd0} {}",
+                     if bd0 == 0 {"OK"} else {fails+=1;"FAIL"});
+            // (2) window >= t_kv: still BIT-identical (mask can never fire).
+            let mut o_wf = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_w_quantized_view(&qd,&kview,&vview,&mut o_wf,hd,nh,nhkv,t,tkv,scale,true,
+                                          tkv,k_tok_bytes,v_tok_bytes)?;
+            let bf = e.dtoh(&o_wf)?;
+            let bdf = a.iter().zip(&bf).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T={t} Tkv={tkv}: bitdiff={bdf} {}",
+                     if bdf == 0 {"OK"} else {fails+=1;"FAIL"});
+            // (3) window < t_kv: mask semantics vs a CPU oracle on the GPU-dequanted operands.
+            let mut kf = e.zeros(tkv*kv_dim_k)?; let mut vf = e.zeros(tkv*kv_dim_v)?;
+            e.fa_dequant_kv_view_f32(&kview,&vview,&mut kf,&mut vf,kv_dim_k,kv_dim_v,tkv,
+                                     k_tok_bytes,v_tok_bytes,false)?;
+            let (kfh, vfh) = (e.dtoh(&kf)?, e.dtoh(&vf)?);
+            let cpu = cpu_w(&q, &kfh, &vfh, t, tkv, win);
+            let mut o_win = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_w_quantized_view(&qd,&kview,&vview,&mut o_win,hd,nh,nhkv,t,tkv,scale,true,
+                                          win,k_tok_bytes,v_tok_bytes)?;
+            let g = e.dtoh(&o_win)?;
+            let sc = cpu.iter().map(|x| x.abs()).fold(0.0f32, f32::max).max(1e-3);
+            let rel = maxdiff(&cpu, &g) / sc;
+            // f32 dot in the same order on both sides — only FMA contraction separates them.
+            println!("sdpa_naive_w_quantized_view window={win} vs CPU windowed oracle T={t} Tkv={tkv}: rel={rel:.2e} {}",
+                     if rel < 1e-4 {"OK"} else {fails+=1;"FAIL"});
+            // and the window must actually bite: differ from the unwindowed output.
+            let changed = a.iter().zip(&g).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("sdpa_naive_w_quantized_view window={win} differs from unwindowed T={t} Tkv={tkv}: changed={changed}/{} {}",
+                     a.len(), if changed > 0 {"OK"} else {fails+=1;"FAIL"});
+        }
+    }
+
     // --- KV-cache quantization round-trip: append-quantize then dequant (matches §A formulas) ---
     // Quantize a known f32 K/V row with the append kernel, read the bytes back, dequant on the CPU
     // via the exact ggml q8_0/q5_1 formulas, compare to the f32 input. Isolates layout/packing bugs
@@ -3852,6 +3982,158 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("fp8-blk-gpu Q8_0 bit-parity [{out_f}x{in_f}] bytes={} bad={bad} {}",
                      cpu.len(), if bad == 0 { "OK" } else { fails += 1; "FAIL" });
         }
+    }
+
+    // --- step35 (Step-3.7-Flash) SEPARATE head-wise attention gate: `attn_head_gate` must equal
+    // `a * sigmoid(g)` with ONE gate scalar per (token, head) broadcast over head_dim, and the
+    // optional fp16 twin must be the same `__float2half` of that f32.
+    //
+    // The cell that matters is the CONFUSION cell: memra also has `sig_mul_f16out`, which reads a
+    // gate value per (head, dim) ELEMENT (qwen35 packs it inside wq). The two kernels have the
+    // same signature shape and adjacent names, so this section asserts the head-broadcast kernel
+    // really does hold the gate constant across head_dim — by feeding a `g` whose per-head values
+    // are distinct and checking that a full-width interpretation cannot produce the same answer.
+    //
+    // n_head 64 AND 96 are both run because Step-3.7-Flash's query-head count is PER LAYER (64 on
+    // the 12 full-attn layers, 96 on the 33 SWA layers); head_dim=128. T=1 is decode, T=7 prefill
+    // with a non-power-of-2 token count so the flat-grid tail is exercised.
+    {
+        let head_dim = 128usize;
+        for &n_head in &[64usize, 96] {
+            for &t in &[1usize, 7] {
+                let n = t * n_head * head_dim;
+                let a: Vec<f32> = (0..n).map(|i| pr(i + 101) - 0.5).collect();
+                // pre-sigmoid gate, token-major [T, n_head]; spread over +-6 so sigmoid spans
+                // ~0.002..0.998 and a wrong broadcast cannot hide inside a flat ~0.5.
+                let g: Vec<f32> = (0..t * n_head).map(|i| (pr(i + 103) - 0.5) * 12.0).collect();
+                let mut cpu = vec![0f32; n];
+                for tok in 0..t {
+                    for hh in 0..n_head {
+                        let s = 1.0 / (1.0 + (-g[tok * n_head + hh]).exp());
+                        for d in 0..head_dim {
+                            let idx = (tok * n_head + hh) * head_dim + d;
+                            cpu[idx] = a[idx] * s;
+                        }
+                    }
+                }
+                let ad = e.htod(&a)?;
+                let gd = e.htod(&g)?;
+                let mut dd = e.zeros(n)?;
+                let mut d16 = e.alloc_u8_uninit(n * 2)?;
+                e.attn_head_gate(&ad, &gd, &mut dd, Some(&mut d16), head_dim, n_head, t)?;
+                let gpu = e.dtoh(&dd)?;
+                let d = maxdiff(&cpu, &gpu);
+                // fp16 twin == __float2half of the f32 the same launch stored.
+                let raw = e.dtoh_u8(&d16)?;
+                let h_bad = (0..n).filter(|&i| {
+                    let bits = u16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+                    bits != memra_gguf::nvfp4_repack::f32_to_f16_bits(gpu[i])
+                }).count();
+                // CONFUSION GUARD: a full-width (per-element) gate reading the same `g` buffer
+                // would differ here. Assert the head-broadcast answer is NOT reproducible by
+                // holding only one sigmoid for the whole layer, i.e. per-head values really vary.
+                let s0 = 1.0 / (1.0 + (-g[0]).exp());
+                let flat_diff = (0..n).filter(|&i| (cpu[i] - a[i] * s0).abs() > 1e-6).count();
+                let ok = d < 1e-6 && h_bad == 0 && flat_diff > n / 2;
+                println!("attn_head_gate [hd{head_dim} nh{n_head} T{t}] maxdiff={d:.2e} \
+                          f16_mismatch={h_bad} per_head_varies={flat_diff}/{n} {}",
+                         if ok { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+        // dst16=None must be a legal skip (the nullable-pointer convention), f32 unchanged.
+        let (n_head, t) = (64usize, 3usize);
+        let n = t * n_head * head_dim;
+        let a: Vec<f32> = (0..n).map(|i| pr(i + 107) - 0.5).collect();
+        let g: Vec<f32> = (0..t * n_head).map(|i| (pr(i + 109) - 0.5) * 12.0).collect();
+        let ad = e.htod(&a)?;
+        let gd = e.htod(&g)?;
+        let mut with16 = e.zeros(n)?;
+        let mut d16 = e.alloc_u8_uninit(n * 2)?;
+        e.attn_head_gate(&ad, &gd, &mut with16, Some(&mut d16), head_dim, n_head, t)?;
+        let mut no16 = e.zeros(n)?;
+        e.attn_head_gate(&ad, &gd, &mut no16, None, head_dim, n_head, t)?;
+        let (x, y) = (e.dtoh(&with16)?, e.dtoh(&no16)?);
+        let bad = x.iter().zip(&y).filter(|(p, q)| p != q).count();
+        println!("attn_head_gate dst16=None skip: f32_mismatch={bad} {}",
+                 if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- step35 CLAMPED SwiGLU (`swiglu_clamp_exp` / `_shexp`, live only on Step-3.7-Flash layers
+    // 43 and 44 with limits 7.0 and 16.0): `min(silu(gate*gs), limit) * clamp(up*us, +-limit)`,
+    // llama.cpp llama-graph.cpp:2146-2165 / :1751-1770, non-DEEPSEEK4 branch.
+    //
+    // Two things are gated, and the second is the reason this cell exists:
+    //   1. maxdiff vs the CPU reference at the two REAL limits, with inputs deliberately spanning
+    //      well past +-limit so both clamps actually engage (a test whose inputs stay in-range
+    //      would pass identically against plain silu_mul and prove nothing).
+    //   2. It must DIFFER from `swigluoai_mul_scaled`, which is the kernel someone reaching for
+    //      "clamped SwiGLU" would grab. oai clamps the gate BEFORE swish and multiplies by
+    //      (1 + clamp(up)); step35 clamps AFTER silu with no linear term. Substituting one for the
+    //      other compiles, runs, and produces plausible logits — so the divergence is asserted.
+    {
+        let n = 4096usize;
+        for &limit in &[7.0f32, 16.0] {
+            // span +-3*limit so silu(gate) exceeds `limit` on many elements and up gets clamped
+            // on both sides.
+            let gate: Vec<f32> = (0..n).map(|i| pr(i + 113) * 3.0 * limit).collect();
+            let up: Vec<f32> = (0..n).map(|i| pr(i + 127) * 3.0 * limit).collect();
+            for &(gs, us) in &[(1.0f32, 1.0f32), (0.75, 1.25)] {
+                let cpu: Vec<f32> = (0..n).map(|i| {
+                    let u = (up[i] * us).clamp(-limit, limit);
+                    let x = gate[i] * gs;
+                    let sl = x / (1.0 + (-x).exp());
+                    sl.min(limit) * u
+                }).collect();
+                let gd = e.htod(&gate)?;
+                let ud = e.htod(&up)?;
+                let mut dd = e.zeros(n)?;
+                e.swiglu_clamped_mul_scaled(&gd, &ud, gs, us, limit, &mut dd, n)?;
+                let gpu = e.dtoh(&dd)?;
+                let d = maxdiff(&cpu, &gpu);
+                // count how many elements the clamps actually touched — a silent no-op would
+                // make this cell vacuous.
+                let clamped = (0..n).filter(|&i| {
+                    let x = gate[i] * gs;
+                    let sl = x / (1.0 + (-x).exp());
+                    sl > limit || (up[i] * us).abs() > limit
+                }).count();
+                println!("swiglu_clamped [limit={limit} gs={gs} us={us}] maxdiff={d:.2e} \
+                          clamped={clamped}/{n} {}",
+                         if d < 1e-4 && clamped > n / 10 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+        // DIVERGENCE GUARD vs swigluoai (the wrong-kernel-looks-right failure mode). Asserted by
+        // NAMED MECHANISM, not by a divergence count over random inputs. A first cut here demanded
+        // ">50% of elements differ" and read 39% — a bad test, not a bad kernel: `pr()` returns
+        // [-1, 1] (memra-validate/src/lib.rs:29), so the `(pr - 0.5) * 6 * limit` inputs it used
+        // were skewed to [-63, +21], and most elements sat at deep-negative gate where
+        // silu(gate) -> 0 and BOTH kernels correctly agree at ~0. A threshold is only as
+        // meaningful as the input distribution behind it; hand-picked points where the two
+        // FORMULAS must disagree carry the claim without depending on one.
+        let limit = 7.0f32;
+        //  (a) up = -1 exactly: oai's `1 + up` factor vanishes -> oai == 0 for ANY gate.
+        //  (b) up just off -1: oai stays near zero while step35 is ~-4.9 (two orders apart).
+        //  (c) gate 12 > limit 7: oai clamps BEFORE swish -> swish(7) ~ 6.994, x (1+2) ~ 20.98;
+        //      step35 clamps AFTER -> min(silu(12), 7) = 7, x 2 = 14. The clamp-ORDER difference.
+        //  (d) up = 0: step35's product is exactly 0; oai's `1 + 0` leaves the whole swish term.
+        let probe_g: Vec<f32> = vec![5.0, 5.0, 12.0, 12.0];
+        let probe_u: Vec<f32> = vec![-1.0, -0.99, 2.0, 0.0];
+        let np = probe_g.len();
+        let gd = e.htod(&probe_g)?;
+        let ud = e.htod(&probe_u)?;
+        let mut a_step = e.zeros(np)?;
+        e.swiglu_clamped_mul_scaled(&gd, &ud, 1.0, 1.0, limit, &mut a_step, np)?;
+        let mut a_oai = e.zeros(np)?;
+        e.swigluoai_mul_scaled(&gd, &ud, 1.0, 1.0, 1.0, limit, &mut a_oai, np)?;
+        let (xs, xo) = (e.dtoh(&a_step)?, e.dtoh(&a_oai)?);
+        let silu5 = 5.0f32 / (1.0 + (-5.0f32).exp());
+        let m_a = xo[0].abs() < 1e-6 && (xs[0] + silu5).abs() < 1e-4;
+        let m_b = xo[1].abs() < 0.1 && xs[1] < -4.0;
+        let m_c = (xs[2] - 14.0).abs() < 1e-3 && (xo[2] - 20.98).abs() < 0.05;
+        let m_d = xs[3].abs() < 1e-9 && xo[3] > 6.9;
+        println!("swiglu_clamped != swigluoai by mechanism: up=-1_oai_zero={m_a} \
+                  up=-0.99_two_orders={m_b} gate>limit_clamp_order={m_c} up=0_no_linear={m_d} {}",
+                 if m_a && m_b && m_c && m_d { "OK" } else { fails += 1; "FAIL" });
     }
 
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }

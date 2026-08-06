@@ -1,0 +1,53 @@
+# step37-p2 — MTP draft-head tensor identity probe (byte hashes over GGUF tensor payloads)
+# WHY: run-spec with MEMRA_MTP_DRAFT attached gave acceptance 0/248 across K=1..8 with
+#      self-consistency PASS (raw/mtp-draft-20260806T212902Z.log) — the exact "correct output,
+#      dead acceptance" class. `MtpHead::load_draft` read the drafter's TOP-LEVEL
+#      `output.weight` as the draft lm_head, while upstream step35.cpp:553 prefers the block's
+#      own `layer.nextn.shared_head_head`. Both tensors exist in this file with identical
+#      [4096, 128896] Q8_0 shape, so shape checks cannot tell them apart. Hash them.
+# HOW: tools-free reader (~/step37/tensor-probe.py on the box) walks the GGUF header, computes
+#      sha256 over each tensor's raw payload bytes at data_offset+off for its computed size.
+#      No dequant, no GPU — pure on-disk bytes.
+# WHEN: 2026-08-07, on THE BOX (2x RTX PRO 6000 Server 96GB, 18.195.123.14), files at
+#      ~/step37/models/step-3.7-flash/ (sha256-verified downloads, see artifact-sha256-20260806.txt)
+# N: single deterministic read per tensor (byte hashes — repetition is meaningless)
+
+=== DRAFTER models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+output.weight                                    ne=[4096, 128896] type=Q8_0     bytes=   560955392 sha256=3eec58313a19535b7f5e7ed157b8c489c2b4ad592b9f5cb2c466fa2e2811334d
+token_embd.weight                                ne=[4096, 128896] type=Q8_0     bytes=   560955392 sha256=139872af2cbc43f70a4709cf66ca371a8925496b2eb577b130bd519256e84c56
+blk.45.nextn.shared_head_norm.weight             ne=[4096] type=F32      bytes=       16384 sha256=405dbb0d73ef7614a1cc18ba3ccfc01b0fea39bcb6f4cdb4159bf93c43252f8d
+blk.45.nextn.shared_head_head.weight             ne=[4096, 128896] type=Q8_0     bytes=   560955392 sha256=c90b907bac31e35e3e29fa5838bedd3130bc3f49d7d6a8d0e789561ab94f5e3d
+blk.46.nextn.shared_head_head.weight             ne=[4096, 128896] type=Q8_0     bytes=   560955392 sha256=a22d29575e19f2babf7d46343285cbda8335e33f30554e1175b48452577f1906
+blk.47.nextn.shared_head_head.weight             ne=[4096, 128896] type=Q8_0     bytes=   560955392 sha256=4b21e1374b402009867ac55929bb439e4b4b9c9aca91fe7604262a3061499daf
+output_norm.weight                               ne=[4096] type=F32      bytes=       16384 sha256=d7526f4452cc892219c1b2f7d0362575c8abf4df3617c71b8945e2d9b1fee02f
+
+=== TRUNK models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+output.weight                                    ne=[4096, 128896] type=Q6_K     bytes=   433090560 sha256=e6c30935f444f637db86936198bf34947df821d9e59a83424fd74d27f8a01bc1
+output_norm.weight                               ne=[4096] type=F32      bytes=       16384 sha256=d7526f4452cc892219c1b2f7d0362575c8abf4df3617c71b8945e2d9b1fee02f
+token_embd.weight                                ne=[4096, 128896] type=IQ4_NL   bytes=   296976384 sha256=b19dffd17bceb75fea4001ebe90a45128e6ca5ae2e9cb2736d2acb989fff1995
+
+=== FINDINGS
+1. output.weight (3eec5831…) != blk.45.nextn.shared_head_head.weight (c90b907b…). They are
+   DIFFERENT MATRICES of the same shape and dtype. The loader was reading the wrong one.
+2. The three MTP blocks' heads all differ from each other (c90b907b / a22d2957 / 4b21e137) —
+   each NextN block owns its own head, exactly as upstream's per-layer
+   `layer.nextn.shared_head_head` lookup implies. A single shared head would have collided.
+3. THE TELL: the drafter's top-level `output_norm.weight` is BYTE-IDENTICAL to the TRUNK
+   artifact's (both d7526f44…), while blk.45's own `nextn.shared_head_norm.weight` is
+   different (405dbb0d…). So the drafter's top-level output stack (output.weight +
+   output_norm.weight) is a COPY OF THE TRUNK'S output stack, re-quantized Q6_K -> Q8_0,
+   shipped so the draft gguf can stand alone. It is NOT the MTP head.
+   Consequence of the old code: the MTP block's hidden was projected through the TRUNK's
+   lm_head under the MTP block's OWN norm — plausible tokens, near-zero agreement with the
+   trunk's actual next-token distribution => acceptance 0.
+4. token_embd differs from output.weight in the drafter (139872af vs 3eec5831), so this model
+   is NOT tied-embedding — another reason a head substitution cannot be waved off as benign.
+
+=== SECOND BUG FOUND BY THE SAME PROBE (embedded-MTP loader, not this artifact's path)
+`HybridModel::load`'s EMBEDDED MTP arm read `blk.{n}.nextn.shared_head.weight` — a name that
+appears in NO artifact and in no upstream tensor mapping (upstream:
+LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD -> "blk.%d.nextn.shared_head_head"). That `load_opt` was
+therefore silently always-None, so every embedded-MTP model fell back to the trunk
+`self.output` in `mtp_head_forward_dev` op 12. Benign for heads genuinely tied to the trunk
+head; wrong for any artifact shipping its own. Fixed to prefer shared_head_head with the old
+name kept as fallback.
