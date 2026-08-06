@@ -394,21 +394,29 @@ for key in "${!CELLGRP[@]}"; do
         for c in $group; do
             PROMPT=$(cell_field "$c" 4); NGEN=$(cell_field "$c" 8)
             [ -f "$PROMPT" ] || continue
+            # MJ1 must be recomputed PER CELL. Reusing the loop-leaked $MJ from the measure pass
+            # compared every cell against the LAST cell's json, so only the final cell of each
+            # group could ever agree — the control reported 4 spurious "BOOTS DISAGREE" FAILs on
+            # a run whose six cells were in fact byte-identical across boots. A control arm that
+            # cries wolf is worse than none: it trains readers to discount the one signal that
+            # says "stop, nothing here is trustworthy".
+            MJ1="$LOGDIR/$c.json"
             MJ2="$LOGDIR/$c.ctl.json"
             measure_cell "$c" "$PROMPT" "$NGEN" "$MJ2" > "$LOGDIR/$c.ctl.measure.log" 2>&1 || {
                 echo "  $c control: FAIL (measurement)"; FAILS=$((FAILS+1)); continue; }
             if python3 -c 'import json,sys
 a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
-sys.exit(0 if (a["spec"],a["text_sha256"])==(b["spec"],b["text_sha256"]) else 1)' "$MJ" "$MJ2"; then
+sys.exit(0 if (a["spec"],a["text_sha256"])==(b["spec"],b["text_sha256"]) else 1)' "$MJ1" "$MJ2"; then
                 echo "  $c control: PASS (boot 1 == boot 2 — single-shot read is valid here)"
             else
                 echo "  $c control: FAIL — TWO IDENTICAL-CONFIG BOOTS DISAGREE."
                 echo "      Acceptance is not deterministic on this rig/build, so NO single-pass"
                 echo "      verdict from this gate is trustworthy. Root-cause before reading any"
                 echo "      pass/fail above."
-                python3 -c 'import json,sys
-for n,p in (("boot1",sys.argv[1]),("boot2",sys.argv[2])):
-    d=json.load(open(p)); print(f"        {n}: {d[\"spec\"]} sha={d[\"text_sha256\"][:16]}")' "$MJ" "$MJ2"
+                python3 -c 'import json, sys
+for n, p in (("boot1", sys.argv[1]), ("boot2", sys.argv[2])):
+    d = json.load(open(p))
+    print("        %s: %s sha=%s" % (n, d["spec"], d["text_sha256"][:16]))' "$MJ1" "$MJ2"
                 FAILS=$((FAILS+1))
             fi
         done

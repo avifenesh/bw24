@@ -1,0 +1,45 @@
+=== accept-gate TEETH RECEIPT: direction 2, q27 re-run ===
+[why re-run] the q27 group's first attempt under the arm died at model load with a QUOTED
+  cause: '[server] FATAL: worker init failed: load m: DriverError(CUDA_ERROR_OUT_OF_MEMORY,
+  "out of memory")'. Concurrent-GPU state at failure time: a neighbor lane's
+  argmax-margin-probe held 8482 MiB of 24463 (it does not take /tmp/gpu5090.lock, so this
+  lane's flock did not exclude it) and the 27B needs ~16 GB. That is rig contention, NOT
+  the arm — so it is re-run in a clean window rather than counted as a detection.
+[when] 2026-08-06T18:02:27+03:00
+[commit] 5cda59b555230f4d782624e4722ee901d2757ff6 (+ control-arm MJ1 fix, uncommitted at run time)
+[gpu] 368 MiB, 180 MHz, 63
+[gpu-apps] 144655, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 q27-p2 q27-p3 (smoke tier; --full for the matrix)
+   arm env: MEMRA_MMQ_F8F4=1
+   logs: /tmp/ag-f8f4-q27
+-- server: Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf + draft-daily-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 8s
+  q27-p1: FAIL — 4 assertion(s):
+      spec.rounds: pinned 42 -> got 43
+      spec.drafted: pinned 126 -> got 129
+      text sha256: pinned 8fcb13e8f3347340 -> got 33d69474edad2d10
+      completion_tokens: pinned 128 -> got 129
+      acceptance 0.6746 -> 0.6589 (-1.57pp)   <- clock-independent; a ratio, so this is real, not drift
+      TEXT DIVERGES at char 208 (~word 30; pinned len 537, got 508)
+        common:  ..."ional, TypeVar, Generic, Iterator\n\nT = TypeVar('T')\n\n\nclass "
+        pinned:  'DoublyLinkedList(Generic[T]):\n    """A doubly-linked list implementati'
+        got:     '_Node(Generic[T]):\n    """Internal node for the doubly-linked list."""'
+        NOTE: this divergence is at/past the 20-token golden window — the token goldens are BLIND to it. That blindness is why this gate exists.
+  q27-p2: PASS (rounds=42 drafted=126 accepted=85 accept=0.6746, 128 tok text sha-identical)
+  q27-p3: FAIL — 3 assertion(s):
+      spec.rounds: pinned 39 -> got 38
+      spec.drafted: pinned 117 -> got 114
+      spec.accepted: pinned 91 -> got 92
+      acceptance 0.7778 -> 0.8070 (+2.92pp)   <- clock-independent; a ratio, so this is real, not drift
+
+accept-gate: 1 pass, 2 fail, 0 unpinned, 0 skip
+
+  ^ An acceptance or long-text FAIL is NOT a drift tripwire. Acceptance is a RATIO
+    (clock-independent) and greedy text at temperature 0 is deterministic, so neither can be
+    explained by thermals, clocks or a contended window. Read it as a real behavior change.
+    DO NOT re-pin to make it green: that is the receipted failure mode (a --refresh-goldens
+    after a kernel change silently re-pins the new arm). Root-cause first; re-pin only after
+    the change is understood, reviewed and committed.
+GATE-RC=1 (nonzero = the gate DETECTED the arm on q27, as required)
