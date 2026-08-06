@@ -1,0 +1,9 @@
+argmax-margin-gate: model=Qwen3.6-27B-Q8_0.gguf prompt=board-2048.txt window=12 canary=1
+  [canary] injected a WIDE-margin flip (pos 9999, margin 5.0000, delta 0.1000)
+           — a disagreement the config spread cannot explain; must be rejected
+  explained pos=2047 margin=0.0307 < delta=0.2117
+  UNEXPLAINED pos=9999 margin=5.0000 delta=0.1000
+  TOO-MANY-FLIPS 2 > 1
+  SUMMARY flips=2 bad=2
+  CANARY PASS: the injected wide-margin flip broke the assertion as required (teeth)
+  raw: research/q8-argmax-20260806/gate-Qwen3.6-27B-Q8_0-board-2048.canary.log

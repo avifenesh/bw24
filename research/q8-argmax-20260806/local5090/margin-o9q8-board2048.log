@@ -1,0 +1,36 @@
+argmax-margin-probe: T=2048 window=24 sm_count=82 model=/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf
+env: MEMRA_FA_SPLIT=<unset> MEMRA_Q80_G2=<unset> MEMRA_FAST=<unset> MEMRA_PRIME_CHUNK=<unset>
+
+pos      prefill_top1  margin_p     decode_top1  margin_d     delta@ids      agree
+2024     332           0.5269       332          0.4928       0.0759         yes
+2025     318           1.3508       318          1.3912       0.0724         yes
+2026     539           0.1895       539          0.2006       0.1023         yes
+2027     1730          4.0642       1730         3.9936       0.1903         yes
+2028     440           0.1599       440          0.1975       0.0529         yes
+2029     1510          1.9758       1510         1.8795       0.0823         yes
+2030     63            0.4447       63           0.2796       0.1095         yes
+2031     620           10.5961      620          10.7388      0.2042         yes
+2032     332           1.3426       332          1.3947       0.0487         yes
+2033     27718         0.4230       27718        0.3576       0.1247         yes
+2034     1510          2.3603       1510         2.3658       0.1308         yes
+2035     5653          4.3023       5653         4.2501       0.0498         yes
+2036     24822         6.4138       24822        6.3489       0.1206         yes
+2037     63            0.6330       63           0.5839       0.0615         yes
+2038     318           0.0463       318          0.1467       0.0605         yes
+2039     2083          0.3625       2083         0.2554       0.1163         yes
+2040     40049         4.7557       40049        4.7674       0.1452         yes
+2041     19852         0.3529       19852        0.4764       0.1833         yes
+2042     11            0.3803       11           0.4136       0.0801         yes
+2043     1892          0.1995       1892         0.1617       0.1508         yes
+2044     264           0.5947       264          0.5695       0.0545         yes
+2045     2972          0.5773       2972         0.5755       0.0291         yes
+2046     42714         2.2554       42714        2.2983       0.0272         yes
+2047     485           0.1087       485          0.0686       0.1064         yes
+
+margin distribution (decode config, 24 positions): min 0.0686  p10 0.1617  p50 0.5755  p90 4.7674  max 10.7388
+margin distribution (prefill config): min 0.0463  p50 0.5947  max 10.5961
+DECISION POSITION (the gate's): prefill_top1=485 decode_top1=485 margin_p=0.1087 margin_d=0.0686 config_delta_at_ids=0.1064
+  -> the decision margin is BELOW 0/24 sampled positions' margins (rank 1 of 24)
+  -> flip is ARITHMETICALLY POSSIBLE iff config_delta > margin: 0.1064 > 0.0686 = true
+agreement across sampled positions: 24/24 (0 flip(s))
+VERDICT-INPUT: NEAR-TIE class — isolated flip at a margin the config spread covers

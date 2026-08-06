@@ -889,13 +889,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if am_p == am_d { "MATCH" } else { "MISMATCH" }
     );
     if am_p != am_d {
-        // near-tie vs real-gap diagnosis before the panic: both sides' view of both ids.
+        // near-tie vs real-gap diagnosis before the panic: both sides' view of both ids, PLUS
+        // the number that actually decides which of the two it is (lane/q8-argmax,
+        // research/q8-argmax-20260806/VERDICT.md). A flip is only meaningful if the config
+        // spread at the contending ids is large enough to reach across the top-2 margin:
+        // margin >= spread means a real numeric defect moved a logit further than the gap it
+        // crossed; margin << spread is the documented near-tie coin. `logit maxdiff` above is
+        // NOT that number — it is the max over a ~250k-wide vocab, dominated by tail noise,
+        // and it is routinely LARGER on runs this same gate calls MATCH (measured: MATCH at
+        // 1.165 beside MISMATCH at 0.466). Do not read it as severity.
+        let margin_p = (prefill[am_p] - prefill[am_d]).abs();
+        let margin_d = (dec_logits[am_d] - dec_logits[am_p]).abs();
+        let spread = (prefill[am_p] - dec_logits[am_p])
+            .abs()
+            .max((prefill[am_d] - dec_logits[am_d]).abs());
         eprintln!("[gate] prefill: l[{am_p}]={:.4} l[{am_d}]={:.4} | decode: l[{am_p}]={:.4} l[{am_d}]={:.4}",
                   prefill[am_p], prefill[am_d], dec_logits[am_p], dec_logits[am_d]);
+        eprintln!("[gate] top-2 margin: prefill {margin_p:.4} decode {margin_d:.4} | config spread at these ids {spread:.4} -> {}",
+                  if spread > margin_p.min(margin_d) {
+                      "NEAR-TIE class (the spread covers the margin; run tools/argmax-margin-gate.sh \
+                       to see this position's margin against the prompt's own distribution)"
+                  } else {
+                      "WIDE-MARGIN flip — the spread does NOT cover the margin; this is a real defect"
+                  });
     }
     assert_eq!(
         am_p, am_d,
-        "decode-step diverges from prefill — cache threading bug"
+        "decode-step diverges from prefill at the last position (see the [gate] lines above for \
+         the near-tie-vs-defect diagnosis; a wide-margin flip means a cache/threading/kernel bug, \
+         a margin inside the config spread is the documented cross-config drift class)"
     );
 
     // --- gap #46: the BATCHED-PRIME config (prime_cache — what actually seeds generation in

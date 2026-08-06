@@ -89,6 +89,23 @@ chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
 # 3 cycles at tier-1; local-ci runs the full 10). Guards capture_graph + the GraphSession
 # capture/recapture path.
 gwstress	cmd	tools/graph-warmup-stress-gate.sh	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 3	-	-
+# amargin/amarginc: the CALIBRATED prefill-vs-decode argmax gate (lane/q8-argmax,
+# research/q8-argmax-20260806/VERDICT.md). run-gen's own gate asserts forward_last and the
+# decode_step loop agree at ONE position (the last) and calls any disagreement a "cache
+# threading bug" — which is how the 27B Q8_0 x board-2048 pair sat red on the 188-SM pod from
+# v0.69.0 through v0.71.0 with nothing wrong: that position is a THREE-WAY near-tie (top-3
+# inside 0.05, prompt median top-2 gap 1.25) and the two configs pick differently. Refuted as
+# causes: the k27 FA-split rung (8/16/1 identical), MEMRA_Q80_G2, chunked prefill, and every
+# fast kernel at once (the MEMRA_FAST=0 f32 oracle flips the same pair).
+# The real hole this closes is COVERAGE: one-position checking makes greenness depend on
+# whether a prompt's LAST token happens to be a near-tie. Measured — the 27B NVFP4 arm the
+# release battery calls green carries a flip at pos 2042 whose margin (0.0184) is SMALLER than
+# the failing arm's (0.0307). This gate checks the last 24 positions and asserts every flip is
+# explained by a margin the config spread can reach across; a WIDE-margin flip (the genuine
+# cache/kernel-bug signature) fails at any position. amarginc is its teeth: it fault-injects a
+# wide-margin flip row and PASSES only if the comparator rejects it.
+amargin	cmd	tools/argmax-margin-gate.sh	-	-	-
+amarginc	cmd	tools/argmax-margin-gate.sh	--canary	-	-
 
 
 # c=64 serving concurrency stress (lane/admit-oom, 2026-08-06): 64 staggered streaming clients
