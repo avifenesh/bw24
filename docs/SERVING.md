@@ -624,8 +624,9 @@ prefill is byte-identical across `MEMRA_PRIME_CHUNK` values with no door and no 
 (chunkinv gate, naked env, both pinned prompts EXACT at chunks 2048/64/32).
 `MEMRA_PRIME_CHUNK` is again a pure memory/transient knob. Rollback seam:
 `MEMRA_PRIME_F32CHUNK0=1` restores the legacy f32 first-chunk arithmetic (and is the gate
-canary's injection). The interim `MEMRA_PRIME_INVARIANT`/`MEMRA_PRIME_GRAIN` door is
-superseded (see docs/FLAGS.md). History + root-cause receipts:
+canary's injection). The interim `MEMRA_PRIME_INVARIANT`/`MEMRA_PRIME_GRAIN` pin-the-boundary
+door was superseded by this fix and removed at v0.71 per the flags doctrine (the research
+record keeps its history). History + root-cause receipts:
 `research/chunk-invariance-20260805/VERDICT.md`; flip receipts:
 `research/chunkinv-flip-20260805/`.
 
