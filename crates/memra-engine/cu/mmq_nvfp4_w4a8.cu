@@ -1051,14 +1051,45 @@ static __constant__ float memra_e2m1_f32[16] =
     {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f,
      -0.0f, -1.0f, -2.0f, -3.0f, -4.0f, -6.0f, -8.0f, -12.0f};
 
-// plain-kind f8f6f4 MMA: D(f32 16x8) += A(e4m3 16x32) * B(e4m3 32x8). A = 4 regs (one
-// tile_A_8 ldmatrix load), B = the two k16 sub-fragments the int8 path already loads.
+// f8f6f4 MMA: D(f32 16x8) += A(e4m3 16x32) * B(e4m3 32x8). A = 4 regs (one tile_A_8 ldmatrix
+// load), B = the two k16 sub-fragments the int8 path already loads.
+//
+// FORM CHOICE (research/w4a8-prefill-20260806, slices 3-4). Two PTX forms compute this exact
+// product on sm_120a, and they do NOT run at the same rate:
+//
+//   kind::f8f6f4 (plain, no scale operands)                    32.02 cyc/warp-MMA  = 155 TF
+//   kind::mxf8f6f4.block_scale.scale_vec::1X ... ue8m0         16.06 cyc/warp-MMA  = 309 TF
+//
+// Both measured at locked 1860 with an NACC=1..16 ILP control (flat from NACC=2 => these are
+// pipe ISSUE INTERVALS, not latency) and confirmed by full-GPU cudaEvent to 0.5%. The plain form
+// costs exactly 2x the interval for 2x the K depth, so its MAC rate equals m16n8k16.s8's — the
+// "+74% MMA ceiling" this tile was designed around belongs ONLY to the block_scale form.
+//
+// The block_scale form with the ue8m0 IDENTITY scale (byte 0x7F = 2^(127-127) = 2^0) in every
+// selected lane is BIT-IDENTICAL to the plain form: 0 of 128 accumulator elements differ on
+// random e4m3 operands, with live-operand controls at 2^1 and 2^-1 returning exactly 2.0x and
+// 0.5x (tools/blksc_identity.cu, logs/blksc-identity.log). Same SM80 m16n8k32 8-bit TN fragment
+// layout, same f32 accumulator. So this is a pure rate change: the tile's numerics, its
+// f8f4-check tolerances, and its argmax lineage are unchanged by construction.
+//
+// MEMRA_MMQ_F8F4_PLAIN=1 is the rollback seam back to the 1.00x plain form.
+#define MEMRA_F8F4_UE8M0_ONE 0x7F7F7F7Fu   // four ue8m0 bytes, each 2^0
+
 static __device__ __forceinline__ void memra_mma_f8f4(
         float * __restrict__ c, const int * __restrict__ a, const int b0, const int b1) {
+#ifdef MEMRA_F8F4_PLAIN_MMA
     asm("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
         : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+#else
+    asm("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X"
+        ".f32.e4m3.e4m3.f32.ue8m0 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1),
+          "r"(MEMRA_F8F4_UE8M0_ONE), "r"(MEMRA_F8F4_UE8M0_ONE));
+#endif
 }
 
 // Loader: same addressing as load_tiles_nvfp4_w4a8. R-A' fold: per PAIR of 16-value

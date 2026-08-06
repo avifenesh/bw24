@@ -1,0 +1,10 @@
+=== arm INT8 (control) ===
+blk.0.attn_gate.weight [5120x6144 m=128] arm=INT8 rel-vs-f32=1.966e-3 OK
+blk.0.attn_qkv.weight [5120x10240 m=128] arm=INT8 rel-vs-f32=3.004e-3 OK
+blk.0.ffn_down.weight [17408x5120 m=128] arm=INT8 rel-vs-f32=2.971e-3 OK
+=== f8f4-check ALL GREEN ===
+=== arm F8F4 (block_scale identity form) ===
+blk.0.attn_gate.weight [5120x6144 m=128] arm=F8F4 rel-vs-f32=1.199e-2 OK
+blk.0.attn_qkv.weight [5120x10240 m=128] arm=F8F4 rel-vs-f32=2.397e-2 OK
+blk.0.ffn_down.weight [17408x5120 m=128] arm=F8F4 rel-vs-f32=3.409e-2 OK
+=== f8f4-check ALL GREEN ===

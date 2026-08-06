@@ -195,6 +195,13 @@ fn main() {
         // research/prefill-gemm-20260806/.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_FOLD_CEILING");
         let w4a8_fold_ceiling = std::env::var("MEMRA_MMQ_FOLD_CEILING").ok();
+        // ROLLBACK SEAM: MEMRA_MMQ_F8F4_PLAIN=1 rebuilds the f8f4 tile with the ORIGINAL plain
+        // kind::f8f6f4 MMA instead of the block_scale form at the ue8m0 identity scale. The two
+        // are bit-identical (0/128 elements differ, live-operand controls at 2^1/2^-1 exact) but
+        // the plain form issues at 32.02 cyc/warp-MMA against the block_scale form's 16.06 — a
+        // 1.994x MMA-rate difference. Receipts: research/w4a8-prefill-20260806/ slices 3-4.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_F8F4_PLAIN");
+        let f8f4_plain = std::env::var("MEMRA_MMQ_F8F4_PLAIN").ok();
         // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
         // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
         // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
@@ -257,6 +264,7 @@ fn main() {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
                 if let Some(v) = &w4a8_fold_ceiling { args.push(format!("-DMEMRA_MMQ_FOLD_CEILING={v}")); }
+                if f8f4_plain.as_deref() == Some("1") { args.push("-DMEMRA_F8F4_PLAIN_MMA".into()); }
             }
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
