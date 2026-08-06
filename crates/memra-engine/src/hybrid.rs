@@ -108,6 +108,9 @@ pub(crate) fn load_ffn(
         || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace)
         // glm-dsa: leading_dense_block_count layers (GLM-5.2: 3) are dense-FFN
         || cfg.mla.as_ref().is_some_and(|m| il < m.first_k_dense_replace)
+        // step35: leading_dense_block_count (Step-3.7-Flash: 3) — blocks 0-2 ship
+        // ffn_gate/up/down and NO ffn_gate_inp, so the MoE arm's load_t would fail.
+        || cfg.step35.as_ref().is_some_and(|s| il < s.first_k_dense_replace)
         // gemma4 DENSE variants (31B/E4B): the arch is MoE-capable but the file ships no
         // expert tensors at all — tensor presence decides.
         || (cfg.gemma4.is_some() && !src.has(&p("ffn_gate_exps.weight"))
@@ -819,6 +822,15 @@ pub struct GemmaAux {
     pub e4b: Option<Gemma4E4bModel>,
 }
 
+/// step35 model-level auxiliaries. Deliberately NOT folded into `GemmaAux`: every gemma4 path
+/// does `gemma4_aux.as_ref().unwrap()` and would then also fire on a step35 model.
+pub struct Step35Aux {
+    /// `rope_freqs.weight [n_rot_full/2]` llama3-style freq factors. Upstream applies them to
+    /// FULL-attention layers ONLY (`rope_factors = is_swa ? nullptr : get_rope_factors(...)`,
+    /// step35.cpp:246) — the SWA layers pass a null factor pointer. Step-3.7-Flash ships [64] F32.
+    pub rope_freqs: Option<CudaSlice<f32>>,
+}
+
 pub struct HybridModel {
     pub cfg: ModelConfig,
     pub embd: EmbedHost,
@@ -830,6 +842,8 @@ pub struct HybridModel {
     /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
     pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
     pub gemma4_aux: Option<GemmaAux>,
+    /// step35 (Step-3.7-Flash) model auxiliaries — `Some` iff `cfg.step35.is_some()`.
+    pub step35_aux: Option<Step35Aux>,
     /// PRIME ACTIVATION SLABS (piecewise-graph foundation, 2026-07-26): the layer loop's
     /// seven trunk transients live in RESIDENT per-model buffers instead of per-call pool
     /// allocs — kills ~224 alloc/free API calls per prime AND freezes the Lt GEMM operand
@@ -1298,6 +1312,22 @@ impl HybridModel {
         } else {
             None
         };
+        // step35: rope_freqs.weight [n_rot_full/2] — FULL-attn layers only (SWA passes null).
+        // Loaded by tensor presence, not required: the key is absent on a sibling without
+        // llama3-style scaling, and `None` is the correct "no factors" signal for rope_neox2.
+        let step35_aux = if cfg.step35.is_some() {
+            let rope_freqs = match src.find("rope_freqs.weight") {
+                Some(t) => Some(e.htod(&memra_gguf::dequant::dequantize(
+                    t.ggml_type,
+                    &t.bytes,
+                    t.ne.iter().product::<u64>() as usize,
+                ))?),
+                None => None,
+            };
+            Some(Step35Aux { rope_freqs })
+        } else {
+            None
+        };
         let mut layers = layers;
         // Q8_0 SPLIT-PLANE DECODE MIRRORS (2026-07-26, the H100 lane): Q8_0-trunk models
         // (Qwen3.5-9B class) stream their whole weight mass through the 34B-stride GGUF
@@ -1571,6 +1601,7 @@ impl HybridModel {
             mtp,
             embd_gpu: std::sync::OnceLock::new(),
             gemma4_aux,
+            step35_aux,
             prime_slabs: std::sync::Mutex::new(None),
         };
         e.configure_moe_cache_layout(model.moe_cache_block_sizes());

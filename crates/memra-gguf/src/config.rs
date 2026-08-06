@@ -841,6 +841,36 @@ impl ModelConfig {
         if let Some(s) = self.step35.as_ref() { return s.is_swa(il); }
         false
     }
+
+    /// Per-layer ROUTED-expert SwiGLU clamp limit, `None` when the arch/layer has none.
+    /// step35-only today (`swiglu_clamp_exp`, live on layers 43-44 of 3.7-Flash).
+    pub fn clamp_exp_at(&self, il: u32) -> Option<f32> {
+        self.step35.as_ref().and_then(|s| s.clamp_exp(il))
+    }
+
+    /// Per-layer SHARED-expert SwiGLU clamp limit (`swiglu_clamp_shexp`).
+    pub fn clamp_shexp_at(&self, il: u32) -> Option<f32> {
+        self.step35.as_ref().and_then(|s| s.clamp_shexp(il))
+    }
+
+    /// True when ANY FFN branch on layer `il` needs the clamped SwiGLU form. This is the
+    /// FUSED-EPILOGUE DENY predicate: memra's fused SiLU epilogues (grouped-decode,
+    /// moe_pairs_silu_mul, the dev-path kernels) hardcode plain `silu(gate)*up`, so a layer
+    /// with a live clamp must fall through to the unfused `ffn_act_*` seam. Substituting the
+    /// plain form compiles, runs, and produces plausible-but-wrong logits — exactly the
+    /// failure mode `swiglu_clamped_mul_scaled_f32`'s kernel-check cell guards against.
+    pub fn swiglu_clamped_at(&self, il: u32) -> bool {
+        self.clamp_exp_at(il).is_some() || self.clamp_shexp_at(il).is_some()
+    }
+
+    /// True when the model has a live SwiGLU clamp on ANY layer — the cheap whole-model
+    /// question the no-`il` `ffn_act` seam asserts against (a clamped model reaching a seam
+    /// that cannot see `il` means the caller has to be migrated to `ffn_act_exp`/`_shexp`).
+    pub fn swiglu_clamped_anywhere(&self) -> bool {
+        self.step35.as_ref().is_some_and(|s| {
+            s.swiglu_clamp_exp.iter().chain(s.swiglu_clamp_shexp.iter()).any(|&l| l > 1e-6)
+        })
+    }
 }
 
 /// Subset of HF `config.json` fields memra needs. Defaults mirror GGUF fallbacks. Hybrid models

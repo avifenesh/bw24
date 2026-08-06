@@ -1509,7 +1509,11 @@ impl HybridModel {
             // add + rms_norm_decode launches AND the dual/singles' internal re-quantize.
             // M3's swigluoai must keep the f32 chain (the fused SwiGLU epilogue encodes plain
             // SiLU), mirroring residual_norm_ffn's m3 guard on the decode path.
-            let fuse_q8 = ffn_fuse && self.cfg.m3.is_none();
+            // step35: same guard per LAYER. A dense FFN's clamp is the SHEXP array (upstream's
+            // one build_ffn serves dense + shared expert, llama-graph.cpp:1751), and verify MUST
+            // mirror decode's dispatch or spec self-consistency fails.
+            let dense_lim = self.cfg.clamp_shexp_at(il as u32);
+            let fuse_q8 = ffn_fuse && self.cfg.m3.is_none() && dense_lim.is_none();
             let mut x1 = vbuf(e, t * n_embd)?; // fully written by add / add_rms_norm*
             let mut z = e.zeros(0)?; // replaced below on the unfused arms
             let z_q8 = if fuse_q8 {
@@ -1600,8 +1604,9 @@ impl HybridModel {
                                 e.matmul_decode_exact(ffn_up, &z, t)?,
                             ),
                         };
-                        let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
-                        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                        let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act_lim
+                        Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0, dense_lim,
+                                          &mut act, t * n_ff)?;
                         e.matmul_decode_exact(ffn_down, &act, t)?
                     }
                 }
@@ -2129,8 +2134,10 @@ impl HybridModel {
                     let n_ff = ffn_gate.out_features();
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
-                    let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act_lim
+                    // dense FFN clamp = the SHEXP array (upstream build_ffn serves both).
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,

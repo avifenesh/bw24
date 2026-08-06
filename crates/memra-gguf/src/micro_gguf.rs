@@ -606,6 +606,21 @@ mod tests {
         assert_eq!(s.clamp_shexp(43), Some(7.0));
         assert_eq!(s.clamp_shexp(44), Some(16.0));
 
+        // The DISPATCH-DENY predicates the forward paths key off (a fused SiLU epilogue on a
+        // clamped layer compiles, runs, and returns plausible-but-wrong logits — the one failure
+        // mode nothing downstream can catch, so pin the predicate itself).
+        for il in 0..43u32 {
+            assert_eq!(c.clamp_exp_at(il), None, "clamp_exp_at at layer {il}");
+            assert_eq!(c.clamp_shexp_at(il), None, "clamp_shexp_at at layer {il}");
+            assert!(!c.swiglu_clamped_at(il), "no fused-epilogue deny below layer 43");
+        }
+        assert_eq!(c.clamp_exp_at(43), Some(7.0));
+        assert_eq!(c.clamp_shexp_at(44), Some(16.0));
+        assert!(c.swiglu_clamped_at(43) && c.swiglu_clamped_at(44),
+            "layers 43/44 MUST deny the grouped-decode/pairs/dev fused SiLU epilogues");
+        assert!(c.swiglu_clamped_anywhere(),
+            "the whole-model form gates the no-`il` seams (moe_ffn_pairs' debug_assert)");
+
         // --- MoE: the DeepSeek-V3-class sigmoid router, verbatim ---
         let moe = c.moe.as_ref().expect("step35 is MoE");
         assert_eq!(moe.expert_count, 288);

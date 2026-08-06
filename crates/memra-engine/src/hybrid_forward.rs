@@ -305,7 +305,12 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    // A DENSE FFN reads the SHEXP clamp array: upstream's one `build_ffn` serves
+                    // both the dense MLP and the shared expert, and its limit is
+                    // `swiglu_clamp_shexp[il]` (llama-graph.cpp:1751). step35's leading dense
+                    // blocks 0-2 therefore key off clamp_shexp, not clamp_exp.
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -360,7 +365,9 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    // dense FFN keys off the SHEXP clamp array — see forward()'s note.
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -727,12 +734,17 @@ impl HybridModel {
                     }
                     // task #17: the silu arm's f16out twin emits the down GEMM's fp16
                     // operand in-epilogue; non-silu activations keep the standalone convert.
-                    let act16 = if Self::f16out_on(e, t) && self.cfg.m3.is_none() {
+                    // silu_mul_f16out is PLAIN silu(gate)*up — a clamped layer (step35 dense
+                    // blocks under a live swiglu_clamp_shexp) must take the ffn_act_lim arm.
+                    let d_lim = self.cfg.clamp_shexp_at(il as u32);
+                    let act16 = if Self::f16out_on(e, t) && self.cfg.m3.is_none()
+                        && d_lim.is_none() {
                         let mut a16 = e.alloc_u8_uninit(t * n_ff * 2)?;
                         e.silu_mul_f16out(sl_gate, sl_up, act, &mut a16, t * n_ff)?;
                         Some(a16)
                     } else {
-                        Self::ffn_act(e, &self.cfg, sl_gate, sl_up, act, t * n_ff)?;
+                        Self::ffn_act_lim(e, &self.cfg, sl_gate, sl_up, 1.0, 1.0, d_lim,
+                                          act, t * n_ff)?;
                         None
                     };
                     // down GEMM into the ffn_out slab (f16 arm; fallback copies)
@@ -902,7 +914,9 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    // dense FFN keys off the SHEXP clamp array — see forward()'s note.
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -1183,7 +1197,9 @@ impl HybridModel {
                     let mut act = e.uninit(total * n_ff)?;
                     // task #17 (batch trunk): silu twin emits the down GEMM's fp16 operand
                     // in-epilogue (nsys round-26: this trunk still paid 32 cvt passes).
-                    if Self::f16out_on(e, total) && self.cfg.m3.is_none() {
+                    // A clamped layer must skip the plain-SiLU twin (see prime_chunk's note).
+                    let d_lim = self.cfg.clamp_shexp_at(il as u32);
+                    if Self::f16out_on(e, total) && self.cfg.m3.is_none() && d_lim.is_none() {
                         let mut a16 = e.alloc_u8_uninit(total * n_ff * 2)?;
                         e.silu_mul_f16out(&gate, &up, &mut act, &mut a16, total * n_ff)?;
                         match e.try_f16_gemm_pre(ffn_down, &a16, total)? {
@@ -1191,7 +1207,8 @@ impl HybridModel {
                             None => e.matmul(ffn_down, &act, total)?,
                         }
                     } else {
-                        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, total * n_ff)?;
+                        Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0, d_lim,
+                                          &mut act, total * n_ff)?;
                         e.matmul(ffn_down, &act, total)?
                     }
                 }
@@ -2133,6 +2150,10 @@ impl HybridModel {
         debug_assert_eq!(m.down_exps.out_f, n_embd);   //                     out=2048
         debug_assert_eq!(m.gate_exps.n_expert, n_expert);
 
+        // step35 PER-LAYER SwiGLU clamp (None on every other arch and on every unclamped layer).
+        // Routed experts and the shared expert read SEPARATE arrays — never share one value.
+        let lim_exp = cfg.clamp_exp_at(il as u32);
+        let lim_shexp = cfg.clamp_shexp_at(il as u32);
         let use_cache = Engine::moe_cache_enabled();
         let uniform_experts = m.has_uniform_expert_layout();
         let moe_q8 = uniform_experts && moe_q8_enabled()
@@ -2247,7 +2268,11 @@ impl HybridModel {
         // its global scale (~3e4x, measured garbage 2026-07-16). GGUF experts: macros None.
         let no_exp_macros = m.gate_exps.macros.is_none() && m.up_exps.macros.is_none()
             && m.down_exps.macros.is_none();
+        // A clamped-SwiGLU layer (step35 43/44) also cannot ride pairs: moe_pairs_silu_mul's
+        // epilogue is plain silu(gate)*up with no clamp form, and moe_ffn_pairs takes no `il`
+        // so it cannot even see the per-layer limit.
         if cfg.sigmoid_router().is_none() && cfg.m3.is_none() && cfg.hy3.is_none()
+            && !cfg.swiglu_clamped_at(il as u32)
             && no_exp_macros
             && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
@@ -2266,7 +2291,16 @@ impl HybridModel {
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
         // macro-carrying experts are handled inside the dev path now (epilogue fold + w-scale);
         // pairs/gdec/csr keep their macro gates until their kernels grow the fold.
-        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
+        // step35 (2026-08-06) is the third sigmoid-router arch and the deny above was written as
+        // two arch names, not as the mechanism — so `dev_ok` let it into moe_ffn_dev's
+        // moe_router_topk (softmax, no exp_probs_b bias, no expert_weights_scale) = silently
+        // wrong experts, the same failure the pairs gate at :2254 already blocks by predicate.
+        // Keyed off sigmoid_router() so arch #4 is denied by construction.
+        // The clamped-SwiGLU layers must also fall through: every moe_ffn_dev kernel's fused
+        // epilogue is plain silu(gate)*up (moe_gate_up_silu8_dev_*), which has no clamp form.
+        let dev_ok = uniform_experts && cfg.sigmoid_router().is_none()
+            && cfg.m3.is_none() && cfg.hy3.is_none()
+            && !cfg.swiglu_clamped_at(il as u32);
         // Observation modes must route through the host-visible selection below. Otherwise a fully
         // resident layer returns through device dispatch before its trace/stats row is recorded,
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.
@@ -2397,7 +2431,12 @@ impl HybridModel {
         // and lazily zero ONLY the row of a token that falls through to the sequential axpy loop.
         // BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
         // zeroed-then-accumulated exactly as before (fallback).
-        let gdec_may_fire = uniform_experts && use_cache && n_used <= 8 && gdec_enabled();
+        // `!swiglu_clamped_at`: the grouped-decode kernels' fused epilogue is plain
+        // silu(gate)*up (see the m3 note at the call sites below) — a clamped layer must fall
+        // through to the sequential loop's ffn_act_lim. Hoisted into the fire predicate so the
+        // uninit/memset invariant at :2418 stays consistent with what actually dispatches.
+        let gdec_may_fire = uniform_experts && use_cache && n_used <= 8 && gdec_enabled()
+            && !cfg.swiglu_clamped_at(il as u32);
         let mut moe_out = if gdec_may_fire {
             e.uninit(t * n_embd)?
         } else {
@@ -2586,13 +2625,14 @@ impl HybridModel {
                         Self::moe_cached_gemm(e, il, PROJ_UP, ex, m, max_block, &zt)?
                     };
                     let mut act = e.uninit(n_ff_exp)?;
-                    Self::ffn_act_scaled(
+                    Self::ffn_act_lim(
                         e,
                         cfg,
                         &gate,
                         &up,
                         m.gate_exps.macro_scale(ex),
                         m.up_exps.macro_scale(ex),
+                        lim_exp,
                         &mut act,
                         n_ff_exp,
                     )?;
@@ -2614,8 +2654,8 @@ impl HybridModel {
                     let gate = Self::moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
                     let up   = Self::moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
-                    Self::ffn_act_scaled(e, cfg, &gate, &up,
-                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
+                    Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex), lim_exp, &mut act, n_ff_exp)?;
                     let actv = act.slice(0..n_ff_exp);
                     let y = Self::moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
@@ -2649,13 +2689,14 @@ impl HybridModel {
                         u_len,
                     )?;
                     let mut act = e.uninit(n_ff_exp)?;
-                    Self::ffn_act_scaled(
+                    Self::ffn_act_lim(
                         e,
                         cfg,
                         &gate,
                         &up,
                         m.gate_exps.macro_scale(ex),
                         m.up_exps.macro_scale(ex),
+                        lim_exp,
                         &mut act,
                         n_ff_exp,
                     )?;
@@ -2696,8 +2737,8 @@ impl HybridModel {
                         m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
 
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
-                    Self::ffn_act_scaled(e, cfg, &gate, &up,
-                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
+                    Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex), lim_exp, &mut act, n_ff_exp)?;
 
                     e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
@@ -2750,7 +2791,7 @@ impl HybridModel {
                 (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)   // [T, 512] each
             };
             let mut sa = e.uninit(t * n_ff_sh)?;  // activation fully overwrites
-            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp, &mut sa, t * n_ff_sh)?;
             let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
                      else { e.matmul(down_shexp, &sa, t)? };     // [T, n_embd]
 
@@ -2968,6 +3009,10 @@ impl HybridModel {
     /// FFN activation dispatch: swigluoai (clamped, alpha/limit) when cfg.m3 says so, else the
     /// standard SiLU*up. One seam so every FFN site (dense, routed expert, shared expert) follows
     /// the model's activation exactly.
+    ///
+    /// NO-`il` FORM: cannot apply step35's PER-LAYER SwiGLU clamp. Only call it from a site whose
+    /// layer provably has no live limit (dense-FFN layers, MTP blocks) — `ffn_act_lim` is the
+    /// form for anything that can land on a clamped layer.
     pub fn ffn_act(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
                act: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
         Self::ffn_act_scaled(e, cfg, gate, up, 1.0, 1.0, act, n)
@@ -2975,13 +3020,32 @@ impl HybridModel {
 
     /// ffn_act with per-tensor post-matmul macro-scales folded in (gs/us == 1.0 -> identical
     /// float ops to ffn_act; used by the ModelOpt NVFP4 expert path where each expert tensor
-    /// carries a `weight_scale_2`).
+    /// carries a `weight_scale_2`). Same no-`il` contract as `ffn_act`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ffn_act_scaled(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
                gs: f32, us: f32, act: &mut CudaSlice<f32>, n: usize)
                -> Result<(), Box<dyn std::error::Error>> {
+        Self::ffn_act_lim(e, cfg, gate, up, gs, us, None, act, n)
+    }
+
+    /// ffn_act_scaled + step35's PER-LAYER clamped SwiGLU. `limit`:
+    ///   * `None`   -> the unclamped dispatch (every arch except step35's layers 43-44).
+    ///   * `Some(l)`-> `min(silu(gate*gs), l) * clamp(up*us, +-l)` (llama-graph.cpp:2146/1751,
+    ///                 non-DEEPSEEK4 branch). Callers source it from `cfg.clamp_exp_at(il)`
+    ///                 (routed experts) or `cfg.clamp_shexp_at(il)` (shared expert) — the two
+    ///                 arrays are SEPARATE and a layer can have one without the other.
+    /// The `> 1e-6` eps gate lives in `clamp_exp_at`/`clamp_shexp_at`, so a `Some` here is
+    /// already known live.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ffn_act_lim(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+               gs: f32, us: f32, limit: Option<f32>, act: &mut CudaSlice<f32>, n: usize)
+               -> Result<(), Box<dyn std::error::Error>> {
         if let Some(m3) = cfg.m3.as_ref() {
+            debug_assert!(limit.is_none(), "m3 swigluoai and step35 clamp are different archs");
             return e.swigluoai_mul_scaled(gate, up, gs, us, m3.swiglu_alpha, m3.swiglu_limit, act, n);
+        }
+        if let Some(l) = limit {
+            return e.swiglu_clamped_mul_scaled(gate, up, gs, us, l, act, n);
         }
         if gs == 1.0 && us == 1.0 { return e.silu_mul(gate, up, act, n); }
         e.silu_mul_scaled(gate, up, gs, us, act, n)
@@ -3211,6 +3275,12 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // This arm has no `il` and every kernel in it fuses PLAIN silu(gate)*up, so a clamped
+        // model must never reach it. The caller's gate at `moe_ffn_sequential_zq8` denies per
+        // layer via `swiglu_clamped_at(il)`; assert the whole-model form here so a future caller
+        // that forgets the gate fails loudly in debug instead of returning wrong logits.
+        debug_assert!(!cfg.swiglu_clamped_anywhere(),
+                      "moe_ffn_pairs has no per-layer clamp: fused epilogues are plain SiLU");
         let dev = m.dev_exps.as_ref().unwrap();
         // WALL-GAP ARC: interleaved gate/up slab strides (see moe_ffn_dev).
         let (rbg_d, rbu_d) = if dev.gu_il {
@@ -3462,6 +3532,13 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // moe_router_topk is SOFTMAX-only (no exp_probs_b bias, no expert_weights_scale) and every
+        // gate_up kernel here fuses PLAIN silu(gate)*up. `dev_ok` denies sigmoid-router archs and
+        // clamped layers; assert both so a future caller that skips the gate fails loudly.
+        debug_assert!(cfg.sigmoid_router().is_none(),
+                      "moe_ffn_dev routes SOFTMAX: a sigmoid-router arch would pick wrong experts");
+        debug_assert!(!cfg.swiglu_clamped_at(il as u32),
+                      "moe_ffn_dev's fused epilogue is plain SiLU: no clamped form");
 
         // device top-k: sel [t, n_used] i32, w [t, n_used] f32 — stays on device.
         let (sel_d, mut w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
@@ -4039,6 +4116,9 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // step35 per-layer SwiGLU clamp; None on every other arch / unclamped layer.
+        let lim_exp = cfg.clamp_exp_at(il as u32);
+        let lim_shexp = cfg.clamp_shexp_at(il as u32);
 
         // 1. ROUTER (identical to moe_ffn).
         let logits = e.matmul(&m.gate_inp, z, t)?;
@@ -4170,10 +4250,10 @@ impl HybridModel {
                     eng.qmatvec_view(buf, 0..ul.len, &gv, m_e,
                         m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
                 })?;
-                // SiLU-MUL activation (per-expert macro-scales folded).
+                // SiLU-MUL activation (per-expert macro-scales folded; step35's per-layer clamp).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act_scaled(e, cfg, &gate, &up,
-                    m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                    m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
@@ -4194,10 +4274,10 @@ impl HybridModel {
                     m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
                 let up = e.qmatvec_view(su, 0..ul.len, &gv, m_e,
                     m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
-                // SiLU-MUL activation (per-expert macro-scales folded).
+                // SiLU-MUL activation (per-expert macro-scales folded; step35's per-layer clamp).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act_scaled(e, cfg, &gate, &up,
-                    m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                    m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.qmatvec_view(sd, 0..dl.len, &actv, m_e,
                     m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?
@@ -4236,7 +4316,7 @@ impl HybridModel {
             let sg_gate = e.matmul(gate_shexp, z, t)?;
             let sg_up = e.matmul(up_shexp, z, t)?;
             let mut sa = e.zeros(t * n_ff_sh)?;
-            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
             // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
             // Fused sigmoid-dot below PRIME_MIN_T — one fold order with the sequential and
@@ -4284,6 +4364,9 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // step35 per-layer SwiGLU clamp; None on every other arch / unclamped layer.
+        let lim_exp = cfg.clamp_exp_at(il as u32);
+        let lim_shexp = cfg.clamp_shexp_at(il as u32);
 
         let logits = e.matmul(&m.gate_inp, zbatch, mrows)?;
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
@@ -4431,8 +4514,8 @@ impl HybridModel {
                     m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
             })?;
             let mut act = e.zeros(m_e * n_ff_exp)?;
-            Self::ffn_act_scaled(e, cfg, &gate, &up,
-                m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+            Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
             let actv = act.slice(0..m_e * n_ff_exp);
             let y = e.with_moe_cache(max_block, |c, eng| {
                 let slot = c
@@ -4480,7 +4563,8 @@ impl HybridModel {
             let sg_gate = e.matmul(gate_shexp, zbatch, mrows)?;
             let sg_up = e.matmul(up_shexp, zbatch, mrows)?;
             let mut sa = e.zeros(mrows * n_ff_sh)?;
-            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, mrows * n_ff_sh)?;
+            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp,
+                              &mut sa, mrows * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, mrows)?;
             // lockstep rows ARE decode tokens: fused sigmoid-dot per row so batched serving
             // decode matches the single-sequence decode chain bit-for-bit.
