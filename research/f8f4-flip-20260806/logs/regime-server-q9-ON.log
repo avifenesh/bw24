@@ -1,0 +1,31 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] m: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "m": 33 layers, eos=248046
+[worker] m: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] m: decode chunk cap 8
+[server] worker ready; serving models: ["m"]
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] listening on http://127.0.0.1:8117
+[meter] admit id=cmpl-ef19470d91fd618218d0d69e624f5a4b tenant=default lane=interactive model="m"
+[worker] observed session VRAM cost for "m": 134MB (admission gate = 2x)
+[spec-acc] ctx=1845 burst=21/39 cum=21/39=0.538
+[spec-acc] ctx=1880 burst=22/30 cum=43/69=0.623
+[spec-acc] ctx=1912 burst=20/39 cum=63/108=0.583
+[spec-acc] ctx=1945 burst=17/42 cum=80/150=0.533
+[meter] admit id=cmpl-d1e29b457191a2b236413363f4ddf328 tenant=default lane=interactive model="m"
+[worker] spec-affinity: declined (history diverged at 0 of checkpoint 1845; 1 parked, 28 prompt tokens; model m)
+[spec-acc] ctx=28 burst=21/36 cum=21/36=0.583
+[spec-acc] ctx=62 burst=23/33 cum=44/69=0.638
+[spec-acc] ctx=96 burst=24/33 cum=68/102=0.667
+[spec-acc] ctx=131 burst=15/30 cum=83/132=0.629
+[meter] admit id=cmpl-cc92149708f56494f30dc375251d7a02 tenant=default lane=interactive model="m"
+[worker] spec-affinity: declined (history diverged at 0 of checkpoint 28; 1 parked, 5411 prompt tokens; model m)
+[spec-acc] ctx=5411 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=5445 burst=21/36 cum=43/69=0.623
+[spec-acc] ctx=5478 burst=19/39 cum=62/108=0.574
+[spec-acc] ctx=5510 burst=20/30 cum=82/138=0.594
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

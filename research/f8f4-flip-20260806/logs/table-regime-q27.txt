@@ -1,0 +1,13 @@
+model=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+draft=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf (REGIME draft — replaces the embedded MTP head)
+K=3
+
+| prompt | pfx tok | OFF acc | ON acc | Dpp | OFF2 acc | box stable? | greedy text | OFF s | ON s |
+|---|---|---|---|---|---|---|---|---|---|
+| p2-code-medium.txt | 1845 | 67.5% (85/126) | 67.5% (85/126) | **+0.0** | 67.5% (85/126) | YES | IDENTICAL | 2.820 | 2.585 |
+| p1-code-short.txt | 28 | 67.5% (85/126) | 65.9% (85/129) | **-1.6** | 67.5% (85/126) | YES | **DIFFERS** | 1.506 | 1.513 |
+| p3-agentic-long-v3.txt | 5411 | 77.8% (91/117) | 80.7% (92/114) | **+2.9** | 77.8% (91/117) | YES | IDENTICAL | 5.575 | 4.855 |
+
+mean Dpp over 3 prompts = +0.45pp   worst = p1-code-short.txt -1.6pp
+box-stability control: OFF==OFF2 on 3/3 prompts
+appended 1 row -> RESULTS.jsonl
