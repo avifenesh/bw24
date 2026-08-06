@@ -646,16 +646,50 @@ impl HybridModel {
 
         let mut ph_last = std::time::Instant::now();
 
+        // B=1 PER-STAGE FAST PATH (measured 2026-08-06, PRO 6000 pair). The unsplit body's
+        // b1_fast guard includes `pp_cuts().is_none()`, so opening the pp door dropped every
+        // solo session off the m=1 FUSION chain (cross-layer add+norm+q8_1, fused SwiGLU,
+        // lever 1's gate+up dual) and onto the batched m=1 walk. Cost, arm A vs arm C at B=1:
+        // 208.5 vs 177.3 tok/s = -15.0% — and NOT a split cost, since arm B (stages=2 on ONE
+        // card) pays the same 177, and the prior lane's `MEMRA_PP_SHARD=0` batched-body B=1
+        // was 178.5. It was the fusion chain going missing, on the config the Step SKU serves
+        // solo requests from.
+        //
+        // `decode_layers_eager(lo, hi)` is ALREADY range-scoped and is exactly what the eager
+        // ppn arm (`decode_step_h_ppn`) calls per stage, so B=1 rides the same per-stage
+        // structure: same engines, same streams, same [1, n_embd] boundary slots, same
+        // stage-owned caches. Only the trunk kernels differ, and they differ identically to
+        // how they differ off-door. Exactness is therefore the SAME accepted decode-config FP
+        // class the unsplit b1_fast lever already carries (strict gate1 PASSes with it on,
+        // FAILs with it off at maxdiff 1.591e-1) — which is why the pp gate pins
+        // `set_b1_fast(false)`: with it on, the B=1 reference and the split arm would
+        // legitimately sit on opposite sides of that gap and the bit-identity arm would
+        // report a fake stage-split failure. Gates that DO cover this: run-gen argmax MATCH
+        // and serve-smoke greedy-determinism over the split.
+        let b1_stage_fast = b_n == 1
+            && Self::b1_fast_on()
+            && !self.is_gemma4_e4b()
+            && self.cfg.gemma4.is_none()
+            && self.cfg.m3.is_none()
+            && !e.verify_exact_on();
+        // Hoisted: `caches[0].pos` as a value argument alongside `caches[0]` as `&mut` in one
+        // call is a borrow conflict; `pos` is Copy and the epilogue is what advances it.
+        let pos0 = if b1_stage_fast { caches[0].pos } else { 0 };
+
         // ---- STAGE 0: embed (the table lives with stage 0) + layers [0, fence[1]) + TX ----
         let mut slot = {
             let _st0 = rt.enter(0);
             let e0 = rt.engine(0, e);
             let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
             let pos_d = e0.htod_i32(&pos_v)?;
-            let ctx = self.batch_layer_ctx(e0, caches, fence[0], fence[1])?;
             let x = e0.htod(&self.embd.gather(n_embd, tokens))?;
             ph_mark(e0, 0, &mut ph_last)?;
-            let x = self.decode_batch_layers(e0, x, caches, &ctx, &pos_d, &mut ph_last)?;
+            let x = if b1_stage_fast {
+                self.decode_layers_eager(e0, x, fence[0], fence[1], &pos_d, pos0, caches[0])?
+            } else {
+                let ctx = self.batch_layer_ctx(e0, caches, fence[0], fence[1])?;
+                self.decode_batch_layers(e0, x, caches, &ctx, &pos_d, &mut ph_last)?
+            };
             rt.tx(0, &x, payload)?
             // x + pos_d + ctx.ptr_table drop here: freed stream-ordered on stage-0's stream.
         };
@@ -666,9 +700,13 @@ impl HybridModel {
             let es = rt.engine(s, e);
             let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
             let pos_d = es.htod_i32(&pos_v)?;
-            let ctx = self.batch_layer_ctx(es, caches, fence[s], fence[s + 1])?;
             let x = rt.rx(s - 1, slot, payload)?;
-            let x = self.decode_batch_layers(es, x, caches, &ctx, &pos_d, &mut ph_last)?;
+            let x = if b1_stage_fast {
+                self.decode_layers_eager(es, x, fence[s], fence[s + 1], &pos_d, pos0, caches[0])?
+            } else {
+                let ctx = self.batch_layer_ctx(es, caches, fence[s], fence[s + 1])?;
+                self.decode_batch_layers(es, x, caches, &ctx, &pos_d, &mut ph_last)?
+            };
             slot = rt.tx(s, &x, payload)?;
         }
 
@@ -677,9 +715,13 @@ impl HybridModel {
         let el = rt.engine(n_st - 1, e);
         let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
         let pos_d = el.htod_i32(&pos_v)?;
-        let ctx = self.batch_layer_ctx(el, caches, fence[n_st - 1], fence[n_st])?;
         let x = rt.rx(n_st - 2, slot, payload)?;
-        let x = self.decode_batch_layers(el, x, caches, &ctx, &pos_d, &mut ph_last)?;
+        let x = if b1_stage_fast {
+            self.decode_layers_eager(el, x, fence[n_st - 1], fence[n_st], &pos_d, pos0, caches[0])?
+        } else {
+            let ctx = self.batch_layer_ctx(el, caches, fence[n_st - 1], fence[n_st])?;
+            self.decode_batch_layers(el, x, caches, &ctx, &pos_d, &mut ph_last)?
+        };
 
         let mut hn = el.uninit(payload)?;
         el.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, b_n, eps)?;

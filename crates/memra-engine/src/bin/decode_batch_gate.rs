@@ -677,6 +677,50 @@ fn pp_battery(
         }
     }
 
+    // ---- ARM 4: B=1 PER-STAGE FAST PATH vs the EAGER stage-split (decode_step_h_ppn) ----
+    // Its own reference, because its bar is a DIFFERENT one. Arms 1-2 pin b1_fast OFF so B=1
+    // compares batched-vs-batched; that is what makes them a clean stage-split test, but it
+    // means they never execute the path a solo serving session actually takes once the door is
+    // open. The B=1 stage-fast path routes each stage's range through `decode_layers_eager` —
+    // the SAME per-stage call `decode_step_h_ppn` makes on the same fence with the same
+    // engines/streams/slots — so the bar here is BIT-IDENTITY TO THE EAGER SPLIT ARM, not to
+    // the batched body (against which it carries the accepted m=1 fusion FP gap by design; see
+    // decode_batch.rs `b1_stage_fast`). Both arms run over pp::new_cache placements, and both
+    // have the door open, so the only difference is which public entry point is called.
+    // WHY THIS ARM EARNS ITS KEEP: it is the only gate that would catch the stage-fast branch
+    // wiring the wrong fence range, reusing stage 0's engine for a later range, or advancing
+    // pos twice — mistakes that leave arms 1-3 fully green because they never run it.
+    {
+        let mut chk = BitCheck::new("b1-stagefast vs eager-ppn B=1".to_string());
+        let prompt: Vec<u32> = (0..24u32).map(|j| 55 + seed * 13 + j * 31).collect();
+        let n_s = steps.min(16);
+        // b1_fast ON is the whole point of the arm (arms 1-2 left it OFF).
+        HybridModel::set_b1_fast(true);
+        let mut c_eager = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+        let _ = model.prime_cache(e, &prompt, &mut c_eager)?;
+        let mut c_batch = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+        let _ = model.prime_cache(e, &prompt, &mut c_batch)?;
+        let mut tok = *prompt.last().unwrap();
+        for s in 0..n_s {
+            let (ref_row, _) = model.decode_step_h(e, tok, &mut c_eager)?;
+            let got = {
+                let mut refs: Vec<&mut Cache> = vec![&mut c_batch];
+                model.decode_step_batch(e, &[tok], &mut refs)?
+            };
+            chk.check(s, 0, &got[0], &ref_row);
+            // Advance on the REFERENCE's argmax so both arms stay on one token stream; a
+            // divergence shows up as differing bits, not as two arms exploring different text.
+            tok = argmax(&ref_row) as u32;
+            assert_eq!(c_eager.pos, c_batch.pos,
+                       "b1-stagefast pos {} != eager pos {} at step {s} — one arm advanced \
+                        the cache differently", c_batch.pos, c_eager.pos);
+        }
+        fails += chk.verdict();
+        // Re-pin OFF: arm 3 (below) compares batched-vs-batched sampled/lean rows and must not
+        // have one of its two caches on the m=1 fusion side of the accepted FP gap.
+        HybridModel::set_b1_fast(false);
+    }
+
     // ---- ARM 3: the LAST-STAGE epilogue (device sampling + lean park) ----
     // Runs at the widest requested B, on the split path, with MIXED metas so the partial-D2H
     // path is exercised: even rows device-sampled greedy, odd rows host rows.
@@ -759,6 +803,9 @@ fn pp_battery(
         fails += usize::from(ep_fail > 0);
     }
 
+    // Restore the live default (arms 1-3 pinned it OFF, arm 4 flipped it): this process may
+    // run further gates, and a leaked pin would silently re-tier them.
+    HybridModel::set_b1_fast(b1_live);
     println!("pp mode verdict: {fails} failing arm(s); {knobs}");
     Ok(fails)
 }
