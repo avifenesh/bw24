@@ -50,6 +50,12 @@ BACKENDS=""
 for port in "${PORTS[@]}"; do BACKENDS+="http://127.0.0.1:$port,"; done
 BACKENDS=${BACKENDS%,}
 
+# /health is the RESTART decision, and since lane/serve-hardening it means inference
+# liveness (worker heartbeat + fault latches), not "the process is listening" — so a replica
+# whose GPU worker panicked or whose card wedged now actually gets restarted here instead of
+# sitting green forever. It 503s while weights load, which is what LOAD_GRACE covers, and
+# stays 200 during a drain on purpose (a drain is a healthy shutdown; the supervisor must not
+# fight it). ROUTING readiness is the proxy's job and asks /readyz.
 healthy() { curl -sf -m 2 "http://127.0.0.1:$1/health" >/dev/null 2>&1; }
 pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 pidfile_of() { echo "$FLEET_RUN/replica-$1.pid"; }
