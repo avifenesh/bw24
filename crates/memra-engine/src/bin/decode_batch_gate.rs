@@ -76,10 +76,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // own correctness is covered by kernel-check + run-gen argmax + run-spec gates.
     unsafe { std::env::set_var("MEMRA_MOE_F16G", "0"); }
     let e = Engine::new(0)?;
-    let g = GgufFile::open(&path)?;
-    let model = HybridModel::load_without_mtp(&e, &g)?;
+    // DIRECTORY path = safetensors HF checkpoint (lane/rp-on-st, 2026-08-06). This gate was
+    // GGUF-only, and `Mmap::map` on a directory fd returns ENODEV — so pointing it at an ST
+    // checkpoint died with `Os { code: 19, ... "No such device" }` BEFORE loading anything,
+    // which reads like a GPU-acquisition failure and is not one. That mattered: the exact-16
+    // serve tier now admits both FP8-ST scale classes (QT_F8_E4M3 via the new b16 twin,
+    // QT_F8_E4M3_BLK via its first batched family), and the ONLY model-level exactness gate
+    // for decode_step_batch could not be pointed at either of them. Same branch as run_gen.
+    let (model, arch) = if std::path::Path::new(&path).is_dir() {
+        let dir = std::path::Path::new(&path);
+        let src: Box<dyn memra_gguf::source::TensorSource> = if dir.join("manifest.json").exists() {
+            Box::new(memra_gguf::source::Hy3RepackSource::open(dir)?)
+        } else {
+            Box::new(memra_gguf::source::SafetensorsSource::open(dir)?)
+        };
+        let m = HybridModel::load_from_source_without_mtp(&e, src.as_ref())?;
+        (m, "safetensors".to_string())
+    } else {
+        let g = GgufFile::open(&path)?;
+        let a = g.arch().unwrap_or("?").to_string();
+        (HybridModel::load_without_mtp(&e, &g)?, a)
+    };
     println!("loaded {} ({} layers); steps={steps} batch={b_n}",
-             g.arch().unwrap_or("?"), model.layers.len());
+             arch, model.layers.len());
 
     // Distinct prompts per lane so caches/states genuinely diverge; length >= 16
     // (PRIME_MIN_T floor) and deliberately uneven so positions differ across the batch.

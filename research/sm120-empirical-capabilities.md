@@ -71,6 +71,20 @@ All re-tested with the CORRECT `-gencode arch=compute_120a,code=sm_120a` flag (t
 | FP16/BF16 mma | **117 TFLOP/s** | 1.0x | ~141 FLOP/byte |
 | FP8 e4m3 **plain** mma | **219 TFLOP/s** | 1.88x | ~264 FLOP/byte |
 | FP8 **block-scale** (mxf8f6f4) | **381 TFLOP/s** | 3.26x | ~460 FLOP/byte |
+
+> **2026-08-06 — THIS TABLE WAS RIGHT AND THREE LIVE KERNELS IGNORED IT FOR A MONTH.** The plain-vs-
+> block-scale row above is the whole finding, and it was sitting here unused: `mmq_nvfp4_w4a8.cu`,
+> `mmq_fp8_blk.cu` and the v3 gate's `mmq_q8_0_f32acc.cu` all issued **plain** `kind::f8f6f4` while
+> their comments claimed the "381-TF class". Re-measured per-instruction on the real tiles: plain
+> `kind::f8f6f4.m16n8k32` = **32.02 cyc/warp-MMA**, `kind::mxf8f6f4.block_scale.scale_vec::1X` with
+> the **ue8m0 identity scale `0x7F7F7F7F`** = **16.06 cyc** for the *bit-identical* e4m3×e4m3
+> product (1.994x, slightly wider than this table's 1.74x because that microbench is an issue-rate
+> upper bound with different ILP). Yields: W4A8 tile **1.2153x** e2e prefill, per-block FP8 tile
+> **1.0654x** e2e pp512, and the v3 gate's Q1 verdict **inverted** (+17.6pp → −8.8pp; its s32
+> control was racing a 2x-slower f32 arm). Receipts: `research/w4a8-prefill-20260806/`,
+> `research/rp-on-st-20260806/`. **Lesson: the identity scale makes the fast form a drop-in for any
+> plain `kind::f8f6f4` site — if you write one, justify it against this row or use the block_scale
+> form.**
 | FP4 e2m1 **block-scale** (mxf4) | **762 TFLOP/s** | 6.52x | ~920 FLOP/byte |
 
 (Microbench = tight independent-mma issue loop, 2 accumulators, 82×4 blocks — upper bound on

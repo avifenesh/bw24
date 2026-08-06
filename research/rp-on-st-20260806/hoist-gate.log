@@ -1,0 +1,73 @@
+### DEQUANT-HOIST exactness gate  md5 505d6a9c4c3b7c0dde13a89654778ca7
+=== kernel-check e4m3 + blk families (the hoisted code) ===
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=9: rms_rel=1.52e-6 bit-bad=4122/4608 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x512] m=9 b16: bit-bad=0/4608 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=1: rms_rel=0.00e0 bit-bad=0/320 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=2: rms_rel=0.00e0 bit-bad=0/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x320] m=2 b2: bit-bad=0/640 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=5: rms_rel=0.00e0 bit-bad=0/1600 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x320] m=5 b8: bit-bad=0/1600 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=9: rms_rel=0.00e0 bit-bad=0/2880 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x320] m=9 b16: bit-bad=0/2880 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=1: rms_rel=1.53e-6 bit-bad=271/320 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=2: rms_rel=1.60e-6 bit-bad=561/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x320] m=2 b2: bit-bad=0/640 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=5: rms_rel=1.54e-6 bit-bad=1422/1600 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x320] m=5 b8: bit-bad=0/1600 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=9: rms_rel=1.52e-6 bit-bad=2565/2880 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x320] m=9 b16: bit-bad=0/2880 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=1: rms_rel=0.00e0 bit-bad=0/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=2: rms_rel=0.00e0 bit-bad=0/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [2080x256] m=2 b2: bit-bad=0/512 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=5: rms_rel=0.00e0 bit-bad=0/1280 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [2080x256] m=5 b8: bit-bad=0/1280 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=9: rms_rel=0.00e0 bit-bad=0/2304 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [2080x256] m=9 b16: bit-bad=0/2304 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=1: rms_rel=5.85e-7 bit-bad=222/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=2: rms_rel=6.16e-7 bit-bad=444/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [2080x256] m=2 b2: bit-bad=0/512 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=5: rms_rel=1.02e-6 bit-bad=1102/1280 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [2080x256] m=5 b8: bit-bad=0/1280 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=9: rms_rel=1.03e-6 bit-bad=1976/2304 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [2080x256] m=9 b16: bit-bad=0/2304 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=1: rms_rel=0.00e0 bit-bad=0/200 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=2: rms_rel=0.00e0 bit-bad=0/400 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [1184x200] m=2 b2: bit-bad=0/400 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=5: rms_rel=0.00e0 bit-bad=0/1000 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [1184x200] m=5 b8: bit-bad=0/1000 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=9: rms_rel=0.00e0 bit-bad=0/1800 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [1184x200] m=9 b16: bit-bad=0/1800 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=1: rms_rel=6.03e-7 bit-bad=161/200 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=2: rms_rel=6.20e-7 bit-bad=323/400 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [1184x200] m=2 b2: bit-bad=0/400 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=5: rms_rel=5.88e-7 bit-bad=792/1000 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [1184x200] m=5 b8: bit-bad=0/1000 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=9: rms_rel=8.34e-7 bit-bad=1432/1800 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [1184x200] m=9 b16: bit-bad=0/1800 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=1: rms_rel=0.00e0 bit-bad=0/1536 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=2: rms_rel=0.00e0 bit-bad=0/3072 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x1536] m=2 b2: bit-bad=0/3072 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=5: rms_rel=0.00e0 bit-bad=0/7680 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x1536] m=5 b8: bit-bad=0/7680 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=9: rms_rel=0.00e0 bit-bad=0/13824 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x1536] m=9 b16: bit-bad=0/13824 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=1: rms_rel=1.50e-6 bit-bad=1374/1536 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=2: rms_rel=1.53e-6 bit-bad=2786/3072 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x1536] m=2 b2: bit-bad=0/3072 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=5: rms_rel=1.82e-6 bit-bad=6932/7680 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x1536] m=5 b8: bit-bad=0/7680 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=9: rms_rel=1.81e-6 bit-bad=12440/13824 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x1536] m=9 b16: bit-bad=0/13824 OK
+E4M3-BLK-MMVQ code coverage: 254/254 legal e4m3 codes exercised (0x7F/0xFF excluded — refused by the residency NaN precondition) OK
+ALL GREEN: kernels match CPU reference.
+=== run-gen argmax ST (e4m3 per-tensor) ===
+prompt tokens: [760, 6511, 314, 9338, 369]
+verify-prefill argmax=11751  decode argmax=11751  logit maxdiff=0.000e0  MATCH
+tokens: [11751, 13, 198, 760, 6511, 314, 9338, 369, 11751, 13, 198, 760, 6511, 314, 9338, 369]
+rc=0
+=== run-gen argmax BLK128 (e4m3 block-128) ===
+prompt tokens: [760, 6511, 314, 9338, 369]
+verify-prefill argmax=11751  decode argmax=11751  logit maxdiff=0.000e0  MATCH
+tokens: [11751, 13, 198, 760, 6511, 314, 9338, 369, 11751, 13, 198, 760, 6511, 314, 9338, 369]
+rc=0
+### DONE 14:07:23

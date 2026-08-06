@@ -1,5 +1,45 @@
 # FP8-ST v3 GATE — verdict
 
+> ## ⛔ CORRECTION 2026-08-06 — **Q1 IS REFUTED. THE Q1 "GO" BELOW IS WRONG. DO NOT FUND A v3 ON IT.**
+>
+> Q1's instrument (`cu/mmq_q8_0_f32acc.cu`) was **not** single-variable. Its F32 arm issued
+> `mma.sync.aligned.kind::f8f6f4.m16n8k32` — which costs **32.02 cyc/warp-MMA** on sm_120a — against
+> an S32 arm on `m16n8k32.s8` at **16.06 cyc**. The accumulator class and the MMA *issue interval*
+> moved together, 2×. The claim below that "the swap is legal as a single-variable experiment because
+> both forms share the fragment ABI" is true at the source level and **false at the cost level**, and
+> the SASS census validated the former while never checking the latter.
+>
+> Re-measured with the form equalized (F32 arm on
+> `kind::mxf8f6f4.block_scale.scale_vec::1X … ue8m0` at the identity scale `0x7F7F7F7F` — the
+> **bit-identical** e4m3×e4m3 product at 16.06 cyc), 3 adjacent alternating binary pairs per cell,
+> both `ACCPROBE_DIST` settings, S32-arm time as a drift control (−0.83 … +0.33% over 24 cells):
+>
+> | cell | published arm (plain form), re-measured | **equalized** |
+> |---|---|---|
+> | weighted delta, m=512 | +17.3pp | **−6.7pp** |
+> | weighted delta, m=6257 | +17.6pp | **−8.8pp** |
+> | geomean ratio f32/s32, m=512 | 1.2033x | **0.9495x** |
+> | geomean ratio f32/s32, m=6257 | 1.2163x | **0.9373x** |
+>
+> **All of the Q1 delta was the MMA form; none of it was the accumulator.** With the interval
+> equalized the sign flips — f32 accumulate is 5–9% *faster* than s32 at fixed geometry, because the
+> S32 arm additionally pays the 512 `I2FP` converts this document already recorded (and scored as
+> "generous to F32"). Q1 does not clear its ≥10pp bar; it does not clear zero. A v3 would pay
+> per-128-block mantissa extraction to buy a **negative** accumulator delta.
+>
+> Q2 (native-e4m3 decode) is untouched by this and is **not** re-priced here; the "decode-v1 first"
+> recommendation stands on Q2's own evidence. `ACCPROBE_F32_PLAIN=1` rebuilds the published arm so
+> everything below stays reproducible.
+>
+> Receipts: `research/rp-on-st-20260806/accprobe-form-ab.{sh,log}`, `accprobe-form-ab-summary.txt`,
+> `accprobe-sass-census.txt`, and the `accprobe_mma_form_ab` / `accprobe_mma_form_verdict` rows in
+> that lane's `RESULTS.jsonl`. Found while auditing a coordinator-routed find on the same defect in
+> `cu/mmq_fp8_blk.cu` (third site; `research/w4a8-prefill-20260806/` was the first).
+>
+> **Law this teaches:** "one free variable" must be verified at the *cost* level (issue rate), not
+> only at the source level (fragment ABI / MMA count). A verdict is only as calibrated as its
+> control arm.
+
 Lane: `lane/fp8-v3-gate` (off `restructure/public-split`) · 2026-08-05 · RTX 5090 Laptop (sm_120a)
 Charter: `research/fp8st-20260804/mmq-v2/LANE-VERDICT.jsonl` §6 — *a v3 "should not start without a
 receipted estimate that s32-vs-f32 accumulate is worth the >= 10pp it would have to buy."*
@@ -49,7 +89,7 @@ time and ~69% of decode**:
 | o_proj | 7.5% | 9.2% |
 | k/v_proj | 2.4% | 5.9% |
 
-## Q1 — what s32 accumulation is worth: **+16.7pp (m=512) / +23.1pp (m=6257) weighted → GO**
+## Q1 — ~~what s32 accumulation is worth: **+16.7pp (m=512) / +23.1pp (m=6257) weighted → GO**~~ **REFUTED 2026-08-06 → NO-GO (−6.7 / −8.8pp once the MMA form is equalized; see the correction at the top)**
 
 **Bar: ≥ 10pp. Cleared by 1.7–2.3x.**
 
@@ -64,6 +104,8 @@ bytes:
 - arm **F32**: `mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32` — the exact op v2
   accumulates in.
 
+**[FALSE — see the 2026-08-06 correction. The two forms share the fragment ABI but not the issue
+interval: 32.02 vs 16.06 cyc/warp-MMA. This paragraph is the exact reasoning error.]**
 The swap is legal as a single-variable experiment because both forms share the fragment ABI at this
 shape (4×b32 A, 2×b32 B, 4-reg D), so nothing but the instruction changes.
 
@@ -96,10 +138,16 @@ construction. This measures **time**. Exactness is owned by `fp8-mmq-check` / `k
 
 - Identical **MMA count (128)** and identical **LDS/LDG** — same tiling, same traffic.
 - Identical **REG:255 / SHARED:1024** — the delta is not an occupancy artifact.
-- S32 emits `IMMA.16832.S8.S8`; F32 emits `QMMA.16832.F32.E4M3.E4M3`. Exactly one thing moved.
+- S32 emits `IMMA.16832.S8.S8`; F32 emits `QMMA.16832.F32.E4M3.E4M3`. ~~Exactly one thing moved.~~
+  **[FALSE. Two things moved: the accumulator class AND the issue interval — `IMMA.16832.S8.S8` is
+  16.06 cyc/warp-MMA and `QMMA.16832.F32.E4M3.E4M3` is 32.02. A census of MMA *count* cannot see
+  this; it needs the per-form *rate*. Re-census with both F32 spellings:
+  `research/rp-on-st-20260806/accprobe-sass-census.txt`.]**
 - **The bias runs against the result**: the S32 arm executes *more* instructions (3176 vs 2680) and
   pays **512 extra `I2FP` int→float converts** (inherent to accumulating in s32 and folding into an
-  f32 sum), and still wins ~20%. The instrument is generous to F32.
+  f32 sum), and still wins ~20%. ~~The instrument is generous to F32.~~
+  **[The fact is right, the scoring was backwards. Those 512 converts are exactly what S32 loses by
+  once the issue interval is equalized: f32 then wins 5–9%.]**
 
 ### Numbers
 
@@ -132,10 +180,14 @@ Weighting does not rescue f32 — the dominant cells are where the delta is *lar
   1..=126, ~5.5% denormals, ~15 binades) vs `mid` (`0x30..=0x4F`, e4m3-normal, mid exponents, zero
   denormals): mid is if anything **larger** (+20.6/+20.7 vs +19.1/+20.0). The delta is a property of
   the instruction, not the data.
-- **Neither arm is MMA-issue-bound.** Both run 87–141 TFLOP against the f8f6f4 class's ~381 TF peak,
-  consistent with v2's own ceiling analysis — yet the accumulator class still moves ~20%. So the cost
-  is not "we ran out of MMA slots"; it is the per-instruction throughput of the QMMA f32-accumulate
-  form at this geometry.
+- ~~**Neither arm is MMA-issue-bound.** Both run 87–141 TFLOP against the f8f6f4 class's ~381 TF
+  peak, consistent with v2's own ceiling analysis — yet the accumulator class still moves ~20%. So
+  the cost is not "we ran out of MMA slots"; it is the per-instruction throughput of the QMMA
+  f32-accumulate form at this geometry.~~
+  **[The ~381 TF denominator is wrong: plain `kind::f8f6f4` on sm_120a is a 155-TF class, not 381 —
+  381 belongs to the block_scale form. The last sentence is, ironically, the true one: the cost WAS
+  "the per-instruction throughput of the QMMA f32-accumulate form", i.e. the form, not the
+  accumulator. Naming that and still attributing the delta to the accumulator is the whole error.]**
 - **This is an UPPER BOUND, not a forecast.** A real v3 additionally pays per-128-block e4m3 mantissa
   extraction, which this instrument does not charge. The gate asked "is there a receipted case for
   v3", and there is. It did not ask, and this does not answer, "v3 will deliver 20pp."
@@ -299,7 +351,7 @@ deliverable should be the extraction micro-benchmark, not a kernel.
 | `q1-accprobe-27b.log` | Q1 run 1 raw (cold-start ramp) |
 | `q1-accprobe-27b-confirm.log` | Q1 run 2 raw, warm/clock-settled — the source of the weighted numbers |
 | `q1-dist-control.log` | Q1 e4m3-denormal distribution control, wide vs mid, both m |
-| `q1-sass-census.txt` | instrument validation: MMA class/count, instruction census, resource usage |
+| `q1-sass-census.txt` | instrument validation: MMA class/count, instruction census, resource usage — **incomplete: censuses MMA count, never MMA issue rate; see the correction at the top** |
 | `q2-gemv-e4m3-27b.log` | Q2 raw, two independent passes |
 
 Code added by this lane (research instruments; no dispatch seam, no default changed):

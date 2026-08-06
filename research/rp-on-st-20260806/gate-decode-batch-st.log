@@ -1,0 +1,4 @@
+=== gate: decode-batch config B=16 (exact-16 tier, ST per-tensor) ===
+Error: Os { code: 19, kind: Uncategorized, message: "No such device" }
+=== gate: decode-batch strict B=4 ===
+Error: Os { code: 19, kind: Uncategorized, message: "No such device" }

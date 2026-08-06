@@ -2268,8 +2268,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("E4M3-MMVQ synth [{in_f}x{out_f}] m={mm}: rel={rel:.2e} m1-bits={bits_ok} {}",
                          if ok { "OK" } else { fails += 1; "FAIL" });
             }
-            // (3) batched twins vs grid.y=m mmvq: bit-exact.
-            for mm in 2..=8usize {
+            // (3) batched twins vs grid.y=m mmvq: bit-exact. Widths 2..=8 plus the b16 tier
+            // (lane/rp-on-st: qmatvec_e4m3_mmvq_b16 — the exact-16 serve chunk's kernel).
+            for mm in [2usize, 3, 4, 5, 6, 7, 8, 9, 12, 16] {
                 let mcols = memra_engine::Engine::batched_mcols(mm);
                 let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 163) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -2561,6 +2562,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                               rms_rel={rms_rel:.2e} bit-bad={bits_bad}/{} m1-bits={m1_bits} \
                               q8-lossless={q8_lossless} nan={nan} {}",
                              want.len(), if ok { "OK" } else { fails += 1; "FAIL" });
+                    // (4b) BATCHED twins vs the grid.y=m form (lane/rp-on-st): the weight-read-once
+                    // b2/b4/b8/b16 kernels must be BIT-IDENTICAL per (token,row) to the launch
+                    // above — that bit-identity is exactly what admits this class to the exact-16
+                    // serve tier, so it is gated, not argued. m=16 is included because chunk 16 is
+                    // the tier this kernel family exists to unlock.
+                    if (2..=16).contains(&mm) {
+                        let mcols = memra_engine::Engine::batched_mcols(mm);
+                        let yb = e.dtoh(&e.qmatvec_e4m3_blk_batched_raw(
+                            &wd, &xd, &scd, mm, in_f, out_f, in_f, scols, mcols)?)?;
+                        let bb = got.iter().zip(&yb)
+                            .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        println!("E4M3-BLK-BATCHED {arm} [{in_f}x{out_f}] m={mm} b{mcols}: \
+                                  bit-bad={bb}/{} {}",
+                                 got.len(), if bb == 0 { "OK" } else { fails += 1; "FAIL" });
+                    }
                 }
             }
         }
@@ -2641,12 +2657,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("KQRP {tname} [{:?}] m=1 mmvq_rp: bit-bad={bad} {}", t.ggml_type,
                          if bad == 0 { "OK" } else { fails += 1; "FAIL" });
             }
-            // batched rp twins vs GGUF-layout batched: bit-identical (b16 tier is q6_K-only).
-            let tiers: &[(usize, usize)] = if gt == memra_engine::QT_Q6_K {
-                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (12, 16)]
-            } else {
-                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8)]
-            };
+            // batched rp twins vs GGUF-layout batched: bit-identical. b16 now covers Q4_K too
+            // (lane/rp-on-st, 2026-08-06: qmatvec_q4_K_mmvq_b16{,_rp}) — Q4_K was the 9B NVFP4
+            // GGUF's exact-16 blocker, since mixed NVFP4 checkpoints keep Q4_K attention.
+            let tiers: &[(usize, usize)] =
+                &[(2, 2), (3, 4), (4, 4), (5, 8), (8, 8), (9, 16), (12, 16), (16, 16)];
             for &(mm, mcols) in tiers {
                 let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -2655,6 +2670,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let bad = yref.iter().zip(&yrp).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
                 println!("KQRP {tname} [{:?}] m={mm} mcols={mcols} batched_rp: bit-bad={bad} {}", t.ggml_type,
                          if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+    // --- EXACT-16 TIER b16 PINS for Q8_0 and Q4_K (lane/rp-on-st, 2026-08-06). The KQRP cells
+    // above compare rp-layout against GGUF-layout at the SAME width; this compares b16 against
+    // the m=1 mmvq launch, which is the tier's actual contract (`decode_batch_exact16_ok` promises
+    // per-(token,row) bit-identity to isolated m=1 decode). Both layouts, because production runs
+    // both: a mirrored trunk (q8rp / kqrp) takes the _rp b16, a naked one takes the base b16.
+    // These two classes were the measured refusals — MEMRA_EXACT16_WHY named `L0.ssm_beta qtype=0`
+    // on the FP8-ST 27B and `L0.wqkv qtype=1` on the 9B NVFP4 GGUF. ---
+    if let Some(path) = gguf_arg.clone() {
+        use memra_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        // Q5_K included and mirror-free: it has no rp twins at any width, so its b16 arm below
+        // runs the base layout only (`build_kq_rp4_raw` covers Q4_K/Q6_K).
+        let want: [(GgmlType, i32); 3] = [
+            (GgmlType::Q8_0, memra_engine::QT_Q8_0), (GgmlType::Q4_K, memra_engine::QT_Q4_K),
+            (GgmlType::Q5_K, memra_engine::QT_Q5_K),
+        ];
+        for (gtype, gt) in want {
+            let t = match g.tensors.iter().find(|t| t.ggml_type == gtype && t.ne.len() == 2
+                                                 && t.ne[0] % 256 == 0 && t.ne[1] >= 4) {
+                Some(t) => t, None => continue,
+            };
+            let tname = t.name.clone();
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            let mir = if gt == memra_engine::QT_Q8_0 { Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?) }
+                      else if gt == memra_engine::QT_Q5_K { None }   // no rp twins exist for Q5_K
+                      else { Some(e.build_kq_rp4_raw(&wd, in_f, out_f, gt)?) };
+            for mm in [9usize, 12, 16] {
+                let arms: Vec<(bool, &_)> = match &mir {
+                    Some(m) => vec![(false, &wd), (true, m)],
+                    None => vec![(false, &wd)],
+                };
+                for (rp, w) in arms {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 173) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(w, &xd, mm, in_f, out_f, gt, row_bytes, rp)?)?;
+                    let yb = e.dtoh(&e.qmatvec_batched_raw(w, &xd, mm, in_f, out_f, gt, row_bytes, 16, rp)?)?;
+                    let bad = yref.iter().zip(&yb).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                    println!("B16-TIER {tname} [{:?}{}] m={mm} mcols=16: bit-bad={}/{} {}",
+                             t.ggml_type, if rp { " rp" } else { "" }, bad, yref.len(),
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
             }
         }
     }
@@ -2680,6 +2741,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let rel = d / scale;
                     println!("BATCHED blk.0.ffn_gate.weight [NVFP4] m={mm} mcols={mcols}: rel={rel:.2e} {}",
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+                // b16 EXACT-16 TIER pin (lane/rp-on-st, 2026-08-06) — BITWISE, on BOTH layouts.
+                // The cells above are rel-tolerance and stop at m=8; the exact-16 serve tier's
+                // whole contract is per-(token,row) bit-identity to the m=1 mmvq launch, so it
+                // needs a bit-bad==0 gate. Both layouts are mandatory, not thorough: NVFP4 from
+                // safetensors is resident SPLIT-PLANE by default (model.rs A1 import, rp: true)
+                // while GGUF NVFP4 is not, and the b16 dispatch pins variant=rp iff rp — so the
+                // two arms below are the two things production actually launches. m=9 and 12 also
+                // check the c >= m masking at a partially-filled b16.
+                {
+                    use memra_engine::model::repack_nvfp4_split;
+                    let wd_rp = e.htod_bytes(&repack_nvfp4_split(raw, out_f))?;
+                    for mm in [9usize, 12, 16] {
+                        let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 167) * 0.1).collect();
+                        let xd = e.htod(&x)?;
+                        let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
+                        for (rp, w) in [(false, &wd), (true, &wd_rp)] {
+                            let yref = e.dtoh(&e.qmatvec_mmvq(w, &aq, &ad, mm, in_f, out_f,
+                                memra_engine::QT_NVFP4, row_bytes, 1.0, rp)?)?;
+                            let ybat = e.dtoh(&e.qmatvec_mmvq_batched(w, &aq, &ad, mm, in_f, out_f,
+                                memra_engine::QT_NVFP4, row_bytes, 16, 1.0, rp)?)?;
+                            let bad = yref.iter().zip(&ybat)
+                                .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                            println!("NVFP4-B16 blk.0.ffn_gate.weight [NVFP4{}] m={mm} mcols=16: bit-bad={}/{} {}",
+                                     if rp { " rp" } else { "" }, bad, yref.len(),
+                                     if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                        }
+                    }
                 }
             }
             // DUAL gate+up batched twins (lane/verify-economics, 2026-08-02): one launch computes
