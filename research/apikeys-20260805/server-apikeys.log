@@ -1,42 +1,40 @@
-[auth] keyring loaded: 5 key(s) from /tmp/apikeys-gate-Lfzv.toml
+[auth] keyring loaded: 5 key(s) from /tmp/apikeys-gate-Mmiy.toml
 [server] starting; models config = [("gate", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
-[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
-[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
 [worker] Engine ready (MEMRA_FAST=true)
 [worker] loading model "gate" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
 [worker]   loaded "gate": 33 layers, eos=248046
 [worker] gate: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
-[worker] gate: decode chunk cap 16 (exact-16 tier)
+[worker] gate: decode chunk cap 8
 [prefix-cache] on: budget 1074MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [server] worker ready; serving models: ["gate"]
 [server] listening on http://127.0.0.1:8178
-[meter] admit id=chatcmpl-3792187254af563c08f5031628e1dac1 tenant=default lane=interactive model="gate"
+[meter] admit id=chatcmpl-404394f46b58ce851280c1bd4fdfc88d tenant=default lane=interactive model="gate"
 [worker] observed session VRAM cost for "gate": 235MB (admission gate = 2x)
 [prefix-cache] insert (seed): 90 tokens, 56.2MB (resident 56.2MB / 1074MB, model gate, ns "t:default\u{1f}")
-[meter] admit id=chatcmpl-a44128dc23068fc16ba3c912cb2e51a3 tenant=acme lane=interactive model="gate"
+[meter] admit id=chatcmpl-0fb90d2ff5020cd29235912638381eb7 tenant=acme lane=interactive model="gate"
 [prefix-cache] insert (seed): 94 tokens, 56.3MB (resident 112.5MB / 1074MB, model gate, ns "t:acme\u{1f}")
-[meter] admit id=chatcmpl-be30592f92797df7ea3ec94b6dfb3298 tenant=acme lane=interactive model="gate"
+[meter] admit id=chatcmpl-3b8290a9535b09d3298cc174d90264ea tenant=acme lane=interactive model="gate"
 [prefix-cache] hit: 94 of 94 prompt tokens from cache (model gate)
-[meter] admit id=chatcmpl-f2096712284fe66fe486e395f23f9897 tenant=blue lane=interactive model="gate"
+[meter] admit id=chatcmpl-8a4d00bab20231ed1bf406bfac42bab2 tenant=blue lane=interactive model="gate"
 [prefix-cache] insert (seed): 94 tokens, 56.3MB (resident 168.8MB / 1074MB, model gate, ns "t:blue\u{1f}")
-[meter] admit id=chatcmpl-d7202e6e20b2188766e6740e4000cbd5 tenant=blue lane=interactive model="gate"
+[meter] admit id=chatcmpl-75791a32a8219e5b5e7f4e24208c0c6d tenant=blue lane=interactive model="gate"
 [prefix-cache] insert (seed): 101 tokens, 56.4MB (resident 225.2MB / 1074MB, model gate, ns "t:blue\u{1f}")
-[meter] admit id=chatcmpl-7333a4598aa20806c72320073436f86d tenant=blue lane=interactive model="gate"
+[meter] admit id=chatcmpl-3c37132f36aed5d0affdf4aff5bbbc7c tenant=blue lane=interactive model="gate"
 [prefix-cache] hit: 101 of 101 prompt tokens from cache (model gate)
-[meter] admit id=chatcmpl-fa813c6eb9cb81d1d42cb36ef0ddecd1 tenant=acme lane=interactive model="gate"
+[meter] admit id=chatcmpl-4fa508be92d41196abe9c11a7f784fe3 tenant=acme lane=interactive model="gate"
 [prefix-cache] insert (seed): 101 tokens, 56.4MB (resident 281.6MB / 1074MB, model gate, ns "t:acme\u{1f}")
-[meter] admit id=chatcmpl-b74dc4cd9fe8b6401aa3e395c6423ddd tenant=acme lane=interactive model="gate"
+[meter] admit id=chatcmpl-e3643064251aebef7d141b7dc888b854 tenant=acme lane=interactive model="gate"
 [prefix-cache] insert (seed): 94 tokens, 56.3MB (resident 337.8MB / 1074MB, model gate, ns "t:acme\u{1f}proj-x")
-[meter] admit id=chatcmpl-c64a6040f6e80362ea3e1e31401f300a tenant=acme lane=interactive model="gate"
+[meter] admit id=chatcmpl-9d6787b17e43cfdfb2c305d364804b9d tenant=acme lane=interactive model="gate"
 [prefix-cache] hit: 94 of 94 prompt tokens from cache (model gate)
-[meter] admit id=chatcmpl-3c102c97495dac9100c0de8902e63274 tenant=bulk lane=harvest model="gate"
+[meter] admit id=chatcmpl-0161c143598e2874fdb2402d691657e9 tenant=bulk lane=harvest model="gate"
 [prefix-cache] insert (seed): 91 tokens, 56.2MB (resident 394.1MB / 1074MB, model gate, ns "t:bulk\u{1f}")
-[meter] admit id=chatcmpl-75f21d41d3c3de89294b5ba75875de62 tenant=acme lane=interactive model="gate"
+[meter] admit id=chatcmpl-1b54799b222f17cbcca3c61bd4543806 tenant=acme lane=interactive model="gate"
 [prefix-cache] insert (lcp-split): 75 tokens, 56.0MB (resident 450.1MB / 1074MB, model gate, ns "t:acme\u{1f}")
-[meter] admit id=chatcmpl-79e448f40b65c653dce4d4ff04710715 tenant=bulk lane=judge model="gate"
+[meter] admit id=chatcmpl-d5107d3635200d9e1e469c0837eefce9 tenant=bulk lane=judge model="gate"
 [prefix-cache] hit: 91 of 91 prompt tokens from cache (model gate)
-[auth] keyring reloaded: 5 key(s) from /tmp/apikeys-gate-Lfzv.toml
-[meter] admit id=chatcmpl-56a0e4a8e16fee30079c8d44cdc903fd tenant=acme lane=interactive model="gate"
+[auth] keyring reloaded: 5 key(s) from /tmp/apikeys-gate-Mmiy.toml
+[meter] admit id=chatcmpl-cd7898aa0456eba70d4f107447f86d09 tenant=acme lane=interactive model="gate"
 [prefix-cache] hit: 75 of 90 prompt tokens from cache (model gate)
 [server] SIGTERM: draining (0 in flight, deadline 30s)
 [server] drain complete in 0.0s; exiting
