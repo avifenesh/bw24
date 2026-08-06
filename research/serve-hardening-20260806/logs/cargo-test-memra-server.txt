@@ -1,0 +1,102 @@
+warning: memra-engine@0.71.0: nvcc from $CUDA_HOME: /usr/local/cuda-13.1/bin/nvcc
+warning: memra-engine@0.71.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running unittests src/main.rs (target/release/deps/memra_server-9bab8f30d1cfd7c6)
+
+running 92 tests
+test auth::tests::inline_env_list_parses ... ok
+test auth::tests::auth_law_composes_keyring_and_single_key ... ok
+test auth::tests::gen_key_prints_once_and_stores_only_the_hash ... ok
+test auth::tests::keystore_hot_reloads_on_mtime_change ... ok
+test auth::tests::malformed_rings_are_loud_errors ... ok
+test auth::tests::namespace_scoping_is_tenant_separated_and_unforgeable ... ok
+test auth::tests::toml_ring_parses_and_looks_up_by_hash ... ok
+test auth::tests::sha256_hex_matches_known_vector ... ok
+test constrained::tests::apply_mask_bans_unset_and_padding_tail ... ok
+test auth::tests::revoke_key_flips_enabled_by_prefix_exactly_once ... ok
+test constrained::tests::parse_response_format_forms ... ok
+test health::tests::loading_is_not_live_and_not_ready ... ok
+test health::tests::readiness_is_off_while_draining_but_liveness_stays_on ... ok
+test health::tests::smi_csv_scan_faults_only_on_definite_values ... ok
+test health::tests::worker_death_and_gpu_fault_latch_immediately_without_a_threshold_wait ... ok
+test health::tests::xid_classification_covers_both_kernel_line_forms_and_the_fatal_set ... ok
+test tests::a_cuda_oom_message_is_capacity_503_not_a_500 ... ok
+test tests::a_closed_worker_channel_is_503_not_500 ... ok
+test tests::a_dark_lane_shed_is_429_with_an_openai_object_body ... ok
+test tests::affinity_key_plumbs_to_the_worker_request_on_both_bodies ... ok
+test tests::assistant_history_tool_calls_and_tool_role_render_into_turns ... ok
+test tests::affinity_key_honors_both_client_conventions_in_priority_order ... ok
+test tests::blocking_response_excludes_stop_text_across_token_events ... ok
+test tests::blocking_tools_response_carries_tool_calls_and_finish_reason ... ok
+test tests::chat_on_templateless_dir_checkpoint_is_rejected_with_clear_message ... ok
+test tests::cache_salt_plumbs_to_the_worker_namespace ... ok
+test tests::chat_response_has_openai_message_shape ... ok
+test tests::chat_request_preserves_turns_and_openai_stop_forms ... ok
+test tests::completions_accept_openai_stop_forms ... ok
+test tests::chat_usage_carries_spec_acceptance_summary ... ok
+test tests::error_bodies_use_the_openai_object_shape ... ok
+test tests::handler_layer_refusals_are_openai_objects_with_x_should_retry ... ok
+test tests::inflight_guard_counts_up_and_frees_on_drop ... ok
+test tests::interactive_never_peeks_so_its_first_token_is_not_held ... ok
+test tests::batch_class_keys_default_to_harvest_and_cannot_claim_interactive ... ok
+test tests::omitted_temperature_is_openai_default_not_greedy ... ok
+test tests::omitted_seed_is_fresh_entropy_not_a_pinned_zero ... ok
+test tests::rate_limit_math_remaining_hits_zero_at_cap_and_reset_arms ... ok
+test tests::model_plan_accepts_st_dir_and_rejects_bogus_dir ... ok
+test tests::response_format_builds_grammar_only_when_present ... ok
+test tests::penalties_plumb_from_http_to_sampler_config ... ok
+test tests::taxonomy_maps_every_class_to_its_status_and_code ... ok
+test tests::stream_worker_error_is_a_data_chunk_not_a_named_event ... ok
+test tests::stream_chunks_carry_envelope_and_first_delta_role ... ok
+test tests::retry_headers_follow_the_sdk_contract ... ok
+test tests::tenant_rate_limit_override_is_min_with_global_cap ... ok
+test tests::stream_excludes_stop_text_like_non_stream_does ... ok
+test tests::v1_models_entry_matches_or_schema_with_honest_nulls ... ok
+test toolcall::tests::include_reasoning_false_drops_think_text ... ok
+test tests::unsupported_semantic_params_are_named_rejections ... ok
+test tests::a_wedged_gpu_flips_health_even_though_the_worker_thread_is_fine ... ok
+test tests::tool_choice_none_strips_tools_and_parser ... ok
+test tests::tools_on_model_without_tools_branch_is_rejected ... ok
+test toolcall::tests::think_gate_routes_think_text_to_reasoning_not_content ... ok
+test constrained::tests::schema_mask_forced_sequence ... ok
+test toolcall::tests::two_calls_and_multiline_string_values ... ok
+test tests::draining_rejects_new_requests_with_503_and_retry_after ... ok
+test toolcall::tests::unclosed_think_flushes_as_reasoning ... ok
+test toolcall::tests::unterminated_block_flushes_raw_on_finish ... ok
+test tests::tools_request_renders_client_key_order_and_arms_parser ... ok
+test tests::unfixable_client_errors_say_x_should_retry_false ... ok
+test toolcall::tests::malformed_block_is_surfaced_verbatim ... ok
+test worker::tests::affinity_refuses_to_resume_across_a_committed_range_divergence ... ok
+test constrained::tests::consume_outside_mask_is_error ... ok
+test toolcall::tests::partial_tag_holdback_never_loses_bytes ... ok
+test tests::reasoning_effort_maps_to_think_switch ... ok
+test constrained::tests::speculative_clone_masks_illegal_draft_and_leaves_real_state ... ok
+test tests::health_is_green_only_while_the_worker_is_alive ... ok
+test toolcall::tests::char_by_char_deltas_produce_the_same_result ... ok
+test toolcall::tests::reasoning_only_mode_splits_think_from_content_char_by_char ... ok
+test worker::tests::affinity_resume_requires_the_whole_committed_prefix ... ok
+test worker::tests::affinity_room_test_accepts_f5_right_sized_sessions ... ok
+test worker::tests::confidence_summary_tracks_reference_and_margin ... ok
+test worker::tests::fingerprint_declines_short_generic_openers ... ok
+test worker::tests::fingerprint_degrades_gracefully_when_a_rewrite_reaches_a_head_window ... ok
+test worker::tests::fingerprint_handles_a_prompt_with_no_markers ... ok
+test worker::tests::fingerprint_ignores_the_live_turn ... ok
+test worker::tests::fingerprint_nominates_the_parked_session_across_a_rewritten_turn ... ok
+test toolcall::tests::parses_call_with_schema_coercion ... ok
+test worker::tests::fingerprint_separates_different_conversations ... ok
+test worker::tests::prefix_cache_default_namespace_preserves_single_tenant_behavior ... ok
+test worker::tests::prefix_cache_namespaces_isolate_both_directions ... ok
+test worker::tests::prefix_cache_same_namespace_same_prefix_hits ... ok
+test worker::tests::prefix_cache_touch_rescues_the_would_be_victim ... ok
+test worker::tests::fingerprint_survives_an_assistant_interior_rewrite ... ok
+test worker::tests::streaming_utf8_consumes_truly_invalid_bytes_once ... ok
+test worker::tests::streaming_utf8_waits_for_a_complete_multibyte_sequence ... ok
+test worker::tests::prefix_cache_eviction_matches_old_policy_on_recorded_pattern ... ok
+test tests::responses_carry_rate_limit_headers_and_slot_frees ... ok
+test health::tests::tick_max_records_the_longest_iteration ... ok
+test health::tests::idle_is_healthy_at_any_age_but_busy_stalls ... ok
+test worker::tests::prefix_cache_eviction_large_pool_flush_smoke ... ok
+
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+TEST_RC=0

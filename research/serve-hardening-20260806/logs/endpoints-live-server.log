@@ -1,0 +1,53 @@
+[server] starting; models config = [("probe", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "probe" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "probe": 33 layers, eos=248046
+[worker] probe: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] probe: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["probe"]
+[server] listening on http://127.0.0.1:8099
+[meter] admit id=chatcmpl-3c8549cfce9520c7982338ed5378ecc4 tenant=default lane=interactive model="probe"
+[worker] observed session VRAM cost for "probe": 101MB (admission gate = 2x)
+[spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
+[meter] admit id=chatcmpl-f37209f79192edfe0023abb5f3e2f2a3 tenant=default lane=interactive model="nope"
+[meter] admit id=chatcmpl-00d4eb64e04a636bc5ddd0c2b7d585dd tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-5e92534f129a473c7d34cded2e75db5f tenant=default lane=harvest model="probe"
+[meter] admit id=chatcmpl-c5f933e525a7dc84f7387a0dd0c68c48 tenant=default lane=harvest model="probe"
+[meter] admit id=chatcmpl-2afa00ab8969a8d1ceda7ee5b048ee7d tenant=default lane=interactive model="probe"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 13; 1 parked, 16 prompt tokens; model probe)
+[spec-acc] ctx=16 burst=6/6 cum=6/6=1.000
+[meter] admit id=chatcmpl-fd8207692f4f76ee4964735987ce2b2c tenant=default lane=interactive model="probe"
+[worker] spec-affinity: declined (no room (session ctx 256 < need 984); 2 parked, 20 prompt tokens; model probe)
+[spec-acc] ctx=20 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=53 burst=23/33 cum=46/60=0.767
+[spec-acc] ctx=87 burst=24/33 cum=70/93=0.753
+[spec-acc] ctx=122 burst=21/33 cum=91/126=0.722
+[spec-acc] ctx=154 burst=20/42 cum=111/168=0.661
+[spec-acc] ctx=188 burst=20/36 cum=131/204=0.642
+[spec-acc] ctx=220 burst=22/33 cum=153/237=0.646
+[spec-acc] ctx=253 burst=18/42 cum=171/279=0.613
+[spec-acc] ctx=285 burst=21/33 cum=192/312=0.615
+[spec-acc] ctx=317 burst=15/54 cum=207/366=0.566
+[spec-acc] ctx=350 burst=19/42 cum=226/408=0.554
+[spec-acc] ctx=383 burst=24/33 cum=250/441=0.567
+[spec-acc] ctx=418 burst=20/36 cum=270/477=0.566
+[spec-acc] ctx=450 burst=20/36 cum=290/513=0.565
+[spec-acc] ctx=482 burst=22/36 cum=312/549=0.568
+[spec-acc] ctx=516 burst=20/45 cum=332/594=0.559
+[spec-acc] ctx=551 burst=23/30 cum=355/624=0.569
+[server] SIGTERM: draining (1 in flight, deadline 30s)
+[spec-acc] ctx=584 burst=17/45 cum=372/669=0.556
+[spec-acc] ctx=616 burst=20/42 cum=392/711=0.551
+[spec-acc] ctx=650 burst=20/42 cum=412/753=0.547
+[spec-acc] ctx=684 burst=17/45 cum=429/798=0.538
+[spec-acc] ctx=716 burst=21/36 cum=450/834=0.540
+[spec-acc] ctx=749 burst=21/42 cum=471/876=0.538
+[spec-acc] ctx=784 burst=21/33 cum=492/909=0.541
+[spec-acc] ctx=816 burst=18/42 cum=510/951=0.536
+[spec-acc] ctx=848 burst=23/33 cum=533/984=0.542
+[spec-acc] ctx=882 burst=21/33 cum=554/1017=0.545
+[spec-acc] ctx=914 burst=3/9 cum=557/1026=0.543
+[server] drain complete in 1.9s; exiting

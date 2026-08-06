@@ -1,0 +1,87 @@
+== live endpoint + taxonomy probe ==
+commit  2f1b8c66  (lane/serve-hardening)
+binary  target/release/memra-server  (2026-08-07T00:03:29)
+model   /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+rig     RTX 5090 Laptop, driver 595.84
+port    8099   server log -> research/serve-hardening-20260806/logs/endpoints-live-server.log
+
+--- [1] DURING the weight load: the port is not even bound yet ---
+(main binds the listener only after worker::spawn returns ready, so the first load is
+ connection-refused, not 503 — same probe-failure verdict for k8s and serve-fleet.sh.
+ Probed with no sleep: a page-cached 9B load here takes ~1.5s, so any wait wins the race
+ and reports a READY server, which is what an earlier version of this probe did.)
+/health  000 (connection refused/timeout) (empty body)
+/livez   000 (connection refused/timeout) (empty body)
+/readyz  000 (connection refused/timeout) (empty body)
+    (if those answered 200, the load beat the first curl — the ordering claim is a code
+     fact: TcpListener::bind runs after worker::spawn returns, main.rs.)
+
+--- [2] waiting for ready (curl -f: 200 only) ---
+ready after 2s
+
+--- [3] LOADED: /health, /livez, /readyz ---
+/health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":541,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+/livez   200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":547,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+/readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":553,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+
+--- [4] warm-up: one real interactive completion (also feeds the step estimator) ---
+status 200
+{"object":"chat.completion","model":"probe","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning":"Thinking Process:\n\n1.  **An","reasoning_details":[{"type":"reasoning.text","text":"Thinking Process:\n\n1.  **An"}]},"finish_reason":"length"}],"usage":{"prompt_tokens":13,"completion_tokens":9,"total_tokens":22,"prompt_tokens_details":{"cached_tokens":0},"elapsed_s":0.173847
+
+--- [5] G6: unknown model -> 400 invalid_request_error / code model_not_found ---
+HTTP/1.1 400 Bad Request
+x-should-retry: false
+{"error":{"message":"unknown model \"nope\"; loaded: [\"probe\"]","type":"invalid_request_error","param":"model","code":"model_not_found"}}
+
+--- [6] G6: prompt over the context cap -> 400 / code context_length_exceeded ---
+HTTP 400 | x-should-retry: false | retry-after: None
+{"error":{"message":"prompt (410 tok) >= context cap (256)","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}
+
+--- [6b] G6: bad x-lane -> 400 / code invalid_lane (was a BARE-STRING error body) ---
+HTTP/1.1 400 Bad Request
+x-should-retry: false
+{"error":{"message":"unknown x-lane \"turbo\"; expected one of interactive, judge, harvest","type":"invalid_request_error","param":"x-lane","code":"invalid_lane"}}
+
+--- [7] G6: dark-lane shed -> 429 rate_limit_error + Retry-After (x-lane: harvest) ---
+(non-streaming: peek_shed resolves the verdict BEFORE headers, so this is a real
+ pre-header 429 and not a mid-stream death — the OpenRouter-uptime point.)
+HTTP/1.1 429 Too Many Requests
+retry-after: 2
+retry-after-ms: 2000
+{"error":{"message":"lane harvest is at capacity, retry","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}
+    same shed on the STREAMING surface (must also be a pre-header status, not an SSE chunk):
+    stream request -> HTTP 429
+    lane counters (/yield/metrics):
+{"lanes":{"interactive":{"admitted":1,"shed":0,"completed":1,"tokens_out":0},"judge":{"admitted":0,"shed":0,"completed":0,"tokens_out":0},"harvest":{"admitted":0,"shed":0,"completed":0,"tokens_out":0}},"interactive_step_ms":{"p50":0.0,"p99":0.0},"batch_size_last":0}
+
+--- [8] streaming still works end to end (mid-stream surface unchanged on success) ---
+
+data: [DONE]
+
+
+--- [9] drain: SIGTERM keeps in-flight work alive and takes the box out of rotation ---
+MEASURED, correcting the obvious guess: axum stops accepting only when its shutdown FUTURE
+resolves, and memra's future IS the drain loop — so throughout the drain window the
+listener keeps accepting, on pooled keep-alive connections AND on fresh ones. That is what
+makes the whole split observable on the wire: /health + /livez answer 200
+status="draining" (a drain is a healthy deliberate shutdown; 503 here would invite a
+supervisor SIGKILL mid-stream), /readyz answers 503 (out of rotation), and a NEW completion
+is refused 503 + Retry-After while the in-flight one runs to completion.
+    pre-SIGTERM  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"busy","beat_age_ms":29,"tick_max_ms":254,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    pooled       /health  200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":121,"tick_max_ms":254,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    pooled       /livez   200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":121,"tick_max_ms":254,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    pooled       /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"busy","beat_age_ms":121,"tick_max_ms":254,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"draining (shutdown in progress)"}
+    fresh conn   /health  200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":121,"tick_max_ms":254,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    fresh conn   /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"busy","beat_age_ms":121,"tick_max_ms":254,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"draining (shutdown in progress)"}
+    new completion during the drain -> 503 | retry-after: 30
+      {"error":{"message":"server is draining (shutdown in progress); retry","type":"server_error","param":null,"code":"draining"}}
+    the in-flight generation survived the drain: yes — 900 tokens, length
+server exit code: 0   (0 = clean drain; 70 = worker unrecoverable; 1 = bad config)
+
+--- [10] G24 watcher + sd_notify lines from the server log ---
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[server] SIGTERM: draining (1 in flight, deadline 30s)
+[server] drain complete in 1.9s; exiting
+
+PROBE DONE

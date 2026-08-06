@@ -1,0 +1,121 @@
+# memra-server — example systemd unit (lane/serve-hardening, 2026-08-06)
+#
+# COPY, DO NOT SYMLINK. Every path, user, and model spec below is site-specific; the value of
+# this file is the SUPERVISION CONTRACT baked into the directive choices, each of which is
+# commented with the failure it exists to prevent. Install:
+#
+#   sudo install -m 0644 deploy/systemd/memra-server.service /etc/systemd/system/
+#   sudo systemctl edit memra-server            # override paths/env in a drop-in
+#   sudo systemctl daemon-reload && sudo systemctl enable --now memra-server
+#   systemctl status memra-server; journalctl -u memra-server -f
+#
+# WHY A UNIT AT ALL, given memra-server already respawns its worker once in-process: because
+# CUDA errors are STICKY PER PROCESS. After an OOM or an Xid, the context is poisoned and no
+# amount of in-process retry recovers it — a fresh process is the only reliable repair, and
+# something outside the process has to start it. The server's job is to fail LOUDLY and fast
+# (nonzero exit, 503 on /health and /readyz); this unit's job is to notice and restart.
+#
+# WHAT THE SERVER PROMISES THIS UNIT (crates/memra-server/src/health.rs):
+#   * READY=1 only after every model is resident AND the socket is bound — so `systemctl start`
+#     returning means "can serve", not "process exists".
+#   * WATCHDOG=1 pings while and only while inference is live. A wedged GPU stops the pings.
+#   * STOPPING=1 + EXTEND_TIMEOUT_USEC on SIGTERM, so a legitimate drain is not SIGKILLed.
+#   * exit 70 when the GPU worker is unrecoverable (distinct from exit 1 = bad config).
+
+[Unit]
+Description=memra inference server
+Documentation=https://github.com/avifenesh/memra
+After=network-online.target
+Wants=network-online.target
+
+# START-RATE LIMITER, SIZED FOR A ~120 s WEIGHT LOAD.
+# THE TRAP: systemd's defaults are StartLimitIntervalSec=10s / StartLimitBurst=5, which are
+# sized for daemons that start in milliseconds. A model server takes ~120 s to become ready,
+# so with the defaults a crash loop can never trip the limiter at all (5 starts cannot fit in
+# 10 s when each start takes 120 s) — you get an INFINITE restart loop that looks like a
+# service "flapping" forever instead of a unit that gives up and stays failed for a human.
+# Sized here so the window spans several full load attempts: 4 starts inside 1 h, i.e. roughly
+# "if it cannot stay up across four ~2-minute loads, stop and page someone".
+StartLimitIntervalSec=3600
+StartLimitBurst=4
+
+[Service]
+Type=notify
+NotifyAccess=main
+# The server sends READY=1 after the models load; give the load real headroom. Startup is NOT
+# a hang: TimeoutStartSec must exceed the slowest cold load (~120 s measured for a 27B NVFP4
+# from page cache; a cold NVMe read of a large bank is slower).
+TimeoutStartSec=600
+
+# WATCHDOG: the wedged-GPU answer at the supervision layer. The heartbeat feeding /health also
+# feeds systemd, so a hung card (Xid 119/120 — which emits nothing and hangs nvidia-smi itself)
+# stops WATCHDOG=1 and systemd restarts the unit whole. MUST be larger than the longest
+# legitimate stall the server can have, which is the same bound /health uses: a full
+# max-context prefill across every session (MEMRA_HEALTH_STALL_S, default 120 s). 180 s = that
+# bound plus margin; raise both together if you raise MEMRA_MAX_SESSIONS or the context.
+WatchdogSec=180
+
+ExecStart=/usr/local/bin/memra-server
+# Graceful drain: SIGTERM flips the drain flag, new requests get 503 + Retry-After, in-flight
+# streams finish. KillSignal is already SIGTERM by default — stated for the reader.
+KillSignal=SIGTERM
+# Must exceed MEMRA_DRAIN_S (default 30 s). The server also sends EXTEND_TIMEOUT_USEC, but a
+# static floor here protects against a version that does not.
+TimeoutStopSec=60
+
+Restart=on-failure
+# RestartSec + the backoff ramp: 10 s, then widening to a 160 s ceiling. A GPU that just threw
+# an Xid needs the driver to settle; hammering it every 100 ms makes recovery LESS likely and
+# fills the journal. RestartSteps/RestartMaxDelaySec require systemd >= 254; on older systemd
+# delete those two lines and keep RestartSec (a flat 10 s backoff).
+RestartSec=10
+RestartSteps=4
+RestartMaxDelaySec=160
+
+# OOM: KILL THE WHOLE UNIT, DO NOT LET IT LIMP.
+# Default OOMPolicy=stop only reaps the offending process; with a multi-threaded server the
+# kernel OOM killer can take out ONE thread — classically a worker — and leave a process that
+# still accepts connections and can never serve them. That is precisely the invisible-death
+# this lane exists to remove, so: any OOM kill inside the cgroup kills the unit, which then
+# restarts under Restart=on-failure.
+# NB: this is HOST memory. CUDA OOM is a different failure, surfaced as HTTP 503 + Retry-After
+# and never as a process kill.
+OOMPolicy=kill
+
+User=memra
+Group=memra
+# Model weights + the GPU. SupplementaryGroups=video is only needed if /dev/nvidia* is
+# group-restricted on your distro.
+# SupplementaryGroups=video
+
+Environment=MEMRA_ADDR=0.0.0.0:8000
+Environment=MEMRA_COMPAT=openai
+# Environment=MEMRA_MODELS=main=/data/models/model.gguf+/data/models/draft.gguf
+# Environment=MEMRA_API_KEYS=/etc/memra/keys.json
+# Health/watch tuning (docs/FLAGS.md §serve-hardening):
+# Environment=MEMRA_HEALTH_STALL_S=120     # keep < WatchdogSec above
+# Environment=MEMRA_GPU_WATCH_S=60         # Xid/nvidia-smi probe interval
+# Environment=MEMRA_GPU_PROBE_TIMEOUT_S=10 # a probe that outlives this = wedged GPU
+# Environment=MEMRA_DRAIN_S=30             # keep < TimeoutStopSec above
+
+# XID VISIBILITY (G24). The in-process watcher reads /dev/kmsg when it can and otherwise falls
+# back to `journalctl -k -f`. On a hardened host BOTH can be blocked: kernel.dmesg_restrict=1
+# makes /dev/kmsg root-only, so an unprivileged unit sees Xids only via journald. Either grant
+# the read explicitly:
+#   AmbientCapabilities=CAP_SYSLOG
+#   CapabilityBoundingSet=CAP_SYSLOG
+# or leave it and rely on the probe-hang + ECC/remap detectors, which need no kernel log. The
+# watcher says in the journal which source it got, so this is never a silent downgrade.
+
+# Hardening. Deliberately NOT ProtectSystem=strict: model paths, /dev/nvidia*, and the CUDA
+# cache all need real filesystem access, and a wrong strict sandbox fails at load time in ways
+# that look like a model bug. Start here, tighten with receipts.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+# A model server's whole job is large mmaps + pinned host buffers; do NOT set MemoryMax without
+# measuring, or the OOMPolicy above will fire on healthy load.
+# MemoryHigh=...
+
+[Install]
+WantedBy=multi-user.target

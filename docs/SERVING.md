@@ -269,10 +269,91 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
   whole life of a stream. Sheds carry `429 + Retry-After`; `MEMRA_RL_RESET_S` is the
   no-signal fallback for `Reset` (with traffic, Reset = mean tokens/request x p50 step
   latency).
-- **Graceful drain:** SIGTERM flips `/health` to `"draining"`, new completion requests
-  get `503 + Retry-After`, in-flight requests — streams included — run to `[DONE]`
-  within the `MEMRA_DRAIN_S` deadline (default 30s), then the process exits 0. Live
-  receipt: a 1024-token stream completed mid-drain.
+- **Graceful drain:** SIGTERM flips `/health` to `status:"draining"` (still **200** — see
+  Health below) and `/readyz` to **503**, new completion requests get `503 + Retry-After`,
+  in-flight requests — streams included — run to `[DONE]` within the `MEMRA_DRAIN_S`
+  deadline (default 30s), then the process exits 0. Live receipt: a 1024-token stream
+  completed mid-drain.
+
+## Health, readiness, and fault handling (serve-hardening lane, 2026-08-06)
+
+Receipts: `research/serve-hardening-20260806/`. Example unit:
+`deploy/systemd/memra-server.service`.
+
+**`/health` == `/livez` — inference liveness, not process liveness.** The GPU worker is
+ONE `std::thread` owning the CUDA context. `/health` used to answer `{"status":"ok"}` off
+the axum task, so a worker panic or a wedged card left a permanently green health check in
+front of a box answering nothing. It now derives from a heartbeat the scheduler loop stamps
+every iteration, plus a phase:
+
+| worker phase | `/health` | why |
+|---|---|---|
+| `loading` | 503 | weights are not resident; the process answers nothing yet. On a FIRST load the port is not bound yet (bind follows the load), so a probe sees connection-refused — the same verdict for k8s and `serve-fleet.sh`. This state is reached over HTTP during a **respawn**, which is the case that matters |
+| `idle` | 200 at any beat age | the worker blocks in `rx.recv()` — an idle server legitimately stamps nothing for hours, and a naive age check would call every quiet server dead |
+| `busy` | 200 while the beat advances, 503 past `MEMRA_HEALTH_STALL_S` (120s) | work in flight must make progress; the bound covers a max-context prefill tick (see FLAGS for the derivation) |
+| `dead` / fault latched | 503 immediately | worker panic or fatal Xid — a latch, not a timeout, so the flip is instant |
+
+The response body publishes `worker.{phase, beat_age_ms, tick_max_ms,
+stall_threshold_ms, generation, xid_warnings}`, so a red is self-explaining and
+`tick_max_ms` is the live receipt for revisiting the threshold.
+
+**`/readyz` — should traffic be routed here?** Ready = model loaded AND worker alive AND
+not draining. Unready is NOT a restart request: draining and loading are healthy states
+that simply must not be routed to, which is exactly why liveness and readiness are
+separate endpoints (k8s deprecated `/healthz` at v1.16 for this split). Queue pressure
+deliberately does not flip readiness — the interactive lane queues FIFO and never sheds,
+so a deep queue is work in progress; capacity backpressure belongs on the request path.
+`tools/serve-proxy.py` probes `/readyz` for rotation; `tools/serve-fleet.sh` probes
+`/health` for its restart decision. vLLM has no readiness endpoint (503 only on
+`EngineDeadError`) and TGI a single `/health`.
+
+**Worker panic → supervised.** The worker thread runs inside `catch_unwind`: a panic marks
+health dead with the quoted panic payload, then ONE respawn is attempted with backoff
+(`MEMRA_WORKER_RESPAWN`), and failing that the process exits **70** so the supervisor
+restarts it whole. One attempt, deliberately — CUDA errors are sticky per process, so a
+respawn loop against a poisoned context produces a box that looks alive and serves nothing.
+Proved on a real CUDA worker, not only in tests (`MEMRA_PANIC_AFTER` fault injection,
+`research/serve-hardening-20260806/logs/worker-death.txt`): panic → 503 on all three routes
+with the quoted payload in `detail` within ~200 ms → weights reloaded → `generation` 0 → 1 →
+the respawned worker served a real completion; with `MEMRA_WORKER_RESPAWN=0` the process
+exited 70 and the port went refused. A request that arrived during the dead window was
+**served by the respawn** — the supervisor owns the command channel across restarts, so
+queued work survives a worker death.
+
+**GPU faults (`MEMRA_GPU_WATCH`).** A watcher thread tails Xid lines (`/dev/kmsg`, falling
+back to `journalctl -k -f`) and latches unhealthy on the fatal classes
+(48/64/79/94/95/119/120), counting the rest as warnings. It also probes `nvidia-smi` for
+uncorrectable ECC and row-remap failures. The design constraint: Blackwell's worst wedge
+(Xid 119/120, GSP RPC timeout) emits nothing to the process **and hangs the query tools**,
+so the probe runs as a killed-on-deadline child and its own timeout
+(`MEMRA_GPU_PROBE_TIMEOUT_S`) is the alarm. Health reads only atomics, so a hung
+`nvidia-smi` can never block a health answer. A GPU fault survives a worker respawn: a new
+thread on a wedged card is not recovery.
+
+**Error taxonomy.** Every engine failure used to be `400 invalid_request_error` — which no
+OpenAI SDK retries, and which a router cannot distinguish from a malformed request. The
+class now comes from the producer:
+
+| condition | status | `type` | `code` | retry headers |
+|---|---|---|---|---|
+| malformed field, bad template, bad `response_format` | 400 | `invalid_request_error` | — | `x-should-retry: false` |
+| prompt ≥ context cap | 400 | `invalid_request_error` | `context_length_exceeded` | `x-should-retry: false` |
+| unknown model id | 400 | `invalid_request_error` | `model_not_found` | `x-should-retry: false` |
+| dark-lane QoS shed (`x-lane` judge/harvest over budget) | 429 | `rate_limit_error` | `rate_limit_exceeded` | `Retry-After: 2` + `retry-after-ms: 2000` |
+| out of VRAM / step-OOM past its park budget / worker restarting | 503 | `server_error` | `overloaded` | `Retry-After: 5` + `retry-after-ms: 5000` |
+| step, prefill, graph or constraint fault | 500 | `server_error` | `engine_error` | none (not time-bounded) |
+| new request arriving during a drain | 503 | `server_error` | `draining` | `Retry-After: MEMRA_DRAIN_S` (≤60) + matching `retry-after-ms` |
+| unknown `x-lane` value | 400 | `invalid_request_error` | `invalid_lane` | `x-should-retry: false` |
+| batch-class api key requesting `x-lane: interactive` | 403 | `authentication_error` | — | `x-should-retry: false` |
+| bad / disabled api key | 401 / 403 | `authentication_error` | — | `x-should-retry: false` |
+
+Unknown model is a deliberate **400, not 404**: OpenRouter's uptime math counts 404s
+against the provider and excludes 400s, and the `code` is what clients branch on either
+way. `Retry-After` is always integer seconds ≤ 60 (RFC 9110 delay-seconds; litellm honors
+only `0 < v ≤ 60`, openai-python abandons retry past 120s) with a matching
+`retry-after-ms`, which openai-python reads first. A **mid-stream** failure — after the 200
+is committed and no status code is left to change — emits the same error object as a
+`data:` chunk and closes the connection.
 
 ## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
 

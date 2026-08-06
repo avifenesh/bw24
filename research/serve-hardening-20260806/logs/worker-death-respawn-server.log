@@ -1,0 +1,35 @@
+[server] starting; models config = [("probe", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "probe" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "probe": 33 layers, eos=248046
+[worker] probe: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] probe: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["probe"]
+[server] listening on http://127.0.0.1:8098
+[meter] admit id=chatcmpl-8785cc4ad551f65fe39771f09c8a7040 tenant=default lane=interactive model="probe"
+[worker] observed session VRAM cost for "probe": 101MB (admission gate = 2x)
+[spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
+
+thread 'memra-gpu-worker' (4156059) panicked at crates/memra-server/src/worker.rs:2224:17:
+MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[worker] PANIC in the GPU worker thread: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)
+[worker] respawn attempt 1/1 in 2s (reloading weights)
+[meter] admit id=chatcmpl-9806423af14b087a0217fdff3555228a tenant=default lane=interactive model="probe"
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "probe" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "probe": 33 layers, eos=248046
+[worker] probe: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] probe: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[spec-acc] ctx=11 burst=3/3 cum=3/3=1.000
+[meter] admit id=chatcmpl-3ab4b6914d4a8f3c3e356d0c7030b772 tenant=default lane=interactive model="probe"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 11; 1 parked, 13 prompt tokens; model probe)
+[worker] observed session VRAM cost for "probe": 67MB (admission gate = 2x)
+[spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

@@ -77,8 +77,93 @@ pub enum Event {
     /// None on non-spec sessions, so the usage surface is byte-identical when spec is off.
     Done { stop_reason: String, n_tokens: usize, n_prompt: usize, n_cached: usize,
            elapsed_s: f64, spec: Option<SpecUsage> },
-    /// The request could not start (bad model name, ctx full at admit, etc).
-    Error(String),
+    /// The request failed. CLASSIFIED at the producer (`EngineError`) — the HTTP layer maps
+    /// the class to a status code instead of calling everything a 400 (G6).
+    Error(EngineError),
+}
+
+/// THE ERROR TAXONOMY (lane/serve-hardening, 2026-08-06; audit gap G6/G16).
+///
+/// WHAT WAS BROKEN: `Event::Error(String)` carried no type information, so `main.rs`'s only
+/// possible mapping was `bad_request(&msg)` — CUDA faults, VRAM exhaustion, tokenizer
+/// failures and genuine client mistakes all left as `400 invalid_request_error`. Two
+/// consequences, both bad: 400 is non-retryable by SDK convention (openai-python retries
+/// 408/409/429/>=500 only), so a transient GPU blip became a hard user-visible failure that
+/// no client would retry; and a real engine fault was invisible in any client's or
+/// aggregator's 5xx error-rate view.
+///
+/// WHERE THE CLASS COMES FROM: the PRODUCER, not a regex over the message. The site that
+/// raises the failure is the only place that knows whether the caller or the box is at
+/// fault, and a string-matching classifier in the HTTP layer would silently reclassify every
+/// time someone reworded an error. The one text-driven rule is deliberate and quoted:
+/// `EngineError::engine()` promotes a message containing the driver's own OOM text to
+/// `Overloaded`, because a CUDA OOM IS capacity — see `is_cuda_oom`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrClass {
+    /// The caller can fix this. -> 400 invalid_request_error.
+    InvalidRequest,
+    /// Prompt does not fit the context. -> 400 + `code: context_length_exceeded`, the
+    /// machine-readable form every client uses to decide "summarize and retry" (G16).
+    ContextLength,
+    /// Unknown model id. -> 400 + `code: model_not_found`.
+    ///
+    /// WHY 400 AND NOT 404: OpenRouter's uptime math counts 404 against the provider while
+    /// 400 is excluded (§2.2), and "you asked for a model this endpoint does not serve" is
+    /// squarely a client error — taking an uptime hit for it would be self-punishment for
+    /// someone else's typo. The `code` is what clients branch on either way.
+    ModelNotFound,
+    /// Admission-time QoS shed: this lane is over its budget RIGHT NOW and a retry in a
+    /// couple of seconds will work. -> 429 + Retry-After. Uptime-neutral at OpenRouter, and
+    /// their own guidance prefers an early 429 to queueing.
+    RateLimit,
+    /// The BOX is out of capacity (VRAM exhausted, step OOM past its park budget). -> 503,
+    /// not 429: "a 429 that a client cannot fix by waiting should not be a 429", and OpenAI
+    /// itself serves overload as 503. This one honestly counts against uptime, because it is
+    /// a request we failed to serve.
+    Overloaded,
+    /// An engine/GPU fault: a step, prefill, graph, or constraint operation failed. -> 500.
+    Engine,
+}
+
+/// A classified failure. `message` stays the exact producer text (quoted, never rewritten —
+/// the evidence-discipline law applies to what the client sees too).
+#[derive(Debug, Clone)]
+pub struct EngineError {
+    pub class: ErrClass,
+    pub message: String,
+    /// OpenAI `error.param` when the failure names a request field.
+    pub param: Option<&'static str>,
+}
+
+impl EngineError {
+    /// Every invalid-request the WORKER can produce names a request field (it has already been
+    /// through request parsing), so there is deliberately no param-less constructor — the
+    /// flags doctrine applies to APIs too: no dead arm.
+    pub fn invalid_param(message: impl Into<String>, param: &'static str) -> Self {
+        Self { class: ErrClass::InvalidRequest, message: message.into(), param: Some(param) }
+    }
+    pub fn context_length(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::ContextLength, message: message.into(), param: Some("messages") }
+    }
+    pub fn model_not_found(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::ModelNotFound, message: message.into(), param: Some("model") }
+    }
+    pub fn rate_limit(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::RateLimit, message: message.into(), param: None }
+    }
+    pub fn overloaded(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::Overloaded, message: message.into(), param: None }
+    }
+    /// An engine fault. A message carrying the DRIVER'S OWN out-of-memory text is promoted to
+    /// `Overloaded` (503 + Retry-After) rather than reported as a 500: the box ran out of
+    /// VRAM, which is a capacity condition a retry can clear, not a bug in the engine. The
+    /// test is `is_cuda_oom` — the same quoted-text predicate the step-OOM park path uses, so
+    /// the two paths can never disagree about what an OOM is.
+    pub fn engine(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let class = if is_cuda_oom(&message) { ErrClass::Overloaded } else { ErrClass::Engine };
+        Self { class, message, param: None }
+    }
 }
 
 /// Per-request spec-decode acceptance summary (lane/accept-telemetry, 2026-08-05): THIS
@@ -1069,11 +1154,16 @@ impl Session {
 /// The worker entry point. Runs on its OWN std::thread. Builds the Engine + loads every model on
 /// THIS thread (CUDA-context affinity), then runs the scheduler loop until the command channel
 /// closes. `models` = (name, gguf_path) pairs. Sends `ready_tx` once load completes (or the error).
+///
+/// `rx` is BORROWED, not owned: the supervisor in `spawn()` keeps the Receiver alive across a
+/// respawn, because dropping it would close the command channel and make every subsequent HTTP
+/// handler's `send` fail permanently — the exact invisible-death this lane exists to remove.
 pub fn run(
     models: Vec<(String, String, Option<String>)>,
-    rx: Receiver<Cmd>,
+    rx: &Receiver<Cmd>,
     ready_tx: Sender<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>,
     metrics: SharedMetrics,
+    health: crate::health::SharedHealth,
 ) {
     // ---- one-time init on the worker thread: Engine + all models resident ----
     let engine = match Engine::new(0) {
@@ -1195,6 +1285,10 @@ pub fn run(
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
+    // INFERENCE LIVENESS (G5): weights are resident and the scheduler loop is about to run —
+    // /health and /readyz go green HERE, not when the HTTP listener binds. Also clears the
+    // fault latch, which is what makes a respawn's success observable.
+    health.mark_ready();
 
     // Per-model decode chunk width (inc3 3a): computed once — model tensors and mirrors
     // are fixed after load.
@@ -1256,11 +1350,24 @@ pub fn run(
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
         //    otherwise poll non-blocking so the decode loop keeps interleaving.
         if active.is_empty() && queue.is_empty() {
+            // IDLE PHASE (G5): about to block indefinitely in recv() with zero work. An idle
+            // worker legitimately stamps no heartbeat for hours, so the phase — not the beat
+            // age — is what /health reads here. Stamped on BOTH sides of the block so the
+            // beat is already fresh the instant work arrives (see health.rs).
+            health.set_phase(crate::health::PHASE_IDLE);
             match rx.recv() {
-                Ok(cmd) => handle_cmd(cmd, &loaded, &order, &mut queue),
+                Ok(cmd) => {
+                    health.set_phase(crate::health::PHASE_BUSY);
+                    handle_cmd(cmd, &loaded, &order, &mut queue);
+                }
                 Err(_) => break, // all senders dropped -> shutdown
             }
         }
+        // BUSY PHASE: work is in flight, so the beat MUST advance every iteration. The
+        // stamp is a bare atomic store (no mutex, no syscall) — unlike the metrics publish
+        // below it is NOT throttled, because a heartbeat sampled every 32nd tick would give
+        // health a 32-tick blind spot at exactly the moment a tick stops returning.
+        health.beat_busy();
         loop {
             match rx.try_recv() {
                 Ok(cmd) => handle_cmd(cmd, &loaded, &order, &mut queue),
@@ -1311,8 +1418,8 @@ pub fn run(
                     requeue.push_back(req);   // waits (FIFO), never shed
                 } else {
                     lane_shed[lane.idx()] += 1;
-                    let _ = req.tx.send(Event::Error(format!(
-                        "shed:{}:lane at capacity, retry", lane.as_str())));
+                    let _ = req.tx.send(Event::Error(EngineError::rate_limit(format!(
+                        "lane {} is at capacity, retry", lane.as_str()))));
                 }
                 continue;
             }
@@ -1325,8 +1432,8 @@ pub fn run(
                 && last_interactive_decode.elapsed().as_secs_f32() * 1000.0 > policy.slo_p99_ms;
             if !policy.admit(lane, &mut step_stats, starved) {
                 lane_shed[lane.idx()] += 1;
-                let _ = req.tx.send(Event::Error(format!(
-                    "shed:{}:interactive p99 over budget, retry", lane.as_str())));
+                let _ = req.tx.send(Event::Error(EngineError::rate_limit(format!(
+                    "lane {} shed: interactive p99 over budget, retry", lane.as_str()))));
                 continue;
             }
             // VRAM-AWARE ADMISSION (lane/fast-router, 2026-08-02). Evidence: c=16 on the
@@ -1496,7 +1603,7 @@ pub fn run(
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
                     Err(err) => {
-                        let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                        let _ = active[i].tx.send(Event::Error(EngineError::engine(format!("step error: {err}"))));
                         finished.push(i);
                     }
                 }
@@ -1525,7 +1632,7 @@ pub fn run(
                             match lm.model.decode_step(&engine, pend, s.cache.as_mut().unwrap()) {
                                 Ok(l) => { s.last_logits = l; s.fed.push(pend); }
                                 Err(err) => {
-                                    let _ = s.tx.send(Event::Error(format!("degrade: {err}")));
+                                    let _ = s.tx.send(Event::Error(EngineError::engine(format!("degrade: {err}"))));
                                     finished.push(i);
                                 }
                             }
@@ -1577,7 +1684,7 @@ pub fn run(
                                 (memra_engine::forward::argmax(&row) as u32, Some(m))
                             }
                             Err(err) => {
-                                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                                let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint mask: {err}"))));
                                 finished.push(0);
                                 (0, None)
                             }
@@ -1596,7 +1703,7 @@ pub fn run(
                         Err(err) => {
                             // capture failed with the cache consumed — degrade the session
                             // via the graph-less error path (rare: capture-time errors only).
-                            let _ = s.tx.send(Event::Error(format!("graph promote failed: {err}")));
+                            let _ = s.tx.send(Event::Error(EngineError::engine(format!("graph promote failed: {err}"))));
                             finished.push(0);
                         }
                     }
@@ -1626,7 +1733,7 @@ pub fn run(
                             }
                         }
                         if let Some(err) = mask_err {
-                            let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                            let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint mask: {err}"))));
                             finished.push(0);
                         } else {
                         let lm = &loaded[&s.model];
@@ -1650,7 +1757,7 @@ pub fn run(
                                 eprintln!("[worker] graph session step FAILED \
                                            (model {}): {err}", s.model);
                                 let _ = s.tx.send(Event::Error(
-                                    format!("graph step failed: {err}")));
+                                    EngineError::engine(format!("graph step failed: {err}"))));
                                 finished.push(0);
                             }
                         }
@@ -1726,7 +1833,7 @@ pub fn run(
                             None => {
                                 // cannot rebuild the request (no prompt to replay) — the
                                 // pre-fix honest error, quoted.
-                                let _ = s.tx.send(Event::Error(format!("step error: {err}")));
+                                let _ = s.tx.send(Event::Error(EngineError::engine(format!("step error: {err}"))));
                                 finished.push(i);
                             }
                         }
@@ -1738,7 +1845,7 @@ pub fn run(
                                       active[i].model, active[i].oom_retries,
                                       step_oom_retries(), active[i].generated.len());
                         }
-                        let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                        let _ = active[i].tx.send(Event::Error(EngineError::engine(format!("step error: {err}"))));
                         finished.push(i);
                     }
                 }
@@ -1858,7 +1965,7 @@ pub fn run(
                 match prefill_tick(&engine, &loaded, &mut px, s, budgets[0]) {
                     Ok(_) => {}
                     Err(err) => {
-                        let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                        let _ = s.tx.send(Event::Error(EngineError::engine(format!("prefill error: {err}"))));
                         finished.push(i);
                     }
                 }
@@ -1886,7 +1993,7 @@ pub fn run(
                         // sampler, so this row rides the same lean tick as everyone else.
                         if let Err(err) = stage_grammar_mask(&engine, &mut active[i]) {
                             let _ = active[i].tx.send(Event::Error(
-                                format!("constraint mask: {err}")));
+                                EngineError::engine(format!("constraint mask: {err}"))));
                             finished.push(i);
                             continue;
                         }
@@ -1976,7 +2083,7 @@ pub fn run(
                     }
                     Err(err) => {
                         for &i in &idxs {
-                            let _ = active[i].tx.send(Event::Error(format!("batch step: {err}")));
+                            let _ = active[i].tx.send(Event::Error(EngineError::engine(format!("batch step: {err}"))));
                             finished.push(i);
                         }
                     }
@@ -2089,7 +2196,7 @@ pub fn run(
                 let chunk = budgets[li].min(adaptive_cap);
                 if chunk < memra_engine::hybrid_forward::PRIME_MIN_T { break; }
                 if let Err(err) = prefill_tick(&engine, &loaded, &mut px, s, chunk) {
-                    let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                    let _ = s.tx.send(Event::Error(EngineError::engine(format!("prefill error: {err}"))));
                     finished.push(i);
                 }
                 break; // one dark chunk per tick — the headroom budget is tick-global
@@ -2109,6 +2216,15 @@ pub fn run(
             let s = active.remove(i);
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
+            // G5 fault injection (MEMRA_PANIC_AFTER, unset in every real deployment): panic
+            // the worker here, with a live CUDA context and the supervisor above us, so the
+            // catch_unwind -> mark_dead -> respawn -> exit-70 ladder is proved on the wire and
+            // not only against a fake worker in unit tests.
+            if panic_injection_due(n_completed) {
+                panic!("MEMRA_PANIC_AFTER={} fault injection: \
+                        deliberate worker panic after {n_completed} completed request(s)",
+                       panic_after().unwrap_or(0));
+            }
             lane_completed[s.lane.idx()] += 1;
             if s.spec_rounds > 0 { spec_telem_dirty = true; } // force-publish on spec retire
             if let Some(mut sess) = s.spec {
@@ -2245,8 +2361,8 @@ fn handle_cmd(
     match cmd {
         Cmd::Generate(req) => {
             if !loaded.contains_key(&req.model) {
-                let _ = req.tx.send(Event::Error(format!(
-                    "unknown model {:?}; loaded: {:?}", req.model, order)));
+                let _ = req.tx.send(Event::Error(EngineError::model_not_found(format!(
+                    "unknown model {:?}; loaded: {:?}", req.model, order))));
                 return;
             }
             queue.push_back(req);
@@ -2305,7 +2421,7 @@ fn admit(
     spec_sizing: &mut SpecSizing,
     px: &mut PrefixCache,
     req: Request,
-) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
+) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, EngineError)> {
     let lm = &loaded[&req.model];
     // PC-ISO: every reuse-pool probe below scans ONLY this (model, namespace) pool.
     let pool_key: PoolKey = (req.model.clone(), req.cache_ns.clone());
@@ -2344,7 +2460,8 @@ fn admit(
             match lm.tok.apply_chat_template_tools(&req.chat_turns, true,
                                                    &req.tools_json, req.think) {
                 Ok(rendered) => rendered,
-                Err(err) => return Err((req.tx, format!("chat template: {err}"))),
+                Err(err) => return Err((req.tx,
+                    EngineError::invalid_param(format!("chat template: {err}"), "messages"))),
             }
         };
         lm.tok.encode(&rendered, true)
@@ -2355,7 +2472,8 @@ fn admit(
         lm.tok.encode(&req.prompt_text, true)
     };
     if prompt.is_empty() {
-        return Err((req.tx, "empty prompt after tokenization".into()));
+        return Err((req.tx, EngineError::invalid_param(
+            "empty prompt after tokenization", "prompt")));
     }
 
     // Context guard mirrors generate_with: prompt + generated must fit ctx_cap.
@@ -2384,8 +2502,10 @@ fn admit(
         (None, max_new) => (prompt.len() + max_new + 8).max(ctx_floor),
     };
     if prompt.len() >= ctx_cap {
-        return Err((req.tx, format!(
-            "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap)));
+        // G16: the ONE prompt failure clients branch on programmatically — 400 with
+        // `code: context_length_exceeded`, not an anonymous 400 they must string-match.
+        return Err((req.tx, EngineError::context_length(format!(
+            "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap))));
     }
     let room = ctx_cap - prompt.len();
     let budget = req.params.max_new.min(room);
@@ -2443,11 +2563,13 @@ fn admit(
             let factory = lm.constraints.get_or_init(||
                 crate::constrained::ConstraintFactory::new(&lm.tok));
             match factory {
-                Err(err) => return Err((req.tx, format!("constrained decoding: {err}"))),
+                Err(err) => return Err((req.tx, EngineError::invalid_param(
+                    format!("constrained decoding: {err}"), "response_format"))),
                 Ok(f) => {
                     let sc = f.matcher(spec);
                     if let Some(err) = sc.error() {
-                        return Err((req.tx, format!("response_format: {err}")));
+                        return Err((req.tx, EngineError::invalid_param(
+                            format!("response_format: {err}"), "response_format")));
                     }
                     Some(sc)
                 }
@@ -2843,10 +2965,12 @@ fn admit(
                     eprintln!("[prefix-cache] evicted {evicted} entries after cache alloc failure; retrying");
                     match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
                         Ok(c) => Some(c),
-                        Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+                        Err(err) => return Err((req.tx,
+                            EngineError::engine(format!("cache alloc failed: {err}")))),
                     }
                 } else {
-                    return Err((req.tx, format!("cache alloc failed: {err}")));
+                    return Err((req.tx,
+                        EngineError::engine(format!("cache alloc failed: {err}"))));
                 }
             }
         },
@@ -3061,7 +3185,7 @@ fn advance_sample_emit(
         (None, Some(c)) => {
             let mut row = s.last_logits.clone();
             if let Err(err) = c.mask_logits(&mut row) {
-                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint mask: {err}"))));
                 return (false, None);
             }
             s.sampler.sample(&row)
@@ -3079,7 +3203,7 @@ fn advance_sample_emit(
     // schema-violating text as if it conformed.
     if let Some(c) = s.constraint.as_mut() {
         if let Err(err) = c.consume(next) {
-            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint advance: {err}"))));
             return (false, None);
         }
     }
@@ -3127,7 +3251,7 @@ fn advance_token_emit(
     // a real bug: loud stop, never emit schema-violating text as if it conformed.
     if let Some(c) = s.constraint.as_mut() {
         if let Err(err) = c.consume(tok) {
-            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint advance: {err}"))));
             return (false, ());
         }
     }
@@ -3625,19 +3749,180 @@ fn finish(s: &Session, reason: StopReason) {
     });
 }
 
+/// FAULT INJECTION (`MEMRA_PANIC_AFTER=<n>`, off unless set): panic the GPU worker thread
+/// after `n` served requests. An explicitly-blocked experimental door in the flags-doctrine
+/// sense, and the ONLY way the G5 supervision path can be exercised against a REAL CUDA
+/// worker — the alternative is trusting that a catch_unwind + respawn + exit-70 ladder built
+/// around a live CUDA context behaves the way its unit tests (which use a fake worker) say it
+/// does. That trust was already misplaced once on this lane: the first supervisor deadlocked
+/// startup, and only a live gate found it. Costs one relaxed atomic load per completed request.
+///
+/// ONE-SHOT PER PROCESS. `n_completed` is per-`run()`, so a per-run trigger re-fires on the
+/// respawned worker the moment it serves its first request — measured: the respawn reloaded
+/// the weights, went green with `generation:1`, then immediately panicked again and exited 70,
+/// which makes "did the recovery actually serve traffic?" unanswerable. Injecting exactly one
+/// panic per process is what proves the recovery half.
+fn panic_after() -> Option<u64> {
+    static P: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("MEMRA_PANIC_AFTER").ok().and_then(|v| v.parse().ok()))
+}
+
+/// Set once the injected panic has fired, so it fires at most once per process (see above).
+static PANIC_INJECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True exactly once, on the `n`th completed request of the process's first worker run.
+fn panic_injection_due(n_completed: u64) -> bool {
+    match panic_after() {
+        Some(n) if n_completed >= n =>
+            !PANIC_INJECTED.swap(true, std::sync::atomic::Ordering::SeqCst),
+        _ => false,
+    }
+}
+
+/// Number of respawn attempts after a worker-thread PANIC before the process fails loudly.
+/// ONE, deliberately: CUDA errors are sticky per process (after an OOM or an Xid the context
+/// is poisoned), so an in-process retry is a long shot — worth exactly one try, because when
+/// it works it saves a ~120 s weight reload, and worth no more, because a respawn loop against
+/// a poisoned context is a box that looks alive and serves nothing. MEMRA_WORKER_RESPAWN=0
+/// disables (straight to loud failure, i.e. let the supervisor restart the process).
+const WORKER_RESPAWN_MAX: u32 = 1;
+
+fn worker_respawn_max() -> u32 {
+    static R: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *R.get_or_init(|| std::env::var("MEMRA_WORKER_RESPAWN").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(WORKER_RESPAWN_MAX))
+}
+
+/// Exit code when the worker is unrecoverable. `systemd Restart=on-failure` treats any nonzero
+/// as failure; 70 is sysexits' EX_SOFTWARE, so an operator reading `systemctl status` can tell
+/// "the engine died" from "bad config" (exit 1, the startup FATAL paths in main).
+const EXIT_WORKER_UNRECOVERABLE: i32 = 70;
+
 /// Convenience: spawn the worker thread and block until it reports ready (or fails). Returns the
 /// command Sender (clone into the axum state) + the loaded model names + template caps.
+///
+/// SUPERVISION (G5c, lane/serve-hardening 2026-08-06). The worker thread used to be a bare
+/// `spawn(move || run(..))`: a panic inside it unwound that thread ONLY, the process kept
+/// serving HTTP, `/health` stayed green forever, and every request blocked or died on a closed
+/// channel. Now the spawned thread is a SUPERVISOR that:
+///   1. runs the scheduler inside `catch_unwind`, so a panic is caught instead of silently
+///      ending the thread;
+///   2. marks the shared health FAULTED on catch — /health and /readyz flip within
+///      milliseconds, no staleness threshold to wait out;
+///   3. attempts `worker_respawn_max()` respawns with backoff (weights reload; the health
+///      generation counter increments so the recovery is observable);
+///   4. and if that fails, exits the PROCESS loudly — because a memra-server without a GPU
+///      worker cannot serve anything, and `Restart=` restarting the unit whole is the only
+///      reliable CUDA recovery (see `deploy/systemd/memra-server.service`).
+/// A CLEAN return (the command channel closed = every HTTP handler dropped = shutdown) is not
+/// a fault and never respawns.
 #[allow(clippy::type_complexity)]
-pub fn spawn(models: Vec<(String, String, Option<String>)>)
+pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::health::SharedHealth)
     -> Result<(Sender<Cmd>, Arc<Vec<String>>, Arc<HashMap<String, ModelCaps>>, SharedMetrics), String> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) =
         std::sync::mpsc::channel::<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>();
     let metrics: SharedMetrics = Default::default();
     let m2 = metrics.clone();
+    let h2 = health.clone();
     std::thread::Builder::new()
         .name("memra-gpu-worker".into())
-        .spawn(move || run(models, cmd_rx, ready_tx, m2))
+        .spawn(move || {
+            // The supervisor OWNS the receiver across restarts: `run` borrows it, so a
+            // panicking scheduler cannot take the command channel down with it (dropping the
+            // Receiver would make every future handler send fail with no way back).
+            let rx = cmd_rx;
+            let mut ready_tx = Some(ready_tx);
+            let mut attempt: u32 = 0;
+            loop {
+                let (models, m, h) = (models.clone(), m2.clone(), h2.clone());
+                // A fresh ready channel per attempt; only the FIRST one is the caller's.
+                //
+                // THE VERDICT MUST BE RELAYED CONCURRENTLY, NOT AFTER `run` RETURNS. `run`
+                // sends its load verdict and then blocks in the scheduler for the life of the
+                // process — so reading `rrx` on this thread after `catch_unwind` deadlocks the
+                // whole server: main blocks in `ready_rx.recv()`, never binds the socket, and
+                // the box loads the model and then answers nothing. (Found by serve-smoke,
+                // which timed out waiting for /health with the worker log showing a fully
+                // loaded model — the exact failure class this lane exists to remove, so it is
+                // fitting that the gate caught it.)
+                let (rtx, rrx) = std::sync::mpsc::channel();
+                let caller = ready_tx.take();
+                let load_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (lf, hr) = (load_failed.clone(), h2.clone());
+                let relay = std::thread::Builder::new()
+                    .name("memra-worker-ready".into())
+                    .spawn(move || {
+                        let verdict = rrx.recv()
+                            .unwrap_or_else(|_| Err("worker died during init".into()));
+                        if let Err(why) = &verdict {
+                            lf.store(true, std::sync::atomic::Ordering::SeqCst);
+                            hr.mark_dead(format!("model load failed: {why}"));
+                        }
+                        // Only the first attempt has a caller waiting; a respawn's verdict is
+                        // observable on /health (phase + generation) instead.
+                        if let Some(tx) = caller {
+                            let _ = tx.send(verdict);
+                        }
+                    });
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(models, &rx, rtx, m, h)
+                }));
+                // `run` has returned, so its `rtx` is dropped and the relay cannot block.
+                if let Ok(t) = relay { let _ = t.join(); }
+                match outcome {
+                    Ok(()) if load_failed.load(std::sync::atomic::Ordering::SeqCst) => {
+                        // Not a shutdown: the model load itself failed, so `run` returned
+                        // without ever entering the scheduler.
+                        if attempt == 0 {
+                            // The caller (main) got the error and reports it as a startup
+                            // FATAL — do not race it with an exit code of our own.
+                            return;
+                        }
+                        eprintln!("[worker] FATAL: respawn attempt {attempt} could not reload \
+                                   the models — exiting the process so the supervisor can \
+                                   restart it whole");
+                        crate::health::sd_notify("STATUS=respawn load failed; exiting");
+                        std::io::stderr().flush().ok();
+                        std::process::exit(EXIT_WORKER_UNRECOVERABLE);
+                    }
+                    Ok(()) => {
+                        // Clean scheduler exit = the command channel closed (shutdown).
+                        h2.set_phase(crate::health::PHASE_DEAD);
+                        return;
+                    }
+                    Err(payload) => {
+                        // QUOTED, never inferred: the panic message as the panic handler saw
+                        // it (String / &str payloads; anything else says so).
+                        let why = payload.downcast_ref::<String>().cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "non-string panic payload".into());
+                        attempt += 1;
+                        h2.mark_dead(format!("worker thread panicked: {why}"));
+                        eprintln!("[worker] PANIC in the GPU worker thread: {why}");
+                        if attempt > worker_respawn_max() {
+                            eprintln!("[worker] FATAL: worker unrecoverable after {} respawn \
+                                       attempt(s) — exiting the process so the supervisor can \
+                                       restart it whole (CUDA errors are sticky per process; a \
+                                       live HTTP listener with a dead worker serves nothing)",
+                                      attempt - 1);
+                            crate::health::sd_notify("STATUS=worker unrecoverable; exiting");
+                            std::io::stderr().flush().ok();
+                            std::process::exit(EXIT_WORKER_UNRECOVERABLE);
+                        }
+                        // Backoff before reloading weights: a panic caused by a transient
+                        // device condition needs the driver to settle, and an immediate
+                        // reload would just re-hit it.
+                        let backoff = std::time::Duration::from_secs(2 * attempt as u64);
+                        eprintln!("[worker] respawn attempt {attempt}/{} in {:?} \
+                                   (reloading weights)", worker_respawn_max(), backoff);
+                        std::thread::sleep(backoff);
+                        h2.mark_respawning();
+                    }
+                }
+            }
+        })
         .map_err(|e| format!("spawn worker thread: {e}"))?;
     match ready_rx.recv() {
         Ok(Ok((names, caps))) => Ok((cmd_tx, Arc::new(names), Arc::new(caps), metrics)),
