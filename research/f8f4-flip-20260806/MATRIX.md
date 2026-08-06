@@ -219,3 +219,207 @@ The idle guard earned its keep mid-run: another lane's `./target/debug/kernel-ch
 (2 compute apps) and the guard **parked rounds 2-3 until it cleared** rather than publishing
 contaminated rounds — the exact failure the w4a8 lane had to discard a whole battery over.
 
+### Gate 1b — chunk-invariance in BOTH arms (matrix row 1's second cell)
+
+`tools/chunkinv_ab.sh` → `tools/chunk-invariance-gate.sh`, raw `logs/chunkinv-ab.log`. This gate
+asserts that the same prompt primed at different `MEMRA_PRIME_CHUNK` values gives byte-identical
+prefill logits — a **prefill-arithmetic** contract, so exactly the kind of thing an f8f4 prefill
+route could break by making the reduction order-sensitive again.
+
+| model | arm | chunk 64 | chunk 32 | verdict |
+|---|---|---|---|---|
+| q9 | OFF | EXACT 0.000e0 | EXACT 0.000e0 | CHUNK-INVARIANT |
+| q9 | **ON** | EXACT 0.000e0 | EXACT 0.000e0 | **CHUNK-INVARIANT** |
+| k27 | OFF | EXACT 0.000e0 | EXACT 0.000e0 | CHUNK-INVARIANT |
+| k27 | **ON** | EXACT 0.000e0 | EXACT 0.000e0 | **CHUNK-INVARIANT** |
+
+Both pinned prompts in every cell (8 prompt×arm cells, all exact), `rc=0` throughout. Teeth
+check: `--canary` **in the ON arm** returned *"canary broke the assertion as required — gate has
+teeth"* — so the invariance above is asserted by a gate that can still fail while f8f4 is on,
+not by a gate that has gone blind under it. **f8f4 does not reintroduce a chunk-variant prefill
+class.** Green, both arms.
+
+### Gate 3 — serve regime with `MEMRA_MMQ_F8F4=1`
+
+| gate | result |
+|---|---|
+| `serve-smoke.sh` | **`serve-smoke: 0 failed`**, `SMOKE_RC=0` |
+| `serve-stress-gate.sh` c=64 | `completed 64/64; wall p50=51.4s p95=60.2s max=61.1s; ttfb p50=0.65s p95=5.00s` → **`ALL GREEN`**, `STRESS_RC=0` |
+
+serve-smoke's ON arm includes `spec == plain greedy text (serving exactness)`, the full sampled
+truncation matrix (top_k / top_p / min_p / llama-default, bangs=0), and session-affinity resume
+exactness across servers. Raw `logs/serve-smoke-ON.log`, `logs/serve-stress-ON.log`. **The ON arm
+serves correctly** — nothing here blocks the flip.
+
+### Gate 2c (the cell that changed the reading) — REGIME-MATCHED acceptance, through the server
+
+Gate 2 measured the **embedded MTP head**. The owner's daily 27B server does not use it:
+`tools/serve-examples/serve-qwen36-27b-memra` attaches the owntrim **regime drafter**
+(`draft-daily-owntrim-nvfp4head-q4blk.gguf`) via `MEMRA_MODELS "+draft"`, which **replaces** the
+embedded head at load (`worker.rs load_draft`). The 2026-07-10 battery's headline numbers were
+also regime/ST numbers. So gate 2 measured a *different drafter than production*, and the flip
+decision is about production. Both reachable models have a regime drafter, so this cell is
+2-model like the rest.
+
+Vehicle: **the server itself** — `usage.spec.{rounds,drafted,accepted,acceptance_rate}`
+(`main.rs usage_json`, lane/accept-telemetry) is exact per-request acceptance from the real serve
+loop, no research binary in the path. `temperature 0` (greedy ⇒ drafting deterministic ⇒
+acceptance is a hard number), `max_tokens 128`, K=3, one server **per arm** (the flag is a
+`OnceLock`, so it cannot be toggled inside a live process), three prompt lengths, passes
+**OFF → ON → OFF2**. `tools/regime_accept_ab.sh`, parser `tools/parse_regime.py`, raw
+`logs/regime-accept-{q27,q9}.log`.
+
+**q27 + daily regime drafter:**
+
+| prompt | prompt tok | OFF | ON | Δpp | OFF2 (control) | served greedy text |
+|---|---|---|---|---|---|---|
+| p2-code-medium | 1845 | 67.5% (85/126) | 67.5% (85/126) | **+0.0** | 67.5% ✓ | IDENTICAL |
+| p1-code-short | 28 | 67.5% (85/126) | 65.9% (85/129) | **−1.6** | 67.5% ✓ | **DIFFERS** |
+| p3-agentic-long-v3 | 5411 | 77.8% (91/117) | 80.7% (92/114) | **+2.9** | 77.8% ✓ | IDENTICAL |
+| | | | | **mean +0.45** | | |
+
+**q9 + its regime drafter:**
+
+| prompt | prompt tok | OFF | ON | Δpp | OFF2 (control) | served greedy text |
+|---|---|---|---|---|---|---|
+| p2-code-medium | 1845 | 53.7% (79/147) | 53.3% (80/150) | **−0.4** | 53.7% ✓ | **DIFFERS** |
+| p1-code-short | 28 | 72.4% (89/123) | 62.9% (83/132) | **−9.5** | 72.4% ✓ | **DIFFERS** |
+| p3-agentic-long-v3 | 5411 | 58.7% (81/138) | 59.4% (82/138) | **+0.7** | 58.7% ✓ | **DIFFERS** |
+| | | | | **mean −3.05** | | |
+
+**The OFF-vs-OFF2 control is green 3/3 on both models** — OFF and OFF2 are the same config in
+different server processes and they agree to the exact fraction, so the OFF→ON deltas are the
+arm, not drift or process-to-process noise. That control is what makes a single-shot regime cell
+readable at all.
+
+Three things follow, and they are the decisive three:
+
+1. **The sign reversed again.** Bare head said q27 −1.9pp / q9 +1.6pp. Regime says q27 **+0.45pp**
+   / q9 **−3.05pp** — i.e. the regime reading **reproduces the 2026-07-10 shape** (9B pays, 27B
+   neutral-to-positive) that the bare-head reading had inverted. Three independent readings now
+   agree that **one of the two reachable models loses acceptance**, and disagree on **which**. The
+   sign moves with the drafter, the prompt, and the model.
+2. **The worst regime cell is −9.5pp** (q9 p1-code-short, 72.4% → 62.9%), squarely inside the ±8pp
+   band the prefill-KV law predicts, on the *short* prompt — the shape that dominates interactive
+   agentic turns.
+3. **Served greedy text DIFFERS between arms in 4 of 6 regime cells.** The route does not merely
+   change internal numerics; it changes what the product returns to the user, at temperature 0.
+
+
+---
+
+## 4. VERDICT — **NO FLIP.** The form stays merged and fast; the route stays opt-in.
+
+Decision rule from the brief: *ALL GREEN → flip; any red → NO-FLIP with the exact failing cell
+quoted.* There is a red cell, it reproduces, and it is on the metric the flip bar exists to guard.
+
+### The failing cells, quoted verbatim from this lane's own logs
+
+Bare-head, the deterministic one (`logs/repeat-q27-k3.log`, N=5 interleaved):
+
+```
+ARM OFF: N=5  acceptance distinct=['89/117'] (DETERMINISTIC)
+ARM ON:  N=5  acceptance distinct=['87/120'] (DETERMINISTIC)
+DELTA: acceptance 76.1% -> 72.5% = -3.6pp
+```
+
+That is **q27 at K=3 — its own serve K** — down 3.6pp, 5/5 identical in both arms. All 8 K values
+are negative (mean −1.9pp).
+
+Regime-matched, through the server, with the box-stability control green
+(`logs/regime-accept-q9.log`):
+
+```
+| p1-code-short.txt | 28 | 72.4% (89/123) | 62.9% (83/132) | -9.5 | 72.4% (89/123) | YES | DIFFERS |
+```
+
+That is **q9 with its production regime drafter** losing **9.5pp** on the short-prompt shape, with
+OFF and OFF2 agreeing to the exact fraction (89/123 twice), so it is the arm and not drift.
+
+### Everything that is green (so the block is precisely located)
+
+| gate | ON-arm result |
+|---|---|
+| `run-gen` internal argmax (prefill-vs-decode, batched-prime-vs-tokenwise) | MATCH, both models |
+| pinned fast-gate goldens (20 tok) | MATCH 20/20, both models, both arms |
+| `run-spec` K=1..8 self-consistency | **PASS in all 32 cells**, rc=0 |
+| chunk-invariance, both pinned prompts, chunks 2048/64/32 | CHUNK-INVARIANT, 0.000e0, both models — and the `--canary` still breaks under f8f4 |
+| `serve-smoke` (incl. spec==plain exactness, truncation matrix, affinity resume) | `0 failed`, `SMOKE_RC=0` |
+| `serve-stress-gate` c=64 | `completed 64/64` … `ALL GREEN`, `STRESS_RC=0` |
+| prefill win, per model, idle-guarded N=15/arm | q27 **1.2153x**, q9 **1.1485x**, ranges do not overlap |
+
+So the ON arm is **not broken** — it is correct, it serves, it is chunk-stable, and it is faster on
+both reachable models. **The block is acceptance alone**, which is exactly the failure mode the
+prefill-KV acceptance law was written to catch, and exactly why an argmax-and-gates-only battery
+would have flipped this and shipped a regression.
+
+### Why this is a NO and not a "re-measure until it's green"
+
+1. **The form cannot fix it.** `7c0df07b` made the MMA form 1.994x faster and **bit-exact** (0/128
+   elements differ) against the plain `kind::f8f6f4` arm. Bit-exact means the acceptance behavior of
+   the **route** is byte-unchanged by the merge. A faster route is not an acceptance-neutral route.
+2. **Four independent readings, one conclusion.** 2026-07-10 (regime/ST: 9B −3.5/−6.1%), the
+   `k32-imma-closed` corroboration (a *different* numeric config, 9B −11pp), this lane's bare head
+   (q27 −1.9pp mean, −3.6pp at its serve K, deterministic), this lane's regime cells (q9 −3.05pp
+   mean, −9.5pp worst). Every reading finds a loser among the two reachable models.
+3. **The sign is not a stable per-model property.** It moved between bare head and regime drafter
+   *on the same two models on the same day*. A global default is a bet on a sign that has now
+   flipped under regime change — so "flip it and adopt exceptions later" has no stable exception
+   list to write.
+4. **The blast radius is 2 models, and the win is already available to them.** The flag is
+   reachable on **2 of 12** gate models (k27 504/866 NVFP4, q9 114/668); the brief's 31B/12B rows
+   have **zero** NVFP4 tensors and are structurally inert (measured, not assumed: g31 is cross-arm
+   bit-identical). A default flip would therefore change behavior for exactly the two artifacts that
+   can already opt in per-serve-config — while making the acceptance tax the default for whichever
+   of them is the loser that week.
+5. **It changes served output.** 4 of 6 regime cells return **different greedy text** at
+   temperature 0. That is a user-visible change, and a 20-token golden battery cannot see it (both
+   this lane's divergences land at generated index 22 and 38, i.e. *past* the pins — a
+   `--refresh-goldens` after a flip would silently re-pin the new arm).
+
+### Consequences
+
+- `MEMRA_MMQ_F8F4` **stays opt-in.** `docs/FLAGS.md`'s existing verdict — *"per-model serve
+  adoption (NV-27B ST config), never a global default (2026-07-10 flip battery)"* — is **upheld**,
+  now with a second, regime-matched battery behind it.
+- **No board move.** The published pp512 cells stay on the default (int8) route, so
+  `research/tune-data/current-board.json`, `tools/update-perf-board.py`, README/PERFORMANCE and the
+  SVG cards are deliberately **not** touched. (The board-moving rule applies to commits that change
+  *published* numbers; this lane changes none.)
+- The `7c0df07b` **form** win is untouched and stays merged: anyone on the f8f4 route (the NV-27B ST
+  serve config) gets 1.2153x prefill for free, bit-exact.
+
+### What would clear the bar (concrete, not aspirational)
+
+The bar is not "measure it again." The route has to stop taxing acceptance, or the tax has to be
+made structurally impossible to hit:
+
+1. **An acceptance-neutral e4m3 activation fold.** The mechanism is visible in the counters — the
+   drafted count itself moves (117→120 bare head; 123→132 on the q9 regime cell), i.e. the draft
+   head *proposes differently* because the prompt-KV lineage changed. A fold whose prompt-KV output
+   matches the int8 route to within the draft head's sensitivity would remove the cause. The
+   `k32-imma-closed` row is the warning here: a config ~10x *numerically cleaner* than the e4m3
+   fold still moved 9B by −11pp, so "reduce the error" is a hypothesis, not a plan — it needs the
+   9B draft head's actual sensitivity threshold measured first.
+2. **Prefill-route/decode-route separation with a KV-lineage equivalence proof.** If the f8f4 route
+   were used only where its output provably does not enter the draft head's read set, the law would
+   not bind. That is a design change, not a flag flip.
+3. **Failing (1) and (2): keep it per-config and make adoption cheap and audited.** The honest
+   shipping shape is a serve-config opt-in with a *pinned acceptance receipt per artifact+drafter*
+   — because this lane just showed the sign is a property of (model × drafter × prompt shape), not
+   of the model. Any future adoption of this route on a new artifact must re-run gate 2c
+   (`tools/regime_accept_ab.sh`) with its real drafter, not inherit another artifact's verdict.
+4. **A gate with teeth for the mechanism.** The existing battery is provably blind to this class:
+   every gate passed in the ON arm. If acceptance is a shipping property (it is — it is spec
+   throughput), an acceptance-delta assertion belongs *inside* the battery, in the H100 lane's
+   law-3 sense ("anything guarding a live lane belongs INSIDE the battery — gates outside rot
+   silently"). `tools/regime_accept_ab.sh` + the OFF/ON/OFF2 control is a working seed for it: it is
+   single-shot-readable *because* greedy acceptance is deterministic and the OFF2 pass bounds drift.
+
+### Provenance
+
+Six commits of evidence on `lane/f8f4-flip` (`df3c545b`, `8237977c`, `a731db23`, `d69d74d2`,
+`1dd58cc8`, `ae03a145`) plus `2d6c563d` (gate 3 + chunkinv + regime acceptance). Every raw log is
+committed under `logs/`; every summary row is in `RESULTS.jsonl`. No `.nsys-rep` was produced or
+committed anywhere in this lane. GPU clocks were locked 1860/1860 for the duration under
+`flock /tmp/gpu5090.lock` and released at lane close.
