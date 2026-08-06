@@ -1,0 +1,81 @@
+### pod gates 10:16:43  gpu=2 MiB
+=== kernel-check (pod, 27B NVFP4 GGUF) ===
+B16-TIER output.weight [Q5_K] m=9 mcols=16: bit-bad=0/2234880 OK
+B16-TIER output.weight [Q5_K] m=12 mcols=16: bit-bad=0/2979840 OK
+B16-TIER output.weight [Q5_K] m=16 mcols=16: bit-bad=0/3973120 OK
+ALL GREEN: kernels match CPU reference.
+=== st27 config B=16 ===
+gate1 seed 0: agreement all 16 steps
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2: agreement all 16 steps
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5: agreement all 16 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=16 vs isolated batched-B=1, bit-checked, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=16 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+=== st27 config B=32 ===
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2: agreement all 16 steps
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5: agreement all 16 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+
+thread 'main' (761194) panicked at crates/memra-engine/src/decode_batch.rs:444:9:
+decode_step_batch: B=32 > cap 8 with no exact tier (Q8_0 m>8 needs the q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+rc=101
+=== st27 strict B=4 ===
+loaded safetensors (64 layers); steps=16 batch=4
+gate1 seed 0: agreement all 16 steps
+gate1 (B=1 bit-identity vs decode_step_h, 16 steps, 1 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated decode_step_h, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+=== Qwen3.6-27B-Q8_0.gguf config B=16 ===
+gate1 seed 0: agreement all 16 steps
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2: agreement all 16 steps
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5: agreement all 16 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=16 vs isolated batched-B=1, bit-checked, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=16 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+=== Qwen3.6-27B-Q8_0.gguf config B=32 ===
+gate1 seed 1: agreement all 16 steps
+gate1 seed 2: agreement all 16 steps
+gate1 seed 3: agreement all 16 steps
+gate1 seed 4: agreement all 16 steps
+gate1 seed 5: agreement all 16 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 16 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+
+thread 'main' (761351) panicked at crates/memra-engine/src/decode_batch.rs:444:9:
+decode_step_batch: B=32 > cap 8 with no exact tier (Q8_0 m>8 needs the q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+rc=101
+=== Qwen3.6-27B-Q8_0.gguf strict B=4 ===
+loaded qwen35 (64 layers); steps=16 batch=4
+gate1 seed 0: agreement all 16 steps
+gate1 (B=1 bit-identity vs decode_step_h, 16 steps, 1 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated decode_step_h, 16 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+rc=0
+### DONE 10:36:27

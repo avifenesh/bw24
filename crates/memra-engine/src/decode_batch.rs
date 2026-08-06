@@ -443,8 +443,11 @@ impl HybridModel {
         let exact16 = b_n > 8 && b_n <= 16 && self.decode_batch_exact16_ok();
         assert!(
             b_n <= cap || exact16,
-            "decode_step_batch: B={b_n} > cap {cap} with no exact tier (Q8_0 m>8 needs the \
-             q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused"
+            "decode_step_batch: B={b_n} > cap {cap} with no exact tier — refused. Either \
+             B>16 (there is NO exact kernel class above 16: m>16 crosses GEMM/dp4a numeric \
+             configs; the serve scheduler chunks wider concurrency into <=16 groups instead), \
+             or some matmul in this checkpoint has no bit-exact b16 kernel — run with \
+             MEMRA_EXACT16_WHY=1 to see which tensor and qtype refuses"
         );
         struct ExactScope<'a>(&'a Engine, bool);
         impl Drop for ExactScope<'_> {
