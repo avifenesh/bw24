@@ -201,6 +201,86 @@ kernel on the critical path than the plan budgeted.
 
 ---
 
+## Increment 4 — the two new math kernels + kernel-check cells (2026-08-06)
+
+step35 needs exactly two pieces of math memra did not have. In both cases memra already contains a
+kernel that *looks* like the right one, and substituting it compiles, runs, and produces plausible
+logits — so each cell's real job is the confusion guard, not the maxdiff.
+
+| new kernel | the lookalike | how they differ |
+|---|---|---|
+| `attn_head_gate_f32` | `sig_mul_f16out_f32` | new: ONE sigmoid per (token, head), broadcast over head_dim. Lookalike: full width, one gate value per (head, dim) element (qwen35 packs it in wq). Same signature shape, adjacent name. |
+| `swiglu_clamped_mul_scaled_f32` | `swigluoai_mul_scaled_f32` | new: `min(silu(gate*gs), limit) * clamp(up*us, ±limit)`. oai: clamps gate BEFORE swish, then `* (1 + clamp(up))`. |
+
+step35's clamp form is verbatim from `llama-graph.cpp:2146-2165` (routed experts,
+`swiglu_clamp_exp`) and `:1751-1770` (shared expert, `swiglu_clamp_shexp`), non-DEEPSEEK4 branch —
+step35 is not DEEPSEEK4 and has no `dsv4_hc_mult`, so it takes the `ggml_silu` then
+`ggml_clamp(-INF, limit)` path, not the `ggml_swiglu_split` one. Callers must gate on
+`limit > 1e-6` (upstream's eps check): at limit=0 the kernel clamps every positive activation to
+zero. Only layers 43 (7.0) and 44 (16.0) have a live limit on this artifact.
+
+Cells (synthetic, CPU oracle, `raw/kernel-check-step35-cells-5090-20260806.log`):
+
+- `attn_head_gate` at n_head **64 and 96** — the query-head count is per layer, so both widths are
+  real geometry — head_dim 128, T=1 (decode) and T=7 (prefill, non-power-of-2 for the grid tail).
+  Gate values spread over ±6 so sigmoid spans ~0.002..0.998; a wrong broadcast cannot hide inside a
+  flat ~0.5. Asserts maxdiff, that the fp16 twin is `f32_to_f16_bits` of the f32 the same launch
+  stored, and that per-head values genuinely vary across the tensor (the confusion guard). Plus a
+  `dst16=None` cell for the nullable-pointer skip.
+- `swiglu_clamped` at both real limits × (gs,us) ∈ {(1,1), (0.75,1.25)}, inputs spanning ±3·limit.
+  The engaged-clamp count is asserted (>10% of elements), because a cell whose inputs stayed
+  in-range would pass identically against plain `silu_mul` and prove nothing. Plus a divergence
+  guard: >50% of elements must differ from `swigluoai_mul_scaled` on the same operands.
+
+## Increment 5 — KV budget and q27 co-residence: PLAN.md §3.4 does not transfer to this box
+
+Receipt: `raw/kv-budget-pp2-20260806.txt` (inputs sourced line-by-line; card capacity from
+`nvidia-smi` on the box, weights from the sha-verified byte counts).
+
+**PLAN.md §3.4's "256K does not fit" was priced for a 4× RTX 5090 box (4 × 32 = 128 GiB), which is
+not the SKU any more.** Phase 1 was written against the sku-repick premise (PLAN.md:5); the owner's
+2026-08-06 call moved Step to 2× RTX PRO 6000 Server 96GB = **191.19 GiB measured**. Headroom after
+weights + MTP is **89.95 GiB, not the 26.8 GiB** §3.4 compares against — 3.4× more.
+
+Two of §3.4's inputs also disagree with the code:
+
+1. It prices FP16 and FP8 KV. memra's **default with no env set** is q8_0 K / q5_1 V
+   (`kv_blk_bytes()`, `memra-kv/src/lib.rs:37-42`) = 1856 B/tok/layer — 45% of the FP16 row.
+2. It compares against a whole-box aggregate, but KV is allocated **per stage** by the device that
+   owns the layer (`memra-kv/src/lib.rs:253`), so the binding constraint is per-card.
+
+| KV format | 128K at-max | 128K ring | 256K at-max | 256K ring |
+|---|---:|---:|---:|---:|
+| q8_0/q5_1 (memra default) | 10.20 | 2.75 | 20.39 | 5.47 |
+| fp8 both planes | 11.25 | 3.03 | 22.50 | 6.03 |
+| fp16 (§3.4's row) | 22.50 | 6.06 | 45.00 | 12.06 |
+
+(GiB. "at-max" = today, all 45 layers at `max_ctx`. "ring" = after work item F.)
+
+At the pp.rs default even cut (23/22), 256K in the default format is 10.42 GiB of KV on stage 0 —
+stage 0 lands ~59.3 of 95.59 GiB. **So on this box 256K fits the allocator as it stands, and the
+SWA ring buffer (F) is a memory optimization here rather than the precondition it was on 4×32 GiB.**
+
+What that does **not** establish, and why the honest listing context stays 128K anyway:
+
+- Activation + graph-pool footprint at 256K is unmeasured (PLAN.md:187 already flagged this). At 45
+  layers × 96 SWA heads the prefill activation peak is not a rounding error, and the 93.5:1
+  prefill-heavy profile makes long prefills the common case, not the tail.
+- Even layer count ≠ even byte split: 3 dense + 42 MoE means stage 0's layers are cheaper. Real
+  per-stage weight bytes need the loader's tensor→layer map — a first-boot measurement.
+- Whether the model is *correct* at 256K is an exactness question this arithmetic is silent on.
+
+The cap stays at 128K; what changed is the **reason** — no longer "the allocator cannot express it".
+
+**q27 co-residence (owner's open question): yes on bytes, with wide margin.** Step 97.78 + Step MTP
+3.45 + q27 14.63 (`Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf`, `/scratch-models`, measured on the box) =
+115.86 GiB of 191.19, leaving 75.32 GiB for both models' KV and activations; Step's own 256K KV is
+20.39 of that. The unanswered part is not capacity but **scheduling** — co-resident q27 shares the
+SMs Step is using, so the cost is throughput interference, which is the pp2-hardening lane's
+measurement, not a fit calculation.
+
+---
+
 ## Ledger
 
 | item | state |
