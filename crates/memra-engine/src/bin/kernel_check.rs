@@ -3380,6 +3380,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- step35 SWA prefill: sdpa_naive_w_quantized_view (head_dim 128) ---------------------
+    // The windowed twin of sdpa_naive_quantized_view, added for step35's 33 SWA layers: every
+    // windowed FlashAttention stamp in flash_attn.cu is head_dim-256 only, so hd128 SWA prefill
+    // takes this f32 floor. Three contracts, all three from the commit that introduced it:
+    //   (1) window == 0 is BIT-identical to sdpa_naive_quantized_view (the documented
+    //       strict-superset claim: sdpa_naive_w_f32 treats window <= 0 as "no window mask").
+    //   (2) window >= t_kv is BIT-identical too — no key can be older than q_pos-(window-1).
+    //   (3) window < t_kv reproduces llama's LLAMA_SWA_TYPE_STANDARD mask (p1 - p0 >= n_swa
+    //       masked, i.e. t < q_pos - (window-1)), checked against a CPU oracle fed the
+    //       GPU-DEQUANTED f32 K/V so the quantized cache bytes drop out of the comparison,
+    //       AND asserted to actually DIFFER from the unwindowed output — a dropped/ignored
+    //       window argument would otherwise sail through (1) and (2).
+    // Cases cover a continuation chunk whose window is smaller than the chunk (the SWA
+    // chunk-prime shape: inside one chunk an early query must not see keys a trimmed view
+    // still holds), a fresh chunk, and a BK-unaligned tail.
+    {
+        let (hd, nh, nhkv) = (128usize, 8usize, 2usize);
+        let scale = 1.0f32 / (hd as f32).sqrt();
+        let (kv_dim_k, kv_dim_v) = (hd * nhkv, hd * nhkv);
+        let (kbb, vbb) = memra_engine::kv_blk_bytes();
+        let k_tok_bytes = (kv_dim_k / 32) * kbb;
+        let v_tok_bytes = (kv_dim_v / 32) * vbb;
+        // CPU windowed SDPA over EXACT f32 operands (same convention as sdpa_naive_w_f32:
+        // q_pos = (T_kv - T) + qt; causal t > q_pos masked; windowed t < q_pos-(win-1) masked).
+        let cpu_w = |q: &[f32], kf: &[f32], vf: &[f32], t: usize, tkv: usize, win: usize| -> Vec<f32> {
+            let mut o = vec![0f32; hd * nh * t];
+            for head in 0..nh {
+                let kvh = head / (nh / nhkv);
+                for qt in 0..t {
+                    let q_pos = ((tkv - t) + qt) as i64;
+                    let qv = &q[(qt * nh + head) * hd..][..hd];
+                    let mut sc = vec![0f32; tkv];
+                    for (tk, s) in sc.iter_mut().enumerate() {
+                        let kv = &kf[(tk * nhkv + kvh) * hd..][..hd];
+                        let mut a = 0.0f32; for d in 0..hd { a += qv[d] * kv[d]; }
+                        a *= scale;
+                        if tk as i64 > q_pos { a = -1e30; }
+                        if win > 0 && (tk as i64) < q_pos - (win as i64 - 1) { a = -1e30; }
+                        *s = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0f32; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nh + head) * hd..][..hd];
+                    for d in 0..hd {
+                        let mut a = 0.0f32;
+                        for tk in 0..tkv { a += sc[tk] * vf[(tk * nhkv + kvh) * hd + d]; }
+                        ov[d] = a;
+                    }
+                }
+            }
+            o
+        };
+        for (t, tkv, win) in [(64usize, 192usize, 32usize), (100, 100, 48), (37, 297, 64)] {
+            let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i+5)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+            let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
+            let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
+            for tok in 0..tkv {
+                let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
+            }
+            let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
+            // (1) window == 0 vs the unwindowed function: BIT identity.
+            let mut o_unw = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_quantized_view(&qd,&kview,&vview,&mut o_unw,hd,nh,nhkv,t,tkv,scale,true,
+                                        k_tok_bytes,v_tok_bytes)?;
+            let mut o_w0 = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_w_quantized_view(&qd,&kview,&vview,&mut o_w0,hd,nh,nhkv,t,tkv,scale,true,
+                                          0,k_tok_bytes,v_tok_bytes)?;
+            let a = e.dtoh(&o_unw)?; let b0 = e.dtoh(&o_w0)?;
+            let bd0 = a.iter().zip(&b0).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("sdpa_naive_w_quantized_view(window=0) vs unwindowed T={t} Tkv={tkv}: bitdiff={bd0} {}",
+                     if bd0 == 0 {"OK"} else {fails+=1;"FAIL"});
+            // (2) window >= t_kv: still BIT-identical (mask can never fire).
+            let mut o_wf = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_w_quantized_view(&qd,&kview,&vview,&mut o_wf,hd,nh,nhkv,t,tkv,scale,true,
+                                          tkv,k_tok_bytes,v_tok_bytes)?;
+            let bf = e.dtoh(&o_wf)?;
+            let bdf = a.iter().zip(&bf).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T={t} Tkv={tkv}: bitdiff={bdf} {}",
+                     if bdf == 0 {"OK"} else {fails+=1;"FAIL"});
+            // (3) window < t_kv: mask semantics vs a CPU oracle on the GPU-dequanted operands.
+            let mut kf = e.zeros(tkv*kv_dim_k)?; let mut vf = e.zeros(tkv*kv_dim_v)?;
+            e.fa_dequant_kv_view_f32(&kview,&vview,&mut kf,&mut vf,kv_dim_k,kv_dim_v,tkv,
+                                     k_tok_bytes,v_tok_bytes,false)?;
+            let (kfh, vfh) = (e.dtoh(&kf)?, e.dtoh(&vf)?);
+            let cpu = cpu_w(&q, &kfh, &vfh, t, tkv, win);
+            let mut o_win = e.zeros(hd*nh*t)?;
+            e.sdpa_naive_w_quantized_view(&qd,&kview,&vview,&mut o_win,hd,nh,nhkv,t,tkv,scale,true,
+                                          win,k_tok_bytes,v_tok_bytes)?;
+            let g = e.dtoh(&o_win)?;
+            let sc = cpu.iter().map(|x| x.abs()).fold(0.0f32, f32::max).max(1e-3);
+            let rel = maxdiff(&cpu, &g) / sc;
+            // f32 dot in the same order on both sides — only FMA contraction separates them.
+            println!("sdpa_naive_w_quantized_view window={win} vs CPU windowed oracle T={t} Tkv={tkv}: rel={rel:.2e} {}",
+                     if rel < 1e-4 {"OK"} else {fails+=1;"FAIL"});
+            // and the window must actually bite: differ from the unwindowed output.
+            let changed = a.iter().zip(&g).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("sdpa_naive_w_quantized_view window={win} differs from unwindowed T={t} Tkv={tkv}: changed={changed}/{} {}",
+                     a.len(), if changed > 0 {"OK"} else {fails+=1;"FAIL"});
+        }
+    }
+
     // --- KV-cache quantization round-trip: append-quantize then dequant (matches §A formulas) ---
     // Quantize a known f32 K/V row with the append kernel, read the bytes back, dequant on the CPU
     // via the exact ggml q8_0/q5_1 formulas, compare to the f32 input. Isolates layout/packing bugs

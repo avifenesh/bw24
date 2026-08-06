@@ -403,6 +403,48 @@ updated (`forward`, `forward_last`, `t2probe`).
 when the MTP external-file arm lands. The dc/graph and batched twins are deliberately deferred:
 bring-up correctness first, and the eager path is what the exactness gates measure.
 
+---
+
+## Increment 7 — the windowed-prefill primitive is now guarded (kernel-check)
+
+`b13738ed` shipped `sdpa_naive_w_quantized_view` with a documented contract and **no test**. The
+lane's own sequence item 2 requires a kernel-check cell for every new mapping, so the primitive now
+has one: `kernel_check.rs`, immediately after the ARC B `fa_prefill_view_ws` bit-identity cell, at
+step35's real attention shape (**head_dim 128**, GQA 8/2 — the hd256 cells above it never reach the
+hd128 stamp).
+
+Four assertions per case, and the last two are the ones that catch a real bug:
+
+| assertion | why it exists |
+|---|---|
+| `window == 0` vs `sdpa_naive_quantized_view`: **bitdiff must be 0** | the commit's literal strict-superset claim; `sdpa_naive_w_f32` treats `window <= 0` as no mask |
+| `window >= t_kv`: **bitdiff must be 0** | no key can be older than `q_pos-(window-1)`, so a live window that still changes the answer is a mask-arithmetic bug |
+| `window < t_kv` vs a CPU windowed oracle fed the **GPU-dequanted** K/V | isolates mask semantics from the quantized cache bytes: both sides see identical f32 operands, so only the mask predicate is under test |
+| the windowed output must **differ** from the unwindowed one | a dropped or ignored `window` argument passes assertions 1 and 2 trivially; this is the assertion that fails if the arg never reaches the kernel |
+
+Cases `(T, T_kv, window)` = `(64, 192, 32)`, `(100, 100, 48)`, `(37, 297, 64)` — a continuation
+chunk whose window is smaller than the chunk (the SWA chunk-prime shape where an early query must
+not see keys a trimmed view still holds), a fresh chunk, and a BK-unaligned tail.
+
+Result (RTX 5090 Laptop, release build, N=1 per case — a correctness gate, not a perf number;
+raw: `raw/kernel-check-step35-swaview-5090-20260806.log`):
+
+```
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=32 vs CPU windowed oracle T=64 Tkv=192: rel=4.84e-7 OK
+sdpa_naive_w_quantized_view window=32 differs from unwindowed T=64 Tkv=192: changed=65536/65536 OK
+```
+plus the same four at `(100,100,48)` (rel 1.12e-7, changed 53248/102400) and `(37,297,64)`
+(rel 8.53e-7, changed 37888/37888). **Full battery: ALL GREEN, 0 FAIL** (`grep -c FAIL` = 0 over
+the whole log, 540 lines).
+
+The `rel < 1e-4` band is deliberately tight, not an oracle band: both sides compute the same f32
+dot in the same order, so only FMA contraction separates them — the measured 1e-7 confirms it. The
+`changed` counts read correctly too: at `T == T_kv == 100, win=48` only the later queries have keys
+old enough to mask, so 52% of elements move; where the chunk is a continuation (`T < T_kv`) every
+query has a maskable past and 100% move.
+
 **q27 co-residence (owner's open question): yes on bytes, with wide margin.** Step 97.78 + Step MTP
 3.45 + q27 14.63 (`Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf`, `/scratch-models`, measured on the box) =
 115.86 GiB of 191.19, leaving 75.32 GiB for both models' KV and activations; Step's own 256K KV is
@@ -428,6 +470,7 @@ measurement, not a fit calculation.
 | forward: `step35_geom`, SWA 3:1, dual rope, gate epilogue, clamp | DONE (`b13738ed`; clamp shipped `b5c8450a`) |
 | SWA mask convention vs upstream `LLAMA_SWA_TYPE_STANDARD` | MATCHES verbatim — no new mask math |
 | windowed prefill at hd128 (`sdpa_naive_w_quantized_view`) | DONE (every windowed FA *prefill* stamp is hd256-only) |
+| kernel-check cell for `sdpa_naive_w_quantized_view` (4 assertions x 3 shapes) | DONE — battery ALL GREEN, 0 FAIL |
 | dc/graph, batched, varlen, spec-verify step35 twins | deferred — refuse with a named cause |
 | `mtp_full_attn_dc` step35 arm | open (lands with the MTP external-file arm) |
 | chat template (StepFun ChatML dialect) | open |
