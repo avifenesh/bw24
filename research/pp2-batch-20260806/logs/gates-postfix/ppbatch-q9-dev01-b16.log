@@ -1,0 +1,9 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=12
+pp mode: batched stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+pp mode: batches=[12, 16] steps=16 reps=2 (split arm)
+pp mode: B=1 fast path pinned OFF (live default = ON)
+
+thread 'main' (37514) panicked at crates/memra-engine/src/decode_batch.rs:474:9:
+decode_step_batch: B=12 > cap 8 with no exact tier (Q8_0 m>8 needs the q8rp mirror's b16 class; m>16 crosses GEMM/dp4a numeric configs) — refused
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,168 @@
+=== wide-width B=12,16 under MEMRA_DECODE_BATCH_CAP=16 (dev01) ===
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=12
+pp mode: batched stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+pp mode: batches=[12, 16] steps=16 reps=2 (split arm)
+pp mode: B=1 fast path pinned OFF (live default = ON)
+-- B=12: reference recorded (16 steps x 12 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=12 rep0]: 47677440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=12 rep1]: 47677440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=12]: 47677440 f32 logits BIT-IDENTICAL (0 differing bits)
+-- B=16: reference recorded (16 steps x 16 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=16 rep0]: 63569920 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=16 rep1]: 63569920 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=16]: 63569920 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [epilogue B=16]: last-stage device sampling + lean park
+pp mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: batched PP-2 stage-split exactness battery
+=== serve-smoke A: door SHUT (baseline fail set on THIS binary) ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+=== serve-smoke B: door OPEN stages=2 devices=0,1 (THE Step-SKU config) ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+=== serve-smoke C: door SHUT, MEMRA_SERVE_SPEC=0 (the non-spec control) ===
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec arm SKIP (no draft at /nonexistent-draft.gguf)
+serve-smoke: 0 failed
+
+==== serve-smoke deltas ====
+A door-shut spec-on: 0 failed | B pp2 nospec: 0 failed | C door-shut nospec: 0 failed
+-- A (door-shut, spec on) fail set:
+-- B (pp2, nospec) fail set:
+-- C (door-shut, nospec) CONTROL fail set:
+-- ADDED BY THE SPLIT, B minus C (must be empty):
+pp2 arm: split CONFIRMED live — [pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+control: door-shut arm shows NO transport banner (the liveness check reads zero)
+script-detected failures: 0
+SERVE_EXIT=0
+--- rep 1 arm A: door SHUT single-device ---
+--- rep 1 arm B: door OPEN stages=2 singledev (seam only) ---
+--- rep 1 arm C: door OPEN dev01 sharded (THE serving config) ---
+--- rep 1 arm D: door OPEN dev10 sharded (placement symmetry) ---
+--- rep 2 arm A: door SHUT single-device ---
+--- rep 2 arm B: door OPEN stages=2 singledev (seam only) ---
+--- rep 2 arm C: door OPEN dev01 sharded (THE serving config) ---
+--- rep 2 arm D: door OPEN dev10 sharded (placement symmetry) ---
+--- rep 3 arm A: door SHUT single-device ---
+--- rep 3 arm B: door OPEN stages=2 singledev (seam only) ---
+--- rep 3 arm C: door OPEN dev01 sharded (THE serving config) ---
+--- rep 3 arm D: door OPEN dev10 sharded (placement symmetry) ---
+--- rep 4 arm A: door SHUT single-device ---
+--- rep 4 arm B: door OPEN stages=2 singledev (seam only) ---
+--- rep 4 arm C: door OPEN dev01 sharded (THE serving config) ---
+--- rep 4 arm D: door OPEN dev10 sharded (placement symmetry) ---
+--- rep 5 arm A: door SHUT single-device ---
+--- rep 5 arm B: door OPEN stages=2 singledev (seam only) ---
+--- rep 5 arm C: door OPEN dev01 sharded (THE serving config) ---
+--- rep 5 arm D: door OPEN dev10 sharded (placement symmetry) ---
+==== raw per-arm per-rep lines (B=16 needs the exact-16 tier; a refusal shows here) ====
+-- arm A-doorshut
+B=1: aggregate 208.5 tok/s, per-seq 208.5 tok/s (median of 1)
+B=4: aggregate 489.1 tok/s, per-seq 122.3 tok/s (median of 1)
+B=8: aggregate 653.4 tok/s, per-seq 81.7 tok/s (median of 1)
+B=16: aggregate 269.1 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 208.6 tok/s, per-seq 208.6 tok/s (median of 1)
+B=4: aggregate 489.6 tok/s, per-seq 122.4 tok/s (median of 1)
+B=8: aggregate 654.3 tok/s, per-seq 81.8 tok/s (median of 1)
+B=16: aggregate 269.4 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 207.8 tok/s, per-seq 207.8 tok/s (median of 1)
+B=4: aggregate 488.7 tok/s, per-seq 122.2 tok/s (median of 1)
+B=8: aggregate 652.2 tok/s, per-seq 81.5 tok/s (median of 1)
+B=16: aggregate 269.1 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 208.4 tok/s, per-seq 208.4 tok/s (median of 1)
+B=4: aggregate 489.3 tok/s, per-seq 122.3 tok/s (median of 1)
+B=8: aggregate 654.4 tok/s, per-seq 81.8 tok/s (median of 1)
+B=16: aggregate 269.4 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 208.5 tok/s, per-seq 208.5 tok/s (median of 1)
+B=4: aggregate 489.7 tok/s, per-seq 122.4 tok/s (median of 1)
+B=8: aggregate 654.0 tok/s, per-seq 81.8 tok/s (median of 1)
+B=16: aggregate 269.5 tok/s, per-seq 16.8 tok/s (median of 1)
+-- arm B-split-singledev
+B=1: aggregate 178.1 tok/s, per-seq 178.1 tok/s (median of 1)
+B=4: aggregate 490.3 tok/s, per-seq 122.6 tok/s (median of 1)
+B=8: aggregate 652.6 tok/s, per-seq 81.6 tok/s (median of 1)
+B=16: aggregate 269.3 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 178.1 tok/s, per-seq 178.1 tok/s (median of 1)
+B=4: aggregate 488.9 tok/s, per-seq 122.2 tok/s (median of 1)
+B=8: aggregate 650.6 tok/s, per-seq 81.3 tok/s (median of 1)
+B=16: aggregate 268.5 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 178.0 tok/s, per-seq 178.0 tok/s (median of 1)
+B=4: aggregate 489.0 tok/s, per-seq 122.3 tok/s (median of 1)
+B=8: aggregate 650.3 tok/s, per-seq 81.3 tok/s (median of 1)
+B=16: aggregate 268.7 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 178.0 tok/s, per-seq 178.0 tok/s (median of 1)
+B=4: aggregate 489.9 tok/s, per-seq 122.5 tok/s (median of 1)
+B=8: aggregate 648.4 tok/s, per-seq 81.0 tok/s (median of 1)
+B=16: aggregate 269.2 tok/s, per-seq 16.8 tok/s (median of 1)
+B=1: aggregate 178.1 tok/s, per-seq 178.1 tok/s (median of 1)
+B=4: aggregate 489.4 tok/s, per-seq 122.4 tok/s (median of 1)
+B=8: aggregate 651.1 tok/s, per-seq 81.4 tok/s (median of 1)
+B=16: aggregate 269.5 tok/s, per-seq 16.8 tok/s (median of 1)
+-- arm C-split-dev01
+B=1: aggregate 177.5 tok/s, per-seq 177.5 tok/s (median of 1)
+B=4: aggregate 486.0 tok/s, per-seq 121.5 tok/s (median of 1)
+B=8: aggregate 647.8 tok/s, per-seq 81.0 tok/s (median of 1)
+B=16: aggregate 265.6 tok/s, per-seq 16.6 tok/s (median of 1)
+B=1: aggregate 177.6 tok/s, per-seq 177.6 tok/s (median of 1)
+B=4: aggregate 487.0 tok/s, per-seq 121.8 tok/s (median of 1)
+B=8: aggregate 648.3 tok/s, per-seq 81.0 tok/s (median of 1)
+B=16: aggregate 265.5 tok/s, per-seq 16.6 tok/s (median of 1)
+B=1: aggregate 177.4 tok/s, per-seq 177.4 tok/s (median of 1)
+B=4: aggregate 487.0 tok/s, per-seq 121.8 tok/s (median of 1)
+B=8: aggregate 646.7 tok/s, per-seq 80.8 tok/s (median of 1)
+B=16: aggregate 265.2 tok/s, per-seq 16.6 tok/s (median of 1)
+B=1: aggregate 177.6 tok/s, per-seq 177.6 tok/s (median of 1)
+B=4: aggregate 487.2 tok/s, per-seq 121.8 tok/s (median of 1)
+B=8: aggregate 646.9 tok/s, per-seq 80.9 tok/s (median of 1)
+B=16: aggregate 264.6 tok/s, per-seq 16.5 tok/s (median of 1)
+B=1: aggregate 177.4 tok/s, per-seq 177.4 tok/s (median of 1)
+B=4: aggregate 485.6 tok/s, per-seq 121.4 tok/s (median of 1)
+B=8: aggregate 646.5 tok/s, per-seq 80.8 tok/s (median of 1)
+B=16: aggregate 265.8 tok/s, per-seq 16.6 tok/s (median of 1)
+-- arm D-split-dev10
+B=1: aggregate 177.3 tok/s, per-seq 177.3 tok/s (median of 1)
+B=4: aggregate 486.3 tok/s, per-seq 121.6 tok/s (median of 1)
+B=8: aggregate 647.2 tok/s, per-seq 80.9 tok/s (median of 1)
+B=16: aggregate 266.6 tok/s, per-seq 16.7 tok/s (median of 1)
+B=1: aggregate 177.3 tok/s, per-seq 177.3 tok/s (median of 1)
+B=4: aggregate 486.5 tok/s, per-seq 121.6 tok/s (median of 1)
+B=8: aggregate 648.4 tok/s, per-seq 81.0 tok/s (median of 1)
+B=16: aggregate 267.3 tok/s, per-seq 16.7 tok/s (median of 1)
+B=1: aggregate 177.4 tok/s, per-seq 177.4 tok/s (median of 1)
+B=4: aggregate 486.5 tok/s, per-seq 121.6 tok/s (median of 1)
+B=8: aggregate 642.6 tok/s, per-seq 80.3 tok/s (median of 1)
+B=16: aggregate 266.4 tok/s, per-seq 16.6 tok/s (median of 1)
+B=1: aggregate 177.4 tok/s, per-seq 177.4 tok/s (median of 1)
+B=4: aggregate 486.2 tok/s, per-seq 121.6 tok/s (median of 1)
+B=8: aggregate 647.0 tok/s, per-seq 80.9 tok/s (median of 1)
+B=16: aggregate 266.6 tok/s, per-seq 16.7 tok/s (median of 1)
+B=1: aggregate 177.3 tok/s, per-seq 177.3 tok/s (median of 1)
+B=4: aggregate 486.1 tok/s, per-seq 121.5 tok/s (median of 1)
+B=8: aggregate 646.2 tok/s, per-seq 80.8 tok/s (median of 1)
+B=16: aggregate 266.2 tok/s, per-seq 16.6 tok/s (median of 1)
+PERF_DONE
+PERF_EXIT=0

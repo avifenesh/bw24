@@ -65,6 +65,11 @@ echo "=== serve-smoke B: door OPEN stages=2 devices=0,1 (THE Step-SKU config) ==
 MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_SERVE_SPEC=0 \
   bash tools/serve-smoke.sh "$Q9" /nonexistent-draft.gguf 2>&1 | tee "$OUT/serve-smoke-pp2-dev01.log"
 B_EXIT=${PIPESTATUS[0]}
+# The transport banner is printed by the SERVER, whose stdout serve-smoke.sh redirects to a
+# fixed /tmp/serve-smoke.log — which arm C then overwrites. Snapshot it here, while it is still
+# arm B's (the first version of this script checked it at the end and reported a liveness
+# failure on a run that was in fact split-live; that was a harness bug, not a serving finding).
+cp /tmp/serve-smoke.log "$OUT/server-stdout-pp2-dev01.log" 2>/dev/null || true
 # Control: the SAME non-spec config with the door SHUT. Without it, arm B's fail set conflates
 # "the split broke it" with "MEMRA_SERVE_SPEC=0 broke it" — one variable per comparison.
 echo "=== serve-smoke C: door SHUT, MEMRA_SERVE_SPEC=0 (the non-spec control) ==="
@@ -83,10 +88,21 @@ comm -13 "$OUT/failset-nospec.txt" "$OUT/failset-pp2.txt" | tee "$OUT/failset-ad
 [ -s "$OUT/failset-added.txt" ] && { echo "FAIL: the split ADDED serve-smoke failures"; FAILS=$((FAILS+1)); }
 # Proof the split was actually LIVE in arm B (not silently door-shut): the server log must
 # carry the cross-device transport banner. A green run without it proves nothing.
-grep -q "cross-device transport: stage0=dev0 stage1=dev1" "$OUT/serve-smoke-pp2-dev01.log" \
-  || grep -q "cross-device transport" /tmp/serve-smoke.log \
-  && echo "pp2 arm: split CONFIRMED live (transport banner present)" \
-  || { echo "FAIL: no pp transport banner — arm B may have served single-device"; FAILS=$((FAILS+1)); }
+# Written as an if/else, not a `||`/`&&` chain — that chain's precedence made the fallback
+# branch fire on a run that WAS split-live.
+cp /tmp/serve-smoke.log "$OUT/server-stdout-nospec-doorshut.log" 2>/dev/null || true
+if grep -q "cross-device transport" "$OUT/server-stdout-pp2-dev01.log" 2>/dev/null; then
+  echo "pp2 arm: split CONFIRMED live — $(grep -m1 'cross-device transport' "$OUT/server-stdout-pp2-dev01.log")"
+else
+  echo "FAIL: no pp transport banner in arm B's server stdout — may have served single-device"
+  FAILS=$((FAILS+1))
+fi
+# Control: the door-SHUT arm must NOT show it (proof the check can read zero where zero is).
+if grep -q "cross-device transport" "$OUT/server-stdout-nospec-doorshut.log" 2>/dev/null; then
+  echo "FAIL: door-SHUT arm showed a transport banner — the door leaks"; FAILS=$((FAILS+1))
+else
+  echo "control: door-shut arm shows NO transport banner (the liveness check reads zero)"
+fi
 
 nvidia-smi --query-gpu=index,memory.used,temperature.gpu --format=csv > "$OUT/gpu-post.csv"
 echo "script-detected failures: $FAILS"

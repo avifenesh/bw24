@@ -24,6 +24,14 @@ OUT=~/receipts/pp2batch/perf
 mkdir -p "$OUT"
 Q9=/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
 BIN=target/release
+# B=16 exceeds the default width cap 8 and q9 (NVFP4) has NO exact-16 tier
+# (`decode_batch_exact16_ok` admits only Q4_0/Q6_K/F8_E4M3/Q8_0+rp4), so without this door
+# every arm would panic at B=16 with "> cap 8 with no exact tier — refused". Applied to ALL
+# FOUR ARMS equally, so it cannot bias the comparison: it selects the same non-exact m>=16
+# tier on both sides, and that tier was gated bit-identical across the split in this lane
+# (serve receipts, ppbatch-q9-dev01-b16-cap16.log). It is a MEASUREMENT door, not a serving
+# default — the capacity numbers at B=16 describe the door-open tier, not shipped behavior.
+export MEMRA_DECODE_BATCH_CAP=16
 
 nvidia-smi --query-gpu=index,memory.used,temperature.gpu,clocks.sm,power.draw \
   --format=csv > "$OUT/gpu-pre.csv"

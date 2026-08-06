@@ -1,0 +1,22 @@
+[server] starting; models config = [("smoke", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 8
+[server] worker ready; serving models: ["smoke"]
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=chatcmpl-b33c2ef1e0b3cd434a5e620c17a75f07 tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 235MB (admission gate = 2x)
+[meter] admit id=chatcmpl-8337d9c0973af759668c41ba8e2038c8 tenant=default lane=interactive model="smoke"
+[meter] admit id=cmpl-54c1cb697b8b43a8d085b1604de6766d tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-92044472118df9ac3cec2bc1514d733e tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-04b2677233e3c749665b4050260aa89e tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-fd0ecf5eebd273fe4f6cba5f4e7a0613 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-f572b333a395be50646eee0ab3658075 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-100aa446eba885a568d4dffa37f59296 tenant=default lane=interactive model="smoke"
+[prime-batch] B=3 tokens=57 in 37.3ms
+[meter] admit id=chatcmpl-b1be51a13c650f3059dc81b27dd98906 tenant=default lane=interactive model="smoke"
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
