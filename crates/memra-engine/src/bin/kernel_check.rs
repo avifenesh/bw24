@@ -1661,6 +1661,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let wd = e.htod_bytes(raw)?;
                 // A6 split-plane copy of the SAME weight — the rp tile loader must be BIT-identical.
                 let wd_rp = e.htod_bytes(&repack_nvfp4_split(raw, out_f))?;
+                // ARM-AWARE BAND (research/w4a8-prefill-20260806). MEMRA_MMQ_F8F4=1 redirects
+                // qmatvec_mmq_nvfp4_w4a8_raw (mmq_ffi.rs) to the f8f4 tile, which breaks BOTH
+                // premises above: weights fold into e4m3 containers instead of int8, and the
+                // activation is e4m3, not q8_1 int8. The e4m3-act class carries 3 mantissa bits,
+                // so it runs ~10x coarser than int8-act and grows ~sqrt(k) — the same reasoning
+                // and the same 5e-2 bound f8f4-check already uses. Judging that tile against the
+                // int8 rung's 2e-2 made this gate fail on a correct kernel in every build, with
+                // or without the MMA form swap (logs/kc-plainform-control.log): the plain-form
+                // control reproduces 3.37e-2 / 3.45e-2 / 3.45e-2 / 4.34e-2 exactly.
+                let f8f4_arm = std::env::var("MEMRA_MMQ_F8F4").as_deref() == Ok("1");
+                let (band, band_txt) = if f8f4_arm {
+                    (5e-2f32, "e4m3-act band ~3e-2, gate 5e-2")
+                } else {
+                    (2e-2f32, "int8 band ~1e-3, gate 2e-2")
+                };
                 for tt in [16usize, 64, 128, 512] {
                     let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
                     let xd = e.htod(&x)?;
@@ -1669,8 +1684,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let d = maxdiff(&cpu, &yb);
                     let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
                     let rel = d / scale;
-                    println!("MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (int8 band ~1e-3) {}",
-                             if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                    println!("MMQ-W4A8{} blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} ({band_txt}) {}",
+                             if f8f4_arm { "-F8F4" } else { "" },
+                             if rel < band { "OK" } else { fails += 1; "FAIL" });
                     // rp-loader BIT-IDENTITY gate: split-plane loader vs GGUF loader on the same
                     // weight+activation must agree on every f32 bit (pure address remap, same FP
                     // ops in the same order). ANY nonzero diff = layout bug = HARD FAIL.
