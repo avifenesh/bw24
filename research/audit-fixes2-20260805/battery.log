@@ -1,0 +1,24 @@
+== kernel-check ==
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [5x128] bytes=680 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [6x160] bytes=1020 bad=0 OK
+
+ALL GREEN: kernels match CPU reference.
+== decode-batch-gate config ==
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+== decode-batch-gate strict ==
+gate1 seed 0: agreement all 32 steps
+gate1 (B=1 bit-identity vs decode_step_h, 32 steps, 1 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated decode_step_h, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+== run-gen argmax 9B ==
+prefill argmax=11751  decode argmax=11751  logit maxdiff=3.702e-1  MATCH
+generated 16 tokens in 0.112s = 142.27 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.035s) [stop: MaxNew]
+--- generated text ---

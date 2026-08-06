@@ -1,0 +1,21 @@
+== Q5 spill-regime A/B: 35B UD-IQ4_XS, SLRU forced (RESIDENT=0, VRAM_FRAC=0.60 -> 15257 slots vs 15360 blocks = permanently full), decode-bench 512/64, interleaved x5, base=pre-fix @HEAD~1(61953206-equivalent tree) new=75f6ee7f ==
+--- pair 1 base ---
+decode tg64 @ctx512: EAGER 99.3 tok/s (10.07 ms/tok)
+--- pair 1 new ---
+decode tg64 @ctx512: EAGER 102.9 tok/s (9.72 ms/tok)
+--- pair 2 base ---
+decode tg64 @ctx512: EAGER 99.2 tok/s (10.08 ms/tok)
+--- pair 2 new ---
+decode tg64 @ctx512: EAGER 102.7 tok/s (9.73 ms/tok)
+--- pair 3 base ---
+decode tg64 @ctx512: EAGER 99.0 tok/s (10.10 ms/tok)
+--- pair 3 new ---
+decode tg64 @ctx512: EAGER 102.6 tok/s (9.75 ms/tok)
+--- pair 4 base ---
+decode tg64 @ctx512: EAGER 98.9 tok/s (10.12 ms/tok)
+--- pair 4 new ---
+decode tg64 @ctx512: EAGER 102.8 tok/s (9.73 ms/tok)
+--- pair 5 base ---
+decode tg64 @ctx512: EAGER 98.5 tok/s (10.16 ms/tok)
+--- pair 5 new ---
+decode tg64 @ctx512: EAGER 101.9 tok/s (9.81 ms/tok)

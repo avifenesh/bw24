@@ -1,0 +1,45 @@
+CHUNKSWEEP seqs=1 chunk=1: aggregate 111.5 tok/s (8.97 ms/tick, median of 3)
+[batch-phase] total 2243.7 ms (sync-bounded; shares rank, not walltime)
+  1075.6 ms  47.9%  ffn (add/norm/gate/up/act/down)
+   393.3 ms  17.5%  gdn batched projections
+   252.5 ms  11.3%  lm_head (norm+matmul)
+   128.5 ms   5.7%  gdn out (gated norm+proj)
+   125.0 ms   5.6%  attn batched pre (norm/qkv/rope)
+    87.1 ms   3.9%  gdn state ops (conv/prep/scan)
+    57.7 ms   2.6%  attn per-seq: fa_decode
+    56.1 ms   2.5%  logits D2H + host split
+    49.1 ms   2.2%  attn post (gate+o-proj)
+    14.8 ms   0.7%  attn per-seq: kv append
+     3.8 ms   0.2%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+CHUNKSWEEP seqs=1 chunk=1: aggregate 111.6 tok/s (8.96 ms/tick, median of 3)
+[batch-phase] total 2243.7 ms (sync-bounded; shares rank, not walltime)
+  1076.0 ms  48.0%  ffn (add/norm/gate/up/act/down)
+   393.5 ms  17.5%  gdn batched projections
+   252.6 ms  11.3%  lm_head (norm+matmul)
+   128.5 ms   5.7%  gdn out (gated norm+proj)
+   125.0 ms   5.6%  attn batched pre (norm/qkv/rope)
+    86.9 ms   3.9%  gdn state ops (conv/prep/scan)
+    57.7 ms   2.6%  attn per-seq: fa_decode
+    55.8 ms   2.5%  logits D2H + host split
+    49.1 ms   2.2%  attn post (gate+o-proj)
+    14.8 ms   0.7%  attn per-seq: kv append
+     3.8 ms   0.2%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+CHUNKSWEEP seqs=1 chunk=1: aggregate 111.1 tok/s (9.00 ms/tick, median of 3)
+[batch-phase] total 2251.7 ms (sync-bounded; shares rank, not walltime)
+  1077.1 ms  47.8%  ffn (add/norm/gate/up/act/down)
+   394.6 ms  17.5%  gdn batched projections
+   252.6 ms  11.2%  lm_head (norm+matmul)
+   129.2 ms   5.7%  gdn out (gated norm+proj)
+   125.2 ms   5.6%  attn batched pre (norm/qkv/rope)
+    87.8 ms   3.9%  gdn state ops (conv/prep/scan)
+    58.5 ms   2.6%  logits D2H + host split
+    58.3 ms   2.6%  attn per-seq: fa_decode
+    49.5 ms   2.2%  attn post (gate+o-proj)
+    15.0 ms   0.7%  attn per-seq: kv append
+     3.9 ms   0.2%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
