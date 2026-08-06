@@ -1,0 +1,5 @@
+/usr/local/lib/python3.11/dist-packages/huggingface_hub/constants.py:298: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Fetching 3 files:   0%|          | 0/3 [00:00<?, ?it/s]Fetching 3 files:  33%|███▎      | 1/3 [00:00<00:01,  1.01it/s]Fetching 3 files:  67%|██████▋   | 2/3 [00:47<00:27, 27.72s/it]Fetching 3 files: 100%|██████████| 3/3 [02:53<00:00, 72.56s/it]Fetching 3 files: 100%|██████████| 3/3 [02:53<00:00, 57.78s/it]
+[32m✓ Downloaded[0m
+  path: /dev/shm/122b

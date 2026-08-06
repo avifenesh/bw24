@@ -1154,6 +1154,27 @@ impl HybridModel {
             );
         }
 
+        // FA v4 GQA CAPACITY GUARD (2026-08-06, lane/122b-bringup): fa_v4_smem sizes its
+        // per-warp Q arrays q_ints[8][64]/q_d[8][8] for gqa<=8 — every model before the
+        // 122B-A10B (32 Q heads / 2 KV heads = gqa 16) fit. At gqa>8 the (32,gqa,1) block's
+        // warps 8..15 write q_ints[wy] PAST the array into the k_ints/k_d K tile, corrupting
+        // scores -> all-NaN decode logits (receipts: research/122b-bringup-20260806/, arm
+        // battery: v4/deep MISMATCH+NaN, v3/v2/smem/reg/scalar all MATCH). The hd512 lane
+        // already carries its own capacity guard at dispatch ("gqa <= 16 = fa_v4_smem_512's
+        // q-array capacity"); hd256 v4 never got one. Key FA_V4_MAX_DEFAULT=0 at load so
+        // EVERY v4 dispatch site (eager, rows-verify, dc, rows_dc, windowed, seqs) flips to
+        // the v3 lane together — decode/verify stay kernel-family-identical (the parity law).
+        // Explicit MEMRA_FA_V4_MAX env still wins (diagnostic seam). The real v4 gqa16
+        // extension is a kernel change gated on its own battery + perf receipts (fix brief
+        // in research/122b-bringup-20260806/VERDICT.md).
+        if cfg.n_head_kv > 0 && cfg.n_head / cfg.n_head_kv > 8 {
+            crate::FA_V4_MAX_DEFAULT.store(0, std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "[fa] v4 decode family disabled: gqa {} > fa_v4_smem capacity 8 (v3 lane serves)",
+                cfg.n_head / cfg.n_head_kv
+            );
+        }
+
         if cfg.gemma4.is_some() {
             // gemma4 fa-vec crossover default (measured sweep 2026-07-10; env overrides).
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);

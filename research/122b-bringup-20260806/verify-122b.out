@@ -1,0 +1,8 @@
+=== FIX r1: default env, 110-tok prompt, NGEN=32 ===
+exit=0 verdict=MATCH guard=1
+=== FIX r2: identical rerun (x2 self-consistency) ===
+exit=0
+ARGMAX-X2-IDENTICAL
+=== FIX 4k: the original failing 4k-class prompt (argmax-run1 repro), NGEN=16 ===
+exit=0 verdict=MATCH
+ALL VERIFY DONE
