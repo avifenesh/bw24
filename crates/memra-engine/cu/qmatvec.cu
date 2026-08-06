@@ -1384,6 +1384,23 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b8(
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// mcols=16 (lane/rp-on-st, 2026-08-06) — the EXACT-16 SERVE TIER's admission ticket for NVFP4,
+// and the actual blocker this lane found. The mixed FP8-ST 27B artifact is 193 NVFP4 dense-MLP
+// tensors + 208 per-tensor F8_E4M3; `decode_batch_exact16_ok` walks EVERY matmul, so one class
+// without a bit-exact m=9..16 kernel refuses the whole model — measured as
+// `decode_step_batch: B=16 > cap 8 with no exact tier ... refused` on the ST checkpoint even
+// after the e4m3 classes got theirs. NVFP4 already had the template (b2/b4/b8); only the MCOLS=16
+// instantiation was missing, so this is one line of new code and zero new arithmetic: same
+// per-group nibble decode, same dp4a order, same ue4m3 weight scale, same warp_reduce_sum, hence
+// bit-identical per (token,row) to qmatvec_nvfp4_mmvq at m=1. NOTE the variant families (_pf,
+// _r2, _pfr2, _ca) deliberately get NO b16 twin here: they are shape-tuned perf variants whose
+// selection is a measured per-shape call, and the exact tier needs the reference form first.
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ---- NVFP4 batched matvec, WEIGHT-PREFETCH double-buffer (b4 long_scoreboard fix, 2026-07-03).
 // ncu --set full on the REAL 27B verify (12 steady launches): the batched kernel is memory-LATENCY
@@ -2165,6 +2182,19 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_rpr2(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_rp<8, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// mcols=16 SPLIT-PLANE twin (lane/rp-on-st, 2026-08-06). REQUIRED, not optional: rp is a LAYOUT,
+// and NVFP4-from-safetensors is resident as split-plane BY DEFAULT (model.rs A1 direct import,
+// `rp: true`). The b16 dispatch pins variant = "rp" whenever rp is set, so a base-only b16 would
+// have made `func("qmatvec_nvfp4_mmvq_b16_rp")` miss — and feeding split-plane bytes to the
+// GGUF-layout b16 instead would silently produce NaN. WROWS=1 matches the b16 launcher's
+// ROWS_PER_BLOCK (the r2 schedules do not exist at this width). Body is the same
+// nvfp4_mmvq_batched_rp template the b2/b4/b8 rp kernels run -> bit-identical per (token,row).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b16_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<16, 1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ---- DUAL gate+up BATCHED twins (lane/verify-economics, 2026-08-02). The verify-tier FFN pair

@@ -2681,6 +2681,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("BATCHED blk.0.ffn_gate.weight [NVFP4] m={mm} mcols={mcols}: rel={rel:.2e} {}",
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
+                // b16 EXACT-16 TIER pin (lane/rp-on-st, 2026-08-06) — BITWISE, on BOTH layouts.
+                // The cells above are rel-tolerance and stop at m=8; the exact-16 serve tier's
+                // whole contract is per-(token,row) bit-identity to the m=1 mmvq launch, so it
+                // needs a bit-bad==0 gate. Both layouts are mandatory, not thorough: NVFP4 from
+                // safetensors is resident SPLIT-PLANE by default (model.rs A1 import, rp: true)
+                // while GGUF NVFP4 is not, and the b16 dispatch pins variant=rp iff rp — so the
+                // two arms below are the two things production actually launches. m=9 and 12 also
+                // check the c >= m masking at a partially-filled b16.
+                {
+                    use memra_engine::model::repack_nvfp4_split;
+                    let wd_rp = e.htod_bytes(&repack_nvfp4_split(raw, out_f))?;
+                    for mm in [9usize, 12, 16] {
+                        let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 167) * 0.1).collect();
+                        let xd = e.htod(&x)?;
+                        let (aq, ad) = e.quantize_q8_1(&xd, mm, in_f)?;
+                        for (rp, w) in [(false, &wd), (true, &wd_rp)] {
+                            let yref = e.dtoh(&e.qmatvec_mmvq(w, &aq, &ad, mm, in_f, out_f,
+                                memra_engine::QT_NVFP4, row_bytes, 1.0, rp)?)?;
+                            let ybat = e.dtoh(&e.qmatvec_mmvq_batched(w, &aq, &ad, mm, in_f, out_f,
+                                memra_engine::QT_NVFP4, row_bytes, 16, 1.0, rp)?)?;
+                            let bad = yref.iter().zip(&ybat)
+                                .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                            println!("NVFP4-B16 blk.0.ffn_gate.weight [NVFP4{}] m={mm} mcols=16: bit-bad={}/{} {}",
+                                     if rp { " rp" } else { "" }, bad, yref.len(),
+                                     if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                        }
+                    }
+                }
             }
             // DUAL gate+up batched twins (lane/verify-economics, 2026-08-02): one launch computes
             // both tensors of the verify FFN pair; per (tensor, token, row) the body is the single

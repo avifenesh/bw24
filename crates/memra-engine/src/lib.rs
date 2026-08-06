@@ -5567,8 +5567,11 @@ impl Engine {
             // is present (rp4) — the mirror pick below then routes to the _rp family.
             // QT_F8_E4M3 joins unconditionally (lane/rp-on-st): its b16 IS the base kernel,
             // because the native e4m3 row layout is already aligned and needs no mirror.
+            // NVFP4 joins unconditionally too (lane/rp-on-st): base + _rp b16 twins both exist,
+            // so either residency layout has its aligned form at this width.
             let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, rp4, .. }
                 if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || *qtype == QT_F8_E4M3
+                    || *qtype == QT_NVFP4
                     || (*qtype == QT_Q8_0 && rp4.is_some()));
             if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
@@ -5753,7 +5756,9 @@ impl Engine {
             // b16 tier: Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's b16 exists ONLY as the
             // split-plane _rp twin (qmatvec_q8_0_mmvq_b16_rp — the q8rp mirror lane was built
             // for the m<=16 family, hybrid.rs), so Q8_0 joins iff the mirror is present (mrp).
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && mrp)) {
+            // NVFP4/F8_E4M3 b16: base + _rp twins (lane/rp-on-st) — no mirror precondition.
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_NVFP4
+                || qtype == QT_F8_E4M3 || (qtype == QT_Q8_0 && mrp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
@@ -5842,9 +5847,10 @@ impl Engine {
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
             // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note); e4m3's
-            // b16 is the base kernel (its native layout is already aligned — no mirror needed).
+            // b16 is the base kernel (its native layout is already aligned — no mirror needed);
+            // NVFP4 has BOTH (base + _rp), so it joins on either layout (lane/rp-on-st).
             && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
-                || (qtype == QT_Q8_0 && rp)) {
+                || qtype == QT_NVFP4 || (qtype == QT_Q8_0 && rp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -5892,7 +5898,7 @@ impl Engine {
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
             && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
-                || (qtype == QT_Q8_0 && rp)) {
+                || qtype == QT_NVFP4 || (qtype == QT_Q8_0 && rp)) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -7531,6 +7537,10 @@ impl Engine {
             (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8", (QT_Q6_K, 16) => "qmatvec_q6_K_mmvq_b16",
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",
             (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
+            // b16 (lane/rp-on-st): no mirror needed — NVFP4's 36 B/k32 block is already the
+            // aligned form its own kernel walks. Unlocks the exact-16 tier for every NVFP4 model
+            // AND for the mixed FP8-ST artifact, whose 193 NVFP4 tensors were refusing it.
+            (QT_NVFP4, 16) => "qmatvec_nvfp4_mmvq_b16",
             (QT_F8_E4M3, 2) => "qmatvec_e4m3_mmvq_b2", (QT_F8_E4M3, 4) => "qmatvec_e4m3_mmvq_b4",
             (QT_F8_E4M3, 8) => "qmatvec_e4m3_mmvq_b8",
             // b16 tier (lane/rp-on-st): e4m3 needs NO split-plane mirror to reach it — its native

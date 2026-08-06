@@ -103,6 +103,16 @@ impl HybridModel {
                     // bar was met, but it re-read the weight m times, which is why admitting it
                     // without the kernel would have been a throughput trap rather than a win.
                     || *qtype == crate::QT_F8_E4M3_BLK
+                    // NVFP4 (lane/rp-on-st, 2026-08-06) — THE blocker this lane measured. The
+                    // mixed FP8-ST 27B is 193 NVFP4 dense-MLP tensors, and this predicate is an
+                    // ALL over every matmul, so NVFP4's missing b16 refused the whole checkpoint
+                    // (`B=16 > cap 8 with no exact tier ... refused`) even with both e4m3 classes
+                    // admitted. It now has base + _rp b16 twins off its existing batched template
+                    // (bit-identical per (token,row) to the m=1 mmvq: same nibble decode, dp4a
+                    // order, ue4m3 scale, warp reduce). This also opens the tier for pure-NVFP4
+                    // GGUF models, which is a behavior change on the primary format — hence the
+                    // full decode-batch config+strict battery on both.
+                    || *qtype == crate::QT_NVFP4
                     || (*qtype == crate::QT_Q8_0 && rp4.is_some()),
                 _ => false,
             }
