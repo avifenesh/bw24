@@ -1,0 +1,16 @@
+[moe] resident-experts decision: experts 53.75GB + trunk 6.46GB vs free 49.43GB (expert budget 40.97GB) -> SLRU cache
+loaded qwen35moe (48 trunk layers; optional MTP skipped)
+prompt text: "Here is a Rust HTTP server source file: bw24-server (BASE-4): a minimal OpenAI-ish HTTP server that serves 2-4 concurrent agents across DIFFERENT models on one endpoint via a single GPU worker thread + step-interleave scheduler. Architecture: axum runs on a tokio runtime; ONE dedicated std thread owns the Engine and every loaded HybridModel because the CUDA context is thread-affine. Handlers submit commands over a std mpsc channel and receive tokens back over a per-request tokio mpsc channel. Endpoints include health, models, and v1 completions with streaming SSE support."
+prompt tokens: [8160, 369, 264, 32671, 9830, 3421, 2450, 999, 25, 33233, 17, 19, 25459, 318, 17900, 12, 19, 1590, 264, 16866, 5097, 15015, 64498, 9830, 3421, 421, 16545, 220, 17, 12, 19, 32907, 12636, 3808, 66230, 622, 1762, 3983, 383, 799, 14456, 4417, 264, 3074, 21966, 11525, 4368, 478, 2923, 43400, 20852, 27867, 13, 36593, 25, 3731, 367, 8213, 383, 264, 9341, 789, 15135, 26, 23287, 11886, 1407, 4368, 23495, 279, 7943, 321, 1396, 6452, 47955, 1652, 1521, 279, 52965, 2193, 369, 4368, 67785, 472, 13, 92259, 9042, 10966, 888, 264, 1407, 295, 79154, 5323, 321, 5091, 10885, 1142, 888, 264, 791, 43318, 9341, 789, 295, 79154, 5323, 13, 3839, 7462, 2830, 2730, 11, 3983, 11, 321, 343, 16, 3348, 880, 440, 16350, 70975, 1761, 13]
+prefill argmax=271  decode argmax=271  logit maxdiff=6.565e-1  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=4.221e-1  MATCH
+prefill 125 tok in 2.2582s = 55.4 tok/s (pp125)
+generated 8 tokens in 2.902s = 2.76 tok/s (Stage-B int8 dp4a decode, gen-only; prime 2.325s) [stop: MaxNew]
+tokens: [271, 27775, 383, 279, 3874, 3294, 11, 3165]
+MoE cache: 20832 slots | cumulative hits=846906 misses=26310 (hit-rate=97.0%) | Stage-1 baseline = 1602 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=95.1% | 78.5 MB/decode-token (vs 1602 MB/token Stage-1 => 20.4x less PCIe)
+OUTPUT TEXT: "\n\nBased on the description above, write"
+--- generated text ---
+
+
+Based on the description above, write
