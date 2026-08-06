@@ -672,6 +672,75 @@ fn serve_spec_enabled() -> bool {
     *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// ---- CONCURRENCY-GATED SPEC (lane/spec-gate, task #89, 2026-08-07) ----
+///
+/// THE MEASUREMENT THAT FORCES THIS (research/spec-scaling-20260806, merged fe2b3740, N=3
+/// interleaved on this rig with q9 NVFP4+MTP + the production drafter, K=3, greedy):
+///
+/// | c | spec ON agg | spec OFF agg | S/N  |
+/// |---|-------------|--------------|------|
+/// | 1 | 253.2       | 139.4        | 1.82x WIN  |
+/// | 2 | 252.3       | 223.2        | 1.13x win  |
+/// | 4 | 251.2       | 386.7        | 0.65x LOSS |
+/// | 8 | 249.7       | 525.9        | 0.47x LOSS |
+///
+/// Spec is monotonically FLAT (253.2 -> 249.7 across an 8x load increase) because the spec path
+/// is a QUEUE: `worker.rs` phase (a) steps each spec session's whole burst in a serial host loop
+/// and phase (c) excludes spec sessions from batched decode, so per-round cost moves 1.009x
+/// under 8x load while per-session p50 goes 7.75x. The obvious fix — a batched cross-session
+/// verify — is REFUTED, not untried: the exact-kernel width tier caps a pooled verify at 16
+/// columns (`matmul_decode_exact`'s `(2..=16).contains(&m)`; measured per-column cliff 1.677 ->
+/// 3.887 ms between T=16 and T=17), which is 4 sessions at K=3, and the measured amortization
+/// inside that cap bounds the whole fix at 1.27-1.44x on an arm spec-OFF already beats 2.1x.
+///
+/// So the shippable answer is POLICY: run spec while concurrency is low, take the batched path
+/// when it rises. Two thresholds, not one, because a single threshold at the crossover would
+/// thrash — a session count oscillating across it would pay both paths' costs and neither's
+/// benefit (and every demotion is one-way, see `into_demoted`).
+///
+///   enter/stay spec while active <= T_LOW   (default 2 — the last measured WIN rung)
+///   demote to batched when active >= T_HIGH (default 4 — the first measured LOSS rung)
+///
+/// The hysteresis band (act == 3 here) is the "keep doing what you are doing" zone: a session
+/// already on spec keeps bursting, a new arrival admits batched. That holds mode switches to
+/// O(load crossings) instead of O(ticks).
+///
+/// `MEMRA_SPEC_GATE=0` is the rollback seam (restores the pre-lane always-spec behavior at every
+/// concurrency). Thresholds are `MEMRA_SPEC_GATE_LOW` / `MEMRA_SPEC_GATE_HIGH`.
+fn spec_gate_on() -> bool {
+    static G: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *G.get_or_init(|| std::env::var("MEMRA_SPEC_GATE").as_deref() != Ok("0"))
+}
+
+/// Admit-spec ceiling: a NEW request goes spec only while the active-session count is at or
+/// below this. Default 2 = the highest measured spec-win rung (1.13x at c=2).
+fn spec_gate_low() -> usize {
+    static L: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        std::env::var("MEMRA_SPEC_GATE_LOW").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+    })
+}
+
+/// Demote floor: a LIVE spec session hands its cache to the batched path once the active count
+/// reaches this. Default 4 = the first measured spec-loss rung (0.65x at c=4). Must exceed
+/// `spec_gate_low()` or there is no hysteresis band; a bad pair is clamped, loudly.
+fn spec_gate_high() -> usize {
+    static H: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *H.get_or_init(|| {
+        let raw = std::env::var("MEMRA_SPEC_GATE_HIGH").ok()
+            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(4);
+        let low = spec_gate_low();
+        if raw <= low {
+            let fixed = low + 1;
+            eprintln!("[spec-gate] WARN: MEMRA_SPEC_GATE_HIGH={raw} <= LOW={low} leaves no \
+                       hysteresis band (mode thrash); clamped to {fixed}");
+            fixed
+        } else {
+            raw
+        }
+    })
+}
+
 /// Admission transient-reserve override in BYTES (lane/admit-oom, 2026-08-06). This exists for
 /// exactly one reason: the c=64 stress gate's TEETH arm. A gate that can only be observed
 /// passing proves nothing, so `tools/serve-stress-gate.sh --teeth` forces the reserve tiny
@@ -1345,6 +1414,11 @@ pub fn run(
     // decode tick inside the SLO age IS an SLO breach the percentile window can't see.
     let mut last_interactive_decode = Instant::now();
     let mut tick_n: u64 = 0;
+    // SPEC GATE (lane/spec-gate): how many live sessions this worker has handed from the spec
+    // burst path to batched decode. The thrash observable — under a correct hysteresis band
+    // this counts LOAD CROSSINGS, not ticks (a per-tick demotion count would mean the band is
+    // too narrow or the handoff is failing and re-firing).
+    let mut n_demoted = 0u64;
 
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
@@ -1548,7 +1622,7 @@ pub fn run(
             let model_key = req.model.clone();
             let free_before = engine.ctx().mem_get_info().map(|(f, _)| f).ok();
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, &mut spec_sizing,
-                        &mut px, *req) {
+                        &mut px, active.len(), *req) {
                 Ok(s) => {
                     n_admitted += 1;
                     lane_admitted[lane.idx()] += 1;
@@ -1766,6 +1840,105 @@ pub fn run(
                         step_stats.record(t_g.elapsed().as_secs_f32() * 1000.0);
                         last_interactive_decode = Instant::now();
                         }
+                    }
+                }
+            }
+            // (a-) SPEC DEMOTION (lane/spec-gate, task #89, 2026-08-07). The admit gate above
+            // keeps NEW arrivals off the serial spec queue, but sessions admitted while the box
+            // was quiet keep bursting after load arrives — and each one holds a whole burst of
+            // the tick (~21 ms at B=32/K=3) that the batched rows wait behind. So a live spec
+            // session hands its cache to the batched path once the active count reaches T_HIGH.
+            //
+            // EXACTNESS (the non-negotiable bar). At a burst boundary the session invariant is
+            // `cache.pos == committed.len()` — every committed row's trunk KV/recurrent state is
+            // exactly what a plain prime of that token sequence would have produced — and
+            // `next_pred` is the argmax of the verify's logits for the last committed row, which
+            // is bit-identical to plain decode's logits there (that identity IS the greedy accept
+            // walk's basis). Handing (cache, next_pred) over therefore continues the stream from
+            // a state the batched path cannot distinguish from one it produced itself:
+            // `device_next` makes the next batched tick emit `next_pred` and feed it into this
+            // same cache, exactly as `advance_sample_emit` does for any batched row. See
+            // `SpecSession::into_demoted`.
+            //
+            // A carried pending (the default partial-accept tail) must COMMIT first — its bonus
+            // row is emitted but deliberately absent from the cache, and handing over a cache
+            // that is one row short of the emitted stream would silently drop a token.
+            // `spec_flush_pending` is that commit, and it is byte-identical to the pre-carry
+            // tail. It costs one T=1 trunk pass, once per demotion (never per burst).
+            //
+            // WHO IS EXCLUDED, and why (stated, not hidden):
+            //   * SAMPLED sessions — `next_pred` on the sampled tail is the commit pass's ARGMAX,
+            //     so handing it over would inject a greedy token into a sampled stream. The
+            //     sampled tail keeps no logits row to draw from, and adding a per-burst
+            //     [n_vocab] D2H (1.36 ms at the 9B's 248k vocab) to enable a rare handoff is the
+            //     wrong trade. Sampled spec sessions stay on spec until they end.
+            //   * CONSTRAINED sessions — `next_pred` is the UNMASKED verify argmax; emitting it
+            //     could produce a grammar-illegal token.
+            // Both residuals are BOUNDED by the admit gate: at most `spec_gate_low()` sessions
+            // can be on the spec path at any time, so the worst case is that many serial bursts,
+            // not a full concurrency ladder's worth.
+            //
+            // ONE-WAY BY DESIGN (v1). Demotion drops the MTP draft scratch and the persistent
+            // draft-graph context; re-promoting on drain-down would mean an `mtp_kv_fill` over
+            // the whole committed history plus a fresh graph capture, i.e. NOT the "symmetric and
+            // cheap" handoff the re-promotion option was conditioned on. A demoted session stays
+            // demoted until it ends. New arrivals get spec again the moment the count falls back
+            // to T_LOW, so the policy still tracks a draining load — per REQUEST, not per session.
+            if spec_gate_on() {
+                let n_live = active.len() - finished.len();
+                if n_live >= spec_gate_high() {
+                    for i in 0..active.len() {
+                        if finished.contains(&i) { continue; }
+                        let s = &mut active[i];
+                        if s.spec.is_none() { continue; }
+                        // exclusions above: sampled + constrained keep the spec path.
+                        if !s.sampler.is_greedy() || s.constraint.is_some() { continue; }
+                        // a session that has not bursted yet has no cache state to hand over
+                        // (its prompt is still queued as the spec turn-1 suffix) — it stays on
+                        // spec for this tick and demotes at its next boundary.
+                        let sess = s.spec.as_ref().unwrap();
+                        if sess.committed_len() == 0
+                            || (!sess.demote_ready() && !sess.has_pending()) { continue; }
+                        let mut sess = s.spec.take().unwrap();
+                        let lm = &loaded[&s.model];
+                        if sess.has_pending() {
+                            if let Err(err) = lm.model.spec_flush_pending(&engine, &mut sess) {
+                                // UNRECOVERABLE, and said so honestly: the flush consumed the
+                                // pending before failing, so the session holds neither a pending
+                                // nor a next_pred — its next continuation burst would trip the
+                                // engine's primed-session assertion. Retire with the quoted cause
+                                // rather than hand back a session that cannot burst.
+                                eprintln!("[spec-gate] demote flush FAILED (model {}): {err}",
+                                          s.model);
+                                let _ = s.tx.send(Event::Error(EngineError::engine(format!(
+                                    "spec demote flush failed: {err}"))));
+                                finished.push(i);
+                                continue;
+                            }
+                        }
+                        // Re-check the handoff shape BEFORE consuming the session:
+                        // `into_demoted` takes `self`, so a None there would drop the caches of
+                        // a live request. Should be unreachable (flush clears pending and sets
+                        // next_pred) — loud no-op, session handed straight back.
+                        if !sess.demote_ready() {
+                            eprintln!("[spec-gate] demote SKIPPED: session not in handoff shape \
+                                       after flush (model {}); staying on spec", s.model);
+                            s.spec = Some(sess);
+                            continue;
+                        }
+                        let committed = sess.committed_len();
+                        let Some((cache, next)) = sess.into_demoted() else { continue };
+                        debug_assert_eq!(cache.pos, s.fed.len(),
+                            "demote handoff: cache rows != fed tokens");
+                        s.cache = Some(cache);
+                        s.device_next = Some(next);
+                        s.prefill_done = true;
+                        s.last_logits.clear();
+                        n_demoted += 1;
+                        eprintln!("[spec-gate] demoted session to batched decode: \
+                                   {n_live} active >= HIGH={} (model {}, committed \
+                                   {committed}, generated {})",
+                                  spec_gate_high(), s.model, s.generated.len());
                     }
                 }
             }
@@ -2098,8 +2271,13 @@ pub fn run(
                 let n_int = active.iter()
                     .filter(|s| s.lane == crate::lanes::Lane::Interactive).count();
                 let n_pref = active.iter().filter(|s| !s.prefill_done).count();
-                eprintln!("[tick] act={} int={} priming={} ready={} decode_ms={:.1}",
-                          active.len(), n_int, n_pref, ready.len(),
+                // `spec` + `demoted` (lane/spec-gate): the policy's own observables — how many
+                // rows are on the serial burst path this tick, and the cumulative handoff count
+                // (thrash = this climbing per tick instead of per load crossing).
+                let n_spec = active.iter().filter(|s| s.spec.is_some()).count();
+                eprintln!("[tick] act={} int={} priming={} ready={} spec={} demoted={} \
+                           decode_ms={:.1}",
+                          active.len(), n_int, n_pref, ready.len(), n_spec, n_demoted,
                           t_decode.elapsed().as_secs_f32() * 1000.0);
             }
             // (d) dark-lane prefill, ADAPTIVE: the tick period IS the client TPOT, so dark
@@ -2413,6 +2591,10 @@ fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Bo
 /// Build a Session: tokenize the prompt (worker owns the Tokenizer), allocate the per-session Cache,
 /// build the per-session Sampler. The prompt is NOT primed here — it's fed one token per scheduler
 /// tick so prefill of a new session interleaves with other sessions' decode (the BASE-4 interleave).
+/// `n_active` = live session count at admit time, the SPEC GATE's policy metric (see
+/// `spec_gate_on`). This request would be number `n_active + 1`, so the gate compares
+/// `n_active + 1 <= spec_gate_low()`.
+#[allow(clippy::too_many_arguments)]
 fn admit(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
@@ -2420,6 +2602,7 @@ fn admit(
     spec_reuse: &mut HashMap<PoolKey, Vec<SpecReuseEntry>>,
     spec_sizing: &mut SpecSizing,
     px: &mut PrefixCache,
+    n_active: usize,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, EngineError)> {
     let lm = &loaded[&req.model];
@@ -2580,11 +2763,21 @@ fn admit(
     // spec bursts — the grammar truncates acceptance AFTER the exactness verify and forces
     // the masked argmax at the cut slot (generate_spec_session_constrained). Sampled
     // constrained and the MEMRA_CONSTRAIN_HOST oracle keep plain decode.
+    // CONCURRENCY GATE (lane/spec-gate, 2026-08-07): the ADMIT half of the policy — a request
+    // arriving while the box is already busy never enters the serial spec queue in the first
+    // place. `n_active + 1` because this request is about to become active. Measured basis and
+    // the threshold pair: `spec_gate_on`. MEMRA_SPEC_GATE=0 restores always-spec.
+    let spec_gate_ok = !spec_gate_on() || n_active + 1 <= spec_gate_low();
     let spec_eligible = serve_spec
+        && spec_gate_ok
         && (constraint.is_none() || (sampler.is_greedy() && !constrain_host()))
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
         && !greedy_penalized
         && lm.model.mtp.is_some();
+    if !spec_gate_ok && serve_spec && lm.model.mtp.is_some() {
+        eprintln!("[spec-gate] admit batched: {} active (+1) > LOW={} — spec would queue",
+                  n_active, spec_gate_low());
+    }
 
     // CROSS-REQUEST PREFIX CACHE probe (2026-08-02; module doc at PrefixCache). Only when the
     // continuation pool missed, the session won't go spec, and batched scheduling is live.

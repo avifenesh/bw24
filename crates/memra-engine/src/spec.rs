@@ -377,6 +377,56 @@ impl SpecSession {
     pub fn rewind_pos(&self) -> Option<usize> {
         self.turn_ckpt.as_ref().map(|c| c.pos)
     }
+    /// Is this session in the DEMOTION-READY shape (see [`SpecSession::into_demoted`])?
+    /// `false` means a carried pending must be flushed first (`spec_flush_pending`), or the
+    /// session has never run a turn and has no prediction to hand over.
+    pub fn demote_ready(&self) -> bool {
+        self.pending_tok.is_none() && self.next_pred.is_some()
+    }
+    /// Does this session hold a carried pending bonus (flush required before a handoff/park)?
+    pub fn has_pending(&self) -> bool {
+        self.pending_tok.is_some()
+    }
+    /// Committed row count == cache rows (the session invariant), for the caller's own
+    /// `fed`-length cross-check at a handoff boundary.
+    pub fn committed_len(&self) -> usize {
+        self.committed.len()
+    }
+    /// DEMOTION HANDOFF (lane/spec-gate, 2026-08-07): consume this session and hand its trunk
+    /// cache + next-token prediction to the plain batched-decode path.
+    ///
+    /// WHY THIS IS EXACT (greedy). The invariant at a burst boundary is `cache.pos ==
+    /// committed.len()`: every committed row has trunk KV + recurrent state, exactly as a plain
+    /// tokenwise prime of the same `committed` sequence would have left it (that is the
+    /// session-tail contract, and the same property `spec_rewind_to_checkpoint` and the reuse
+    /// pool already rely on). `next_pred` is the argmax of the verify's logits for the LAST
+    /// committed row — and verify-column logits are bit-identical to plain decode's logits at
+    /// that position, because `matmul_decode_exact` bit-identity IS the basis of the greedy
+    /// accept walk. So handing (cache, next_pred) to the batched path continues the stream from
+    /// a state indistinguishable from one the batched path produced itself: the batched tick
+    /// emits `next_pred`, feeds it into this same cache, and decodes on.
+    ///
+    /// `None` when the session is not in the handoff shape — a carried pending (its bonus row is
+    /// NOT in the cache, so `spec_flush_pending` must commit it first) or no `next_pred` yet
+    /// (never bursted). Callers must not force it: a half-committed cache handed to the batched
+    /// path would silently skip a token.
+    ///
+    /// The MTP draft scratch, the persistent draft-graph context and the turn checkpoint are
+    /// DROPPED here (freeing their VRAM): the batched path never drafts, and this handoff is
+    /// one-way by design — there is no cheap symmetric re-promotion (rebuilding the draft KV
+    /// would mean an `mtp_kv_fill` over the whole committed history).
+    pub fn into_demoted(self) -> Option<(Cache, u32)> {
+        if self.pending_tok.is_some() {
+            return None;
+        }
+        let np = self.next_pred?;
+        debug_assert_eq!(
+            self.cache.pos,
+            self.committed.len(),
+            "demotion handoff: cache rows != committed tokens"
+        );
+        Some((self.cache, np))
+    }
     /// Pool-resume hook (audit Q2): clear the parked draft-graph failure memoization so a
     /// NEW request resuming this session gets one fresh capture chance — a transient-pressure
     /// capture failure must not persist for the pool's whole lifetime (the TRT #16072 class).
