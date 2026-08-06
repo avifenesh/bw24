@@ -1002,3 +1002,32 @@ The verdict is right on this SKU anyway, and the SLRU path it chose is measurabl
 steady-state hit rate, 133.5 MB/decode-token vs the 2678 MB/token Stage-1 baseline = 20.1x less
 PCIe). But it would wrongly spill a bank that *fits* per-stage on a wider PP split. Not fixed:
 changing residency selection is perf-affecting and belongs behind the pp2-hardening lane's A/B.
+
+---
+
+## Regression guard for the draft-head fix (`3dad4f01`)
+
+The 0%-acceptance bug had a property worth naming: **no gate in the repo could have caught it.**
+`kernel-check` is model-free, `run-gen` argmax was MATCH, and `run-spec` self-consistency PASSED at
+every K=1..8 — because the verify arbitrates, a wrong draft head produces *correct output* and only
+loses speed. The single line that flagged it was `run_spec.rs`'s own
+`WARNING: acceptance == 0 with identical output`, which is a warning, not a failure.
+
+So the fix is pinned by construction rather than by a gate. `draft_head_tensor(has, n)` factors the
+name preference out of `MtpHead::load_draft` (CUDA device + 3.5 GB artifact) into a pure function
+over a tensor-presence predicate, with five GPU-free unit tests: the real drafter's tensor set
+(transcribed from `raw/draft-head-tensor-hashes-20260807.txt`) resolving to
+`blk.45.nextn.shared_head_head.weight`; per-block head selection across 45/46/47 (three distinct
+matrices by sha256, so the name must be index-built — this is the seam multi-block chaining will
+use); the FR-Spec fallback to file-level `output.weight`; the legacy `nextn.shared_head` probe
+losing to the real name; and a different block's head never being borrowed.
+
+`cargo test -p memra-engine --lib` = 46 passed / 0 failed (5 new), no GPU. The
+`[mtp-draft] external draft head: source=` receipt now derives from the resolved name rather than
+re-probing, so the log and the load cannot disagree.
+
+Note on repo hygiene, unrelated to this lane: `cargo fmt --check` reports drift in ~100 files
+across `memra-engine` (rustfmt 1.9.0-stable, no `rust-toolchain.toml` pin), and neither
+`.github/workflows/ci.yml` nor `tools/hooks/pre-push` runs fmt or clippy. The lines this commit
+adds are fmt-clean; the surrounding drift predates it and is a rustfmt-version artifact, not a
+regression. Recorded, not touched.
