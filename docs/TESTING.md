@@ -75,7 +75,12 @@ The K=1..8 sweep stays tier-2.
 gates like `sample-check` — whose gate is exit 0. They pin no golden and exist for code
 the greedy token goldens structurally cannot see (the sampler chain). Three landed
 2026-08-05: `chunkinv` (chunked-prefill byte-identity across `MEMRA_PRIME_CHUNK` values,
-naked env — the grain-free default's contract), `chunkinvc` (its canary: injects the
+naked env — the grain-free default's contract; note its **coverage is per-architecture and
+prompt-length-bounded** — the pinned probe prompts are short, which is precisely why they could
+not reach the `step35` chunk-dependence defect that lives past a 512-token SWA window. A
+long-prompt arm for that arch is written and legitimately red until the fix lands:
+[`research/step37-p2-20260806/`](../research/step37-p2-20260806/)), `chunkinvc` (its canary:
+injects the
 `MEMRA_PRIME_F32CHUNK0=1` legacy arithmetic and must FAIL, proving the gate detects the
 mechanism), and `gwstress` (the graph-warmup pool-growth stress gate behind the
 `MEMRA_GRAPH_WARMUPS=1` default). A fourth landed 2026-08-06: `sstress`
@@ -245,6 +250,50 @@ Two holes in this stage were closed by that same red (2026-08-06):
 - **H100/sm_90a lane**: `tools/validate-h100.sh` on an H100, per its own laws.
 - **Cross-model blast radius**: tier 1 probes one model per kernel class; the full per-model
   matrix runs at tier 2.
+- **Multi-GPU (PP-N) exactness**: needs 2+ cards, so it is neither in fast-gate nor in
+  `local-ci.sh` — it runs on the multi-card box for any diff touching `pp.rs`, the stage-split
+  dispatch, or a decode path a split reaches. See below.
+
+## Multi-GPU (PP-N) exactness gates — run on the multi-card box
+
+These are not in `tools/local-ci.sh`: the single owned rig has one GPU, so a green local
+battery says nothing about them. Any change to `pp.rs`, the stage-split dispatch, or a decode
+path a split walks needs these re-run on a 2+ card box.
+
+| gate | invocation | what it proves |
+|---|---|---|
+| `ppn-gate` | `MEMRA_PP_DEVICES=0,1 ppn-gate <model.gguf> [stages=2] [P=16] [N=32]` | the eager stage-split decode (`decode_step_h_ppn`) is bit-identical to the unsplit walk, serial and pipelined arms |
+| `decode-batch-gate --mode pp` | `decode-batch-gate <model.gguf> --mode pp [--batch 1,4,8] [--stages N] [--reps R]` | the **batched** stage split (`decode_step_batch_ppn`) is bit-identical per row per step. Honours `MEMRA_PP_DEVICES` / `MEMRA_PP_SPLITS` / `MEMRA_PP_SHARD` from the caller |
+| `decode-batch-gate --mode ppspec` | `decode-batch-gate <model.gguf> --mode ppspec [--ts 2,5,9] [--stages N] [--reps R]` | the **spec-verify** stage split (`decode_step_t_core_ppn`, T=K+1) is bit-identical per logit column per round, plus the `h_seed` column the drafter is re-seeded from. `--ts 2,5,9` = K=1,4,8 |
+| `pp-transport-smoke` | `pp-transport-smoke` | the peer boundary transport primitive alone |
+
+Three properties of these gates are load-bearing and were learned by measurement:
+
+1. **`--reps` defaults to 2 because the class they must catch was a 35% FLAKE.** The
+   shared-`Engine` scratch race (`fa_part_pool` / `argmax_partials` / `fa_vf16_scratch` are
+   stable-pointer pools, single-stream-safe by design) surfaced as an intermittent failure on
+   2026-08-02. One green replay is not evidence of absence — always run reps.
+2. **The door must open BEFORE load**, because weight sharding is a load-time decision. The
+   gates set `MEMRA_PP_STAGES` themselves for exactly this reason; a battery that opened it
+   after load would be measuring the wrong placement.
+3. **Two arms make these localizers rather than coin flips.** The `unsplit@ppncache` arm
+   replays the unsplit walk over the *same* stage-owned caches, holding cache placement
+   constant so only the walk varies — a red split arm then points at the stage split and
+   nothing else. The `epilogue` arm runs mixed per-row metas and checks the lean
+   `last_logits_dev` park through UVA from the primary context, the same read the server's
+   retire path does.
+
+Arm 4 of the pp battery deserves its own note: the B=1 fast path's exactness bar is
+bit-identity **to the eager split** (`decode_step_h`), not to the batched body — against which
+it carries the accepted m=1 fusion FP gap by design. That is why arms 1-3 pin
+`set_b1_fast(false)`, and why arm 4 also asserts per-step `pos` equality, so a double-advance
+cannot hide behind matching logits.
+
+Receipts: [`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/),
+[`research/pp2-spec-20260806/`](../research/pp2-spec-20260806/),
+[`research/pp2-hardening-20260806/`](../research/pp2-hardening-20260806/) (the 20-arm
+fail-closed guard battery), [`research/m2-pp8-20260802/`](../research/m2-pp8-20260802/) (N=2/4/8
+on an 8xH100 box).
 
 ## Receipts
 
