@@ -166,6 +166,41 @@ role) in `chat.rs`.
 
 ---
 
+## Increment 3 — loader: the separate head-wise attention gate (2026-08-06)
+
+`crates/memra-engine/src/hybrid.rs`: `FullAttnLayer` gains `attn_gate: Option<GpuTensor>`, and
+`load_mixer_kind` gains a `sep_gate: bool` parameter (passed, not read off a cfg, so the MTP/draft
+call sites that build a synthetic cfg opt in explicitly). All three call sites forward
+`attn_gate_separate()`; gemma4's shared-KV literal is `attn_gate: None`.
+
+Loaded with **`load_t`, not `load_opt`** — deliberate. If the arch says the gate exists and the
+tensor is missing, the correct outcome is a load failure, not a forward pass that silently skips a
+per-head sigmoid and returns plausible-but-wrong logits.
+
+**A plan assumption corrected by reading the artifact header.** Going in (phase-1 notes) the gate
+was described as belonging to "the full-attn path", implying a subset of layers. The real header
+has `blk.N.attn_gate.weight` on **all 45 blocks**, with the width varying per layer because it is
+that layer's query-head count:
+
+```
+blk.0.attn_gate.weight  [4096,   64]      blk.0.attn_q.weight  [4096,  8192]   (full attn, 64 heads)
+blk.1.attn_gate.weight  [4096,   96]      blk.1.attn_q.weight  [4096, 12288]   (SWA,       96 heads)
+```
+
+So the gate is universal on this arch and it is the *per-layer wq/wo widths* that vary — the
+forward must take both from `n_head_at(il)`, never from the global scalar (which is the max, 96,
+and would over-read wq on the 12 full-attn layers).
+
+**Half-rotary needs no kernel work.** `rope_neox2_f32` (`crates/memra-engine/cu/kernels.cu:1416`)
+already takes `head_dim` and `n_dims` as *separate* arguments and does `int half = n_dims / 2; if
+(j >= half) return;`. Passing `n_dims = 64` with `head_dim = 128` rotates the first 64 dims and
+leaves the tail untouched — exactly upstream's half-rotary on the full-attn layers. One less
+kernel on the critical path than the plan budgeted.
+
+`cargo build -p memra-engine`: exit 0, no warnings.
+
+---
+
 ## Ledger
 
 | item | state |
@@ -177,8 +212,9 @@ role) in `chat.rs`.
 | `attn_out_gate()` deny-list mis-split | FIXED |
 | `deepseek-v3` pretokenizer | DONE (cross-checked vs an independent engine) |
 | unknown-`pre` silent fallback | now warns once |
-| loader: `attn_gate.weight` on the full-attn path | open |
-| forward: `step35_geom`, SWA 3:1, dual rope, half-rotary, gate epilogue, clamp | open |
+| loader: `attn_gate.weight` (all 45 blocks, per-layer width) | DONE |
+| half-rotary needs a new kernel | NO — `rope_neox2_f32` already splits `head_dim`/`n_dims` |
+| forward: `step35_geom`, SWA 3:1, dual rope, gate epilogue, clamp | open |
 | chat template (StepFun ChatML dialect) | open |
 | PP-2 split boot | open |
 | KV @128K under PP-2 + q27 co-residence arithmetic | open |

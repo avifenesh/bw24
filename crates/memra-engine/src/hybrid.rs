@@ -31,12 +31,17 @@ fn load_opt(
 /// regardless of the periodic interval — its GGUF carries attn_q/k/v, not ssm_*/attn_qkv).
 /// `mla` is the Arch gate: `Some` only for glm-dsa (cfg.mla) — every layer of an MLA model,
 /// INCLUDING its NextN/MTP block (dense MLA, no indexer), takes the Mla arm.
+///
+/// `sep_gate` = `ModelConfig::attn_gate_separate()`: load step35's separate head-wise
+/// `attn_gate.weight` onto the full-attn arm. It is passed in rather than read off a cfg so the
+/// MTP/draft call sites (which build a synthetic cfg) opt in explicitly.
 fn load_mixer_kind(
     e: &Engine,
     src: &dyn TensorSource,
     il: u32,
     kind: LayerKind,
     mla: Option<&MlaConfig>,
+    sep_gate: bool,
 ) -> Result<Mixer, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
     if let Some(m) = mla {
@@ -58,6 +63,14 @@ fn load_mixer_kind(
             wo: load_t(e, src, &p("attn_output.weight"))?,
             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
             k_norm: load_t(e, src, &p("attn_k_norm.weight"))?,
+            // step35: REQUIRED when the arch says so — a missing gate would silently drop the
+            // per-head sigmoid and produce plausible-but-wrong logits, so this is load_t not
+            // load_opt. Step-3.7-Flash ships it on all 45 blocks (width = that layer's n_head).
+            attn_gate: if sep_gate {
+                Some(load_t(e, src, &p("attn_gate.weight"))?)
+            } else {
+                None
+            },
         }),
         LayerKind::LinearAttention => Mixer::Linear(LinearAttnLayer {
             wqkv: load_t(e, src, &p("attn_qkv.weight"))?,
@@ -330,6 +343,17 @@ pub struct FullAttnLayer {
     pub wo: GpuTensor,
     pub q_norm: GpuTensor,
     pub k_norm: GpuTensor,
+    /// step35-class SEPARATE head-wise attention gate: `blk.N.attn_gate.weight [n_embd, n_head_l]`
+    /// where `n_head_l` is this layer's query-head count (64 full / 96 SWA on Step-3.7-Flash, so
+    /// the width VARIES per layer). Produces one pre-sigmoid scalar per head from the
+    /// post-attn_norm hidden state; the forward broadcasts sigmoid(gate) over head_dim and
+    /// multiplies attn_out before wo (upstream `step35.cpp:267-285`).
+    ///
+    /// `None` for every other arch. Do NOT confuse with `LinearAttnLayer::wqkv_gate`, which reads
+    /// the SAME tensor name on qwen35's SSM layers but is a different mechanism (a full-width
+    /// z-gate, not a per-head scalar), nor with the qwen35 FUSED gate packed inside wq that
+    /// `ModelConfig::attn_out_gate()` / `q_gate_split` handle.
+    pub attn_gate: Option<GpuTensor>,
 }
 
 /// Latent-KV geometry for one MLA layer, resolved at load from `MlaConfig` (glm-dsa). The KV
@@ -771,7 +795,8 @@ impl MtpHead {
             post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
                 .expect("draft NextN block needs post_attention_norm or ffn_norm"),
-            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref())?,
+            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref(),
+                                   dcfg.attn_gate_separate())?,
             ffn: load_ffn(e, &src, &dcfg, n, None)?,
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
@@ -943,9 +968,11 @@ impl HybridModel {
                             wo: load_t(e, src, &p("attn_output.weight"))?,
                             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
                             k_norm: load_t(e, src, &tp("attn_k_norm.weight"))?,
+                            attn_gate: None, // gemma4 has no separate head-wise gate
                         })
                     } else {
-                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref())?
+                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref(),
+                                        cfg.attn_gate_separate())?
                     }
                 },
                 ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
@@ -1030,7 +1057,8 @@ impl HybridModel {
                     post_attn_norm: load_opt(e, src, &p("post_attention_norm.weight"))?
                         .or(load_opt(e, src, &p("ffn_norm.weight"))?)
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
-                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref())?,
+                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref(),
+                                           cfg.attn_gate_separate())?,
                     ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
                     shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
