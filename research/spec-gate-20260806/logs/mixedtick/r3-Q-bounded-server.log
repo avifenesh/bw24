@@ -1,0 +1,1832 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8318
+[meter] admit id=chatcmpl-e84296356270e5f5e6b1847fa83a4093 tenant=default lane=interactive model="q9"
+[spec-acc] ctx=226 burst=3/3 cum=3/3=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=231 burst=3/3 cum=6/6=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=235 burst=3/3 cum=9/9=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[spec-acc] ctx=239 burst=3/3 cum=12/12=1.000
+[tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
+[meter] admit id=chatcmpl-15a780c636478771b504a673f911cb0b tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-9e97bff444395e3f212a526427e6b16e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-84cbfd371c8162e73a0a1160a340137d tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d02cc53425189be98c1c8a0f366baf78 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-9bae41438801beb54cb53c094da34121 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-586cd82ac34dfca084d11b4edfa6e7bb tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[worker] observed session VRAM cost for "q9": 101MB (admission gate = 2x)
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[spec-acc] ctx=226 burst=3/3 cum=3/3=1.000
+[spec-acc] ctx=226 burst=3/3 cum=3/3=1.000
+[prime-batch] B=4 tokens=904 in 198.0ms
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model q9)
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=11.2
+[spec-acc] ctx=231 burst=3/3 cum=6/6=1.000
+[spec-acc] ctx=231 burst=3/3 cum=6/6=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=235 burst=3/3 cum=9/9=1.000
+[spec-acc] ctx=235 burst=3/3 cum=9/9=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=239 burst=3/3 cum=12/12=1.000
+[spec-acc] ctx=239 burst=3/3 cum=12/12=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=243 burst=3/3 cum=15/15=1.000
+[spec-acc] ctx=243 burst=3/3 cum=15/15=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=247 burst=3/3 cum=18/18=1.000
+[spec-acc] ctx=247 burst=3/3 cum=18/18=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=251 burst=3/3 cum=21/21=1.000
+[spec-acc] ctx=251 burst=3/3 cum=21/21=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=255 burst=3/3 cum=24/24=1.000
+[spec-acc] ctx=255 burst=3/3 cum=24/24=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=259 burst=3/3 cum=27/27=1.000
+[spec-acc] ctx=259 burst=3/3 cum=27/27=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=263 burst=3/3 cum=30/30=1.000
+[spec-acc] ctx=263 burst=3/3 cum=30/30=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=267 burst=3/3 cum=33/33=1.000
+[spec-acc] ctx=267 burst=3/3 cum=33/33=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=271 burst=3/3 cum=36/36=1.000
+[spec-acc] ctx=271 burst=3/3 cum=36/36=1.000
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=275 burst=2/6 cum=38/42=0.905
+[spec-acc] ctx=275 burst=2/6 cum=38/42=0.905
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.7
+[spec-acc] ctx=279 burst=3/3 cum=41/45=0.911
+[spec-acc] ctx=279 burst=3/3 cum=41/45=0.911
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.5
+[spec-acc] ctx=283 burst=3/3 cum=44/48=0.917
+[spec-acc] ctx=283 burst=3/3 cum=44/48=0.917
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=287 burst=5/6 cum=49/54=0.907
+[spec-acc] ctx=287 burst=5/6 cum=49/54=0.907
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=294 burst=1/9 cum=50/63=0.794
+[spec-acc] ctx=294 burst=1/9 cum=50/63=0.794
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=298 burst=3/3 cum=53/66=0.803
+[spec-acc] ctx=298 burst=3/3 cum=53/66=0.803
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=302 burst=3/9 cum=56/75=0.747
+[spec-acc] ctx=302 burst=3/9 cum=56/75=0.747
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=308 burst=5/6 cum=61/81=0.753
+[spec-acc] ctx=308 burst=5/6 cum=61/81=0.753
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=315 burst=3/3 cum=64/84=0.762
+[spec-acc] ctx=315 burst=3/3 cum=64/84=0.762
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=319 burst=2/6 cum=66/90=0.733
+[spec-acc] ctx=319 burst=2/6 cum=66/90=0.733
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=323 burst=3/6 cum=69/96=0.719
+[spec-acc] ctx=323 burst=3/6 cum=69/96=0.719
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=328 burst=3/3 cum=72/99=0.727
+[spec-acc] ctx=328 burst=3/3 cum=72/99=0.727
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=332 burst=4/9 cum=76/108=0.704
+[spec-acc] ctx=332 burst=4/9 cum=76/108=0.704
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=339 burst=3/3 cum=79/111=0.712
+[spec-acc] ctx=339 burst=3/3 cum=79/111=0.712
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=343 burst=3/3 cum=82/114=0.719
+[spec-acc] ctx=343 burst=3/3 cum=82/114=0.719
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=347 burst=3/3 cum=85/117=0.726
+[spec-acc] ctx=347 burst=3/3 cum=85/117=0.726
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=351 burst=3/3 cum=88/120=0.733
+[spec-acc] ctx=351 burst=3/3 cum=88/120=0.733
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=355 burst=2/6 cum=90/126=0.714
+[spec-acc] ctx=355 burst=2/6 cum=90/126=0.714
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=359 burst=5/6 cum=95/132=0.720
+[spec-acc] ctx=359 burst=5/6 cum=95/132=0.720
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=366 burst=4/9 cum=99/141=0.702
+[spec-acc] ctx=366 burst=4/9 cum=99/141=0.702
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=373 burst=5/6 cum=104/147=0.707
+[spec-acc] ctx=373 burst=5/6 cum=104/147=0.707
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=380 burst=3/3 cum=107/150=0.713
+[spec-acc] ctx=380 burst=3/3 cum=107/150=0.713
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=384 burst=5/6 cum=112/156=0.718
+[spec-acc] ctx=384 burst=5/6 cum=112/156=0.718
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=391 burst=1/9 cum=113/165=0.685
+[spec-acc] ctx=391 burst=1/9 cum=113/165=0.685
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=395 burst=3/9 cum=116/174=0.667
+[spec-acc] ctx=395 burst=3/9 cum=116/174=0.667
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=401 burst=3/3 cum=119/177=0.672
+[spec-acc] ctx=401 burst=3/3 cum=119/177=0.672
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=405 burst=3/6 cum=122/183=0.667
+[spec-acc] ctx=405 burst=3/6 cum=122/183=0.667
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=410 burst=2/6 cum=124/189=0.656
+[spec-acc] ctx=410 burst=2/6 cum=124/189=0.656
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=414 burst=3/3 cum=127/192=0.661
+[spec-acc] ctx=414 burst=3/3 cum=127/192=0.661
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=418 burst=3/9 cum=130/201=0.647
+[spec-acc] ctx=418 burst=3/9 cum=130/201=0.647
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=424 burst=3/3 cum=133/204=0.652
+[spec-acc] ctx=424 burst=3/3 cum=133/204=0.652
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=428 burst=4/6 cum=137/210=0.652
+[spec-acc] ctx=428 burst=4/6 cum=137/210=0.652
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=434 burst=3/6 cum=140/216=0.648
+[spec-acc] ctx=434 burst=3/6 cum=140/216=0.648
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=439 burst=2/9 cum=142/225=0.631
+[spec-acc] ctx=439 burst=2/9 cum=142/225=0.631
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=444 burst=3/3 cum=145/228=0.636
+[spec-acc] ctx=444 burst=3/3 cum=145/228=0.636
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=448 burst=1/9 cum=146/237=0.616
+[spec-acc] ctx=448 burst=1/9 cum=146/237=0.616
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=452 burst=4/6 cum=150/243=0.617
+[spec-acc] ctx=452 burst=4/6 cum=150/243=0.617
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=458 burst=3/9 cum=153/252=0.607
+[spec-acc] ctx=458 burst=3/9 cum=153/252=0.607
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=464 burst=4/6 cum=157/258=0.609
+[spec-acc] ctx=464 burst=4/6 cum=157/258=0.609
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=470 burst=1/9 cum=158/267=0.592
+[spec-acc] ctx=470 burst=1/9 cum=158/267=0.592
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=474 burst=3/6 cum=161/273=0.590
+[spec-acc] ctx=474 burst=3/6 cum=161/273=0.590
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=479 burst=3/3 cum=164/276=0.594
+[spec-acc] ctx=479 burst=3/3 cum=164/276=0.594
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=483 burst=3/3 cum=167/279=0.599
+[spec-acc] ctx=483 burst=3/3 cum=167/279=0.599
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=487 burst=3/3 cum=170/282=0.603
+[spec-acc] ctx=487 burst=3/3 cum=170/282=0.603
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=491 burst=3/6 cum=173/288=0.601
+[spec-acc] ctx=491 burst=3/6 cum=173/288=0.601
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=496 burst=3/3 cum=176/291=0.605
+[spec-acc] ctx=496 burst=3/3 cum=176/291=0.605
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=500 burst=2/6 cum=178/297=0.599
+[spec-acc] ctx=500 burst=2/6 cum=178/297=0.599
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=504 burst=4/9 cum=182/306=0.595
+[spec-acc] ctx=504 burst=4/9 cum=182/306=0.595
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=511 burst=3/6 cum=185/312=0.593
+[spec-acc] ctx=511 burst=3/6 cum=185/312=0.593
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=516 burst=3/9 cum=188/321=0.586
+[spec-acc] ctx=516 burst=3/9 cum=188/321=0.586
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=522 burst=0/12 cum=188/333=0.565
+[spec-acc] ctx=522 burst=0/12 cum=188/333=0.565
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=526 burst=2/6 cum=190/339=0.560
+[spec-acc] ctx=526 burst=2/6 cum=190/339=0.560
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=530 burst=2/6 cum=192/345=0.557
+[spec-acc] ctx=530 burst=2/6 cum=192/345=0.557
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=534 burst=3/3 cum=195/348=0.560
+[spec-acc] ctx=534 burst=3/3 cum=195/348=0.560
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=538 burst=4/6 cum=199/354=0.562
+[spec-acc] ctx=538 burst=4/6 cum=199/354=0.562
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=544 burst=5/6 cum=204/360=0.567
+[spec-acc] ctx=544 burst=5/6 cum=204/360=0.567
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=551 burst=2/6 cum=206/366=0.563
+[spec-acc] ctx=551 burst=2/6 cum=206/366=0.563
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=555 burst=3/3 cum=209/369=0.566
+[spec-acc] ctx=555 burst=3/3 cum=209/369=0.566
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=559 burst=3/6 cum=212/375=0.565
+[spec-acc] ctx=559 burst=3/6 cum=212/375=0.565
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=564 burst=3/3 cum=215/378=0.569
+[spec-acc] ctx=564 burst=3/3 cum=215/378=0.569
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=568 burst=3/3 cum=218/381=0.572
+[spec-acc] ctx=568 burst=3/3 cum=218/381=0.572
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=572 burst=3/3 cum=221/384=0.576
+[spec-acc] ctx=572 burst=3/3 cum=221/384=0.576
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=576 burst=2/6 cum=223/390=0.572
+[spec-acc] ctx=576 burst=2/6 cum=223/390=0.572
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=580 burst=2/6 cum=225/396=0.568
+[spec-acc] ctx=580 burst=2/6 cum=225/396=0.568
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=584 burst=1/9 cum=226/405=0.558
+[spec-acc] ctx=584 burst=1/9 cum=226/405=0.558
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=588 burst=3/3 cum=229/408=0.561
+[spec-acc] ctx=588 burst=3/3 cum=229/408=0.561
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=592 burst=4/6 cum=233/414=0.563
+[spec-acc] ctx=592 burst=4/6 cum=233/414=0.563
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=598 burst=2/6 cum=235/420=0.560
+[spec-acc] ctx=598 burst=2/6 cum=235/420=0.560
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=602 burst=3/3 cum=238/423=0.563
+[spec-acc] ctx=602 burst=3/3 cum=238/423=0.563
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=606 burst=3/6 cum=241/429=0.562
+[spec-acc] ctx=606 burst=3/6 cum=241/429=0.562
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=611 burst=3/3 cum=244/432=0.565
+[spec-acc] ctx=611 burst=3/3 cum=244/432=0.565
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=615 burst=3/6 cum=247/438=0.564
+[spec-acc] ctx=615 burst=3/6 cum=247/438=0.564
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=620 burst=3/3 cum=250/441=0.567
+[spec-acc] ctx=620 burst=3/3 cum=250/441=0.567
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=624 burst=4/6 cum=254/447=0.568
+[spec-acc] ctx=624 burst=4/6 cum=254/447=0.568
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=630 burst=4/6 cum=258/453=0.570
+[spec-acc] ctx=630 burst=4/6 cum=258/453=0.570
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=636 burst=3/9 cum=261/462=0.565
+[spec-acc] ctx=636 burst=3/9 cum=261/462=0.565
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=642 burst=3/3 cum=264/465=0.568
+[spec-acc] ctx=642 burst=3/3 cum=264/465=0.568
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=646 burst=2/6 cum=266/471=0.565
+[spec-acc] ctx=646 burst=2/6 cum=266/471=0.565
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=650 burst=3/3 cum=269/474=0.568
+[spec-acc] ctx=650 burst=3/3 cum=269/474=0.568
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=654 burst=3/3 cum=272/477=0.570
+[spec-acc] ctx=654 burst=3/3 cum=272/477=0.570
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.2
+[spec-acc] ctx=658 burst=3/3 cum=275/480=0.573
+[spec-acc] ctx=658 burst=3/3 cum=275/480=0.573
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=662 burst=3/6 cum=278/486=0.572
+[spec-acc] ctx=662 burst=3/6 cum=278/486=0.572
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=667 burst=2/6 cum=280/492=0.569
+[spec-acc] ctx=667 burst=2/6 cum=280/492=0.569
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=671 burst=3/6 cum=283/498=0.568
+[spec-acc] ctx=671 burst=3/6 cum=283/498=0.568
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=676 burst=2/6 cum=285/504=0.565
+[spec-acc] ctx=676 burst=2/6 cum=285/504=0.565
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=680 burst=2/9 cum=287/513=0.559
+[spec-acc] ctx=680 burst=2/9 cum=287/513=0.559
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=685 burst=4/6 cum=291/519=0.561
+[spec-acc] ctx=685 burst=4/6 cum=291/519=0.561
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=691 burst=5/6 cum=296/525=0.564
+[spec-acc] ctx=691 burst=5/6 cum=296/525=0.564
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=698 burst=3/6 cum=299/531=0.563
+[spec-acc] ctx=698 burst=3/6 cum=299/531=0.563
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=703 burst=2/6 cum=301/537=0.561
+[spec-acc] ctx=703 burst=2/6 cum=301/537=0.561
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=707 burst=3/3 cum=304/540=0.563
+[spec-acc] ctx=707 burst=3/3 cum=304/540=0.563
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=711 burst=4/9 cum=308/549=0.561
+[spec-acc] ctx=711 burst=4/9 cum=308/549=0.561
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=718 burst=3/6 cum=311/555=0.560
+[spec-acc] ctx=718 burst=3/6 cum=311/555=0.560
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-acc] ctx=723 burst=3/3 cum=314/558=0.563
+[spec-acc] ctx=723 burst=3/3 cum=314/558=0.563
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=727 burst=2/6 cum=316/564=0.560
+[spec-acc] ctx=727 burst=2/6 cum=316/564=0.560
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=731 burst=2/6 cum=318/570=0.558
+[spec-acc] ctx=731 burst=2/6 cum=318/570=0.558
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.3
+[spec-acc] ctx=735 burst=2/3 cum=320/573=0.558
+[meter] admit id=chatcmpl-2f2f47c1a96283af08686e0431c7a271 tenant=default lane=interactive model="q9"
+[spec-acc] ctx=735 burst=2/3 cum=320/573=0.558
+[meter] admit id=chatcmpl-7081dbd469304a26abf4dae22d25546f tenant=default lane=interactive model="q9"
+[tick] act=6 int=6 priming=0 ready=4 spec=2 demoted=0 decode_ms=10.4
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[meter] admit id=chatcmpl-98969167e4c254521223ac072a727cf2 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d096b030a8519085e5704873d7b8c2bb tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-141f252456be7d4cf8eb2025543cdd5e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4633131bd934513b2e9a1104dec4743e tenant=default lane=interactive model="q9"
+[tick] act=6 int=6 priming=0 ready=2 spec=0 demoted=0 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=14.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[meter] admit id=chatcmpl-1f320affa10200c6d860ffe0ca466706 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-35dc9c68c0b5ebb5ee806f6caf87bd93 tenant=default lane=interactive model="q9"
+[tick] act=6 int=6 priming=0 ready=4 spec=0 demoted=0 decode_ms=9.9
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=14.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.8
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.7
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=12.9
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.0
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.1
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.2
+[meter] admit id=chatcmpl-8fe5b574874e4c438c498128ef572de1 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-e2e1dae1b35be8cd4a560136cf87564a tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-586e47c075567c0d3fe336aac6c15547 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-db3c5e1ee283d8029f0647e4b387938a tenant=default lane=interactive model="q9"
+[tick] act=6 int=6 priming=0 ready=2 spec=0 demoted=0 decode_ms=9.0
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=14.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.3
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.4
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.6
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=6 spec=0 demoted=0 decode_ms=13.5
+[tick] act=6 int=6 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.1
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.2
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.3
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.7
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.4
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=4 spec=0 demoted=0 decode_ms=10.5
+[tick] act=4 int=4 priming=0 ready=0 spec=0 demoted=0 decode_ms=0.0
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
