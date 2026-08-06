@@ -31,6 +31,40 @@ use crate::hybrid::{HybridModel, Mixer};
 use crate::Engine;
 use cudarc::driver::CudaSlice;
 
+/// Per-step, per-LAYER-RANGE invariants the batched trunk needs: the device state-pointer
+/// table for the range's layers, the arm picks, and the per-row `t_kv` snapshot. Built once
+/// per step per range by `HybridModel::batch_layer_ctx`, consumed by `decode_batch_layers`.
+///
+/// WHY IT IS RANGE-SCOPED AND NOT STEP-SCOPED (this is the whole point of the struct):
+/// `ptr_table` is a `CudaSlice<u64>` of DEVICE ADDRESSES, uploaded through `e` — so it lives
+/// on `e`'s device, and its entries are pointers into caches that live on the device that
+/// OWNS those layers. Under a pp stage split, stage s runs layers [fence[s], fence[s+1])
+/// whose cache state was allocated by stage s's engine (`pp::new_cache` -> `Cache::new_ppn`),
+/// so stage s must build its OWN table through its OWN engine. One step-wide table built on
+/// the primary would put every stage's kernel arguments in stage-0's HBM — a peer read per
+/// pointer fetch, which is the exact cliff `pp::refuse_unsplit_if_remote` exists to stop.
+/// `lo`/`hi` are recorded so the consumer can assert the ctx it was handed matches the range
+/// it was asked to run (the offsets in `lin_base`/`attn_base` are only valid for that range).
+pub(crate) struct BatchLayerCtx {
+    /// Offset into `ptr_table` of layer il's [conv x B][ssm_in x B][ssm_out x B] block
+    /// (linear-attn layers only). Indexed by ABSOLUTE layer id; `None` off-range.
+    lin_base: Vec<Option<usize>>,
+    /// Offset into `ptr_table` of layer il's [k0,v0,k1,v1,..] block (full-attn layers only).
+    /// Indexed by ABSOLUTE layer id; `None` off-range.
+    attn_base: Vec<Option<usize>>,
+    ptr_table: Option<CudaSlice<u64>>,
+    /// Per-row `pos + 1` — the t_kv each sequence attends at this step. Layer-invariant
+    /// within a step, so the arm picks below are decided once.
+    t_kvs: Vec<usize>,
+    t_kv_max: usize,
+    /// The single `fa_split_keys` rung every row shares (the rows-twins straddle law).
+    sp0: usize,
+    seqs_append: bool,
+    seqs_fa: bool,
+    lo: usize,
+    hi: usize,
+}
+
 // ---- MEMRA_BATCH_PHASE=1 (diagnostics): sync-bounded per-phase accumulators for the batched
 // tick. Each boundary syncs the stream, so the TOTAL inflates (launch pipelining is destroyed);
 // the value is the RANKING/shares, not absolute ms. Read via `batch_phase_report()`.
@@ -53,6 +87,28 @@ pub fn batch_phase_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MEMRA_BATCH_PHASE").as_deref() == Ok("1"))
 }
+/// Accumulate the elapsed time since `last` into phase slot `slot` and re-stamp `last`.
+/// No-op unless `MEMRA_BATCH_PHASE=1`. Syncs the ambient stream first, so under a pp stage
+/// scope this bounds the STAGE's stream, which is what the caller is timing.
+///
+/// A free fn rather than the closure it replaced: `decode_batch_layers` (the pp stage seam)
+/// runs the instrumented layer loop, so the marker has to be callable from both the seam
+/// and its caller's epilogue. `batch_phase_on()` is a `OnceLock` memo, so per-call cost is
+/// the same atomic load the hoisted `ph_on` local was.
+fn ph_mark(
+    e: &Engine,
+    slot: usize,
+    last: &mut std::time::Instant,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if batch_phase_on() {
+        e.stream().synchronize()?;
+        let now = std::time::Instant::now();
+        BATCH_PHASE.lock().unwrap()[slot] += (now - *last).as_secs_f64();
+        *last = now;
+    }
+    Ok(())
+}
+
 pub fn batch_phase_report() -> String {
     let ph = BATCH_PHASE.lock().unwrap();
     let tot: f64 = ph.iter().sum();
@@ -427,38 +483,59 @@ impl HybridModel {
             !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
             "decode_step_batch v1 covers the hybrid non-gemma4 trunk only"
         );
-        let cfg = &self.cfg;
-        let n_embd = cfg.n_embd as usize;
-        let eps = cfg.rms_eps;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
-        let scale = 1.0 / (head_dim as f32).sqrt();
-        let rope_dims = cfg.rope_dim_count as usize;
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
 
         // MEMRA_BATCH_PHASE=1: sync-bounded phase accumulation (diagnostics — see header note).
         // Initialized BEFORE the tick-input assembly below so slot 0 covers the HOST side of
         // setup (pos_v/ptr-table builds, embed gather) as well as the H2D sync — the audit-fix
         // lane's Q6 instrumentation gap (research/audit-fixes2-20260805): the old placement
         // started the clock after the assembly, so slot 0 under-reported setup.
-        let ph_on = batch_phase_on();
         let mut ph_last = std::time::Instant::now();
-        let ph_mark = |slot: usize,
-                       last: &mut std::time::Instant|
-         -> Result<(), Box<dyn std::error::Error>> {
-            if ph_on {
-                e.stream().synchronize()?;
-                let now = std::time::Instant::now();
-                BATCH_PHASE.lock().unwrap()[slot] += (now - *last).as_secs_f64();
-                *last = now;
-            }
-            Ok(())
-        };
 
         // Per-row rope positions (each sequence at its own depth).
         let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
         let pos_d = e.htod_i32(&pos_v)?;
 
+        // Per-step, whole-trunk layer context: state pointer table + arm picks. Under a pp
+        // split this call is made once PER STAGE with that stage's engine and range instead
+        // (see `batch_layer_ctx`'s doc for why the table cannot be shared across devices).
+        let n_layers = self.layers.len();
+        let ctx = self.batch_layer_ctx(e, caches, 0, n_layers)?;
+
+        // Embed all B tokens -> x [B, n_embd] (host gather, one H2D).
+        let x = e.htod(&self.embd.gather(n_embd, tokens))?;
+        ph_mark(e, 0, &mut ph_last)?;
+
+        let x = self.decode_batch_layers(e, x, caches, &ctx, &pos_d, &mut ph_last)?;
+
+        // ---- output norm + lm_head at m=B, one D2H ----
+        let mut hn = e.uninit(b_n * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, b_n, eps)?;
+        let logits = e.matmul(&self.output, &hn, b_n)?;
+        ph_mark(e, 10, &mut ph_last)?;
+
+        self.decode_batch_epilogue(e, caches, samp, masks, lean, logits, b_n, &mut ph_last)
+    }
+
+    /// Build the per-step layer context for layers `[lo, hi)`: the device state-pointer
+    /// table plus the step's arm picks. See [`BatchLayerCtx`] for why this is RANGE-scoped
+    /// (the table holds device addresses and must be uploaded through the engine whose
+    /// device runs those layers).
+    ///
+    /// Table layout is unchanged from the whole-trunk version — `lin_base`/`attn_base` are
+    /// still indexed by ABSOLUTE layer id, so `decode_batch_layers`' body indexes them
+    /// exactly as the old inline loop did. Only layers in `[lo, hi)` contribute entries; the
+    /// rest stay `None`, which is a loud `expect` if a range ever reads outside its own.
+    pub(crate) fn batch_layer_ctx(
+        &self,
+        e: &Engine,
+        caches: &[&mut Cache],
+        lo: usize,
+        hi: usize,
+    ) -> Result<BatchLayerCtx, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let head_dim = cfg.head_dim_k as usize;
         // Per-step STATE POINTER TABLE (one H2D): for every linear layer, [conv x B]
         // [ssm_in x B][ssm_out x B] device addresses. The batched state kernels read their
         // sequence's pointer from these arrays — states stay per-cache (no pooling refactor),
@@ -474,8 +551,8 @@ impl HybridModel {
         {
             use cudarc::driver::DevicePtr;
             let s = &e.gpu.stream();
-            for (il, layer) in self.layers.iter().enumerate() {
-                match &layer.mixer {
+            for il in lo..hi {
+                match &self.layers[il].mixer {
                     Mixer::Linear(_) => {
                         lin_base[il] = Some(ptrs.len());
                         for c in caches.iter() {
@@ -518,6 +595,10 @@ impl HybridModel {
         //   crossing inside the batch keeps the per-seq loop for that step, so each
         //   sequence always executes the exact program its isolated run would.
         // MEMRA_BATCH_APPEND=0 / MEMRA_BATCH_FA=0 are the rollback/A-B seams.
+        //
+        // The picks are t_kv-driven, and t_kv is layer-INVARIANT within a step, so every
+        // stage of a pp split independently computes the SAME arms from the same `caches`
+        // — a stage cannot silently take a different program than its unsplit self.
         let t_kvs: Vec<usize> = caches.iter().map(|c| c.pos + 1).collect();
         let t_kv_max = *t_kvs.iter().max().unwrap();
         let seqs_append = {
@@ -531,11 +612,67 @@ impl HybridModel {
         } && t_kvs.iter().all(|&t| crate::fa_seqs_eligible(t, head_dim))
           && t_kvs.iter().all(|&t| crate::fa_split_keys(t, cfg.n_head_kv as usize) == sp0);
 
-        // Embed all B tokens -> x [B, n_embd] (host gather, one H2D).
-        let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
-        ph_mark(0, &mut ph_last)?;
+        Ok(BatchLayerCtx {
+            lin_base,
+            attn_base,
+            ptr_table,
+            t_kvs,
+            t_kv_max,
+            sp0,
+            seqs_append,
+            seqs_fa,
+            lo,
+            hi,
+        })
+    }
 
-        for (il, layer) in self.layers.iter().enumerate() {
+    /// THE PP SEAM (pp2-batch increment 1, 2026-08-06): run the batched trunk over layers
+    /// `[ctx.lo, ctx.hi)`, entering with a materialized `[B, n_embd]` residual and exiting
+    /// with the range's final residual materialized. The batched twin of
+    /// `decode_layers_eager` — the eager arm has had this seam since M1-PP2 and every ppN
+    /// stage calls it; the batched body had no equivalent, which is why every later PP-2
+    /// increment (and spec-over-PP2, whose verify is a batched T=K+1 forward) waited on this
+    /// extraction (`research/pp2-hardening-20260806/PROGRESS.md` bill item 1).
+    ///
+    /// SINGLE-DEVICE SEMANTICS ARE UNCHANGED BY CONSTRUCTION: the body is the old
+    /// `for (il, layer) in self.layers.iter().enumerate()` loop moved verbatim, with `for il
+    /// in ctx.lo..ctx.hi` as the header and the per-step invariants (`ptr_table`, arm picks,
+    /// `t_kv`) read from `ctx` instead of enclosing locals. At `lo=0, hi=n_layers` — every
+    /// call today — the launch sequence is identical, so the exactness contract in this
+    /// module's header carries over untouched rather than needing a re-proof.
+    ///
+    /// UNLIKE the eager seam, this one is NOT yet stage-callable: `caches` is `&mut [&mut
+    /// Cache]` mutated in place (KV `len` bumps, ssm ping-pong swaps), and `pos_d`/`x` come
+    /// from the caller's device. Wiring a stage split means per-stage `pos_d` + a boundary
+    /// `[B, n_embd]` transfer around this call, which is the NEXT increment. The seam exists
+    /// so that increment is a call-site change, not a 250-line surgery.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_batch_layers(
+        &self,
+        e: &Engine,
+        mut x: CudaSlice<f32>,
+        caches: &mut [&mut Cache],
+        ctx: &BatchLayerCtx,
+        pos_d: &CudaSlice<i32>,
+        ph_last: &mut std::time::Instant,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let b_n = caches.len();
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let rope_dims = cfg.rope_dim_count as usize;
+        let (lin_base, attn_base) = (&ctx.lin_base, &ctx.attn_base);
+        let ptr_table = &ctx.ptr_table;
+        let (seqs_append, seqs_fa, sp0, t_kv_max) =
+            (ctx.seqs_append, ctx.seqs_fa, ctx.sp0, ctx.t_kv_max);
+        debug_assert_eq!(ctx.t_kvs.len(), b_n, "ctx built for a different batch width");
+
+        for il in ctx.lo..ctx.hi {
+            let layer = &self.layers[il];
             // ---- attn_norm + q8_1 quantize, batched (B rows) ----
             let anorm = layer.attn_norm.float_data();
             let mut xn = e.uninit(b_n * n_embd)?;
@@ -572,7 +709,7 @@ impl HybridModel {
                                 cfg.rope_freq_base, 1.0)?;
                     e.rope_neox(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, b_n,
                                 cfg.rope_freq_base, 1.0)?;
-                    ph_mark(1, &mut ph_last)?;
+                    ph_mark(e, 1, ph_last)?;
 
                     // INCREMENT 2 (2026-08-01): the per-seq (append, attend) launch train
                     // becomes two phases. Phase A appends all B rows (one z-batched launch,
@@ -614,7 +751,7 @@ impl HybridModel {
                             kvl.len += 1;
                         }
                     }
-                    ph_mark(2, &mut ph_last)?;
+                    ph_mark(e, 2, ph_last)?;
                     // ---- phase B: attention (all B sequences) ----
                     if seqs_fa {
                         let (ktb, vtb) = {
@@ -627,7 +764,7 @@ impl HybridModel {
                         e.fa_decode_batch_seqs_v4(&q, &kv_view, &pos_d, &mut attn,
                                                   head_dim, n_head, n_head_kv, b_n,
                                                   t_kv_max, scale, sp0, ktb, vtb)?;
-                        ph_mark(4, &mut ph_last)?;
+                        ph_mark(e, 4, ph_last)?;
                     } else {
                         for (bi, cache) in caches.iter_mut().enumerate() {
                             let kvl = cache.kv[il].as_mut().unwrap();
@@ -639,15 +776,15 @@ impl HybridModel {
                             // reads/writes row offsets in place.
                             let mut q_row = e.uninit(q_dim)?;
                             e.dtod_copy_view(&q.slice(bi * q_dim..(bi + 1) * q_dim), &mut q_row)?;
-                            ph_mark(3, &mut ph_last)?;
+                            ph_mark(e, 3, ph_last)?;
                             let mut a_row = e.uninit(q_dim)?;
                             e.fa_decode_kvmod(
                                 &q_row, &k_view, &v_view, &mut a_row, head_dim, n_head, n_head_kv,
                                 t_kv, scale, kvl.k_tok_bytes, kvl.v_tok_bytes, Engine::kv_fp8_on(),
                             )?;
-                            ph_mark(4, &mut ph_last)?;
+                            ph_mark(e, 4, ph_last)?;
                             e.dtod_copy_into(&a_row, &mut attn, bi * q_dim)?;
-                            ph_mark(3, &mut ph_last)?;
+                            ph_mark(e, 3, ph_last)?;
                         }
                     }
 
@@ -664,7 +801,7 @@ impl HybridModel {
                         None => attn,
                     };
                     let o = e.matmul(&fa.wo, &attn_g, b_n)?;
-                    ph_mark(5, &mut ph_last)?;
+                    ph_mark(e, 5, ph_last)?;
                     o
                 }
                 Mixer::Linear(la) => {
@@ -689,7 +826,7 @@ impl HybridModel {
                     let z = e.matmul_pre(&la.wqkv_gate, &hq, &hd, &xn, b_n)?;
                     let beta_raw = e.matmul_pre(&la.ssm_beta, &hq, &hd, &xn, b_n)?;
                     let alpha = e.matmul_pre(&la.ssm_alpha, &hq, &hd, &xn, b_n)?;
-                    ph_mark(6, &mut ph_last)?;
+                    ph_mark(e, 6, ph_last)?;
 
                     // ---- batched recurrent state ops (3 launches for all B sequences) ----
                     let base = lin_base[il].expect("linear layer missing from pointer table");
@@ -720,7 +857,7 @@ impl HybridModel {
                         let rl = cache.recur[il].as_mut().unwrap();
                         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
                     }
-                    ph_mark(7, &mut ph_last)?;
+                    ph_mark(e, 7, ph_last)?;
 
                     // ---- batched gated norm + out-projection ----
                     let o = if e.uses_q8_1_fast(&la.ssm_out) {
@@ -734,7 +871,7 @@ impl HybridModel {
                                         d_state, b_n * num_v, eps)?;
                         e.matmul(&la.ssm_out, &gn, b_n)?
                     };
-                    ph_mark(8, &mut ph_last)?;
+                    ph_mark(e, 8, ph_last)?;
                     o
                 }
             };
@@ -776,15 +913,31 @@ impl HybridModel {
             let mut x2 = e.uninit(b_n * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, b_n * n_embd)?;
             x = x2;
-            ph_mark(9, &mut ph_last)?;
+            ph_mark(e, 9, ph_last)?;
         }
+        Ok(x)
+    }
 
-        // ---- output norm + lm_head at m=B, one D2H ----
-        let mut hn = e.uninit(b_n * n_embd)?;
-        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, b_n, eps)?;
-        let logits = e.matmul(&self.output, &hn, b_n)?;
-        ph_mark(10, &mut ph_last)?;
-
+    /// The batched tick's TAIL, after the trunk: grammar masks -> device sampling -> lean
+    /// logits park -> `pos` bump. Split out with the pp seam (`decode_batch_layers`) because
+    /// under a stage split this runs on the LAST stage's engine and device — the lm_head, the
+    /// masks, the sampler, and `cache.last_logits_dev` all live where the final residual
+    /// lands, and the caller must be able to place them there without duplicating 90 lines of
+    /// serving contract. `logits` is `[b_n, n_vocab]` already computed by the caller (the
+    /// output_norm + lm_head pair stays at the call site so a stage split can fence around
+    /// it); everything after it is here, verbatim.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_batch_epilogue(
+        &self,
+        e: &Engine,
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+        masks: &[Option<(&CudaSlice<u32>, usize)>],
+        lean: bool,
+        logits: CudaSlice<f32>,
+        b_n: usize,
+        ph_last: &mut std::time::Instant,
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
         // GRAMMAR MASKS (constrained decoding): preserve each masked row's PRISTINE logits
         // for its consumer (lean park into cache.last_logits_dev — the reuse-pool park stays
         // unmasked, the v1 contract — or the non-lean D2H), then ban in place BEFORE the
@@ -881,7 +1034,7 @@ impl HybridModel {
         for c in caches.iter_mut() {
             c.pos += 1;
         }
-        ph_mark(11, &mut ph_last)?;
+        ph_mark(e, 11, ph_last)?;
         Ok((rows, next))
     }
 }
