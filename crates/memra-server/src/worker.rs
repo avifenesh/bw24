@@ -1884,15 +1884,44 @@ pub fn run(
             // cheap" handoff the re-promotion option was conditioned on. A demoted session stays
             // demoted until it ends. New arrivals get spec again the moment the count falls back
             // to T_LOW, so the policy still tracks a draining load — per REQUEST, not per session.
-            if spec_gate_on() {
+            //
+            // TESTABILITY (`MEMRA_SPEC_DEMOTE_AT`, diagnostics-only). Load-triggered demotion can
+            // never be a clean exactness test: the trigger needs concurrent sessions, and a loaded
+            // batch is not bit-identical to a solo one (measured pre-existing property — batch-vs-
+            // solo decode diverges on its own with spec OFF and this gate absent, because
+            // `fa_decode_batch_seqs_v4` carries one `split_keys` for rows at different depths and
+            // the batched-linear tier changes with B). Both the arrival timing and the batch
+            // composition are then nondeterministic, so a diff cannot attribute a divergence to
+            // the HANDOFF. This door forces the demotion at a fixed generated-token count with NO
+            // load at all, holding B=1 across the boundary: the only difference from a plain
+            // batched run is that the first N tokens came off the spec path. That isolates exactly
+            // the property this lane must prove. Never set in production.
+            let demote_at: Option<usize> = {
+                static D: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+                *D.get_or_init(|| std::env::var("MEMRA_SPEC_DEMOTE_AT").ok()
+                    .and_then(|v| v.parse().ok()))
+            };
+            if spec_gate_on() || demote_at.is_some() {
                 let n_live = active.len() - finished.len();
-                if n_live >= spec_gate_high() {
+                let forced = demote_at.is_some_and(|n| {
+                    active.iter().enumerate().any(|(i, s)| {
+                        !finished.contains(&i) && s.spec.is_some() && s.generated.len() >= n
+                    })
+                });
+                if n_live >= spec_gate_high() || forced {
                     for i in 0..active.len() {
                         if finished.contains(&i) { continue; }
                         let s = &mut active[i];
                         if s.spec.is_none() { continue; }
                         // exclusions above: sampled + constrained keep the spec path.
                         if !s.sampler.is_greedy() || s.constraint.is_some() { continue; }
+                        // forced mode (test door): only the session past the pinned token count,
+                        // and only it — a peer still short of N keeps bursting.
+                        if let Some(n) = demote_at {
+                            if s.generated.len() < n { continue; }
+                        } else if n_live < spec_gate_high() {
+                            continue;
+                        }
                         // a session that has not bursted yet has no cache state to hand over
                         // (its prompt is still queued as the spec turn-1 suffix) — it stays on
                         // spec for this tick and demotes at its next boundary.
@@ -1935,10 +1964,13 @@ pub fn run(
                         s.prefill_done = true;
                         s.last_logits.clear();
                         n_demoted += 1;
-                        eprintln!("[spec-gate] demoted session to batched decode: \
-                                   {n_live} active >= HIGH={} (model {}, committed \
-                                   {committed}, generated {})",
-                                  spec_gate_high(), s.model, s.generated.len());
+                        let why = match demote_at {
+                            Some(n) => format!("FORCED at DEMOTE_AT={n} (test door)"),
+                            None => format!("{n_live} active >= HIGH={}", spec_gate_high()),
+                        };
+                        eprintln!("[spec-gate] demoted session to batched decode: {why} \
+                                   (model {}, committed {committed}, generated {})",
+                                  s.model, s.generated.len());
                     }
                 }
             }
