@@ -1,0 +1,15 @@
+== Q5 hit-rate + token parity: same prompt, greedy 48, base vs new ==
+--- base ---
+prefill argmax=279  decode argmax=279  logit maxdiff=5.944e-1  MATCH
+prefill 11 tok in 0.0319s = 345.1 tok/s (pp11)
+generated 16 tokens in 0.154s = 103.91 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.068s) [stop: MaxNew]
+MoE cache: 15257 slots | cumulative hits=63549 misses=4611 (hit-rate=93.2%) | Stage-1 baseline = 454 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=92.9% | 32.1 MB/decode-token (vs 454 MB/token Stage-1 => 14.1x less PCIe)
+--- generated text ---
+--- new ---
+prefill argmax=279  decode argmax=279  logit maxdiff=5.944e-1  MATCH
+prefill 11 tok in 0.0318s = 345.4 tok/s (pp11)
+generated 16 tokens in 0.146s = 109.42 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.068s) [stop: MaxNew]
+MoE cache: 15257 slots | cumulative hits=63549 misses=4611 (hit-rate=93.2%) | Stage-1 baseline = 454 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=92.9% | 32.1 MB/decode-token (vs 454 MB/token Stage-1 => 14.1x less PCIe)
+--- generated text ---

@@ -12,3 +12,10 @@ decode tg64 @ctx512: EAGER 99.0 tok/s (10.10 ms/tok)
 --- pair 3 new ---
 decode tg64 @ctx512: EAGER 102.6 tok/s (9.75 ms/tok)
 --- pair 4 base ---
+decode tg64 @ctx512: EAGER 98.9 tok/s (10.12 ms/tok)
+--- pair 4 new ---
+decode tg64 @ctx512: EAGER 102.8 tok/s (9.73 ms/tok)
+--- pair 5 base ---
+decode tg64 @ctx512: EAGER 98.5 tok/s (10.16 ms/tok)
+--- pair 5 new ---
+decode tg64 @ctx512: EAGER 101.9 tok/s (9.81 ms/tok)
