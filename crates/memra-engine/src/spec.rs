@@ -5215,7 +5215,24 @@ impl HybridModel {
                 committed.push(cb);
             }
             if stashed_pending {
-                committed.extend_from_slice(&out[..out.len() - 1]); // all but the stashed bonus
+                // ZERO-EMIT BURST (2026-08-06 c=8 serve panic, pre-existing since b4aea184):
+                // `out.len() - 1` underflowed on an EMPTY `out` — "range end index
+                // 18446744073709551615 out of range for slice of length 0", killing the
+                // memra-gpu-worker and failing 31 of 32 concurrent requests with "worker closed
+                // stream". Reachable because `pending` starts as `carried_pending` (a bonus
+                // stashed by the PREVIOUS burst) while `out` starts empty, and the carry is
+                // deliberately NOT pushed to `out` (line ~3239: the burst that emitted it already
+                // did). So a burst that stashes a pending without emitting anything of its own —
+                // the round loop exits before a push, e.g. the ring drain's `out.len() < max_new`
+                // guard skipping every token under a tight budget — arrives here with
+                // out.len() == 0 and stashed_pending == true.
+                //
+                // The invariant is unchanged: `committed` gets every emitted token EXCEPT the
+                // stashed bonus. With nothing emitted, that is nothing — and the carry pushed
+                // just above is already accounted. Saturating, not a min/assert: an empty `out`
+                // here is a legitimate burst shape, not a corrupt state.
+                let emitted = out.len().saturating_sub(1);
+                committed.extend_from_slice(&out[..emitted]);
             } else {
                 committed.extend_from_slice(&out); // FULL out incl. overshoot — all committed
             }
