@@ -1253,6 +1253,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         affinity,
         lane,
         grammar: None, // /v1/completions carries no response_format (chat surface only)
+        oom_retries: 0, // step-OOM park budget: fresh from the HTTP layer (lane/admit-oom)
         tx,
     }
 }
@@ -1380,6 +1381,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             affinity,
             lane,
             grammar,
+            oom_retries: 0, // step-OOM park budget: fresh from the HTTP layer (lane/admit-oom)
             tx,
         },
         parser,

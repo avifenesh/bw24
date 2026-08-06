@@ -122,6 +122,10 @@ pub struct Request {
     /// yield lane (x-lane header; default interactive). Drives admission + prefill budgets
     /// (lane/dl-metering QoS gate, ported 2026-08-02 — the metering half stayed behind).
     pub lane: crate::lanes::Lane,
+    /// STEP-OOM PARK budget already spent by this request (lane/admit-oom, 2026-08-06).
+    /// Always 0 from the HTTP layer; only `park_requeue` sets it, carrying the count across
+    /// a re-admit so the retry bound is per-REQUEST and a parked session cannot loop forever.
+    pub oom_retries: u32,
     /// Constrained decoding (`response_format` json_object/json_schema): the parsed
     /// grammar spec. None = unconstrained — the request takes the exact legacy path
     /// (no factory, no matcher, no masking branch).
@@ -575,6 +579,38 @@ fn serve_batching() -> bool {
     *B.get_or_init(|| std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true))
 }
 
+/// Spec serving armed? (MEMRA_SERVE_SPEC!=0 — the model-independent half of `spec_eligible`.)
+/// The admission gate uses this to decide whether a model can take the spec path at all, and
+/// therefore whether it must pay the SPEC_SHRINK_RESERVE transient floor (lane/admit-oom).
+fn serve_spec_enabled() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
+}
+
+/// STEP-OOM PARK budget (lane/admit-oom, 2026-08-06): how many times a session may be parked
+/// back to the queue after a step-time CUDA OOM before the failure is reported honestly.
+/// A transient collision (a peer's capture arena landing in the same tick) clears as soon as
+/// ONE session retires, so a small budget covers the real case; an unbounded retry would turn
+/// a genuine capacity failure into a silent hang, which is strictly worse than the error it
+/// replaces. MEMRA_STEP_OOM_RETRIES overrides (0 = restore the pre-fix kill-on-OOM behavior —
+/// the rollback seam).
+const STEP_OOM_MAX_RETRIES: u32 = 3;
+
+fn step_oom_retries() -> u32 {
+    static R: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        std::env::var("MEMRA_STEP_OOM_RETRIES").ok().and_then(|v| v.parse().ok())
+            .unwrap_or(STEP_OOM_MAX_RETRIES)
+    })
+}
+
+/// Is this error a CUDA out-of-memory? Quoted, never inferred (the evidence-discipline law):
+/// the match is on the driver's own error text, so a non-OOM step failure can never be
+/// silently retried as if it were a capacity blip.
+fn is_cuda_oom(err: &str) -> bool {
+    err.contains("CUDA_ERROR_OUT_OF_MEMORY") || err.contains("out of memory")
+}
+
 /// One full-attn layer's cached prefix bytes: exactly `len` tokens of quantized K/V.
 struct PrefixPlane {
     k: CudaSlice<u8>,
@@ -886,6 +922,23 @@ fn maybe_prefix_seed(engine: &Engine, px: &mut PrefixCache, s: &mut Session) {
     prefix_insert_from_session(engine, px, s, "seed");
 }
 
+/// STEP-OOM PARK replay plan (lane/admit-oom, 2026-08-06): the request-shaped inputs a
+/// session needs to be re-admitted after a step-time CUDA OOM parks it. These are exactly the
+/// `Request` fields `admit` consumes to render and tokenize the prompt — the Session itself
+/// keeps only the tokenized result, so a faithful retry has to replay from the source.
+/// Cloned once per admitted session (a Vec of turns + a few strings; no device state).
+struct ReplayPlan {
+    prompt_ids: Vec<u32>,
+    prompt_text: String,
+    chat: bool,
+    chat_turns: Vec<memra_tokenizer::chat::Turn>,
+    tools_json: Vec<String>,
+    think: memra_tokenizer::chat::ThinkMode,
+    params: GenParams,
+    sampler_cfg: SamplerConfig,
+    grammar: Option<crate::constrained::GrammarSpec>,
+}
+
 struct Session {
     model: String,
     /// PC-ISO cache namespace this session admits, hits, and parks under (see PoolKey).
@@ -918,6 +971,17 @@ struct Session {
     graph: Option<memra_engine::decode::GraphSession>,
     /// The token produced by the last graph step (next INPUT; emitted on the next tick).
     graph_pending: Option<u32>,
+    /// STEP-OOM PARK (lane/admit-oom): how many times this session has been parked back to
+    /// the queue after a step-time CUDA OOM. Bounded by STEP_OOM_MAX_RETRIES before the
+    /// honest error — a session that cannot make progress must not retry forever.
+    oom_retries: u32,
+    /// STEP-OOM PARK replay plan (lane/admit-oom): everything needed to rebuild this
+    /// session's `Request` if a step-time OOM parks it back to the admission queue. Held
+    /// because `admit` consumes the Request and the Session keeps only derived state (the
+    /// TOKENIZED prompt, not the turns/tools/think that rendered it). Re-admitting from
+    /// these fields re-runs the identical render+tokenize, so the retried session is the
+    /// one a cold arrival would have produced.
+    replay: Box<ReplayPlan>,
     /// Live acceptance telemetry (hqmtp axis-D): cumulative drafted/accepted across the
     /// session's bursts, logged per burst so serve-regime acceptance-vs-context is measurable.
     /// THIS REQUEST's counts (0 at admit even on a pool resume) — the `usage.spec` source.
@@ -1197,6 +1261,8 @@ pub fn run(
         //    judge/harvest caps come from the lane policy.
         let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
         let mut requeue: std::collections::VecDeque<Box<Request>> = Default::default();
+        // Per-tick count of requests the VRAM gate deferred (logged once per tick).
+        let mut vram_defers = 0usize;
         while let Some(req) = queue.pop_front() {
             // DISCONNECT ABORT (gap-scan F8): a queued request whose client already hung
             // up (receiver dropped) never reaches the GPU — dropped here, logged for the
@@ -1254,10 +1320,66 @@ pub fn run(
             // session always passes (the residency planner's reserve guarantees one), and an
             // OOM with no active sessions still errors — that is a real capacity failure,
             // quoted to the client.
+            //
+            // ADMIT-OOM FIX (lane/admit-oom, 2026-08-06 — research/admit-oom-20260806).
+            // The `2x cost` model above is DISHONEST for spec sessions and c=64 on 24GB
+            // proved it: 0/64 well-formed, every stream dead of a step-time
+            // CUDA_ERROR_OUT_OF_MEMORY (research/serving-density-20260806/VERDICT.md §Q2).
+            // Two independent errors, both measured against the three PASSING controls
+            // (cap16/32/48 peaks 11400/15948/20528 MiB over 5540 MiB of weights):
+            //
+            //   1. `cost` UNDERSTATES the live footprint it is used to predict. It is the
+            //      free-VRAM delta of the FIRST ADMIT — a PARKED session (flat KV + draft
+            //      scratch, 192 MiB here) — while a session that has actually BURST also
+            //      holds its persistent draft-graph context, q slots, and round snapshots.
+            //      The three controls fit peak = weights + N x 286 MiB + ~1.3 GiB, i.e. the
+            //      live resident cost is 1.49x the parked delta. This term needs no new
+            //      measurement: `free` from mem_get_info is GROUND TRUTH and already
+            //      reflects every live session's real 286 MiB. The bug was never the
+            //      subtrahend — it was sizing the HEADROOM against the wrong quantity.
+            //   2. The headroom that matters is a CONSTANT, non-N-scaled transient (the
+            //      same fit puts it at ~1.3 GiB): sampled draft-graph CAPTURE arenas,
+            //      verify activations, prime chunk slabs. `2x cost` = 384 MiB cannot cover
+            //      it, so the card ran to 23.98 of 24.46 GB during admission and the
+            //      transient had nowhere to land. This is EXACTLY the class
+            //      SPEC_SHRINK_RESERVE (1.5 GiB) already encodes for the F5 ladder's
+            //      landing probe — and the control fit independently validates that
+            //      constant to within 252 MiB. Charge it as an admission FLOOR.
+            //
+            // The gate is therefore `free >= cost + reserve`, where the reserve applies
+            // only to models that can actually take the spec path (the plain batched path
+            // survived c=64 unaided — spec-OFF cap64 PASSED — and must not pay a 1.5 GiB
+            // toll it does not need). Consequence, by arithmetic on the measured fit:
+            // admission stops at ~55 spec sessions on this card and the REST QUEUE (FIFO,
+            // never rejected — completion is 64/64, just paced), instead of 64
+            // admitted-then-killed. At the passing controls free-at-peak is 3.9-13.1 GB
+            // against a 1.7 GB bar, so the new term CANNOT bind and c <= 48 is
+            // behaviorally IDENTICAL (the no-regression contract: this math only bites
+            // where the old gate over-admitted).
             if !active.is_empty() {
                 if let (Some(&cost), Ok((free, _))) =
                     (session_vram_cost.get(&req.model), engine.ctx().mem_get_info()) {
-                    if free < cost.saturating_mul(2) {
+                    // spec-capable models pay the transient floor; the plain path keeps
+                    // the legacy headroom term (cost) exactly — byte-identical behavior.
+                    let reserve = if serve_spec_enabled()
+                        && loaded.get(&req.model).is_some_and(|lm| lm.model.mtp.is_some())
+                    {
+                        SPEC_SHRINK_RESERVE
+                    } else {
+                        cost
+                    };
+                    if free < cost.saturating_add(reserve) {
+                        // Pacing receipt: the defer path used to be SILENT, which is why the
+                        // pre-fix red read as "all 64 admitted then all 64 died" with no
+                        // visible back-pressure. One line per tick (not per deferred request)
+                        // keeps a 64-client burst readable.
+                        if vram_defers == 0 {
+                            eprintln!("[admit-oom] VRAM defer: {} active, free {:.0}MB < \
+                                       cost {:.0}MB + reserve {:.0}MB — queueing (FIFO)",
+                                      active.len(), free as f64 / 1e6,
+                                      cost as f64 / 1e6, reserve as f64 / 1e6);
+                        }
+                        vram_defers += 1;
                         requeue.push_back(req);   // waits (FIFO), never rejected
                         continue;
                     }
@@ -1296,6 +1418,12 @@ pub fn run(
         //        decode_step_batch over survivors in chunks of <= 8.
         let batching = serve_batching();
         let mut finished: Vec<usize> = Vec::new();
+        // STEP-OOM PARK (lane/admit-oom): requests parked out of a step-time CUDA OOM this
+        // tick. Drained onto the FRONT of the admission queue after the retire sweep — the
+        // retire is what frees the VRAM their re-admit needs, and front-insertion keeps them
+        // ahead of later arrivals (they were admitted first; a park must not send a request
+        // to the back of the line and starve it).
+        let mut requeue_oom: std::collections::VecDeque<Box<Request>> = Default::default();
         // DISCONNECT ABORT (gap-scan F8): every send in the tick loop is `let _ =
         // s.tx.send(..)` — send errors ignored — so an aborted client used to burn GPU
         // until max_tokens/EOS and hold a slot against admission. The per-tick sweep
@@ -1507,7 +1635,56 @@ pub fn run(
                 match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
+                    // STEP-OOM PARK-NOT-KILL (lane/admit-oom, 2026-08-06). A step that OOMs
+                    // on a card-full condition used to kill the stream outright, and at c=64
+                    // that killed ALL 64 in one tick sweep (research/serving-density-20260806
+                    // §Q2: 0/64 well-formed). The honest admission gate above makes this rare
+                    // — it is now the TRANSIENT-COLLISION backstop, for the case where two
+                    // sessions' capture arenas land in the same tick despite the reserve.
+                    //
+                    // The session PARKS: its caches drop (freeing exactly the VRAM the retry
+                    // needs) and the REQUEST goes back to the admission queue, where the
+                    // reserve-floor gate holds it until a retire frees room — the same
+                    // FIFO-wait every over-cap request already takes. Bounded by
+                    // step_oom_retries() before the honest error, so a genuine capacity
+                    // failure still surfaces instead of looping forever.
+                    //
+                    // WHAT PARKING COSTS, stated honestly: the session's committed KV is
+                    // discarded, so the retry RE-PRIMES its prompt from scratch. That is
+                    // pure latency, never a correctness change — a re-primed session emits
+                    // exactly what a cold one would (the same property the F5 right-size
+                    // ladder relies on). Tokens already streamed to the client are NOT
+                    // re-sent: `park_requeue` rebuilds the request with the prompt only, and
+                    // a session that has already emitted cannot be silently restarted, so it
+                    // takes the honest error instead. Only pre-emission sessions park.
+                    Err(err) if is_cuda_oom(&err.to_string())
+                        && step_oom_retries() > 0
+                        && active[i].generated.is_empty()
+                        && active[i].oom_retries < step_oom_retries() =>
+                    {
+                        let n_active = active.len();
+                        let s = &mut active[i];
+                        s.oom_retries += 1;
+                        eprintln!("[admit-oom] step OOM parked session back to queue \
+                                   (model {}, retry {}/{}, {n_active} active): {err}",
+                                  s.model, s.oom_retries, step_oom_retries());
+                        match park_requeue(&loaded, s) {
+                            Some(req) => { requeue_oom.push_back(req); finished.push(i); }
+                            None => {
+                                // cannot rebuild the request (no prompt to replay) — the
+                                // pre-fix honest error, quoted.
+                                let _ = s.tx.send(Event::Error(format!("step error: {err}")));
+                                finished.push(i);
+                            }
+                        }
+                    }
                     Err(err) => {
+                        if is_cuda_oom(&err.to_string()) {
+                            eprintln!("[admit-oom] step OOM NOT parked (model {}, retries \
+                                       {}/{}, generated {}): reporting honestly",
+                                      active[i].model, active[i].oom_retries,
+                                      step_oom_retries(), active[i].generated.len());
+                        }
                         let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
                         finished.push(i);
                     }
@@ -1945,6 +2122,12 @@ pub fn run(
                 }
             }
         }
+        // STEP-OOM PARK (lane/admit-oom): re-queue parked requests AFTER the retire sweep
+        // above — the retire is what actually released their VRAM. Front-inserted in original
+        // order so a parked session keeps its place ahead of later arrivals.
+        while let Some(req) = requeue_oom.pop_back() {
+            queue.push_front(req);
+        }
         // publish serving metrics (worker owns the counters; axum reads the snapshot).
         // THROTTLED: the per-tick mutex+percentile cost ~1.7ms/token of B=1 TPOT
         // (2026-07-26 live A/B) — publish every 32nd tick. A spec-session retire forces
@@ -2018,6 +2201,46 @@ fn handle_cmd(
     }
 }
 
+/// STEP-OOM PARK (lane/admit-oom, 2026-08-06): rebuild a live session's `Request` so it can go
+/// back to the admission queue after a step-time CUDA OOM, instead of the stream dying.
+///
+/// PRECONDITION (enforced by the caller, not here): the session has emitted NOTHING. A session
+/// that already streamed tokens cannot be restarted — the client would see the prefix twice —
+/// so those take the honest error. This is why the function needs no emitted-state surgery.
+///
+/// The rebuilt request replays the ORIGINAL render inputs (`ReplayPlan`), so re-admission runs
+/// the identical template + tokenize and produces the session a cold arrival would have. The
+/// retry counter rides along on the Request, keeping the bound per-request across re-admits.
+/// Returns None when the plan cannot produce a prompt (nothing to replay) — caller errors.
+fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Box<Request>> {
+    // A plan with no prompt source at all would re-admit into "empty prompt after
+    // tokenization" — report the OOM honestly instead of laundering it into a 400.
+    let p = &s.replay;
+    if p.prompt_ids.is_empty() && p.prompt_text.is_empty() && p.chat_turns.is_empty() {
+        return None;
+    }
+    debug_assert!(loaded.contains_key(&s.model), "parked session's model must still be loaded");
+    Some(Box::new(Request {
+        model: s.model.clone(),
+        prompt_ids: p.prompt_ids.clone(),
+        prompt_text: p.prompt_text.clone(),
+        chat: p.chat,
+        chat_turns: p.chat_turns.clone(),
+        tools_json: p.tools_json.clone(),
+        think: p.think,
+        params: p.params.clone(),
+        sampler_cfg: p.sampler_cfg.clone(),
+        stop_strings: s.stop_strings.clone(),
+        trace_id: s.trace_id.clone(),
+        cache_ns: s.cache_ns.clone(),
+        affinity: s.affinity.clone(),
+        lane: s.lane,
+        grammar: p.grammar.clone(),
+        oom_retries: s.oom_retries,
+        tx: s.tx.clone(),
+    }))
+}
+
 /// Build a Session: tokenize the prompt (worker owns the Tokenizer), allocate the per-session Cache,
 /// build the per-session Sampler. The prompt is NOT primed here — it's fed one token per scheduler
 /// tick so prefill of a new session interleaves with other sessions' decode (the BASE-4 interleave).
@@ -2033,6 +2256,20 @@ fn admit(
     let lm = &loaded[&req.model];
     // PC-ISO: every reuse-pool probe below scans ONLY this (model, namespace) pool.
     let pool_key: PoolKey = (req.model.clone(), req.cache_ns.clone());
+    // STEP-OOM PARK plan (lane/admit-oom): snapshot the render inputs before this function
+    // consumes them, so a step-time OOM can re-admit an identical request. Host-side only.
+    let replay = Box::new(ReplayPlan {
+        prompt_ids: req.prompt_ids.clone(),
+        prompt_text: req.prompt_text.clone(),
+        chat: req.chat,
+        chat_turns: req.chat_turns.clone(),
+        tools_json: req.tools_json.clone(),
+        think: req.think,
+        params: req.params.clone(),
+        sampler_cfg: req.sampler_cfg.clone(),
+        grammar: req.grammar.clone(),
+    });
+    let req_oom_retries = req.oom_retries;
 
     // Tokenize: prefer explicit prompt_ids (raw-id path, for the exact-token validation gate); else
     // tokenize the text, optionally wrapping in the chat template.
@@ -2570,6 +2807,8 @@ fn admit(
         spec,
         graph: None,
         graph_pending: None,
+        oom_retries: req_oom_retries,
+        replay,
         spec_drafted: 0,
         spec_accepted: 0,
         spec_rounds: 0,
