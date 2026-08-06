@@ -12,10 +12,21 @@ edges of batched serving.
 > same SKU and ~2x between a 188-SM and an 82-SM board. The open gaps stated below travel
 > with the wins.
 
-memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
-placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
-processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
-(M0 comms floor measured — ARCHITECTURE-H100.md).
+Multi-GPU serving has two shapes, and which one applies is decided by whether the model fits
+on one card:
+
+- **Replica fleet** (the default for a model that fits): N independent `memra-server`
+  processes, one engine per GPU (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the placement
+  mechanism), fronted by an admission proxy. This is the throughput shape — see
+  [Fleet tooling](#fleet-tooling).
+- **Pipeline-parallel PP-2** (for a model that fits only across the pair): ONE engine
+  process, the layer trunk cut into stages, each stage's weights and KV resident on its own
+  card. Opt-in via `MEMRA_PP_STAGES` / `MEMRA_PP_DEVICES`; see
+  [Pipeline-parallel serving](#pipeline-parallel-pp-2-serving) below for what is gated and
+  what is refused.
+
+Tensor parallelism is neither — it is a separate in-progress build (M0 comms floor measured
+— ARCHITECTURE-H100.md).
 
 ## Fleet tooling
 
@@ -28,6 +39,7 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 | `tools/serve-proxy.py` | least-outstanding reverse proxy with per-backend admission cap (default 8 = the engine's exactness-tier batch width and the two-replicas-per-GPU anti-thrash bound). Bounded FIFO queue with deadline → 429 + Retry-After; `/health` + `/metrics` JSON |
 | `tools/load-serve.py` | concurrent OpenAI-format load harness: aggregate output tok/s, p50/p95 latency, JSONL per load point |
 | `tools/serve-smoke.sh` | OpenAI-surface smoke gate for a single server |
+| `deploy/systemd/memra-server.service` | example unit for a **single supervised instance** (the other deployment shape — `serve-fleet.sh` is the systemd-free multi-replica path). `Type=notify` with `READY=1` after the models load and the socket binds, `WATCHDOG=1` pings only while inference is live, `STOPPING=1` + `EXTEND_TIMEOUT_USEC` so a drain is not SIGKILLed, and exit 70 (unrecoverable GPU) distinguished from exit 1 (bad config). Copy, do not symlink: every path is site-specific and the value is the supervision contract in the directive choices, each commented with the failure it prevents |
 
 ## Measured numbers (Qwen3.5-9B Q8_0; receipts in `research/`)
 
@@ -202,6 +214,87 @@ default `MEMRA_CTX=8192` exceed VRAM (captured `CUDA_ERROR_OUT_OF_MEMORY` in the
 pre-admission-wait receipts; ~27 sessions fit — since the VRAM-aware admission wait the
 overflow queues instead of erroring). Set `MEMRA_CTX` to the workload — 2048 clears the
 same cell (machine-specific config per the flags doctrine).
+
+## Pipeline-parallel (PP-2) serving
+
+For a model that fits only across two cards. Receipts:
+[`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/) (batched decode),
+[`research/pp2-spec-20260806/`](../research/pp2-spec-20260806/) (the spec verdict),
+[`research/pp2-hardening-20260806/`](../research/pp2-hardening-20260806/) (the fail-closed
+guard). Rig for all three: 2x RTX PRO 6000 Blackwell Server Edition 96 GB, sm_120a, CUDA
+13.2, SPOT box — **rented**, not owned. Flag reference: [FLAGS.md](FLAGS.md) `MEMRA_PP_*`.
+
+The serving config, minimally:
+
+```bash
+MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
+MEMRA_SERVE_SPEC=0 \
+MEMRA_MODELS="big=/path/to/model.gguf" memra-server
+```
+
+`MEMRA_SERVE_SPEC=0` is **load-bearing, not tidiness** (see below). The server logs
+`[pp] cross-device transport: stage0=dev0 stage1=dev1` when the split is live — a config that
+silently did not split is the failure mode that banner exists to rule out.
+
+**Exactness: the split adds zero deviation.** `decode-batch-gate --mode pp` records a
+reference with the door OFF over the same loaded weights, replays the same token sequence
+through the split, and compares every f32 logit of every row of every step bit by bit.
+**0 differing bits** on all seven configs — `dev01`, `dev10` (reversed placement),
+`singledev` (seam only, one card), `split5` (uneven cut), N=4 (`devices 0,0,1,1`), q27 (64
+layers), and `wide` (B=12/16 under the `MEMRA_DECODE_BATCH_CAP=16` door). The B=1 fast path
+is its own gate arm (arm 4) against the eager split, since it carries the accepted m=1 fusion
+FP gap vs the batched body by design: **3,973,120 f32 logits bit-identical, 0 differing
+bits**, across the same six configs.
+
+**Cost: the boundary transfer does not bite at m>1.** q9, 64 steps, 512-token prompts,
+greedy, N=5 rep-major interleaved in one lock hold on one binary (medians; cross-run
+comparison would be clock-drift invalid):
+
+| arm | B=1 | B=4 | B=8 |
+|---|---|---|---|
+| door shut, single device | 208.4 | 489.3 | 654.0 |
+| split dev01 (**the serving config**) | **204.7** | 487.0 | 646.9 |
+| ratio | 0.982x | **0.995x** | **0.989x** |
+
+So batched PP-2 costs **0.5–1.5%** at B=4/8/16, and of that, transport is 0.986–0.997x of the
+seam — almost all of the small loss is the seam, not PCIe. Both placement orders agree within
+0.3%. Aggregate scaling survives the split: B=8 reaches 3.65x B=1's aggregate.
+
+The B=1 row has history worth keeping: opening the pp door originally dropped every solo
+session off the m=1 fusion chain (the `b1_fast` guard included `pp_cuts().is_none()`), a
+permanent **−14.9%** tax on exactly the request shape an interactive 2-card box serves. Fixed
+by giving the split its own B=1 path — each stage runs its layer range through
+`decode_layers_eager`. `MEMRA_SERVE_B1FAST=0` is the rollback control and still measures the
+old 177 (0.851x).
+
+**Why `MEMRA_SERVE_SPEC=0`.** Speculative serving over PP-2 is *correct* — the verify trunk
+takes its own stage split and the bit-identity battery is 7/7 ALL GREEN — and it is still
+**not shippable for concurrent serving**:
+
+- On the reversed placement it provokes a deterministic `CUDA_ERROR_ILLEGAL_ADDRESS` that is
+  **sticky for the CUDA context**: once it fires, every later `new_session` inherits it. At
+  c=4 that is **100% of requests lost** (0/48, wall 0.008 s), reproducible 3/3.
+- On the other placement it is ~20x slow.
+- The same placement with spec OFF is 96/96 clean and the fastest arm measured.
+
+So PP-2 serves the **plain** path today. An artifact carrying an embedded MTP head self-specs
+by default, which is why the flag must be explicit: without it every request funnels into the
+verify trunk. `serve-smoke.sh` over the split (PP-2 dev01, spec off) returns **0 failed
+checks** across `/models`, non-stream chat, SSE streaming, `/v1/completions`, greedy
+determinism, 3 concurrent chats, and long generation — identical to the door-shut control,
+i.e. the split adds nothing observable to the OpenAI surface.
+
+**What refuses, deliberately.** The four decode paths that have no stage split
+(`decode_step_batch`'s unsplit body, `decode_step_dc`, the graph capture wrapping dc, and
+`decode_step_t*` spec verify) **fail closed** under an open pp door with a sharded
+cross-device placement, behind one shared guard (`pp::refuse_unsplit_if_remote`). They were
+not wrong, they were a silent perf cliff with a green battery: an unsplit trunk peer-reads
+every remote stage's weights every step, measured **7.4 vs 208.9 tok/s at B=1 (28x)** and
+**47.4 vs 657.0 at B=8 (13.9x)**. Exactness was never affected (peer reads return identical
+bytes), which is exactly why a refusal rather than a warning was the right call.
+`MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` re-admits them as a measurement door only;
+`MEMRA_PP_SHARD=0` is the non-measurement escape (weights all home — full speed, forfeits the
+capacity PP-2 exists for).
 
 ## OpenAI tools surface (serve-tools lane, 2026-08-02)
 
@@ -827,6 +920,25 @@ What this changes and what it does not:
    reads quantized KV — the same arithmetic long prompts always had past the first boundary.
    Near-tie argmax flips vs the old f32-first-chunk output are the documented contract
    change (quantified teacher-forced in `research/chunkinv-flip-20260805/`), not a bug.
+
+**Scope: this is a per-architecture property.** The fix above is a property of the
+`full_attn_prime_fa_dispatch` path, and the gate runs on the shipped arches. A different
+attention family can re-enter the class through its own door, and one has: the `step35`
+bring-up arch (Step-3.7-Flash) is **chunk-DEPENDENT past its 512-token SWA window** —
+`MEMRA_PRIME_CHUNK` changes prefill logits, hidden rows, and generated text for any prompt
+over the window. The mechanism is kernel *selection*, not reduction order: a chunk whose
+`t_kv` exceeds the window takes the f32 windowed floor `sdpa_naive_w_quantized_view` while a
+chunk that fits takes the dequant-once `fa_prefill_view_ws`, so the FA rows form a contiguous
+prefix `P = c*floor(win/c)` and the verdict depends only on `P`. A pre-registered 4/4
+falsification battery pinned it — including a one-token verdict flip at c=513 vs c=512 at
+identical chunk count in one process, and a 20-chunks-vs-10-chunks pair that is bit-identical
+because `P` matches, which no fold-order account permits. The shipped default (4096) has
+`P=0`, so a naked single-rig run is self-consistent; the exposure is two rigs at different
+chunk sizes returning different text. Fix shape is named and correct-by-construction (force
+`naive_w` on SWA layers whenever `T>win`, making `P` identically 0, which cannot move the
+default's numbers since that path is already `P=0`); its chunkinv gate at T=4883 is written
+and legitimately red until the fix lands. Receipts:
+[`research/step37-p2-20260806/`](../research/step37-p2-20260806/) (commit `66a81371`).
 
 The behavior is **gated in both directions**: fast-gate ids `chunkinv` / `chunkinvc`
 (routed from the `hybrid_forward.rs` map row): the default arm asserts byte-identity naked;
