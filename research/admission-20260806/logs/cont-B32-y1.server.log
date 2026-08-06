@@ -1,0 +1,71 @@
+[server] starting; models config = [("q", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q": 65 layers, eos=248046
+[worker] q: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q"]
+[server] listening on http://127.0.0.1:8203
+[meter] admit id=chatcmpl-d7ee249e4ca7cfaf86b918054e84cc47 tenant=default lane=interactive model="q"
+[worker] observed session VRAM cost for "q": 336MB (admission gate = 2x)
+[spec-acc] ctx=36 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=70 burst=21/33 cum=45/60=0.750
+[spec-acc] ctx=102 burst=16/48 cum=61/108=0.565
+[spec-acc] ctx=134 burst=20/36 cum=81/144=0.562
+[spec-acc] ctx=166 burst=19/45 cum=100/189=0.529
+[meter] admit id=chatcmpl-77dd87042d56d1025010cb970ea89cdd tenant=default lane=interactive model="q"
+[spec-acc] ctx=200 burst=5/15 cum=105/204=0.515
+[spec-acc] ctx=39 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=210 burst=18/45 cum=123/249=0.494
+[spec-acc] ctx=243 burst=20/36 cum=143/285=0.502
+[spec-acc] ctx=73 burst=26/27 cum=50/54=0.926
+[spec-acc] ctx=275 burst=20/39 cum=163/324=0.503
+[spec-acc] ctx=108 burst=23/30 cum=73/84=0.869
+[spec-acc] ctx=308 burst=20/36 cum=183/360=0.508
+[spec-acc] ctx=141 burst=18/24 cum=91/108=0.843
+[meter] admit id=chatcmpl-ffe5e6354408fbcda5d794910f579ae0 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=340 burst=24/30 cum=207/390=0.531
+[spec-acc] ctx=374 burst=20/36 cum=227/426=0.533
+[spec-acc] ctx=73 burst=26/27 cum=50/54=0.926
+[spec-acc] ctx=406 burst=22/30 cum=249/456=0.546
+[spec-acc] ctx=108 burst=23/30 cum=73/84=0.869
+[spec-acc] ctx=438 burst=19/39 cum=268/495=0.541
+[spec-acc] ctx=141 burst=18/24 cum=91/108=0.843
+[meter] admit id=chatcmpl-cbae93f8d00519c9bcd23fba280d0339 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=470 burst=21/33 cum=289/528=0.547
+[spec-acc] ctx=502 burst=16/54 cum=305/582=0.524
+[spec-acc] ctx=73 burst=26/27 cum=50/54=0.926
+[spec-acc] ctx=536 burst=21/39 cum=326/621=0.525
+[spec-acc] ctx=108 burst=23/30 cum=73/84=0.869
+[spec-acc] ctx=570 burst=14/54 cum=340/675=0.504
+[spec-acc] ctx=141 burst=18/24 cum=91/108=0.843
+[meter] admit id=chatcmpl-745a6266634331e073c1a31b3b11f1fe tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=602 burst=25/30 cum=365/705=0.518
+[spec-acc] ctx=637 burst=18/42 cum=383/747=0.513
+[spec-acc] ctx=73 burst=26/27 cum=50/54=0.926
+[spec-acc] ctx=669 burst=21/33 cum=404/780=0.518
+[spec-acc] ctx=108 burst=23/30 cum=73/84=0.869
+[spec-acc] ctx=701 burst=20/39 cum=424/819=0.518
+[spec-acc] ctx=141 burst=18/24 cum=91/108=0.843
+[meter] admit id=chatcmpl-a41274ea774e4df97bf7df00816f6275 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=39 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=734 burst=20/42 cum=444/861=0.516
+[spec-acc] ctx=768 burst=19/48 cum=463/909=0.509
+[spec-acc] ctx=73 burst=26/27 cum=50/54=0.926
+[spec-acc] ctx=803 burst=24/27 cum=487/936=0.520
+[spec-acc] ctx=108 burst=23/30 cum=73/84=0.869
+[spec-acc] ctx=836 burst=21/33 cum=508/969=0.524
+[spec-acc] ctx=141 burst=18/24 cum=91/108=0.843
+[server] SIGTERM: draining (1 in flight, deadline 30s)
+[abort] client disconnected: model "q", prompt 36 (0 cached), 832 generated — billed to abort point, 14.85s
+[server] drain complete in 0.1s; exiting

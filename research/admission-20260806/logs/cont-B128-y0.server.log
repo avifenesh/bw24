@@ -1,0 +1,39 @@
+[server] starting; models config = [("q", "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf", Some("/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q" <- /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[mtp-draft] external draft head: blk.64, head_vocab=32768 (trimmed, d2t map)
+[worker] q: regime draft attached (/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q": 65 layers, eos=248046
+[worker] q: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q"]
+[server] listening on http://127.0.0.1:8203
+[meter] admit id=chatcmpl-09818f47c6dedd1ee79b1be1f5559bbf tenant=default lane=interactive model="q"
+[worker] observed session VRAM cost for "q": 336MB (admission gate = 2x)
+[spec-acc] ctx=36 burst=81/144 cum=81/144=0.562
+[meter] admit id=chatcmpl-9342ff4e6fe596367b6dcb384bd50d5c tenant=default lane=interactive model="q"
+[spec-acc] ctx=166 burst=73/171 cum=154/315=0.489
+[spec-acc] ctx=296 burst=87/129 cum=241/444=0.543
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-e15bf878aa3b560fff876253674f678d tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=426 burst=78/156 cum=319/600=0.532
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-61fb8dfa6c5217cfe437a1ff6d109ec5 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=556 burst=74/168 cum=393/768=0.512
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-3df03b8d9c0f50eb91b05dabe4f87937 tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=686 burst=79/153 cum=472/921=0.512
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[meter] admit id=chatcmpl-39bb8af5d935d623ccc25d6b315b90fa tenant=default lane=interactive model="q"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 39 prompt tokens; model q)
+[spec-acc] ctx=816 burst=77/159 cum=549/1080=0.508
+[spec-acc] ctx=39 burst=91/108 cum=91/108=0.843
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[abort] client disconnected: model "q", prompt 36 (0 cached), 910 generated — billed to abort point, 15.97s
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

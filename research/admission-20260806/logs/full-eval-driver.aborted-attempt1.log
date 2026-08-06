@@ -1,0 +1,2 @@
+[01:37:59Z] P1 contended hold acquired (54)
+[01:38:22Z] P1 contended B32 yield=1: {"label": "contended-B32-y1", "n": 5, "ttft_first_chunk_s": 0.1221487930015428, "chunk_gap_p50_s": 0.027427802997408435, "chunks_per_resp": 37}
