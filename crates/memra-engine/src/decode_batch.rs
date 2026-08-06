@@ -412,6 +412,25 @@ impl HybridModel {
         let scale = 1.0 / (head_dim as f32).sqrt();
         let rope_dims = cfg.rope_dim_count as usize;
 
+        // MEMRA_BATCH_PHASE=1: sync-bounded phase accumulation (diagnostics — see header note).
+        // Initialized BEFORE the tick-input assembly below so slot 0 covers the HOST side of
+        // setup (pos_v/ptr-table builds, embed gather) as well as the H2D sync — the audit-fix
+        // lane's Q6 instrumentation gap (research/audit-fixes2-20260805): the old placement
+        // started the clock after the assembly, so slot 0 under-reported setup.
+        let ph_on = batch_phase_on();
+        let mut ph_last = std::time::Instant::now();
+        let ph_mark = |slot: usize,
+                       last: &mut std::time::Instant|
+         -> Result<(), Box<dyn std::error::Error>> {
+            if ph_on {
+                e.stream().synchronize()?;
+                let now = std::time::Instant::now();
+                BATCH_PHASE.lock().unwrap()[slot] += (now - *last).as_secs_f64();
+                *last = now;
+            }
+            Ok(())
+        };
+
         // Per-row rope positions (each sequence at its own depth).
         let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
         let pos_d = e.htod_i32(&pos_v)?;
@@ -490,21 +509,6 @@ impl HybridModel {
 
         // Embed all B tokens -> x [B, n_embd] (host gather, one H2D).
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
-
-        // MEMRA_BATCH_PHASE=1: sync-bounded phase accumulation (diagnostics — see header note).
-        let ph_on = batch_phase_on();
-        let mut ph_last = std::time::Instant::now();
-        let ph_mark = |slot: usize,
-                       last: &mut std::time::Instant|
-         -> Result<(), Box<dyn std::error::Error>> {
-            if ph_on {
-                e.stream().synchronize()?;
-                let now = std::time::Instant::now();
-                BATCH_PHASE.lock().unwrap()[slot] += (now - *last).as_secs_f64();
-                *last = now;
-            }
-            Ok(())
-        };
         ph_mark(0, &mut ph_last)?;
 
         for (il, layer) in self.layers.iter().enumerate() {

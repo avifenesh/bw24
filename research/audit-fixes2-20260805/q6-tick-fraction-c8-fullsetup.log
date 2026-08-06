@@ -1,0 +1,75 @@
+CHUNKSWEEP seqs=8 chunk=8: aggregate 445.2 tok/s (17.97 ms/tick, median of 3)
+[batch-phase] total 4161.7 ms (sync-bounded; shares rank, not walltime)
+  1728.3 ms  41.5%  ffn (add/norm/gate/up/act/down)
+   793.0 ms  19.1%  gdn batched projections
+   382.4 ms   9.2%  lm_head (norm+matmul)
+   369.6 ms   8.9%  logits D2H + host split
+   244.8 ms   5.9%  gdn out (gated norm+proj)
+   211.0 ms   5.1%  gdn state ops (conv/prep/scan)
+   200.7 ms   4.8%  attn batched pre (norm/qkv/rope)
+   128.0 ms   3.1%  attn per-seq: fa_decode
+    74.6 ms   1.8%  attn post (gate+o-proj)
+    15.4 ms   0.4%  attn per-seq: kv append
+    13.9 ms   0.3%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+CHUNKSWEEP seqs=8 chunk=8: aggregate 445.9 tok/s (17.94 ms/tick, median of 3)
+[batch-phase] total 4155.7 ms (sync-bounded; shares rank, not walltime)
+  1729.4 ms  41.6%  ffn (add/norm/gate/up/act/down)
+   793.4 ms  19.1%  gdn batched projections
+   381.5 ms   9.2%  lm_head (norm+matmul)
+   369.8 ms   8.9%  logits D2H + host split
+   245.5 ms   5.9%  gdn out (gated norm+proj)
+   202.7 ms   4.9%  gdn state ops (conv/prep/scan)
+   201.4 ms   4.8%  attn batched pre (norm/qkv/rope)
+   128.6 ms   3.1%  attn per-seq: fa_decode
+    74.4 ms   1.8%  attn post (gate+o-proj)
+    15.3 ms   0.4%  attn per-seq: kv append
+    13.6 ms   0.3%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+CHUNKSWEEP seqs=8 chunk=8: aggregate 443.8 tok/s (18.03 ms/tick, median of 3)
+[batch-phase] total 4177.0 ms (sync-bounded; shares rank, not walltime)
+  1737.8 ms  41.6%  ffn (add/norm/gate/up/act/down)
+   798.0 ms  19.1%  gdn batched projections
+   383.0 ms   9.2%  lm_head (norm+matmul)
+   372.6 ms   8.9%  logits D2H + host split
+   247.0 ms   5.9%  gdn out (gated norm+proj)
+   203.4 ms   4.9%  gdn state ops (conv/prep/scan)
+   202.5 ms   4.8%  attn batched pre (norm/qkv/rope)
+   129.0 ms   3.1%  attn per-seq: fa_decode
+    74.7 ms   1.8%  attn post (gate+o-proj)
+    15.4 ms   0.4%  attn per-seq: kv append
+    13.5 ms   0.3%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+CHUNKSWEEP seqs=8 chunk=8: aggregate 442.7 tok/s (18.07 ms/tick, median of 3)
+[batch-phase] total 4190.8 ms (sync-bounded; shares rank, not walltime)
+  1744.1 ms  41.6%  ffn (add/norm/gate/up/act/down)
+   800.8 ms  19.1%  gdn batched projections
+   384.3 ms   9.2%  lm_head (norm+matmul)
+   373.8 ms   8.9%  logits D2H + host split
+   247.9 ms   5.9%  gdn out (gated norm+proj)
+   203.3 ms   4.9%  gdn state ops (conv/prep/scan)
+   202.9 ms   4.8%  attn batched pre (norm/qkv/rope)
+   129.3 ms   3.1%  attn per-seq: fa_decode
+    75.1 ms   1.8%  attn post (gate+o-proj)
+    15.5 ms   0.4%  attn per-seq: kv append
+    13.8 ms   0.3%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
+CHUNKSWEEP seqs=8 chunk=8: aggregate 440.4 tok/s (18.17 ms/tick, median of 3)
+[batch-phase] total 4209.2 ms (sync-bounded; shares rank, not walltime)
+  1750.1 ms  41.6%  ffn (add/norm/gate/up/act/down)
+   802.9 ms  19.1%  gdn batched projections
+   385.4 ms   9.2%  lm_head (norm+matmul)
+   379.9 ms   9.0%  logits D2H + host split
+   249.0 ms   5.9%  gdn out (gated norm+proj)
+   204.4 ms   4.9%  gdn state ops (conv/prep/scan)
+   203.6 ms   4.8%  attn batched pre (norm/qkv/rope)
+   129.7 ms   3.1%  attn per-seq: fa_decode
+    75.2 ms   1.8%  attn post (gate+o-proj)
+    15.5 ms   0.4%  attn per-seq: kv append
+    13.5 ms   0.3%  setup(ptrs+embed H2D)
+     0.0 ms   0.0%  attn per-seq: q/a dtod copies
+
