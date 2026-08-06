@@ -819,3 +819,186 @@ set. Two structural facts already visible in the header that the wiring must han
 
 Battery bookkeeping: `=== battery rc=0`, and `nvidia-smi` at lock release reported `0, 0 MiB` /
 `1, 0 MiB` — the process exited clean and left the cards free for the co-tenant lane.
+
+---
+
+## Sequence item 5 — MTP drafter wiring: CLOSED (gate PASSES both contracts)
+
+Two bugs stood between the drafter file and a working spec path. Both were found on the box, both
+have committed receipts, and the second one is the interesting one.
+
+### Bug 1 — the attach panicked (`348a5787`)
+
+The very first `MEMRA_MTP_DRAFT` attach died inside cudarc:
+
+```
+thread 'main' (82647) panicked at cudarc-0.19.8/src/driver/safe/core.rs:1917:32:
+called Option::unwrap() on a None value
+```
+
+`RUST_BACKTRACE=full` gave the frames (`raw/mtp-bt-20260806T212127Z.log`):
+`copy_into` → `full_attn_verify` → `decode_step_t_core_stream` → `generate_spec_inner2` →
+`generate_spec`. Cause: `step35_verify` sized its output buffer from the per-layer **head**
+geometry (`t * n_head_at(il) * head_dim` = 8192 on full-attn, 12288 on SWA) while
+`step35_decode_attn` returns rows **post-`wo`**, i.e. `[n_embd]` = 4096 — the same contract the
+generic arm's `matmul_decode_exact(&fa.wo, &attn_g, t)` return has. The first row copy overran
+and `CudaView::slice` returned `None`. Fixed by sizing/striding on `n_embd` plus a
+`debug_assert_eq!` that pins the contract. Blast radius is step35 only.
+
+### The geometry work from phase 2's first half was correct
+
+Worth stating plainly, because it was the thing most likely to be wrong: the drafter resolved its
+per-layer geometry correctly on the **first** attach, and both of `load_draft`'s tensor-shape
+witnesses passed silently.
+
+```
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+```
+
+That is the two-file geometry trap handled: 96 heads (not the trunk array's out-of-range `.last()`
+of 64), SWA, 128 rotary dims, base 1e4 — all read from the **drafter's own** arrays.
+
+### Bug 2 — the draft lm_head was the TRUNK's lm_head (`9f9d8321`)
+
+With the panic gone, the gate produced the failure that no exactness gate can see:
+
+```
+[generate_spec K=1] 32 tok in 5.917s = 5.24 tok/s (0.32x vs generate)
+  acceptance: 0/31 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong
+           (bonus-token masking). Speedup will be absent.
+```
+
+0/31, 0/62, 0/93, 0/124, 0/155, 0/186, 0/217, 0/248 — **exactly zero** at every K, with
+self-consistency PASS throughout (`raw/mtp-draft-20260806T212902Z.log`). Exact zero across 248
+drafts is structural, not a quality problem.
+
+`load_draft` read the drafter file's **top-level `output.weight`** as the draft lm_head. Upstream's
+`graph_mtp` (llama.cpp `src/models/step35.cpp:553`) instead prefers the block's own head:
+
+```cpp
+ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+```
+
+Both tensors exist in this file at identical `[4096, 128896]` Q8_0, so **no shape check can tell
+them apart**. So: hash the payload bytes (`raw/draft-head-tensor-hashes-20260807.txt`).
+
+| tensor | sha256 (head) |
+|---|---|
+| drafter `output.weight` | `3eec5831…` |
+| `blk.45.nextn.shared_head_head.weight` | `c90b907b…` |
+| `blk.46.nextn.shared_head_head.weight` | `a22d2957…` |
+| `blk.47.nextn.shared_head_head.weight` | `4b21e137…` |
+| drafter `output_norm.weight` | `d7526f44…` |
+| **trunk** `output_norm.weight` | `d7526f44…` |
+
+Three distinct per-block heads, none equal to `output.weight`. And the tell: the drafter's
+top-level `output_norm` is **byte-identical to the trunk artifact's**, while blk.45's own
+`shared_head_norm` differs (`405dbb0d…`). The drafter's top level is a re-quantized (Q6_K→Q8_0)
+**copy of the trunk's output stack**, shipped so the draft GGUF stands alone. It is not the MTP
+head. (`token_embd` also differs from `output.weight` here, so this is not a tied-embedding model
+either.) The old code was projecting the MTP block's hidden through the *trunk's* lm_head under the
+*MTP block's* norm — fluent-looking drafts with near-zero agreement against the trunk's real
+next-token distribution.
+
+Fixed as a **preference**, not a replacement: prefer `blk.{n}.nextn.shared_head_head.weight`, fall
+back to top-level `output.weight`. FR-Spec drafts publish their *trimmed* head (+ `d2t`) as the
+file-level `output.weight` and carry no `shared_head_head`, so they keep the old path. The
+`[mtp-draft]` line now prints which source was taken.
+
+**Second bug, same root, found by the same probe.** The *embedded* MTP loader read
+`blk.{n}.nextn.shared_head.weight` — a name no artifact and no upstream tensor mapping uses
+(upstream: `LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD` → `"blk.%d.nextn.shared_head_head"`). That
+`load_opt` was silently **always-None**, so every embedded-MTP model fell back to the trunk
+`self.output` in `mtp_head_forward_dev` op 12. Benign for heads genuinely tied to the trunk head,
+wrong for any artifact shipping its own. This is precisely the mapping the section above flagged
+as "recorded so it is checked against the header, not assumed" — it was checked, and it was wrong.
+
+### The gate, after the fix (`raw/mtp-draft-PASS-20260806T215132Z.log`)
+
+```
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head, head_vocab=128896 (full)
+[generate_spec K=1] acceptance: 14/18 = 77.8%   self-consistency: PASS (identical to generate)
+```
+
+| K | accepted / drafted | acceptance |
+|---|---|---|
+| 1 | 14/18 | **77.8%** |
+| 2 | 15/34 | 44.1% |
+| 3 | 15/51 | 29.4% |
+| 4 | 15/68 | 22.1% |
+| 5 | 15/85 | 17.6% |
+| 6 | 15/102 | 14.7% |
+| 7 | 15/119 | 12.6% |
+| 8 | 15/136 | 11.0% |
+
+Both contracts hold at every K: token-identical to `generate`, and acceptance > 0. K=1 went from
+**0/31 = 0.0% → 14/18 = 77.8%**. One bounded `flock -w 1800` window (21:51:32Z → 21:53:45Z, 133s);
+`nvidia-smi` at release reported `0, 0 MiB` / `1, 0 MiB`, cards returned to the co-tenant lane.
+
+Sequence item 5 is closed. N=1 per K on a shared box; the tok/s figures in that log are bring-up
+receipts, **not** perf claims — and note spec is still *slower* than plain generate here (0.56x at
+K=1), which is expected while each draft costs a full MoE trunk-block forward against a 20 tok/s
+baseline. The gate is acceptance, not speed; PP-2 spec throughput belongs to the pp2-hardening lane.
+
+### What the acceptance curve says next (recorded, NOT fixed)
+
+Read the table by column, not by row: **accepted is flat at 15** while drafted grows 18 → 136.
+Slot 0 accepts ~78%; slots 1+ accept ~nothing. Raising K from 1 to 8 buys **one** extra accepted
+token for 7.5x the draft work.
+
+The cause candidate is in upstream's own comment (`step35.cpp:378`):
+
+```cpp
+// Multi-block MTP: the DECODER_MTP graph runs the MTP head selected by
+// cparams.nextn_layer_offset (0 = first trained head). The speculative driver
+// bumps the offset per draft step to chain heads 45->46->47.
+const int il = hparams.n_layer() + cparams.nextn_layer_offset;
+```
+
+Upstream uses a **different head per draft step**. memra loads one block
+(`n = n_layer - nextn_predict_layers` = 45) and reuses it for every step `j`. This artifact ships
+all three heads with genuinely different weights (the byte hashes above). A head trained for the
++1 position, reused at +2/+3, drafts near-noise past slot 0 — which is exactly the flat-15 curve
+measured. Not fixed here: multi-block chaining is a new code path (`MtpHead` becomes indexed per
+draft step, each block needs its own scratch KV), not a bring-up fix.
+
+**Served implication for this SKU today: K=1 is the correct depth.**
+
+---
+
+## Sequence item 4 (remainder) — admission ladder
+
+`raw/admission-ladder-step37-20260807.txt`. Constants quoted from `worker.rs` @ `9f9d8321`
+(`MAX_ACTIVE=4`, `MEMRA_CTX` floor 8192, `SPEC_SHRINK_SLACK=64`, `SPEC_SHRINK_RESERVE=1.5 GiB`,
+gate `free >= cost + reserve`); bytes carried from `raw/kv-budget-pp2-20260806.txt`.
+
+The binding constraint is **per-card, not pair-aggregate** — KV is allocated by the stage that owns
+the layer (`memra-kv/src/lib.rs:253`) and weights are per-stage (`pp.rs:518`). At the even 23/22
+cut with memra-default KV, stage-0 occupancy runs 54.1 / 59.3 / 64.5 / **69.7** GiB for 1-4
+concurrent 128K sessions against 95.59 GiB. **At the honest 128K target, `MAX_ACTIVE=4` is not
+KV-bound on this box** (~25.9 GiB spare on stage 0). 4×256K lands at 90.6 GiB — byte-plausible,
+but that leaves 4.99 GiB for activations plus the 1.5 GiB reserve plus MoE staging, and that is
+unmeasured.
+
+Two serving findings fell out, both recorded and neither fixed in this lane:
+
+**(A) This SKU is silently spec-ineligible when served.** `spec_eligible` (`worker.rs:2461`)
+requires `lm.model.mtp.is_some()`, but the MTP head is a separate GGUF and the trunk declares
+`nextn_predict_layers=0` — so a served trunk has `mtp == None` and every request takes plain
+decode, with no log line saying so. The server's load path does not consult `MEMRA_MTP_DRAFT` for
+this two-file shape. Nothing breaks (the plain-path `reserve = cost` branch takes over
+consistently), but the model forgoes the MTP win this lane just proved works. Wiring the server's
+`+draft` path to accept a standalone step35 drafter is the named follow-up — a serve-surface
+change, deliberately not bundled into bring-up.
+
+**(B) The MoE residency decision is PP-blind in its numerator.** `build_dev_exps`
+(`hybrid.rs:244-280`) resolves `free` from the owning stage's engine — correct, `layer_engine`
+hands it the per-stage engine (`pp.rs:755`) — but projects `exps` by summing **every**
+`blk.*_exps.*` tensor in the GGUF header (`hybrid.rs:254-260`), i.e. the whole model's expert
+bytes including the layers living on the *other* card. Hence the boot line
+`experts 101.07GB + trunk 3.92GB vs free 100.88GB`: whole-model bytes against one card's free.
+The verdict is right on this SKU anyway, and the SLRU path it chose is measurably healthy (89.0%
+steady-state hit rate, 133.5 MB/decode-token vs the 2678 MB/token Stage-1 baseline = 20.1x less
+PCIe). But it would wrongly spill a bank that *fits* per-stage on a wider PP split. Not fixed:
+changing residency selection is perf-affecting and belongs behind the pp2-hardening lane's A/B.
