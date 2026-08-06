@@ -162,37 +162,77 @@ re-measured on top of the fix; the pre-fix receipts are preserved on the box at
 
 ### Cost: spec over the split is EXPENSIVE, and asymmetric by placement
 
-c=1, N=5 interleaved rep-major with the arm order alternating per rep, greedy, steady thermals
-(pre/post `nvidia-smi` in `logs/perf/gpu-pre.csv` / `gpu-post.csv`), one server per arm per rep,
-`memra-server` + `tools/load-serve.py` per the servepath-p2 harness law:
+N=5 interleaved rep-major with the arm order alternating per rep, greedy, steady thermals
+(pre/post `nvidia-smi` in `logs/perf/gpu-pre.csv` / `gpu-post.csv` — 32->34 C dev0, 27->32 C dev1,
+idle clocks both ends, so no thermal drift to account for), one server per arm per rep,
+`memra-server` + `tools/load-serve.py` per the servepath-p2 harness law. Medians of 5; the
+per-rep spread is remarkably tight (arm B is 17.1 in all five reps at both concurrencies, arm A
+344.6-347.7), so these medians are not hiding variance:
 
-| arm | config | agg tok/s | lat_p50 (s) |
-| --- | --- | --- | --- |
-| A | door shut, spec ON (one card) | 346.5 | 0.373 |
-| C | pp2 dev01, spec OFF (predecessor's shipped config) | 223.4 | 0.573 |
-| D | pp2 dev10, spec ON | 123.4 | 1.045 |
-| B | pp2 dev01, spec ON | 17.2 | 7.515 |
+| arm | config | c=1 agg tok/s | c=1 p50 (s) | c=8 agg tok/s | c=8 p50 (s) | errors |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | door shut, spec ON (one card) | 346.5 | 0.373 | 345.2 | 2.826 | 0/180 |
+| C | pp2 dev01, spec OFF | 223.7 | 0.572 | **872.9** | 1.171 | 0/180 |
+| D | pp2 dev10, spec ON | 123.3 | 1.046 | 119.2 | 8.265 | **5/180** |
+| B | pp2 dev01, spec ON | 17.1 | 7.536 | 17.1 | 56.839 | 0/180 |
 
-So: spec over PP-2 is **2.8x slower than spec on one card in the good placement and 20x slower in
-the bad one** — and in both placements it is slower than simply running the split with spec OFF.
-The exactness work is done and the door is open, but on a model that FITS one card there is no
-reason to prefer it. That is the honest verdict for the felt-latency story, and it is a
-capacity-only feature until the placement bug below is fixed.
+Two things fall out, and the second was not what this lane went looking for:
+
+1. **Spec over the split is not worth it on a model that fits one card.** 2.8x slower than
+   one-card spec in the good placement, 20x in the bad one, and slower than the split with spec
+   OFF in both. The exactness work is done and the door is open, but the felt-latency story does
+   not pay here. Capacity-only until the placement issue is fixed.
+2. **Spec does not scale with concurrency at all, and the split without spec does.** Arm C goes
+   223.7 -> 872.9 (3.9x) from c=1 to c=8, while arms A, B and D are FLAT (346.5->345.2,
+   17.1->17.1, 123.3->119.2). Flat aggregate throughput under 8x the offered load means the spec
+   path is serializing sessions rather than batching them. That is a serving-architecture finding
+   about spec generally, not about PP — arm A is the door-shut single-card arm and it is just as
+   flat — and it is the reason arm C, the predecessor's shipped spec-OFF config, is the fastest
+   c=8 configuration measured anywhere in this lane by 2.5x over one-card spec. Worth its own
+   lane; not fixable inside a PP change.
 
 The B1FAST check comes out clean in the sense that matters: acceptance is bit-identical to the
 door-shut arm at every K, so a solo spec session does not fall off the draft chain or lose
-acceptance when the door opens. The loss is entirely data movement, not degraded speculation.
+acceptance when the door opens. The c=1 loss is data movement, not degraded speculation.
 
-### Draft-head placement: the answer, and a bug this lane FOUND
+### A deterministic illegal address on the reversed placement (found, not yet owned)
 
-Placement matters enormously — 7x between the two orders (B 17.2 vs D 123.4) — while
-bit-identity and acceptance are IDENTICAL in both. So it is pure data movement, and there is a
-named cause, checked against the artifact and the code rather than inferred:
+Arm D failed **exactly 1 of 32 requests at c=8 in all five reps** with:
+
+```
+step error: DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")
+```
+
+Deterministic 1/32 x 5/5 is a bug, not a flake. Arm B (dev01, spec ON) is 160/160 clean, arm A
+(door shut, spec ON) is 160/160 clean, and c=1 is clean on every arm — so it needs BOTH the
+reversed placement AND concurrency. The server's stderr carries no diagnostic (257 lines, zero
+matches for illegal/panic/abort/error), so per the evidence law the honest statement is: **fails
+with the quoted illegal address; mechanism unlocalized, repro in hand.**
+
+`run-ppspec-illegal.sh` is the ownership battery, because the step-4 receipt has no dev10 +
+spec-OFF control and therefore cannot attribute the fault: F1 (dev10, spec OFF) decides whether
+this is the predecessor's split under a reversed placement or this lane's spec path; F2
+(`MEMRA_SPEC_NOGRAPH=1`) tests the captured draft graph, which is the one part of the spec path
+that bakes launch args across replays AND disables the context's event tracking for the whole
+session (`spec.rs:2937-2942`) — exactly the ordering machinery a reversed placement leans on;
+F3 re-measures arm D in the same hold; F4 sweeps c=2,4 for the onset. Running at time of writing.
+
+### Draft placement: the answer
+
+**Placement matters enormously — 7x between the two orders (B 17.1 vs D 123.3), N=5, every rep
+within 0.2 tok/s** — while bit-identity and acceptance are IDENTICAL in both. So the answer to the
+brief's question is: yes, and it is the single largest factor in spec-over-PP2 cost. `dev10`
+(drafter co-resident with the serving primary, which is also the last stage) is the configuration
+to use; `dev01` is 7x worse. That much is a measured, tight, reproducible fact.
+
+The MECHANISM is only partly established, and the rest of this section is the honest account of
+that. A candidate cause was constructed from the code and the artifact:
 
 1. `memra-server` always builds `Engine::new(0)` (`worker.rs:1079`): the serving primary is
    **always device 0**, whatever `MEMRA_PP_DEVICES` says. `decode-batch-gate` instead follows
-   `MEMRA_PP_DEVICES[0]` (`decode_batch_gate.rs:121-127`) — which is exactly why the gate
-   battery never saw this: in the gate, stage 0 IS the primary in both orders.
+   `MEMRA_PP_DEVICES[0]` (`decode_batch_gate.rs:121-127`) — which is why the gate battery never
+   saw this: in the gate, stage 0 IS the primary in both orders. (This asymmetry between the
+   serving harness and the gate harness is worth knowing on its own.)
 2. `output_norm` + the lm head upload through the LAST stage's engine (`hybrid.rs:881`) —
    correct for the trunk, since the last stage is what runs the head.
 3. Every MTP/draft weight uploads through the plain primary engine (`hybrid.rs` ~1021,
@@ -201,23 +241,46 @@ named cause, checked against the artifact and the code rather than inferred:
    `eh_proj` / `enorm` / `hnorm` / `shared_head_norm` — so the draft head falls back to the
    TRUNK head at `spec.rs:781`, `mtp.shared_head_head.as_ref().unwrap_or(&self.output)`.
 
-Therefore with `devices=0,1` the last stage is dev1, so `output` (`[4096, 248320]` NVFP4, ~508 MB)
-lives on dev1 while the draft GEMV runs on dev0 — half a gigabyte of peer-read weight traffic
-**per draft step**. With `devices=1,0` the last stage is dev0 = the primary, head and draft are
-co-resident, and the traffic disappears. Arm C (spec OFF) is unaffected because the trunk runs the
-head on the stage that owns it. The measured per-token times (B ~59 ms, D ~8 ms) are the right
-order for that transfer.
+All four are true. The inference drawn from them — that with `devices=0,1` the draft GEMV on dev0
+peer-reads a `[4096, 248320]` NVFP4 head (~508 MB) from dev1 every draft step, matching the
+measured ~59 vs ~8 ms/token — was plausible and is NOT what dominates. It got an isolation arm
+instead of a writeup, and the arm knocked it down:
 
-`run-ppspec-drafthead.sh` decides this with no code change: `MEMRA_PP_SHARD=0` brings every weight
-home to the primary while the stage streams still split, so E1 (`dev01` + `SHARD=0` + spec ON)
-recovering arm D's speed confirms the mechanism, and E1 staying at ~17 refutes it and indicts the
-split itself. E2 is the draft-free control; E3 re-measures arm D inside the same hold so E1 has an
-interleaved denominator.
+`run-ppspec-drafthead.sh`, N=3 interleaved, c=1, all arms 12/12 OK, zero errors:
 
-Note the shape of the real fix, which is NOT in this lane's diff: the draft should run on the
-engine that owns the head it uses (or the head it uses should be resident where the draft runs).
-Both are one-line placement changes in load/dispatch, but they are trunk-loader decisions with
-their own gate obligations, so they are named here rather than smuggled in behind a spec change.
+| arm | config | agg tok/s | p50 (s) | all reps |
+| --- | --- | --- | --- | --- |
+| E3 | dev10 sharded, spec ON (arm D in-hold) | 123.3 | 1.049 | 123.4, 123.2, 123.3 |
+| E1 | dev01 + `SHARD=0`, spec ON | 23.4 | 5.510 | 23.4, 23.4, 23.4 |
+| E2 | dev01 + `SHARD=0`, spec OFF | 7.5 | 17.128 | 7.5, 7.5, 7.5 |
+
+E1 confirms the placement (`weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement)`) and brings
+the lm head home to the primary — and recovers almost nothing: 17.1 -> 23.4, still 5.3x short of
+E3's 123.3.
+
+**The honest reading: the remote-lm-head story is NOT the dominant term, and this arm does not
+cleanly refute it either — it is confounded.** E2 is why. With `SHARD=0` and spec OFF the same
+placement collapses to **7.5 tok/s, 30x below arm C's 223.7** at the identical stage split, because
+`SHARD=0` puts every weight on dev0 while stage 1's kernels run on dev1, so stage 1 peer-reads its
+whole layer range every token. That is a known-slow bring-up mode and E2's collapse is expected —
+but it means E1 pays that same whole-trunk peer-read tax while removing only the head tax. E1's
+17.1 -> 23.4 is therefore a FLOOR on the head effect, not a measurement of it, and the confounder
+runs in the direction that hides what the arm was built to see. I designed the arm believing
+`SHARD=0` isolated the head cleanly; E2 proves it does not, which is what the control was there
+to catch.
+
+What IS established: removing the head tax entirely still leaves 5.3x on the table, so the head
+cannot be the whole story even at its most favourable reading. The 508 MB-per-draft-step
+arithmetic was consistent with the data and is not sufficient to explain it.
+
+What that leaves as the live explanation for B vs D is the primary-device asymmetry itself
+(`memra-server` always builds `Engine::new(0)`, so with `devices=1,0` stage 1 IS the primary and
+the draft, the embed, and the head all sit together on it, whereas with `0,1` the draft runs on
+dev0 while stage 1's work — including the head — is remote). Deciding that needs an arm that moves
+the DRAFT rather than the weights, i.e. a code change to run the draft on the head's engine, which
+is a trunk-loader placement decision with its own gate obligations. Named here, not smuggled in
+behind a spec change. The B/D asymmetry and its 7x remain a measured, reproducible fact regardless
+of which term dominates.
 
 ### What remains unsplit
 
