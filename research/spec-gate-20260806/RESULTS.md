@@ -268,6 +268,53 @@ its life**, so the total is bounded by sessions admitted-spec that then met a hi
 per-tick flap this test exists to rule out cannot occur by construction; the run confirms the
 implementation matches the design.
 
+## 5.5 The pre-push battery, and the one red it raised (settled)
+
+`tools/local-ci.sh --perf` is the pre-push gate for any engine-touching commit (this lane touched
+`crates/memra-engine/src/spec.rs`). Correctness stage **fully green**: kernel-check GREEN,
+prime-gate MATCH=8/8, run-gen argmax MATCH (31B + 12B depth), VERIFY-GATE K=7 PASS both, spec
+self-consistency 64/64, decode-batch-gate config+strict ALL GREEN on both 9B encodings,
+graph-warmup-stress GREEN, sampler-gate, serve-smoke 0 failed, serve-stress 64/64, accept-gate
+1/1. Perf stage: **9 cells, 8 OK, 1 FAIL** — `31b-plain-d1736` at 38.02 tok/s, -3.03% against a
+rolling median of 39.21.
+
+**Settled the way the script itself prescribes, and it is NOT a regression.** Interleaved A/B/A/B,
+N=5 each, one thermal window, one exclusive `flock` hold for the whole run
+(`perf-ab-31b-plain-d1736.sh`, receipts `logs/perf-ab/`):
+
+| arm | reps (tok/s) | median |
+|---|---|---|
+| A — merge-base `9e228f4c` | 39.04 38.31 38.23 38.22 37.55 | **38.23** |
+| B — lane tip `faba56cf` | 38.35 38.27 38.08 37.89 37.64 | **38.08** |
+
+**B vs A: -0.39%** — inside noise, and the merge-base does not reproduce 39.21 either. The rolling
+median is the invalid side: its rows are from 2026-07-30..08-06 (a cross-day comparison, which this
+project's measurement law forbids as evidence, denominator included), that series itself spans
+39.2x on 08-03/04/05 and 35.8x twice on 08-06, and the failing row is `window_clean:false` by its
+own admission. Scope agrees with the measurement: the cell is gemma-4-31B **plain** greedy decode
+through `run-gen`, a `memra-engine` binary; this lane's engine diff is +50 lines of NEW
+`impl SpecSession` methods (0 existing lines touched) and `memra-engine` does not depend on
+`memra-server`, so `run-gen` never constructs a `SpecSession` at all.
+
+### 5.5.1 A gate bug found and fixed while running it
+
+The perf stage **hung**, and the first battery produced no rows. `run_cell`'s dirty-window retry
+was `while ! window_free_now; do sleep 40; done` — unbounded. The co-resident here is the owner's
+`hermes-gateway.service`, holding a 394 MiB idle CUDA context 24/7 at 0% GPU util; it is not a
+lane's job to kill and it never leaves, so that loop could not exit and the script's own honest
+fallback two lines below it (`DIRTY twice — recording with window_clean=false`) was unreachable.
+Fixed in `tools/local-ci.sh`: the wait is bounded (`MEMRA_CI_DIRTY_WAIT`, default 600s) and
+**latched** — once one cell proves the co-resident outlasts the wait, later cells skip straight to
+the honestly-labeled retry instead of re-paying it, because 10 cells x 600s of sleeping is a hang
+with progress output, not a gate. A gate that hangs forever is worse than one that records a row
+labeled `window_clean=false`.
+
+The A/B harness had its own two bugs, fixed before its numbers were used: the loop body was passed
+to `bash -c` via a `tr`-collapsed `declare -f` (`syntax error near unexpected token 'done'`) and the
+run still **exited 0** because the failure was inside a pipeline. Now an exported function plus a
+`PIPESTATUS` check — a settle harness that can report success while measuring nothing is worse than
+no harness.
+
 ## 6. Flags
 
 Winners are defaults — the gate needs no flag to be on.
@@ -311,6 +358,9 @@ reader reaching for that knob to fix a mixed-tick latency problem finds the meas
 | `run-mixedtick.sh` | measurement 2 — baseline / mixed / mixed+bounded / gated at c=6 |
 | `run-thrash.py` | measurement 3 — oscillating load across the hysteresis band |
 | `analyze.py` | medians per (arm, c) + per-rep spread + error accounting |
+| `perf-ab-31b-plain-d1736.sh` | §5.5's settle — merge-base vs lane tip, interleaved N=5, one lock hold |
+| `logs/perf-ab/` | the settle's per-rep logs, `A.toks`/`B.toks`, `interleave.txt`, `VERDICT.txt` |
+| `logs/local-ci-perf.txt` | the full pre-push battery run (correctness + 9 perf cells) |
 | `logs/exact/` | 5 arms: per-arm server logs, full streams, `exactness.json` |
 | `logs/cladder/` | `points.jsonl` (60), `per-request.jsonl`, per-arm-per-rep server logs, tick traces, demote counts, `/metrics`, `gpu-{pre,post}.csv` |
 | `logs/mixedtick/` | same shape + `*-tickshape.txt` (MIXED tick counts) |

@@ -1,0 +1,25 @@
+== perf-ab: 31b-plain-d1736, N=5 interleaved, one lock hold ==
+   A = merge-base 9e228f4c (/tmp/perf-ab-mb/target/release/run-gen)
+   B = lane/spec-gate faba56cf (target/release/run-gen)
+   entry: 56, 1590 MHz, 34.16 W
+   other GPU compute apps at entry:
+     144655, 332 MiB, /home/avifenesh/projects/llama.cpp/build/bin/llama-server
+     7600, 394 MiB, /home/avifenesh/projects/hermes-agent/.venv/bin/python
+
+  A rep1: 39.04 tok/s  (77,1890MHz)
+  B rep1: 38.35 tok/s  (81,1627MHz)
+  A rep2: 38.31 tok/s  (86,1912MHz)
+  B rep2: 38.27 tok/s  (82,1830MHz)
+  A rep3: 38.23 tok/s  (86,1935MHz)
+  B rep3: 38.08 tok/s  (82,1912MHz)
+  A rep4: 38.22 tok/s  (82,1807MHz)
+  B rep4: 37.89 tok/s  (85,1860MHz)
+  A rep5: 37.55 tok/s  (86,1822MHz)
+  B rep5: 37.64 tok/s  (81,1665MHz)
+
+A (merge-base) reps: 39.04 38.31 38.23 38.22 37.55   median 38.23
+B (lane tip)   reps: 38.35 38.27 38.08 37.89 37.64   median 38.08
+B vs A: -0.39%
+VERDICT: NO LANE REGRESSION — the rolling median was the invalid side.
+   exit: 81, 1665 MHz, 125.12 W
+PERF_AB_DONE
