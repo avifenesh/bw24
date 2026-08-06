@@ -1,0 +1,67 @@
+loaded qwen35 (32 layers); steps=8 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,0 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5] rounds=8 reps=2 (split arm)
+-- T=2: reference recorded (8 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+[verify-split T=2 rep0] MISMATCH step 0 row 0: 2/248320 logits differ, first @[247948] ref=-5.531202 pp=0.0035411743
+[verify-split T=2 rep0] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=-5510.6226
+[verify-split T=2 rep0] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=0.10263705
+[verify-split h_seed T=2 rep0] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-2.2916267 pp=-0.17257285
+[verify-split T=2 rep0] MISMATCH step 2 row 0: 248320/248320 logits differ, first @[0] ref=6.18012 pp=2.1425796
+[verify-split T=2 rep0] MISMATCH step 2 row 1: 248320/248320 logits differ, first @[0] ref=3.4130793 pp=7.363105
+[verify-split h_seed T=2 rep0] MISMATCH step 2 row 0: 4096/4096 logits differ, first @[0] ref=-10.591036 pp=-2.2916267
+[verify-split h_seed T=2 rep0] MISMATCH step 3 row 0: 4096/4096 logits differ, first @[0] ref=-3.7023222 pp=-1.3305353
+[verify-split h_seed T=2 rep0] MISMATCH step 4 row 0: 4096/4096 logits differ, first @[0] ref=-11.840309 pp=-0.26557004
+[verify-split h_seed T=2 rep0] MISMATCH step 5 row 0: 4096/4096 logits differ, first @[0] ref=0.3012581 pp=-0.3056444
+pp gate FAIL [verify-split T=2 rep0]: 15 rows mismatched of 3973120 f32 compared (first @ step 0 row 0 idx 247948: ref=-5.531202 pp=0.0035411743)
+pp gate FAIL [verify-split h_seed T=2 rep0]: 7 rows mismatched of 32768 f32 compared (first @ step 1 row 0 idx 0: ref=-2.2916267 pp=-0.17257285)
+[verify-split T=2 rep1] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=0.8601973
+[verify-split T=2 rep1] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=0.003892889
+[verify-split h_seed T=2 rep1] MISMATCH step 0 row 0: 4096/4096 logits differ, first @[0] ref=-2.2991757 pp=-0.18977566
+[verify-split T=2 rep1] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=4.9197845
+[verify-split T=2 rep1] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=5.276622
+[verify-split h_seed T=2 rep1] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-2.2916267 pp=-3.3044095
+[verify-split T=2 rep1] MISMATCH step 2 row 0: 248320/248320 logits differ, first @[0] ref=6.18012 pp=4.9197845
+[verify-split h_seed T=2 rep1] MISMATCH step 2 row 0: 4096/4096 logits differ, first @[0] ref=-10.591036 pp=-0.8642671
+[verify-split h_seed T=2 rep1] MISMATCH step 3 row 0: 4096/4096 logits differ, first @[0] ref=-3.7023222 pp=-0.15735796
+[verify-split h_seed T=2 rep1] MISMATCH step 4 row 0: 4096/4096 logits differ, first @[0] ref=-11.840309 pp=-10.489952
+pp gate FAIL [verify-split T=2 rep1]: 16 rows mismatched of 3973120 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=0.8601973)
+pp gate FAIL [verify-split h_seed T=2 rep1]: 8 rows mismatched of 32768 f32 compared (first @ step 0 row 0 idx 0: ref=-2.2991757 pp=-0.18977566)
+[verify-unsplit@ppncache T=2] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=4.755474
+[verify-unsplit@ppncache T=2] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=5.351793
+[verify-unsplit@ppncache T=2] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=2.2242582
+[verify-unsplit@ppncache T=2] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=6.39789
+[verify-unsplit@ppncache T=2] MISMATCH step 2 row 0: 248320/248320 logits differ, first @[0] ref=6.18012 pp=6.619037
+pp gate FAIL [verify-unsplit@ppncache T=2]: 16 rows mismatched of 3973120 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=4.755474)
+-- T=5: reference recorded (8 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+[verify-split T=5 rep0] MISMATCH step 0 row 0: 40/248320 logits differ, first @[247273] ref=-3.6179333 pp=0.00065771537
+[verify-split T=5 rep0] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.9967523 pp=6.7108545
+[verify-split T=5 rep0] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.1992426 pp=7.15536
+[verify-split T=5 rep0] MISMATCH step 1 row 2: 248320/248320 logits differ, first @[0] ref=7.0782304 pp=6.896149
+[verify-split T=5 rep0] MISMATCH step 1 row 3: 248320/248320 logits differ, first @[0] ref=7.286583 pp=6.6215296
+[verify-split h_seed T=5 rep0] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-1.4027445 pp=-1.2218221
+[verify-split h_seed T=5 rep0] MISMATCH step 2 row 0: 4096/4096 logits differ, first @[0] ref=-1.7737323 pp=-1.0361007
+[verify-split h_seed T=5 rep0] MISMATCH step 3 row 0: 4096/4096 logits differ, first @[0] ref=-3.5340896 pp=-10.291293
+[verify-split h_seed T=5 rep0] MISMATCH step 4 row 0: 4096/4096 logits differ, first @[0] ref=-3.9695215 pp=-1.574675
+[verify-split h_seed T=5 rep0] MISMATCH step 5 row 0: 4096/4096 logits differ, first @[0] ref=-1.7272183 pp=-3.5340896
+pp gate FAIL [verify-split T=5 rep0]: 36 rows mismatched of 9932800 f32 compared (first @ step 0 row 0 idx 247273: ref=-3.6179333 pp=0.00065771537)
+pp gate FAIL [verify-split h_seed T=5 rep0]: 7 rows mismatched of 32768 f32 compared (first @ step 1 row 0 idx 0: ref=-1.4027445 pp=-1.2218221)
+[verify-split T=5 rep1] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=6.3364615
+[verify-split T=5 rep1] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=4.775011
+[verify-split T=5 rep1] MISMATCH step 0 row 2: 248320/248320 logits differ, first @[0] ref=6.896149 pp=3.9672828
+[verify-split T=5 rep1] MISMATCH step 0 row 3: 248320/248320 logits differ, first @[0] ref=6.6215296 pp=5.4034595
+[verify-split T=5 rep1] MISMATCH step 0 row 4: 248320/248320 logits differ, first @[0] ref=6.441998 pp=4.844169
+[verify-split h_seed T=5 rep1] MISMATCH step 0 row 0: 4096/4096 logits differ, first @[0] ref=-2.2249389 pp=NaN
+[verify-split h_seed T=5 rep1] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-1.4027445 pp=NaN
+[verify-split h_seed T=5 rep1] MISMATCH step 2 row 0: 4096/4096 logits differ, first @[0] ref=-1.7737323 pp=NaN
+[verify-split h_seed T=5 rep1] MISMATCH step 3 row 0: 4096/4096 logits differ, first @[0] ref=-3.5340896 pp=1.250336
+[verify-split h_seed T=5 rep1] MISMATCH step 4 row 0: 4096/4096 logits differ, first @[0] ref=-3.9695215 pp=NaN
+pp gate FAIL [verify-split T=5 rep1]: 40 rows mismatched of 9932800 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=6.3364615)
+pp gate FAIL [verify-split h_seed T=5 rep1]: 8 rows mismatched of 32768 f32 compared (first @ step 0 row 0 idx 0: ref=-2.2249389 pp=NaN)
+[verify-unsplit@ppncache T=5] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=5.220135
+[verify-unsplit@ppncache T=5] MISMATCH step 0 row 1: 248320/248320 logits differ, first @[0] ref=7.15536 pp=5.147887
+[verify-unsplit@ppncache T=5] MISMATCH step 0 row 2: 248320/248320 logits differ, first @[0] ref=6.896149 pp=5.2943363
+[verify-unsplit@ppncache T=5] MISMATCH step 0 row 3: 248320/248320 logits differ, first @[0] ref=6.6215296 pp=5.533361
+[verify-unsplit@ppncache T=5] MISMATCH step 0 row 4: 248320/248320 logits differ, first @[0] ref=6.441998 pp=5.4079876
+pp gate FAIL [verify-unsplit@ppncache T=5]: 40 rows mismatched of 9932800 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=5.220135)
+ppspec mode verdict: 10 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,0 splits=default(even) shard=per-stage streams=per-stage
+Error: "decode-batch-gate --mode ppspec FAILED"

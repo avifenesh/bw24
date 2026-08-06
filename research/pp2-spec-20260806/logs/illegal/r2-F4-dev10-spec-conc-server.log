@@ -1,0 +1,84 @@
+[server] starting; models config = [("q9", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8099
+[meter] admit id=chatcmpl-836586a415afd678b62fe304799286e5 tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 134MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=13/15 cum=13/15=0.867
+[meter] admit id=chatcmpl-b8f09c8c8878b63a8b7b3c5972765c4e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d08534ee48e4f8435cb60e2c5f26fab6 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=24/27 cum=49/54=0.907
+[spec-acc] ctx=261 burst=24/27 cum=49/54=0.907
+[spec-acc] ctx=294 burst=24/30 cum=73/84=0.869
+[spec-acc] ctx=294 burst=24/30 cum=73/84=0.869
+[spec-acc] ctx=328 burst=18/27 cum=91/111=0.820
+[meter] admit id=chatcmpl-020ad9df6c37a54ea150242aa1d3c69a tenant=default lane=interactive model="q9"
+[spec-acc] ctx=328 burst=3/3 cum=76/87=0.874
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=332 burst=15/24 cum=91/111=0.820
+[meter] admit id=chatcmpl-4ddb7f9b29db2ea339022eed8363980a tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=24/27 cum=49/54=0.907
+[spec-acc] ctx=294 burst=24/30 cum=73/84=0.869
+[spec-acc] ctx=261 burst=24/27 cum=49/54=0.907
+[spec-acc] ctx=328 burst=18/27 cum=91/111=0.820
+[meter] admit id=chatcmpl-e0560205689791dac6c1f244fcec1e72 tenant=default lane=interactive model="q9"
+[spec-acc] ctx=294 burst=2/3 cum=51/57=0.895
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[meter] admit id=chatcmpl-c4ac625a7bf2c4aa3f64d6e2d526fda9 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-313d821c4aec00902726397fec7125d7 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec pool evicted (2) after alloc failure; retrying (evict-first learned)
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-b44ae4c48596113a7e8ae2bd2bcdf49c tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-d69faed9315a246f4fce53e067e475c2 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-c111e6e1a5bb369d49c655d76f4cc80e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-6c6644b4278619a693915dd45d76e888 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c3e6b2a56543ff1e2b6ef504f88d1c56 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-543d9bd2960634993b4195b9fd4ca921 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-c639d3a328e29b5b58e320998b429c10 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-4b021fec5d417b58493561f066c24aeb tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-e232f29f7873e0fdb74de3c272d0e220 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-320c38447591592545bcb0544363deee tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-01ab93d005f1f72bfc7cbff019935006 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-774bc8adce63c0b446db4d6dea6c0ad5 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-12e289a90019a8158de074bf262b6e61 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-f7c05a3168d3ac911a3c99325352f473 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-f3a46dfc950a23a700c621db28d9e5cf tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-8bef987b518dd396f0d3fd2059b7eb58 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-a7c221beb67f86ba293ad70ed613b49d tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[meter] admit id=chatcmpl-255f6264e3dae5b1dad491bdd25b0845 tenant=default lane=interactive model="q9"
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")); tokenwise path
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

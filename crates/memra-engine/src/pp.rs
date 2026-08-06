@@ -283,6 +283,17 @@ pub fn batch_pp_on() -> bool {
     std::env::var("MEMRA_BATCH_PP").as_deref() != Ok("0")
 }
 
+/// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).
+/// Default ON — with the ppN door open the verify forward (`decode_step_t_core_ppn`) takes its
+/// own stage split exactly as the eager and batched steps do. Setting 0 sends verify back through
+/// the unsplit trunk walk, which under a sharded cross-device placement is then caught by
+/// `refuse_unsplit_if_remote` (the 28x peer-read regime) rather than running silently. Exists so
+/// the bit-identity gate can A/B split vs unsplit IN ONE PROCESS against the same loaded weights
+/// — read per verify call, never memoized, for that reason.
+pub fn spec_pp_on() -> bool {
+    std::env::var("MEMRA_SPEC_PP").as_deref() != Ok("0")
+}
+
 /// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
 /// pipelining seed). Default OFF — scheduling structure only, never math. Read per step
 /// so gates can A/B in-process.
@@ -739,6 +750,46 @@ impl PpNRt {
         s_rx.memcpy_dtod(&buf.slice(0..n), &mut work)?;
         sl.ev_rx.record(s_rx)?;
         Ok(work)
+    }
+
+    /// PUBLISH a DEVICE-RESIDENT result off the last stage to the caller's stream
+    /// (lane/pp2-spec 2026-08-06).
+    ///
+    /// Every ppN body before this one returned HOST values — `decode_step_h_ppn` and
+    /// `decode_step_batch_ppn` both `dtoh` inside the last-stage scope, and a dtoh on the
+    /// producing stream is self-ordering. The verify trunk is the FIRST ppN body whose
+    /// contract is device-resident output (`decode_step_t_h_emb_dev` exists precisely so the
+    /// accept walk argmaxes on-device instead of moving T x n_vocab f32 per round), and
+    /// device slices carry no stream affinity: the caller resumes on the PRIMARY stream and
+    /// dereferences buffers whose producing kernels are still queued on the last stage's
+    /// stream. Nothing orders them.
+    ///
+    /// Why this only ever failed on ONE device: with stages on separate devices the caller's
+    /// first touch is a cross-device copy that the driver orders against the source context,
+    /// and the readback path syncs. Two streams on the SAME device genuinely overlap, so the
+    /// primary stream reads a buffer whose matmul has not run — nondeterministic garbage
+    /// (measured: NaN, 3155.677, and 2.87e-5 where the reference had -2.0048926), and it
+    /// poisons the NEXT arm in the same process because the corrupted KV persists. This is
+    /// the same class as the SLOT FIRST-USE ORDERING find above, one level up: there the
+    /// unordered pair was alloc-memset vs TX copy, here it is stage-N compute vs the
+    /// caller's consumer.
+    ///
+    /// Fix = the boundary law applied to the exit: record an event on the producing stage
+    /// stream, make the caller's stream wait on it. Event-wait, not a device sync, so the
+    /// stage streams keep running for the deferred-readback arm. Call INSIDE the last-stage
+    /// scope, after the last enqueue, with the caller's (pre-`enter`) stream.
+    pub fn publish_to(&self, s: usize, dst: &Arc<CudaStream>)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let st = &self.stages[s];
+        // Same stream (STREAMS=0 rollback, or a caller already on the stage stream): the
+        // stream orders itself; recording+waiting would be a no-op with a stray event.
+        if Arc::ptr_eq(&st.stream, dst) {
+            return Ok(());
+        }
+        let ev = st.ctx.new_event(None)?;
+        ev.record(&st.stream)?;
+        dst.wait(&ev)?;
+        Ok(())
     }
 
     /// Deferred readback: record a fresh completion event on the LAST stage's stream

@@ -1,0 +1,1012 @@
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q9-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=3 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q9-dev10.log: env[MEMRA_PP_DEVICES=1,0] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=1,0 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=3 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=1,0 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q9-singledev.log: env[] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=3 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q9-split5.log: env[MEMRA_PP_DEVICES=0,1 MEMRA_PP_SPLITS=5] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 5, 32] devices=0,1 splits=5 shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=3 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 5, 32] devices=0,1 splits=5 shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q9-n4-dev0011.log: env[MEMRA_PP_DEVICES=0,0,1,1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 4 --steps 16 --ts 2,5,9 --reps 2
+[pp] cross-device transport: stage0=dev0 stage1=dev0 stage2=dev1 stage3=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=4 fence=[0, 8, 16, 24, 32] devices=0,0,1,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=2 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=4 fence=[0, 8, 16, 24, 32] devices=0,0,1,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-4 stage-split exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q9-dev01-hpost.log: env[MEMRA_PP_DEVICES=0,1 MEMRA_SPEC_HPOST=1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 12 --ts 5 --reps 2
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=12 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[5] rounds=12 reps=2 (split arm)
+-- T=5: reference recorded (12 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 49152 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 49152 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/ppspec-q27-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/decode-batch-gate /scratch-models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf --mode ppspec --stages 2 --steps 12 --ts 2,5,9 --reps 2
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (64 layers); steps=12 batch=4
+ppspec mode: verify stage-split exactness battery over 64 layers; stages=2 fence=[0, 32, 64] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=12 reps=2 (split arm)
+-- T=2: reference recorded (12 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (12 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (12 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 26818560 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 26818560 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 26818560 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 32, 64] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== refusal-residue SPEC_PP=0 (expected FAIL with the refusal text) ===
+refusal-specpp0: refused as designed
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q9-dev01.log: env[MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 MEMRA_QWEN_DC=0 MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.548s = 115.04 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 2.501s = 25.19 tok/s (0.22x vs generate; this run's prime 0.005s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 4.077s = 15.45 tok/s (0.13x vs generate; this run's prime 0.005s)
+  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 5.445s = 11.57 tok/s (0.10x vs generate; this run's prime 0.005s)
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 7.134s = 8.83 tok/s (0.08x vs generate; this run's prime 0.005s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 8.801s = 7.16 tok/s (0.06x vs generate; this run's prime 0.005s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 10.515s = 5.99 tok/s (0.05x vs generate; this run's prime 0.005s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 12.192s = 5.17 tok/s (0.04x vs generate; this run's prime 0.005s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 13.840s = 4.55 tok/s (0.04x vs generate; this run's prime 0.005s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q9-doorshut.log: env[MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.301s = 209.63 tok/s (gen-only; this run's prime 0.005s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.253s = 249.49 tok/s (1.19x vs generate; this run's prime 0.004s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.262s = 240.23 tok/s (1.15x vs generate; this run's prime 0.004s)
+  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.282s = 223.37 tok/s (1.07x vs generate; this run's prime 0.004s)
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.337s = 187.20 tok/s (0.89x vs generate; this run's prime 0.004s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.383s = 164.29 tok/s (0.78x vs generate; this run's prime 0.004s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.431s = 146.07 tok/s (0.70x vs generate; this run's prime 0.005s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.491s = 128.20 tok/s (0.61x vs generate; this run's prime 0.004s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 0.554s = 113.72 tok/s (0.54x vs generate; this run's prime 0.004s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q9-doorshut-dc0.log: env[MEMRA_QWEN_DC=0 MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.320s = 196.93 tok/s (gen-only; this run's prime 0.004s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.308s = 204.36 tok/s (1.04x vs generate; this run's prime 0.004s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.263s = 239.85 tok/s (1.22x vs generate; this run's prime 0.004s)
+  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.282s = 223.13 tok/s (1.13x vs generate; this run's prime 0.004s)
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.337s = 186.69 tok/s (0.95x vs generate; this run's prime 0.004s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.385s = 163.65 tok/s (0.83x vs generate; this run's prime 0.004s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.432s = 145.74 tok/s (0.74x vs generate; this run's prime 0.004s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.493s = 127.80 tok/s (0.65x vs generate; this run's prime 0.004s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 0.555s = 113.53 tok/s (0.58x vs generate; this run's prime 0.004s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q9-dev10.log: env[MEMRA_PP_DEVICES=1,0 MEMRA_PP_STAGES=2 MEMRA_QWEN_DC=0 MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.549s = 114.85 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.383s = 164.61 tok/s (1.43x vs generate; this run's prime 0.005s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.440s = 143.18 tok/s (1.25x vs generate; this run's prime 0.005s)
+  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.538s = 117.08 tok/s (1.02x vs generate; this run's prime 0.005s)
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.621s = 101.45 tok/s (0.88x vs generate; this run's prime 0.005s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.682s = 92.40 tok/s (0.80x vs generate; this run's prime 0.005s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.785s = 80.23 tok/s (0.70x vs generate; this run's prime 0.005s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.851s = 74.05 tok/s (0.64x vs generate; this run's prime 0.005s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 0.916s = 68.76 tok/s (0.60x vs generate; this run's prime 0.005s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q27-dev01.log: env[MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 MEMRA_QWEN_DC=0 MEMRA_NGEN=48] target/release/run-spec /scratch-models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf 55
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (65 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   47 tok in 1.072s = 43.85 tok/s (gen-only; this run's prime 0.017s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55]
+
+[generate_spec K=1] 48 tok in 1.639s = 28.67 tok/s (0.65x vs generate; this run's prime 0.013s)
+  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 48 tok in 2.048s = 22.95 tok/s (0.52x vs generate; this run's prime 0.013s)
+  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 48 tok in 2.270s = 20.71 tok/s (0.47x vs generate; this run's prime 0.013s)
+  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 48 tok in 2.671s = 17.60 tok/s (0.40x vs generate; this run's prime 0.013s)
+  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 48 tok in 3.293s = 14.27 tok/s (0.33x vs generate; this run's prime 0.013s)
+  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 48 tok in 3.544s = 13.26 tok/s (0.30x vs generate; this run's prime 0.013s)
+  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 48 tok in 4.043s = 11.63 tok/s (0.27x vs generate; this run's prime 0.013s)
+  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 48 tok in 4.396s = 10.69 tok/s (0.24x vs generate; this run's prime 0.013s)
+  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q27-doorshut.log: env[MEMRA_NGEN=48] target/release/run-spec /scratch-models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf 55
+loaded qwen35 (65 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   47 tok in 0.622s = 75.56 tok/s (gen-only; this run's prime 0.013s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55]
+
+[generate_spec K=1] 48 tok in 0.400s = 117.48 tok/s (1.55x vs generate; this run's prime 0.013s)
+  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 48 tok in 0.336s = 140.07 tok/s (1.85x vs generate; this run's prime 0.013s)
+  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 48 tok in 0.293s = 160.36 tok/s (2.12x vs generate; this run's prime 0.013s)
+  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 48 tok in 0.287s = 163.69 tok/s (2.17x vs generate; this run's prime 0.013s)
+  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 48 tok in 0.316s = 148.50 tok/s (1.97x vs generate; this run's prime 0.013s)
+  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 48 tok in 0.316s = 148.60 tok/s (1.97x vs generate; this run's prime 0.013s)
+  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 48 tok in 0.347s = 135.26 tok/s (1.79x vs generate; this run's prime 0.013s)
+  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 48 tok in 0.371s = 126.79 tok/s (1.68x vs generate; this run's prime 0.013s)
+  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/runspec-q27-doorshut-dc0.log: env[MEMRA_QWEN_DC=0 MEMRA_NGEN=48] target/release/run-spec /scratch-models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf 55
+loaded qwen35 (65 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   47 tok in 0.637s = 73.73 tok/s (gen-only; this run's prime 0.013s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55]
+
+[generate_spec K=1] 48 tok in 0.486s = 96.79 tok/s (1.31x vs generate; this run's prime 0.013s)
+  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 48 tok in 0.336s = 140.07 tok/s (1.90x vs generate; this run's prime 0.013s)
+  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 48 tok in 0.293s = 160.29 tok/s (2.17x vs generate; this run's prime 0.013s)
+  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 48 tok in 0.287s = 163.59 tok/s (2.22x vs generate; this run's prime 0.013s)
+  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 48 tok in 0.317s = 148.38 tok/s (2.01x vs generate; this run's prime 0.013s)
+  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 48 tok in 0.316s = 148.52 tok/s (2.01x vs generate; this run's prime 0.013s)
+  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 48 tok in 0.347s = 135.32 tok/s (1.84x vs generate; this run's prime 0.013s)
+  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 48 tok in 0.370s = 127.08 tok/s (1.72x vs generate; this run's prime 0.013s)
+  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+=== /home/ubuntu/receipts/pp2spec/gates/kernel-check.log: env[] target/release/kernel-check
+GPU: NVIDIA RTX PRO 6000 Blackwell Server Edition
+rms_norm     maxdiff=2.38e-7 OK
+sigmoid_dot  maxdiff=0.00e0 OK
+rms_norm_qkv_w4 (prefill rows) maxdiff=7.15e-7 OK
+add_rms_norm fused: res_mismatch=0 norm_mismatch=0 OK
+rms_norm_q8_1 fused (nrows=1): q_mismatch=0 d_mismatch=0 OK
+rms_norm_q8_1 fused (nrows=5): q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 fused: res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=2): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=4): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=5): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+add_rms_norm_q8_1 batched (T=8): res_mismatch=0 q_mismatch=0 d_mismatch=0 OK
+l2_norm      maxdiff=2.98e-8 OK
+rope_neox    maxdiff=1.19e-7 OK
+silu_mul     maxdiff=2.98e-8 OK
+mask_logits_col: mismatch=0 argmax 458==458 OK (byte-identical)
+silu_mul_q8_1 fold: int8_mismatch=0 scale_mismatch=0 OK
+silu_mul_q8_1 batched (T=5): int8_mismatch=0 scale_mismatch=0 OK
+gated_rmsnorm_q8_1 (T=1): q_mismatch=0 d_mismatch=0 OK
+gated_rmsnorm_q8_1 (T=5): q_mismatch=0 d_mismatch=0 OK
+iq fused act+quant [silu in_f=768 n_pairs=33]: byte_mismatch=0/38016 OK
+iq fused act+quant [silu in_f=512 n_pairs=7]: byte_mismatch=0/4032 OK
+iq fused act+quant [gelu in_f=704 n_pairs=29]: byte_mismatch=0/33408 OK
+sdpa_naive   maxdiff=1.12e-8 OK
+ssm_conv1d   maxdiff=1.49e-8 OK
+ssm_conv1d fused: out_mismatch=0 state_mismatch=0 OK
+gdn_scan     maxdiff=1.40e-9 OK
+gdn_chunked  T=200 C= 32 vs f64-truth: out seq=3.93e-6/chunk=2.19e-5 state seq=9.18e-6/chunk=1.85e-5 OK
+gdn_chunked  T=200 C= 64 vs f64-truth: out seq=3.93e-6/chunk=3.44e-5 state seq=9.18e-6/chunk=1.50e-5 OK
+gdn_chunked  T=200 C=128 vs f64-truth: out seq=3.93e-6/chunk=4.21e-5 state seq=9.18e-6/chunk=9.56e-5 OK
+gdn_chunked  T= 17 C= 64 vs f64-truth: out seq=3.93e-6/chunk=1.97e-5 state seq=1.28e-5/chunk=2.61e-5 OK
+gdn_chunked  T=512 C= 64 vs f64-truth: out seq=4.22e-6/chunk=3.50e-5 state seq=1.21e-5/chunk=1.03e-4 OK
+qmatvec Q2_K synthetic Stage-A: rel=3.16e-7 OK
+(pass a GGUF path to also validate qmatvec vs CPU oracle)
+KC-SKIP [dtype5] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [dtype5] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+f16g-sk (in=512 out=300 skew 1..300) grid-scan vs oracle: rel=1.73e-6 OK
+f16g-sk (in=512 out=300) visitor-hybrid(cross=64,deep-tail) vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-128 vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-32-deep-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=512 out=300) visitor-32-legacy-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk-tail (in=512 out=300) deep(64x3st) vs legacy(32x2st): maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192 skew 1..300) grid-scan vs oracle: rel=8.65e-7 OK
+f16g-sk (in=480 out=192) visitor-hybrid(cross=64,deep-tail) vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-128 vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-32-deep-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk (in=480 out=192) visitor-32-legacy-tail vs grid-scan: maxdiff=0.00e0 OK (byte-identical)
+f16g-sk-tail (in=480 out=192) deep(64x3st) vs legacy(32x2st): maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q4_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [q6_K synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq4_xs synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] hybrid(cross=64,deep-tail) vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-128 vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-32-deep-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+f16g-kq-direct [iq3_s synth in=512 out=300] all-32-legacy-tail vs workspace: maxdiff=0.00e0 OK (byte-identical)
+KC-SKIP [f16g-kq-direct] ornith-1.0-35b-Q4_K_M.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [f16g-kq-direct] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+iq4xs-mmq [synth] T=16: rel=2.43e-7 OK
+iq4xs-mmq [synth] T=64: rel=2.39e-7 OK
+iq4xs-mmq [synth] T=128: rel=2.38e-7 OK
+iq4xs-mmq [synth] T=512: rel=1.70e-4 OK
+KC-SKIP [iq4xs-mmq] Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [nvfp4-gemm] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [nvfp4-gemm] Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [q8mmq-gemm] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [q4_0-mmq] gemma-4-12b-it-qat-q4_0.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [nvfp4-27b-shape] Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [q4_0-sk-arm] gemma-4-26B_q4_0-it.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [nvfp4-mmvq] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+E4M3-MMVQ synth [5120x512] m=1: rel=1.73e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=2: rel=1.73e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=5: rel=2.17e-7 m1-bits=true OK
+E4M3-MMVQ synth [5120x512] m=9: rel=2.17e-7 m1-bits=true OK
+E4M3-BATCHED synth [5120x512] m=2 b2: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=3 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=4 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=5 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=6 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=7 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=8 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=9 b16: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=12 b16: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [5120x512] m=16 b16: rel=0.00e0 bit-bad=0 OK
+E4M3-FUSED2 synth [5120x(512+320)] m=1: bit-bad=0 OK
+E4M3-FUSED3 synth [5120x(512+320+128)] m=1: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED3-T synth [5120x(512+320+128)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [5120x(512+320+128)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [5120x(512+320+128)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=5 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=6 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=7 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [5120x(512+320)] m=8 b8: bit-bad=0 OK
+E4M3-MMVQ synth [2048x320] m=1: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=2: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=5: rel=2.12e-7 m1-bits=true OK
+E4M3-MMVQ synth [2048x320] m=9: rel=2.10e-7 m1-bits=true OK
+E4M3-BATCHED synth [2048x320] m=2 b2: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=3 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=4 b4: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=5 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=6 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=7 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=8 b8: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=9 b16: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=12 b16: rel=0.00e0 bit-bad=0 OK
+E4M3-BATCHED synth [2048x320] m=16 b16: rel=0.00e0 bit-bad=0 OK
+E4M3-FUSED2 synth [2048x(320+224)] m=1: bit-bad=0 OK
+E4M3-FUSED3 synth [2048x(320+224+128)] m=1: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED3-T synth [2048x(320+224+128)] m=2 b2: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [2048x(320+224+128)] m=3 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED3-T synth [2048x(320+224+128)] m=4 b4: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=5 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=6 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=7 b8: bit-bad=0 OK
+E4M3-FUSED2-T synth [2048x(320+224)] m=8 b8: bit-bad=0 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=1: rms_rel=0.00e0 bit-bad=0/128 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=2: rms_rel=0.00e0 bit-bad=0/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [512x128] m=2 b2: bit-bad=0/256 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=5: rms_rel=0.00e0 bit-bad=0/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [512x128] m=5 b8: bit-bad=0/640 OK
+E4M3-BLK-MMVQ EXACT [512x128] s1x4 m=9: rms_rel=0.00e0 bit-bad=0/1152 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [512x128] m=9 b16: bit-bad=0/1152 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=1: rms_rel=2.09e-7 bit-bad=95/128 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=2: rms_rel=3.12e-7 bit-bad=189/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [512x128] m=2 b2: bit-bad=0/256 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=5: rms_rel=6.28e-7 bit-bad=486/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [512x128] m=5 b8: bit-bad=0/640 OK
+E4M3-BLK-MMVQ RAND [512x128] s1x4 m=9: rms_rel=6.22e-7 bit-bad=884/1152 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [512x128] m=9 b16: bit-bad=0/1152 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=1: rms_rel=0.00e0 bit-bad=0/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=2: rms_rel=0.00e0 bit-bad=0/1024 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x512] m=2 b2: bit-bad=0/1024 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=5: rms_rel=0.00e0 bit-bad=0/2560 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x512] m=5 b8: bit-bad=0/2560 OK
+E4M3-BLK-MMVQ EXACT [5120x512] s4x40 m=9: rms_rel=0.00e0 bit-bad=0/4608 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x512] m=9 b16: bit-bad=0/4608 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=1: rms_rel=1.52e-6 bit-bad=450/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=2: rms_rel=1.55e-6 bit-bad=914/1024 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x512] m=2 b2: bit-bad=0/1024 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=5: rms_rel=1.54e-6 bit-bad=2294/2560 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x512] m=5 b8: bit-bad=0/2560 OK
+E4M3-BLK-MMVQ RAND [5120x512] s4x40 m=9: rms_rel=1.52e-6 bit-bad=4122/4608 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x512] m=9 b16: bit-bad=0/4608 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=1: rms_rel=0.00e0 bit-bad=0/320 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=2: rms_rel=0.00e0 bit-bad=0/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x320] m=2 b2: bit-bad=0/640 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=5: rms_rel=0.00e0 bit-bad=0/1600 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x320] m=5 b8: bit-bad=0/1600 OK
+E4M3-BLK-MMVQ EXACT [5120x320] s3x40 m=9: rms_rel=0.00e0 bit-bad=0/2880 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x320] m=9 b16: bit-bad=0/2880 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=1: rms_rel=1.53e-6 bit-bad=271/320 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=2: rms_rel=1.60e-6 bit-bad=561/640 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x320] m=2 b2: bit-bad=0/640 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=5: rms_rel=1.54e-6 bit-bad=1422/1600 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x320] m=5 b8: bit-bad=0/1600 OK
+E4M3-BLK-MMVQ RAND [5120x320] s3x40 m=9: rms_rel=1.52e-6 bit-bad=2565/2880 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x320] m=9 b16: bit-bad=0/2880 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=1: rms_rel=0.00e0 bit-bad=0/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=2: rms_rel=0.00e0 bit-bad=0/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [2080x256] m=2 b2: bit-bad=0/512 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=5: rms_rel=0.00e0 bit-bad=0/1280 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [2080x256] m=5 b8: bit-bad=0/1280 OK
+E4M3-BLK-MMVQ EXACT [2080x256] s2x17 m=9: rms_rel=0.00e0 bit-bad=0/2304 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [2080x256] m=9 b16: bit-bad=0/2304 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=1: rms_rel=5.85e-7 bit-bad=222/256 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=2: rms_rel=6.16e-7 bit-bad=444/512 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [2080x256] m=2 b2: bit-bad=0/512 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=5: rms_rel=1.02e-6 bit-bad=1102/1280 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [2080x256] m=5 b8: bit-bad=0/1280 OK
+E4M3-BLK-MMVQ RAND [2080x256] s2x17 m=9: rms_rel=1.03e-6 bit-bad=1976/2304 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [2080x256] m=9 b16: bit-bad=0/2304 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=1: rms_rel=0.00e0 bit-bad=0/200 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=2: rms_rel=0.00e0 bit-bad=0/400 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [1184x200] m=2 b2: bit-bad=0/400 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=5: rms_rel=0.00e0 bit-bad=0/1000 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [1184x200] m=5 b8: bit-bad=0/1000 OK
+E4M3-BLK-MMVQ EXACT [1184x200] s2x10 m=9: rms_rel=0.00e0 bit-bad=0/1800 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [1184x200] m=9 b16: bit-bad=0/1800 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=1: rms_rel=6.03e-7 bit-bad=161/200 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=2: rms_rel=6.20e-7 bit-bad=323/400 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [1184x200] m=2 b2: bit-bad=0/400 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=5: rms_rel=5.88e-7 bit-bad=792/1000 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [1184x200] m=5 b8: bit-bad=0/1000 OK
+E4M3-BLK-MMVQ RAND [1184x200] s2x10 m=9: rms_rel=8.34e-7 bit-bad=1432/1800 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [1184x200] m=9 b16: bit-bad=0/1800 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=1: rms_rel=0.00e0 bit-bad=0/1536 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=2: rms_rel=0.00e0 bit-bad=0/3072 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x1536] m=2 b2: bit-bad=0/3072 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=5: rms_rel=0.00e0 bit-bad=0/7680 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x1536] m=5 b8: bit-bad=0/7680 OK
+E4M3-BLK-MMVQ EXACT [5120x1536] s12x40 m=9: rms_rel=0.00e0 bit-bad=0/13824 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED EXACT [5120x1536] m=9 b16: bit-bad=0/13824 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=1: rms_rel=1.50e-6 bit-bad=1374/1536 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=2: rms_rel=1.53e-6 bit-bad=2786/3072 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x1536] m=2 b2: bit-bad=0/3072 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=5: rms_rel=1.82e-6 bit-bad=6932/7680 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x1536] m=5 b8: bit-bad=0/7680 OK
+E4M3-BLK-MMVQ RAND [5120x1536] s12x40 m=9: rms_rel=1.81e-6 bit-bad=12440/13824 m1-bits=true q8-lossless=true nan=0 OK
+E4M3-BLK-BATCHED RAND [5120x1536] m=9 b16: bit-bad=0/13824 OK
+E4M3-BLK-MMVQ code coverage: 254/254 legal e4m3 codes exercised (0x7F/0xFF excluded — refused by the residency NaN precondition) OK
+KC-SKIP [nvfp4-batched] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [a6-split-plane(9b-fallback)] Qwen3.5-9B-NVFP4-MTP-GGUF.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+fa_prefill T=16 Tkv=16: rel=3.03e-3 OK
+fa_prefill T=64 Tkv=64: rel=3.03e-3 OK
+fa_prefill T=100 Tkv=100: rel=3.03e-3 OK
+fa_prefill T=256 Tkv=256: rel=3.03e-3 OK
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: SKIPPED (hp door numeric class)
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: SKIPPED (hp door numeric class)
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 0/262144 OK
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 0/409600 OK
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+fa_prefill_hd512 GQA nkv=4 (hp arm) T=64 Tkv=64: rel=5.09e-4 OK
+fa_prefill_hd512 GQA nkv=4 (hp arm) T=100 Tkv=100: rel=5.09e-4 OK
+fa_decode(KVQ) Tkv=64: rel=4.95e-2 OK
+fa_decode_vec_q(KVQ) Tkv=64: rel=4.95e-2 (scalar 4.95e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=64: rel=4.95e-2 (scalar 4.95e-2) OK
+fa_decode(KVQ) Tkv=128: rel=4.63e-2 OK
+fa_decode_vec_q(KVQ) Tkv=128: rel=4.75e-2 (scalar 4.63e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=128: rel=4.75e-2 (scalar 4.63e-2) OK
+fa_decode(KVQ) Tkv=257: rel=4.59e-2 OK
+fa_decode_vec_q(KVQ) Tkv=257: rel=4.67e-2 (scalar 4.59e-2) OK
+fa_decode_vec_q_v3(KVQ) Tkv=257: rel=4.67e-2 (scalar 4.59e-2) OK
+fa_decode_rows vs per-row loop base=95 T=5: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=95 T=5: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=127 T=4: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=127 T=4: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=256 T=3: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=256 T=3: bitdiff=0 OK
+fa_decode_rows vs per-row loop base=1000 T=5: bitdiff=0 OK
+fa_decode_rows_v3 vs per-row loop (FA_V3) base=1000 T=5: bitdiff=0 OK
+append_kv_seqs vs per-seq loop B=4: bytediff=0 OK
+fa_decode_seqs_v4 vs per-seq loop B=4 depths=[96, 128, 257, 511]: bitdiff=0 OK
+append_kv_seqs vs per-seq loop B=8: bytediff=0 OK
+fa_decode_seqs_v4 vs per-seq loop B=8 depths=[200, 200, 200, 200, 200, 200, 200, 200]: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=511: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=511 bucket=639: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=512: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=512 bucket=640: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=513: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=513 bucket=641: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3071: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3071 bucket=3199: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3073: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=3073 bucket=3201: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4096: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=4096 bucket=4224: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=64 Tkv=192: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=100 Tkv=100: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=37 Tkv=297: bitdiff=0 OK
+kvq q8_0 K round-trip: rel=3.99e-3 OK
+kvq q5_1 V round-trip: rel=1.35e-2 OK
+kvq q5_1 5th-bit boundary: maxerr=3.78e-4 (d~5.00e-2) OK
+kv append rows-vs-loop bit-identity (T=7, t0=3): k_mismatch=0 v_mismatch=0 OK
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+KC-SKIP [d2-cache-bit-identity] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [fast-router-batch] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+moe async-prefetch ordering + protected victim: OK
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [5x128] bytes=680 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [6x160] bytes=1020 bad=0 OK
+
+ALL GREEN: kernels match CPU reference.
+=== /home/ubuntu/receipts/pp2spec/gates/dbg-q9-config.log: env[] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --steps 32 --batch 4
+loaded qwen35 (32 layers); steps=32 batch=4
+gate1 seed 0: agreement all 32 steps
+gate1 seed 1: agreement all 32 steps
+gate1 seed 2: agreement all 32 steps
+gate1 seed 3: agreement all 32 steps
+gate1 seed 4: agreement all 32 steps
+gate1 seed 5: agreement all 32 steps
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/dbg-q9-strict.log: env[MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --steps 32 --batch 4 --mode strict
+loaded qwen35 (32 layers); steps=32 batch=4
+gate1 seed 0: agreement all 32 steps
+gate1 (B=1 bit-identity vs decode_step_h, 32 steps, 1 seed(s)): PASS
+gate2/gate3 B=1 reference arm: batched body (B=1 fast path pinned OFF; live default = ON)
+gate2 (B=4 vs isolated decode_step_h, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+ALL GREEN: decode_step_batch exactness battery
+=== /home/ubuntu/receipts/pp2spec/gates/run-gen-q9-naked.log: env[MEMRA_NGEN=8] target/release/run-gen /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+prefill argmax=268  decode argmax=268  logit maxdiff=5.987e-1  MATCH
+generated 8 tokens in 0.037s = 216.69 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+tokens: [268, 43159, 220, 18, 13, 15, 220, 95726]
+=== /home/ubuntu/receipts/pp2spec/gates/ppbatch-q9-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode pp --stages 2 --steps 16 --batch 1,4,8 --reps 2
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=1
+pp mode: batched stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+pp mode: batches=[1, 4, 8] steps=16 reps=2 (split arm)
+pp mode: B=1 fast path pinned OFF (live default = ON)
+-- B=1: reference recorded (16 steps x 1 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=1 rep0]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=1 rep1]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=1]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+-- B=4: reference recorded (16 steps x 4 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=4 rep0]: 15892480 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=4 rep1]: 15892480 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=4]: 15892480 f32 logits BIT-IDENTICAL (0 differing bits)
+-- B=8: reference recorded (16 steps x 8 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=8 rep0]: 31784960 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=8 rep1]: 31784960 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=8]: 31784960 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [b1-stagefast vs eager-ppn B=1]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [epilogue B=8]: last-stage device sampling + lean park
+pp mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: batched PP-2 stage-split exactness battery
+
+==== verdicts ====
+ppspec-q27-dev01.log:pp gate PASS [verify-split T=2 rep0]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split h_seed T=2 rep0]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split T=2 rep1]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split h_seed T=2 rep1]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-unsplit@ppncache T=2]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split T=5 rep0]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split h_seed T=5 rep0]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split T=5 rep1]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split h_seed T=5 rep1]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-unsplit@ppncache T=5]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split T=9 rep0]: 26818560 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split h_seed T=9 rep0]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split T=9 rep1]: 26818560 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-split h_seed T=9 rep1]: 61440 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:pp gate PASS [verify-unsplit@ppncache T=9]: 26818560 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q27-dev01.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 32, 64] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q27-dev01.log:ALL GREEN: spec-verify PP-2 stage-split exactness battery
+ppspec-q9-dev01-hpost.log:pp gate PASS [verify-split T=5 rep0]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01-hpost.log:pp gate PASS [verify-split h_seed T=5 rep0]: 49152 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01-hpost.log:pp gate PASS [verify-split T=5 rep1]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01-hpost.log:pp gate PASS [verify-split h_seed T=5 rep1]: 49152 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01-hpost.log:pp gate PASS [verify-unsplit@ppncache T=5]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01-hpost.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-dev01-hpost.log:ALL GREEN: spec-verify PP-2 stage-split exactness battery
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev01.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-dev01.log:ALL GREEN: spec-verify PP-2 stage-split exactness battery
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-dev10.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=1,0 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-dev10.log:ALL GREEN: spec-verify PP-2 stage-split exactness battery
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-n4-dev0011.log:ppspec mode verdict: 0 failing arm(s); stages=4 fence=[0, 8, 16, 24, 32] devices=0,0,1,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-n4-dev0011.log:ALL GREEN: spec-verify PP-4 stage-split exactness battery
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-singledev.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-singledev.log:ALL GREEN: spec-verify PP-2 stage-split exactness battery
+ppspec-q9-split5.log:pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec-q9-split5.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 5, 32] devices=0,1 splits=5 shard=per-stage streams=per-stage
+ppspec-q9-split5.log:ALL GREEN: spec-verify PP-2 stage-split exactness battery
+ppbatch-q9-dev01.log:pp gate PASS [split B=1 rep0]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [split B=1 rep1]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [unsplit@ppncache B=1]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [split B=4 rep0]: 15892480 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [split B=4 rep1]: 15892480 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [unsplit@ppncache B=4]: 15892480 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [split B=8 rep0]: 31784960 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [split B=8 rep1]: 31784960 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [unsplit@ppncache B=8]: 31784960 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [b1-stagefast vs eager-ppn B=1]: 3973120 f32 logits BIT-IDENTICAL (0 differing bits)
+ppbatch-q9-dev01.log:pp gate PASS [epilogue B=8]: last-stage device sampling + lean park
+ppbatch-q9-dev01.log:pp mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppbatch-q9-dev01.log:ALL GREEN: batched PP-2 stage-split exactness battery
+-- run-spec self-consistency + acceptance --
+runspec-q27-dev01.log:  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+runspec-q27-dev01.log:=== SELF-CONSISTENCY PASS ===
+runspec-q27-doorshut-dc0.log:  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut-dc0.log:=== SELF-CONSISTENCY PASS ===
+runspec-q27-doorshut.log:  acceptance: 23/24 = 95.8%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 31/36 = 86.1%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 36/42 = 85.7%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 35/48 = 72.9%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 40/60 = 66.7%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 39/66 = 59.1%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 43/77 = 55.8%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:  acceptance: 37/80 = 46.2%   self-consistency: PASS (identical to generate)
+runspec-q27-doorshut.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-dev01.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-dev10.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-doorshut-dc0.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-doorshut.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:=== SELF-CONSISTENCY PASS ===
+dbg-q9-config.log:gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+dbg-q9-config.log:gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+dbg-q9-config.log:gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+dbg-q9-config.log:ALL GREEN: decode_step_batch exactness battery
+dbg-q9-strict.log:gate1 (B=1 bit-identity vs decode_step_h, 32 steps, 1 seed(s)): PASS
+dbg-q9-strict.log:gate2 (B=4 vs isolated decode_step_h, 32 steps): PASS
+dbg-q9-strict.log:gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+dbg-q9-strict.log:ALL GREEN: decode_step_batch exactness battery
+kernel-check.log:ALL GREEN: kernels match CPU reference.
+run-gen-q9-naked.log:prefill argmax=268  decode argmax=268  logit maxdiff=5.987e-1  MATCH
+script-detected failures: 0
