@@ -1067,7 +1067,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t = ids.len();
             let n_embd = cx.model.cfg.n_embd as usize;
             let n_vocab = cx.model.output.out_features();
-            let mut run_arm = |seam: &str| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+            let run_arm = |seam: &str| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
                 unsafe { std::env::set_var("MEMRA_PRIME_F32CHUNK0", seam) };
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
                 let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
