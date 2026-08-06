@@ -1469,6 +1469,12 @@ impl HybridModel {
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
         let payload = t * n_embd;
+        // The CALLER's ambient stream, captured BEFORE any `rt.enter()` pushes a stage stream:
+        // this body returns DEVICE-RESIDENT buffers (the device-argmax accept walk's contract),
+        // so the exit needs the same publication the boundaries get — see `PpNRt::publish_to`.
+        // Taken here, not at the end, because inside the last-stage scope `e.stream()` IS the
+        // stage stream and the wait would self-order into a no-op.
+        let caller_stream = e.stream();
 
         // Per-stage rope positions: in host mode the same [T] iota each stage uploads itself; in
         // stream mode each stage's own `pos_iota` over the shared read-only device counter.
@@ -1529,6 +1535,12 @@ impl HybridModel {
         let mut hn = vbuf(el, payload)?; // fully written by rms_norm_decode
         el.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = el.matmul_decode_exact(&self.output, &hn, t)?;
+        // EXIT PUBLICATION: both returned buffers are still being produced on the last stage's
+        // stream. Order the caller's stream behind that work before the buffers escape this
+        // scope (the 2026-08-06 same-device ppspec find: without it the caller's primary-stream
+        // consumer read unwritten logits — nondeterministic, one-device-only, and it poisoned
+        // the following arm's KV in the same process).
+        rt.publish_to(n_st - 1, &caller_stream)?;
         // stream: the device pos counter owns position; host mirror reconciles at drain.
         if stream.is_none() {
             cache.pos += t;
