@@ -391,29 +391,38 @@ impl HybridModel {
         // tick's only steady-state D2H — one per chunk, none per seq.
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
-        // ---- PP DOOR: FAIL CLOSED (pp2-hardening 2026-08-06) ------------------------------
-        // This body has NO pp arm: it walks lo=0..n_layers on the primary engine's stream,
-        // with no stage split, no boundary, and no `rt.enter()`. The only pp-awareness below
-        // is the `pp_cuts().is_none()` term in the B=1 fast-path condition, whose effect is
-        // the OPPOSITE of a guard — it disables the fast path and drops into this full-trunk
-        // body. So with the door open and a cross-device placement, every projection for the
-        // remote stages' layers was read over PCIe, per step, silently: measured 7.4 vs
-        // 208.9 tok/s at B=1 (28x), 47.4 vs 657.0 at B=8 (13.9x) on a PRO 6000 pair over
-        // Gen5 x16 P2P. Nothing failed or warned, because peer reads return identical bytes
-        // and all three `decode-batch-gate` gates PASS on that config — the failure mode is
-        // performance, and a green exactness battery hid it. Receipts + the SHARD=0 isolation
-        // arm: `research/pp2-hardening-20260806` (RESULTS.jsonl, logs/batchcost/).
+        // ---- PP DOOR: THE BATCHED STAGE SPLIT (pp2-batch 2026-08-06) ----------------------
+        // Until this increment this body had NO pp arm: it walked lo=0..n_layers on the
+        // primary engine's stream, with no stage split, no boundary, and no `rt.enter()`. With
+        // the door open and a sharded cross-device placement, every projection for the remote
+        // stages' layers was read over PCIe, per step, silently — measured 7.4 vs 208.9 tok/s
+        // at B=1 (28x), 47.4 vs 657.0 at B=8 (13.9x) on a PRO 6000 pair over Gen5 x16 P2P.
+        // Nothing failed or warned, because peer reads return identical bytes and all three
+        // `decode-batch-gate` gates PASS on that config — the failure mode was performance,
+        // and a green exactness battery hid it. `pp2-hardening` made that regime FAIL CLOSED
+        // (research/pp2-hardening-20260806); this lane makes it legitimately split, so the
+        // refusal lifts for the batched path.
         //
-        // Matches the deferred-pipelined arm's precedent (decode.rs: refuse the unsound
-        // placement loudly, with a measurement override). Escape hatches, in preference
-        // order: MEMRA_PP_SHARD=0 (weights all home — restores full speed, costs the
-        // capacity that PP-2 exists for), or drop the pp door for batched serving. The
-        // override below exists so this lane's successors can bench the peer-read arm.
+        // `decode_step_batch_ppn` runs each stage's layer range through that stage's engine
+        // and stream with a [B, n_embd] boundary transfer between them, i.e. every stage
+        // touches only LOCAL weights and LOCAL cache state. The refusal below still guards
+        // the residue: the door open with `MEMRA_PP_STREAMS=0` (the same-stream rollback,
+        // which also disables the sharded loader, so nothing is remote — `pp_shard_off` and
+        // `pp2_streams_off` both make `pp_sharded_cross_device()` false) or a placement whose
+        // PpNRt fails to build. Keeping the call means a future path that reaches here in a
+        // remote regime still refuses instead of regressing 28x.
+        if let Some(fence) = crate::pp::pp_cuts(self.layers.len()) {
+            if !crate::pp::pp2_streams_off() && crate::pp::batch_pp_on() {
+                return self.decode_step_batch_ppn(
+                    e, tokens, caches, samp, masks, lean, &fence,
+                );
+            }
+        }
         crate::pp::refuse_unsplit_if_remote(
             "decode_step_batch",
-            "stage-split the batched trunk (open bill item — start by extracting a \
-             decode_batch_layers(lo..hi) seam), or serve single-stream over the eager pp \
-             arm (decode_step_h), which IS split",
+            "drop MEMRA_PP_STREAMS=0 / MEMRA_BATCH_PP=0 so the batched path takes its OWN \
+             stage split (decode_step_batch_ppn), or serve single-stream over the eager pp \
+             arm (decode_step_h), which is also split",
         )?;
         // ---- H3: B=1 FAST-PATH (serve-path phase 2, 2026-08-05) ----------------------------
         // At b_n==1 every projection below calls `matmul_pre(.., b_n)` with m=1, which is
@@ -516,6 +525,168 @@ impl HybridModel {
         ph_mark(e, 10, &mut ph_last)?;
 
         self.decode_batch_epilogue(e, caches, samp, masks, lean, logits, b_n, &mut ph_last)
+    }
+
+    /// THE BATCHED PP-N STEP (pp2-batch increment 2, 2026-08-06): the batched tick split
+    /// across `fence.len()-1` stages, each stage running ONLY its own layer range through
+    /// ITS OWN engine and stream, with a `[B, n_embd]` boundary activation between them.
+    /// The batched twin of `decode_step_h_ppn`, and the #1 item on the PP-2 serving bill —
+    /// without it a >VRAM SKU (Step-3.7-Flash: 105 GB, fits only across two cards) serves
+    /// SINGLE-STREAM only, because the batched path was the one loop with no stage split.
+    ///
+    /// STRUCTURE (mirrors the eager arm exactly, so the two stay comparable):
+    ///   stage 0        `rt.enter(0)` -> per-stage pos_d + embed -> range -> `rt.tx`
+    ///   middle stages  `rt.rx` -> per-stage pos_d -> range -> `rt.tx`
+    ///   last stage     `rt.rx` -> per-stage pos_d -> range -> output_norm + lm_head ->
+    ///                  the batched serving epilogue (masks, device sample, lean park)
+    ///
+    /// FOUR THINGS ARE PER-STAGE, and each is per-stage for a measured reason:
+    ///
+    /// 1. THE ENGINE (`rt.engine(s, e)`). Not just for the remote device: `Engine` owns
+    ///    lazily-grown stable-pointer scratch pools (`fa_part_pool`, `fa_vf16_scratch`,
+    ///    `argmax_partials`) that are single-stream-safe BY DESIGN. Two stage streams
+    ///    through one Engine is the shared-scratch race the pp2 lane hit (2026-08-02
+    ///    nondeterministic all-logits divergence, 35% flake). `PpNRt::build` already gives
+    ///    every stage s>0 its own Engine even on the primary device, so honouring
+    ///    `rt.engine(s, e)` here is what scopes the pools per stage — the batched path
+    ///    allocates MORE of that scratch than the eager one (fa at m=B), so this is the
+    ///    load-bearing half of the trap's mitigation, not an inherited nicety.
+    ///
+    /// 2. THE POINTER TABLE (`batch_layer_ctx(es, caches, lo, hi)`). See [`BatchLayerCtx`]:
+    ///    it holds DEVICE ADDRESSES of that range's cache state, uploaded through that
+    ///    stage's engine. One step-wide table on the primary would put every stage's kernel
+    ///    arguments in stage-0's HBM — a peer read per pointer fetch, the exact cliff this
+    ///    whole lane exists to remove.
+    ///
+    /// 3. `pos_d` (the M2 pipelining law, learned on the eager arm): each stage uploads its
+    ///    own copy of the step's per-row positions on ITS stream, so the buffer is
+    ///    allocated, consumed and freed on one stream. A shared stage-0 `pos_d` freed at fn
+    ///    return breaks under deferred readback — the free enqueues on stream 0 while later
+    ///    stages still dereference it.
+    ///
+    /// 4. THE HEAD + EPILOGUE run on the LAST stage: `output_norm`/`output` were uploaded
+    ///    through the last stage's engine by the sharded loader (`hybrid.rs`: `e_head =
+    ///    layer_engine(e, n_trunk, n_trunk-1)`), and `cache.last_logits_dev` must be
+    ///    allocated where the logits are.
+    ///
+    /// EXACTNESS: PP-N adds ZERO deviation. Each stage runs the SAME kernels on the SAME
+    /// bytes in the same order — the split only moves where the residual is materialized,
+    /// and the boundary is a straight f32 copy (dtod same-device / `cudaMemcpyPeerAsync`
+    /// cross-device, no conversion). So batched PP-N must be BIT-IDENTICAL to single-device
+    /// batched at the same B, in both placement orders. Gate: `decode-batch-gate --mode
+    /// pp` (logit-dump, both orders) — the batched analogue of the eager arm's 48 steps x
+    /// 248,320 f32 logits with zero differing bits.
+    ///
+    /// The B=1 fast path is NOT taken here (its condition already excludes an open door):
+    /// it routes through `decode_layers_eager` whole-trunk on one engine, which is exactly
+    /// the unsplit walk. B=1 under the door rides this function's B=1 case instead — the
+    /// same trade the eager arm's own ppn step makes, and the reason the pp2 lane measured
+    /// B=1 door-open at 0.854x (the lost fusion chain), not a cliff.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_step_batch_ppn(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        caches: &mut [&mut Cache],
+        samp: &[Option<(f32, u64, u32)>],
+        masks: &[Option<(&CudaSlice<u32>, usize)>],
+        lean: bool,
+        fence: &[usize],
+    ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
+        let b_n = tokens.len();
+        assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
+        assert!(
+            !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
+            "decode_step_batch_ppn covers the hybrid non-gemma4 trunk only"
+        );
+        // Same width policy as the unsplit body — the stage split changes WHERE kernels run,
+        // never WHICH tier admits the width. Duplicated deliberately rather than hoisted:
+        // the exact-16 scope must wrap the whole multi-stage walk (`set_verify_exact` is
+        // per-Engine state read at dispatch on every stage), so it has to be established
+        // here, and a shared helper returning a guard would have to own `e` plus the flag.
+        let cap = Self::decode_batch_cap();
+        let exact16 = b_n > 8 && b_n <= 16 && self.decode_batch_exact16_ok();
+        assert!(
+            b_n <= cap || exact16,
+            "decode_step_batch_ppn: B={b_n} > cap {cap} with no exact tier — refused"
+        );
+        let rt = crate::pp::PpNRt::get(e)?;
+        let n_st = fence.len() - 1;
+        assert_eq!(
+            rt.n_stages(), n_st,
+            "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
+        );
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let payload = b_n * n_embd;
+
+        // EXACT-16 SCOPE, PER STAGE ENGINE: `verify_exact` is per-Engine state (an AtomicBool
+        // on the Engine the dispatch reads), and each stage runs through a DIFFERENT Engine —
+        // so setting it on the primary alone would leave stages 1..N-1 dispatching the m>=16
+        // GEMM/MMQ arms while stage 0 used the exact b16 tier. That is a silent per-stage
+        // numeric split (the failure this tier exists to prevent), so the flag is set on
+        // every stage engine and cleared on all of them at scope exit.
+        struct ExactScopeN<'a>(Vec<&'a Engine>);
+        impl Drop for ExactScopeN<'_> {
+            fn drop(&mut self) {
+                for eng in &self.0 {
+                    eng.set_verify_exact(false);
+                }
+            }
+        }
+        let _exact_scope = if exact16 {
+            let engines: Vec<&Engine> = (0..n_st).map(|s| rt.engine(s, e)).collect();
+            for eng in &engines {
+                eng.set_verify_exact(true);
+            }
+            Some(ExactScopeN(engines))
+        } else {
+            None
+        };
+
+        let mut ph_last = std::time::Instant::now();
+
+        // ---- STAGE 0: embed (the table lives with stage 0) + layers [0, fence[1]) + TX ----
+        let mut slot = {
+            let _st0 = rt.enter(0);
+            let e0 = rt.engine(0, e);
+            let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
+            let pos_d = e0.htod_i32(&pos_v)?;
+            let ctx = self.batch_layer_ctx(e0, caches, fence[0], fence[1])?;
+            let x = e0.htod(&self.embd.gather(n_embd, tokens))?;
+            ph_mark(e0, 0, &mut ph_last)?;
+            let x = self.decode_batch_layers(e0, x, caches, &ctx, &pos_d, &mut ph_last)?;
+            rt.tx(0, &x, payload)?
+            // x + pos_d + ctx.ptr_table drop here: freed stream-ordered on stage-0's stream.
+        };
+
+        // ---- MIDDLE STAGES: RX boundary s-1 -> range -> TX boundary s ----
+        for s in 1..n_st - 1 {
+            let _st = rt.enter(s);
+            let es = rt.engine(s, e);
+            let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
+            let pos_d = es.htod_i32(&pos_v)?;
+            let ctx = self.batch_layer_ctx(es, caches, fence[s], fence[s + 1])?;
+            let x = rt.rx(s - 1, slot, payload)?;
+            let x = self.decode_batch_layers(es, x, caches, &ctx, &pos_d, &mut ph_last)?;
+            slot = rt.tx(s, &x, payload)?;
+        }
+
+        // ---- LAST STAGE: RX + final range + head + the batched serving epilogue ----
+        let _stl = rt.enter(n_st - 1);
+        let el = rt.engine(n_st - 1, e);
+        let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
+        let pos_d = el.htod_i32(&pos_v)?;
+        let ctx = self.batch_layer_ctx(el, caches, fence[n_st - 1], fence[n_st])?;
+        let x = rt.rx(n_st - 2, slot, payload)?;
+        let x = self.decode_batch_layers(el, x, caches, &ctx, &pos_d, &mut ph_last)?;
+
+        let mut hn = el.uninit(payload)?;
+        el.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, b_n, eps)?;
+        let logits = el.matmul(&self.output, &hn, b_n)?;
+        ph_mark(el, 10, &mut ph_last)?;
+
+        self.decode_batch_epilogue(el, caches, samp, masks, lean, logits, b_n, &mut ph_last)
     }
 
     /// Build the per-step layer context for layers `[lo, hi)`: the device state-pointer
