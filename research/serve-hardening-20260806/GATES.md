@@ -12,15 +12,17 @@ the lane's obligation is the *serving* battery below.
 Battery re-run in full **after the rebase onto `origin/restructure/public-split`** (the base had
 advanced 18 commits, incl. the `lane/spec-scaling` and `lane/pp2-spec` merges that move
 `worker.rs` spec paths *underneath* this lane's code). The logs below are that post-rebase run at
-lane head `633b1915`; every verdict was re-earned, not carried over from the pre-rebase build,
-and the pre-rebase numbers matched to within run-to-run noise.
+lane head `7c988bb7`; every verdict was re-earned, not carried over from the pre-rebase build,
+and the pre-rebase numbers matched to within run-to-run noise. The last code commit on the lane
+(the handler-layer G6 fix, which touches the auth/lane refusal path) re-ran the whole battery
+again rather than only the tests it looked like it affected — the logs here are that final run.
 
 | gate | command | verdict | log |
 |---|---|---|---|
 | unit tests | `cargo test -p memra-server --release` | **92 passed, 0 failed** (82 before this lane) | `logs/cargo-test-memra-server.txt` |
 | serve-smoke | `tools/serve-smoke.sh` | **0 failed** (`SMOKE_RC=0`) — 16 checks incl. spec-vs-plain greedy identity, the 4-arm sampled truncation matrix (every arm `bangs=0 <= baseline 0`), session-affinity resume (`affinity fired (3 rewind(s))`, `no failed rewinds`) | `logs/serve-smoke.txt`, `logs/serve-smoke-server.log` |
 | api-key auth | `tools/apikeys-gate.sh` | **0 failed / 18 gates** (`APIKEYS_RC=0`) | `logs/apikeys-gate.txt`, `logs/apikeys-gate.jsonl`, `logs/apikeys-gate-server.log` |
-| serve-stress c=64 | `tools/serve-stress-gate.sh` | **ALL GREEN** — `completed 64/64; wall p50=46.0s p95=53.2s max=54.0s; ttfb p50=0.51s p95=5.00s` (ttfb informational), streams well-formed, worker alive, log clean (`STRESS_RC=0`) | `logs/serve-stress-c64.txt`, `logs/serve-stress-c64-server.log` |
+| serve-stress c=64 | `tools/serve-stress-gate.sh` | **ALL GREEN** — `completed 64/64; wall p50=46.2s p95=53.3s max=54.0s; ttfb p50=0.51s p95=5.00s` (ttfb informational), streams well-formed, worker alive, log clean (`STRESS_RC=0`) | `logs/serve-stress-c64.txt`, `logs/serve-stress-c64-server.log` |
 | accept-gate (smoke arm) | `tools/accept-gate.sh` | **1 pass, 0 fail** — `q27-p1: PASS (rounds=42 drafted=126 accepted=85 accept=0.6746, 128 tok text sha-identical)` (`ACCEPT_RC=0`) | `logs/accept-gate-smoke.txt` |
 
 Live wire verification (not a pass/fail gate — payload receipts; see `DESIGN.md §7` for the
