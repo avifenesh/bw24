@@ -12,6 +12,18 @@
 #   B  pp2 dev01, spec ON            — THE new configuration
 #   C  pp2 dev01, spec OFF           — the predecessor lane's shipped config (what spec buys
 #                                      over the split, measured within the same rep)
+#   D  pp2 dev10, spec ON            — THE DRAFT-PLACEMENT ARM. The brief asks whether the
+#                                      drafter's placement matters. It needs no new flag: the MTP
+#                                      head loads through the PLAIN PRIMARY engine (hybrid.rs
+#                                      ~1021 — every `load_t(e, ...)`, where trunk layers use
+#                                      `layer_engine(e, n_trunk, il)`), and the primary is always
+#                                      device 0. So MEMRA_PP_DEVICES=0,1 puts the drafter on
+#                                      STAGE 0's card, and 1,0 puts stage 0 on device 1 while the
+#                                      drafter stays on device 0 = the LAST stage's card. Same
+#                                      weights, same split, drafter on the other side of the
+#                                      boundary — which is exactly the A/B, and both orders are
+#                                      already bit-identical in the gate battery, so any delta
+#                                      here is pure placement cost.
 # c=1 AND c=8: c=1 is the felt path (and the B1FAST lesson's blast radius — a solo spec session
 # must not fall off a fusion chain when the door opens); c=8 is the capacity path.
 #
@@ -68,7 +80,7 @@ serve_arm() { # $1 = label, $2 = rep, $3.. = env words
 for r in 1 2 3 4 5; do
   echo "=== rep $r ==="
   # order alternates across reps so a monotone thermal drift cannot favour one arm
-  if [ $((r % 2)) -eq 1 ]; then ORDER="A B C"; else ORDER="C B A"; fi
+  if [ $((r % 2)) -eq 1 ]; then ORDER="A B C D"; else ORDER="D C B A"; fi
   for a in $ORDER; do
     case $a in
       A) echo "-- rep $r arm A: door shut, spec ON --"
@@ -77,6 +89,8 @@ for r in 1 2 3 4 5; do
          serve_arm B-pp2-spec $r MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 ;;
       C) echo "-- rep $r arm C: pp2 dev01, spec OFF --"
          serve_arm C-pp2-nospec $r MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_SERVE_SPEC=0 ;;
+      D) echo "-- rep $r arm D: pp2 dev10, spec ON (DRAFT PLACEMENT flip) --"
+         serve_arm D-pp2-dev10-spec $r MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,0 ;;
     esac
   done
 done

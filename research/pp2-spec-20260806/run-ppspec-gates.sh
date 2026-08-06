@@ -78,14 +78,29 @@ fi
 # ---- THE END-TO-END ARM: run-spec K=1..8 over the split ------------------------------
 # Two invocations, same prompt/NGEN, so the acceptance counts are directly comparable. The
 # self-consistency PASS is the exactness gate; the count equality is the sharper check.
-run runspec-q9-dev01.log  MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 MEMRA_NGEN=64 -- \
+#
+# MEMRA_QWEN_DC=0 on the SPLIT arms: run-spec's ORACLE is plain `generate`, whose default Qwen
+# route is the DEVICE-COUNTER loop `decode_step_dc` — a path with no pp stage split, so
+# pp2-hardening makes it fail closed under a sharded cross-device placement. The refusal fires
+# in the reference arm before spec runs at all (measured 2026-08-06: the first battery's four
+# run-spec arms all died on that quoted refusal, NOT on anything in the verify trunk). =0 takes
+# the eager `decode_step` -> `decode_step_h` route, which IS stage-split, so BOTH arms of the
+# comparison walk split paths. The door-shut denominators keep the default dc route, which is
+# also the honest baseline: dc is what single-device serving actually runs.
+# dc-over-PP is the ONE remaining unsplit hole (dc + the graph capture that wraps it).
+DC0=MEMRA_QWEN_DC=0
+run runspec-q9-dev01.log  MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 $DC0 MEMRA_NGEN=64 -- \
   $BIN/run-spec "$Q9" 55
 run runspec-q9-doorshut.log MEMRA_NGEN=64 -- $BIN/run-spec "$Q9" 55
-run runspec-q9-dev10.log  MEMRA_PP_DEVICES=1,0 MEMRA_PP_STAGES=2 MEMRA_NGEN=64 -- \
+# door-shut WITH the same DC0 seam: the exact denominator for the split arm's acceptance counts
+# (dc vs eager oracle changes nothing under greedy, and this arm proves it rather than assuming).
+run runspec-q9-doorshut-dc0.log $DC0 MEMRA_NGEN=64 -- $BIN/run-spec "$Q9" 55
+run runspec-q9-dev10.log  MEMRA_PP_DEVICES=1,0 MEMRA_PP_STAGES=2 $DC0 MEMRA_NGEN=64 -- \
   $BIN/run-spec "$Q9" 55
-run runspec-q27-dev01.log MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 MEMRA_NGEN=48 -- \
+run runspec-q27-dev01.log MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 $DC0 MEMRA_NGEN=48 -- \
   $BIN/run-spec "$Q27" 55
 run runspec-q27-doorshut.log MEMRA_NGEN=48 -- $BIN/run-spec "$Q27" 55
+run runspec-q27-doorshut-dc0.log $DC0 MEMRA_NGEN=48 -- $BIN/run-spec "$Q27" 55
 
 # ---- STANDING BATTERY (door SHUT — the split must not move single-device behavior) ----
 run kernel-check.log      -- $BIN/kernel-check
