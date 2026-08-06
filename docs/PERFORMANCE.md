@@ -433,7 +433,9 @@ router/gate kernels, serve-gate c=1-vs-c=16 byte identity — serve-vs-serve, no
 against a tokenwise oracle). Multi-GPU boxes serve as a replica fleet — supervisor +
 admission proxy + load harness, measured at 1,477 tok/s managed on 3 rented H100s,
 chaos-tested: kill a replica mid-load and the breaker + supervisor recover in seconds with
-only in-flight requests lost. Endurance: 140 minutes at c=96 on 8 rented H100s, 464,870
+only in-flight requests lost. A model too large for one card serves over **PP-2** instead
+(pipeline-parallel, one engine, stage-split trunk) — see
+[the PP-2 cells](#pipeline-parallel-pp-2--the-capacity-shape) below. Endurance: 140 minutes at c=96 on 8 rented H100s, 464,870
 requests, 0 errors, 0 sheds, +0.045% throughput drift — a **9B-class** (Qwen3.5-9B-Q8_0)
 warm-prefix result whose load ran at temp 0.7 seeded, with a separate greedy probe hashing
 identical on all 8 replicas before and after. Runbook: [`docs/SERVING.md`](SERVING.md).
@@ -454,6 +456,48 @@ post-fix; the pre-fix −11.74% is history, not a current number. **Still open:*
 (phase 1), [`research/servepath-p2-20260805/`](../research/servepath-p2-20260805/) (the
 fix + the graph-door refutation). The published boards above are **bare-CLI** numbers; do
 not read them as serve-path numbers.
+
+### Pipeline-parallel (PP-2) — the capacity shape
+
+Rig: **rented** 2x RTX PRO 6000 Blackwell Server Edition 96 GB, sm_120a, CUDA 13.2, Gen5 x16
+P2P, SPOT box shared between lanes (GPU windows under `flock`, both cards verified at 0 MiB on
+entry and exit). Date 2026-08-06. Receipts:
+[`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/),
+[`research/pp2-spec-20260806/`](../research/pp2-spec-20260806/),
+[`research/pp2-hardening-20260806/`](../research/pp2-hardening-20260806/).
+
+**PP-2 exists for capacity, not throughput.** The replica fleet above is the throughput
+answer; PP-2 is what lets a model that fits only across the pair serve at all. Read these
+cells as "what the split costs", never as a scaling win.
+
+q9, 64 steps, 512-token prompts, greedy, N=5 rep-major interleaved in one lock hold on one
+binary (medians; `MEMRA_DECODE_BATCH_CAP=16` applied to all arms equally):
+
+| Cell | Value | Protocol |
+|---|---|---|
+| Batched split cost, B=4 / B=8 / B=16 | **0.995x / 0.989x / 0.986x** | vs door-shut single device, same binary same lock hold |
+| B=1 split cost (after the fast-path fix) | **0.982x** (204.7 vs 208.4 tok/s) | N=5; `MEMRA_SERVE_B1FAST=0` rollback control reproduces the pre-fix 177.4 (0.851x) |
+| Transport alone (C/B) | 0.986–0.997x of the seam | so almost all of the small loss is the seam, not PCIe |
+| Placement symmetry (dev01 vs dev10) | agree within 0.3% | |
+| Aggregate scaling under the split | B=8 = **3.65x** B=1 | intact |
+| Spec OFF at c=8, dev10 | **875.1 tok/s**, 96/96, 0 err | the fastest arm in the lane |
+| P2P vs a host bounce at boundary payload | **13.6–14.0x** (16 KB: 13.35 vs 0.954 GB/s) | link ~56 GB/s uni, ~107 bidir |
+
+Caveats that travel with these cells:
+
+- **The 1.786x (q9) / 1.905x (q27) pipelined figures are NOT serving throughput.** They were
+  measured on a pre-recorded greedy token stream; the lane's own words: "Plain autoregressive
+  serving cannot do that." Single-stream greedy gets the serial 0.996x row. The pipelined arm
+  also remains **quarantined**: the H100-era 35% same-device flake was refuted on this silicon
+  (20/20, p<0.001) but the quarantine was not lifted, and the cross-device ~0.5% flake is
+  neither reproduced nor excluded.
+- **`MEMRA_SERVE_SPEC=0` is required** — spec over PP-2 is bit-identical (7/7) but one
+  placement is ~20x slow and the other trips a sticky `CUDA_ERROR_ILLEGAL_ADDRESS` that
+  poisons the CUDA context (100% of requests lost at c=4, 3/3 repro). Mechanism detail in
+  [`docs/SERVING.md`](SERVING.md#pipeline-parallel-pp-2-serving).
+- **The serving primary is always device 0** (`Engine::new(0)` is unconditional in the worker,
+  regardless of `MEMRA_PP_DEVICES`). That asymmetry is the root of the dev01-vs-dev10
+  behavioral difference — and dev10 is the placement that goes fatal at c=4 with spec on.
 
 ## Bring-up notes
 
@@ -476,11 +520,21 @@ not read them as serve-path numbers.
   loader read 1 of 3), the attention mixer (dual-base partial RoPE, SWA 3:1, head-wise gate),
   two new math kernels with their kernel-check cells, and the StepFun ChatML dialect template
   (19 jinja-rendered goldens; reusing the qwen arm corrupted the prompt in 8 distinct ways).
-  Gates on the pair: boots resident over PP-2 and generates coherently, `ppn-gate`
-  **BIT-IDENTICAL** both arms, `run-gen` argmax **MATCH** at pp19/64tok, `kernel-check` **ALL
+  Gates on the pair: boots over PP-2 and generates coherently, `ppn-gate` **BIT-IDENTICAL**
+  both arms (fence `[0,22,45]`), `run-gen` argmax **MATCH** at pp19/64tok, `kernel-check` **ALL
   GREEN** model-backed on the real weights, `chunkinv` PASS at the default config. MTP drafter
   wired and its gate passes both contracts (acceptance 0% → 77.8% at K=1 after the draft head
   was pointed at the NextN block's own `lm_head` instead of the trunk's).
+  **This SKU is a spill path, not a resident one** — and that is the honest headline for its
+  future numbers. `101.07 GB experts + 3.92 GB trunk vs 100.88 GB free` puts it on the SLRU
+  cache even on 2x96 GB. That cache is measurably healthy (89.0% steady-state hit rate, 133.5
+  MB per decode token on the 32-token boot, vs a 2678 MB/token Stage-1 baseline = 20.1x less
+  PCIe), so the MoE cache is load-bearing here rather than incidental. One caveat travels with
+  the decision itself: the residency check is **PP-blind in its numerator** — it sums every
+  layer's expert bytes from the GGUF header, including layers living on the *other* card, and
+  compares that against one stage's free VRAM. The verdict happens to be right on this SKU, but
+  it would wrongly spill a bank that fits per-stage on a wider split. Not fixed: changing
+  residency selection is perf-affecting and belongs behind an A/B.
   **No throughput cell is published for this SKU yet** — bring-up gates are not perf evidence,
   and nothing here was measured per `research/benchmarks.md`.
   Open on the ledger ([`research/step37-p2-20260806/`](../research/step37-p2-20260806/)):
