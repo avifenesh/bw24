@@ -276,7 +276,116 @@ that means:
    seam to reuse; **the batched body has no equivalent `lo..hi` helper** — that extraction is
    the first increment of any real wiring.
 
-Cost of the silent peer-read is being measured now (interleaved A/B/C/D, rep-major, N=5:
-door-shut / door-open-singledev / door-open-dev01-sharded / door-open-dev01-SHARD=0), so the
-refusal recommendation lands with a number attached rather than an assertion. Driver
-`run-pp2-batchcost.sh`, receipts `logs/batchcost/`.
+#### Cost of the silent peer-read — MEASURED
+
+`decode-batch-bench`, q9, 32 prompt / 128 gen, four arms **interleaved rep-major N=5**
+(driver `run-pp2-batchcost.sh`, receipts `logs/batchcost/`, one log per rep per arm).
+Medians, aggregate tok/s across the batch:
+
+| arm | B=1 | B=4 | B=8 | vs door-shut |
+|---|---|---|---|---|
+| A door SHUT (single-GPU baseline) | 208.9 | 491.3 | 657.0 | 1.00x |
+| B door OPEN `stages=2` singledev | 178.5 | 491.2 | 655.7 | 0.854x / 1.000x / 0.998x |
+| **C door OPEN `stages=2` dev01 SHARDED** | **7.4** | **29.8** | **47.4** | **0.035x / 0.061x / 0.072x** |
+| D door OPEN `stages=2` dev01 `SHARD=0` | 178.5 | 491.1 | 656.6 | 0.854x / 1.000x / 0.999x |
+
+Run-to-run spread ≤0.63% on every cell (most ≤0.35%), so these are not noisy numbers.
+
+Three reads, all of which the refusal recommendation rests on:
+
+1. **The real serving shape (arm C) costs 28x at B=1 and 14x at B=8.** 7.4 tok/s aggregate
+   for a 9B model on two PRO 6000s. Every projection for layers 32..63 is fetched over
+   PCIe *per batched step*, and there is no pipeline overlap to hide it because the trunk
+   runs as one unsplit loop on the primary stream.
+2. **Arm D isolates the cause exactly.** Same open door, same two devices, only
+   `MEMRA_PP_SHARD=0` (all weights home on the primary) — and it is bit-for-bit the same
+   throughput as arm B/singledev (178.5 / 491.1 / 656.6). So the entire 28x is the
+   **peer read of stage-1 weights**, not the door, not the placement plumbing, not the
+   `pp::new_cache` stage-owned KV. This matches M2's H100 finding that unsharded
+   peer-read weight placement is a 3-4x cliff — on this pair, at batch, it is a 14-28x
+   cliff, because PCIe Gen5 x16 (56 GB/s) against 96 GB HBM bandwidth is a far worse
+   ratio than NVLink was.
+3. **The `-15%` at B=1 in arms B/D is the lost fast path, and it is the door's only
+   *visible* effect.** 178.5 vs 208.9 = the `decode_step_b1_fast` bypass that
+   `decode_batch.rs:361` disables. At B>=4 it vanishes (491.2 vs 491.3) because the
+   batched body is what runs in both cases. So a well-placed operator who opens the door
+   with `SHARD=0` sees only a 15% B=1 regression and nothing else — no warning that PP
+   is not happening at all.
+
+**Recommendation, now with numbers: `decode_step_batch` must fail closed under an open pp
+door with multi-device placement.** The pipelined arm refuses its unsound config with a
+full `Err` (decode.rs:977) plus a measurement override; the batch path has no counterpart
+and silently delivers 3.5% of baseline. Shipped as a code change this lane — see Item 4.
+
+### Item 3: the eager PP-2 throughput story on a PRO 6000 pair — **the 1.87x transfers, and it is 1.91x here**
+
+`ppn-bench`, 32 prompt / 128 gen, N=5 reps interleaved rep-major in-process. Two
+invocations per model because **the pp door is a load-time decision** (a sharded load
+timed as a "baseline" would time peer-reads — the bench's own header law): invocation 1 =
+door shut, unsharded, `serial-off`; invocation 2 = `MEMRA_PP_STAGES=2
+MEMRA_PP_DEVICES=0,1`, which interleaves `serial-pp` and `pipelined-pp`. Both under
+`flock /tmp/memra-gpu.lock`. Driver `run-pp2-eagerbench.sh`, receipts `logs/eagerbench/`.
+Cards went 180 MHz/30 W idle to 2400/2317 MHz, 266/291 W (`gpu-pre.csv`/`gpu-post.csv`) —
+full-power regime, box otherwise empty of compute apps.
+
+| model | baseline (door shut, 1 GPU) | serial-pp dev01 | pipelined-pp dev01 | serial vs base | **pipelined vs base** |
+|---|---|---|---|---|---|
+| q9 (Qwen3.5-9B-NVFP4-MTP, 32L, 5.7 GB) | 211.77 tok/s | 210.10 | **378.18** | 0.992x | **1.786x** |
+| q27 (Qwen3.6-27B-NVFP4-Q4_K_M-mtp, 64L, 15.7 GB) | 76.03 tok/s | 75.73 | **144.82** | 0.996x | **1.905x** |
+
+Spread is tight (q27 pipelined: all 5 reps inside 0.5 us/tok, 0.007%). Fences: q9
+`[0,16,32]`, q27 `[0,32,64]`. Both door-open logs carry the cross-device transport line
+(`cudaMemcpyPeerAsync per cross boundary; ... weight home: per-stage (sharded loader)`).
+
+Reads:
+
+1. **The M2 prize transfers to PCIe P2P silicon, and improves with model depth.** H100
+   SXM/NVSwitch measured 1.87x at N=2 on q9; this pair does 1.786x on q9 and **1.905x on
+   q27**. The *bigger* model winning more is the expected shape — the boundary copy is a
+   fixed ~7 us against a per-stage compute half that grows with layer count, so the
+   overlap fraction improves. It also confirms the Phase-0 verdict under load: at these
+   payloads the interconnect is not the limiter, and NVLink's absence costs ~nothing here.
+2. **Serial cross-device PP-2 is free (0.99x both models)** — reproducing M2's H100 result
+   and M0's 0.3-0.5%/tick prediction on new silicon. So the pure *capacity* use of PP-2
+   (fit a model that does not fit one card) costs ~0.4% of single-card decode. That is the
+   number the 192 GB listing decision needs, now measured on the target pair.
+3. **Ceiling check.** 1.905x is near the structural max for a 2-stage split with
+   tokens-in-flight 3 (each stage busy ~half the serial tick), so little is left in *this*
+   mechanism at N=2 — and M2 already showed N=4/8 do not add single-stream speed.
+
+**The caveat that governs how this number may be used** (recorded because the M2 write-up
+does not state it and the 192 GB assessment repeats "1.87x" unqualified): the deferred
+window is measured on a **pre-recorded greedy token stream**. `ppn-bench` and `ppn-gate`
+both replay an `inputs` vector captured from a door-off reference run, so step t+1 is
+enqueued before step t's logits are read back. **Plain autoregressive serving cannot do
+that** — it needs token t to pick token t+1. So 1.905x is not a free speedup for
+single-stream greedy serving; it is the pipeline's throughput *when something supplies the
+next token early*. What legitimately supplies it: **speculative/MTP decode** (draft tokens
+are known ahead, and the artifact already carries an MTP head), **batched/multi-sequence
+serving** (independent sequences fill the window), and prefill. Single-stream greedy gets
+the *serial* 0.996x row, not the pipelined row. This does not weaken the result — it names
+which serving modes monetize it, and both are the remaining bill items. It does mean the
+deferred arm's value is **gated behind spec-over-PP2 or batch-over-PP2**, on top of its
+existing root-cause quarantine.
+
+---
+
+## Cohabitation with the step37-p2 lane (coordinator directive 2026-08-06)
+
+The box is shared with the Step-3.7-Flash bring-up lane (owner doctrine: 3.7-Flash serves on
+this pair over PP-2). Rules honored on my side:
+
+- **Tree isolation:** my work is confined to `~/memra`, `~/receipts/pp2`, and
+  `/scratch-models`. `~/step37` is not touched.
+- **GPU lock:** every measurement window from the eagerbench onward runs under
+  `flock /tmp/memra-gpu.lock`. The reason is not courtesy — an interleaved A/B whose arms
+  straddle another lane's model load is a cross-run comparison, which this repo's H100 LAWS
+  forbid outright. `run-pp2-eagerbench.sh` carries the wrapper plus an in-script comment so
+  the next hand does not drop it.
+- **Contention actually observed: none.** `nvidia-smi --query-compute-apps` was empty before
+  and after every window in this report, and the cards idled at P8/30 W immediately before
+  the eagerbench. Every receipt here is window-clean.
+- **Disk:** root went 74 GB to **128 GB of 387 GB used (34%, 259 GB free)** while `~/step37`
+  grew to 54 GB en route to ~105 GB. Headroom is fine for both lanes (my models total 21 GB
+  and are already staged), but a *third* lane staging a 100 GB-class artifact would not fit.
+  Flagged per directive; not blocking.

@@ -1,0 +1,8 @@
+loaded qwen35 (32 layers); steps=64 reps=1 batches=[1, 4, 8]
+B=1: aggregate 178.5 tok/s, per-seq 178.5 tok/s (median of 1)
+B=4: aggregate 490.7 tok/s, per-seq 122.7 tok/s (median of 1)
+B=8: aggregate 655.6 tok/s, per-seq 81.9 tok/s (median of 1)
+scale B=1: 1.00x aggregate vs B=1
+scale B=4: 2.75x aggregate vs B=1
+scale B=8: 3.67x aggregate vs B=1
+[host-sample] n_vocab=248320 greedy argmax 256 us/row | temp0.7 sample 955 us/row | x B=8 rows/tick = 2.05 ms (greedy) / 7.64 ms (temp) [sink 6137081]
