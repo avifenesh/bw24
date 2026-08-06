@@ -1006,6 +1006,63 @@ impl Engine {
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
+
+    /// Bytes the async pool holds MAPPED but NOT LIVE (reserved - used), i.e. freed blocks
+    /// parked in the pool because `Engine::new` pins RELEASE_THRESHOLD to u64::MAX above.
+    ///
+    /// Why this is a public engine surface: `mem_get_info`'s `free` DOES NOT SEE these bytes —
+    /// they are mapped to this process, so `free` counts them as gone, yet the very next
+    /// `alloc_u8` is satisfied from them without touching `free` at all. Any admission or
+    /// budget decision that reads `free` alone therefore under-counts real headroom by exactly
+    /// this amount. Effective allocatable headroom is `free + pool_cached_bytes()`.
+    ///
+    /// MEASURED SIZE (c=64 serve burst, 9B NVFP4 + draft, 24GB card, 2026-08-06): 34-89 MB
+    /// during the burst — SMALL. The admission gate adds it because a term that can only ever
+    /// under-count headroom does not belong in a gate that queues real work, but the honest
+    /// reading of this number is that pool caching is NOT where a long-running server's VRAM
+    /// hides on this path: reserved ~= used throughout, so the memory the driver reports as
+    /// gone is genuinely LIVE (see `pool_reserved_used` for the diagnostic pair).
+    ///
+    /// Returns 0 if the pool cannot be queried (never a false-positive headroom claim).
+    pub fn pool_cached_bytes(&self) -> usize {
+        let (reserved, used) = self.pool_reserved_used();
+        reserved.saturating_sub(used)
+    }
+
+    /// Raw async-pool occupancy: (RESERVED_MEM_CURRENT, USED_MEM_CURRENT) in bytes. Reserved is
+    /// what the pool has mapped from the driver; used is what is live inside it. Exposed for
+    /// admission/VRAM diagnostics — the pair distinguishes "memory is parked in the pool and
+    /// `free` cannot see it" (reserved >> used) from "memory is genuinely held live by some
+    /// owner" (reserved ~= used), which are opposite bugs with opposite fixes.
+    /// (0, 0) if the pool cannot be queried.
+    pub fn pool_reserved_used(&self) -> (usize, usize) {
+        use cudarc::driver::sys;
+        unsafe {
+            let mut pool: sys::CUmemoryPool = std::ptr::null_mut();
+            if sys::cuDeviceGetDefaultMemPool(&mut pool, self.gpu.ctx.ordinal() as sys::CUdevice)
+                != sys::CUresult::CUDA_SUCCESS
+            {
+                return (0, 0);
+            }
+            let (mut reserved, mut used) = (0u64, 0u64);
+            if sys::cuMemPoolGetAttribute(
+                pool,
+                sys::CUmemPool_attribute_enum::CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT,
+                &mut reserved as *mut u64 as *mut core::ffi::c_void,
+            ) != sys::CUresult::CUDA_SUCCESS {
+                return (0, 0);
+            }
+            if sys::cuMemPoolGetAttribute(
+                pool,
+                sys::CUmemPool_attribute_enum::CU_MEMPOOL_ATTR_USED_MEM_CURRENT,
+                &mut used as *mut u64 as *mut core::ffi::c_void,
+            ) != sys::CUresult::CUDA_SUCCESS {
+                return (0, 0);
+            }
+            (reserved as usize, used as usize)
+        }
+    }
+
     /// Ambient stream (by value since M1-PP2 increment 2): the thread's pp2 stage stream
     /// when a stage scope is active, else the main compute stream — see `Gpu::stream`.
     pub fn stream(&self) -> Arc<CudaStream> { self.gpu.stream() }

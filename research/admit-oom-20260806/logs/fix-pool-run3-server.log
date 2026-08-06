@@ -1,0 +1,485 @@
+[server] starting; models config = [("stress", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "stress" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] stress: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "stress": 33 layers, eos=248046
+[worker] stress: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] stress: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["stress"]
+[server] listening on http://127.0.0.1:8179
+[meter] admit id=chatcmpl-d52a750955b1257422f21ee5e16b2ffd tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-eb3af75c693214c0e159e5913e2d783b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-4c9df9bf02024cac3a783dda056e4462 tenant=default lane=interactive model="stress"
+[worker] observed session VRAM cost for "stress": 201MB (admission gate = 2x)
+[meter] admit id=chatcmpl-45d4a89ffbd816fdfd0b8862817b313e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e9b49917d9efd8aa15ccc2e6b01d6679 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-912f2f3d4ad3cba625420ea1a523b234 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d0f24754ec9e9273bf47351167c5d250 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-bc85193e2f49f1d01be990551e4e5db5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e80af3163b2850a48480c234303f0e8d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-28c0778463d988556be336d9e038f6ff tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-aeef0980626ccbcd2c566d8d8ea2aea9 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ed3a748ccc358084b284296011f18ea1 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b0dd32803364344faeead22b5f84d1b7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-7276782ee3cbaf3ebe1d73e55334521e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a31171e97e86401ff5553c0f1326aa52 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-06835cabea9ceebafcc1cfea8e568870 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-69acad850963ea4be369fc70d8dcc02f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-5ae255daa73c12b043b7de013098d633 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-3f084d0fb8bb7f4bb07538c83c8a4c55 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6dc7e6ddb6aab5f3b8e86e9f0285b5cf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-f8e1fcdf98426b3aafc1385cb5b9366e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b2ba7dbbdce4de0b662c49409c56525d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-2b80a94d749ca34ff7cbb6e6dcbb2821 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0d9ac1511bca6bd8597d627d85ccb9c6 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-8a60a6cf378ee140ac3a1dc10604585c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-2fe7d65199e8d8360a65fa3361ebcc7f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-03d52f802ada774fd74aa3ff2ef738b5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e053a6a624d0e98887033c601b1bbd7b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b62ff76bb1130044769e5d7c147a1542 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-9a55052bee0c9fb92d5d75f63162938c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-eecddd0b3057cf0e816889bbb705184f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-3c3f401459931463d126cbff61925108 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a398bf6c75a90f97b2becb1c02d49feb tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-633f686c1c273c135236791b9b0de14f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-558bc6c6ff047369d2c2acc42bc79cbf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-5a0f81a42fd5318682fff3b8ac2dc9c6 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-4ca93067146190337d0dab99d3142a5b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-40bebc4d1b5d891ae2bc26219528310e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-f9a6e697f81f8fa761e8c10c919870a3 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c887024637da4a5c9d9bf65676555d7f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-5a629f7600e51a83c5100b533c657070 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0f497920ff2a0643b590425e0656a174 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-be555bc72b4dd16d95a719a3b7a2e3cb tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e77b0b22ca617c19ede07527e811a214 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-01d1a7012204e9570c24f5fc4f0d02c7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c1600130914b969154cc09828e870b49 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-33c1eaf1d0f85b8342c43633283ae274 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-62637d2da3d540fb573b08ce96790414 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-1180061a0499e9c022b72493c4d1dc41 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ee53517e9bce97b1ad640a31fb680c40 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0c7e6b361379f799ef73a3befacf6884 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6249ab9ed10d3db638a349cc9194aa27 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-9d911651f096e09fcb7372541a15494c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-883de5707c8ab96325db08ae27014877 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-3f5498d8a5b2758ed92eebed9364feb2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d9849f62a23a97bf43598a475670e2d9 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d61509a7700e9636712afd478579c70a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ef01af2007d02e2f6248bd6c3b62c1c6 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-aab0bdb3d5150708d33aa2ff3dc9c873 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-dd6e865cb8a86adcd9bef05d4ed90100 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-56fc51219d40388b19497170c5c81606 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0cfad97edb8b43271f288544497aad0a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-4c214ec548e1e386e15d6a521dc2a7cd tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-677eda889c73551085ad71becc10eb82 tenant=default lane=interactive model="stress"
+[admit-oom] VRAM defer: 59 active, effective free 1631MB (driver + 11MB pool-cached) < cost 201MB + reserve 1611MB — queueing (FIFO) [pool res 22817MB used 22806MB; parked spec sessions 0; plain reuse 0; queue 4]
+[spec-acc] ctx=55 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=57 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=54 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=56 burst=19/39 cum=19/39=0.487
+[spec-acc] ctx=53 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=44 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=55 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=57 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=54 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=56 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=53 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=62 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=63 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=60 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=61 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=58 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=48 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=59 burst=21/33 cum=21/33=0.636
+[spec-acc] ctx=61 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=57 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=59 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=57 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=48 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=59 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=60 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=57 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=59 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=56 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=47 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=58 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=60 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=56 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=58 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=55 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=46 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=57 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=59 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=56 burst=24/30 cum=24/30=0.800
+[spec-acc] ctx=58 burst=21/33 cum=21/33=0.636
+[spec-acc] ctx=55 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=46 burst=22/33 cum=22/33=0.667
+[spec-acc] ctx=57 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=58 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=55 burst=20/39 cum=20/39=0.513
+[spec-acc] ctx=57 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=54 burst=24/30 cum=24/30=0.800
+[spec-acc] ctx=45 burst=21/33 cum=21/33=0.636
+[spec-acc] ctx=56 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=58 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=55 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=57 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=54 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=45 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=56 burst=22/27 cum=22/27=0.815
+[spec-acc] ctx=58 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=55 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=57 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=54 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=45 burst=22/33 cum=22/33=0.667
+[admit-oom] VRAM defer: 59 active, effective free 996MB (driver + 89MB pool-cached) < cost 201MB + reserve 1611MB — queueing (FIFO) [pool res 23522MB used 23433MB; parked spec sessions 0; plain reuse 0; queue 4]
+[spec-acc] ctx=94 burst=21/33 cum=42/63=0.667
+[spec-acc] ctx=96 burst=22/30 cum=45/57=0.789
+[spec-acc] ctx=94 burst=21/36 cum=44/66=0.667
+[spec-acc] ctx=95 burst=23/30 cum=46/60=0.767
+[spec-acc] ctx=90 burst=20/33 cum=43/57=0.754
+[spec-acc] ctx=80 burst=22/27 cum=43/57=0.754
+[spec-acc] ctx=92 burst=20/33 cum=41/66=0.621
+[spec-acc] ctx=94 burst=22/33 cum=46/57=0.807
+[spec-acc] ctx=89 burst=21/33 cum=43/60=0.717
+[spec-acc] ctx=92 burst=23/27 cum=47/51=0.922
+[spec-acc] ctx=89 burst=21/33 cum=43/60=0.717
+[spec-acc] ctx=81 burst=24/27 cum=46/57=0.807
+[spec-acc] ctx=91 burst=18/39 cum=40/66=0.606
+[spec-acc] ctx=94 burst=19/36 cum=43/63=0.683
+[spec-acc] ctx=90 burst=22/27 cum=45/54=0.833
+[spec-acc] ctx=94 burst=21/33 cum=44/66=0.667
+[spec-acc] ctx=89 burst=24/30 cum=47/57=0.825
+[spec-acc] ctx=81 burst=21/30 cum=45/57=0.789
+[spec-acc] ctx=91 burst=21/36 cum=43/66=0.652
+[spec-acc] ctx=95 burst=19/39 cum=44/66=0.667
+[spec-acc] ctx=89 burst=22/27 cum=44/57=0.772
+[spec-acc] ctx=90 burst=24/27 cum=46/54=0.852
+[spec-acc] ctx=88 burst=23/30 cum=46/57=0.807
+[spec-acc] ctx=80 burst=23/27 cum=45/60=0.750
+[spec-acc] ctx=89 burst=18/45 cum=40/72=0.556
+[spec-acc] ctx=94 burst=19/39 cum=44/66=0.667
+[spec-acc] ctx=91 burst=20/33 cum=44/63=0.698
+[spec-acc] ctx=91 burst=21/33 cum=42/66=0.636
+[spec-acc] ctx=88 burst=22/27 cum=46/51=0.902
+[spec-acc] ctx=80 burst=20/33 cum=42/66=0.636
+[spec-acc] ctx=89 burst=18/39 cum=40/66=0.606
+[spec-acc] ctx=90 burst=23/30 cum=46/54=0.852
+[spec-acc] ctx=89 burst=20/39 cum=40/78=0.513
+[spec-acc] ctx=90 burst=25/27 cum=48/54=0.889
+[spec-acc] ctx=89 burst=23/27 cum=47/57=0.825
+[spec-acc] ctx=78 burst=23/27 cum=44/60=0.733
+[spec-acc] ctx=88 burst=21/36 cum=43/63=0.683
+[spec-acc] ctx=91 burst=20/42 cum=44/66=0.667
+[spec-acc] ctx=88 burst=23/27 cum=46/54=0.852
+[spec-acc] ctx=89 burst=23/30 cum=44/60=0.733
+[spec-acc] ctx=87 burst=21/30 cum=44/57=0.772
+[spec-acc] ctx=77 burst=22/27 cum=44/54=0.815
+[spec-acc] ctx=88 burst=23/30 cum=45/57=0.789
+[spec-acc] ctx=91 burst=20/42 cum=44/66=0.667
+[spec-acc] ctx=89 burst=20/39 cum=44/66=0.667
+[spec-acc] ctx=90 burst=24/27 cum=46/57=0.807
+[spec-acc] ctx=87 burst=22/33 cum=45/60=0.750
+[spec-acc] ctx=79 burst=22/27 cum=44/60=0.733
+[spec-acc] ctx=87 burst=22/36 cum=44/63=0.698
+[spec-acc] ctx=92 burst=18/42 cum=43/69=0.623
+[spec-acc] ctx=88 burst=20/33 cum=42/66=0.636
+[spec-acc] ctx=89 burst=23/27 cum=42/66=0.636
+[spec-acc] ctx=85 burst=22/30 cum=44/57=0.772
+[spec-acc] ctx=78 burst=25/27 cum=47/60=0.783
+[spec-acc] ctx=88 burst=21/33 cum=43/63=0.683
+[spec-acc] ctx=90 burst=21/39 cum=45/63=0.714
+[spec-acc] ctx=87 burst=22/33 cum=46/57=0.807
+[spec-acc] ctx=90 burst=20/33 cum=43/63=0.683
+[spec-acc] ctx=87 burst=24/30 cum=48/57=0.842
+[admit-oom] VRAM defer: 59 active, effective free 994MB (driver + 89MB pool-cached) < cost 201MB + reserve 1611MB — queueing (FIFO) [pool res 23522MB used 23433MB; parked spec sessions 0; plain reuse 0; queue 4]
+[spec-acc] ctx=127 burst=20/33 cum=62/96=0.646
+[spec-acc] ctx=129 burst=22/36 cum=67/93=0.720
+[spec-acc] ctx=128 burst=21/30 cum=65/96=0.677
+[spec-acc] ctx=129 burst=22/27 cum=68/87=0.782
+[spec-acc] ctx=122 burst=21/36 cum=64/93=0.688
+[spec-acc] ctx=112 burst=21/33 cum=64/90=0.711
+[spec-acc] ctx=124 burst=20/42 cum=61/108=0.565
+[spec-acc] ctx=128 burst=22/30 cum=68/87=0.782
+[spec-acc] ctx=122 burst=22/33 cum=65/93=0.699
+[spec-acc] ctx=125 burst=23/24 cum=70/75=0.933
+[spec-acc] ctx=122 burst=18/39 cum=61/99=0.616
+[spec-acc] ctx=115 burst=19/36 cum=65/93=0.699
+[spec-acc] ctx=123 burst=21/39 cum=61/105=0.581
+[spec-acc] ctx=126 burst=22/30 cum=65/93=0.699
+[spec-acc] ctx=122 burst=22/36 cum=67/90=0.744
+[spec-acc] ctx=127 burst=20/33 cum=64/99=0.646
+[spec-acc] ctx=124 burst=17/42 cum=64/99=0.646
+[spec-acc] ctx=113 burst=19/36 cum=64/93=0.688
+[spec-acc] ctx=125 burst=21/30 cum=64/96=0.667
+[spec-acc] ctx=128 burst=22/30 cum=66/96=0.688
+[spec-acc] ctx=121 burst=20/36 cum=64/93=0.688
+[spec-acc] ctx=124 burst=21/36 cum=67/90=0.744
+[spec-acc] ctx=122 burst=17/45 cum=63/102=0.618
+[spec-acc] ctx=113 burst=19/39 cum=64/99=0.646
+[spec-acc] ctx=123 burst=22/33 cum=62/105=0.590
+[spec-acc] ctx=127 burst=22/30 cum=66/96=0.688
+[spec-acc] ctx=123 burst=23/33 cum=67/96=0.698
+[spec-acc] ctx=124 burst=20/33 cum=62/99=0.626
+[spec-acc] ctx=120 burst=18/39 cum=64/90=0.711
+[spec-acc] ctx=112 burst=20/36 cum=62/102=0.608
+[spec-acc] ctx=121 burst=22/30 cum=62/96=0.646
+[spec-acc] ctx=124 burst=22/27 cum=68/81=0.840
+[spec-acc] ctx=123 burst=21/33 cum=61/111=0.550
+[spec-acc] ctx=125 burst=23/30 cum=71/84=0.845
+[spec-acc] ctx=122 burst=19/39 cum=66/96=0.688
+[spec-acc] ctx=111 burst=20/33 cum=64/93=0.688
+[spec-acc] ctx=122 burst=19/42 cum=62/105=0.590
+[spec-acc] ctx=126 burst=23/30 cum=67/96=0.698
+[spec-acc] ctx=121 burst=22/30 cum=68/84=0.810
+[spec-acc] ctx=123 burst=17/42 cum=61/102=0.598
+[spec-acc] ctx=119 burst=17/45 cum=61/102=0.598
+[spec-acc] ctx=109 burst=22/27 cum=66/81=0.815
+[spec-acc] ctx=122 burst=19/36 cum=64/93=0.688
+[spec-acc] ctx=126 burst=24/30 cum=68/96=0.708
+[spec-acc] ctx=123 burst=22/27 cum=66/93=0.710
+[spec-acc] ctx=124 burst=20/36 cum=66/93=0.710
+[spec-acc] ctx=121 burst=21/36 cum=66/96=0.688
+[spec-acc] ctx=111 burst=20/33 cum=64/93=0.688
+[spec-acc] ctx=122 burst=22/33 cum=66/96=0.688
+[spec-acc] ctx=125 burst=21/30 cum=64/99=0.646
+[spec-acc] ctx=120 burst=22/30 cum=64/96=0.667
+[spec-acc] ctx=122 burst=20/33 cum=62/99=0.626
+[spec-acc] ctx=118 burst=18/42 cum=62/99=0.626
+[spec-acc] ctx=113 burst=21/30 cum=68/90=0.756
+[spec-acc] ctx=121 burst=24/27 cum=67/90=0.744
+[spec-acc] ctx=125 burst=21/39 cum=66/102=0.647
+[spec-acc] ctx=121 burst=20/42 cum=66/99=0.667
+[spec-acc] ctx=122 burst=21/30 cum=64/93=0.688
+[spec-acc] ctx=122 burst=19/36 cum=67/93=0.720
+[admit-oom] VRAM defer: 59 active, effective free 994MB (driver + 89MB pool-cached) < cost 201MB + reserve 1611MB — queueing (FIFO) [pool res 23522MB used 23433MB; parked spec sessions 0; plain reuse 0; queue 4]
+[spec-acc] ctx=159 burst=22/27 cum=84/123=0.683
+[spec-acc] ctx=164 burst=20/39 cum=87/132=0.659
+[spec-acc] ctx=160 burst=23/24 cum=88/120=0.733
+[spec-acc] ctx=161 burst=22/30 cum=90/117=0.769
+[spec-acc] ctx=156 burst=20/30 cum=84/123=0.683
+[spec-acc] ctx=145 burst=21/30 cum=85/120=0.708
+[spec-acc] ctx=159 burst=24/30 cum=85/138=0.616
+[spec-acc] ctx=161 burst=17/42 cum=85/129=0.659
+[spec-acc] ctx=156 burst=22/27 cum=87/120=0.725
+[spec-acc] ctx=157 burst=22/33 cum=92/108=0.852
+[spec-acc] ctx=154 burst=23/27 cum=84/126=0.667
+[spec-acc] ctx=147 burst=22/27 cum=87/120=0.725
+[spec-acc] ctx=158 burst=23/27 cum=84/132=0.636
+[spec-acc] ctx=159 burst=18/39 cum=83/132=0.629
+[spec-acc] ctx=157 burst=19/36 cum=86/126=0.683
+[spec-acc] ctx=159 burst=21/33 cum=85/132=0.644
+[spec-acc] ctx=156 burst=21/39 cum=85/138=0.616
+[spec-acc] ctx=145 burst=19/36 cum=83/129=0.643
+[spec-acc] ctx=157 burst=21/30 cum=85/126=0.675
+[spec-acc] ctx=161 burst=21/36 cum=87/132=0.659
+[spec-acc] ctx=154 burst=20/36 cum=84/129=0.651
+[spec-acc] ctx=158 burst=23/30 cum=90/120=0.750
+[spec-acc] ctx=155 burst=16/33 cum=79/135=0.585
+[spec-acc] ctx=146 burst=21/30 cum=85/129=0.659
+[spec-acc] ctx=157 burst=20/33 cum=82/138=0.594
+[spec-acc] ctx=160 burst=19/36 cum=85/132=0.644
+[spec-acc] ctx=158 burst=20/33 cum=87/129=0.674
+[spec-acc] ctx=156 burst=18/39 cum=80/138=0.580
+[spec-acc] ctx=152 burst=20/36 cum=84/126=0.667
+[spec-acc] ctx=145 burst=19/36 cum=81/138=0.587
+[spec-acc] ctx=154 burst=20/39 cum=82/135=0.607
+[spec-acc] ctx=156 burst=20/33 cum=88/114=0.772
+[spec-acc] ctx=156 burst=15/48 cum=76/159=0.478
+[spec-acc] ctx=159 burst=20/33 cum=91/117=0.778
+[spec-acc] ctx=155 burst=21/39 cum=87/135=0.644
+[spec-acc] ctx=143 burst=23/30 cum=87/123=0.707
+[spec-acc] ctx=156 burst=17/45 cum=79/150=0.527
+[spec-acc] ctx=160 burst=17/42 cum=84/138=0.609
+[spec-acc] ctx=154 burst=21/36 cum=89/120=0.742
+[spec-acc] ctx=155 burst=22/27 cum=83/129=0.643
+[spec-acc] ctx=152 burst=19/36 cum=80/138=0.580
+[spec-acc] ctx=141 burst=20/36 cum=86/117=0.735
+[spec-acc] ctx=154 burst=18/42 cum=82/135=0.607
+[spec-acc] ctx=161 burst=20/33 cum=88/129=0.682
+[spec-acc] ctx=155 burst=20/39 cum=86/132=0.652
+[spec-acc] ctx=157 burst=19/36 cum=85/129=0.659
+[spec-acc] ctx=155 burst=21/33 cum=87/129=0.674
+[spec-acc] ctx=143 burst=23/30 cum=87/123=0.707
+[spec-acc] ctx=156 burst=20/42 cum=86/138=0.623
+[spec-acc] ctx=157 burst=17/42 cum=81/141=0.574
+[spec-acc] ctx=153 burst=23/33 cum=87/129=0.674
+[spec-acc] ctx=154 burst=17/42 cum=79/141=0.560
+[spec-acc] ctx=151 burst=19/39 cum=81/138=0.587
+[spec-acc] ctx=145 burst=22/33 cum=90/123=0.732
+[spec-acc] ctx=155 burst=21/30 cum=88/120=0.733
+[spec-acc] ctx=160 burst=21/33 cum=87/135=0.644
+[spec-acc] ctx=156 burst=18/39 cum=84/138=0.609
+[spec-acc] ctx=154 burst=20/33 cum=84/126=0.667
+[spec-acc] ctx=154 burst=23/27 cum=90/120=0.750
+[admit-oom] VRAM defer: 57 active, effective free 994MB (driver + 89MB pool-cached) < cost 201MB + reserve 1611MB — queueing (FIFO) [pool res 23522MB used 23433MB; parked spec sessions 2; plain reuse 0; queue 4]
+[spec-acc] ctx=191 burst=23/33 cum=107/156=0.686
+[spec-acc] ctx=198 burst=21/36 cum=108/168=0.643
+[spec-acc] ctx=192 burst=22/30 cum=110/150=0.733
+[spec-acc] ctx=194 burst=19/36 cum=109/153=0.712
+[spec-acc] ctx=177 burst=1/3 cum=86/123=0.699
+[spec-acc] ctx=194 burst=17/42 cum=102/180=0.567
+[spec-acc] ctx=193 burst=23/33 cum=108/162=0.667
+[spec-acc] ctx=188 burst=20/36 cum=107/156=0.686
+[spec-acc] ctx=191 burst=21/33 cum=113/141=0.801
+[spec-acc] ctx=187 burst=19/36 cum=103/162=0.636
+[spec-acc] ctx=179 burst=3/3 cum=90/123=0.732
+[spec-acc] ctx=191 burst=18/42 cum=102/174=0.586
+[spec-acc] ctx=191 burst=19/36 cum=102/168=0.607
+[spec-acc] ctx=189 burst=21/33 cum=107/159=0.673
+[spec-acc] ctx=192 burst=20/33 cum=105/165=0.636
+[spec-acc] ctx=191 burst=19/36 cum=104/174=0.598
+[spec-acc] ctx=177 burst=17/21 cum=100/150=0.667
+[spec-acc] ctx=189 burst=15/24 cum=100/150=0.667
+[spec-acc] ctx=195 burst=19/36 cum=106/168=0.631
+[spec-acc] ctx=187 burst=3/9 cum=87/138=0.630
+[spec-acc] ctx=192 burst=22/27 cum=112/147=0.762
+[spec-acc] ctx=178 burst=21/36 cum=106/165=0.642
+[spec-acc] ctx=189 burst=21/39 cum=103/177=0.582
+[spec-acc] ctx=192 burst=21/33 cum=106/165=0.642
+[spec-acc] ctx=190 burst=20/36 cum=107/165=0.648
+[spec-acc] ctx=188 burst=4/6 cum=84/144=0.583
+[spec-acc] ctx=185 burst=17/42 cum=101/168=0.601
+[spec-acc] ctx=177 burst=16/45 cum=97/183=0.530
+[spec-acc] ctx=188 burst=18/39 cum=100/174=0.575
+[spec-acc] ctx=188 burst=22/27 cum=110/141=0.780
+[spec-acc] ctx=188 burst=18/39 cum=94/198=0.475
+[spec-acc] ctx=191 burst=20/36 cum=111/153=0.725
+[spec-acc] ctx=190 burst=21/30 cum=108/165=0.655
+[spec-acc] ctx=177 burst=20/33 cum=107/156=0.686
+[spec-acc] ctx=189 burst=15/51 cum=94/201=0.468
+[spec-acc] ctx=192 burst=16/27 cum=100/165=0.606
+[spec-acc] ctx=188 burst=20/36 cum=109/156=0.699
+[spec-acc] ctx=187 burst=21/30 cum=104/159=0.654
+[spec-acc] ctx=184 burst=22/33 cum=102/171=0.596
+[spec-acc] ctx=174 burst=20/36 cum=106/153=0.693
+[spec-acc] ctx=187 burst=20/39 cum=102/174=0.586
+[spec-acc] ctx=193 burst=22/33 cum=110/162=0.679
+[spec-acc] ctx=189 burst=6/6 cum=92/138=0.667
+[spec-acc] ctx=189 burst=8/15 cum=93/144=0.646
+[spec-acc] ctx=188 burst=19/39 cum=106/168=0.631
+[spec-acc] ctx=177 burst=21/33 cum=108/156=0.692
+[spec-acc] ctx=191 burst=19/36 cum=105/174=0.603
+[spec-acc] ctx=189 burst=16/45 cum=97/186=0.522
+[spec-acc] ctx=188 burst=23/33 cum=110/162=0.679
+[spec-acc] ctx=186 burst=25/27 cum=104/168=0.619
+[spec-acc] ctx=184 burst=19/39 cum=100/177=0.565
+[spec-acc] ctx=179 burst=8/15 cum=98/138=0.710
+[spec-acc] ctx=187 burst=20/33 cum=108/153=0.706
+[spec-acc] ctx=193 burst=19/39 cum=106/174=0.609
+[spec-acc] ctx=188 burst=21/33 cum=105/171=0.614
+[spec-acc] ctx=186 burst=11/15 cum=95/141=0.674
+[spec-acc] ctx=187 burst=19/39 cum=109/159=0.686
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 44; 2 parked, 44 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 44; 2 parked, 55 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 44; 2 parked, 57 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 44; 2 parked, 54 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 44; 2 parked, 56 prompt tokens; model stress)
+[spec-acc] ctx=44 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=55 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=57 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=54 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=56 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=226 burst=22/36 cum=129/192=0.672
+[spec-acc] ctx=232 burst=12/30 cum=120/198=0.606
+[spec-acc] ctx=225 burst=19/36 cum=129/186=0.694
+[spec-acc] ctx=226 burst=22/30 cum=131/183=0.716
+[spec-acc] ctx=226 burst=18/45 cum=120/225=0.533
+[spec-acc] ctx=228 burst=16/30 cum=124/192=0.646
+[spec-acc] ctx=221 burst=20/33 cum=127/189=0.672
+[spec-acc] ctx=224 burst=20/33 cum=133/174=0.764
+[spec-acc] ctx=219 burst=17/36 cum=120/198=0.606
+[spec-acc] ctx=223 burst=22/30 cum=124/198=0.626
+[spec-acc] ctx=222 burst=2/3 cum=109/162=0.673
+[spec-acc] ctx=224 burst=20/36 cum=125/201=0.622
+[spec-acc] ctx=223 burst=9/12 cum=113/186=0.608
+[spec-acc] ctx=227 burst=20/27 cum=126/195=0.646
+[spec-acc] ctx=224 burst=20/36 cum=132/183=0.721
+[spec-acc] ctx=212 burst=17/39 cum=123/204=0.603
+[spec-acc] ctx=224 burst=21/36 cum=124/213=0.582
+[spec-acc] ctx=225 burst=13/15 cum=119/180=0.661
+[spec-acc] ctx=223 burst=10/15 cum=117/180=0.650
+[spec-acc] ctx=217 burst=4/6 cum=105/174=0.603
+[spec-acc] ctx=209 burst=22/30 cum=119/213=0.559
+[spec-acc] ctx=220 burst=12/36 cum=112/210=0.533
+[spec-acc] ctx=220 burst=16/18 cum=126/159=0.792
+[spec-acc] ctx=220 burst=6/6 cum=100/204=0.490
+[spec-acc] ctx=224 burst=8/18 cum=119/171=0.696
+[spec-acc] ctx=222 burst=20/36 cum=128/201=0.637
+[spec-acc] ctx=222 burst=23/27 cum=117/228=0.513
+[spec-acc] ctx=221 burst=23/30 cum=132/186=0.710
+[spec-acc] ctx=218 burst=3/12 cum=105/183=0.574
+[spec-acc] ctx=207 burst=23/27 cum=129/180=0.717
+[spec-acc] ctx=221 burst=16/36 cum=118/210=0.562
+[spec-acc] ctx=227 burst=19/39 cum=129/201=0.642
+[spec-acc] ctx=221 burst=21/33 cum=127/201=0.632
+[spec-acc] ctx=210 burst=22/27 cum=130/183=0.710
+[spec-acc] ctx=223 burst=22/27 cum=127/201=0.632
+[spec-acc] ctx=221 burst=21/36 cum=118/222=0.532
+[spec-acc] ctx=223 burst=21/36 cum=131/198=0.662
+[spec-acc] ctx=221 burst=6/12 cum=110/180=0.611
+[spec-acc] ctx=217 burst=5/6 cum=105/183=0.574
+[spec-acc] ctx=219 burst=8/27 cum=116/180=0.644
+[spec-acc] ctx=226 burst=21/39 cum=127/213=0.596
+[spec-acc] ctx=221 burst=9/15 cum=114/186=0.613
+[spec-acc] ctx=220 burst=18/42 cum=127/201=0.632
+[spec-acc] ctx=261 burst=7/21 cum=136/213=0.638
+[spec-acc] ctx=257 burst=18/33 cum=147/219=0.671
+[spec-acc] ctx=259 burst=8/18 cum=139/201=0.692
+[spec-acc] ctx=260 burst=14/51 cum=134/276=0.486
+[spec-acc] ctx=253 burst=21/39 cum=148/228=0.649
+[spec-acc] ctx=256 burst=21/36 cum=154/210=0.733
+[spec-acc] ctx=256 burst=6/18 cum=130/216=0.602
+[spec-acc] ctx=257 burst=16/24 cum=141/225=0.627
+[spec-acc] ctx=257 burst=4/6 cum=136/189=0.720
+[spec-acc] ctx=258 burst=16/42 cum=140/255=0.549
+[spec-acc] ctx=242 burst=17/36 cum=136/249=0.546
+[spec-acc] ctx=255 burst=17/42 cum=145/243=0.597
+[spec-acc] ctx=255 burst=15/48 cum=132/276=0.478
+[spec-acc] ctx=240 burst=16/21 cum=145/201=0.721
+[spec-acc] ctx=260 burst=19/39 cum=148/240=0.617
+[spec-acc] ctx=254 burst=14/21 cum=141/222=0.635
+[spec-acc] ctx=242 burst=16/33 cum=146/216=0.676
+[spec-acc] ctx=255 burst=17/42 cum=144/243=0.593
+[spec-acc] ctx=255 burst=21/30 cum=139/252=0.552
+[spec-acc] ctx=257 burst=19/42 cum=150/240=0.625
+[spec-acc] ctx=253 burst=4/9 cum=131/210=0.624
+[spec-acc] ctx=77 burst=21/30 cum=43/60=0.717
+[spec-acc] ctx=90 burst=23/30 cum=48/57=0.842
+[spec-acc] ctx=92 burst=20/36 cum=45/63=0.714
+[spec-acc] ctx=88 burst=20/36 cum=44/63=0.698
+[spec-acc] ctx=89 burst=23/27 cum=46/54=0.852
+[spec-acc] ctx=292 burst=4/9 cum=138/285=0.484
+[spec-acc] ctx=290 burst=4/12 cum=158/222=0.712
+[spec-acc] ctx=287 burst=9/27 cum=154/270=0.570
+[spec-acc] ctx=287 burst=6/6 cum=138/282=0.489
+[spec-acc] ctx=293 burst=14/18 cum=162/258=0.628
+[spec-acc] ctx=287 burst=7/9 cum=151/252=0.599
+[spec-acc] ctx=287 burst=11/15 cum=150/267=0.562
+[spec-acc] ctx=291 burst=11/27 cum=161/267=0.603
+[spec-acc] ctx=109 burst=19/36 cum=62/96=0.646
+[spec-acc] ctx=124 burst=19/36 cum=67/93=0.720
+[spec-acc] ctx=125 burst=23/27 cum=68/90=0.756
+[spec-acc] ctx=121 burst=20/33 cum=64/96=0.667
+[spec-acc] ctx=122 burst=19/39 cum=65/93=0.699
+[spec-acc] ctx=141 burst=21/36 cum=83/132=0.629
+[spec-acc] ctx=156 burst=19/39 cum=86/132=0.652
+[spec-acc] ctx=158 burst=18/45 cum=86/135=0.637
+[spec-acc] ctx=153 burst=22/27 cum=86/123=0.699
+[spec-acc] ctx=155 burst=21/27 cum=86/120=0.717
+[spec-acc] ctx=175 burst=21/30 cum=104/162=0.642
+[spec-acc] ctx=189 burst=23/33 cum=109/165=0.661
+[spec-acc] ctx=192 burst=22/30 cum=108/165=0.655
+[spec-acc] ctx=185 burst=22/30 cum=108/153=0.706
+[spec-acc] ctx=207 burst=17/27 cum=121/189=0.640
+[spec-acc] ctx=224 burst=6/18 cum=115/183=0.628
+[spec-acc] ctx=225 burst=20/33 cum=128/198=0.646
+[spec-acc] ctx=218 burst=22/36 cum=130/189=0.688
+[spec-acc] ctx=257 burst=17/42 cum=145/240=0.604
+[spec-acc] ctx=253 burst=21/33 cum=151/222=0.680
+[spec-acc] ctx=289 burst=16/24 cum=161/264=0.610
+[spec-acc] ctx=286 burst=14/18 cum=165/240=0.688
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

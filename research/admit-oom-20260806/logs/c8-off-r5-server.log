@@ -1,0 +1,78 @@
+[server] starting; models config = [("stress", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "stress" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] stress: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "stress": 33 layers, eos=248046
+[worker] stress: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] stress: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["stress"]
+[server] listening on http://127.0.0.1:8188
+[meter] admit id=chatcmpl-d974af0de8b6d90245cc2b012848cef7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-eac9975bdd03a34e8a80b47c144c1138 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ed1044b4a2204922e8c13ca15aead43b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-5b72fb05ee755e55b6d11436375bf5b5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-7c11c3de9859ce3c78cc9803cbb774b5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6c54a72c4feaa1d43eda1c62714e64f7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-228c574de840eb1ef51851899fbab767 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-7d5142054df2f3b7ff4c54dfc6ed0587 tenant=default lane=interactive model="stress"
+[worker] observed session VRAM cost for "stress": 235MB (admission gate = 2x)
+[admit-oom] WARN: MEMRA_ADMIT_RESERVE_MB=0 overrides the 1536MB transient reserve (teeth/diagnostics door — NOT a tuning knob)
+[spec-acc] ctx=26 burst=21/30 cum=21/30=0.700
+[spec-acc] ctx=21 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=27 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=21 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=27 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=27 burst=23/30 cum=23/30=0.767
+[spec-acc] ctx=27 burst=23/27 cum=23/27=0.852
+[spec-acc] ctx=27 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=54 burst=21/36 cum=44/63=0.698
+[spec-acc] ctx=62 burst=19/39 cum=44/66=0.667
+[spec-acc] ctx=54 burst=24/33 cum=46/63=0.730
+[spec-acc] ctx=62 burst=19/39 cum=44/66=0.667
+[spec-acc] ctx=61 burst=23/36 cum=46/66=0.697
+[spec-acc] ctx=60 burst=20/42 cum=43/69=0.623
+[spec-acc] ctx=62 burst=24/33 cum=49/60=0.817
+[spec-acc] ctx=58 burst=25/30 cum=46/60=0.767
+[spec-acc] ctx=87 burst=21/33 cum=65/96=0.677
+[spec-acc] ctx=94 burst=21/39 cum=65/105=0.619
+[spec-acc] ctx=89 burst=23/27 cum=69/90=0.767
+[spec-acc] ctx=94 burst=20/39 cum=64/105=0.610
+[spec-acc] ctx=96 burst=18/42 cum=64/108=0.593
+[spec-acc] ctx=94 burst=21/36 cum=64/105=0.610
+[spec-acc] ctx=97 burst=23/36 cum=72/96=0.750
+[spec-acc] ctx=93 burst=23/33 cum=69/93=0.742
+[spec-acc] ctx=119 burst=20/39 cum=85/135=0.630
+[spec-acc] ctx=128 burst=20/36 cum=85/141=0.603
+[spec-acc] ctx=121 burst=21/39 cum=90/129=0.698
+[spec-acc] ctx=127 burst=21/39 cum=85/144=0.590
+[spec-acc] ctx=128 burst=23/33 cum=87/141=0.617
+[spec-acc] ctx=127 burst=20/36 cum=84/141=0.596
+[spec-acc] ctx=132 burst=19/39 cum=91/135=0.674
+[spec-acc] ctx=127 burst=21/36 cum=90/129=0.698
+[spec-acc] ctx=152 burst=24/27 cum=109/162=0.673
+[spec-acc] ctx=160 burst=20/36 cum=105/177=0.593
+[spec-acc] ctx=155 burst=21/39 cum=111/168=0.661
+[spec-acc] ctx=161 burst=19/42 cum=104/186=0.559
+[spec-acc] ctx=162 burst=20/39 cum=107/180=0.594
+[spec-acc] ctx=159 burst=22/33 cum=106/174=0.609
+[spec-acc] ctx=164 burst=18/42 cum=109/177=0.616
+[spec-acc] ctx=160 burst=23/30 cum=113/159=0.711
+[spec-acc] ctx=185 burst=16/33 cum=125/195=0.641
+[spec-acc] ctx=192 burst=18/30 cum=123/207=0.594
+[spec-acc] ctx=189 burst=17/21 cum=128/189=0.677
+[spec-acc] ctx=194 burst=16/24 cum=120/210=0.571
+[spec-acc] ctx=195 burst=14/27 cum=121/207=0.585
+[spec-acc] ctx=192 burst=19/27 cum=125/201=0.622
+[spec-acc] ctx=196 burst=16/27 cum=125/204=0.613
+[spec-acc] ctx=193 burst=16/36 cum=129/195=0.662
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session

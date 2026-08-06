@@ -1,0 +1,64 @@
+{"i": 0, "ok": false, "chunks": 10, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.1, "wall_s": 5.454}
+{"i": 1, "ok": false, "chunks": 9, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.109, "wall_s": 5.413}
+{"i": 2, "ok": false, "chunks": 9, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.117, "wall_s": 5.373}
+{"i": 3, "ok": false, "chunks": 8, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.141, "wall_s": 5.332}
+{"i": 4, "ok": false, "chunks": 8, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.15, "wall_s": 5.291}
+{"i": 5, "ok": false, "chunks": 7, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.187, "wall_s": 5.249}
+{"i": 6, "ok": false, "chunks": 7, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.195, "wall_s": 5.208}
+{"i": 7, "ok": false, "chunks": 7, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.204, "wall_s": 5.168}
+{"i": 8, "ok": false, "chunks": 6, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.261, "wall_s": 5.127}
+{"i": 9, "ok": false, "chunks": 6, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.27, "wall_s": 5.086}
+{"i": 10, "ok": false, "chunks": 6, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.278, "wall_s": 5.047}
+{"i": 11, "ok": false, "chunks": 6, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.286, "wall_s": 5.006}
+{"i": 12, "ok": false, "chunks": 6, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.294, "wall_s": 4.965}
+{"i": 13, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.381, "wall_s": 4.924}
+{"i": 14, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.391, "wall_s": 4.883}
+{"i": 15, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.4, "wall_s": 4.842}
+{"i": 16, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.409, "wall_s": 4.801}
+{"i": 17, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.417, "wall_s": 4.76}
+{"i": 18, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.425, "wall_s": 4.719}
+{"i": 19, "ok": false, "chunks": 5, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.437, "wall_s": 4.678}
+{"i": 20, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.572, "wall_s": 4.637}
+{"i": 21, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.58, "wall_s": 4.596}
+{"i": 22, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.589, "wall_s": 4.555}
+{"i": 23, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.597, "wall_s": 4.513}
+{"i": 24, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.605, "wall_s": 4.472}
+{"i": 25, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.615, "wall_s": 4.431}
+{"i": 26, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.623, "wall_s": 4.39}
+{"i": 27, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.634, "wall_s": 4.349}
+{"i": 28, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.643, "wall_s": 4.308}
+{"i": 29, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.651, "wall_s": 4.267}
+{"i": 30, "ok": false, "chunks": 4, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.659, "wall_s": 4.226}
+{"i": 31, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.865, "wall_s": 4.188}
+{"i": 32, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.874, "wall_s": 4.146}
+{"i": 33, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.883, "wall_s": 4.106}
+{"i": 34, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.892, "wall_s": 4.065}
+{"i": 35, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.9, "wall_s": 4.023}
+{"i": 36, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.909, "wall_s": 3.983}
+{"i": 37, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.918, "wall_s": 3.942}
+{"i": 38, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.926, "wall_s": 3.9}
+{"i": 39, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.935, "wall_s": 3.86}
+{"i": 40, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.944, "wall_s": 3.819}
+{"i": 41, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.952, "wall_s": 3.778}
+{"i": 42, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.961, "wall_s": 3.736}
+{"i": 43, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.97, "wall_s": 3.695}
+{"i": 44, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.979, "wall_s": 3.654}
+{"i": 45, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.988, "wall_s": 3.614}
+{"i": 46, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 0.997, "wall_s": 3.572}
+{"i": 47, "ok": false, "chunks": 3, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 1.005, "wall_s": 3.531}
+{"i": 48, "ok": false, "chunks": 13, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 1.311, "wall_s": 5.855}
+{"i": 49, "ok": false, "chunks": 12, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 1.486, "wall_s": 5.814}
+{"i": 50, "ok": false, "chunks": 12, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 1.64, "wall_s": 5.774}
+{"i": 51, "ok": false, "chunks": 16, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 1.794, "wall_s": 5.733}
+{"i": 52, "ok": false, "chunks": 12, "finish_reason": null, "done": true, "server_error": "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")", "ttfb_s": 2.012, "wall_s": 5.693}
+{"i": 53, "ok": true, "chunks": 53, "finish_reason": "length", "done": true, "ttfb_s": 2.168, "wall_s": 10.922}
+{"i": 54, "ok": true, "chunks": 75, "finish_reason": "length", "done": true, "ttfb_s": 2.18, "wall_s": 12.451}
+{"i": 55, "ok": true, "chunks": 79, "finish_reason": "length", "done": true, "ttfb_s": 2.187, "wall_s": 13.391}
+{"i": 56, "ok": true, "chunks": 72, "finish_reason": "length", "done": true, "ttfb_s": 2.195, "wall_s": 12.606}
+{"i": 57, "ok": true, "chunks": 57, "finish_reason": "length", "done": true, "ttfb_s": 2.204, "wall_s": 11.396}
+{"i": 58, "ok": true, "chunks": 78, "finish_reason": "length", "done": true, "ttfb_s": 2.212, "wall_s": 13.281}
+{"i": 59, "ok": true, "chunks": 67, "finish_reason": "length", "done": true, "ttfb_s": 2.222, "wall_s": 12.748}
+{"i": 60, "ok": true, "chunks": 67, "finish_reason": "length", "done": true, "ttfb_s": 2.23, "wall_s": 12.787}
+{"i": 61, "ok": true, "chunks": 100, "finish_reason": "length", "done": true, "ttfb_s": 2.239, "wall_s": 13.565}
+{"i": 62, "ok": true, "chunks": 98, "finish_reason": "length", "done": true, "ttfb_s": 2.247, "wall_s": 13.643}
+{"i": 63, "ok": true, "chunks": 49, "finish_reason": "length", "done": true, "ttfb_s": 2.255, "wall_s": 10.366}

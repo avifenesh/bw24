@@ -193,6 +193,17 @@ if [ "${MEMRA_CI_SERVE:-1}" = "1" ] && [ -x tools/serve-smoke.sh ]; then
     tools/serve-smoke.sh || { echo "serve-smoke FAIL"; exit 1; }
 fi
 
+# c=64 CONCURRENCY STRESS (lane/admit-oom, 2026-08-06): 64 staggered streaming clients on a
+# 24GB card — the cell that was RED until the admission cost model charged the spec transient
+# reserve and step-OOM learned to park instead of kill. In-battery per the H100 lane law
+# (gates outside the battery rot silently); serving-density deliberately left it unwired while
+# it was red, because wiring a known-red gate either blocks every merge or normalizes a red.
+# Its own teeth: `tools/serve-stress-gate.sh --teeth` forces the reserve to 16MB and asserts
+# the RED returns — run that whenever the admission math moves. MEMRA_CI_STRESS=0 skips.
+if [ "${MEMRA_CI_STRESS:-1}" = "1" ] && [ -x tools/serve-stress-gate.sh ]; then
+    tools/serve-stress-gate.sh || { echo "serve-stress FAIL"; exit 1; }
+fi
+
 [ "$MODE" = "--correctness" ] && exit 0
 
 echo "== local-ci: perf stage ($MODE) =="
