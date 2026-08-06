@@ -4,7 +4,14 @@
 **Rig:** local RTX 5090 Laptop (sm_120a, GB203, 82 SM), clocks locked 1860/1860 MHz, persistence ON,
 55 C, one idle co-resident `llama-server` (pid 144655, 332 MiB, 0% util) — recorded, not contending.
 **Denominator prompt:** `research/e2e/prompts/pp512.txt` (512 tokens, the prod anchor).
-**Receipts:** `RESULTS.jsonl` (3 slices), `logs/`, `nsys/`, `ncu/`, `tools/` (the harness scripts, verbatim).
+**Receipts:** `RESULTS.jsonl` (4 slices), `logs/`, `nsys/`, `ncu/`, `tools/` (the harness scripts, verbatim).
+
+**Two findings, in order of importance:**
+1. The plan's premise is dead — its target kernel does not run, and vendoring already met its
+   pass criteria (§"Headline").
+2. The replacement ceiling I derived from ncu was **itself wrong by 16x**, and I caught it with a
+   probe instead of a multi-day build (§"The fold ceiling was measured"). The lesson there —
+   pipe-utilization % is not a speedup ceiling — is the most reusable thing in this document.
 
 ---
 
@@ -163,6 +170,11 @@ is exactly that shape. The tensor pipe sits at 60.38% busy and **every hole in i
 
 ## The ceiling, stated before building anything (the Amdahl discipline)
 
+> **⚠ MEASURED AND REFUTED — see §"The fold ceiling was measured" below. The 1.656x / 1.447x
+> figures in this section are WRONG by 16x. A probe that deleted the entire fold moved pp512
+> by 3.17%, not 44.7%. The arithmetic is kept here, with its refutation, because the *error*
+> is the transferable finding.**
+
 If the f32 fold cost **went to zero** the tensor pipe would go 60.38% → 100%, so the kernel
 speedup ceiling is `1/0.6038 = **1.656x**`:
 
@@ -209,6 +221,59 @@ behind exactly two doors:
 
 ---
 
+## The fold ceiling was measured — and it is 3.17%, not 44.7%
+
+Rather than spend a multi-day s32-chain build against the 1.656x number above, I bounded the
+**entire** fold-removal lever family with one compile-time probe (`MEMRA_MMQ_FOLD_CEILING=1`)
+that *deletes* the fold: the per-`k01` `dB*(C0*dA0 + C1*dA1)` becomes `s32acc += C0 + C1`,
+drained once outside the k-loop with one `dA` and one `y_df` multiply so both scale loads stay
+live and nvcc cannot hoist them. MMAs, ldmatrix feed, smem tile, and geometry are identical.
+Numerically wrong by construction; default OFF; **naked build provably untouched — `cuobjdump
+-sass` before vs after the source edit is 0 diff lines over 174,084.**
+
+Interleaved BASE/CEIL, 3 rounds × 5 reps = **N=15 per arm**, two separately built binaries,
+clocks locked 1860, q27 NVFP4, 53 → 70 C:
+
+| arm | median | all 15 reps |
+|---|---|---|
+| BASE | **1395.2** tok/s | 1394.2 – 1395.7 |
+| CEIL (no fold) | **1439.4** tok/s | 1438.1 – 1440.2 |
+
+**+3.17% e2e = 1.041x kernel**, against 1.447x / 1.656x predicted → **ncu overpredicted 16x.**
+
+So the fold is **not** the bound. It co-issues in the MMA's shadow and is already almost
+entirely hidden. **Do not build the s32-chain lever.** This also retires the
+`next_lever_if_anyone_resumes` note in `research/fp8st-20260804/mmq-v2/LANE-VERDICT.jsonl`,
+which proposed exactly this on the sibling FP8 kernel — two lanes converged independently on a
+lever worth 3%.
+
+### Why the arithmetic lied (the transferable lesson)
+
+`1/utilization` assumes the idle 39.6% of tensor-pipe cycles are *blocked by* the competing
+pipes. They are not:
+
+```
+sm__pipe_tensor_cycles_active.sum / smsp__inst_executed_pipe_tensor.sum
+  = 356,515,840 / 22,282,240 = EXACTLY 16.00 cycles per warp-MMA
+```
+
+16.00 is the **hardware issue interval** of `m16n8k16.s8`, not a queueing artifact. With 8
+warps/CTA at 1 CTA/SM, each scheduler owns **2 warps** against a 16-cycle pipe — so the idle
+cycles are **MMA latency exposure from thin warp parallelism**, and the FMA (25.45%) and ALU
+(20.63%) pipes run *concurrently inside that exposure, for free*. Removing concurrent work
+from a latency-exposed pipe recovers only the sliver that was genuinely serialized.
+
+**LESSON: `pct_of_peak_sustained` pipe utilization is not a speedup ceiling.** Convert to
+cycles-per-instruction and check the issue interval before quoting any `1/utilization` figure.
+This lane quoted 1.656x in good faith and it was worth 1.041x.
+
+Corollary worth noting: at **88.6 TOP/s**, if the 219 TOP/s figure is the sparsity-enabled
+number then the dense s8 peak is 109.5 and this kernel is already at **80.9% of dense peak** —
+which is consistent with a 3% fold ceiling and inconsistent with any "40% of peak, so 2.5x
+available" reading.
+
+---
+
 ## Verdict
 
 - **Plan steps 2–5 as written: REFUTED**, with receipts. Wrong file (`cu/qmatvec_gemm.cu` does not
@@ -223,9 +288,28 @@ behind exactly two doors:
   q9 = **5184.7** (N=3). No code changed this dispatch, so **before == after**. The frozen llama
   reference (pp512 5451) is orientation only; the live metric is memra-vs-memra.
 - **Battery: not run** — correctly, because no code changed. There is nothing to gate.
-- **Re-aim for the next dispatch:** the fold arithmetic, ceiling 1.656x kernel / 1.447x e2e
-  (q27 → 2224 tok/s), starting with s32-chained accumulation; and separately scope the
-  `mxf4nvf4.block_scale` MMA as the only lever that can exceed that ceiling.
+- **Re-aim, corrected by measurement:** the fold lever is **dead** (3.17%, receipted above).
+  The bound is the **m16n8k16.s8 issue interval (16.00 cycles/MMA) at 2 warps/scheduler** —
+  i.e. MMA *latency exposure*, not fold cost, not feed, not bandwidth. That leaves exactly two
+  candidate directions, and **both need their ceiling measured by probe before any build**,
+  because this lane just demonstrated that derived ceilings can be 16x wrong:
+  1. **More MMAs in flight per scheduler.** The config axes are already swept and closed
+     (`research/tune-data/rig5090.jsonl` 2026-07-06: X 32/128/256, Y 64/128/192 all
+     flat-to-negative; Y=64 gives 2 CTA/SM but halves warps/CTA and cancels). What is *not*
+     swept is ILP *within* a warp — more independent accumulators per warp so the 16-cycle
+     interval is filled without more warps. Cheap to probe.
+  2. **A wider/faster MMA form.** `m16n8k32` is architecturally unavailable (NVFP4's UE4M3
+     scale per 16 elements caps one accumulate's K span at 16 — that is *why* `C[0]`/`C[1]`
+     are separate accumulators). The only real door is
+     `mma.sync.aligned.m16n8k64.kind::mxf4nvf4.block_scale`, where block scales are hardware
+     MMA operands. That changes the issue interval itself, which is the thing actually binding.
+     Large build (new tile layout, `scale_vec` staging, exactness re-proof) — worth a
+     feasibility probe on the instruction in isolation before committing to it.
+  - Also still un-probed and explicitly named by the July 6 row as "the one remaining prefill
+    card": the Marlin-style x-stage restructure (cp.async raw-weight ring + dequant-from-smem).
+    Note the profile is *hostile* to it — DRAM 8-10%, `long_scoreboard` 0.04 — so it should be
+    ceiling-probed, not built on faith.
+  - **Owner call requested** on which of these gets the next dispatch.
 
 ### Measurement note that is itself a finding
 

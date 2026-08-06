@@ -18,11 +18,19 @@
 > while the 1.25-weight one goes untouched; the TMA probe (Phase 4) has an 8-10% DRAM slice to
 > attack and a cp.async arm already exists behind `MEMRA_PP_PIPE=1`.
 >
-> Ceiling for the re-aimed lane, stated up front: fold-free = **1.656x** kernel → **1.447x** e2e
-> on q27 (1536.5 → 2224 tok/s). Exceeding it requires changing the MMA form — NVFP4's UE4M3
-> scale per 16 elements caps one accumulate's K span at 16, which is exactly why `C[0]`/`C[1]`
-> are separate accumulators and why `m16n8k32` is unavailable. The two live doors are s32-chained
-> accumulation and `mma.sync.m16n8k64.kind::mxf4nvf4.block_scale`.
+> The fold-removal lever that profile suggested has ALSO been measured and refuted: a probe that
+> **deletes** the f32 fold moved q27 pp512 by **+3.17%** (1395.2 → 1439.4, N=15/arm interleaved),
+> against a derived ceiling of 1.447x e2e — **the ncu arithmetic overpredicted 16x**. Do not build
+> s32-chained accumulation. `1/pipe_utilization` is not a speedup ceiling: tensor-pipe cycles per
+> warp-MMA is **exactly 16.00**, the `m16n8k16.s8` hardware issue interval, so the idle pipe cycles
+> are MMA **latency exposure** at 2 warps/scheduler — the FMA/ALU pipes co-issue inside it for free.
+>
+> The real bound is that issue interval. `m16n8k32` is architecturally unavailable (NVFP4's UE4M3
+> scale per 16 elements caps one accumulate's K span at 16 — which is why `C[0]`/`C[1]` are separate
+> accumulators). Remaining candidates, all requiring a ceiling probe *before* any build: intra-warp
+> ILP (more independent accumulators per warp), and
+> `mma.sync.aligned.m16n8k64.kind::mxf4nvf4.block_scale` (block scales as hardware MMA operands —
+> the only door that changes the issue interval itself).
 >
 > Kept below for the reasoning record — the alternative-rejection analysis in §1
 > (CUTLASS-SM120, marlin, TMA) is still sound and still worth reading.
