@@ -1,0 +1,89 @@
+[server] starting; models config = [("q9", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[server] worker ready; serving models: ["q9"]
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] listening on http://127.0.0.1:8099
+[meter] admit id=chatcmpl-750a320a8457e8d7f81bbe3f4b10f1a2 tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 101MB (admission gate = 2x)
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model q9)
+[meter] admit id=chatcmpl-4f1e9b549056b1b5c9007e6e27469b6c tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-f5775e6094d454ed5a8b4e06e9b670e7 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-e5e3dfd4152c512aa5e5c80f7bec3024 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-177c4fb33b2c219165e4f7d4cbeb6b98 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-258eeb8398d9b0c8bc79008cb764bfc0 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-9a9a4a6248f275617132b8c617f4db3f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-f7c92da01b19110dcfa68dd42da39448 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4a92fa352faffdf93a36d9e705fd7111 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-6469bc6a441043f2666b97b4736d9fed tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-f4ad72aaa141c6d555b782eca9484884 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-2716963db656ca68f864f092917c219f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-81e77db1ed3af4c39a95fa394d95e335 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-841577ecdf5aeddc79ac13144279b517 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-7f2939a5cb6986236e204585e6924332 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-170c428a6e340f057c6374c8b4ea281f tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-ab9366947480c59aab8466e9b44c589b tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c7e2d05246dcf55000ffe4c316fa6c5b tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-32b5ba96ba46984797dba2981fd699db tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-9f4db2b4736458ceff9731fe82ed2ac4 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-02cf9e2526f0beb3c2fe63867b8675b4 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-f46f6f126871f51fb11afc674d8e01dc tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-5fd0e2271d0d09b70e435777517452ff tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-6b9d61a4f9162ff21ae28c811456cc33 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-cbf214389eb5f09ba2aaa90e503ba20c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c06c57a2f8e4f138a1d28151cead7d76 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-84c496fea6bf695b6f65083f4f3597f1 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d3b1a63cdc1edaab488ee205e855446e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-7186ab1e0d30edcf35181b9bc5a4394c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-cb39984f0938ca58358a0ce41d7fb655 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-45dae176f18a8073bafb4fbeacf395a7 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-8ecd32aeebddd1e7a518e4c8856beebd tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c7dd121c95b0cf5d1a5c1dd2c8693e93 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d379dc41de81b98d3d4130544ad6ead3 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-5f61c38fa82ad9f5704bed7b44eabb65 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-920e0d0576616320738f3150d324d867 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-ce8dbff9eb769fb6a67da10e1679ddb6 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-150a852ab329e5f68d3b3a745afee87c tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

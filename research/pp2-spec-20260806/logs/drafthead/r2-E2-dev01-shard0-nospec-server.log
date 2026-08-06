@@ -1,0 +1,23 @@
+[server] starting; models config = [("q9", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[server] worker ready; serving models: ["q9"]
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] listening on http://127.0.0.1:8099
+[meter] admit id=chatcmpl-380e2e7ad599d806fa852df1abaef721 tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 101MB (admission gate = 2x)
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model q9)
+[meter] admit id=chatcmpl-4f2478798ea0331b8947e95dae8a20ca tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-fa512ee5ae2467959d46aef40f064c71 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-36247e03ebc28210db0a4583f407c8b2 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-5506a06363c443627db9bef06dd459a5 tenant=default lane=interactive model="q9"
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
