@@ -1500,7 +1500,13 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     meter_admit(&env, &tenant, &model, lane);
     let stop_strings = request.stop_strings.clone();
 
+    // Admission yield (lane/admission-latency): raise the pending-admit gauge BEFORE the
+    // send — an in-flight spec burst polls it at every round boundary and ends early so
+    // this request's admission wait stops scaling with MEMRA_SPEC_BURST. The worker
+    // decrements at pop (handle_cmd).
+    worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
+        worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         return rl.attach(with_request_id(&env.id, error_response(
             StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
     }
@@ -1575,7 +1581,10 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
     meter_admit(&env, &tenant, &model, lane);
     let stop_strings = plan.request.stop_strings.clone();
+    // Admission yield (lane/admission-latency): gauge up before send — see completions.
+    worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
+        worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         return rl.attach(with_request_id(&env.id, error_response(
             StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
     }

@@ -2632,6 +2632,13 @@ impl HybridModel {
     /// streaming caller can flush text at round cadence instead of once per burst. The slices
     /// are disjoint, in order, and concatenate to exactly the returned token vec. Emission-
     /// timing only: token bytes, session state, and exactness are untouched.
+    ///
+    /// The returned bool is a CONTINUE-VERDICT (admission yield, 2026-08-06): `false` ends
+    /// the burst at the current round boundary, exactly as if `max_new` had been reached —
+    /// the caller's scheduler regains control without waiting the burst out. Burst size is
+    /// content-neutral (spec-levers battery), so an early exit moves WHEN the burst returns,
+    /// never what tokens say. The slice may be EMPTY (a poll-only boundary — round-stream
+    /// drains and the defensive tail flush can land with nothing new committed).
     #[allow(clippy::too_many_arguments)]
     pub fn generate_spec_session_sampled(
         &self,
@@ -2641,7 +2648,7 @@ impl HybridModel {
         max_new: usize,
         k: usize,
         sampling: Option<SpecSampling>,
-        on_commit: Option<&mut dyn FnMut(&[u32])>,
+        on_commit: Option<&mut dyn FnMut(&[u32]) -> bool>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         self.generate_spec_session_constrained(e, sess, suffix, max_new, k, sampling, None, on_commit)
     }
@@ -2663,7 +2670,7 @@ impl HybridModel {
         k: usize,
         sampling: Option<SpecSampling>,
         constraint: Option<&mut dyn SpecConstraint>,
-        on_commit: Option<&mut dyn FnMut(&[u32])>,
+        on_commit: Option<&mut dyn FnMut(&[u32]) -> bool>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         if constraint.is_some() && sampling.is_some_and(|s| s.temp > 0.0) {
             return Err("constrained spec decode is greedy-only (worker routes sampled \
@@ -2764,11 +2771,15 @@ impl HybridModel {
         mut sess: Option<&mut SpecSession>,
         sampling: Option<SpecSampling>,
         mut constraint: Option<&mut dyn SpecConstraint>,
-        mut on_commit: Option<&mut dyn FnMut(&[u32])>,
+        mut on_commit: Option<&mut dyn FnMut(&[u32]) -> bool>,
     ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         // sse-cadence flush cursor: everything in out[..flushed] has been handed to on_commit.
         let mut flushed = 0usize;
+        // admission yield (2026-08-06): on_commit's continue-verdict; false = end the burst
+        // at the next round boundary (same exit as max_new reached — the session tail runs).
+        // Initialized by the unconditional post-prime flush below.
+        let mut keep_going;
         let mtp = self
             .mtp
             .as_ref()
@@ -3007,20 +3018,23 @@ impl HybridModel {
         }
         // sse-cadence: hand the caller every not-yet-flushed token (disjoint in-order slices
         // concatenating to the full `out`). Called after the prime's first token and after each
-        // round commit — emission timing only, token bytes untouched.
+        // round commit — emission timing only, token bytes untouched. The slice may be EMPTY
+        // (poll-only boundary: zero-round folds commit nothing new); returns the caller's
+        // continue-verdict (admission yield, 2026-08-06) — false ends the burst at this round.
         fn flush_commit(
-            cb: &mut Option<&mut dyn FnMut(&[u32])>,
+            cb: &mut Option<&mut dyn FnMut(&[u32]) -> bool>,
             out: &[u32],
             flushed: &mut usize,
-        ) {
+        ) -> bool {
             if let Some(f) = cb.as_mut() {
-                if out.len() > *flushed {
-                    f(&out[*flushed..]);
-                    *flushed = out.len();
-                }
+                let keep = f(&out[*flushed..]);
+                *flushed = out.len();
+                keep
+            } else {
+                true
             }
         }
-        flush_commit(&mut on_commit, &out, &mut flushed);
+        keep_going = flush_commit(&mut on_commit, &out, &mut flushed);
         // INVARIANT at loop top: `last_token` is the most-recently-committed/emitted token, its
         // KV+recur state IS in `cache` (cache.pos = position right AFTER last_token), `last_pred`
         // is the greedy ARGMAX of the logits that predict the token FOLLOWING last_token, and
@@ -3734,7 +3748,7 @@ impl HybridModel {
                 ph_t = now;
             }
         };
-        while out.len() < max_new {
+        while keep_going && out.len() < max_new {
             // ROUND-STREAM BURST: from round 1 (pending guaranteed by every non-replay arm),
             // issue M rounds with zero readbacks, then drain the ring + reconcile mirrors.
             if let (true, Some(sg), Some(ptrs)) = (
@@ -3839,7 +3853,7 @@ impl HybridModel {
                 }
                 round += m_rounds;
                 // sse-cadence: the drained ring is committed — flush it at burst-drain cadence.
-                flush_commit(&mut on_commit, &out, &mut flushed);
+                keep_going = flush_commit(&mut on_commit, &out, &mut flushed);
                 continue;
             }
             let pos = cache.pos; // #tokens committed (EXCLUDES a pending bonus)
@@ -4861,10 +4875,11 @@ impl HybridModel {
             round += 1;
             // sse-cadence: this round's accepted drafts + bonus are committed (out is
             // append-only past step 4) — flush at round cadence.
-            flush_commit(&mut on_commit, &out, &mut flushed);
+            keep_going = flush_commit(&mut on_commit, &out, &mut flushed);
         }
         // sse-cadence: nothing below appends to `out`; flush any remainder (defensive).
-        flush_commit(&mut on_commit, &out, &mut flushed);
+        // (verdict ignored — the burst is over either way; the session tail runs unchanged.)
+        let _ = flush_commit(&mut on_commit, &out, &mut flushed);
 
         if spec_stats {
             let per_slot: Vec<String> = (0..k)
