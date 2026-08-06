@@ -1,0 +1,65 @@
+[2026-08-06T12:36:55Z] START step37 artifact download -> /home/ubuntu/step37/models/step-3.7-flash
+[2026-08-06T12:36:55Z] df before: /dev/root       387G   74G  313G  20% /
+[2026-08-06T12:36:55Z] repo=stepfun-ai/Step-3.7-Flash-GGUF rev=0b69336d2fd2adfdef9c66e425f7778196c31482
+[2026-08-06T12:36:55Z] FETCH attempt=1 Step3.7-flash-mtp-Q8_0.gguf
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[2026-08-06T12:37:19Z] OK Step3.7-flash-mtp-Q8_0.gguf (3.5G)
+[2026-08-06T12:37:19Z] FETCH attempt=1 Step3.7-flash-mtp-BF16.gguf
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-BF16.gguf
+[2026-08-06T12:37:50Z] OK Step3.7-flash-mtp-BF16.gguf (6.5G)
+[2026-08-06T12:37:50Z] FETCH attempt=1 Step-3.7.imatrix.gguf
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/Step-3.7.imatrix.gguf
+[2026-08-06T12:37:56Z] OK Step-3.7.imatrix.gguf (445M)
+[2026-08-06T12:37:56Z] FETCH attempt=1 README.md
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/README.md
+[2026-08-06T12:37:57Z] OK README.md (16K)
+[2026-08-06T12:37:57Z] FETCH attempt=1 .gitattributes
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/.gitattributes
+[2026-08-06T12:37:57Z] OK .gitattributes (8.0K)
+[2026-08-06T12:37:57Z] PHASE small-files done; MTP + imatrix available for wiring
+[2026-08-06T12:37:57Z] FETCH attempt=1 IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[2026-08-06T12:40:08Z] OK IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf (44G)
+[2026-08-06T12:40:08Z] FETCH attempt=1 IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf
+[2026-08-06T12:42:25Z] OK IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf (44G)
+[2026-08-06T12:42:25Z] FETCH attempt=1 IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf
+[2026-08-06T12:43:17Z] OK IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf (11G)
+[2026-08-06T12:43:17Z] df after: /dev/root       387G  183G  205G  48% /
+[2026-08-06T12:43:17Z] TREE:
+1	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/.gitignore
+191	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/CACHEDIR.TAG
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/.gitattributes.lock
+101	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/.gitattributes.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf.lock
+125	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf.lock
+125	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf.lock
+125	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/README.md.lock
+101	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/README.md.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/Step-3.7.imatrix.gguf.lock
+124	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/Step-3.7.imatrix.gguf.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/Step3.7-flash-mtp-BF16.gguf.lock
+125	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/Step3.7-flash-mtp-BF16.gguf.metadata
+0	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/Step3.7-flash-mtp-Q8_0.gguf.lock
+125	/home/ubuntu/step37/models/step-3.7-flash/.cache/huggingface/download/Step3.7-flash-mtp-Q8_0.gguf.metadata
+4159	/home/ubuntu/step37/models/step-3.7-flash/.gitattributes
+46483327296	/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+46999941600	/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf
+11510293728	/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf
+15062	/home/ubuntu/step37/models/step-3.7-flash/README.md
+465998112	/home/ubuntu/step37/models/step-3.7-flash/Step-3.7.imatrix.gguf
+6973549696	/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-BF16.gguf
+3707276416	/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[2026-08-06T12:43:17Z] DONE step37 artifact download

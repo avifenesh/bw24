@@ -22,6 +22,10 @@ pub enum MetaW {
     Bool(bool),
     Str(&'static str),
     ArrBool(Vec<bool>),
+    /// Per-layer u32 array — step35 writes `attention.head_count`/`head_count_kv` this way.
+    ArrU32(Vec<u32>),
+    /// Per-layer f32 array — step35's `swiglu_clamp_exp`/`_shexp`.
+    ArrF32(Vec<f32>),
 }
 
 pub struct GgufWriter {
@@ -82,6 +86,18 @@ impl GgufWriter {
                     buf.extend(7u32.to_le_bytes()); // elem type bool
                     buf.extend((a.len() as u64).to_le_bytes());
                     for &b in a { buf.push(b as u8); }
+                }
+                MetaW::ArrU32(a) => {
+                    buf.extend(9u32.to_le_bytes());
+                    buf.extend(4u32.to_le_bytes()); // elem type u32
+                    buf.extend((a.len() as u64).to_le_bytes());
+                    for &x in a { buf.extend(x.to_le_bytes()); }
+                }
+                MetaW::ArrF32(a) => {
+                    buf.extend(9u32.to_le_bytes());
+                    buf.extend(6u32.to_le_bytes()); // elem type f32
+                    buf.extend((a.len() as u64).to_le_bytes());
+                    for &x in a { buf.extend(x.to_le_bytes()); }
                 }
             }
         }
@@ -216,6 +232,81 @@ pub fn write_glm52_meta_only(path: &Path) -> std::io::Result<()> {
     w.kv(&a("attention.indexer.top_k"), MetaW::U32(2048));
     w.kv(&a("attention.indexer.types"), MetaW::ArrBool(glm52_indexer_types()));
     w.kv(&a("vocab_size"), MetaW::U32(154_880));
+    w.write(path)
+}
+
+// ---------------------------------------------------------------------------------------------
+// step35 (StepFun Step-3.7-Flash) metadata pin
+// ---------------------------------------------------------------------------------------------
+
+/// The 3:1 SWA pattern of Step-3.7-Flash, as the official GGUF serializes it:
+/// `[false, true, true, true]` repeating — full attention exactly where `il % 4 == 0`
+/// (12 full + 33 SWA over 45 trunk blocks).
+pub fn step35_swa_pattern(n: usize) -> Vec<bool> {
+    (0..n).map(|il| il % 4 != 0).collect()
+}
+
+/// Per-layer query-head counts: 64 on the full-attn layers, 96 on the SWA layers.
+pub fn step35_head_counts(n: usize) -> Vec<u32> {
+    step35_swa_pattern(n).iter().map(|&swa| if swa { 96 } else { 64 }).collect()
+}
+
+/// Step-3.7-Flash metadata-only GGUF (zero tensors): every `step35.*` key at the values parsed
+/// from the REAL official IQ4_XS artifact header — receipt
+/// `research/step37-bringup-20260802/raw/gguf-header-stepfun-iq4xs-shard1-20260802.txt`
+/// (49 KVs, 754 tensors, 45 blocks). The config parse-arm tests read `ModelConfig` off this, so
+/// a drift in the artifact's key names/types fails a unit test rather than a 105 GB load.
+///
+/// `nextn_predict_layers` is intentionally OMITTED: the TRUNK GGUF does not carry it (the MTP
+/// blocks ship in the standalone `Step3.7-flash-mtp-*.gguf`, which writes 48 blocks + the key).
+pub fn write_step35_meta_only(path: &Path) -> std::io::Result<()> {
+    let mut w = GgufWriter::new();
+    let a = |s: &str| format!("step35.{s}");
+    const N: usize = 45;
+    w.kv("general.architecture", MetaW::Str("step35"));
+    w.kv("general.type", MetaW::Str("model"));
+    w.kv("general.name", MetaW::Str("Step-3.7"));
+    w.kv("general.size_label", MetaW::Str("288x7.4B"));
+    w.kv(&a("block_count"), MetaW::U32(N as u32));
+    w.kv(&a("context_length"), MetaW::U32(262_144));
+    w.kv(&a("embedding_length"), MetaW::U32(4096));
+    w.kv(&a("feed_forward_length"), MetaW::U32(11264));
+    // ARRAY, not scalar — 64 on full-attn layers, 96 on SWA. This is the key that panics a
+    // scalar-only reader (`as_u64` returns None on an Array).
+    w.kv(&a("attention.head_count"), MetaW::ArrU32(step35_head_counts(N)));
+    w.kv(&a("attention.head_count_kv"), MetaW::ArrU32(vec![8; N]));
+    w.kv(&a("attention.key_length"), MetaW::U32(128));
+    w.kv(&a("attention.value_length"), MetaW::U32(128));
+    w.kv(&a("attention.layer_norm_rms_epsilon"), MetaW::F32(1e-5));
+    w.kv(&a("attention.sliding_window"), MetaW::U32(512));
+    // BOOL array in the real file (llama.cpp reads it into `is_swa_impl`).
+    w.kv(&a("attention.sliding_window_pattern"), MetaW::ArrBool(step35_swa_pattern(N)));
+    w.kv(&a("rope.freq_base"), MetaW::F32(5_000_000.0));
+    w.kv(&a("rope.freq_base_swa"), MetaW::F32(10_000.0));
+    w.kv(&a("expert_count"), MetaW::U32(288));
+    w.kv(&a("expert_used_count"), MetaW::U32(8));
+    w.kv(&a("expert_feed_forward_length"), MetaW::U32(1280));
+    w.kv(&a("expert_shared_feed_forward_length"), MetaW::U32(1280));
+    w.kv(&a("expert_weights_scale"), MetaW::F32(3.0));
+    w.kv(&a("expert_weights_norm"), MetaW::Bool(true));
+    w.kv(&a("expert_gating_func"), MetaW::U32(2)); // sigmoid
+    w.kv(&a("leading_dense_block_count"), MetaW::U32(3));
+    w.kv(&a("moe_every_n_layers"), MetaW::U32(1));
+    // Clamp arrays: zero everywhere except the last two layers (43 -> 7.0, 44 -> 16.0).
+    let mut clamp = vec![0.0f32; N];
+    clamp[43] = 7.0;
+    clamp[44] = 16.0;
+    w.kv(&a("swiglu_clamp_exp"), MetaW::ArrF32(clamp.clone()));
+    w.kv(&a("swiglu_clamp_shexp"), MetaW::ArrF32(clamp));
+    w.kv("tokenizer.ggml.model", MetaW::Str("gpt2"));
+    w.kv("tokenizer.ggml.pre", MetaW::Str("deepseek-v3"));
+    w.kv("tokenizer.ggml.bos_token_id", MetaW::U32(0));
+    w.kv("tokenizer.ggml.eos_token_id", MetaW::U32(128_007));
+    w.kv("tokenizer.ggml.padding_token_id", MetaW::U32(1));
+    w.kv("tokenizer.ggml.add_bos_token", MetaW::Bool(true));
+    // NOTE: the real artifact carries NO `step35.vocab_size` key — n_vocab comes off
+    // `token_embd.weight`'s last dim. A meta-only fixture therefore parses n_vocab == 0; the
+    // test asserts that (it is the behavior the 105 GB load depends on, not a fixture artifact).
     w.write(path)
 }
 
@@ -446,6 +537,91 @@ mod tests {
             let want = i < 3 || (i >= 6 && (i - 6) % 4 == 0);
             assert_eq!(full, want, "indexer type at layer {i}");
         }
+    }
+
+    /// Parse-arm gate for `step35` (StepFun Step-3.7-Flash), every value pinned to the REAL
+    /// official IQ4_XS header receipt
+    /// `research/step37-bringup-20260802/raw/gguf-header-stepfun-iq4xs-shard1-20260802.txt`.
+    /// This arch is memra's first with a PER-LAYER query-head count, so the scalar-only readers
+    /// are the thing under test as much as the values are.
+    #[test]
+    fn parse_step35_pinned_metadata() {
+        let p = tmp("step35-meta");
+        write_step35_meta_only(&p).unwrap();
+        let g = GgufFile::open(&p).unwrap();
+        let c = ModelConfig::from_gguf(&g);
+        std::fs::remove_file(&p).ok();
+
+        assert_eq!(c.arch, Arch::Step35);
+        assert!(c.arch.is_step35());
+        assert!(c.arch.is_moe(), "288 experts top-8");
+        assert!(c.arch.is_hybrid(), "SWA/full mix routes through the hybrid layer loop");
+        assert_eq!(c.n_layer, 45, "trunk GGUF: 3 dense + 42 MoE, MTP ships separately");
+        assert_eq!(c.nextn_predict_layers, 0, "the TRUNK file carries no nextn_predict_layers");
+        assert_eq!(c.n_layer_total, 45);
+        assert_eq!(c.n_embd, 4096);
+        assert_eq!(c.head_dim_k, 128);
+        assert_eq!(c.head_dim_v, 128);
+        assert_eq!(c.n_ff, 11264, "dense-layer FFN width (blocks 0-2)");
+        assert_eq!(c.context_length, 262_144);
+        assert!((c.rms_eps - 1e-5).abs() < 1e-9);
+        assert_eq!(c.n_vocab, 0, "no vocab_size key; real loads read token_embd's last dim");
+
+        // --- the per-layer-scalar contract: the global n_head is the MAX, not the first value ---
+        assert_eq!(c.n_head, 96, "global scalar sizes shared buffers: max(64,96), not 64");
+        assert_eq!(c.n_head_kv, 8, "uniform KV heads");
+
+        let s = c.step35.as_ref().expect("step35 parses Step35Config");
+        assert_eq!(s.head_count.len(), 45);
+        assert_eq!(s.swa_pattern.len(), 45);
+        assert_eq!(s.sliding_window, 512);
+        assert!((s.rope_base_global - 5e6).abs() < 1.0);
+        assert!((s.rope_base_swa - 1e4).abs() < 1e-3);
+        // Upstream ordering: the generic loader seeds n_rot_swa from n_rot_full (= key_length,
+        // 128) BEFORE step35.cpp halves n_rot_full. SWA keeps 128; full attention gets 64.
+        assert_eq!(s.rope_dims_swa, 128);
+        assert_eq!(s.rope_dims_full, 64);
+        assert_eq!(s.n_full_attn(45), 12, "3:1 over 45 blocks = 12 full + 33 SWA");
+
+        for il in 0..45u32 {
+            let full = il % 4 == 0;
+            assert_eq!(s.is_swa(il), !full, "swa flag at layer {il}");
+            assert_eq!(c.is_swa_at(il), !full, "ModelConfig::is_swa_at at layer {il}");
+            assert_eq!(s.n_head(il), if full { 64 } else { 96 }, "n_head at layer {il}");
+            assert_eq!(c.n_head_at(il), s.n_head(il), "n_head_at at layer {il}");
+            assert_eq!(c.n_head_kv_at(il), 8, "n_head_kv_at at layer {il}");
+            // half rotary on the FULL layers only
+            assert_eq!(s.n_rot(il), if full { 64 } else { 128 }, "n_rot at layer {il}");
+            assert!((s.rope_base(il) - if full { 5e6 } else { 1e4 }).abs() < 1.0,
+                "rope base at layer {il}");
+        }
+
+        // --- SwiGLU clamp: unset everywhere but 43 (7.0) and 44 (16.0) ---
+        for il in 0..43u32 {
+            assert_eq!(s.clamp_exp(il), None, "clamp_exp at layer {il}");
+            assert_eq!(s.clamp_shexp(il), None, "clamp_shexp at layer {il}");
+        }
+        assert_eq!(s.clamp_exp(43), Some(7.0));
+        assert_eq!(s.clamp_exp(44), Some(16.0));
+        assert_eq!(s.clamp_shexp(43), Some(7.0));
+        assert_eq!(s.clamp_shexp(44), Some(16.0));
+
+        // --- MoE: the DeepSeek-V3-class sigmoid router, verbatim ---
+        let moe = c.moe.as_ref().expect("step35 is MoE");
+        assert_eq!(moe.expert_count, 288);
+        assert_eq!(moe.expert_used_count, 8);
+        assert_eq!(moe.expert_ff_length, 1280);
+        assert_eq!(moe.expert_shared_ff_length, 1280, "1 shared expert of the same width");
+        assert!(s.sigmoid_routing, "expert_gating_func == 2");
+        assert!((s.routed_scaling_factor - 3.0).abs() < 1e-6);
+        assert!(s.route_norm);
+        assert_eq!(s.first_k_dense_replace, 3);
+        assert_eq!(c.sigmoid_router(), Some((3.0, true)));
+
+        // --- the gate predicates: separate head-wise tensor, NOT the qwen35 fused-in-wq form ---
+        assert!(!c.attn_out_gate(),
+            "step35 wq carries NO fused [q|gate]; a true here mis-splits wq 2x out of bounds");
+        assert!(c.attn_gate_separate(), "blk.N.attn_gate.weight [n_embd, n_head_l] is a tensor");
     }
 
     /// The REAL artifact shape: the 2026-06 unsloth GLM-5.2 GGUF ships WITHOUT
