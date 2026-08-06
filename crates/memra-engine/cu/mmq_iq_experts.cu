@@ -145,10 +145,12 @@ namespace ggml_cuda_mma {
     // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
     //   16.06 cyc/warp-MMA, 155.2 TOP/s. The int8 pipe is K-FREE on sm_120: m16n8k32.s8 costs the
     //   SAME 16.06 cyc for 2x the MACs, so this k16 form runs at HALF the available int8 rate.
-    //   THE BEST SWAP CANDIDATE IN THE REPO: unlike the NVFP4 tile, all three loaders here write the
-    //   16 x_df slots with `int g = s>>1` (:199 IQ4_XS, :233 IQ3_S, :275 Q4_0), so the two per-16
-    //   scale slots in a 32-block provably hold the SAME value -- merging the two k16 MMAs at :322-323
-    //   into one k32 MMA under that shared scale is exact (s32 accumulation is exact). Tile-level
+    //   THE BEST SWAP CANDIDATE IN THE REPO: unlike the NVFP4 tile, all three loaders here index the
+    //   16 x_df slots through the 32-block id `s>>1` (:210 IQ4_XS via `g`, :244 Q4_0 via `g*18`,
+    //   :286 IQ3_S via `ib32`), so the two per-16 scale slots in a 32-block provably hold the SAME
+    //   value -- and the fold at :339 reads exactly such a pair (k01 steps 8, so k01/4 is even and
+    //   +0/+1 are slots 2m,2m+1 of one 32-block). Merging the two k16 MMAs at :335-336 into one k32
+    //   MMA under that shared scale is exact (s32 accumulation is exact). Tile-level
     //   price 1.42x (research/ptx-audit-20260806/logs/k16-vs-k32-tileloop.log). NOT applied in the
     //   audit lane: needs the e2e share measured on an IQ-bank model + the full exactness battery.
     static __device__ __forceinline__ void mma(tile<16,8,int>&D,const tile<16,4,int>&A,const tile<8,4,int>&B){

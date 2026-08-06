@@ -39,8 +39,8 @@ static __device__ __forceinline__ uint16_t cvt_e4m3x2(float lo, float hi) {
 // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
 //   32.03 cyc/warp-MMA = the SLOW form; kind::mxf8f6f4.block_scale.scale_vec::1X @ ue8m0
 //   (0x7F7F7F7F identity) computes the bit-identical product at 16.06 = 1.994x. This is the
-//   FOURTH site of the same defect the audit's two prior fixes closed (mmq_fp8_blk.cu:250,
-//   mmq_nvfp4_w4a8.cu:1086). Verdict: DEAD-DOOR -- left as-is deliberately. This function is
+//   FOURTH site of the same defect the audit's two prior fixes closed (mmq_fp8_blk.cu:256,
+//   mmq_nvfp4_w4a8.cu:1099). Verdict: DEAD-DOOR -- left as-is deliberately. This function is
 //   UNCALLED: the file's only live exports are memra_mmq_nvfp4_f8f4_act_bytes and
 //   memra_mmq_nvfp4_f8f4_quantize_act (the e4m3 activation quantizer); the actual f8f4 GEMM
 //   tile lives in mmq_nvfp4_w4a8.cu, which already runs the fast form. Fixing this changes no

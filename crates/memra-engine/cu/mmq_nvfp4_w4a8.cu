@@ -210,7 +210,7 @@ namespace ggml_cuda_mma {
     //   16.06 cyc/warp-MMA, 155.2 TOP/s. The int8 pipe is K-FREE on sm_120: m16n8k32.s8 costs the
     //   SAME 16.06 cyc for 2x the MACs (309.7 TOP/s), so this k16 form runs at HALF the available
     //   int8 rate. SWAP-AVAILABLE but NOT a drop-in here: x_df carries a DISTINCT UE4M3 scale every
-    //   16 k-values (written per-`sub` at :276/:424, read as dA[..][k01/4] at :474), so one k32 MMA
+    //   16 k-values (written per-`sub` at :284/:432, read as dA[..][k01/4] at :482), so one k32 MMA
     //   would sum two differently-scaled halves inside the s32 accumulator before the fold. Needs
     //   the scale fold restructured, not one line. Tile-level price if legalized: 1.42x measured
     //   (research/ptx-audit-20260806/logs/k16-vs-k32-tileloop.log), 71% of the 1.997x bound.
