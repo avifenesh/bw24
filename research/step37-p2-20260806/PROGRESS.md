@@ -1095,3 +1095,82 @@ read the per-row maxdiff razor already built into `chunkinv` (a kernel-class edg
 order-of-magnitude step at the boundary; GEMM fold noise is a flat band). Not a bring-up blocker —
 G6a is a real pass and kernel-check is ALL GREEN — but the coverage claim must not be overstated
 until it runs.
+
+---
+
+## GAP 2 closed — and it is a real defect, reduced to a closed form
+
+The named next work item ran, and the prediction was right for a worse reason than expected.
+step35 prefill is **chunk-dependent**: for any prompt past the 512 SWA window, `MEMRA_PRIME_CHUNK`
+changes the logits, the hidden rows, and the generated text.
+
+The control and the defect, same code and same prompt family (`raw/chunkinv-long-20260806T222721Z.log`):
+
+| prompt | ref | 2048 | 512 | 64 | verdict |
+|---|---|---|---|---|---|
+| T=402 (below window) | 4096 | EXACT | EXACT | EXACT | CHUNK-INVARIANT |
+| T=4883 | 4096 | EXACT | DIFFER 1.813e0, greedy diverges step 6 | DIFFER 1.813e0, step 6 | **CHUNK-DEPENDENT** |
+
+T=402 being clean is what makes this a real finding rather than a broken probe: the defect requires
+T past the window, which is exactly why the pinned T=96/147 prompts could never have reached it.
+
+**The mechanism is kernel selection, and it collapses to arithmetic.** A chunk `[b,e)` computes
+`off = max(0, b-(win-1))` and `t_kv = e-off`; `t_kv > win` takes the f32 windowed floor
+`sdpa_naive_w_quantized_view`, otherwise the dequant-once `fa_prefill_view_ws`. So a chunk starting
+below `win` has `off=0` and is FA iff `e <= win`, while any later chunk has `t_kv = t+511 > win`.
+The FA rows are therefore always a contiguous **prefix** `[0,P)` with
+
+```
+P = c * floor(win/c)   for c <= win ;   P = 0   for c > win
+```
+
+and **the verdict depends only on P.** Verified by enumerating the real loop — including the
+`PRIME_MIN_T=16` tail merge at `hybrid_forward.rs:470` — for every `c` in [2,700] plus
+{768,1024,2048,4096}. This is why `P(512)=P(64)=512` are **byte-identical to each other** (10 chunks
+vs 77) while both diverge from the `P=0` family, and why `P(1024)=P(768)=P(600)=0` are all exact.
+
+A **pre-registered** battery then tried to break it (predictions committed in
+`chunkinv-knife-step35.sh` before the run; `raw/chunkinv-knife-20260806T224947Z.log`) — 4/4:
+
+| pair | P | predicted | measured |
+|---|---|---|---|
+| 4096 vs **513** | 0 vs 0 | EXACT | EXACT, 0.000e0 |
+| 4096 vs **512** | 0 vs 512 | DIFFER | DIFFER, div\@0, 1.813e0, step 6 |
+| 512 vs **384** | 512 vs 384 | DIFFER | DIFFER, div\@**384**, 1.417e0, step 13 |
+| 512 vs **256** | 512 vs 512 | EXACT | EXACT, 0.000e0 |
+
+Two of these are load-bearing. `513` vs `512` is a **one-token flip of the verdict** in a single
+process on a single clock at an identical 10-chunk count — nothing in reduction order or tile shape
+is discontinuous there, only the arm predicate. And `256` runs **twenty** chunks against the
+reference's ten, double the partial sums, yet is bit-identical because P matches; a fold-order
+account required that pair to differ. The model also predicted first divergence at
+`min(P_ref,P_arm)`, and PRED-3 diverges at exactly row 384 — a number only this model produces.
+
+Consequently the comment at `hybrid_forward.rs:6829-6830` ("Same cache bytes, same numeric class")
+is **false as written**: same bytes, different numeric class.
+
+Why it matters here rather than academically: `MEMRA_PRIME_CHUNK` is documented as a
+machine-config/OOM knob, so two rigs serving this SKU with different values return different text —
+the exact class `research/chunk-invariance-20260805` was built to eliminate, re-entering through a
+different door on a new arch. P differs across {64,512,1024,2048,4096} for **95.7%** of prompt
+lengths under 12000, starting at T=513. The default 4096 has P=0, so a naked single-rig run is
+self-consistent and the bug surfaces as a field nondeterminism report — the worst way to find it.
+
+**Not fixed here, deliberately**: this is kernel selection on the launch SKU's served prefill path,
+so it needs before/after prefill numbers per `research/benchmarks.md`, not a bring-up commit. The
+arithmetic does narrow it: forcing `naive_w` on SWA layers whenever `T > win` makes `P ≡ 0` for
+every chunk size, is correct-by-construction, respects the `t_kv <= 12287` smem ceiling, and — since
+the default already has `P=0` — **cannot move the shipped default's numbers at all**, paying only
+where the knob is turned down. Full option set and the arbitrating measurement are in
+`raw/chunkinv-step35-GAP2-CONFIRMED-20260807.txt`.
+
+This also resolves GAP 1 differently than expected. The canary is inert because step35 never had a
+grain seam, and after the fix there is still nothing to flip — the correct step35 assertion is naked
+chunk-invariance (`chunkinv` at T=4883 over {4096,513,512,256,64} returning CHUNK-INVARIANT), which
+must land in the **same commit as the fix**, since today it is legitimately red.
+
+Two of my own intermediate claims were refuted along the way and are retracted in the receipt: that
+512 and 64 should differ pairwise (section B measured EXACT — chasing this produced the closed form),
+and a suspected "tail hazard" on the logits row (enumeration over T in (512,40000] found zero cases;
+the `PRIME_MIN_T` merge rules it out). The `--profile` razor's "step at the boundary" framing also
+does not fit this defect shape and is documented as inapplicable rather than forced.
