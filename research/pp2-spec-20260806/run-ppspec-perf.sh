@@ -52,6 +52,17 @@ nvidia-smi --query-gpu=index,memory.used,temperature.gpu,clocks.sm,power.draw \
 serve_arm() { # $1 = label, $2 = rep, $3.. = env words
   local label="$1" rep="$2"; shift 2
   local log="$OUT/r$rep-$label"
+  # STALE-LISTENER GUARD (2026-08-06, learned the hard way): a server from an earlier,
+  # externally-killed run can still own $ADDR. The new server then fails to bind, /v1/models
+  # answers from the OLD process, and every point in this arm is measured against the wrong
+  # binary and the wrong placement — a silently wrong receipt, not a visible failure. Worse on
+  # this box: such an orphan also inherits the flock fd and holds the GPU lock. Refuse to
+  # measure into an occupied port.
+  if curl -sf "$BASE/v1/models" >/dev/null 2>&1; then
+    echo "FAIL: $label rep$rep — something is ALREADY serving $ADDR (stale server?); refusing \
+to measure against it. Investigate with: ss -lntp | grep ${ADDR##*:}"
+    return 1
+  fi
   env "$@" MEMRA_MODELS="q9=$Q9" MEMRA_ADDR=$ADDR \
     $BIN/memra-server > "$log-server.log" 2>&1 &
   local pid=$!
