@@ -229,8 +229,34 @@ Cells (synthetic, CPU oracle, `raw/kernel-check-step35-cells-5090-20260806.log`)
   `dst16=None` cell for the nullable-pointer skip.
 - `swiglu_clamped` at both real limits × (gs,us) ∈ {(1,1), (0.75,1.25)}, inputs spanning ±3·limit.
   The engaged-clamp count is asserted (>10% of elements), because a cell whose inputs stayed
-  in-range would pass identically against plain `silu_mul` and prove nothing. Plus a divergence
-  guard: >50% of elements must differ from `swigluoai_mul_scaled` on the same operands.
+  in-range would pass identically against plain `silu_mul` and prove nothing. Plus the divergence
+  guard vs `swigluoai_mul_scaled`, asserted by **named mechanism** at four hand-picked points.
+
+Result on the 5090 (release build, `raw/kernel-check-step35-cells-5090-20260806.log`, exit 0):
+**ALL GREEN**, whole battery, 555 lines. The 10 step35 cells: `attn_head_gate` maxdiff 1.19e-7 to
+2.38e-7 with 0 f16 mismatches at all four (n_head, T) combinations; `swiglu_clamped` maxdiff 1.9e-6
+to 7.6e-6 with 3700-3914 of 4096 elements clamp-engaged; all four divergence mechanisms true.
+
+**A bad test caught and fixed, not a bad kernel.** The divergence guard first demanded ">50% of
+elements differ from swigluoai" and read **39%** — FAIL. The cause was the input distribution, not
+the math: `pr()` returns **[-1, 1]** (`memra-validate/src/lib.rs:29`), so my `(pr - 0.5) * 6 * limit`
+expression produced [-63, +21], and most elements sat at deep-negative gate where `silu(gate) → 0`
+and *both* kernels correctly agree at ~0. Two fixes: the inputs became symmetric (`pr * 3 * limit`),
+and the count threshold was replaced with four named-mechanism probes that do not depend on a
+distribution at all —
+
+| probe | why the formulas must disagree |
+|---|---|
+| `up = -1` exactly | oai's `1 + up` factor vanishes → oai is 0 for any gate; step35 is `-silu(5)` |
+| `up = -0.99` | oai stays ~0.05, step35 ~ -4.92 — two orders apart |
+| `gate = 12 > limit = 7`, `up = 2` | the clamp-ORDER difference: oai `swish(min(12,7)) × 3 ≈ 20.98`, step35 `min(silu(12),7) × 2 = 14` |
+| `up = 0` | step35's product is exactly 0; oai's `1 + 0` leaves the whole swish term |
+
+This is the second time this lane has shipped a threshold-over-random-inputs assertion that failed
+for distribution reasons (the first was `deepseek_v3_differs_from_qwen35`, increment 2). Both are
+now mechanism assertions. The lesson is worth stating once: *a divergence threshold is only as
+meaningful as the input distribution behind it*, and when the point is "these two functions are not
+the same function", the honest assertion is a point where they provably differ.
 
 ## Increment 5 — KV budget and q27 co-residence: PLAN.md §3.4 does not transfer to this box
 

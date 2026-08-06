@@ -3840,8 +3840,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for &limit in &[7.0f32, 16.0] {
             // span +-3*limit so silu(gate) exceeds `limit` on many elements and up gets clamped
             // on both sides.
-            let gate: Vec<f32> = (0..n).map(|i| (pr(i + 113) - 0.5) * 6.0 * limit).collect();
-            let up: Vec<f32> = (0..n).map(|i| (pr(i + 127) - 0.5) * 6.0 * limit).collect();
+            let gate: Vec<f32> = (0..n).map(|i| pr(i + 113) * 3.0 * limit).collect();
+            let up: Vec<f32> = (0..n).map(|i| pr(i + 127) * 3.0 * limit).collect();
             for &(gs, us) in &[(1.0f32, 1.0f32), (0.75, 1.25)] {
                 let cpu: Vec<f32> = (0..n).map(|i| {
                     let u = (up[i] * us).clamp(-limit, limit);
@@ -3867,20 +3867,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          if d < 1e-4 && clamped > n / 10 { "OK" } else { fails += 1; "FAIL" });
             }
         }
-        // DIVERGENCE GUARD vs swigluoai (the wrong-kernel-looks-right failure mode).
+        // DIVERGENCE GUARD vs swigluoai (the wrong-kernel-looks-right failure mode). Asserted by
+        // NAMED MECHANISM, not by a divergence count over random inputs. A first cut here demanded
+        // ">50% of elements differ" and read 39% — a bad test, not a bad kernel: `pr()` returns
+        // [-1, 1] (memra-validate/src/lib.rs:29), so the `(pr - 0.5) * 6 * limit` inputs it used
+        // were skewed to [-63, +21], and most elements sat at deep-negative gate where
+        // silu(gate) -> 0 and BOTH kernels correctly agree at ~0. A threshold is only as
+        // meaningful as the input distribution behind it; hand-picked points where the two
+        // FORMULAS must disagree carry the claim without depending on one.
         let limit = 7.0f32;
-        let gate: Vec<f32> = (0..n).map(|i| (pr(i + 131) - 0.5) * 6.0 * limit).collect();
-        let up: Vec<f32> = (0..n).map(|i| (pr(i + 137) - 0.5) * 6.0 * limit).collect();
-        let gd = e.htod(&gate)?;
-        let ud = e.htod(&up)?;
-        let mut a_step = e.zeros(n)?;
-        e.swiglu_clamped_mul_scaled(&gd, &ud, 1.0, 1.0, limit, &mut a_step, n)?;
-        let mut a_oai = e.zeros(n)?;
-        e.swigluoai_mul_scaled(&gd, &ud, 1.0, 1.0, 1.0, limit, &mut a_oai, n)?;
+        //  (a) up = -1 exactly: oai's `1 + up` factor vanishes -> oai == 0 for ANY gate.
+        //  (b) up just off -1: oai stays near zero while step35 is ~-4.9 (two orders apart).
+        //  (c) gate 12 > limit 7: oai clamps BEFORE swish -> swish(7) ~ 6.994, x (1+2) ~ 20.98;
+        //      step35 clamps AFTER -> min(silu(12), 7) = 7, x 2 = 14. The clamp-ORDER difference.
+        //  (d) up = 0: step35's product is exactly 0; oai's `1 + 0` leaves the whole swish term.
+        let probe_g: Vec<f32> = vec![5.0, 5.0, 12.0, 12.0];
+        let probe_u: Vec<f32> = vec![-1.0, -0.99, 2.0, 0.0];
+        let np = probe_g.len();
+        let gd = e.htod(&probe_g)?;
+        let ud = e.htod(&probe_u)?;
+        let mut a_step = e.zeros(np)?;
+        e.swiglu_clamped_mul_scaled(&gd, &ud, 1.0, 1.0, limit, &mut a_step, np)?;
+        let mut a_oai = e.zeros(np)?;
+        e.swigluoai_mul_scaled(&gd, &ud, 1.0, 1.0, 1.0, limit, &mut a_oai, np)?;
         let (xs, xo) = (e.dtoh(&a_step)?, e.dtoh(&a_oai)?);
-        let differ = xs.iter().zip(&xo).filter(|(p, q)| (*p - *q).abs() > 1e-4).count();
-        println!("swiglu_clamped != swigluoai: differ={differ}/{n} {}",
-                 if differ > n / 2 { "OK" } else { fails += 1; "FAIL" });
+        let silu5 = 5.0f32 / (1.0 + (-5.0f32).exp());
+        let m_a = xo[0].abs() < 1e-6 && (xs[0] + silu5).abs() < 1e-4;
+        let m_b = xo[1].abs() < 0.1 && xs[1] < -4.0;
+        let m_c = (xs[2] - 14.0).abs() < 1e-3 && (xo[2] - 20.98).abs() < 0.05;
+        let m_d = xs[3].abs() < 1e-9 && xo[3] > 6.9;
+        println!("swiglu_clamped != swigluoai by mechanism: up=-1_oai_zero={m_a} \
+                  up=-0.99_two_orders={m_b} gate>limit_clamp_order={m_c} up=0_no_linear={m_d} {}",
+                 if m_a && m_b && m_c && m_d { "OK" } else { fails += 1; "FAIL" });
     }
 
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
