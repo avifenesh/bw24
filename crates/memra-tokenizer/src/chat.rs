@@ -14,6 +14,12 @@
 //!
 //! `content` is trimmed (the template applies `|trim`). If the GGUF has no template
 //! we fall back to plain ChatML (no `<think>` tail).
+//!
+//! Non-qwen dialects each get their own arm, dispatched by a marker substring in the raw
+//! template: Tencent Hy3 (`hy_User`), gemma4 (`<|turn>`), and StepFun Step-3.7-Flash /
+//! arch `step35` (`render_message_content`). The step35 check must come BEFORE the qwen
+//! `<think>`-tail detection — its template contains every qwen marker, so the qwen arm would
+//! render the right generation tail on the wrong turn bodies.
 
 /// One tool call attached to a prior assistant turn, pre-rendered for the template:
 /// `params` values are already strings per the template law (string arguments raw,
@@ -57,6 +63,17 @@ pub fn apply_chat_template_str(
     // Detected by its `hy_User` token literal; rendered by the dedicated arm below.
     if template.is_some_and(|t| t.contains("hy_User")) {
         return apply_hy3_template(messages, add_generation_prompt);
+    }
+    // StepFun Step-3.7-Flash (arch `step35`): a ChatML *dialect* — same `<|im_start|>` framing,
+    // different everything else (see `apply_step35_template`). Detected by its
+    // `render_message_content` macro, which no other committed template defines. This check MUST
+    // precede the qwen `<think>`-tail detection below: the step35 template contains both markers,
+    // so the qwen arm would produce the right generation tail with the wrong turn bodies.
+    if template.is_some_and(|t| t.contains("render_message_content")) {
+        let turns: Vec<Turn> = messages.iter().map(|(r, c)| Turn {
+            role: r.to_string(), content: c.to_string(), tool_calls: Vec::new(),
+        }).collect();
+        return apply_step35_template(&turns, add_generation_prompt, &[], None);
     }
     // gemma4: `<|turn>role\n{content}<turn|>\n` dialect; generation prompt appends
     // `<|turn>model\n` + the CLOSED thought channel (`<|channel>thought\n<channel|>` — the
@@ -161,6 +178,14 @@ pub fn apply_chat_template_tools(
     let tools_branch = template.is_some_and(|t| t.contains("<tools>"));
     if has_tool_features && !tools_branch {
         return Err("model chat template has no tools branch".into());
+    }
+    // step35: its own dialect all the way through, tools included (unlike hy3/gemma4, which
+    // reject tool features — step35 HAS a tools branch and it is reproduced). Must precede the
+    // qwen arm: the step35 template contains `<tools>`, `<think>` and `add_generation_prompt`,
+    // so every qwen marker check below matches it. `ThinkMode` is ignored (no `enable_thinking`
+    // in this template => `think_switch` is false => NoThink is already a documented no-op).
+    if template.is_some_and(|t| t.contains("render_message_content")) {
+        return Ok(apply_step35_template(turns, add_generation_prompt, tools_json, None));
     }
     if template.is_some_and(|t| t.contains("hy_User") || t.contains("<|turn>")) {
         // hy3 / gemma4 dialects: no committed tools rendering reference — reject tool
@@ -278,6 +303,200 @@ pub fn apply_chat_template_tools(
         }
     }
     Ok(out)
+}
+
+/// The fixed tool-calling instruction block of the StepFun `step35` template. NOT the same
+/// string as `QWEN_TOOLS_INSTRUCTION` — three differences, all load-bearing: the header says
+/// "in JSONSchema format", the nesting reminder carries literal `\n...\n` inside the
+/// `<function=...>` / `<tool_call>` examples, and the Reminder list has 2 bullets instead of 4
+/// (no "optional reasoning BEFORE the call" and no "answer normally if no function is
+/// available"). Copied byte-for-byte out of the shipped template
+/// (`research/step37-bringup-20260802/raw/chat_template.jinja`, == the GGUF's own
+/// `tokenizer.chat_template`).
+const STEP35_TOOLS_INSTRUCTION: &str = "\n\nIf you choose to call a function ONLY reply in the \
+following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n\
+<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\n\
+This is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n\
+</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified \
+format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n\
+...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT>";
+
+/// StepFun Step-3.7-Flash (GGUF arch `step35`) chat template.
+///
+/// A ChatML *dialect*, not ChatML: it shares the `<|im_start|>role\n…<|im_end|>\n` frame and
+/// nothing else. Reproduced from the shipped jinja, and pinned test-by-test against goldens
+/// rendered from that jinja under jinja2 with `trim_blocks`/`lstrip_blocks` — the settings HF
+/// transformers and llama.cpp's minja both parse chat templates with
+/// (`research/step37-p2-20260806/render_step35_template.py`, goldens committed under `raw/`).
+///
+/// Where it differs from the qwen3.5/3.6 arms above — every one of these silently corrupts the
+/// prompt if the qwen arm is reused:
+///
+/// | | qwen3.5/3.6 | step35 |
+/// |---|---|---|
+/// | reasoning level | `enable_thinking` bool | `Reasoning: {low,medium,high}\n\n` prefix inside the system turn |
+/// | `<think>` tail | switchable | **unconditional** — no `enable_thinking`, so `ThinkMode::NoThink` is a no-op |
+/// | prior assistant turns | content only | turns AFTER the last real user query also carry `<think>\n{reasoning}\n</think>\n` |
+/// | tool results | grouped into a `user` turn, `\n<tool_response>\n…\n</tool_response>` | own **`tool_response`** role, `<tool_response>…</tool_response>` with NO inner newlines |
+/// | content | `\|trim`med | **not** trimmed |
+/// | tools header | `following functions:` | `following functions in JSONSchema format:` |
+/// | call separators | `\n\n` after content, `\n` between calls | **none** |
+/// | leading system + tools | appended AFTER the instruction block | folded in BEFORE `# Tools` |
+///
+/// `reasoning_effort` is the model's headline three-level control (low/medium/high per the
+/// StepFun model card). It is a parameter here rather than a `ThinkMode`: the value is a
+/// *string in the system turn*, so a bool cannot carry it. Nothing on the serve path supplies
+/// it yet — `Request` has no field — so both call sites pass `None` (the template's own default:
+/// no `Reasoning:` line at all). Plumbing it is a serve-surface change, tracked separately.
+///
+/// BOS is NOT emitted (the jinja's `{{bos_token}}` is dropped): memra's `encode(add_special)`
+/// prepends it from `tokenizer.ggml.add_bos_token`/`bos_token_id` — the same double-BOS trap the
+/// gemma4 arm documents.
+///
+/// ONE deliberate divergence: the jinja's body loop has no `else`, so a role outside
+/// {system, user, assistant, tool} renders as **nothing at all** — the turn silently vanishes
+/// from the prompt. memra renders it as a generic `<|im_start|>{role}\n{content}<|im_end|>\n`
+/// turn instead, matching the other arms here. A dropped turn is the worse failure, and this
+/// branch cannot fire on the serve surface: OpenAI roles are exactly system/user/assistant/tool,
+/// all four of which are reproduced byte-for-byte.
+///
+/// Not reproduced (needs data `Turn` does not carry, tracked, cannot fire from an OpenAI client):
+/// the `name == "observation"` alias that renames a non-leading `system` turn's role to
+/// `observation`, and the `<im_patch>` image-content path (this is a VLM; memra is text-only here).
+fn apply_step35_template(turns: &[Turn], add_generation_prompt: bool, tools_json: &[String],
+                         reasoning_effort: Option<&str>) -> String {
+    let mut out = String::new();
+    let leading_system = turns.first().filter(|t| t.role == "system");
+
+    // --- system header. Two branches in the jinja, and the ORDER differs between them.
+    if !tools_json.is_empty() {
+        out.push_str("<|im_start|>system\n");
+        if let Some(effort) = reasoning_effort {
+            out.push_str("Reasoning: ");
+            out.push_str(effort);
+            out.push_str("\n\n");
+        }
+        if let Some(sys) = leading_system {
+            // unconditional `content + '\n\n'` — no emptiness check, unlike the qwen arm.
+            out.push_str(&sys.content);
+            out.push_str("\n\n");
+        }
+        out.push_str("# Tools\n\nYou have access to the following functions in JSONSchema \
+                      format:\n\n<tools>");
+        for tool in tools_json {
+            out.push('\n');
+            out.push_str(tool);
+        }
+        out.push_str("\n</tools>");
+        out.push_str(STEP35_TOOLS_INSTRUCTION);
+        out.push_str("<|im_end|>\n");
+    } else if let Some(sys) = leading_system {
+        out.push_str("<|im_start|>system\n");
+        if let Some(effort) = reasoning_effort {
+            out.push_str("Reasoning: ");
+            out.push_str(effort);
+            out.push_str("\n\n");
+        }
+        out.push_str(&sys.content);
+        out.push_str("<|im_end|>\n");
+    } else if let Some(effort) = reasoning_effort {
+        out.push_str("<|im_start|>system\nReasoning: ");
+        out.push_str(effort);
+        out.push_str("\n\n<|im_end|>\n");
+    }
+
+    // --- last_query_index: the index of the LAST `user` turn that is a real query, i.e. whose
+    // content is not itself a `<tool_response>…</tool_response>` wrapper (a client replaying tool
+    // output as a user turn must not reset the reasoning boundary). Default len-1 when there is
+    // no such turn, exactly as the jinja's namespace initializer does.
+    let last_query_index = turns.iter().enumerate().rev()
+        .find(|(_, t)| t.role == "user"
+              && !(t.content.starts_with("<tool_response>")
+                   && t.content.ends_with("</tool_response>")))
+        .map(|(i, _)| i)
+        .unwrap_or(turns.len().saturating_sub(1));
+
+    for (i, turn) in turns.iter().enumerate() {
+        let content = &turn.content;    // NOT trimmed: this template applies no `|trim`
+        match turn.role.as_str() {
+            // the leading system turn lives in the header above; later ones are body turns.
+            "system" if i == 0 => {}
+            "system" | "user" => {
+                out.push_str("<|im_start|>");
+                out.push_str(&turn.role);
+                out.push('\n');
+                out.push_str(content);
+                out.push_str("<|im_end|>\n");
+            }
+            "assistant" => {
+                // Split an inline `<think>…</think>` out of content, mirroring the jinja's
+                // string surgery exactly: reasoning = text before the FIRST `</think>`, with
+                // trailing newlines stripped, then everything after the LAST `<think>` in that
+                // prefix, with leading newlines stripped; body = after the LAST `</think>`,
+                // leading newlines stripped.
+                let (reasoning, body): (String, &str) = match content.find("</think>") {
+                    Some(first) => {
+                        let pre = content[..first].trim_end_matches('\n');
+                        let pre = match pre.rfind("<think>") {
+                            Some(o) => &pre[o + "<think>".len()..],
+                            None => pre,
+                        };
+                        let last = content.rfind("</think>").unwrap();
+                        (pre.trim_start_matches('\n').to_string(),
+                         content[last + "</think>".len()..].trim_start_matches('\n'))
+                    }
+                    None => (String::new(), content.as_str()),
+                };
+                out.push_str("<|im_start|>assistant\n");
+                if i > last_query_index {
+                    out.push_str("<think>\n");
+                    out.push_str(&reasoning);
+                    out.push_str("\n</think>\n");
+                }
+                out.push_str(body);
+                // NO separator before or between calls (the qwen arm's `\n\n`/`\n` would corrupt).
+                for call in &turn.tool_calls {
+                    out.push_str("<tool_call>\n<function=");
+                    out.push_str(&call.name);
+                    out.push_str(">\n");
+                    for (key, value) in &call.params {
+                        out.push_str("<parameter=");
+                        out.push_str(key);
+                        out.push_str(">\n");
+                        out.push_str(value);
+                        out.push_str("\n</parameter>\n");
+                    }
+                    out.push_str("</function>\n</tool_call>");
+                }
+                out.push_str("<|im_end|>\n");
+            }
+            "tool" => {
+                // own role, and consecutive tool turns share ONE `tool_response` turn.
+                if i == 0 || turns[i - 1].role != "tool" {
+                    out.push_str("<|im_start|>tool_response\n");
+                }
+                out.push_str("<tool_response>");
+                out.push_str(content);
+                out.push_str("</tool_response>");
+                if i + 1 >= turns.len() || turns[i + 1].role != "tool" {
+                    out.push_str("<|im_end|>\n");
+                }
+            }
+            other => {
+                // the jinja drops this turn entirely; see the divergence note above.
+                out.push_str("<|im_start|>");
+                out.push_str(other);
+                out.push('\n');
+                out.push_str(content);
+                out.push_str("<|im_end|>\n");
+            }
+        }
+    }
+
+    if add_generation_prompt {
+        out.push_str("<|im_start|>assistant\n<think>\n");
+    }
+    out
 }
 
 /// Text-only reproduction of the Hy3 `chat_template.jinja` default path (no tools, no
@@ -482,6 +701,200 @@ mod tests {
         // tool-role turns need the branch too.
         let tool_turns = vec![Turn { role: "tool".into(), content: "r".into(), tool_calls: Vec::new() }];
         assert!(apply_chat_template_tools(None, &tool_turns, true, &[], ThinkMode::Default).is_err());
+    }
+
+    // ---- StepFun Step-3.7-Flash (arch step35) -------------------------------------------
+    // Every `expected` below is the EXACT string the shipped jinja renders, taken from
+    // research/step37-p2-20260806/raw/step35-template-goldens.txt (generated by
+    // render_step35_template.py under jinja2 with trim_blocks/lstrip_blocks — the settings HF
+    // transformers and llama.cpp's minja use). `{{bos_token}}` renders as "" there because
+    // encode(add_special) supplies BOS.
+
+    /// A step35 template stand-in: the real one is 5723 chars, and the detector keys on
+    /// `render_message_content` (the macro no other committed template defines). The other
+    /// markers are present to prove the step35 arm WINS the dispatch — a qwen-marker template
+    /// carrying `<tools>`/`<think>`/`add_generation_prompt` would otherwise take the qwen arm.
+    const STEP35_TMPL: &str =
+        "{% macro render_message_content(message) %}... <tools> ... add_generation_prompt ... '<think>\\n' ...";
+
+    fn s35(msgs: &[(&str, &str)], genp: bool) -> String {
+        apply_chat_template_str(Some(STEP35_TMPL), msgs, genp)
+    }
+
+    fn s35_turns(turns: Vec<Turn>, genp: bool, tools: &[String]) -> String {
+        apply_chat_template_tools(Some(STEP35_TMPL), &turns, genp, tools, ThinkMode::Default)
+            .unwrap()
+    }
+
+    fn turn(role: &str, content: &str) -> Turn {
+        Turn { role: role.into(), content: content.into(), tool_calls: Vec::new() }
+    }
+
+    #[test]
+    fn step35_plain_paths_match_the_shipped_jinja() {
+        assert_eq!(s35(&[("user", "Hello")], true),
+                   "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n");
+        assert_eq!(s35(&[("user", "Hello")], false), "<|im_start|>user\nHello<|im_end|>\n");
+        assert_eq!(s35(&[("system", "You are helpful."), ("user", "Hi")], true),
+                   "<|im_start|>system\nYou are helpful.<|im_end|>\n\
+                    <|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n");
+        // multi-turn: the prior assistant is BEFORE the last user query, so it carries NO
+        // think block — the reasoning boundary the qwen arms have no concept of.
+        assert_eq!(
+            s35(&[("system", "rules"), ("user", "task"), ("assistant", "work"),
+                  ("user", "more")], true),
+            "<|im_start|>system\nrules<|im_end|>\n<|im_start|>user\ntask<|im_end|>\n\
+             <|im_start|>assistant\nwork<|im_end|>\n<|im_start|>user\nmore<|im_end|>\n\
+             <|im_start|>assistant\n<think>\n");
+        // content is NOT trimmed (this template applies no `|trim`) — the qwen arms trim.
+        assert_eq!(s35(&[("user", "  padded  ")], true),
+                   "<|im_start|>user\n  padded  <|im_end|>\n<|im_start|>assistant\n<think>\n");
+    }
+
+    #[test]
+    fn step35_dispatch_beats_the_qwen_marker_arm() {
+        // The step35 template carries every qwen marker. If the dispatch order regressed, the
+        // think tail would still be right and the BODY would be wrong (trimmed content, wrong
+        // tools header) — so assert a body-shaped difference, not the tail.
+        let qwen = apply_chat_template_str(Some(QWEN_TOOLS_TMPL), &[("user", " pad ")], true);
+        let step = s35(&[("user", " pad ")], true);
+        assert_eq!(qwen, "<|im_start|>user\npad<|im_end|>\n<|im_start|>assistant\n<think>\n");
+        assert_eq!(step, "<|im_start|>user\n pad <|im_end|>\n<|im_start|>assistant\n<think>\n");
+        assert_ne!(qwen, step);
+    }
+
+    #[test]
+    fn step35_reasoning_effort_renders_in_the_system_turn() {
+        // Not reachable from the serve path yet (no Request field) — assert the renderer
+        // directly so the plumbing has a proven target.
+        assert_eq!(
+            apply_step35_template(&[turn("user", "Hi")], true, &[], Some("high")),
+            "<|im_start|>system\nReasoning: high\n\n<|im_end|>\n\
+             <|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n");
+        assert_eq!(
+            apply_step35_template(&[turn("system", "Be terse."), turn("user", "Hi")], true, &[],
+                                  Some("low")),
+            "<|im_start|>system\nReasoning: low\n\nBe terse.<|im_end|>\n\
+             <|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n");
+        // with tools the order flips: Reasoning, then the system content, then `# Tools`.
+        let tools = vec![r#"{"type": "function", "function": {"name": "f"}}"#.to_string()];
+        let s = apply_step35_template(&[turn("system", "Be terse."), turn("user", "q")], true,
+                                      &tools, Some("medium"));
+        assert!(s.starts_with("<|im_start|>system\nReasoning: medium\n\nBe terse.\n\n# Tools\n"),
+                "{s:?}");
+    }
+
+    #[test]
+    fn step35_tools_header_is_not_the_qwen_header() {
+        let tools = vec![
+            r#"{"type": "function", "function": {"name": "get_weather"}}"#.to_string(),
+            r#"{"type": "function", "function": {"name": "search"}}"#.to_string(),
+        ];
+        let s = s35_turns(vec![turn("system", "Be terse."), turn("user", "Weather in Paris?")],
+                          true, &tools);
+        assert_eq!(s, concat!(
+            // leading system folds in BEFORE `# Tools` (the qwen arm appends it AFTER the
+            // instruction block), and the header says "in JSONSchema format".
+            "<|im_start|>system\nBe terse.\n\n# Tools\n\n",
+            "You have access to the following functions in JSONSchema format:\n\n<tools>\n",
+            "{\"type\": \"function\", \"function\": {\"name\": \"get_weather\"}}\n",
+            "{\"type\": \"function\", \"function\": {\"name\": \"search\"}}\n</tools>",
+            "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:",
+            "\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\n",
+            "value_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the ",
+            "second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>",
+            // the nesting reminder carries literal \n...\n INSIDE the example tags, and the
+            // Reminder list stops after 2 bullets (the qwen block has 4).
+            "\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner ",
+            "<function=...>\n...\n</function> block must be nested within <tool_call>\n...\n",
+            "</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT>",
+            "<|im_end|>\n",
+            "<|im_start|>user\nWeather in Paris?<|im_end|>\n",
+            "<|im_start|>assistant\n<think>\n",
+        ));
+        // and it is NOT the qwen instruction block.
+        assert!(!s.contains(QWEN_TOOLS_INSTRUCTION));
+    }
+
+    #[test]
+    fn step35_tool_results_take_their_own_role_and_group() {
+        let tools = vec![r#"{"type": "function", "function": {"name": "get_weather"}}"#.to_string()];
+        let turns = vec![
+            turn("user", "both"),
+            Turn { role: "assistant".into(), content: "checking".into(), tool_calls: vec![
+                ToolCall { name: "a".into(), params: vec![("x".into(), "1".into())] },
+                ToolCall { name: "b".into(), params: Vec::new() },
+            ] },
+            turn("tool", "r1"),
+            turn("tool", "r2"),
+        ];
+        let s = s35_turns(turns, true, &tools);
+        let body = s.split("<|im_end|>\n").skip(1).collect::<Vec<_>>().join("<|im_end|>\n");
+        assert_eq!(body, concat!(
+            "<|im_start|>user\nboth<|im_end|>\n",
+            // the assistant is AFTER the last user query, so it carries a think block — empty,
+            // because its content has no `</think>` marker.
+            "<|im_start|>assistant\n<think>\n\n</think>\nchecking",
+            // NO separator before the first call and NONE between calls.
+            "<tool_call>\n<function=a>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>",
+            "<tool_call>\n<function=b>\n</function>\n</tool_call><|im_end|>\n",
+            // own `tool_response` ROLE (not a user turn), and NO newlines inside the wrappers.
+            "<|im_start|>tool_response\n<tool_response>r1</tool_response>",
+            "<tool_response>r2</tool_response><|im_end|>\n",
+            "<|im_start|>assistant\n<think>\n",
+        ));
+    }
+
+    #[test]
+    fn step35_assistant_think_split_and_the_reasoning_boundary() {
+        // inline <think>…</think> in content splits into the reasoning block + body.
+        assert_eq!(
+            s35(&[("user", "q"), ("assistant", "<think>\nreasoned\n</think>\nanswer")], false),
+            "<|im_start|>user\nq<|im_end|>\n\
+             <|im_start|>assistant\n<think>\nreasoned\n</think>\nanswer<|im_end|>\n");
+        // no markers, but still after the last query -> an EMPTY reasoning block is emitted.
+        assert_eq!(
+            s35(&[("user", "q"), ("assistant", "plain")], false),
+            "<|im_start|>user\nq<|im_end|>\n\
+             <|im_start|>assistant\n<think>\n\n</think>\nplain<|im_end|>\n");
+        // a user turn that IS a <tool_response> wrapper does NOT move the boundary: the
+        // assistant before it still counts as after-the-last-real-query.
+        assert_eq!(
+            s35(&[("user", "real question"), ("assistant", "thinking about it"),
+                  ("user", "<tool_response>r</tool_response>")], true),
+            "<|im_start|>user\nreal question<|im_end|>\n\
+             <|im_start|>assistant\n<think>\n\n</think>\nthinking about it<|im_end|>\n\
+             <|im_start|>user\n<tool_response>r</tool_response><|im_end|>\n\
+             <|im_start|>assistant\n<think>\n");
+    }
+
+    #[test]
+    fn step35_think_tail_is_unconditional_and_nothink_is_a_noop() {
+        // No `enable_thinking` in this template, so ThinkMode::NoThink cannot close the tail —
+        // the same graceful-no-op contract the other switchless templates get. A NoThink that
+        // silently emitted `<think>\n\n</think>\n\n` would be a prompt the model never saw.
+        let turns = vec![turn("user", "hi")];
+        for mode in [ThinkMode::Default, ThinkMode::NoThink] {
+            let s = apply_chat_template_tools(Some(STEP35_TMPL), &turns, true, &[], mode).unwrap();
+            assert!(s.ends_with("<|im_start|>assistant\n<think>\n"), "mode={mode:?} {s:?}");
+        }
+    }
+
+    #[test]
+    fn step35_plain_path_is_identical_through_both_renderers() {
+        // same isolation contract the qwen arms hold: a plain request renders byte-identically
+        // whether it enters via apply_chat_template_str or apply_chat_template_tools.
+        let batteries: &[&[(&str, &str)]] = &[
+            &[("user", "Hello")],
+            &[("system", "You are helpful."), ("user", "Hi")],
+            &[("system", "rules"), ("user", "task"), ("assistant", "work"), ("user", "more")],
+            &[("user", "  padded  "), ("assistant", "reply\nwith lines")],
+        ];
+        for msgs in batteries {
+            let legacy = s35(msgs, true);
+            let ext = s35_turns(msgs.iter().map(|(r, c)| turn(r, c)).collect(), true, &[]);
+            assert_eq!(legacy, ext, "msgs={msgs:?}");
+        }
     }
 
     #[test]

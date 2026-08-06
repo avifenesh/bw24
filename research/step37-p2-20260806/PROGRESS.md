@@ -445,6 +445,83 @@ dot in the same order, so only FMA contraction separates them — the measured 1
 old enough to mask, so 52% of elements move; where the chunk is a continuation (`T < T_kv`) every
 query has a maskable past and 100% move.
 
+---
+
+## Increment 8 — the chat template: a ChatML *dialect*, and reusing the qwen arm would corrupt it
+
+The step35 template's `tokenizer.chat_template` (5723 chars, byte-identical to the HF repo's
+`chat_template.jinja` dumped in phase 1) shares `<|im_start|>role\n…<|im_end|>\n` with the
+qwen3.5/3.6 class **and nothing else**. It also contains every marker memra's dispatcher keys the
+qwen arm on — `<tools>`, `<think>`, `add_generation_prompt` — so before this increment a loaded
+Step-3.7-Flash would have silently rendered through the qwen arm: right generation tail, wrong
+turn bodies. The step35 check now precedes it, keyed on `render_message_content` (the macro no
+other committed template defines).
+
+### The oracle came first
+
+memra ships no jinja engine, so the goldens are rendered from the shipped jinja itself:
+`render_step35_template.py` (committed) renders 19 cases and writes
+`raw/step35-template-goldens.txt`. Every `expected` string in the Rust tests is copied from that
+file. One correctness detail in the harness is load-bearing: **`trim_blocks=True,
+lstrip_blocks=True`** — what HF transformers' `_compile_jinja_template` uses and what llama.cpp's
+minja parses with. With them false, the newline after this template's `{% endmacro %}` leaks into
+every render as a leading `\n`; the first draft of the goldens had exactly that artifact and it
+would have been baked into the Rust as a phantom prefix byte.
+
+### Eight divergences from the qwen arm, each one a corrupted prompt
+
+| | qwen3.5/3.6 | step35 |
+|---|---|---|
+| reasoning level | `enable_thinking` bool | `Reasoning: {low,medium,high}\n\n` **string inside the system turn** |
+| `<think>` tail | switchable | **unconditional** (no `enable_thinking` at all) |
+| prior assistant turns | content only | turns AFTER the last real user query also carry `<think>\n{reasoning}\n</think>\n` |
+| tool results | grouped into a `user` turn, `\n<tool_response>\n…\n</tool_response>` | own **`tool_response` role**, `<tool_response>…</tool_response>`, **no inner newlines** |
+| content | `\|trim`med | **not trimmed** |
+| tools header | `following functions:` | `following functions in JSONSchema format:` |
+| instruction block | 4 Reminder bullets, `<function=...></function>` | **2 bullets**, literal `\n...\n` inside the example tags |
+| leading system + tools | appended AFTER the instruction block | folded in **before** `# Tools` |
+| call separators | `\n\n` after content, `\n` between calls | **none** |
+
+Two of these are not cosmetic. The **reasoning boundary** (`last_query_index`) means a prior
+assistant turn's rendering depends on whether a later *real* user query exists — and a user turn
+whose content is itself a `<tool_response>…</tool_response>` wrapper does **not** count, so a
+client replaying tool output as a user turn must not reset it. And the **think tail is
+unconditional**: `ThinkMode::NoThink` is a documented no-op here (the template has no
+`enable_thinking`, so `ModelCaps::think_switch` is already false and the existing switchless
+contract applies unchanged). A NoThink that emitted the qwen `<think>\n\n</think>\n\n` would be a
+prompt this model has never seen.
+
+`reasoning_effort` is the model's headline three-level control (low/medium/high, per the StepFun
+card) and it is a **string in the system turn**, so a bool cannot carry it. It is a parameter of
+`apply_step35_template` and tested directly, but nothing on the serve path supplies it yet —
+`worker::Request` has no field, and `main.rs`'s `parse_think` currently collapses
+low/medium/high into two `ThinkMode` values. Both call sites pass `None` (the template's own
+default: no `Reasoning:` line). Plumbing it is a serve-surface change, tracked below, not
+smuggled into a bring-up commit.
+
+### Checked, not assumed
+
+- **`ModelCaps` probe needs no change.** Measured against the real template: `tools_branch` true
+  (has `<tools>`, no hy3/gemma4 markers), `qwen_think` true (**correct** — the tail really is
+  `<think>\n`), `think_switch` false (**correct** — no `enable_thinking`, so NoThink is honestly
+  reported as unavailable), `instruct_type` "chatml" (defensible: it is a ChatML dialect).
+- **The tool-call parser needs no change.** step35 emits `</think>\n` where qwen emits
+  `</think>\n\n`; `toolcall.rs` swallows *up to* two separator newlines (`postthink_nl`), so one
+  is consumed correctly and nothing is lost. The `<tool_call>` / `<function=` / `<parameter=`
+  emission grammar is identical between the two templates.
+- **One deliberate divergence.** The jinja's body loop has no `else`: a role outside
+  {system, user, assistant, tool} renders as **nothing at all** and the turn silently vanishes.
+  memra renders it as a generic turn instead, matching every other arm in `chat.rs`. A dropped
+  turn is the worse failure, and the branch cannot fire from the serve surface (OpenAI roles are
+  exactly those four, all reproduced byte-for-byte).
+- **Not reproduced, and cannot fire from an OpenAI client:** the `name == "observation"` alias
+  that renames a non-leading `system` turn's role (`Turn` carries no `name`), and the
+  `<im_patch>` image path (this is a VLM; memra is text-only here).
+
+Tests: 8 new `step35_*` cases in `chat.rs` (22 pass in `memra-tokenizer`, 75 in `memra-server`,
+0 fail). They include the dispatch-order guard — a body-shaped assertion (`" pad "` vs `"pad"`),
+because a tail-shaped one would pass even if the qwen arm won.
+
 **q27 co-residence (owner's open question): yes on bytes, with wide margin.** Step 97.78 + Step MTP
 3.45 + q27 14.63 (`Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf`, `/scratch-models`, measured on the box) =
 115.86 GiB of 191.19, leaving 75.32 GiB for both models' KV and activations; Step's own 256K KV is
@@ -473,6 +550,7 @@ measurement, not a fit calculation.
 | kernel-check cell for `sdpa_naive_w_quantized_view` (4 assertions x 3 shapes) | DONE — battery ALL GREEN, 0 FAIL |
 | dc/graph, batched, varlen, spec-verify step35 twins | deferred — refuse with a named cause |
 | `mtp_full_attn_dc` step35 arm | open (lands with the MTP external-file arm) |
-| chat template (StepFun ChatML dialect) | open |
+| chat template (StepFun ChatML dialect) | DONE — 19 jinja-rendered goldens, 8 tests; dispatch precedes the qwen arm |
+| `reasoning_effort` (low/medium/high) on the serve surface | open — renderer takes it, `Request` has no field yet |
 | PP-2 split boot | open |
 | KV @128K under PP-2 + q27 co-residence arithmetic | open |
