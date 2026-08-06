@@ -2,6 +2,130 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// `nvcc --version`'s reported release, as `(major, minor)`. `None` when the binary cannot
+/// be run or the line cannot be parsed — such a candidate is unusable and gets skipped.
+/// Parses the canonical last line: `Cuda compilation tools, release 13.2, V13.2.68`.
+fn nvcc_version(p: &std::path::Path) -> Option<(u32, u32)> {
+    let out = Command::new(p).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let rel = s.split("release ").nth(1)?;
+    let rel = rel.split(',').next()?.trim();
+    let mut it = rel.split('.');
+    let maj = it.next()?.parse::<u32>().ok()?;
+    let min = it.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+    Some((maj, min))
+}
+
+/// Resolve the `nvcc` to build with.
+///
+/// EXPLICIT INTENT WINS, unvalidated: `MEMRA_NVCC` first, then
+/// `CUDA_HOME`/`CUDA_PATH`/`CUDA_ROOT` + `/bin/nvcc`. Whoever sets those has chosen a
+/// toolkit (CI pins 13.1 through `MEMRA_NVCC`; the portable `89`/`90a` arches build fine on
+/// older releases), so this function must not second-guess them.
+///
+/// Otherwise: enumerate every candidate — `PATH` entries, `/usr/local/cuda/bin/nvcc`, and
+/// each `/usr/local/cuda-<x.y>/bin/nvcc` — ask each one its release, and take the
+/// **NEWEST**, not the first found.
+///
+/// WHY NEWEST-WINS RATHER THAN FIRST-ON-PATH (measured on the 5090 dev rig, 2026-08-06):
+/// this rig has BOTH a distro `/usr/bin/nvcc` (**CUDA 12.4**) and `/usr/local/cuda-13.1`.
+/// `/usr/bin` precedes the toolkit on the default `PATH`, and 12.4 predates sm_120 entirely
+/// — a first-hit resolver picks it and the build dies at
+/// `nvcc fatal : Unsupported gpu architecture 'compute_120a'`, which is a WORSE failure
+/// than the hardcoded pin it replaced (it breaks a machine that used to work). Ranking by
+/// reported release makes the pick order-independent and monotone: the rig picks 13.1, the
+/// PRO 6000 box picks 13.2, and a stale distro nvcc can never shadow a real toolkit.
+///
+/// WHY AT ALL: the old code defaulted to a bare `/usr/local/cuda-13.1/bin/nvcc`. The
+/// 2x RTX PRO 6000 box ships 12.8/12.9/13.0/**13.2** and no 13.1, so a naked `cargo build`
+/// died at `panicked at build.rs: spawn nvcc: Os { code: 2, kind: NotFound }` — a message
+/// naming neither CUDA nor the missing path. It cost the pp2-hardening lane its first build
+/// (`research/pp2-hardening-20260806/PROGRESS.md` Phase 0) and the vast 2x5090 bring-up
+/// before that (`research/vast2x5090-bringup-20260803/SUMMARY.md`). The resolved path and
+/// release are always echoed via `cargo:warning`, so every build log records which nvcc
+/// produced its fatbins.
+fn resolve_nvcc() -> String {
+    println!("cargo:rerun-if-env-changed=MEMRA_NVCC");
+    println!("cargo:rerun-if-env-changed=CUDA_HOME");
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDA_ROOT");
+    if let Ok(p) = std::env::var("MEMRA_NVCC") {
+        println!("cargo:warning=nvcc from MEMRA_NVCC: {p}");
+        return p;
+    }
+    for var in ["CUDA_HOME", "CUDA_PATH", "CUDA_ROOT"] {
+        if let Ok(root) = std::env::var(var) {
+            let cand = PathBuf::from(&root).join("bin/nvcc");
+            if cand.is_file() {
+                println!("cargo:warning=nvcc from ${var}: {}", cand.display());
+                return cand.to_string_lossy().into_owned();
+            }
+        }
+    }
+    // Candidate set. Canonicalized + deduped so `/usr/local/cuda -> cuda-13.2` and a PATH
+    // entry pointing at the same tree are not probed (or reported) twice, and so the
+    // `<nvcc>/../../lib64` derivations below land in the real toolkit tree.
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Ok(path) = std::env::var("PATH") {
+        cands.extend(
+            path.split(':').filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("nvcc")),
+        );
+    }
+    cands.push(PathBuf::from("/usr/local/cuda/bin/nvcc"));
+    if let Ok(rd) = std::fs::read_dir("/usr/local") {
+        for ent in rd.flatten() {
+            if ent.file_name().to_string_lossy().starts_with("cuda-") {
+                cands.push(ent.path().join("bin/nvcc"));
+            }
+        }
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut ranked: Vec<((u32, u32), PathBuf)> = Vec::new();
+    for c in cands {
+        if !c.is_file() {
+            continue;
+        }
+        let abs = c.canonicalize().unwrap_or(c);
+        if seen.contains(&abs) {
+            continue;
+        }
+        seen.push(abs.clone());
+        if let Some(v) = nvcc_version(&abs) {
+            ranked.push((v, abs));
+        }
+    }
+    // Newest release wins; ties (same release reachable by two paths) keep discovery order,
+    // which puts PATH ahead of /usr/local — sort_by is stable.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    if let Some(((maj, min), p)) = ranked.first() {
+        let others: Vec<String> = ranked[1..]
+            .iter()
+            .map(|((a, b), q)| format!("{a}.{b} @ {}", q.display()))
+            .collect();
+        println!(
+            "cargo:warning=nvcc auto-detected CUDA {maj}.{min} at {}{}",
+            p.display(),
+            if others.is_empty() {
+                String::new()
+            } else {
+                format!(" (newest of {}; also saw {})", ranked.len(), others.join(", "))
+            }
+        );
+        return p.to_string_lossy().into_owned();
+    }
+    // Nothing runnable found: keep the historic pin so the failure text names a familiar
+    // path, and say out loud what to set. The spawn below turns this into a build error.
+    let pin = "/usr/local/cuda-13.1/bin/nvcc";
+    println!(
+        "cargo:warning=no runnable nvcc found via MEMRA_NVCC / CUDA_HOME / PATH / \
+         /usr/local/cuda*; falling back to {pin} — set MEMRA_NVCC=<path/to/nvcc>"
+    );
+    pin.to_string()
+}
+
 /// Arch auto-detection (MEMRA_CUDA_ARCH unset): probe the first GPU's compute capability
 /// via nvidia-smi and pick the matching build arch. GPU-less machines (CI compile gate)
 /// and unrecognized caps fall back to 120a — the naked build stays the sm_120a build.
@@ -58,7 +182,7 @@ fn main() {
         return;
     }
 
-    let nvcc = std::env::var("MEMRA_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
+    let nvcc = resolve_nvcc();
     println!("cargo:rerun-if-env-changed=MEMRA_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MEMRA_CUTLASS");
     println!("cargo:rustc-check-cfg=cfg(memra_portable_cuda)");
