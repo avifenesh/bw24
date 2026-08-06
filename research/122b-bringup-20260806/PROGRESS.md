@@ -32,14 +32,17 @@ Receipts (logs/, salvaged from /root/receipts-122b):
   (MEMRA_FA_VEC_MIN default 96). 35B-A3B shares nkv=2/hd256 and is green — so the delta
   (n_head/gqa group? IQ4_XS K/V? 12-full-attn-layer hybrid?) is the isolation target.
 
-## Plan (this staffing)
+## Plan (this staffing) — ALL DONE, see VERDICT.md
 
-1. [x] Salvage receipts + this file, commit (this slice)
-2. [ ] Rsync worktree @4cbf5e39 (train HEAD) -> pod /root/bw24-122b, rebuild
-3. [ ] Reproduce NaN on the 4cbf build; pin the threshold (t_kv ~96 crossover?)
-4. [ ] Arm isolation via env doors: MEMRA_FAST=0 oracle, MEMRA_FA_V4=0, MEMRA_FA_V3=0,
-       MEMRA_FA_V2=0, MEMRA_FA_VEC_MIN=big (scalar floor), MEMRA_FA_SPLIT
-5. [ ] If an arm is clean: workaround config receipt + FA v4 fix brief; full gate battery
-       under the workaround (kernel-check MoE cells, argmax x2, run-spec probe, serve boot
-       + smoke, chunkinv, c=8 8k-ctx capacity no-OOM)
-6. [ ] MTP head probe (artifact tensors) — drafter status for the deployment-gap list
+1. [x] Salvage receipts + this file, commit
+2. [x] Worktree @4cbf5e39 (train HEAD) -> pod /root/bw24-122b, rebuilt
+3. [x] NaN reproduced on the 4cbf build (arm a0)
+4. [x] Arm isolation: v4/deep NaN, v3/v2/smem-reg/scalar clean, FAST=0 oracle still NaN
+       -> FA v4 family is the source; root cause = fa_v4_smem q_ints[8][64] gqa<=8 bound
+       vs the 122B's gqa 16 (warps 8..15 overflow into the K tile)
+5. [x] Fix shipped (22fd5f6a): load-time gqa>8 guard keys FA_V4_MAX_DEFAULT=0 (v3 lane,
+       all dispatch sites together). Battery: kernel-check ALL GREEN, argmax x2 identical
+       (incl. the original 4k repro), chunkinv PASS, serve-smoke PASS, capacity c=8 @8k
+       8/8 clean 0-OOM peak 62.0GB
+6. [x] MTP probe: artifact ships NO NextN tensors (nextn=0) though HF config has
+       mtp_num_hidden_layers=1 — own-gen drafter or GGUF re-export is the follow-up
