@@ -172,14 +172,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window,
         window - n_agree
     );
+    // Classification. The two independent axes are (a) how many positions flipped, and
+    // (b) whether the config spread at the contending ids is even large enough to reach
+    // across the decision margin. Only (flip AND spread < margin) is a defect.
+    let flips = window - n_agree;
+    let exposed = fdelta > fmd.min(fmp);
     println!(
         "VERDICT-INPUT: {}",
-        if window - n_agree <= 1 && fdelta > fmd.min(fmp) {
-            "NEAR-TIE class — isolated flip at a margin the config spread covers"
-        } else if window - n_agree > 1 {
-            "SYSTEMATIC — multiple positions disagree; NOT a near-tie coin"
-        } else {
-            "UNEXPLAINED — flip at a margin the config spread does NOT cover; investigate"
+        match (flips, exposed) {
+            (0, false) =>
+                "STABLE — no flip, and the config spread cannot reach across the decision \
+                 margin (structurally safe at this position)",
+            (0, true) =>
+                "NEAR-TIE-EXPOSED — no flip fired, but the margin is inside the config spread: \
+                 this position is a coin that happened to land the same way in both configs",
+            (1, true) =>
+                "NEAR-TIE class — the single flip sits at a margin the config spread covers \
+                 (documented cross-config drift, not a numeric defect)",
+            (1, false) =>
+                "UNEXPLAINED — a flip at a margin the config spread does NOT cover; this is a \
+                 real defect, investigate",
+            _ =>
+                "SYSTEMATIC — multiple positions disagree; NOT a near-tie coin, investigate",
         }
     );
     Ok(())
