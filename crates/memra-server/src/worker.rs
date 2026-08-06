@@ -2216,6 +2216,15 @@ pub fn run(
             let s = active.remove(i);
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
+            // G5 fault injection (MEMRA_PANIC_AFTER, unset in every real deployment): panic
+            // the worker here, with a live CUDA context and the supervisor above us, so the
+            // catch_unwind -> mark_dead -> respawn -> exit-70 ladder is proved on the wire and
+            // not only against a fake worker in unit tests.
+            if panic_injection_due(n_completed) {
+                panic!("MEMRA_PANIC_AFTER={} fault injection: \
+                        deliberate worker panic after {n_completed} completed request(s)",
+                       panic_after().unwrap_or(0));
+            }
             lane_completed[s.lane.idx()] += 1;
             if s.spec_rounds > 0 { spec_telem_dirty = true; } // force-publish on spec retire
             if let Some(mut sess) = s.spec {
@@ -3738,6 +3747,37 @@ fn finish(s: &Session, reason: StopReason) {
         elapsed_s: elapsed,
         spec,
     });
+}
+
+/// FAULT INJECTION (`MEMRA_PANIC_AFTER=<n>`, off unless set): panic the GPU worker thread
+/// after `n` served requests. An explicitly-blocked experimental door in the flags-doctrine
+/// sense, and the ONLY way the G5 supervision path can be exercised against a REAL CUDA
+/// worker — the alternative is trusting that a catch_unwind + respawn + exit-70 ladder built
+/// around a live CUDA context behaves the way its unit tests (which use a fake worker) say it
+/// does. That trust was already misplaced once on this lane: the first supervisor deadlocked
+/// startup, and only a live gate found it. Costs one relaxed atomic load per completed request.
+///
+/// ONE-SHOT PER PROCESS. `n_completed` is per-`run()`, so a per-run trigger re-fires on the
+/// respawned worker the moment it serves its first request — measured: the respawn reloaded
+/// the weights, went green with `generation:1`, then immediately panicked again and exited 70,
+/// which makes "did the recovery actually serve traffic?" unanswerable. Injecting exactly one
+/// panic per process is what proves the recovery half.
+fn panic_after() -> Option<u64> {
+    static P: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("MEMRA_PANIC_AFTER").ok().and_then(|v| v.parse().ok()))
+}
+
+/// Set once the injected panic has fired, so it fires at most once per process (see above).
+static PANIC_INJECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True exactly once, on the `n`th completed request of the process's first worker run.
+fn panic_injection_due(n_completed: u64) -> bool {
+    match panic_after() {
+        Some(n) if n_completed >= n =>
+            !PANIC_INJECTED.swap(true, std::sync::atomic::Ordering::SeqCst),
+        _ => false,
+    }
 }
 
 /// Number of respawn attempts after a worker-thread PANIC before the process fails loudly.
