@@ -204,6 +204,31 @@ if [ "${MEMRA_CI_STRESS:-1}" = "1" ] && [ -x tools/serve-stress-gate.sh ]; then
     tools/serve-stress-gate.sh || { echo "serve-stress FAIL"; exit 1; }
 fi
 
+# SERVED-SPEC ACCEPTANCE + LONG-TEXT ASSERTION (lane/accept-gate, 2026-08-06): the arm that
+# closes a receipted blind spot in THIS battery. research/f8f4-flip-20260806 (merged c506317e)
+# showed a kernel arm move served greedy text in 4 of 6 regime cells at temperature 0 and move
+# spec acceptance up to -9.5pp while EVERY gate above stayed green — because (1) the token
+# goldens stop at 20 tokens and both divergences landed at generated index 22 and 38, (2)
+# `fast-gate --refresh-goldens` after such a change would silently re-pin the new arm, and (3)
+# nothing here compared accepted-draft COUNTS, which are spec throughput, i.e. the product.
+# Each arm was internally self-consistent and reproduced its own goldens, so self-consistency
+# could never see it.
+#
+# This arm asserts, at the production serve config (real regime drafter attached, real serve K):
+# exact (rounds, drafted, accepted) integers — temp 0 makes drafting deterministic — plus the
+# full generated text sha256 to ngen=128, 6.4x past the golden window. In-battery per the H100
+# lane law: gates outside the battery rot silently.
+#
+# Default arm = the smoke tier (ONE model, ONE cell: q27-p1, ~1 min incl. the 16G load) to keep
+# the correctness stage near its ~3 min budget. The full 6-cell matrix (both NVFP4-reachable
+# models x 3 prompt lengths) is `tools/accept-gate.sh --full`, and `--control` adds the
+# second-boot determinism control. Its own teeth: `tools/accept-gate.sh --teeth` sets
+# MEMRA_MMQ_F8F4=1 and REQUIRES the gate to fail — run that whenever the spec/draft or NVFP4
+# prefill path moves. MEMRA_CI_ACCEPT=0 skips.
+if [ "${MEMRA_CI_ACCEPT:-1}" = "1" ] && [ -x tools/accept-gate.sh ]; then
+    tools/accept-gate.sh || { echo "accept-gate FAIL"; exit 1; }
+fi
+
 [ "$MODE" = "--correctness" ] && exit 0
 
 echo "== local-ci: perf stage ($MODE) =="
