@@ -45,3 +45,17 @@ if [ "${MEMRA_SKIP_PERF_CI:-0}" != "1" ]; then
         fi
     fi
 fi
+
+# ---- profile-blob / secret guard (2026-08-06) ----
+# nsys full profiles (.nsys-rep/.qdrep/.qdstrm) embed the ENTIRE process environment —
+# a committed one leaked a live GH_TOKEN + Bedrock key (caught by GitHub push protection,
+# scrubbed via filter-repo). Refuse any push whose new commits add one. No override:
+# export the kern-sum CSV instead (nsys stats --report cuda_gpu_kern_sum).
+range=$(git rev-parse @{u} 2>/dev/null || echo HEAD~50)
+blobs=$(git diff --name-only --diff-filter=A "$range"..HEAD 2>/dev/null | grep -E '\.(nsys-rep|qdrep|qdstrm)$' || true)
+if [ -n "$blobs" ]; then
+    echo "pre-push: REFUSED — nsys profile blob(s) in the push range (they capture full env, incl. tokens):"
+    echo "$blobs" | sed 's/^/    /'
+    echo "Export kern-sum CSVs instead; strip the blob from history before pushing."
+    exit 1
+fi

@@ -29,3 +29,9 @@ probe/mxf4_transient_repack
 probe/kv_align_probe
 probe/pdl_probe
 target-*/
+
+# nsys full profiles capture the ENTIRE process environment (tokens, keys) —
+# 2026-08-06 credential-leak lesson. Commit exported kern-sum CSVs / text only.
+*.nsys-rep
+*.qdrep
+*.qdstrm
