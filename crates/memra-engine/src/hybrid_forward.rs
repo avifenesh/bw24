@@ -286,7 +286,7 @@ impl HybridModel {
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
+                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t, il)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
@@ -349,7 +349,7 @@ impl HybridModel {
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} norm ok"); }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
+                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t, il)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
@@ -623,7 +623,10 @@ impl HybridModel {
         // drift (the repo's interleaved-A/B law exists for exactly this). Larger segments
         // (S-prep/S-attn, 7-9 kernels) remain the open hypothesis; the core-split
         // machinery stays (byte-identical) as their foundation.
-        let use_seg = f16fuse && seg.is_some()
+        // step35 is excluded: the core-split path calls `full_attn_prime_core_inner`, which is
+        // the GENERIC attn core (uniform n_head, rope_dim_count, no window, no head-wise gate).
+        // step35 rides its own mixer through the normal per-layer arm below.
+        let use_seg = f16fuse && seg.is_some() && self.cfg.step35.is_none()
             && std::env::var("MEMRA_PRIME_SEG").as_deref() == Ok("1");
         if let Some((sg, sm, _, st)) = seg.as_mut() {
             if **st != t {
@@ -970,6 +973,15 @@ impl HybridModel {
         if carried && cfg.gemma4.is_some() {
             return Err("prime_cache_batch: gemma4 has no continuation prime (v0 fresh-only)".into());
         }
+        // step35: the cross-request batch driver splits the concat projection outputs and feeds
+        // them to `full_attn_prime_core_inner` (the GENERIC attn core — uniform n_head, 128-dim
+        // rope on every layer, no window, no head-wise gate). Running step35 through it compiles
+        // and produces plausible-but-wrong logits, so refuse until a step35 varlen core exists.
+        // The single-sequence `prime_cache` path is the supported prefill.
+        if cfg.step35.is_some() {
+            return Err("prime_cache_batch: step35 has no batched prime core (per-layer n_head / \
+                        partial rope / SWA / head-wise gate) — use prime_cache per sequence".into());
+        }
         let ts: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
         for &t in &ts { assert!(t >= PRIME_MIN_T, "prime_cache_batch needs T >= {PRIME_MIN_T}"); }
         for (s, c) in caches.iter().enumerate() {
@@ -1274,6 +1286,9 @@ impl HybridModel {
                        hx: Option<&CudaSlice<u8>>,
                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return self.step35_attn_prime(e, fa, h, hx, pos_d, t, cache, il);
+        }
         // PROJ/CORE SPLIT (task #13, 2026-07-26): the q/k/v group projection is hoisted so
         // the cross-request batch driver can run it at m = sum_T over concatenated tokens;
         // this single-seq path composes proj+core identically (byte-for-byte the old body).
@@ -1810,8 +1825,14 @@ impl HybridModel {
     }
 
     /// Full-attention mixer with QK-norm, partial RoPE, sigmoid output gate (qwen35 :257-336).
-    pub fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
+    ///
+    /// `il` = layer index: step35 needs it (per-layer n_head / rope width / window / gate) and
+    /// routes to its own mixer. Every other arch ignores it (uniform geometry).
+    pub fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize, il: usize)
                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return self.step35_attn(e, fa, h, pos_d, t, il);
+        }
         let cfg = &self.cfg;
         let _n_embd = cfg.n_embd as usize;
         let n_head = cfg.n_head as usize;
@@ -6692,6 +6713,270 @@ impl HybridModel {
         let logits = e.dtoh(&ld)?;
         cache.pos += 1;
         Ok((logits, h_seed))
+    }
+}
+
+// ============================ step35 (Step-3.7-Flash) ==================================
+// Node-for-node vs llama.cpp src/models/step35.cpp:216-300. WHY THIS IS A DEDICATED MIXER
+// FAMILY and not a few branches inside the generic `full_attn*` chain:
+//
+//   1. `n_head` IS PER LAYER (`step35.attention.head_count` is an ARRAY: 64 on full-attn
+//      layers, 96 on SWA). Every generic site reads the `cfg.n_head` scalar, so wq/wo/attn_gate
+//      shapes and the FA head counts would be wrong on 33 of 45 layers.
+//   2. `cfg.rope_dim_count` is 128 for this arch, but FULL-attn layers rotate only 64 dims
+//      (upstream halves `n_rot_full` after the generic loader defaults it). A generic mixer
+//      would rotate 128 dims on the full layers — silently wrong, plausible-looking logits.
+//   3. Dual rope base (5e6 full / 1e4 SWA) + `rope_freqs.weight` on FULL layers ONLY.
+//   4. SWA 3:1 (`sliding_window` 512, pattern [false,true,true,true]).
+//   5. The head-wise gate is a SEPARATE `attn_gate.weight [n_embd, n_head_l]` (one pre-sigmoid
+//      scalar per head, broadcast over head_dim) applied to the attention output BEFORE wo —
+//      not the qwen35 fused-in-wq per-DIM gate that `attn_out_gate()`/`q_gate_split` handle.
+//      Its input is the POST-attn_norm hidden (`cur`), not the residual.
+//
+// Attention scale is the DEFAULT 1/sqrt(n_embd_head_k) (step35.cpp:255) — NOT gemma4's 1.0.
+impl HybridModel {
+    /// Per-layer attention geometry: (head_dim, n_kv, n_head, rope_base, scale, is_swa).
+    pub(crate) fn step35_geom(&self, il: usize) -> (usize, usize, usize, f32, f32, bool) {
+        let s = self.cfg.step35.as_ref().unwrap();
+        let hd = self.cfg.head_dim_k as usize;
+        (hd,
+         s.n_head_kv(il as u32) as usize,        // 8 (uniform on 3.7-Flash)
+         s.n_head(il as u32) as usize,           // 64 full / 96 SWA
+         s.rope_base(il as u32),                 // 5e6 full / 1e4 SWA
+         1.0 / (hd as f32).sqrt(),               // step35.cpp:255 kq_scale
+         s.is_swa(il as u32))
+    }
+
+    /// step35 attention core: everything from the q/k/v projection outputs through the head-wise
+    /// gate, returning the GATED attention output PRE-`wo` (the caller runs wo, so this composes
+    /// with both the plain `matmul(&fa.wo, ..)` sites and the f16/into-slab GEMM sites).
+    ///
+    /// `hg` = the POST-attn_norm hidden state (upstream's `cur`) — the gate projection's input.
+    /// `cache`:
+    ///   * `Some` => PRIME mode: append this chunk's post-rope K / raw V rows into the resident
+    ///     quantized cache and attend THROUGH the cache view, exactly like the generic
+    ///     `full_attn_prime_fa_dispatch` (quantize-then-attend on chunk 0 too, so chunk size
+    ///     cannot decide where a precision edge falls — the grain-free chunk-invariance
+    ///     contract, lane/chunkinv-flip).
+    ///   * `None` => pure prefill (forward/forward_last/t2probe): attend over this batch's f32
+    ///     q/k/v, no cache side effect.
+    ///
+    /// SWA WINDOW, and why prefill needs `sdpa_naive_w_quantized_view`: the view is trimmed to
+    /// the oldest key ANY query in this chunk can reach (`off = base_len - (win-1)`), which
+    /// bounds the view at `win-1+t` rows, but the mask is still required — inside the chunk,
+    /// query `qt` may only see view keys `[qt, qt+win-1]`, so the earlier keys the trimmed view
+    /// still contains must be masked per query. memra's window convention
+    /// (`sdpa_naive_w_f32`: mask `t < q_pos-(window-1)`, `q_pos = (T_kv-T)+qt`) is bit-for-bit
+    /// upstream's `LLAMA_SWA_TYPE_STANDARD` (`llama-hparams.h:359`: mask `p1-p0 >= n_swa`), and
+    /// step35.cpp:6 sets exactly that swa_type — verified verbatim on both sides.
+    ///
+    /// Note the f32 `sdpa_naive_w` floor's shared memory is `t_kv*4` bytes, so the SWA arm needs
+    /// `t_kv = win-1+t <= 12287` — i.e. it relies on chunked prefill (MEMRA_PRIME_CHUNK, default
+    /// 4096). A monolithic 32k prime would exceed the 48 KiB dynamic-smem default.
+    #[allow(clippy::too_many_arguments)]
+    fn step35_attn_pre_wo(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
+                          hg: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                          cache: Option<&mut Cache>, il: usize)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+        let eps = self.cfg.rms_eps;
+        let s = self.cfg.step35.as_ref().unwrap();
+        let win = s.sliding_window as usize;
+        let n_rot = s.n_rot(il as u32) as usize;
+
+        let v = g3.pop().unwrap();
+        let k0 = g3.pop().unwrap();
+        let q0 = g3.pop().unwrap();
+
+        // q/k RMSNorm over head_dim rows (attn_q_norm/attn_k_norm [128] F32), then the
+        // per-layer PARTIAL NEOX rope: n_rot = 64 on full layers (dims 64..127 pass through
+        // unrotated), 128 on SWA. rope_freqs (llama3-style per-dim factors) on FULL only.
+        let mut q = e.uninit(t * nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
+        let mut k = e.uninit(t * nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
+        let ff = if swa { None } else {
+            self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, n_rot, nh, nkv, t, rbase, 1.0, ff)?;
+
+        let mut attn = e.uninit(t * nh * hd)?;
+        match cache {
+            Some(cache) => {
+                let base_len = {
+                    let kvl = cache.kv[il].as_mut().unwrap();
+                    assert!(kvl.len + t <= cache.max_ctx, "step35 prime: KV overflow");
+                    let base_len = kvl.len;
+                    e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
+                                               kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                               kvl.v_tok_bytes, crate::Engine::kv_fp8_on())?;
+                    kvl.len += t;
+                    let new_len = kvl.len as i32;
+                    e.set_i32_one(&mut kvl.len_d, new_len)?;
+                    base_len
+                };
+                let kvl = cache.kv[il].as_ref().unwrap();
+                // SWA: trim the view to the oldest key any query in this chunk can reach.
+                let off = if swa { base_len.saturating_sub(win - 1) } else { 0 };
+                let t_kv = base_len + t - off;
+                let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
+                                             (off + t_kv) * kvl.k_tok_bytes);
+                let v_view = e.view_u8_range(&kvl.v, off * kvl.v_tok_bytes,
+                                             (off + t_kv) * kvl.v_tok_bytes);
+                if swa && t_kv > win {
+                    // Windowed mask needed (see the doc note). No windowed FA stamp exists at
+                    // head_dim 128 — every windowed prefill twin in flash_attn.cu is hd256 —
+                    // so this takes the f32 quantized-view floor. Same cache bytes, same
+                    // numeric class as the unwindowed quantized-view fallback.
+                    e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                                  t, t_kv, scale, true, win,
+                                                  kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else if std::env::var("MEMRA_NOFA").is_ok() {
+                    e.sdpa_naive_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                                t, t_kv, scale, true,
+                                                kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else {
+                    // t_kv <= win (or a full-attn layer): the window mask is a no-op under
+                    // causal, so ride the hd128 dequant-once FA prefill.
+                    e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                         t, t_kv, scale, true,
+                                         kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                         crate::Engine::kv_fp8_on())?;
+                }
+            }
+            None => {
+                if swa && t > win {
+                    e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+                } else if std::env::var("MEMRA_NOFA").is_ok() {
+                    e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                } else {
+                    e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                }
+            }
+        }
+
+        // HEAD-WISE GATE (step35.cpp:267-285): gate = attn_gate(cur) -> [t, n_head_l];
+        // attn *= sigmoid(gate) broadcast over head_dim. BEFORE wo.
+        let gw = fa.attn_gate.as_ref()
+            .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+        let gt = e.matmul(gw, hg, t)?;
+        let mut ag = e.uninit(t * nh * hd)?;
+        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, t)?;
+        Ok(ag)
+    }
+
+    /// step35 PREFILL mixer, no cache side effect (the `full_attn` contract: `forward`,
+    /// `forward_last`, t2probe). Post-`wo`.
+    pub(crate) fn step35_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                              pos_d: &CudaSlice<i32>, t: usize, il: usize)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
+        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, None, il)?;
+        Ok(e.matmul(&fa.wo, &ag, t)?)
+    }
+
+    /// step35 PRIME mixer (the `full_attn_prime` contract: append this chunk's K/V into the
+    /// resident quantized cache, attend through the cache view). Post-`wo`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step35_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                                    hx: Option<&CudaSlice<u8>>, pos_d: &CudaSlice<i32>, t: usize,
+                                    cache: &mut Cache, il: usize)
+                                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let g3 = match hx {
+            Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
+            None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
+        };
+        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, Some(cache), il)?;
+        Ok(e.matmul(&fa.wo, &ag, t)?)
+    }
+
+    /// step35 T=1 decode attention (post-`wo`, matching `full_attn_decode_pre`'s contract).
+    /// `pre_q` = the attn-input norm's q8_1 pair when the caller took the norm-fusion lever
+    /// (then `h` is a zero-length placeholder and EVERY projection here — including the gate —
+    /// must be on the q8_1 fast path; `mixer_in_q8_1_fast` enforces that for step35 by also
+    /// requiring `attn_gate`).
+    ///
+    /// SWA decode is a token-aligned VIEW OFFSET into the quantized cache (the gemma4 R6
+    /// pattern): keys carry absolute rope and the mask is purely positional, so the single
+    /// query at `len-1` attending the last `win` rows IS the windowed result — no mask kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step35_decode_attn(&self, e: &Engine, fa: &FullAttnLayer, il: usize,
+                          h: &CudaSlice<f32>,
+                          pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+                          pos_d: &CudaSlice<i32>, cache: &mut Cache)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+        let eps = self.cfg.rms_eps;
+        let s = self.cfg.step35.as_ref().unwrap();
+        let win = s.sliding_window as usize;
+        let n_rot = s.n_rot(il as u32) as usize;
+        let n_embd = self.cfg.n_embd as usize;
+        let gw = fa.attn_gate.as_ref()
+            .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+
+        let (q0, k0, v0, gt) = match pre_q {
+            Some((hq, hdq)) => {
+                debug_assert!(e.uses_q8_1_fast(gw),
+                    "step35 pre-quantized decode requires attn_gate on the q8_1 fast path \
+                     (h is a zero-length placeholder here) — see mixer_in_q8_1_fast");
+                let (a, b, c) = match e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)? {
+                    Some(t3) => t3,
+                    None => (e.matmul_pre(&fa.wq, hq, hdq, h, 1)?,
+                             e.matmul_pre(&fa.wk, hq, hdq, h, 1)?,
+                             e.matmul_pre(&fa.wv, hq, hdq, h, 1)?),
+                };
+                let gt = e.matmul_pre(gw, hq, hdq, h, 1)?;
+                (a, b, c, gt)
+            }
+            None => {
+                if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
+                    && e.uses_q8_1_fast(&fa.wv) && e.uses_q8_1_fast(gw) {
+                    let (hq, hdq) = e.quantize_q8_1(h, 1, n_embd)?;
+                    let (a, b, c) = match e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hdq)? {
+                        Some(t3) => t3,
+                        None => (e.matmul_pre(&fa.wq, &hq, &hdq, h, 1)?,
+                                 e.matmul_pre(&fa.wk, &hq, &hdq, h, 1)?,
+                                 e.matmul_pre(&fa.wv, &hq, &hdq, h, 1)?),
+                    };
+                    let gt = e.matmul_pre(gw, &hq, &hdq, h, 1)?;
+                    (a, b, c, gt)
+                } else {
+                    (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?,
+                     e.matmul(&fa.wv, h, 1)?, e.matmul(gw, h, 1)?)
+                }
+            }
+        };
+
+        let mut q = e.uninit(nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh, eps)?;
+        let mut k = e.uninit(nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv, eps)?;
+        let ff = if swa { None } else {
+            self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, n_rot, nh, nkv, 1, rbase, 1.0, ff)?;
+
+        if std::env::var("MEMRA_NOFA").is_ok() {
+            return Err("MEMRA_NOFA (naive f32 SDPA) is incompatible with the quantized KV \
+                        cache; unset MEMRA_NOFA to use fa_decode".into());
+        }
+        let kvl = cache.kv[il].as_mut().unwrap();
+        e.append_kv_quantized(&k, &v0, &mut kvl.k, &mut kvl.v, kvl.len,
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                              crate::Engine::kv_fp8_on())?;
+        kvl.len += 1;
+        let (off, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) } else { (0, kvl.len) };
+        let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
+                                     (off + t_kv) * kvl.k_tok_bytes);
+        let v_view = e.view_u8_range(&kvl.v, off * kvl.v_tok_bytes,
+                                     (off + t_kv) * kvl.v_tok_bytes);
+        let mut attn = e.uninit(nh * hd)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                          kvl.k_tok_bytes, kvl.v_tok_bytes, crate::Engine::kv_fp8_on())?;
+
+        let mut ag = e.uninit(nh * hd)?;
+        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, 1)?;
+        Ok(e.matmul(&fa.wo, &ag, 1)?)
     }
 }
 

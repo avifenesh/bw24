@@ -320,7 +320,15 @@ impl HybridModel {
     pub(crate) fn mixer_in_q8_1_fast(&self, e: &Engine, mixer: &Mixer) -> bool {
         match mixer {
             Mixer::Full(fa) => {
-                e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv)
+                // step35 also projects its head-wise GATE from the same attn-normed input, so
+                // the fused (h-less) arm requires attn_gate on the q8_1 fast path too — without
+                // this the gate matmul would get a zero-length `h`.
+                let gate_ok = match &fa.attn_gate {
+                    Some(g) => e.uses_q8_1_fast(g),
+                    None => true,
+                };
+                gate_ok && e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
+                    && e.uses_q8_1_fast(&fa.wv)
             }
             Mixer::Linear(la) => {
                 e.uses_q8_1_fast(&la.wqkv)
@@ -1884,6 +1892,14 @@ impl HybridModel {
         il: usize,
         cap_bucket_max: Option<usize>,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // step35 has no device-counter twin yet: the `_dc` family needs a windowed dc fa_decode
+        // (SWA layers read a token-OFFSET view, which the dc kernels' len_d-derived t_kv cannot
+        // express) plus a per-layer-n_head capture. Refuse loudly instead of silently running
+        // the generic geometry. The eager arm (`step35_decode_attn`) is the supported decode.
+        if self.cfg.step35.is_some() {
+            return Err("step35 has no device-counter/graph decode arm (SWA needs an offset KV \
+                        view the dc kernels cannot express) — use the eager decode".into());
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -2598,6 +2614,9 @@ impl HybridModel {
         cache: &mut Cache,
         il: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return self.step35_decode_attn(e, fa, il, h, pre_q, pos_d, cache);
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -2786,6 +2805,10 @@ impl HybridModel {
         caches: &mut [Cache],
         il: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return Err("step35 has no batched (m-stream) decode mixer — per-layer n_head, \
+                        partial rope and the SWA offset view need a step35 twin".into());
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;

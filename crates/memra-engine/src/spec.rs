@@ -2189,6 +2189,14 @@ impl HybridModel {
         il: usize,
         stream_ctr: Option<&CudaSlice<i32>>,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // step35: the decode-exact verify needs its own twin (per-layer n_head, partial rope,
+        // the SWA offset view, and the head-wise gate). Refuse rather than run the generic
+        // geometry — a verify that silently computes different attention than decode defeats
+        // the whole self-consistency gate.
+        if self.cfg.step35.is_some() {
+            return Err("step35 has no spec-verify attention arm yet (needs the decode-exact \
+                        twin of step35_decode_attn at t>1)".into());
+        }
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
