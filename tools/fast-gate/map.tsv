@@ -81,9 +81,11 @@
 ^crates/memra-sampling/	synthetic	g12,sampt,samp	q35spec
 ^crates/memra-runtime/	all	g12,q9,q35	-
 ^crates/memra-validate/	synthetic	-	-
-# memra-server: fast-gate prints a pointer to tools/serve-smoke.sh (the serving battery);
-# engine-side effects are covered by the DEFAULT row only if engine files are also touched.
-^crates/memra-server/	none	-	-
+# memra-server: the serving battery (tools/serve-smoke.sh) is local-ci's; what fast-gate owns
+# here is the CONCURRENCY contract — sstress (c=64 streaming burst) covers the admission VRAM
+# gate + step-OOM park seams that a worker.rs edit can silently break with a green build.
+# Engine-side effects are covered by the DEFAULT row only if engine files are also touched.
+^crates/memra-server/	none	sstress	-
 # --- no-gate paths ---
 ^(docs/|research/|agent-knowledge/|probe/|\.github/|tools/)	none	-	-
 ^[^/]*\.(md|svg|png|txt|json|lock)$	none	-	-

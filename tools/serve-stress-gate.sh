@@ -14,20 +14,30 @@
 #   4. p50/p95 completion wall time + TTFB recorded per run (INFORMATIONAL, not asserted —
 #      this is a robustness gate, not a perf cell; perf lives in the tracked boards).
 #
-# Concurrency mechanics under test: MEMRA_MAX_SESSIONS default (64) admits everything;
-# the VRAM-aware admission gate (worker.rs: free < 2x observed session cost -> FIFO wait)
-# and the F5 right-size ladder are exactly the seams a 64-client burst stresses on a 24GB
-# card (64 x ~233MiB q9 spec sessions + 5.8GiB weights does NOT all fit — the gate proves
-# the admission wait degrades gracefully instead of OOMing or hanging).
+# Concurrency mechanics under test: MEMRA_MAX_SESSIONS default (64) lets the COUNT axis admit
+# everything, so the VRAM axis is what has to hold. The admission gate (worker.rs: spec-capable
+# models wait while free < cost + SPEC_SHRINK_RESERVE), the step-OOM park-requeue, and the F5
+# right-size ladder are exactly the seams a 64-client burst stresses on a 24GB card (64 x
+# ~286MiB live q9 spec sessions + 5.8GiB weights + a ~1.3GiB burst transient does NOT all fit
+# — the gate proves the admission wait paces gracefully instead of OOMing or hanging).
 #
 # NOT flock-wrapped: callers own the GPU lock (fast-gate's lockrun / local-ci's window
 # discipline) — self-locking here would self-deadlock under fast-gate.
 #
-# Usage: tools/serve-stress-gate.sh [model.gguf [draft.gguf [n_clients]]]
+# TEETH (--teeth, lane/admit-oom 2026-08-06): a gate only ever observed PASSING proves nothing.
+# --teeth forces the admission transient reserve tiny (MEMRA_ADMIT_RESERVE_MB=16, i.e. back to
+# roughly the pre-fix `2x cost` headroom) and INVERTS the verdict: the run must FAIL. If a
+# deliberately-broken reserve still passes, this gate is not measuring the admission cost model
+# and its green is worthless. Run it whenever the admission math changes.
+#
+# Usage: tools/serve-stress-gate.sh [--teeth] [model.gguf [draft.gguf [n_clients]]]
 # Exits nonzero on any failed assertion. SKIPs (exit 0, "serve-stress-gate: SKIP" line —
 # fast-gate's verdict-word contract) when the model artifact is absent.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+TEETH=0
+if [ "${1:-}" = "--teeth" ]; then TEETH=1; shift; export MEMRA_ADMIT_RESERVE_MB=16; fi
 
 MODEL="${1:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf}"
 DRAFT="${2:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf}"
@@ -170,6 +180,19 @@ FAILS=0
 if [ -n "$BADLOG" ]; then
     echo "  FAIL: server log carries failure lines:"; echo "$BADLOG" | sed 's/^/      /'
     FAILS=$((FAILS+1))
+fi
+
+if [ "$TEETH" = 1 ]; then
+    # inverted verdict: a broken reserve MUST break the gate
+    if [ "$FAILS" -gt 0 ]; then
+        echo "serve-stress-gate: TEETH OK ($FAILS assertion(s) failed at MEMRA_ADMIT_RESERVE_MB=16 \
+— the gate detects a broken admission reserve); server log: $SLOG"
+        exit 0
+    else
+        echo "serve-stress-gate: TEETH FAIL (c=$NCLIENTS passed with the reserve forced to 16MB \
+— this gate does NOT measure the admission cost model; its green is worthless)"
+        exit 1
+    fi
 fi
 
 if [ "$FAILS" -eq 0 ]; then

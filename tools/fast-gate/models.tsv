@@ -90,3 +90,10 @@ chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
 # capture/recapture path.
 gwstress	cmd	tools/graph-warmup-stress-gate.sh	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 3	-	-
 
+
+# c=64 serving concurrency stress (lane/admit-oom, 2026-08-06): 64 staggered streaming clients
+# against a live memra-server. Guards the admission VRAM cost model (spec transient reserve) +
+# the step-OOM park-requeue — the pair that turned the c=64 red (0/64 well-formed, 64x
+# CUDA_ERROR_OUT_OF_MEMORY) into 64/64 paced. ~2 min (server load + ~60s burst). Its teeth arm
+# lives in local-ci's doc, not here: `tools/serve-stress-gate.sh --teeth`.
+sstress	cmd	tools/serve-stress-gate.sh	-	-	-
