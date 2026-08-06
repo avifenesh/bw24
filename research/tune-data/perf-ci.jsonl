@@ -384,3 +384,4 @@
 {"ts":"2026-08-06T08:06:06Z","git":"eea5a9ed","cell":"e4b-spec-short","toks":216.19,"accept":0.429,"tok_round":2.08,"profile":"performance","load":1.48,"window_clean":true}
 {"ts":"2026-08-06T08:06:06Z","git":"eea5a9ed","cell":"qwen9b-plain-short","toks":124.79,"profile":"performance","load":1.48,"window_clean":true}
 {"ts":"2026-08-06T08:39:50Z","git":"3d24cbaf","cell":"31b-plain-short","toks":37.97,"profile":"performance","load":4.12,"window_clean":false}
+{"ts":"2026-08-06T12:06:01Z","git":"4b4dc7b1","cell":"31b-plain-short","toks":41.22,"profile":"performance","load":2.40,"window_clean":true}
