@@ -1,0 +1,99 @@
+[server] starting; models config = [("stress", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "stress" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] stress: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "stress": 33 layers, eos=248046
+[worker] stress: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] stress: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["stress"]
+[server] listening on http://127.0.0.1:8179
+[meter] admit id=chatcmpl-d7575f8c13ae0de148dcd099e46adcd4 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-8dc49fc1dd169a33b1b9cf4f41f67b19 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b1df60f13639228d014df2f52d3876aa tenant=default lane=interactive model="stress"
+[worker] observed session VRAM cost for "stress": 201MB (admission gate = 2x)
+[meter] admit id=chatcmpl-22cd586bdfcebd8eb3987de645b5e616 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=109 in 53.3ms
+[meter] admit id=chatcmpl-4c54a4debd0684338acc19bb9fd71441 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-71725a7eb7db04fe589545193609c838 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-dbfbe3866f75937b3f79657f2ac1a207 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=95 in 52.9ms
+[meter] admit id=chatcmpl-d314be426cb7c3cad1f52cae29545003 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-3b76b241dfad4447e3179ccba6132c9d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-68d69f6498407be60c259cddc32368a4 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=109 in 53.3ms
+[meter] admit id=chatcmpl-a292ac8c91ff8c0211e9a089599b2f00 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-058e8b15c665c4a9f0b2b763b8386585 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=108 in 53.0ms
+[meter] admit id=chatcmpl-0cf2b83b1e10bc86f5152f8acf0fad12 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-fb514898dd7755c70b0ac43f003ef7a8 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=99 in 53.0ms
+[meter] admit id=chatcmpl-833d3220df2c223a2ba9463489eb774e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-8af6965950bd5d977467f81570d3de80 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=111 in 53.3ms
+[meter] admit id=chatcmpl-692c95d6fcd707b8e34e89dcd7f99767 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6aed39efbb50a0f44ddbbbd526228e8e tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=109 in 53.3ms
+[meter] admit id=chatcmpl-5277a031c93c91452d35378472239eb2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b9630caed848a3dce9e28d6aa0e667aa tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=99 in 53.0ms
+[meter] admit id=chatcmpl-3e2991ae8539008ebafa6588fef53158 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-42de9c70a69769c2081c22995a1999bc tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=111 in 53.3ms
+[meter] admit id=chatcmpl-738b66f7d5693f6a1cef855b63010cbf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-21cecdbeedda3e332e9ef6316e2436a2 tenant=default lane=interactive model="stress"
+[prime-batch] B=2 tokens=109 in 53.2ms
+[meter] admit id=chatcmpl-e587ff4b34b542627637f6d0a22048ee tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-f0d0b99996a61c07a673581d9654c355 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-111eb1ba28ac853c2fb22f54a23d772c tenant=default lane=interactive model="stress"
+[prime-batch] B=3 tokens=156 in 71.8ms
+[meter] admit id=chatcmpl-28db37d0c5e0ceb191cc970564c2e2c6 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-012930e623ab1a281546b91814209f40 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-acbfde629b80de8b2620bccc649862f4 tenant=default lane=interactive model="stress"
+[prime-batch] B=3 tokens=163 in 72.4ms
+[meter] admit id=chatcmpl-c0d7e72ce07b850970296756665ee6c7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0a544ba8f6cdf1147154c3585781d2cf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-7f7816ba754d5e62f79f69e954ead5b4 tenant=default lane=interactive model="stress"
+[prime-batch] B=3 tokens=156 in 71.8ms
+[meter] admit id=chatcmpl-ce65802e950963b76e8a1268fd59ad78 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-2d6a73431095364167e098e5295c3412 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-201aa02451408289c69ccfbf3332fcb2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6a3017fb936955e2452111da2b8ea941 tenant=default lane=interactive model="stress"
+[prime-batch] B=3 tokens=163 in 72.5ms
+[meter] admit id=chatcmpl-b706d4ba71c00c2b11024044c1b4c9c5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-14cdf801641d1e4df61107aedf86e200 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d92b42dcef00cef2e7cb8fa69cf012ac tenant=default lane=interactive model="stress"
+[prime-batch] B=4 tokens=210 in 79.7ms
+[meter] admit id=chatcmpl-b0c3bdc260d510b19085c5b0c5ff27e2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-53452a9a01c4ad6256313c07436d233e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-35110e66abece6de0c5a013ece8015ab tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c1263723b76b4a5cf364b77574b9ebe6 tenant=default lane=interactive model="stress"
+[prime-batch] B=4 tokens=208 in 79.7ms
+[meter] admit id=chatcmpl-584500eb4ee8afebd8550b10cd941a8c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d6670ec9280fe28eb7b5f136133853d5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6604a0e0e6e95fc64263b6cbb1cec56b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-88ca95d2bbaaabf79b65452e4f7c7845 tenant=default lane=interactive model="stress"
+[prime-batch] B=4 tokens=220 in 80.0ms
+[meter] admit id=chatcmpl-2b926a23e25fd2dbd7d86c78e7a65bd4 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-68008b6f86f23219d372f7e59550a448 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-321ce1f03d1de9b6c770b91c5cd6c042 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-97f39f921b06a8425f2228f3d715f077 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a66d5eead7a64c39f04d59b71105e25c tenant=default lane=interactive model="stress"
+[prime-batch] B=4 tokens=210 in 79.8ms
+[meter] admit id=chatcmpl-de21a1449bdd36cd568d3a60d348c35b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d4edad612f0608f398b58f2ae27d818f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0dc05a423bbc96ff432a868880e6438b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0be6aea61724683b77da046cd1fd1857 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-fd89fa7fdbc5bda3bccff602c17789a4 tenant=default lane=interactive model="stress"
+[prime-batch] B=5 tokens=265 in 112.5ms
+[meter] admit id=chatcmpl-5bfc327186d15a5bf09fbf10db3ce2dd tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e95cd911b93beaa085eb33e23202e126 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-5299cff2270ec4be02ea658dcc1d7599 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d54fb88eac631ced867ab256f8d0ade8 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-57cb622c961f42eefc337c986115cd84 tenant=default lane=interactive model="stress"
+[prime-batch] B=5 tokens=262 in 112.1ms
+[meter] admit id=chatcmpl-80a312f8b50e0176aae89baf4a7890be tenant=default lane=interactive model="stress"
+[prime-batch] B=3 tokens=167 in 72.4ms
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

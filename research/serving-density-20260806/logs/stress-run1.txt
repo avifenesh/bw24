@@ -1,0 +1,18 @@
+== serve-stress-gate: c=64 staggered short streams (128-256 tok) ==
+completed 0/64; wall p50=4.2s p95=5.3s max=5.5s; ttfb p50=0.87s p95=2.24s  (informational)
+  BAD i=53: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=54: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=55: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=56: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=57: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=58: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=59: err=None chunks=2 finish_reason=None done=True bad_json=
+  BAD i=60: err=None chunks=2 finish_reason=None done=True bad_json=
+  FAIL: not all 64 requests completed well-formed
+  FAIL: server log carries failure lines:
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+serve-stress-gate: FAIL (2 assertion(s)); server log: research/serving-density-20260806/logs/stress-run1-server.log, rows: research/serving-density-20260806/logs/stress-run1-rows.jsonl

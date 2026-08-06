@@ -1,0 +1,3 @@
+completed 64/64; wall p50=47.5s p95=61.1s max=61.3s; ttfb p50=5.00s p95=5.00s  (informational)
+log error lines:
+0
