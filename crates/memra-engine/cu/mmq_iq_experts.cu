@@ -142,6 +142,15 @@ namespace ggml_cuda_mma {
         asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
             :"=r"(xi[0]),"=r"(xi[1]),"=r"(xi[2]),"=r"(xi[3]):"l"(xs));
     }
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+    //   16.06 cyc/warp-MMA, 155.2 TOP/s. The int8 pipe is K-FREE on sm_120: m16n8k32.s8 costs the
+    //   SAME 16.06 cyc for 2x the MACs, so this k16 form runs at HALF the available int8 rate.
+    //   THE BEST SWAP CANDIDATE IN THE REPO: unlike the NVFP4 tile, all three loaders here write the
+    //   16 x_df slots with `int g = s>>1` (:199 IQ4_XS, :233 IQ3_S, :275 Q4_0), so the two per-16
+    //   scale slots in a 32-block provably hold the SAME value -- merging the two k16 MMAs at :322-323
+    //   into one k32 MMA under that shared scale is exact (s32 accumulation is exact). Tile-level
+    //   price 1.42x (research/ptx-audit-20260806/logs/k16-vs-k32-tileloop.log). NOT applied in the
+    //   audit lane: needs the e2e share measured on an IQ-bank model + the full exactness battery.
     static __device__ __forceinline__ void mma(tile<16,8,int>&D,const tile<16,4,int>&A,const tile<8,4,int>&B){
         asm("mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
             :"+r"(D.x[0]),"+r"(D.x[1]),"+r"(D.x[2]),"+r"(D.x[3]):"r"(A.x[0]),"r"(A.x[1]),"r"(B.x[0]));

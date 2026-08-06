@@ -237,6 +237,12 @@ static __device__ __forceinline__ uint16_t memra_fp8blk_cvt_e4m3x2(float lo, flo
 // untouched by construction, and fp8-mmq-check's ARM-1 bit-identity gate proves it on this kernel.
 //
 // MEMRA_MMQ_FP8BLK_PLAIN=1 (build-time) is the rollback seam back to the 1.00x plain form.
+//
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md — the repo-wide audit
+// re-measured all 12 MMA forms independently (3 reruns, SASS-census verified) and CONFIRMED these
+// numbers: plain 32.03, block_scale 16.06, and the 2x holds for e2m1 operands too (the KIND carries
+// the cost, not the operand format). Verdict for this site: OPTIMAL (default arm is the fast form);
+// the plain arm behind MEMRA_FP8BLK_PLAIN_MMA is a rollback seam, not a rate defect.
 #define MEMRA_FP8BLK_UE8M0_ONE 0x7F7F7F7Fu   // four ue8m0 bytes, each 2^0
 
 static __device__ __forceinline__ void memra_fp8_mma_f8f4(

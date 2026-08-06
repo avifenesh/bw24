@@ -1497,12 +1497,20 @@ static __device__ __forceinline__ void ld_A_trans(ATile& t, const __nv_bfloat16*
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.b16 {%0,%1,%2,%3}, [%4];"
         : "=r"(xi[0]),"=r"(xi[2]),"=r"(xi[1]),"=r"(xi[3]) : "r"(addr));
 }
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   bf16-f32acc 32.03 cyc/warp-MMA (77.7 TF); the f16-f32acc twin below measures the same 32.03
+//   (77.8 TF) -- the operand format is free, the f32 ACCUMULATOR is what costs 2x. No equal-math
+//   sibling exists (ptxas rejects bf16/f16 m16n8k32 and bf16 .block_scale), and the mma_f16 twin
+//   documents why this K4/K5 path needs 11 mantissa bits, so f16-accumulate is off the table on
+//   accuracy grounds too. Verdict: NOT-APPLICABLE (no equal-math sibling).
 static __device__ __forceinline__ void mma_bf16(CTile& D, const ATile& A, const BTile& B){
     const int* Ax=(const int*)A.x; const int* Bx=(const int*)B.x; float* Dx=D.x;
     asm("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
         : "+f"(Dx[0]),"+f"(Dx[1]),"+f"(Dx[2]),"+f"(Dx[3])
         : "r"(Ax[0]),"r"(Ax[1]),"r"(Ax[2]),"r"(Ax[3]),"r"(Bx[0]),"r"(Bx[1]));
 }
+// rate-audited 2026-08-06 (same verdict as mma_bf16 above): f16-f32acc = 32.03 cyc/warp-MMA,
+// 77.8 TF. NOT-APPLICABLE -- no equal-math sibling; see research/sm120-empirical-capabilities.md.
 static __device__ __forceinline__ void mma_f16(CTile& D, const ATile& A, const BTile& B){
     // same fragment shapes; operands are IEEE half (the coupled Y/Ssnap channel needs
     // 11 mantissa bits — bf16's 8 compounded K4->K5 error past the config pin).

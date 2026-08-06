@@ -159,6 +159,10 @@ __device__ __forceinline__ float ghalf2float(uint16_t h) {
 //  int8 mma m16n8k32: D[16x8] s32 += A[16x32] s8 * B[8x32](col) s8       //
 //  A: 4 x .b32 regs/lane (16 int8). B: 2 x .b32/lane (8 int8). C/D: 4 s32/lane.
 // ===================================================================== //
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   16.06 cyc/warp-MMA, 309.7 TOP/s = fastest int8 form (the pipe is K-FREE: k16 costs the same
+//   16.06 for half the MACs). ptxas rejects m16n8k64.s8 -- nothing deeper. OPTIMAL, no swap.
+//   Live only as the Q6_K prefill fallback (mmq has no Q6_K tile), so its e2e share is small.
 __device__ __forceinline__ void mma_s8_m16n8k32(int (&d)[4], const int (&a)[4], const int (&b)[2]) {
     asm volatile(
         "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
@@ -1228,6 +1232,10 @@ extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4_rp(
 //   SFB(4X): 4 ue4m3 bytes = K16 blocks 0..3. Lane L%4==1 supplies col L/4.
 // ===================================================================== //
 #if !defined(MEMRA_PORTABLE_CUDA) && !defined(MEMRA_DISABLE_NATIVE_FP4)
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   16.06 cyc/warp-MMA, 619.2 TFLOP/s = the fastest form on sm_120; no deeper sibling (ptxas
+//   rejects m16n8k128). OPTIMAL. NOTE this site is double-gated OFF by default (the W4A4 door
+//   plus its own dispatch), so the rate is correct but currently buys nothing at runtime.
 __device__ __forceinline__ void mma_mxf4_m16n8k64(
         float (&d)[4], const unsigned (&a)[4], const unsigned (&b)[2],
         unsigned sa, unsigned sb) {
@@ -1564,6 +1572,10 @@ __device__ __forceinline__ unsigned long long wg_make_desc(const void* smem_ptr,
     d |= (unsigned long long)((stride_bytes >> 4) & 0x3FFF) << 32;
     return d;
 }
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   NOT-APPLICABLE on sm_120a: wgmma is an sm_90a (Hopper) instruction and does not exist in
+//   the sm_120a ISA -- unmeasurable on this rig, and no instruction is emitted here in the
+//   shipped build. Double-gated off: the sm_90a arch guard plus its own dispatch door.
 __device__ __forceinline__ void wg_m64n64k32_s8(int acc[32], unsigned long long da,
                                                 unsigned long long db, int scale_d) {
     asm volatile(

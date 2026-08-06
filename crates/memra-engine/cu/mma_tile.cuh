@@ -119,6 +119,11 @@ static __device__ __forceinline__ void load_ldmatrix_A_trans(
 //  MMA  m16n8k16  .f32.bf16.bf16.f32   (PORT of mma.cuh:1181-1194)
 //  D[16x8 f32] += A[16x16 bf16] @ B[8x16 bf16]^T  (.row.col)
 // ============================================================================
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   32.03 cyc/warp-MMA, 77.7 TFLOP/s -- the f32-accumulate throttle (half the f16-acc rate).
+//   No equal-math sibling: ptxas rejects bf16 m16n8k32 AND bf16 .block_scale. Verdict:
+//   NOT-APPLICABLE -- this header is a DEAD FILE (zero #include from any .cu in the tree), so it
+//   emits no instruction on any path. Delete-or-wire is a separate call, not this lane's.
 static __device__ __forceinline__ void mma_m16n8k16_bf16(
         CTile_m16n8_f32 & D, const ATile_m16k16_bf16 & A, const BTile_n8k16_bf16 & B) {
     const int * Axi = (const int *) A.x;   // 4 regs

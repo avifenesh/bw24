@@ -145,6 +145,16 @@ static __device__ __forceinline__ void ld_A_trans(ATile& t, const __nv_bfloat16*
         : "=r"(xi[0]),"=r"(xi[2]),"=r"(xi[1]),"=r"(xi[3]) : "r"(addr));
 }
 // mma m16n8k16 .f32.bf16.bf16.f32 (mma.cuh:1187). D[16x8] += A[16x16] @ B[8x16]^T.
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   32.03 cyc/warp-MMA, 77.7 TFLOP/s -- with tf32, THE SLOWEST tensor form on sm_120, and exactly
+//   HALF the rate of the f16-accumulate form at :974 (16.10 cyc, 155.2 TFLOP/s). This is the
+//   f32-accumulate throttle, now measured rather than inferred. NO equal-math swap exists: ptxas
+//   REJECTS bf16 m16n8k32, f16 m16n8k32, and bf16 .block_scale (isa_sibling_check.cu, all 7
+//   candidates rejected), so there is no deeper-K sibling to escape to. The only lever is the
+//   accumulator, which is a NUMERIC change, not an equal-math swap -- and that lever already
+//   exists as the MEMRA_FA_F16PV door (default ON) for exactly the P@V accumulation. KQ, softmax
+//   and the final normalize deliberately stay f32-accumulate. Verdict: NOT-APPLICABLE (no
+//   equal-math sibling); the rate is a property of f32 accumulate, not a wrong mnemonic choice.
 static __device__ __forceinline__ void mma_bf16(CTile& D, const ATile& A, const BTile& B){
     const int* Ax=(const int*)A.x; const int* Bx=(const int*)B.x; float* Dx=D.x;
     asm("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
@@ -967,6 +977,10 @@ static __device__ __forceinline__ float row_sum4(float v) {
 
 // f16-accum mma (the MEMRA_FA_F16PV door, llama fa=1 VKQ class): m16n8k16 f16 in / f16 out.
 // ONLY the P@V accumulation uses this — KQ, softmax and the final normalize stay f32.
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   16.10 cyc/warp-MMA, 155.2 TFLOP/s = the FASTEST 16-bit float form on sm_120, exactly 2.0x the
+//   f32-accumulate forms (32.03 cyc). OPTIMAL: no faster sibling exists for 16-bit float operands.
+//   This is the rate half of why the f16pv door is default-ON.
 struct CTileH { unsigned x[2]; };  // 16x8 f16 accum tile: 4 halves packed as 2 half2-in-u32
 static __device__ __forceinline__ void mma_f16acc(CTileH& D, const ATile& A, const BTile& B) {
     const unsigned* a = (const unsigned*)A.x;
