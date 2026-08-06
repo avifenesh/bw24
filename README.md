@@ -172,10 +172,17 @@ runs out of the box on the checkpoint's own MTP head, no GGUF conversion step. G
 the primary delivery format and Q8_0 the shipping 8-bit arm; the FP8-native compute paths
 are implemented, bit-exact, and default off until they clear the deployment bar
 ([docs/FLAGS.md](docs/FLAGS.md)).
+Streaming is round-cadence (one flush per spec-round commit, not one per burst) and a
+request arriving mid-burst preempts at the next round boundary, so felt latency no longer
+scales with the speculative burst size: solo first text ~0.12 s with ~27 ms chunk gaps, and
+contended first text 0.12–0.15 s — the solo class — instead of waiting a full burst out
+([docs/SERVING.md](docs/SERVING.md)).
 The contract: greedy serving is isolated-identical under concurrent load — a request's
 output tokens are byte-identical whether it arrives alone or inside a full batch, gated by
 replaying the same prompts at c=1 and c=16 against the same server and byte-comparing every
-stream. (That is the scoped claim; it is not an identity claim against a single-token
+stream — and chunk-size-invariant: chunked prefill produces bit-identical logits across
+`MEMRA_PRIME_CHUNK` values (one canonical greedy output per prompt, gated by the chunkinv
+battery arm). (That is the scoped claim; it is not an identity claim against a single-token
 reference decode — the batched-plain path has a documented, bounded near-tie flip class, and
 speculative decode is gated self-consistent per `run-spec` K=1..8 on MTP-capable artifacts.)
 Multi-GPU boxes serve as a replica fleet:
@@ -218,13 +225,16 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
   — the spec tier's burst loop is a separate path from the solo fast path that closed the
   plain-serve c=1 gap (serve c=1 now runs the same m=1 fused trunk as the CLI, +5–8%
   decode-only, bit-identical; [docs/SERVING.md](docs/SERVING.md)). Open lane.
-- Cold time-to-first-token on short turns trails llama.cpp on the local laptop rig
-  (0.53 s vs 0.19 s, same model file, N=5 interleaved) alongside short-agentic decode and
-  raw prefill, while long-generation sampled decode leads by +17%. Of the three causes
-  identified, the per-request session realloc under VRAM pressure is fixed (evict-first +
-  right-size ladder) and rewritten-history conversations now resume via session affinity
-  (TTFT flat at any depth instead of re-priming the whole conversation); the prefill wall
-  and short-context acceptance (0.55 vs 0.73) stay open.
+- Cold time-to-first-token on short turns trailed llama.cpp on the local laptop rig
+  (0.53 s vs 0.19 s, same model file, N=5 interleaved — a pre-fix measurement) alongside
+  short-agentic decode and raw prefill, while long-generation sampled decode leads by +17%.
+  Most of that latency stack is since fixed: the per-request session realloc under VRAM
+  pressure (evict-first + right-size ladder), rewritten-history resume via session affinity
+  (TTFT flat at any depth), per-burst SSE emission (round-cadence streaming: solo first
+  text 0.41 → 0.12 s), and the contended admission wait (0.15 s at any burst size instead
+  of scaling with it). Still open: the prefill wall and short-context acceptance
+  (0.55 vs 0.73). The head-to-head number itself has not been re-measured (competitor
+  benching is stopped by doctrine).
 
 ## Requirements and limits
 

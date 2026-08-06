@@ -267,33 +267,6 @@ impl HybridModel {
             .as_deref()
     }
 
-    /// CHUNK-ORDER INVARIANCE door (`MEMRA_PRIME_INVARIANT=1`, default OFF).
-    /// ON: chunked-prefill split points are pinned to `prime_grain()` and STOP tracking
-    /// `MEMRA_PRIME_CHUNK`, so the same prompt primes through the same boundary set — and
-    /// therefore the same arithmetic — on every rig regardless of that rig's chunk config.
-    /// The cost is that `MEMRA_PRIME_CHUNK` no longer bounds the prime's transient
-    /// footprint; `MEMRA_PRIME_GRAIN` does. Gated by
-    /// `tools/chunk-invariance-gate.sh` (fast-gate tier 1).
-    pub fn prime_invariant() -> bool {
-        static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *E.get_or_init(|| std::env::var("MEMRA_PRIME_INVARIANT").as_deref() == Ok("1"))
-    }
-
-    /// The fixed prefill segmentation grain (`MEMRA_PRIME_GRAIN`, default 4096 = the
-    /// historical `MEMRA_PRIME_CHUNK` default, so the invariant door's boundary set matches
-    /// today's default-config output). Clamped to >= PRIME_MIN_T: a grain below the stateful
-    /// conv's minimum would make the tail-merge rule the real segmenter.
-    /// This is a NUMERIC-CONFIG knob under the invariant door — changing it changes bits,
-    /// exactly like `MEMRA_KV_K` or `MEMRA_GDN_CHUNK`.
-    pub fn prime_grain() -> usize {
-        static G: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        *G.get_or_init(|| {
-            std::env::var("MEMRA_PRIME_GRAIN").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(4096)
-                .max(PRIME_MIN_T)
-        })
-    }
-
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
     pub fn forward(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         if self.is_gemma4_e4b() { return self.gemma4_e4b_forward(e, tokens, false); }
@@ -452,7 +425,7 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        let mut chunk: usize = std::env::var("MEMRA_PRIME_CHUNK").ok()
+        let chunk: usize = std::env::var("MEMRA_PRIME_CHUNK").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(4096);
         // CHUNK-ORDER INVARIANCE (lane/chunk-invariance, 2026-08-05; vLLM #38561 shape).
         // MEMRA_PRIME_CHUNK is documented as a memory-transient knob, but it also decides
@@ -472,16 +445,12 @@ impl HybridModel {
         //     cache (fa_prefill_view_ws). The chunk size therefore decides WHERE in the
         //     prompt that precision edge falls. Signature: per-row maxdiff is exactly 0.0
         //     before the first boundary and O(1) right after, first_div_pos == chunk size.
-        // Pinning split points to a fixed grain makes that edge land at the same position on
-        // every rig, which is sufficient for bit-identity here (measured: 4/4 arms exact).
-        // Under the door MEMRA_PRIME_CHUNK no longer steers arithmetic — MEMRA_PRIME_GRAIN
-        // becomes both the (explicitly numeric) knob and the transient bound. The stronger
-        // fix that needs no grain knob at all is to drop the `base_len == 0` f32 special case
-        // so every row is in one class; that trades the unchunked fast path and owns its own
-        // arm (see VERDICT.md "a cheaper stronger fix").
-        if Self::prime_invariant() {
-            chunk = Self::prime_grain();
-        }
+        // The grain-free fix (full_attn_prime_fa_dispatch below) removed that class edge at
+        // the source — every row is in one numeric class, so the chunk size no longer steers
+        // arithmetic and MEMRA_PRIME_CHUNK is a pure memory/transient knob again. The interim
+        // MEMRA_PRIME_INVARIANT/MEMRA_PRIME_GRAIN pin-the-boundary door was superseded by that
+        // fix and KILLED at v0.71 per the flags doctrine (the jsonl + VERDICT.md are the
+        // record); the chunkinv gate asserts byte-identity across chunk sizes naked.
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache);
         }

@@ -14,7 +14,10 @@ ledger — every promoted config, every mechanism refutation — is
 
 Every published median states its N and thermal regime; every perf claim is a same-session
 interleaved pair (cross-run and cross-day comparisons are clock-drift-invalid, including the
-competitor denominator).
+competitor denominator). Locked-clock corollary (measured 2026-08-06, lane/prefill-gemm:
+unlocked clocks drift 9% in-process, and 1860 MHz-locked absolute numbers read BELOW the
+3090 MHz free-clock boost): a clock-locked value is the only valid A/B denominator, and
+locked and free-clock numbers must never be mixed in one comparison.
 
 > **Competitor benching is STOPPED (owner call, 2026-08-03).** Every llama.cpp and vLLM
 > column in this document is a **frozen reference point** recorded on or before that date,
@@ -29,7 +32,14 @@ competitor denominator).
 > raw prefill**, while memra leads long-generation sampled decode by +17%
 > ([`research/memra-vs-llama-daily-20260805/`](../research/memra-vs-llama-daily-20260805/),
 > labeled a dogfood diagnostic, not board material). memra makes **no interactive-latency
-> superiority claim** while that stands.
+> superiority claim** while that stands. Since that measurement, the memra side of the
+> latency stack has moved (all self-competition receipts, local 5090): round-cadence SSE
+> takes solo first text 0.41 → 0.12 s and the admission-yield fix takes contended first
+> text 1.60 → 0.15 s at any burst size
+> ([`research/sse-cadence-20260805/`](../research/sse-cadence-20260805/),
+> [`research/admission-20260806/`](../research/admission-20260806/)) — but the head-to-head
+> itself has NOT been re-run (benching stopped), so the 0.53 s-vs-0.19 s row stays frozen
+> as recorded.
 
 > **Rig labels are load-bearing.** The *tracked boards* here are two rigs only: an **RTX 5090
 > Laptop** (82 SM — the local rig, and the only owned GPU) and **rented H100 80 GB pods**.
@@ -92,6 +102,14 @@ Caveats that travel with these cells:
 - **The TTFT protocol trap.** An unsalted repeat request hits the prefix cache, so a TTFT
   number measured without a fresh `cache_salt` is a warm number wearing a cold label. Cold
   and warm are always stated separately.
+- **These TTFT rows predate the felt-latency fixes** (round-cadence SSE 2026-08-05 +
+  admission yield 2026-08-06). The rows above measure time to the first *token* on a plain
+  request and stand as recorded; what changed is first *streamed text* on the spec tier —
+  solo 0.41 → **0.12 s**, contended 1.60 → **0.15 s** at any `MEMRA_SPEC_BURST`, measured
+  N=5 on the local 82-SM rig (27B NVFP4+MTP;
+  [`research/sse-cadence-20260805/`](../research/sse-cadence-20260805/),
+  [`research/admission-20260806/`](../research/admission-20260806/)). This board's rig has
+  not re-measured them; do not mix the two rigs' latency numbers.
 - **4118 and 4591 are two different artifacts**, not two configs of one.
 - **Never present a single rep as the headline.** 170.6188 is the r4 rep; the N=5 median is
   170.55. 421.18 is the p1 pass; the N=3 median is 420.57.

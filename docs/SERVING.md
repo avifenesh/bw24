@@ -547,6 +547,37 @@ RESULTS.md); the lane gate accounts for **4.34 → 3.69s**. Roughly half the hea
 improvement is the queue, not the engine gate — which is the point of the sentence above,
 not a caveat to it. Quoting 7.15 → 3.69s as "what lanes do" is refutable from our own log.
 
+## Streaming cadence + admission latency — the felt-TTFT arc (lanes sse-cadence 2026-08-05, admission-latency 2026-08-06)
+
+Two fixes, one arc: solo first text went **0.41 s → 0.12 s** and contended first text
+**1.60 s → 0.15 s** (27B NVFP4+MTP, K=3, local 5090, N=5 medians in one lock hold), and
+neither number scales with `MEMRA_SPEC_BURST` anymore.
+
+- **Round-cadence SSE** (lane/sse-cadence): spec-burst sessions used to emit ONE
+  `Event::Token` per burst — at B128 that meant 2 chunks per response and 1.16 s to first
+  text. The worker now flushes text at every spec-round commit through an `on_commit` seam
+  in the engine's spec loop (same detokenize-tail + `utf8_delta` cursor, same
+  EOS-text-never-streamed rule), so first text is ~0.12 s and inter-chunk gap p50 ~27 ms at
+  ANY burst size for a solo stream (B32 fix-off was 0.41 s / 299 ms). Content is
+  byte-identical either way — only chunk boundaries move. Throughput parity measured c=1
+  and c=8. Rollback: `MEMRA_SSE_PER_BURST=1`. Receipts:
+  `research/sse-cadence-20260805/VERDICT.md`.
+- **Admission yield + cold-first ordering** (lane/admission-latency): a request arriving
+  mid-burst used to wait the whole in-flight burst out (contended first text 0.54 s at B32 /
+  1.60 s at B128, i.e. burst size set round-robin admission latency). Two pieces, one flag:
+  a pending admit (`PENDING_ADMITS` gauge, polled by the round hook above) ends the
+  in-flight burst at the next round boundary, and sessions that have emitted nothing yet
+  burst before mid-generation peers. Contended first text is now **0.123 s (B32) / 0.152 s
+  (B128)** — the solo class at any burst. Content byte-identical on/off, solo AND contended.
+  The cost lives at c=8 saturation only: −3.4% agg tok/s for 3.8x better p50
+  (newcomer-first vs lockstep-fair; p95 tail pays); c=1 parity. Rollback:
+  `MEMRA_ADMIT_YIELD=0` (both pieces). Receipts: `research/admission-20260806/VERDICT.md`.
+
+Burst default stays **B32** by the strict flip criterion, but the two old flip-blockers are
+gone: B128 buys +8.4% (c=1) / +8.5% (c=8) and now trails B32's contended first text by one
+29 ms round-cadence quantum instead of a 3x cliff — a live owner call, per the
+`MEMRA_SPEC_BURST` row in FLAGS.md.
+
 ## Knobs
 
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are
@@ -575,12 +606,15 @@ within contract, but real. `MEMRA_PRIME_TOKENWISE=1` pins the oracle stream at p
 cost; the run-gen `batched-prime` gate line + the `prime-gate` battery bound the class
 (structured divergence fails hard, near-tie flips are reported).
 
-### Chunked prefill is not split-stable (2026-08-05; mechanism corrected same day)
+### Chunked prefill is split-stable — since the grain-free fix (found 2026-08-05; mechanism corrected and FIXED same day)
 
-A sharper statement of the same class, found while building serve-smoke check 10:
-**changing only the prefill chunk split changes greedy output.** Arms were the same four
-recorded prompts with a per-turn `cache_salt` (so nothing resumes — every request primes
-cold), `MEMRA_AFFINITY=0`, varying only `MEMRA_PRIME_CHUNK`:
+The class below is **history**: since lane/chunkinv-flip, chunked prefill is bit-identical
+across `MEMRA_PRIME_CHUNK` values by default (see "FIXED BY DEFAULT" further down). What
+follows is the finding and root cause, kept because the mechanism correction is the
+evidence for the fix. A sharper statement of the same class, found while building
+serve-smoke check 10: **changing only the prefill chunk split changed greedy output.**
+Arms were the same four recorded prompts with a per-turn `cache_salt` (so nothing
+resumes — every request primes cold), `MEMRA_AFFINITY=0`, varying only `MEMRA_PRIME_CHUNK`:
 
 | prompt tokens | 2048 vs 64 | 2048 vs 32 |
 |---|---|---|
@@ -624,8 +658,9 @@ prefill is byte-identical across `MEMRA_PRIME_CHUNK` values with no door and no 
 (chunkinv gate, naked env, both pinned prompts EXACT at chunks 2048/64/32).
 `MEMRA_PRIME_CHUNK` is again a pure memory/transient knob. Rollback seam:
 `MEMRA_PRIME_F32CHUNK0=1` restores the legacy f32 first-chunk arithmetic (and is the gate
-canary's injection). The interim `MEMRA_PRIME_INVARIANT`/`MEMRA_PRIME_GRAIN` door is
-superseded (see docs/FLAGS.md). History + root-cause receipts:
+canary's injection). The interim `MEMRA_PRIME_INVARIANT`/`MEMRA_PRIME_GRAIN` pin-the-boundary
+door was superseded by this fix and removed at v0.71 per the flags doctrine (the research
+record keeps its history). History + root-cause receipts:
 `research/chunk-invariance-20260805/VERDICT.md`; flip receipts:
 `research/chunkinv-flip-20260805/`.
 

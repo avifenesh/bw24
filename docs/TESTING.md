@@ -10,7 +10,7 @@ merge/tag bar — a fast-gate green is a *keep going* signal, never a *ship* sig
 |---|---|---|---|
 | 0 | seconds (~2 s kernel-check scoped + build) | workspace compile + kernel-check scoped to the touched sections | every edit-compile loop |
 | 1 | ~1–2 min | tier 0 + golden-token argmax probe on ONE model per affected kernel class (+ one single-K spec probe when the diff touches the spec pipeline) | before every dev-loop commit |
-| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), serve-smoke, `--perf` cell battery | **every merge, every tag** (unchanged) |
+| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, `--perf` cell battery | **every merge, every tag** (unchanged) |
 
 Entry point:
 
@@ -73,7 +73,15 @@ The K=1..8 sweep stays tier-2.
 
 `kind=cmd` probes (models.tsv) are self-gating commands — host unit tests or GPU oracle
 gates like `sample-check` — whose gate is exit 0. They pin no golden and exist for code
-the greedy token goldens structurally cannot see (the sampler chain).
+the greedy token goldens structurally cannot see (the sampler chain). Three landed
+2026-08-05: `chunkinv` (chunked-prefill byte-identity across `MEMRA_PRIME_CHUNK` values,
+naked env — the grain-free default's contract), `chunkinvc` (its canary: injects the
+`MEMRA_PRIME_F32CHUNK0=1` legacy arithmetic and must FAIL, proving the gate detects the
+mechanism), and `gwstress` (the graph-warmup pool-growth stress gate behind the
+`MEMRA_GRAPH_WARMUPS=1` default). The `k27` argmax probe pins `MEMRA_FA_SPLIT=8` in its
+env column so its golden is rig-portable across the 82-vs-188-SM `fa_split_keys` rung
+(lane/k27-divergence — a near-tie flip class, not a defect; `k27div-probe` is the
+cross-rig teacher-forced localizer).
 
 ### Golden refresh protocol
 
