@@ -34,15 +34,27 @@ mkdir -p "$R"
 FAILF=$(mktemp /tmp/step-draft-fails.XXXXXX)
 PASS() { echo "  ok: $1" | tee -a "$LOG"; }
 FAIL() { echo "  FAIL: $1" | tee -a "$LOG"; echo x >> "$FAILF"; }
+# SKIP is neither: the arm did not run, so it gets no verdict. Scoring an unrun arm green is
+# the dishonesty this whole lane exists to remove; scoring it red is a false alarm that trains
+# the operator to ignore the gate.
+SKIP() { echo "  SKIP: $1" | tee -a "$LOG"; }
 
 # A "refused" arm must have refused for OUR reason. A server that dies of trunk OOM on a
 # shared card also exits nonzero, and the first run of this gate scored exactly that as a
 # PASS on arm C — the refusal assertions grepped a log whose only FATAL was
 # CUDA_ERROR_OUT_OF_MEMORY, from a load that never reached the draft path. Any arm that
 # expects DOWN must first prove the death was not incidental.
-not_incidental() {  # $1 = logfile, $2 = arm label
+#
+# Arm C's incidental OOM is a SKIP (the trunk load never reached the draft path — nothing was
+# tested). Arm D's is a FAIL: D asserts the refusal lands at PARSE time, so a trunk load
+# happening at all means the parse-time check did not fire, which is exactly the regression.
+not_incidental() {  # $1 = logfile, $2 = arm label, $3 = skip|fail on incidental OOM
   if grep -q "CUDA_ERROR_OUT_OF_MEMORY" "$1"; then
-    FAIL "$2: died of trunk OOM, not the refusal under test — card is shared, arm INVALID"
+    if [ "${3:-fail}" = skip ]; then
+      SKIP "$2: card busy (trunk OOM before the draft path) — arm not run"
+    else
+      FAIL "$2: reached a trunk GPU load at all — the parse-time refusal did not fire"
+    fi
     return 1
   fi
   return 0
@@ -111,7 +123,7 @@ if [ "$ST" = UP ]; then
 elif grep -q "CUDA_ERROR_OUT_OF_MEMORY" "$A"; then
   # SKIP, not PASS and not FAIL: another tenant holds the card, so this arm was never run.
   # Recording it as anything else would be the same dishonesty arm C nearly committed.
-  echo "  SKIP: A: card busy (another tenant holds VRAM) — arm not run" | tee -a "$LOG" >&3
+  SKIP "A: card busy (another tenant holds VRAM) — arm not run"
 else
   FAIL "A: server did not come up ($ST)"; tail -20 "$A" | tee -a "$LOG" >&3
 fi
@@ -127,7 +139,7 @@ if [ "$ST" = UP ]; then
   grep -q "no MTP drafter attached" "$B" \
     && FAIL "B: warned on a non-step35 model (noise)" || PASS "B: quiet on non-step35"
 elif grep -q "CUDA_ERROR_OUT_OF_MEMORY" "$B"; then
-  echo "  SKIP: B: card busy (another tenant holds VRAM) — arm not run" | tee -a "$LOG" >&3
+  SKIP "B: card busy (another tenant holds VRAM) — arm not run"
 else
   FAIL "B: server did not come up ($ST)"; tail -20 "$B" | tee -a "$LOG" >&3
 fi
@@ -140,7 +152,7 @@ BAD=/tmp/step-draft-not-a-gguf-$$.gguf
 printf 'this is not a GGUF file' > "$BAD"
 boot "m=$Q9+$BAD" "$C"
 if [ "$ST" = DOWN ]; then
-  if not_incidental "$C" C; then
+  if not_incidental "$C" C skip; then
     PASS "C: refused to start (did not degrade to plain decode)"
     grep -q "FATAL: worker init failed" "$C" \
       && PASS "C: refusal is FATAL, not a warning" || FAIL "C: no FATAL line"
@@ -166,7 +178,7 @@ echo "########## ARM D: missing drafter path -> parse-time refusal ##########" |
 D=$R/armD-refuse-missing-$STAMP.log
 boot "m=$Q9+/nonexistent/draft.gguf" "$D"
 if [ "$ST" = DOWN ]; then
-  if not_incidental "$D" D; then
+  if not_incidental "$D" D fail; then
     PASS "D: refused to start on a nonexistent drafter path"
     grep -q "drafter path" "$D" && grep -q "does not exist" "$D" \
       && PASS "D: cause is quoted and names the DRAFTER (not the trunk)" \

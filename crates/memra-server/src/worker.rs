@@ -756,6 +756,43 @@ pub fn draft_verdict_message(v: &DraftVerdict, name: &str, path: &str) -> Option
     }
 }
 
+/// The #87 refusal, decided BEFORE any model load — for the case where it can be.
+///
+/// A `+draft` attach in MEMRA_MODELS is a promise that a drafter WILL be attached, so the
+/// (drafter + spec armed + sharded cross-device PP) regime is knowable from the config string
+/// and the environment alone: `pp_sharded_cross_device()` and `serve_spec_enabled()` are both
+/// pure env reads with no runtime dependency. Deciding it here matters concretely — Step-3.7-
+/// Flash is 105 GB over PP-2, so the load-path refusal would spend ~20 minutes streaming
+/// weights across two cards before announcing a verdict that was fixed at startup. A gate that
+/// takes 20 minutes to say "no" is a gate operators route around.
+///
+/// The load-path verdict (`draft_verdict` at the load site) still stands, and still has work to
+/// do: it covers the EMBEDDED-head case, where `mtp.is_some()` is only known after the trunk is
+/// parsed. This is the subset that does not need the model.
+pub fn preflight_pp2_spec_refusal(models: &[(String, String, Option<String>)]) -> Option<String> {
+    preflight_pp2_spec_refusal_inner(
+        models,
+        serve_spec_enabled(),
+        memra_engine::pp::pp_sharded_cross_device(),
+    )
+}
+
+/// `preflight_pp2_spec_refusal` with the two env reads lifted into arguments. Both real readers
+/// memoize in a `OnceLock`, so a test cannot drive them by setting env — the pure core is the
+/// only seam through which the preflight's own decision (and its message) can be pinned.
+fn preflight_pp2_spec_refusal_inner(
+    models: &[(String, String, Option<String>)],
+    spec_armed: bool,
+    pp_sharded_cross_device: bool,
+) -> Option<String> {
+    if !spec_armed || !pp_sharded_cross_device {
+        return None;
+    }
+    models.iter().find(|(_, _, d)| d.is_some()).and_then(|(name, path, _)| {
+        draft_verdict_message(&DraftVerdict::RefuseSpecOverPp2, name, path)
+    })
+}
+
 /// Admission transient-reserve override in BYTES (lane/admit-oom, 2026-08-06). This exists for
 /// exactly one reason: the c=64 stress gate's TEETH arm. A gate that can only be observed
 /// passing proves nothing, so `tools/serve-stress-gate.sh --teeth` forces the reserve tiny
@@ -3954,6 +3991,14 @@ const EXIT_WORKER_UNRECOVERABLE: i32 = 70;
 #[allow(clippy::type_complexity)]
 pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::health::SharedHealth)
     -> Result<(Sender<Cmd>, Arc<Vec<String>>, Arc<HashMap<String, ModelCaps>>, SharedMetrics), String> {
+    // #87 preflight, before the thread and before a single byte of weights: refuse a config
+    // that pairs a '+draft' attach with armed spec over a sharded cross-device PP placement.
+    // Step is 105 GB over PP-2 — the load-path refusal is correct but arrives ~20 minutes late,
+    // and this verdict never depended on the model. (Load-path `draft_verdict` still covers the
+    // embedded-head case, which genuinely needs the parsed trunk.)
+    if let Some(msg) = preflight_pp2_spec_refusal(&models) {
+        return Err(msg);
+    }
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) =
         std::sync::mpsc::channel::<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>();
@@ -4069,7 +4114,7 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
 mod tests {
     use super::{summarize_confidence, utf8_delta};
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
-    use super::{draft_verdict, draft_verdict_message, DraftVerdict};
+    use super::{draft_verdict, draft_verdict_message, preflight_pp2_spec_refusal_inner, DraftVerdict};
 
     // ---- drafter attachment: the loud-failure semantics (lane/step-draft, 2026-08-07) ----
     //
@@ -4143,6 +4188,39 @@ mod tests {
         assert_eq!(draft_verdict(false, true, true, true), DraftVerdict::NoDrafterExternalMtpArch);
         // ... and the same with spec disarmed: still just the warning.
         assert_eq!(draft_verdict(false, true, false, true), DraftVerdict::NoDrafterExternalMtpArch);
+    }
+
+    #[test]
+    fn the_87_refusal_lands_before_the_load_when_a_draft_was_attached() {
+        // The preflight's reason for existing: Step over PP-2 is a ~20-minute, 105 GB load, and
+        // this verdict is fixed at startup. Refusing after the load is correct-but-useless.
+        let with = vec![("step".into(), "/m/step.gguf".into(), Some("/m/mtp.gguf".into()))];
+        let msg = preflight_pp2_spec_refusal_inner(&with, true, true)
+            .expect("a '+draft' attach under armed spec over sharded PP-2 must refuse at parse");
+        // Same text as the load-path refusal — one message, one place, so the operator cannot
+        // get a differently-worded verdict depending on which check happened to fire.
+        assert_eq!(msg, draft_verdict_message(&DraftVerdict::RefuseSpecOverPp2,
+                                              "step", "/m/step.gguf").unwrap());
+
+        // No attach = nothing knowable pre-load: an EMBEDDED head only shows up once the trunk
+        // is parsed, so this case MUST fall through to the load-path verdict, not be waved past.
+        let without = vec![("step".into(), "/m/step.gguf".into(), None)];
+        assert!(preflight_pp2_spec_refusal_inner(&without, true, true).is_none());
+
+        // And the preflight must not fire one term too wide — the standing quarantine config
+        // (drafter attached, MEMRA_SERVE_SPEC=0) and every single-card config still boot.
+        assert!(preflight_pp2_spec_refusal_inner(&with, false, true).is_none());
+        assert!(preflight_pp2_spec_refusal_inner(&with, true, false).is_none());
+
+        // Multi-model: one offending model in the list is enough. The quarantine is a property
+        // of the CUDA context, which the whole process shares — a second, drafter-less model
+        // does not make the first one's spec sessions safe.
+        let mixed = vec![
+            ("plain".into(), "/m/a.gguf".into(), None),
+            ("step".into(), "/m/step.gguf".into(), Some("/m/mtp.gguf".into())),
+        ];
+        let m = preflight_pp2_spec_refusal_inner(&mixed, true, true).expect("must still refuse");
+        assert!(m.contains("step"), "the refusal must name the offending model: {m}");
     }
 
     /// Device-free PrefixEntry (empty kv/conv/ssm planes) — the namespace-visibility laws
