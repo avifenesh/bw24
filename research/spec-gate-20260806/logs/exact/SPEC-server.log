@@ -11,10 +11,10 @@
 [prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [server] worker ready; serving models: ["q9"]
 [server] listening on http://127.0.0.1:8319
-[meter] admit id=chatcmpl-7b6ec7ae45fb0c6726ec8c6d06036773 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-5fc1ffcd263e1189f9422d0206ca34c8 tenant=default lane=interactive model="q9"
 [spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
 [tick] act=1 int=1 priming=0 ready=0 spec=1 demoted=0 decode_ms=0.0
-[meter] admit id=chatcmpl-41494faf7688c7642af5d9b9567215a3 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-3a0dd1f4e9ac211c297ebaea590c3306 tenant=default lane=interactive model="q9"
 [worker] spec-affinity: declined (history diverged at 3 of checkpoint 13; 1 parked, 70 prompt tokens; model q9)
 [worker] observed session VRAM cost for "q9": 101MB (admission gate = 2x)
 [spec-acc] ctx=70 burst=23/24 cum=23/24=0.958
