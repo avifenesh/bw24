@@ -9,15 +9,18 @@ battery under one `flock /tmp/memra-5090.lock`, so nothing else held the GPU). S
 — **no CUDA kernel changes**, so `kernel-check` / `run-gen` / `run-spec` numbers cannot move and
 the lane's obligation is the *serving* battery below.
 
-Battery re-run in full after the last code change on the lane (the drain-503 retry-contract fix),
-not carried over from the earlier build.
+Battery re-run in full **after the rebase onto `origin/restructure/public-split`** (the base had
+advanced 18 commits, incl. the `lane/spec-scaling` and `lane/pp2-spec` merges that move
+`worker.rs` spec paths *underneath* this lane's code). The logs below are that post-rebase run at
+lane head `633b1915`; every verdict was re-earned, not carried over from the pre-rebase build,
+and the pre-rebase numbers matched to within run-to-run noise.
 
 | gate | command | verdict | log |
 |---|---|---|---|
 | unit tests | `cargo test -p memra-server --release` | **91 passed, 0 failed** (82 before this lane) | `logs/cargo-test-memra-server.txt` |
 | serve-smoke | `tools/serve-smoke.sh` | **0 failed** (`SMOKE_RC=0`) — 16 checks incl. spec-vs-plain greedy identity, the 4-arm sampled truncation matrix (every arm `bangs=0 <= baseline 0`), session-affinity resume (`affinity fired (3 rewind(s))`, `no failed rewinds`) | `logs/serve-smoke.txt`, `logs/serve-smoke-server.log` |
-| api-key auth | `tools/apikeys-gate.sh` | **0 failed / 18 gates** (`APIKEYS_RC=0`) | `logs/apikeys-gate.txt` |
-| serve-stress c=64 | `tools/serve-stress-gate.sh` | **ALL GREEN** — `completed 64/64; wall p50=45.9s p95=53.5s max=54.2s; ttfb p50=0.49s p95=5.00s` (ttfb informational), streams well-formed, worker alive, log clean (`STRESS_RC=0`) | `logs/serve-stress-c64.txt`, `logs/serve-stress-c64-server.log` |
+| api-key auth | `tools/apikeys-gate.sh` | **0 failed / 18 gates** (`APIKEYS_RC=0`) | `logs/apikeys-gate.txt`, `logs/apikeys-gate.jsonl`, `logs/apikeys-gate-server.log` |
+| serve-stress c=64 | `tools/serve-stress-gate.sh` | **ALL GREEN** — `completed 64/64; wall p50=46.0s p95=53.2s max=54.0s; ttfb p50=0.51s p95=5.00s` (ttfb informational), streams well-formed, worker alive, log clean (`STRESS_RC=0`) | `logs/serve-stress-c64.txt`, `logs/serve-stress-c64-server.log` |
 | accept-gate (smoke arm) | `tools/accept-gate.sh` | **1 pass, 0 fail** — `q27-p1: PASS (rounds=42 drafted=126 accepted=85 accept=0.6746, 128 tok text sha-identical)` (`ACCEPT_RC=0`) | `logs/accept-gate-smoke.txt` |
 
 Live wire verification (not a pass/fail gate — payload receipts; see `DESIGN.md §7` for the
@@ -44,6 +47,15 @@ per-arm table and the two assumptions the wire corrected):
 * **`ttfb p95=5.00s` in the stress gate is expected and informational**, not a regression: c=64
   arrivals are staggered and queue FIFO behind the interactive cap. The gate asserts completion
   and stream well-formedness, not latency.
+* **`tools/apikeys-gate.sh` writes into another lane's committed evidence directory.** Its `OUT`
+  defaults to `research/apikeys-20260805` (`tools/apikeys-gate.sh:13`), and `apikey_gate.py` lives
+  there too, so it cannot simply be redirected — running the gate rewrites
+  `apikeys-20260805/{apikey-gates.jsonl,meter-lines-sample.log,server-apikeys.log}` with the
+  rerunner's timestamps. This lane's rule: run it in place, **copy** the resulting jsonl + server
+  log into `logs/apikeys-gate.jsonl` / `logs/apikeys-gate-server.log`, then
+  `git checkout <merge-base> -- research/apikeys-20260805/` to hand the other lane's receipts back
+  byte-identical. Anyone reusing this gate should do the same, or teach the script to take an
+  `--out` that doesn't have to also hold the harness.
 * **No perf-board surfaces move.** This lane publishes no benchmark numbers, so
   `tools/update-perf-board.py` has nothing to regenerate (`current-board.json` untouched). The
   `pre-push` hook's `--check` therefore passes unchanged.

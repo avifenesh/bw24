@@ -9,16 +9,16 @@
 [prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [server] worker ready; serving models: ["probe"]
 [server] listening on http://127.0.0.1:8098
-[meter] admit id=chatcmpl-7761c5b56ffb55126787ec901cef3ac3 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-b00e35ac41fdf87024fae13fc82d6ce5 tenant=default lane=interactive model="probe"
 [worker] observed session VRAM cost for "probe": 101MB (admission gate = 2x)
 [spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
 
-thread 'memra-gpu-worker' (2465127) panicked at crates/memra-server/src/worker.rs:2224:17:
+thread 'memra-gpu-worker' (3445460) panicked at crates/memra-server/src/worker.rs:2224:17:
 MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 [worker] PANIC in the GPU worker thread: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)
 [worker] respawn attempt 1/1 in 2s (reloading weights)
-[meter] admit id=chatcmpl-db7a54c6ee0c5470a13434d229dbac84 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-af6a732f692e7a5b42a58581c153bfbb tenant=default lane=interactive model="probe"
 [worker] Engine ready (MEMRA_FAST=true)
 [worker] loading model "probe" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
 [worker]   loaded "probe": 33 layers, eos=248046
@@ -26,7 +26,7 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 [worker] probe: decode chunk cap 16 (exact-16 tier)
 [prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [spec-acc] ctx=11 burst=3/3 cum=3/3=1.000
-[meter] admit id=chatcmpl-dda23ff4f05fc8169bbc55b83f13f4f9 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-d757549ff98b8c5bd51d621e926c71ba tenant=default lane=interactive model="probe"
 [worker] spec-affinity: declined (history diverged at 3 of checkpoint 11; 1 parked, 13 prompt tokens; model probe)
 [worker] observed session VRAM cost for "probe": 67MB (admission gate = 2x)
 [spec-acc] ctx=13 burst=6/6 cum=6/6=1.000

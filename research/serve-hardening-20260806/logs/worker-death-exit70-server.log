@@ -9,11 +9,11 @@
 [prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [server] worker ready; serving models: ["probe"]
 [server] listening on http://127.0.0.1:8098
-[meter] admit id=chatcmpl-a00206d1626e50ff8ed3926f7fcda150 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-87630521e0caebe71cea07c4847b1fac tenant=default lane=interactive model="probe"
 [worker] observed session VRAM cost for "probe": 101MB (admission gate = 2x)
 [spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
 
-thread 'memra-gpu-worker' (2473722) panicked at crates/memra-server/src/worker.rs:2224:17:
+thread 'memra-gpu-worker' (3453711) panicked at crates/memra-server/src/worker.rs:2224:17:
 MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 [worker] PANIC in the GPU worker thread: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)

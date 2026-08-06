@@ -1,6 +1,6 @@
 == live endpoint + taxonomy probe ==
-commit  8feb21ee  (lane/serve-hardening)
-binary  target/release/memra-server  (2026-08-06T23:35:21)
+commit  633b1915  (lane/serve-hardening)
+binary  target/release/memra-server  (2026-08-06T23:52:21)
 model   /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
 rig     RTX 5090 Laptop, driver 595.84
 port    8099   server log -> research/serve-hardening-20260806/logs/endpoints-live-server.log
@@ -20,13 +20,13 @@ port    8099   server log -> research/serve-hardening-20260806/logs/endpoints-li
 ready after 2s
 
 --- [3] LOADED: /health, /livez, /readyz ---
-/health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":507,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-/livez   200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":514,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-/readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":520,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+/health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":529,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+/livez   200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":537,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+/readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":544,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
 
 --- [4] warm-up: one real interactive completion (also feeds the step estimator) ---
 status 200
-{"object":"chat.completion","model":"probe","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning":"Thinking Process:\n\n1.  **An","reasoning_details":[{"type":"reasoning.text","text":"Thinking Process:\n\n1.  **An"}]},"finish_reason":"length"}],"usage":{"prompt_tokens":13,"completion_tokens":9,"total_tokens":22,"prompt_tokens_details":{"cached_tokens":0},"elapsed_s":0.174361
+{"object":"chat.completion","model":"probe","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning":"Thinking Process:\n\n1.  **An","reasoning_details":[{"type":"reasoning.text","text":"Thinking Process:\n\n1.  **An"}]},"finish_reason":"length"}],"usage":{"prompt_tokens":13,"completion_tokens":9,"total_tokens":22,"prompt_tokens_details":{"cached_tokens":0},"elapsed_s":0.175000
 
 --- [5] G6: unknown model -> 400 invalid_request_error / code model_not_found ---
 HTTP/1.1 400 Bad Request
@@ -62,14 +62,14 @@ makes the whole split observable on the wire: /health + /livez answer 200
 status="draining" (a drain is a healthy deliberate shutdown; 503 here would invite a
 supervisor SIGKILL mid-stream), /readyz answers 503 (out of rotation), and a NEW completion
 is refused 503 + Retry-After while the in-flight one runs to completion.
-    pre-SIGTERM  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"busy","beat_age_ms":33,"tick_max_ms":253,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-    pooled       /health  200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":126,"tick_max_ms":253,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-    pooled       /livez   200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":126,"tick_max_ms":253,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-    pooled       /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"busy","beat_age_ms":126,"tick_max_ms":253,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"draining (shutdown in progress)"}
-    fresh conn   /health  200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":126,"tick_max_ms":253,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-    fresh conn   /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"busy","beat_age_ms":126,"tick_max_ms":253,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"draining (shutdown in progress)"}
+    pre-SIGTERM  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"busy","beat_age_ms":130,"tick_max_ms":257,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    pooled       /health  200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":73,"tick_max_ms":257,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    pooled       /livez   200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":73,"tick_max_ms":257,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    pooled       /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"busy","beat_age_ms":73,"tick_max_ms":257,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"draining (shutdown in progress)"}
+    fresh conn   /health  200 {"status":"draining","models":["probe"],"worker":{"phase":"busy","beat_age_ms":74,"tick_max_ms":257,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+    fresh conn   /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"busy","beat_age_ms":74,"tick_max_ms":257,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"draining (shutdown in progress)"}
     new completion during the drain -> 503 | retry-after: 30
-      {"error":{"message":"server is draining (shutdown in progress); retry","type":"server_error","param":null,"code":null}}
+      {"error":{"message":"server is draining (shutdown in progress); retry","type":"server_error","param":null,"code":"draining"}}
     the in-flight generation survived the drain: yes — 900 tokens, length
 server exit code: 0   (0 = clean drain; 70 = worker unrecoverable; 1 = bad config)
 
@@ -77,6 +77,6 @@ server exit code: 0   (0 = clean drain; 70 = worker unrecoverable; 1 = bad confi
 [gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
 [gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
 [server] SIGTERM: draining (1 in flight, deadline 30s)
-[server] drain complete in 1.9s; exiting
+[server] drain complete in 2.0s; exiting
 
 PROBE DONE

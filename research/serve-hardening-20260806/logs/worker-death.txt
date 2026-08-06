@@ -1,22 +1,22 @@
 == G5 worker-death probe ==
-commit 4f64bf62 (lane/serve-hardening); rig RTX 5090 Laptop, driver 595.84
+commit 633b1915 (lane/serve-hardening); rig RTX 5090 Laptop, driver 595.84
 
 --- ARM A: MEMRA_WORKER_RESPAWN=1 (default) — panic must flip health, then recover ---
   before (healthy):
-  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":541,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
-  /readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":548,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":528,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+  /readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":535,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
   request that trips MEMRA_PANIC_AFTER=1 -> HTTP 200
   immediately after the panic (must be 503 on BOTH, with the quoted payload in detail):
-  /health  503 {"status":"unhealthy","models":["probe"],"worker":{"phase":"dead","beat_age_ms":699,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"worker thread panicked: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)"}
-  /livez   503 {"status":"unhealthy","models":["probe"],"worker":{"phase":"dead","beat_age_ms":705,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"worker thread panicked: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)"}
-  /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"dead","beat_age_ms":710,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"worker thread panicked: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)"}
+  /health  503 {"status":"unhealthy","models":["probe"],"worker":{"phase":"dead","beat_age_ms":686,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"worker thread panicked: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)"}
+  /livez   503 {"status":"unhealthy","models":["probe"],"worker":{"phase":"dead","beat_age_ms":692,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"worker thread panicked: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)"}
+  /readyz  503 {"status":"not_ready","models":["probe"],"worker":{"phase":"dead","beat_age_ms":698,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0},"detail":"worker thread panicked: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)"}
   a request while the worker is dead (must not hang: typed 503, or served by the respawn):
 HTTP/1.1 200 OK
   {"object":"chat.completion","model":"probe","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning":"Thinking Process:\n\n1","reasoning_details":[{"type":"reasoning.text","text":"Thinking Process:\n\n1"}]},"finish_reason":"length
   waiting for the respawn to reload weights (backoff 2s + load)...
   recovered after 0s (generation must be 1, not 0):
   /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":19,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":1,"xid_warnings":0}}
-  /readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":24,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":1,"xid_warnings":0}}
+  /readyz  200 {"status":"ready","models":["probe"],"worker":{"phase":"idle","beat_age_ms":25,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":1,"xid_warnings":0}}
   the respawned worker serves: HTTP 200
   supervisor lines:
     [worker] PANIC in the GPU worker thread: MEMRA_PANIC_AFTER=1 fault injection: deliberate worker panic after 1 completed request(s)
@@ -25,7 +25,7 @@ HTTP/1.1 200 OK
 
 --- ARM B: MEMRA_WORKER_RESPAWN=0 — panic must exit the PROCESS 70 (EX_SOFTWARE) ---
   before (healthy):
-  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":449,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
+  /health  200 {"status":"ok","models":["probe"],"worker":{"phase":"idle","beat_age_ms":493,"tick_max_ms":0,"stall_threshold_ms":120000,"generation":0,"xid_warnings":0}}
   request that trips the panic -> HTTP 200
   process exit code: 70   (expected 70 = EX_SOFTWARE 'the engine died', vs 1 = bad config)
   port after exit (must be refused — no listener without a worker):

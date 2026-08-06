@@ -1,10 +1,10 @@
-[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-Lfzv.toml — the plaintext above is shown ONCE and stored only as SHA-256
-[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-Lfzv.toml — the plaintext above is shown ONCE and stored only as SHA-256
-[gen-key] tenant "blue" lane interactive appended to /tmp/apikeys-gate-Lfzv.toml — the plaintext above is shown ONCE and stored only as SHA-256
-[gen-key] tenant "bulk" lane batch appended to /tmp/apikeys-gate-Lfzv.toml — the plaintext above is shown ONCE and stored only as SHA-256
-[gen-key] tenant "dead" lane interactive appended to /tmp/apikeys-gate-Lfzv.toml — the plaintext above is shown ONCE and stored only as SHA-256
-[revoke-key] mk-dead-471e22634ad9 disabled in /tmp/apikeys-gate-Lfzv.toml (takes effect on the next keyring poll, <=2s on a running server)
-[revoke-key] mk-acme-5ed2dae65893 disabled in /tmp/apikeys-gate-Lfzv.toml (takes effect on the next keyring poll, <=2s on a running server)
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-gd4a.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-gd4a.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "blue" lane interactive appended to /tmp/apikeys-gate-gd4a.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "bulk" lane batch appended to /tmp/apikeys-gate-gd4a.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "dead" lane interactive appended to /tmp/apikeys-gate-gd4a.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[revoke-key] mk-dead-241bb58a5bbd disabled in /tmp/apikeys-gate-gd4a.toml (takes effect on the next keyring poll, <=2s on a running server)
+[revoke-key] mk-acme-e4fcb7fb38ee disabled in /tmp/apikeys-gate-gd4a.toml (takes effect on the next keyring poll, <=2s on a running server)
   ok: no-key-401 {'status': 401}
   ok: bad-key-401 {'status': 401}
   ok: revoked-key-403 {'status': 403, 'message': 'api key is disabled'}
