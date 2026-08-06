@@ -1,0 +1,78 @@
+== local-ci: correctness stage ==
+kernel-check: GREEN
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=2.3640e0 min flip margin=-
+prime-gate: ALL GREEN
+run-gen argmax: MATCH (31B)
+VERIFY-GATE K=7 depth: PASS (31B)
+spec self-consistency 64/64: PASS (31B)
+run-gen argmax depth: MATCH (12B)
+VERIFY-GATE K=7 depth: PASS (12B)
+decode-batch-gate config B=8: ALL GREEN (9B NVFP4)
+decode-batch-gate strict B=4 equalized: ALL GREEN (9B NVFP4)
+decode-batch-gate config B=8: ALL GREEN (9B Q8_0)
+decode-batch-gate strict B=4 equalized: ALL GREEN (9B Q8_0)
+== graph-warmup-stress gate: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf cycles=10 warmups=1 ==
+model /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf arch qwen35 (32 layers) cycles=10 large=160tok/@4096 small=90tok/@96 MEMRA_GRAPH_WARMUPS=1 canary=false
+[pool] post-load: reserved 4640 MB used 4624 MB
+[pool] post-eager-ref: reserved 4736 MB used 4625 MB
+cycle 1: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 2: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 3: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 4: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 5: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 6: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 7: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 8: OK  [pool after L-drop: 5440/4627 MB, after S: 5440/4627 MB rsv/used]
+cycle 9: OK  [pool after L-drop: 5440/4627 MB, after S: 5440/4627 MB rsv/used]
+cycle 10: OK  [pool after L-drop: 5440/4627 MB, after S: 5440/4627 MB rsv/used]
+overlap arm: OK (A survived B's pool growth; B survived A's free + recapture)
+[pool] end: reserved 6080 MB used 4627 MB
+ALL GREEN: graph-warmup-stress (10 cycles x 4 arms + overlap, bit-identical, no fault)
+== canary arm: injected graph-memory corruption must be CAUGHT ==
+model /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf arch qwen35 (32 layers) cycles=1 large=160tok/@4096 small=90tok/@96 MEMRA_GRAPH_WARMUPS=1 canary=true
+[pool] post-load: reserved 4640 MB used 4624 MB
+[pool] post-eager-ref: reserved 4736 MB used 4625 MB
+cycle 1 ->S: canary caught at token 30 (expected — comparator has teeth)
+cycle 1: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+overlap arm: OK (A survived B's pool growth; B survived A's free + recapture)
+[pool] end: reserved 6048 MB used 4627 MB
+CANARY GATE PASS: injected graph-memory corruption was detected; all clean arms held
+ALL GREEN: graph-warmup-stress gate (10 cycles + canary)
+correctness stage: GREEN
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+serve-smoke: 0 failed
+== serve-stress-gate: c=64 staggered short streams (128-256 tok) ==
+completed 64/64; wall p50=53.2s p95=60.7s max=61.5s; ttfb p50=0.89s p95=5.00s  (informational)
+serve-stress-gate: ALL GREEN (c=64 complete, streams well-formed, worker alive, log clean)
+== local-ci: perf stage (--perf) ==
+  31b-plain-short: 37.98 tok/s [FAIL] — tok/s -8.31% vs median 41.42
+  31b-plain-d1736: 35.87 tok/s [FAIL] — tok/s -8.56% vs median 39.23
+  31b-spec-short: 95.74 tok/s accept=0.798 [FAIL] — tok/s -10.88% vs median 107.43
+  31b-spec-d1736: 88.95 tok/s accept=0.817 [FAIL] — tok/s -12.64% vs median 101.82
+  26b-plain-short: 171.74 tok/s [FAIL] — tok/s -16.79% vs median 206.39
+  26b-spec-d1736: 250.89 tok/s accept=0.816 [FAIL] — tok/s -24.75% vs median 333.42; ACCEPTANCE 0.880 -> 0.816
+  e4b-plain-short: 173.43 tok/s [FAIL] — tok/s -15.47% vs median 205.17
+  e4b-spec-short: 216.22 tok/s accept=0.429 [FAIL] — tok/s -19.52% vs median 268.67
+  qwen9b-plain-short: 124.80 tok/s [FAIL] — tok/s -8.98% vs median 137.12
+perf stage: 10 fail, 0 warn
+=== EXIT=1 ===

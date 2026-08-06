@@ -1,0 +1,25 @@
+== perf-ab: 31b-plain-short, N=5 interleaved, one lock hold ==
+   A = fcfe3837 baseline (/tmp/perf-ab-baseline/run-gen)
+   B = eea5a9ed candidate (target/release/run-gen)
+   entry: 54, 1852 MHz, 16.55 W
+   other GPU compute apps at entry:
+     144655, 332 MiB, /home/avifenesh/projects/llama.cpp/build/bin/llama-server
+
+  [warmup rep into the steady thermal state, discarded]
+  A    rep1: 37.94    tok/s  (exit 0, 63,1755MHz)
+  B    rep1: 37.87    tok/s  (exit 0, 63,1755MHz)
+  A    rep2: 37.87    tok/s  (exit 0, 68,1747MHz)
+  B    rep2: 37.85    tok/s  (exit 0, 69,1747MHz)
+  A    rep3: 37.85    tok/s  (exit 0, 69,1747MHz)
+  B    rep3: 37.86    tok/s  (exit 0, 70,1747MHz)
+  A    rep4: 37.86    tok/s  (exit 0, 70,1747MHz)
+  B    rep4: 37.93    tok/s  (exit 0, 67,1747MHz)
+  A    rep5: 37.93    tok/s  (exit 0, 67,1747MHz)
+  B    rep5: 37.93    tok/s  (exit 0, 67,1747MHz)
+
+== VERDICT (this window only, N=5 each, interleaved, exclusive lock) ==
+   A fcfe3837 median: 37.87 tok/s   [37.94 37.87 37.85 37.86 37.93 ]
+   B eea5a9ed median: 37.87 tok/s   [37.87 37.85 37.86 37.93 37.93 ]
+   B vs A: +0.00%
+   => NO code regression in this cell. The rolling median was the invalid side.
+   raw logs: /tmp/perf-ab-logs/

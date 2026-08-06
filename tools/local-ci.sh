@@ -221,15 +221,25 @@ run_cell() {
     best_toks="0"; accept=""; tokround=""
     for _rep in 1 2; do
         local out toks
+        # The reps run UNDER THE SHARED GPU LOCK (2026-08-06, v0.71.0 release battery). The
+        # window_free_now() recheck below samples only BETWEEN reps, so a neighbor lane that
+        # starts and finishes inside a rep is invisible to it — that hole reported 10/10 cells
+        # FAIL (-8.31%..-24.75%) at the v0.71.0 tag candidate while a concurrent Q8RP census
+        # held run-gen on the same card, and every poisoned row still recorded
+        # window_clean:true. Every other GPU consumer in this repo (fast-gate, the gate
+        # scripts) already takes /tmp/gpu5090.lock; the perf stage — the one stage whose whole
+        # output is a timing number — did not.
         if [ "$mode" = "plain" ]; then
             # shellcheck disable=SC2046
-            out=$(MEMRA_NGEN="$ngen" timeout 420 target/release/run-gen "$mp" $(cat "$pfile") 2>&1 || true)
+            out=$(flock -w "${MEMRA_CI_LOCK_WAIT:-7200}" "${MEMRA_CI_LOCK:-/tmp/gpu5090.lock}" \
+                  env MEMRA_NGEN="$ngen" timeout 420 target/release/run-gen "$mp" $(cat "$pfile") 2>&1 || true)
             toks=$(echo "$out" | grep -oE "= [0-9.]+ tok/s" | tail -1 | grep -oE "[0-9.]+" || echo 0)
         else
             local envs=(MEMRA_SPEC_ONLY=1 "MEMRA_SPEC=$k" "MEMRA_DRAFT=$MODELS/$draft" "MEMRA_NGEN=$ngen")
             [ -n "$ranks" ] && [ "$ranks" != "null" ] && envs+=("MEMRA_GEMMA_DRAFT_RANKS=$ranks")
             # shellcheck disable=SC2046
-            out=$(env "${envs[@]}" timeout 420 target/release/gemma-gate "$mp" $(cat "$pfile") 2>&1 || true)
+            out=$(flock -w "${MEMRA_CI_LOCK_WAIT:-7200}" "${MEMRA_CI_LOCK:-/tmp/gpu5090.lock}" \
+                  env "${envs[@]}" timeout 420 target/release/gemma-gate "$mp" $(cat "$pfile") 2>&1 || true)
             toks=$(echo "$out" | grep -oE "spec: [0-9.]+" | grep -oE "[0-9.]+" || echo 0)
             accept=$(echo "$out" | grep -oE "accept-rate=[0-9.]+" | grep -oE "[0-9.]+" | tail -1 || true)
             tokround=$(echo "$out" | grep -oE "tok/round=[0-9.]+" | grep -oE "[0-9.]+" | tail -1 || true)
@@ -247,7 +257,27 @@ run_cell() {
     done
     [ "$best_toks" = "0" ] && { echo "  $id: FAIL (no reading)"; FAILS=$((FAILS+1)); return 0; }
 
-    # rolling-median verdict from prior rows of this cell
+    # Rolling-median verdict from prior rows of this cell.
+    #
+    # WHAT THIS VERDICT IS, EXACTLY (2026-08-06): a DRIFT TRIPWIRE, not evidence. The
+    # denominator is a median of rows measured on earlier days, so a tok/s FAIL here is a
+    # CROSS-DAY comparison — precisely the form the measurement law (research/benchmarks.md,
+    # the H100 lane's law 1) forbids as proof, because clock/thermal/power state drifts under
+    # both numerator and denominator. It answers "did something move?", never "did this commit
+    # regress?".
+    #
+    # THE PROTOCOL WHEN IT GOES RED (do not skip to a conclusion either way):
+    #   build the last-green commit's binary, then run the SAME cell interleaved A/B/A/B, N>=5
+    #   each, in ONE thermal window under one exclusive lock hold, and compare only within
+    #   that window. See research/v071-prep-20260806/battery-logs/perf-ab.sh for the harness.
+    # v0.71.0 is the worked example: 10/10 cells "FAIL" at -8.31%..-24.75%, and the
+    # interleaved A/B put the last-green baseline binary at 37.87 tok/s against the candidate's
+    # 37.87 (+0.00%) — the drop was the machine's state, and zero code had regressed. A uniform
+    # multi-cell drop with correctness green is that signature, not ten simultaneous
+    # regressions.
+    #
+    # ACCEPTANCE drops are the exception: acceptance is a RATIO, clock-independent, and
+    # invisible to every exactness gate by construction. Treat an acceptance FAIL as real.
     local base verdict="OK" note="" rows
     rows=$(grep "\"cell\":\"$id\"" "$OUT" 2>/dev/null || true)
     base=$(printf '%s\n' "$rows" | tail -"$(jq -r .gates.baseline_window $MANIFEST)" \
@@ -294,4 +324,18 @@ while read -r cell; do
 done < <(jq -c '.cells[]' $MANIFEST)
 
 echo "perf stage: $FAILS fail, $WARNS warn"
+if [ "$FAILS" -gt 0 ]; then
+    cat <<'PERFRED'
+
+  ^ A tok/s FAIL above is a DRIFT TRIPWIRE against a cross-day median, NOT a proven
+    regression, and it is not by itself a merge/tag blocker. Settle it before concluding:
+      1. build the last-green commit's binary for this cell,
+      2. run that cell interleaved A/B/A/B, N>=5 each, ONE thermal window, one exclusive
+         lock hold (harness: research/v071-prep-20260806/battery-logs/perf-ab.sh),
+      3. compare medians WITHIN that window only.
+    A uniform drop across many cells with correctness green points at machine state
+    (power/thermal/profile) or a contended window, not at the diff. An ACCEPTANCE FAIL is
+    different — acceptance is clock-independent, so treat it as real.
+PERFRED
+fi
 [ "$FAILS" -eq 0 ] || exit 1

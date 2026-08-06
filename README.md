@@ -177,6 +177,12 @@ request arriving mid-burst preempts at the next round boundary, so felt latency 
 scales with the speculative burst size: solo first text ~0.12 s with ~27 ms chunk gaps, and
 contended first text 0.12–0.15 s — the solo class — instead of waiting a full burst out
 ([docs/SERVING.md](docs/SERVING.md)).
+Admission is VRAM-aware and **64 concurrent speculative clients is a gated property**, not
+an aspiration: `tools/serve-stress-gate.sh` runs in local CI and asserts 64/64 well-formed
+streams on a 24GB card (peak 23.1 GB), with a teeth arm that forces a broken headroom
+reserve and proves the gate still catches it. Requests should send an explicit `max_tokens`
+— omitting it sizes the KV ladder from the context ceiling and strands measurable VRAM
+([docs/SERVING.md](docs/SERVING.md)).
 The contract: greedy serving is isolated-identical under concurrent load — a request's
 output tokens are byte-identical whether it arrives alone or inside a full batch, gated by
 replaying the same prompts at c=1 and c=16 against the same server and byte-comparing every

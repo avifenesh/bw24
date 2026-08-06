@@ -77,8 +77,15 @@ all_probe_ids() { awk -F'\t' '$0 !~ /^#/ && NF >= 5 { print $1 }' "$MODELS_TSV";
 # ---------- diff -> plan (map.tsv is the dispatch-structure encoding) ----------
 CHANGED=$( { git diff --name-only "$DIFF_REF" 2>/dev/null;
              git ls-files --others --exclude-standard; } | sort -u )
-if [ -z "$CHANGED" ] && [ "$REFRESH" = 0 ]; then
+# --probes names the plan explicitly, so an empty diff is NOT "nothing to gate" — it is a
+# clean tree someone is deliberately gating (a release candidate, a fresh rsync onto another
+# rig, a tree with no .git at all). Exiting 0 there is a FALSE GREEN: it reported success
+# having run zero probes. Found on the v0.71.0 pod battery, where the rsync'd tree had no
+# .git and the k27 regression check "passed" without executing. Only the diff-driven path
+# may short-circuit.
+if [ -z "$CHANGED" ] && [ "$REFRESH" = 0 ] && [ -z "$PROBES_OVERRIDE" ]; then
     echo "fast-gate: no changes vs $DIFF_REF — nothing to gate."
+    echo "  (to gate a clean tree anyway, name the arms: --probes <id,...>)"
     exit 0
 fi
 

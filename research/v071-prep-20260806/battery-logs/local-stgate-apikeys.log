@@ -1,0 +1,62 @@
+=== fast-gate tier1 ===
+== fast-gate plan (diff vs HEAD) ==
+  changed: docs/SERVING.md
+  changed: docs/TESTING.md
+  changed: README.md
+  changed: research/v071-prep-20260806/CHANGELOG-FINAL.md
+  changed: research/v071-prep-20260806/changelog-raw-final.txt
+  changed: research/v071-prep-20260806/DARKLANE-SYNC.md
+  kernel-check scope: none
+  tier-1 argmax probes: none
+  tier-1 spec probes:   none
+  logs: /tmp/fast-gate-20260806-101149
+== fast-gate tier 0 ==
+  build: OK (1s)
+  kernel-check: SKIP (no matched kernel scope)
+tier 0: GREEN (1s total)
+== fast-gate tier 1 ==
+  no probes in plan (diff touches no probed dispatch class)
+tier 1: 0 fail (1s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.
+=== EXIT fast-gate=0 ===
+=== serve-st-gate ===
+== serve-st-gate: checkpoint /data/ai-ml/hf-models/qwen35-4b-hf ==
+  ok: /models lists the ST model
+  ok: chat completion coherent (Paris) via ST template
+identical 64 ids
+  ok: CLI-vs-server greedy token streams identical
+  ok: no quarantine notice (dir checkpoints spec-eligible)
+default (spec) text prefix-matches the tokenwise serve oracle (1520/1515 chars)
+  ok: default (spec) server == tokenwise serve oracle (400-tok window)
+serve-st-gate: 0 failed
+=== EXIT st-gate=0 ===
+=== apikeys-gate ===
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-Mmiy.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-Mmiy.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "blue" lane interactive appended to /tmp/apikeys-gate-Mmiy.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "bulk" lane batch appended to /tmp/apikeys-gate-Mmiy.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "dead" lane interactive appended to /tmp/apikeys-gate-Mmiy.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[revoke-key] mk-dead-c6fb8fcd5976 disabled in /tmp/apikeys-gate-Mmiy.toml (takes effect on the next keyring poll, <=2s on a running server)
+[revoke-key] mk-acme-574fa7a39611 disabled in /tmp/apikeys-gate-Mmiy.toml (takes effect on the next keyring poll, <=2s on a running server)
+  ok: no-key-401 {'status': 401}
+  ok: bad-key-401 {'status': 401}
+  ok: revoked-key-403 {'status': 403, 'message': 'api key is disabled'}
+  ok: single-key-200 {'status': 200}
+  ok: acme-k1-seed-P {'prompt': 94, 'cached': 0}
+  ok: acme-k2-HIT-P-same-tenant {'prompt': 94, 'cached': 94}
+  ok: blue-MISS-P-cross-tenant {'prompt': 94, 'cached': 0}
+  ok: blue-seed-Q {'prompt': 101, 'cached': 0}
+  ok: blue-HIT-own-Q-cache-alive {'prompt': 101, 'cached': 101}
+  ok: acme-MISS-Q-cross-tenant-reverse {'prompt': 101, 'cached': 0}
+  ok: acme-salted-MISS-vs-unsalted {'prompt': 94, 'cached': 0}
+  ok: acme-salted-HIT-itself {'prompt': 94, 'cached': 94}
+  ok: tenant-rl-override-headers {'status': 200, 'limit': 2, 'remaining': 1}
+  ok: uncapped-key-global-cap {'limit': 64}
+  ok: batch-key-interactive-403 {'status': 403, 'message': 'this api key is batch-class: x-lane interactive is not permitted (use judge or harvest)'}
+  ok: batch-key-judge-admits {'status': 200}
+  ok: hot-revoke-403-within-poll {'status': 403}
+  ok: sibling-key-survives-revoke {'status': 200}
+apikey_gate: 0 failed / 18 gates
+=== EXIT apikeys=0 ===

@@ -1,0 +1,28 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: docs/SERVING.md
+  changed: docs/TESTING.md
+  changed: README.md
+  changed: research/apikeys-20260805/apikey-gates.jsonl
+  changed: research/apikeys-20260805/meter-lines-sample.log
+  changed: research/apikeys-20260805/server-apikeys.log
+  changed: research/v071-prep-20260806/CHANGELOG-FINAL.md
+  changed: research/v071-prep-20260806/changelog-raw-final.txt
+  changed: research/v071-prep-20260806/DARKLANE-SYNC.md
+  kernel-check scope: none
+  tier-1 argmax probes: chunkinv,chunkinvc,gwstress,k27
+  tier-1 spec probes:   none
+  logs: /tmp/fast-gate-20260806-102336
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check: SKIP (no matched kernel scope)
+tier 0: GREEN (0s total)
+== fast-gate tier 1 ==
+  chunkinv: PASS (self-gating check green, 113s)
+  chunkinvc: PASS (self-gating check green, 6s)
+  gwstress: PASS (self-gating check green, 37s)
+  k27: PASS (gates green + golden token-identical, 13s)
+tier 1: 0 fail (169s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.
+=== EXIT=0 ===

@@ -10,7 +10,7 @@ merge/tag bar — a fast-gate green is a *keep going* signal, never a *ship* sig
 |---|---|---|---|
 | 0 | seconds (~2 s kernel-check scoped + build) | workspace compile + kernel-check scoped to the touched sections | every edit-compile loop |
 | 1 | ~1–2 min | tier 0 + golden-token argmax probe on ONE model per affected kernel class (+ one single-K spec probe when the diff touches the spec pipeline) | before every dev-loop commit |
-| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, `--perf` cell battery | **every merge, every tag** (unchanged) |
+| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), `--perf` cell battery | **every merge, every tag** (unchanged) |
 
 Entry point:
 
@@ -78,7 +78,13 @@ the greedy token goldens structurally cannot see (the sampler chain). Three land
 naked env — the grain-free default's contract), `chunkinvc` (its canary: injects the
 `MEMRA_PRIME_F32CHUNK0=1` legacy arithmetic and must FAIL, proving the gate detects the
 mechanism), and `gwstress` (the graph-warmup pool-growth stress gate behind the
-`MEMRA_GRAPH_WARMUPS=1` default). The `k27` argmax probe pins `MEMRA_FA_SPLIT=8` in its
+`MEMRA_GRAPH_WARMUPS=1` default). A fourth landed 2026-08-06: `sstress`
+(`tools/serve-stress-gate.sh` — 64 staggered streaming clients, asserting every stream
+completes well-formed with a live worker and no OOM lines; it is the *concurrency*
+contract, which no exactness golden can see, and the regression proof for the admission
+spec-headroom fix). Its own teeth: `--teeth` forces the admission reserve to 16 MB and the
+verdict must invert. It also closed a map hole where `crates/memra-server/` diffs mapped to
+no gate at all. The `k27` argmax probe pins `MEMRA_FA_SPLIT=8` in its
 env column so its golden is rig-portable across the 82-vs-188-SM `fa_split_keys` rung
 (lane/k27-divergence — a near-tie flip class, not a defect; `k27div-probe` is the
 cross-rig teacher-forced localizer).
@@ -162,12 +168,45 @@ code is broken. The mapping table encodes the fixes; keep them in mind when addi
 - **Sampled serving path** (temp>0 end-to-end): `samp` oracles the kernels, but no probe
   runs a sampled generation stream; distribution-level drift stays a battery/eval concern.
 
+## The perf stage's tok/s verdict is a tripwire, not evidence
+
+`tools/local-ci.sh --perf` verdicts each cell against a **rolling median of that cell's prior
+rows** — rows measured on earlier days. A tok/s FAIL there is therefore a *cross-day*
+comparison, exactly the form [`research/benchmarks.md`](../research/benchmarks.md) forbids as
+proof: clock, thermal and power state drift under numerator and denominator alike. It answers
+"did something move?", never "did this commit regress?" — and it is **not** by itself a
+merge/tag blocker.
+
+When it goes red, settle it and record the settle:
+
+1. build the last-green commit's binary for that cell,
+2. run the cell **interleaved A/B/A/B, N≥5 each, in ONE thermal window under one exclusive
+   lock hold** (harness: `research/v071-prep-20260806/battery-logs/perf-ab.sh`),
+3. compare medians *within that window only*.
+
+The v0.71.0 release battery is the worked example: 10/10 cells reported FAIL at −8.31% to
+−24.75% with correctness fully green, and the interleaved A/B measured the **last-green
+baseline binary at 37.87 tok/s against the candidate's 37.87 (+0.00%)** — the drop was machine
+state, and no code had regressed. A uniform drop across many unrelated cells with correctness
+green is that signature, not many simultaneous regressions.
+
+Two holes in this stage were closed by that same red (2026-08-06):
+
+- **The reps now run under `/tmp/gpu5090.lock`.** `window_free_now()` samples only *between*
+  reps, so a neighbor lane that started and finished inside a rep was invisible — and its
+  poisoned rows still recorded `window_clean:true`. Every other GPU consumer in the repo
+  already took the lock; the one stage whose entire output is a timing number did not.
+- **A tok/s FAIL now prints the settle protocol** instead of only a percentage, so the next
+  reader does not have to re-derive why the number alone cannot convict a commit.
+
 ## What fast-gate does NOT cover
 
 - **Serving surface** (`crates/memra-server/`): run `tools/serve-smoke.sh` (fast-gate prints
   the pointer when the diff touches it).
 - **Acceptance drift**: invisible to every exactness gate by construction (decode and verify
   shift together) — only the tier-2 perf battery's per-cell acceptance verdicts catch it.
+  Acceptance is a ratio and therefore clock-independent: an acceptance FAIL is real evidence,
+  unlike a tok/s FAIL (below).
 - **H100/sm_90a lane**: `tools/validate-h100.sh` on an H100, per its own laws.
 - **Cross-model blast radius**: tier 1 probes one model per kernel class; the full per-model
   matrix runs at tier 2.

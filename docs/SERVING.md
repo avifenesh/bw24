@@ -112,6 +112,44 @@ caught by the serve gate as instant HTTP 400s — `research/fast-router-20260802
 The first session always admits; an OOM with no active sessions is real capacity and
 still errors loudly, with the CUDA error quoted.
 
+### 64-client robustness (lane/admit-oom, 2026-08-06) — gated, not assumed
+
+At `MEMRA_MAX_SESSIONS=64` with spec ON on a 24GB card, the 2026-08-02 cost model
+under-charged the live burst and **every one of 64 streams died** with a quoted
+`step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY)` (0/64 well-formed, x3 runs; the worker
+itself survived — it was never a hang or a panic). Two independent errors, both fixed:
+
+- **The parked-session delta understated the live cost 1.49x**, and a roughly constant
+  ~1.3 GiB draft-graph capture-arena transient is not proportional to session count at all,
+  so no per-session headroom multiple could cover it. Admission now charges a flat
+  `SPEC_SHRINK_RESERVE` (1.5 GiB) on **spec-capable models only** — the plain path is
+  untolled and passed c=64 unaided.
+- **Retires returned KV to the pinned async pool, invisible to driver `free`**, so the gate
+  read a full card while gigabytes sat cached. The gate now reads `free + pool_cached`
+  (deferrals 36 → 5, 59 sessions active sustained).
+- **Step-OOM parks instead of killing**: a spec step that OOMs despite admission rebuilds
+  its request and re-queues at the FRONT (`MEMRA_STEP_OOM_RETRIES`, default 3) — bounded,
+  and only for a session that has emitted **nothing** and only on a quoted CUDA OOM, so a
+  streamed prefix is never replayed to a client. Parking costs a re-prime: pure latency,
+  never a correctness change.
+
+Result: **64/64 well-formed, x3, peak 23.1 of 24.5 GB.** The c=8 no-regression control is
+behaviorally identical (+0.49% agg tok/s, zero defer/park events). This is now a *gated*
+property, not a claim: `tools/serve-stress-gate.sh` runs in `tools/local-ci.sh` and as the
+`sstress` fast-gate arm, and it has teeth — `--teeth` forces the reserve to 16 MB and the
+verdict inverts (11/64), so a gate observed only passing proves nothing.
+Receipts: `research/admit-oom-20260806/`, `research/serving-density-20260806/VERDICT.md`.
+
+### Config recommendation: send `max_tokens`
+
+Admission sizes each session's KV ladder from the request's own bound. A request that
+**omits `max_tokens`** falls back to the context ceiling, so at `MEMRA_CTX=32768` it
+reserves ladder slack it will never use: measured **6.3% of a 96GB card at c=16 and 12.6%
+at c=32** stranded on the 9B — more than sealed-prefix duplication costs at the same
+shape. Right-sized requests (explicit `max_tokens`) strand ~0%. Set an explicit
+`max_tokens` in serve configs and client defaults, and keep `MEMRA_CTX` at the workload
+rather than the maximum. Receipt: `research/serving-density-20260806/VERDICT.md` (Q1).
+
 ## The exact-16 decode chunk tier
 
 The batched tick decodes sessions in per-model chunks. Default width is **16 on models
