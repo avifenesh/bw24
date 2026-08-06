@@ -1,0 +1,57 @@
+[server] starting; models config = [("q9", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] q9: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[server] worker ready; serving models: ["q9"]
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] listening on http://127.0.0.1:8317
+[meter] admit id=chatcmpl-0b6d9b165ca8289dcdbbce08f45eafad tenant=default lane=interactive model="q9"
+[spec-phase] draft=7.0ms (16.0%) verify-issue=6.7ms (15.5%) verify-wait=28.9ms (66.3%) commit-host=0.9ms (2.2%) rounds=4
+[spec-acc] ctx=226 burst=12/12 cum=12/12=1.000
+[meter] admit id=chatcmpl-27dad927f59c278155b1e48d6b4be659 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[worker] observed session VRAM cost for "q9": 101MB (admission gate = 2x)
+[spec-phase] draft=13.2ms (14.8%) verify-issue=12.6ms (14.2%) verify-wait=61.5ms (69.0%) commit-host=1.8ms (2.0%) rounds=8
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-phase] draft=15.9ms (13.9%) verify-issue=15.5ms (13.6%) verify-wait=80.3ms (70.3%) commit-host=2.4ms (2.1%) rounds=10
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[spec-phase] draft=22.8ms (14.2%) verify-issue=21.8ms (13.5%) verify-wait=112.6ms (69.9%) commit-host=3.9ms (2.4%) rounds=14
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[spec-phase] draft=12.6ms (13.8%) verify-issue=12.2ms (13.3%) verify-wait=64.8ms (70.9%) commit-host=1.9ms (2.1%) rounds=8
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-7bbb4dca5447396d3ab98b0f4bee1892 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-phase] draft=13.1ms (14.8%) verify-issue=12.5ms (14.2%) verify-wait=60.8ms (69.0%) commit-host=1.7ms (2.0%) rounds=8
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-phase] draft=16.3ms (14.0%) verify-issue=15.6ms (13.3%) verify-wait=82.5ms (70.6%) commit-host=2.4ms (2.0%) rounds=10
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[spec-phase] draft=25.8ms (14.5%) verify-issue=21.8ms (12.2%) verify-wait=126.3ms (71.1%) commit-host=3.9ms (2.2%) rounds=14
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[spec-phase] draft=13.2ms (13.9%) verify-issue=12.3ms (13.0%) verify-wait=67.2ms (71.1%) commit-host=1.9ms (2.0%) rounds=8
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-84c76e6798b41c11ba440321ecd5caf2 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-phase] draft=13.7ms (15.0%) verify-issue=12.5ms (13.7%) verify-wait=63.2ms (69.4%) commit-host=1.8ms (1.9%) rounds=8
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-phase] draft=16.3ms (14.1%) verify-issue=15.6ms (13.4%) verify-wait=81.8ms (70.4%) commit-host=2.4ms (2.1%) rounds=10
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[spec-phase] draft=23.3ms (14.3%) verify-issue=21.8ms (13.3%) verify-wait=114.3ms (70.0%) commit-host=3.9ms (2.4%) rounds=14
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[spec-phase] draft=12.7ms (13.8%) verify-issue=12.3ms (13.4%) verify-wait=65.1ms (70.7%) commit-host=1.9ms (2.1%) rounds=8
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[meter] admit id=chatcmpl-db3884d0cc59ec4be940343448759a90 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-phase] draft=13.6ms (14.9%) verify-issue=12.7ms (13.9%) verify-wait=63.1ms (69.2%) commit-host=1.8ms (1.9%) rounds=8
+[spec-acc] ctx=226 burst=24/24 cum=24/24=1.000
+[spec-phase] draft=17.0ms (14.1%) verify-issue=15.3ms (12.7%) verify-wait=85.7ms (71.2%) commit-host=2.4ms (2.0%) rounds=10
+[spec-acc] ctx=259 burst=25/30 cum=49/54=0.907
+[spec-phase] draft=24.1ms (14.2%) verify-issue=21.8ms (12.9%) verify-wait=119.1ms (70.5%) commit-host=4.0ms (2.3%) rounds=14
+[spec-acc] ctx=294 burst=20/42 cum=69/96=0.719
+[spec-phase] draft=13.1ms (13.9%) verify-issue=12.4ms (13.2%) verify-wait=66.6ms (70.9%) commit-host=1.9ms (2.0%) rounds=8
+[spec-acc] ctx=328 burst=19/24 cum=88/120=0.733
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
