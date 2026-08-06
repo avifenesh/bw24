@@ -1,0 +1,37 @@
+[server] starting; models config = [("m122b", "/dev/shm/122b/Qwen3.5-122B-A10B-UD-IQ4_XS.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m122b" <- /dev/shm/122b/Qwen3.5-122B-A10B-UD-IQ4_XS.gguf
+[moe] resident-experts decision: experts 53.75GB + trunk 6.46GB vs free 100.62GB (expert budget 92.15GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 16 > fa_v4_smem capacity 8 (v3 lane serves)
+[worker]   loaded "m122b": 48 layers, eos=248046
+[worker] m122b: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] m122b: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["m122b"]
+[server] listening on http://127.0.0.1:8199
+[meter] admit id=chatcmpl-b8522de460f0de2513d6a42233a2aa7b tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-d68a43a2ee2effaf8a4ef7d743207dbe tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-c1d4f70d2c2bf03488831ce12cd6a993 tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-4d2e35c01a943527f45acf50cb8fcde8 tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-433a2d2f38f340a1b4cc0c88e922c4d1 tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-2cd496f506fe9519a953d9171f7bb5a6 tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-20c4b33b31251f706fdd9135ad38e987 tenant=default lane=interactive model="m122b"
+[meter] admit id=chatcmpl-eff8ed8c5256fe52c5c16d5f0d0302a5 tenant=default lane=interactive model="m122b"
+[worker] observed session VRAM cost for "m122b": 403MB (admission gate = 2x)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 169.2MB / 268MB, model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[prefix-cache] insert (seed): 1155 tokens, 169.2MB (resident 338.3MB / 268MB, model m122b)
+[prefix-cache] evict (LRU): 1155 tokens, 169.2MB (model m122b)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
