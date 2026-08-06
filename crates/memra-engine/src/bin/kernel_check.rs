@@ -3749,6 +3749,140 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- step35 (Step-3.7-Flash) SEPARATE head-wise attention gate: `attn_head_gate` must equal
+    // `a * sigmoid(g)` with ONE gate scalar per (token, head) broadcast over head_dim, and the
+    // optional fp16 twin must be the same `__float2half` of that f32.
+    //
+    // The cell that matters is the CONFUSION cell: memra also has `sig_mul_f16out`, which reads a
+    // gate value per (head, dim) ELEMENT (qwen35 packs it inside wq). The two kernels have the
+    // same signature shape and adjacent names, so this section asserts the head-broadcast kernel
+    // really does hold the gate constant across head_dim — by feeding a `g` whose per-head values
+    // are distinct and checking that a full-width interpretation cannot produce the same answer.
+    //
+    // n_head 64 AND 96 are both run because Step-3.7-Flash's query-head count is PER LAYER (64 on
+    // the 12 full-attn layers, 96 on the 33 SWA layers); head_dim=128. T=1 is decode, T=7 prefill
+    // with a non-power-of-2 token count so the flat-grid tail is exercised.
+    {
+        let head_dim = 128usize;
+        for &n_head in &[64usize, 96] {
+            for &t in &[1usize, 7] {
+                let n = t * n_head * head_dim;
+                let a: Vec<f32> = (0..n).map(|i| pr(i + 101) - 0.5).collect();
+                // pre-sigmoid gate, token-major [T, n_head]; spread over +-6 so sigmoid spans
+                // ~0.002..0.998 and a wrong broadcast cannot hide inside a flat ~0.5.
+                let g: Vec<f32> = (0..t * n_head).map(|i| (pr(i + 103) - 0.5) * 12.0).collect();
+                let mut cpu = vec![0f32; n];
+                for tok in 0..t {
+                    for hh in 0..n_head {
+                        let s = 1.0 / (1.0 + (-g[tok * n_head + hh]).exp());
+                        for d in 0..head_dim {
+                            let idx = (tok * n_head + hh) * head_dim + d;
+                            cpu[idx] = a[idx] * s;
+                        }
+                    }
+                }
+                let ad = e.htod(&a)?;
+                let gd = e.htod(&g)?;
+                let mut dd = e.zeros(n)?;
+                let mut d16 = e.alloc_u8_uninit(n * 2)?;
+                e.attn_head_gate(&ad, &gd, &mut dd, Some(&mut d16), head_dim, n_head, t)?;
+                let gpu = e.dtoh(&dd)?;
+                let d = maxdiff(&cpu, &gpu);
+                // fp16 twin == __float2half of the f32 the same launch stored.
+                let raw = e.dtoh_u8(&d16)?;
+                let h_bad = (0..n).filter(|&i| {
+                    let bits = u16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+                    bits != memra_gguf::nvfp4_repack::f32_to_f16_bits(gpu[i])
+                }).count();
+                // CONFUSION GUARD: a full-width (per-element) gate reading the same `g` buffer
+                // would differ here. Assert the head-broadcast answer is NOT reproducible by
+                // holding only one sigmoid for the whole layer, i.e. per-head values really vary.
+                let s0 = 1.0 / (1.0 + (-g[0]).exp());
+                let flat_diff = (0..n).filter(|&i| (cpu[i] - a[i] * s0).abs() > 1e-6).count();
+                let ok = d < 1e-6 && h_bad == 0 && flat_diff > n / 2;
+                println!("attn_head_gate [hd{head_dim} nh{n_head} T{t}] maxdiff={d:.2e} \
+                          f16_mismatch={h_bad} per_head_varies={flat_diff}/{n} {}",
+                         if ok { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+        // dst16=None must be a legal skip (the nullable-pointer convention), f32 unchanged.
+        let (n_head, t) = (64usize, 3usize);
+        let n = t * n_head * head_dim;
+        let a: Vec<f32> = (0..n).map(|i| pr(i + 107) - 0.5).collect();
+        let g: Vec<f32> = (0..t * n_head).map(|i| (pr(i + 109) - 0.5) * 12.0).collect();
+        let ad = e.htod(&a)?;
+        let gd = e.htod(&g)?;
+        let mut with16 = e.zeros(n)?;
+        let mut d16 = e.alloc_u8_uninit(n * 2)?;
+        e.attn_head_gate(&ad, &gd, &mut with16, Some(&mut d16), head_dim, n_head, t)?;
+        let mut no16 = e.zeros(n)?;
+        e.attn_head_gate(&ad, &gd, &mut no16, None, head_dim, n_head, t)?;
+        let (x, y) = (e.dtoh(&with16)?, e.dtoh(&no16)?);
+        let bad = x.iter().zip(&y).filter(|(p, q)| p != q).count();
+        println!("attn_head_gate dst16=None skip: f32_mismatch={bad} {}",
+                 if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- step35 CLAMPED SwiGLU (`swiglu_clamp_exp` / `_shexp`, live only on Step-3.7-Flash layers
+    // 43 and 44 with limits 7.0 and 16.0): `min(silu(gate*gs), limit) * clamp(up*us, +-limit)`,
+    // llama.cpp llama-graph.cpp:2146-2165 / :1751-1770, non-DEEPSEEK4 branch.
+    //
+    // Two things are gated, and the second is the reason this cell exists:
+    //   1. maxdiff vs the CPU reference at the two REAL limits, with inputs deliberately spanning
+    //      well past +-limit so both clamps actually engage (a test whose inputs stay in-range
+    //      would pass identically against plain silu_mul and prove nothing).
+    //   2. It must DIFFER from `swigluoai_mul_scaled`, which is the kernel someone reaching for
+    //      "clamped SwiGLU" would grab. oai clamps the gate BEFORE swish and multiplies by
+    //      (1 + clamp(up)); step35 clamps AFTER silu with no linear term. Substituting one for the
+    //      other compiles, runs, and produces plausible logits — so the divergence is asserted.
+    {
+        let n = 4096usize;
+        for &limit in &[7.0f32, 16.0] {
+            // span +-3*limit so silu(gate) exceeds `limit` on many elements and up gets clamped
+            // on both sides.
+            let gate: Vec<f32> = (0..n).map(|i| (pr(i + 113) - 0.5) * 6.0 * limit).collect();
+            let up: Vec<f32> = (0..n).map(|i| (pr(i + 127) - 0.5) * 6.0 * limit).collect();
+            for &(gs, us) in &[(1.0f32, 1.0f32), (0.75, 1.25)] {
+                let cpu: Vec<f32> = (0..n).map(|i| {
+                    let u = (up[i] * us).clamp(-limit, limit);
+                    let x = gate[i] * gs;
+                    let sl = x / (1.0 + (-x).exp());
+                    sl.min(limit) * u
+                }).collect();
+                let gd = e.htod(&gate)?;
+                let ud = e.htod(&up)?;
+                let mut dd = e.zeros(n)?;
+                e.swiglu_clamped_mul_scaled(&gd, &ud, gs, us, limit, &mut dd, n)?;
+                let gpu = e.dtoh(&dd)?;
+                let d = maxdiff(&cpu, &gpu);
+                // count how many elements the clamps actually touched — a silent no-op would
+                // make this cell vacuous.
+                let clamped = (0..n).filter(|&i| {
+                    let x = gate[i] * gs;
+                    let sl = x / (1.0 + (-x).exp());
+                    sl > limit || (up[i] * us).abs() > limit
+                }).count();
+                println!("swiglu_clamped [limit={limit} gs={gs} us={us}] maxdiff={d:.2e} \
+                          clamped={clamped}/{n} {}",
+                         if d < 1e-4 && clamped > n / 10 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+        // DIVERGENCE GUARD vs swigluoai (the wrong-kernel-looks-right failure mode).
+        let limit = 7.0f32;
+        let gate: Vec<f32> = (0..n).map(|i| (pr(i + 131) - 0.5) * 6.0 * limit).collect();
+        let up: Vec<f32> = (0..n).map(|i| (pr(i + 137) - 0.5) * 6.0 * limit).collect();
+        let gd = e.htod(&gate)?;
+        let ud = e.htod(&up)?;
+        let mut a_step = e.zeros(n)?;
+        e.swiglu_clamped_mul_scaled(&gd, &ud, 1.0, 1.0, limit, &mut a_step, n)?;
+        let mut a_oai = e.zeros(n)?;
+        e.swigluoai_mul_scaled(&gd, &ud, 1.0, 1.0, 1.0, limit, &mut a_oai, n)?;
+        let (xs, xo) = (e.dtoh(&a_step)?, e.dtoh(&a_oai)?);
+        let differ = xs.iter().zip(&xo).filter(|(p, q)| (*p - *q).abs() > 1e-4).count();
+        println!("swiglu_clamped != swigluoai: differ={differ}/{n} {}",
+                 if differ > n / 2 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }

@@ -11820,6 +11820,55 @@ impl Engine {
         Ok(())
     }
 
+    /// step35 (Step-3.7-Flash) SEPARATE head-wise attention gate: one scalar per query head,
+    /// broadcast over head_dim. `dst = a * sigmoid(g)` where `a`/`dst` are `[head_dim, n_head, T]`
+    /// (the `q_gate_split` layout) and `g` is the PRE-sigmoid `attn_gate` projection output in
+    /// token-major `[T, n_head]`. `dst16` is the optional fp16 operand for wo (None -> skipped).
+    ///
+    /// NOT interchangeable with `sig_mul_f16out`, which gates FULL WIDTH (qwen35 packs one gate
+    /// value per (head, dim) element inside wq). Using this for that, or that for this, silently
+    /// applies the wrong number of distinct gate values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_head_gate(&self, a: &CudaSlice<f32>, g: &CudaSlice<f32>,
+                          dst: &mut CudaSlice<f32>, dst16: Option<&mut CudaSlice<u8>>,
+                          head_dim: usize, n_head: usize, t: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("attn_head_gate_f32");
+        let cfg = LaunchConfig::for_num_elems((head_dim * n_head * t) as u32);
+        let (hd, nh, ti) = (head_dim as i32, n_head as i32, t as i32);
+        // nullable device pointer by value (0 = skip), same convention as `l2_norm_pp`.
+        let d16: u64 = match dst16 { Some(d) => self.addr_u8(d), None => 0 };
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(a).arg(g).arg(dst).arg(&d16).arg(&hd).arg(&nh).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// step35 CLAMPED SwiGLU: `dst = min(silu(gate*gs), limit) * clamp(up*us, +-limit)`.
+    /// Verbatim from llama.cpp `llama-graph.cpp:2146-2165` (routed, `swiglu_clamp_exp`) and
+    /// `:1751-1770` (shared, `swiglu_clamp_shexp`), non-DEEPSEEK4 branch.
+    ///
+    /// This is NOT `swigluoai_mul_scaled`: that one clamps the gate BEFORE swish and multiplies by
+    /// `(1 + clamp(up))`. Caller MUST check `limit > 1e-6` (upstream's eps gate) and use the plain
+    /// `silu_mul_scaled` path otherwise — at limit=0 this kernel would clamp every positive
+    /// activation to zero. On Step-3.7-Flash only layers 43 (7.0) and 44 (16.0) have a live limit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn swiglu_clamped_mul_scaled(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+                                     gs: f32, us: f32, limit: f32,
+                                     dst: &mut CudaSlice<f32>, n: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(limit > 1e-6, "swiglu_clamped needs a live limit; use silu_mul_scaled");
+        let f = self.func("swiglu_clamped_mul_scaled_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&gs).arg(&us).arg(&limit).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// gated RMSNorm: dst = RMSNorm(o, w[ncols]) * silu(z), per row of ncols. nrows blocks.
     pub fn gated_rmsnorm(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
                          dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)

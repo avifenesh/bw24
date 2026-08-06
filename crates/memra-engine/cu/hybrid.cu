@@ -983,6 +983,57 @@ extern "C" __global__ void sig_mul_f16out_f32(const float* __restrict__ a, const
         dst16[i] = __float2half(o);
     }
 }
+// step35 (Step-3.7-Flash) SEPARATE head-wise attention gate. Distinct from sig_mul_f16out_f32
+// above: qwen35's gate is FULL WIDTH (one gate value per (head, dim) element, packed into wq), so
+// that kernel is a plain elementwise mul. step35's gate is ONE SCALAR PER HEAD (from its own
+// [n_embd, n_head_l] tensor), broadcast over head_dim. Upstream step35.cpp:267-285:
+//   gate = sigmoid(g_proj(attn_norm_out))                      -> [n_head_l, T]
+//   attn_3d[hd, n_head_l, T] *= gate_3d[1, n_head_l, T]        (ggml broadcast over dim 0)
+// `a`/`dst` are [head_dim, n_head, T] (the same layout q_gate_split_f32 emits, i.e. dst row
+// (tok*n_head + hh) of head_dim contiguous). `g` is the PRE-sigmoid projection output in the
+// matmul's natural token-major layout [T, n_head] -> g[tok*n_head + hh]. One thread per output
+// element; every thread in a head's head_dim span reads the same g (broadcast through L1/L2).
+// dst16 mirrors sig_mul_f16out_f32's fp16 operand for wo; pass a null dst16 via the _nof16 form.
+extern "C" __global__ void attn_head_gate_f32(const float* __restrict__ a,
+                                              const float* __restrict__ g,
+                                              float* __restrict__ dst, __half* __restrict__ dst16,
+                                              int head_dim, int n_head, int T) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)T * n_head * head_dim;
+    if (idx >= total) return;
+    int hh  = (int)((idx / head_dim) % n_head);
+    int tok = (int)(idx / ((long)head_dim * n_head));
+    float s = 1.0f / (1.0f + expf(-g[(long)tok * n_head + hh]));
+    float o = a[idx] * s;
+    dst[idx] = o;
+    if (dst16) dst16[idx] = __float2half(o);
+}
+
+// step35 CLAMPED SwiGLU. NOT the same math as swigluoai_mul_scaled_f32 in kernels.cu — do not
+// substitute one for the other:
+//   swigluoai:  x = min(gate*gs, limit);  dst = swish_alpha(x) * (1 + clamp(up*us, +-limit))
+//   step35:     up' = clamp(up*us, +-limit);  dst = min(silu(gate*gs), limit) * up'
+// i.e. step35 clamps AFTER silu (upper bound only, -INFINITY lower) and has no `1 +` linear term.
+// Verbatim from llama.cpp llama-graph.cpp:2146-2165 (routed experts, swiglu_clamp_exp) and
+// :1751-1770 (shared expert, swiglu_clamp_shexp), non-DEEPSEEK4 branch — step35 is not DEEPSEEK4
+// and has no dsv4_hc_mult, so it takes the `ggml_silu` then `ggml_clamp(-INF, limit)` path.
+// The caller must only dispatch this when `limit > 1e-6` (upstream's eps gate); at or below that
+// the plain silu_mul_scaled_f32 path is the correct one and this kernel must not be used, because
+// limit=0 would clamp every positive activation to zero.
+// gs/us fold the NVFP4 per-tensor macro-scales exactly like silu_mul_scaled_f32 (1.0 otherwise).
+extern "C" __global__ void swiglu_clamped_mul_scaled_f32(const float* __restrict__ gate,
+                                                        const float* __restrict__ up,
+                                                        float gs, float us, float limit,
+                                                        float* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float u = fmaxf(fminf(up[i] * us, limit), -limit);
+        float x = gate[i] * gs;
+        float sl = x / (1.0f + expf(-x));            // silu, same form as silu_mul_scaled_f32
+        dst[i] = fminf(sl, limit) * u;
+    }
+}
+
 // softplus(x + bias_broadcast) then * a_broadcast -> g_log. x:[H,T], bias/a:[H]. out:[H,T].
 // alpha layout [H,T] (alpha[t*H+h]); dt_bias/a [H].
 extern "C" __global__ void gdn_glog_f32(const float* alpha, const float* dt_bias, const float* a,
