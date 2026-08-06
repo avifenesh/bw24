@@ -298,6 +298,111 @@ What that does **not** establish, and why the honest listing context stays 128K 
 
 The cap stays at 128K; what changed is the **reason** — no longer "the allocator cannot express it".
 
+## Increment 6 — the attention mixer (commit `b13738ed`)
+
+Three arms (`hybrid_forward.rs`, node-for-node vs `llama.cpp src/models/step35.cpp:216-300`):
+`step35_attn` (pure prefill, no cache), `step35_attn_prime` (append into the resident quantized
+cache and attend through the cache view), `step35_decode_attn` (T=1, incl. the pre-quantized
+norm-fusion arm). `step35_geom(il)` returns `(head_dim, n_kv, n_head, rope_base, scale, is_swa)`.
+
+### Why this is a dedicated mixer family and not a few branches in `full_attn*`
+
+Five reasons. Each one produces plausible-but-wrong logits rather than a crash, which is the whole
+argument for not trying to generalize the existing chain:
+
+| # | mechanism | what the generic path does instead |
+|---|---|---|
+| 1 | `attention.head_count` is an ARRAY (64 full / 96 SWA) | reads the `cfg.n_head` scalar → wrong wq/wo/attn_gate shape and FA head count on 33 of 45 layers |
+| 2 | FULL layers rotate 64 dims, SWA 128 | `cfg.rope_dim_count` is 128 for this arch (upstream halves `n_rot_full` *after* the generic loader defaults it to `n_embd_head_k`) → rotates 128 on the full layers |
+| 3 | dual rope base 5e6/1e4 + `rope_freqs` on FULL only | one base, factors everywhere |
+| 4 | SWA 3:1, window 512 | unwindowed attention on 33 layers |
+| 5 | separate `attn_gate.weight [n_embd, n_head_l]`, per-HEAD scalar, pre-`wo`, fed by the post-attn_norm hidden | no gate at all (`attn_out_gate()` correctly denies step35 — the fused split would read wq 2× out of bounds — but nothing supplied the mechanism it *does* need) |
+
+Attention scale is the default `1/sqrt(head_dim_k)` (step35.cpp:255), **not** gemma4's 1.0. That
+one is worth naming because gemma4 is the nearest template in the repo and its 1.0 is the
+exception, not the rule — copying the template wholesale would have left token 0 exact (softmax
+over one element) and every later position drifting, which is exactly how the gemma4 bring-up bug
+presented.
+
+### SWA masking: the convention already matched, verified verbatim on both sides
+
+| side | mask predicate | source |
+|---|---|---|
+| upstream | `p1 - p0 >= (int32_t) n_swa` | `llama-hparams.h:359-395`, `is_masked_swa` under `LLAMA_SWA_TYPE_STANDARD` |
+| memra | `t < q_pos - (window - 1)`, `q_pos = (T_kv - T) + qt` | `cu/kernels.cu:1795-1836`, `sdpa_naive_w_f32` |
+
+Identical, and `step35.cpp:6` sets `hparams.swa_type = LLAMA_SWA_TYPE_STANDARD` — so memra's
+existing windowed kernels are the correct semantics and **no new mask math was needed**. Worth
+recording as a negative result: the plausible-looking work item "write a step35 window mask" does
+not exist.
+
+**Decode SWA is free**: a token-aligned view offset into the quantized cache (the gemma4 R6
+pattern). Keys carry absolute rope and the mask is purely positional, so the single query attending
+the last `win` rows IS the windowed result — no mask kernel on the decode path at all.
+
+**Prefill SWA needed one new primitive.** `sdpa_naive_w_quantized_view` (`lib.rs`), the windowed
+twin of `sdpa_naive_quantized_view`: the same `fa_dequant_kv_ws_f32` launch into f32 workspaces,
+then `sdpa_naive_w` instead of `sdpa_naive`. `window == 0` is bit-identical to the unwindowed
+function, so it is a strict superset.
+
+Two things forced it, and the second is the subtle one:
+
+1. **Every windowed FlashAttention *prefill* stamp in `flash_attn.cu` is head_dim-256 only**
+   (`fa_prefill_w_f32` == `fa_prefill_f32_body<256>`, and the quantized-view windowed twins
+   likewise). step35 is hd128. Note this is specifically the *windowed* family —
+   `fa_prefill_qw_hd128` (:4632) and `fa_prefill_qw_db_hd128` (:4892) DO exist, so the unwindowed
+   quantized-view prefill is stamped at hd128 and the full-attn layers ride it. Likewise
+   `fa_decode_vec_q_rows_smem_w` (:5749) exists, so windowed *decode-rows* is stamped. The gap is
+   windowed prefill at hd128, and only that.
+2. **Trimming the view is not sufficient — the mask is still required.** The view is trimmed to the
+   oldest key any query in the chunk can reach (`off = base_len - (win-1)`), which bounds it at
+   `win-1+t` rows. But *inside* the chunk, query `qt` may only see view keys `[qt, qt+win-1]`, so
+   the earlier keys the trimmed view still contains have to be masked per query. A trim-only
+   implementation would let early queries attend past their window — silently, and only on
+   continuation chunks.
+
+Same cache bytes and same numeric class as the unwindowed quantized-view fallback, so the
+chunk-invariance contract holds on both arms. One constraint to remember: the f32 floor's shared
+memory is `t_kv * 4` bytes, so it needs `t_kv = win-1+t <= 12287` — it relies on chunked prefill
+(`MEMRA_PRIME_CHUNK`, default 4096). A monolithic 32K prime would exceed the 48 KiB dynamic-smem
+default. SWA layers still inside the window, and all full-attn layers, take the existing hd128
+dequant-once `fa_prefill_view_ws`.
+
+### One gate-related fix in shared code
+
+`mixer_in_q8_1_fast` (`decode.rs`) now also requires `attn_gate` on the q8_1 fast path when the
+layer has one. step35 projects its head-wise gate from the same attn-normed input as q/k/v, and the
+fused arm passes a **zero-length `h`** — so admitting a layer whose gate is off the fast path would
+hand the gate matmul an empty activation. No behavior change for any other arch (`None` ⇒ true).
+
+### Refusals rather than silent generic geometry
+
+The generic paths that cannot serve step35 now return a named error instead of running the wrong
+geometry. Naming each missing twin is the point — a silent wrong answer here is unfalsifiable:
+
+| site | missing twin |
+|---|---|
+| `full_attn_decode_dc_inner` (dc + graph capture) | SWA needs an **offset** KV view, which the `len_d`-derived dc kernels cannot express; plus per-layer-`n_head` capture |
+| `full_attn_decode_batched` (m-stream) | per-layer n_head, partial rope, offset view |
+| `decode_step_batch` at B>1 | same (B=1 already routes to the shared eager trunk) |
+| `prime_cache_batch` | feeds the GENERIC attn core (`full_attn_prime_core_inner`) |
+| `full_attn_verify` (spec) | a verify computing different attention than decode defeats the K=1..8 self-consistency gate outright |
+| `MEMRA_PRIME_SEG` core-split segments | same generic-core reason (excluded via `use_seg`) |
+
+**B=1 serve needs no step35 arm** — `decode_batch.rs`'s B=1 fast path calls
+`decode_layers_eager`, the same trunk `decode_step_h` and the PP-N stages use, so it inherits the
+step35 mixer through `full_attn_decode_pre` for free. That shared trunk is also the PP-2 stage
+walker, which is what makes the first PP-2 boot reachable from this increment.
+
+`full_attn` gains an `il` parameter (step35 needs it; every other arch ignores it) — 3 call sites
+updated (`forward`, `forward_last`, `t2probe`).
+
+### Still open on the forward path
+
+`spec.rs`'s `mtp_full_attn_dc` is a 17th `attn_out_gate()`-keyed site and will need a step35 arm
+when the MTP external-file arm lands. The dc/graph and batched twins are deliberately deferred:
+bring-up correctness first, and the eager path is what the exactness gates measure.
+
 **q27 co-residence (owner's open question): yes on bytes, with wide margin.** Step 97.78 + Step MTP
 3.45 + q27 14.63 (`Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf`, `/scratch-models`, measured on the box) =
 115.86 GiB of 191.19, leaving 75.32 GiB for both models' KV and activations; Step's own 256K KV is
@@ -320,7 +425,11 @@ measurement, not a fit calculation.
 | unknown-`pre` silent fallback | now warns once |
 | loader: `attn_gate.weight` (all 45 blocks, per-layer width) | DONE |
 | half-rotary needs a new kernel | NO — `rope_neox2_f32` already splits `head_dim`/`n_dims` |
-| forward: `step35_geom`, SWA 3:1, dual rope, gate epilogue, clamp | open |
+| forward: `step35_geom`, SWA 3:1, dual rope, gate epilogue, clamp | DONE (`b13738ed`; clamp shipped `b5c8450a`) |
+| SWA mask convention vs upstream `LLAMA_SWA_TYPE_STANDARD` | MATCHES verbatim — no new mask math |
+| windowed prefill at hd128 (`sdpa_naive_w_quantized_view`) | DONE (every windowed FA *prefill* stamp is hd256-only) |
+| dc/graph, batched, varlen, spec-verify step35 twins | deferred — refuse with a named cause |
+| `mtp_full_attn_dc` step35 arm | open (lands with the MTP external-file arm) |
 | chat template (StepFun ChatML dialect) | open |
 | PP-2 split boot | open |
 | KV @128K under PP-2 + q27 co-residence arithmetic | open |
