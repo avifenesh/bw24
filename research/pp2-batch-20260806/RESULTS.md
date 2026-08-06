@@ -215,3 +215,26 @@ and its `||`/`&&` chain's precedence fired the failure branch on a run that WAS 
 - `logs/nvcc-resolve-local.txt` — the 5-arm local compile matrix behind the build.rs change
 - scripts: `run-ppbatch-gates.sh`, `run-ppbatch-serve.sh`, `run-ppbatch-perf.sh`,
   `run-ppbatch-b1.sh`
+
+## Why this lane pushed with `MEMRA_SKIP_PERF_CI=1`
+
+The pre-push local-CI freshness gate wants a `tools/local-ci.sh --perf` row on the **local 5090**
+newer than the newest engine commit. This lane did not produce one, deliberately:
+
+- the 5090 was occupied by another lane at push time (`decode-batch-gate` holding 5922 MiB plus a
+  `llama-server`), so a perf battery there would have contended for the GPU AND produced
+  clock-invalid numbers — the H100 lane's law is that every perf claim is interleaved on-box in
+  one hold, and a contended 5090 satisfies neither half;
+- more fundamentally, **the local 5090 is a single card and this lane's subject is a two-card
+  stage split.** There is no 5090 measurement of batched PP-2 to be had; the target rig for
+  every claim here is the PRO 6000 pair, where the full battery ran (`logs/gates-postfix/`,
+  `logs/serve/`, `logs/perf/`, `logs/perf-b1/`).
+
+What DID gate the engine changes, on the target rig: `kernel-check` ALL GREEN, `run-gen` argmax
+MATCH, `decode-batch-gate` config + strict gate1/2/3 PASS, `ppn-gate` serial + pipelined
+bit-identical, the seven `--mode pp` bit-identity configs, and serve-smoke 0 failed. The
+door-shut arms are what prove single-device behavior did not move.
+
+The 5090 default-flip gate in CLAUDE.md still applies to anything that would change a runtime
+default for single-card users. Nothing here does: the pp door is off by default, and the B=1
+per-stage fast path only exists on the open-door side (`MEMRA_SERVE_B1FAST=0` is its seam).
