@@ -199,8 +199,10 @@ fn main() {
         // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
         // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
         // floor at every 27B shape; v2's restructure made X=256 affordable and it is now the
-        // default. Neither arm is MMA-bound at any width measured (110-130 TF against f8f6f4's
-        // 381-TF class), so geometry, not the MMA, is what this seam moves.
+        // default. Neither arm is MMA-bound at any width measured (110-130 TF) — though note the
+        // denominator that judgement used was WRONG: the tile issued the PLAIN kind::f8f6f4 form,
+        // a 155-TF ceiling, not the 381-TF block_scale class (corrected 2026-08-06; see the FORM
+        // CHOICE block in cu/mmq_fp8_blk.cu).
         //
         // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 (v2 slice-2/slice-3 seams)
         // CONCLUDED NEGATIVE and were DELETED per the flags doctrine (v0.69.0): halving Y splits
@@ -209,6 +211,15 @@ fn main() {
         // record is research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and experiment B.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
         let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
+        // ROLLBACK SEAM: MEMRA_MMQ_FP8BLK_PLAIN=1 rebuilds the per-block FP8 prefill tile with the
+        // ORIGINAL plain kind::f8f6f4 MMA instead of the block_scale form at the ue8m0 identity
+        // scale. The two are bit-identical (0/128 accumulator elements differ, live-operand controls
+        // at 2^1/2^-1 exact) but the plain form issues at 32.02 cyc/warp-MMA against the block_scale
+        // form's 16.06 — a 1.994x MMA-rate difference. Same seam the W4A8 tile carries as
+        // MEMRA_MMQ_F8F4_PLAIN. Receipts: research/w4a8-prefill-20260806/ slices 3-4,
+        // research/rp-on-st-20260806/.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_FP8BLK_PLAIN");
+        let fp8blk_plain = std::env::var("MEMRA_MMQ_FP8BLK_PLAIN").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -265,6 +276,7 @@ fn main() {
             // negative and were deleted; see the TUNE SEAM note above).
             if mmq_src.ends_with("mmq_fp8_blk.cu") {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
+                if fp8blk_plain.as_deref() == Some("1") { args.push("-DMEMRA_FP8BLK_PLAIN_MMA".into()); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());

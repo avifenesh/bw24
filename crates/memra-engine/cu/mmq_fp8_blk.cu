@@ -48,9 +48,15 @@
 //
 // THE KEY PROPERTY IS UNCHANGED — THE WEIGHT SIDE IS NOT RE-QUANTIZED AT ALL:
 // the checkpoint bytes ARE the A operand. e4m3 x e4m3 -> f32 is a native Blackwell MMA
-// (mma.sync.aligned.kind::f8f6f4.m16n8k32, 381-TF class, the same op the W4A8-FP8 arm uses), so
-// the tile loader is a pure global->smem COPY: no dequant, no LUT, no fold, zero weight-side
-// precision loss. Every weight block keeps its own f32 scale.
+// (m16n8k32, the same op the W4A8-FP8 arm uses), so the tile loader is a pure global->smem COPY:
+// no dequant, no LUT, no fold, zero weight-side precision loss. Every weight block keeps its own
+// f32 scale.
+//   MMA FORM, CORRECTED 2026-08-06: this kernel issued the PLAIN `kind::f8f6f4` form, whose rate is
+//   155 TF (32.02 cyc/warp-MMA) — NOT the 381-TF class asserted below and in the X-seam note. The
+//   381-TF class belongs to `kind::mxf8f6f4.block_scale`, which at the ue8m0 identity scale computes
+//   the bit-identical product at 16.06 cyc. See the FORM CHOICE block at memra_fp8_mma_f8f4. Every
+//   "not MMA-bound (105-130 TF against 381)" conclusion in this header was measured against a
+//   ceiling the kernel never had; the numbers are real, the ceiling was 155.
 //
 // GEOMETRY (why the scale lookup is free):
 //   FP8_MMQ_Y divides FP8_BLK and row tiles start at it*FP8_MMQ_Y, so every row in a CTA's tile
@@ -207,14 +213,47 @@ static __device__ __forceinline__ uint16_t memra_fp8blk_cvt_e4m3x2(float lo, flo
     return r;
 }
 
-// plain-kind f8f6f4 MMA: D(f32 16x8) += A(e4m3 16x32) * B(e4m3 32x8). Same op as the W4A8-FP8 arm.
+// f8f6f4 MMA: D(f32 16x8) += A(e4m3 16x32) * B(e4m3 32x8). Same op as the W4A8-FP8 arm.
 // v2 CHAINS this: c is the whole 128-k block accumulator, not a per-32 temporary.
+//
+// FORM CHOICE (research/w4a8-prefill-20260806 slices 3-4, ported here 2026-08-06). Two PTX forms
+// compute this EXACT product on sm_120a and they do NOT run at the same rate:
+//
+//   kind::f8f6f4 (plain, no scale operands)               32.02 cyc/warp-MMA  = 155 TF
+//   kind::mxf8f6f4.block_scale.scale_vec::1X ... ue8m0    16.06 cyc/warp-MMA  = 309 TF
+//
+// Measured at locked 1860 MHz with an NACC=1..16 ILP control (flat from NACC=2, so these are pipe
+// ISSUE INTERVALS, not latency) and confirmed by full-GPU cudaEvent to 0.5%, two full reruns. The
+// plain form costs exactly 2x the interval for 2x the K depth, so its MAC rate EQUALS
+// m16n8k16.s8's. The "381-TF f8f6f4 class" this kernel's header and its X-seam note both reason
+// against belongs ONLY to the block_scale form — the plain form the kernel used to issue is
+// rate-neutral vs int8, which is why every v1/v2 profile read "105-130 TF, not MMA-bound".
+//
+// The block_scale form with the ue8m0 IDENTITY scale (byte 0x7F = 2^(127-127) = 2^0) in every
+// selected lane is BIT-IDENTICAL to the plain form: 0 of 128 accumulator elements differ on random
+// e4m3 operands, with live-operand controls at 2^1 and 2^-1 returning exactly 2.0x and 0.5x
+// (research/w4a8-prefill-20260806/tools/blksc_identity.cu). Same SM80 m16n8k32 8-bit TN fragment
+// layout, same f32 accumulator, two extra immediate registers. So the ARITHMETIC CONTRACT above is
+// untouched by construction, and fp8-mmq-check's ARM-1 bit-identity gate proves it on this kernel.
+//
+// MEMRA_MMQ_FP8BLK_PLAIN=1 (build-time) is the rollback seam back to the 1.00x plain form.
+#define MEMRA_FP8BLK_UE8M0_ONE 0x7F7F7F7Fu   // four ue8m0 bytes, each 2^0
+
 static __device__ __forceinline__ void memra_fp8_mma_f8f4(
         float * __restrict__ c, const int * __restrict__ a, const int b0, const int b1) {
+#ifdef MEMRA_FP8BLK_PLAIN_MMA
     asm("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
         : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+#else
+    asm("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X"
+        ".f32.e4m3.e4m3.f32.ue8m0 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1),
+          "r"(MEMRA_FP8BLK_UE8M0_ONE), "r"(MEMRA_FP8BLK_UE8M0_ONE));
+#endif
 }
 
 // ======================= tile loader: a COPY, not a dequant =======================

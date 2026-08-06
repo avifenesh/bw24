@@ -1,0 +1,4 @@
+blksc  n=6 medians=[1472.8, 1472.6, 1473.0, 1472.4, 1472.9, 1473.2] median=1472.8 min=1472.4 max=1473.2
+plain  n=6 medians=[1382.6, 1382.3, 1382.0, 1382.5, 1382.8, 1382.3] median=1382.4 min=1382.0 max=1382.8
+ratio blksc/plain = 1.0654
+overlap: min(blksc)=1472.4 vs max(plain)=1382.8 -> DISJOINT
