@@ -60,6 +60,7 @@ two PRO 6000 pod classes and roughly 2x apart between a 188-SM and an 82-SM boar
 | `pro6000wk-runpod` | RTX PRO 6000 Blackwell Workstation 96 GB, 188 SM, 600 W, clocks pinned 2865 MHz, zero throttle | Rented pod | The 27B serving cells below |
 | `pro6000wk-runpod-community` | Same SKU, community-tier pod | Rented pod | Dev/iteration. Runs **5-11% slower** than the prod pod — never quote a community absolute next to a prod absolute; use relative deltas within one pod |
 | `rig2x5090-serve` | vast.ai 2x RTX 5090 32 GB (single card used) | Rented | The official-FP8 checkpoint lane. Also the multi-card measurement platform and the small-SKU serving-shape reference |
+| 2x PRO 6000 Server Edition | 2x RTX PRO 6000 Blackwell Server Edition 96 GB, sm_120a, CUDA 13.2, Gen5 x16 P2P, SPOT | Rented pod | The PP-2 lanes (batched decode, spec verdict, hardening) and the Step-3.7-Flash bring-up. A SPOT box shared between lanes — GPU windows held under `flock`, both cards verified at 0 MiB on entry and exit |
 | rented H100 80 GB | 8x / 3x / 1x HBM3 pods | Rented | The H100 board, the replica fleet, QoS lanes, endurance |
 | AWS G7e | PRO 6000 Server Edition | Rented | Hy3 spill / quantization research (`docs/HY3-SPILL.md`) |
 
@@ -466,3 +467,29 @@ not read them as serve-path numbers.
   serves at a 5.13 tok/s N=3 median, tuning toward 10
   ([`docs/HY3-SPILL.md`](HY3-SPILL.md)).
 - **MiniMax-M3 REAP50** — safetensors spill; loads + generates, router tuning open.
+- **Step-3.7-Flash (`step35`)** — onboarded 2026-08-06 on a **rented** 2x RTX PRO 6000
+  Blackwell Server Edition pair (SPOT box, sm_120a, CUDA 13.2); the official StepFun IQ4_XS
+  artifact is 105.0 GB and fits only across the pair, so this SKU is PP-2-or-nothing. What
+  landed: the `step35` arch (config parse, per-layer geometry and per-layer `n_head`), the
+  `deepseek-v3` pre-tokenizer (Step was mis-tokenized without it — cross-checked against an
+  independent engine), **split multi-shard GGUF support** (the artifact is 3 shards and the
+  loader read 1 of 3), the attention mixer (dual-base partial RoPE, SWA 3:1, head-wise gate),
+  two new math kernels with their kernel-check cells, and the StepFun ChatML dialect template
+  (19 jinja-rendered goldens; reusing the qwen arm corrupted the prompt in 8 distinct ways).
+  Gates on the pair: boots resident over PP-2 and generates coherently, `ppn-gate`
+  **BIT-IDENTICAL** both arms, `run-gen` argmax **MATCH** at pp19/64tok, `kernel-check` **ALL
+  GREEN** model-backed on the real weights, `chunkinv` PASS at the default config. MTP drafter
+  wired and its gate passes both contracts (acceptance 0% → 77.8% at K=1 after the draft head
+  was pointed at the NextN block's own `lm_head` instead of the trunk's).
+  **No throughput cell is published for this SKU yet** — bring-up gates are not perf evidence,
+  and nothing here was measured per `research/benchmarks.md`.
+  Open on the ledger ([`research/step37-p2-20260806/`](../research/step37-p2-20260806/)):
+  (1) the **chunk-dependence defect** — prefill is chunk-dependent past the 512 SWA window,
+  reduced to `P = c*floor(win/c)` with a pre-registered 4/4 falsification battery; fix shape
+  named and correct-by-construction, its gate written and legitimately red until it lands;
+  (2) served spec — the server runs this SKU on **plain decode silently** (`spec_eligible`
+  needs `mtp.is_some()`, the trunk declares `nextn=0`, and the server ignores
+  `MEMRA_MTP_DRAFT`); (3) tokenizer byte-check; (4) the `reasoning_effort` serve surface (the
+  renderer takes it, `Request` has no field). Honest listing context stays **128K**: 256K KV
+  fits the allocator on this box (20.4 GiB at the memra default, 89.95 GiB headroom after
+  weights+MTP), but activation/graph-pool footprint and exactness at 256K are both unmeasured.
