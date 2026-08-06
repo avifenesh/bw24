@@ -12,8 +12,13 @@ step error: decode_step_t (spec verify): refused with the ppN door open across 2
 **Rig**: 2x RTX PRO 6000 Blackwell Server Edition (96 GB each), sm_120a, CUDA 13.2, driver
 595.71.05. SPOT box shared with the step37-p2 lane; GPU windows under `flock /tmp/memra-gpu.lock`.
 
-**Status**: refusal LIFTED, exactness battery ALL GREEN, cost receipt measured. The remaining
-open item is a placement bug this lane FOUND but did not create (see §Draft-head placement).
+**Status**: refusal LIFTED and the exactness battery is ALL GREEN — the correctness deliverable is
+done. **But the feature is NOT shippable for concurrent serving**: spec over PP-2 is 20x slow in
+one placement and, in the other, provokes a sticky `CUDA_ERROR_ILLEGAL_ADDRESS` that kills the
+worker's CUDA context under concurrency (100% of requests lost at c=4). That is this lane's bug,
+not the predecessor's — the same placement with spec OFF is 96/96 clean and the fastest arm
+measured here. See §A deterministic illegal address. Recommendation: keep `MEMRA_SERVE_SPEC=0`
+for PP-2 serving until it is fixed.
 
 ## What changed in the engine
 
@@ -181,7 +186,8 @@ Two things fall out, and the second was not what this lane went looking for:
 1. **Spec over the split is not worth it on a model that fits one card.** 2.8x slower than
    one-card spec in the good placement, 20x in the bad one, and slower than the split with spec
    OFF in both. The exactness work is done and the door is open, but the felt-latency story does
-   not pay here. Capacity-only until the placement issue is fixed.
+   not pay here. (Arm D's 5/180 errors are the illegal-address bug below — and its c=8 rate
+   badly understates it; at c=4 the same config loses 100% of requests.)
 2. **Spec does not scale with concurrency at all, and the split without spec does.** Arm C goes
    223.7 -> 872.9 (3.9x) from c=1 to c=8, while arms A, B and D are FLAT (346.5->345.2,
    17.1->17.1, 123.3->119.2). Flat aggregate throughput under 8x the offered load means the spec
@@ -195,7 +201,7 @@ The B1FAST check comes out clean in the sense that matters: acceptance is bit-id
 door-shut arm at every K, so a solo spec session does not fall off the draft chain or lose
 acceptance when the door opens. The c=1 loss is data movement, not degraded speculation.
 
-### A deterministic illegal address on the reversed placement (found, not yet owned)
+### A deterministic illegal address on the reversed placement — OWNED, and worse than it looked
 
 Arm D failed **exactly 1 of 32 requests at c=8 in all five reps** with:
 
@@ -203,19 +209,57 @@ Arm D failed **exactly 1 of 32 requests at c=8 in all five reps** with:
 step error: DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory access was encountered")
 ```
 
-Deterministic 1/32 x 5/5 is a bug, not a flake. Arm B (dev01, spec ON) is 160/160 clean, arm A
-(door shut, spec ON) is 160/160 clean, and c=1 is clean on every arm — so it needs BOTH the
-reversed placement AND concurrency. The server's stderr carries no diagnostic (257 lines, zero
-matches for illegal/panic/abort/error), so per the evidence law the honest statement is: **fails
-with the quoted illegal address; mechanism unlocalized, repro in hand.**
+Deterministic 1/32 x 5/5 is a bug, not a flake. `run-ppspec-illegal.sh` (N=3, `logs/illegal/`)
+settles ownership and finds the c=8 receipt was measuring the mild end of it:
 
-`run-ppspec-illegal.sh` is the ownership battery, because the step-4 receipt has no dev10 +
-spec-OFF control and therefore cannot attribute the fault: F1 (dev10, spec OFF) decides whether
-this is the predecessor's split under a reversed placement or this lane's spec path; F2
-(`MEMRA_SPEC_NOGRAPH=1`) tests the captured draft graph, which is the one part of the spec path
-that bakes launch args across replays AND disables the context's event tracking for the whole
-session (`spec.rs:2937-2942`) — exactly the ordering machinery a reversed placement leans on;
-F3 re-measures arm D in the same hold; F4 sweeps c=2,4 for the onset. Running at time of writing.
+| arm | config | c | ok | err | agg tok/s |
+| --- | --- | --- | --- | --- | --- |
+| F1 | dev10, spec **OFF** | 8 | 96/96 | **0** | 875.1 |
+| F2 | dev10, spec ON, `SPEC_NOGRAPH=1` | 8 | 93/96 | 3 | 119.1 |
+| F3 | dev10, spec ON (arm D in-hold) | 8 | 93/96 | 3 | 119.1 |
+| F4 | dev10, spec ON | 2 | 9/24 | **15** | 84.1 |
+| F4 | dev10, spec ON | 4 | 0/48 | **48** | **0.0** |
+
+**Verdict on ownership: it is the SPEC path, not the predecessor's split.** F1 — the same reversed
+placement, same stage split, spec OFF — is 96/96 clean and the fastest arm in the lane (875.1).
+So the reversed placement itself is sound; adding spec breaks it. That makes it this lane's to
+fix, and it is NOT attributable to `pp2-batch`.
+
+**The draft graph is exonerated**: F2 (`MEMRA_SPEC_NOGRAPH=1`, eager draft) fails identically to
+F3 (3/96 both, 119.1 both). The captured graph was the best structural suspect — it bakes launch
+args across replays and disables the context's event tracking for the whole session
+(`spec.rs:2937-2942`) — and it is not the cause.
+
+**The failure rate is inverted in concurrency, which is the real finding.** c=8 loses 1 in 32,
+but c=4 loses **everything** (0/48, wall 0.008s) and c=2 loses 15/24. A c=4 run finishing in 8 ms
+with 48 errors is not a slow failure — the CUDA context is already dead when the requests arrive.
+The server log shows the sequence, and the cause is quoted rather than inferred:
+
+```
+[worker] spec pool evicted (2) after alloc failure; retrying (evict-first learned)
+[worker] spec session alloc failed (DriverError(CUDA_ERROR_ILLEGAL_ADDRESS, "an illegal memory
+         access was encountered")); tokenwise path
+```
+
+then that second line repeats for **every subsequent request in the process** — 20 of them in
+r1-F4 — including the whole c=4 phase that ran after the c=2 phase in the same server. So:
+concurrent spec sessions on the reversed placement provoke an illegal access, and once it fires,
+`CUDA_ERROR_ILLEGAL_ADDRESS` is **sticky for the CUDA context** — every later `new_session` inherits
+it, the worker charitably reports "tokenwise path", and the process serves nothing but 400s until
+restarted. The c=8 arm's benign-looking 1/32 was luck of ordering: it happened late in the run.
+
+That also retro-explains why the step-4 receipt looked survivable and why c=1 is clean everywhere:
+the trigger needs two live spec sessions. The eviction line points at the spec session pool
+(`worker.rs:2733-2745`) as where it surfaces, but the first bad dereference is upstream of the
+allocator's error report, so the mechanism is still **unlocalized to a kernel or buffer** — repro
+in hand (`c=4, MEMRA_PP_DEVICES=1,0`, spec ON, 100% reproducible in 3/3 reps), no conclusion built
+past the quotes.
+
+**Serving consequence, stated plainly: PP-2 + spec is NOT safe to enable for concurrent serving
+in either placement.** `dev01` is 20x slow, `dev10` is fast but dies under concurrency and takes
+the process with it. The exactness work stands; the feature is not shippable until this is fixed.
+The predecessor's spec-OFF split (F1/arm C, 872-875 tok/s at c=8) remains the configuration that
+actually serves.
 
 ### Draft placement: the answer
 
