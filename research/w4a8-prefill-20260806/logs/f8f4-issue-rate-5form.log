@@ -1,0 +1,40 @@
+180 MHz, 54
+# device NVIDIA GeForce RTX 5090 Laptop GPU SMs=82 (clock LOCKED 1860 via nvidia-smi -lgc)
+
+## CONTROL -- NACC sweep, 1 CTA of 4 warps (1 warp/scheduler), clock64 cyc/warp-MMA
+# flat across NACC => pipe ISSUE INTERVAL; halving as NACC doubles => latency/NACC
+# NACC         s8.k16   f8f4plain.k32   mxf8blksc.k32   f8f4e2m1A.k32   blksc_e4m3.k32
+  1           27.1267         34.5149         29.0820         34.5034          29.0815
+  2           16.1296         32.0681         17.1234         32.0659          17.1292
+  4           16.0648         32.0170         16.0723         32.0172          16.0724
+  8           16.0612         32.0456         16.0596         32.0319          16.0593
+  16          16.0306         32.0159         16.0296         32.0148          16.0296
+
+## FULL-GPU wall clock (grid=82 CTAs x 256 thr = 8 warps/CTA, the SHIPPED shape; NACC=8, best of 5)
+# MACs/warp-MMA: s8.k16=2048, all k32 forms=4096
+# form                                   ms   cyc/MMA@1860      T(FL)OP/s      vs s8
+  m16n8k16.s8.s8.s32                  0.567        16.1015          155.2      1.000x
+  f8f6f4 PLAIN e4m3xe4m3              1.134        32.1894          155.3      1.000x
+  mxf8f6f4 blkscale e2m1xe4m3         0.569        16.1424          309.6      1.995x
+  f8f6f4 PLAIN e2m1xe4m3              1.132        32.1304          155.5      1.002x
+  mxf8f6f4 blkscale e4m3xe4m3         0.569        16.1524          309.4      1.994x
+--- rerun for repeatability ---
+# device NVIDIA GeForce RTX 5090 Laptop GPU SMs=82 (clock LOCKED 1860 via nvidia-smi -lgc)
+
+## CONTROL -- NACC sweep, 1 CTA of 4 warps (1 warp/scheduler), clock64 cyc/warp-MMA
+# flat across NACC => pipe ISSUE INTERVAL; halving as NACC doubles => latency/NACC
+# NACC         s8.k16   f8f4plain.k32   mxf8blksc.k32   f8f4e2m1A.k32   blksc_e4m3.k32
+  1           27.1265         34.5015         29.0815         34.5007          29.0815
+  2           16.1294         32.0653         17.1289         32.0657          17.1289
+  4           16.0647         32.0168         16.0724         32.0171          16.0723
+  8           16.0612         32.0456         16.0599         32.0319          16.0593
+  16          16.0306         32.0159         16.0296         32.0148          16.0296
+
+## FULL-GPU wall clock (grid=82 CTAs x 256 thr = 8 warps/CTA, the SHIPPED shape; NACC=8, best of 5)
+# MACs/warp-MMA: s8.k16=2048, all k32 forms=4096
+# form                                   ms   cyc/MMA@1860      T(FL)OP/s      vs s8
+  m16n8k16.s8.s8.s32                  0.567        16.1015          155.2      1.000x
+  f8f6f4 PLAIN e4m3xe4m3              1.133        32.1458          155.5      1.002x
+  mxf8f6f4 blkscale e2m1xe4m3         0.568        16.1188          310.1      1.998x
+  f8f6f4 PLAIN e2m1xe4m3              1.133        32.1513          155.4      1.002x
+  mxf8f6f4 blkscale e4m3xe4m3         0.571        16.2033          308.4      1.987x
