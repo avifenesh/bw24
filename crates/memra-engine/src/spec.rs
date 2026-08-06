@@ -2366,10 +2366,13 @@ impl HybridModel {
              fused q8-only norm arm (h_q8={}) — step35 must stay on the unfused arm",
             h_q8.is_some()
         );
-        // Per-layer head count: 64 on full-attn layers, 96 on SWA (step35_geom(il).2).
-        let nh = self.cfg.n_head_at(il as u32) as usize;
-        let hd = self.cfg.head_dim_k as usize;
-        let mut out = vbuf(e, t * nh * hd)?; // each row fully written by the copy below
+        // ROW WIDTH IS n_embd, NOT n_head*head_dim: `step35_decode_attn` returns the mixer output
+        // AFTER `wo`, so a row is [n_embd] — the same contract the generic arm's
+        // `matmul_decode_exact(&fa.wo, &attn_g, t)` return has. Sizing this buffer from the
+        // per-layer head geometry (8192 on full-attn, 12288 on SWA) instead overran the row on the
+        // FIRST copy and panicked inside `copy_into`'s `CudaView::slice` unwrap
+        // (raw/mtp-bt-20260806T212127Z.log frames 12-13).
+        let mut out = vbuf(e, t * n_embd)?; // each row fully written by the copy below
         for r in 0..t {
             // Absolute position of this query row. `cache.pos` is the committed length at round
             // start and every row before r has already been appended by this loop, so the r-th
@@ -2380,7 +2383,8 @@ impl HybridModel {
             // THE eager decode mixer: appends this row's K/V at kvl.len, advances it, then
             // attends over the (SWA-offset) view. Post-`wo`, same contract as this fn returns.
             let o = self.step35_decode_attn(e, fa, il, &h_row, None, &pos_d, cache)?;
-            e.copy_into(&mut out, r * nh * hd, &o, nh * hd)?;
+            debug_assert_eq!(o.len(), n_embd, "step35_decode_attn returns post-wo [n_embd]");
+            e.copy_into(&mut out, r * n_embd, &o, n_embd)?;
         }
         Ok(out)
     }
