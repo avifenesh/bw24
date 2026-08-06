@@ -554,3 +554,105 @@ measurement, not a fit calculation.
 | `reasoning_effort` (low/medium/high) on the serve surface | open — renderer takes it, `Request` has no field yet |
 | PP-2 split boot | open |
 | KV @128K under PP-2 + q27 co-residence arithmetic | open |
+
+## Increment 9 — split (multi-shard) GGUF support: the first PP-2 boot's real blocker
+
+The first PP-2 boot attempt on the 2x RTX PRO 6000 box got further than expected and then died on
+something that has nothing to do with step35. Quoted from
+`raw/pp2boot-20260806T193536Z.log`:
+
+```
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary;
+     peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 44.12GB + trunk 2.36GB vs free 100.88GB
+      (expert budget 96.52GB) -> RESIDENT
+thread 'main' (68214) panicked at crates/memra-engine/src/hybrid.rs:963:22:
+need post_attention_norm or ffn_norm
+run-gen exit=101 after 21s
+```
+
+Two facts in that log, in order of importance:
+
+1. **PP-2 transport came up.** Peer access granted on all pairs over [0,1], the sharded loader
+   picked per-stage weight homes, and the run reached the trunk-layer loop. The pipeline plumbing
+   is not the blocker.
+2. **`experts 44.12GB` is wrong for this model** and is the same bug as the panic. The IQ4_XS
+   artifact is 97.78 GiB; 44.12GB is what you see when you only count the experts in **shard 1 of
+   3**. The loader then walked to `blk.22`, whose `ffn_norm` lives in shard 2, found nothing, and
+   the `.expect("need post_attention_norm or ffn_norm")` fired.
+
+### Root cause: memra's GGUF reader was single-file only
+
+`GgufFile::open` mmap'd exactly one file and built one tensor table from its header. Nothing in
+`crates/memra-gguf/` ever read `split.no` / `split.count` / `split.tensors.count`. Confirmed
+against the real headers dumped in phase 1
+(`research/step37-bringup-20260802/raw/gguf-header-stepfun-iq4xs-shard1-20260802.txt`):
+
+```
+KV split.no (u16) = 0
+KV split.tensors.count (i32) = 754
+KV split.count (u16) = 3
+```
+
+and the block ranges per shard (`grep -oE "blk\.[0-9]+\."` over the phase-1 header dumps):
+
+| shard | `split.no` | blocks present | note |
+|---|---|---|---|
+| 1 of 3 | 0 | 0..21 | also carries arch + tokenizer KVs |
+| 2 of 3 | 1 | 22..44 (unsloth twin: 0..24 boundary differs) | split keys only |
+| 3 of 3 | 2 | 24..44 | split keys only |
+
+This is a **general capability gap, not a step35 quirk** — every 100GB+ GGUF ships split, so the
+fix lives in the shared reader, not in a step35 arm.
+
+### What landed
+
+`GgufFile` now holds `shards: Vec<Shard>` (mmap + inode + path + **its own** `data_start`) instead
+of one mmap, and `TensorInfo` gains `shard: usize`. `open()` reads `split.count`; when > 1 it
+rebuilds every sibling name from the count via the standard `-%05d-of-%05d.gguf` form
+(`llama-gguf-split`'s `SPLIT_PATH_FORMAT`), parses each, and presents ONE merged tensor table.
+Callers cannot tell a split model from a single-file one.
+
+Deliberate design calls, each with a reason:
+
+- **Names are rebuilt from `split.count`, not parsed out of the filename.** A shard whose name
+  disagrees with its own `split.no` therefore cannot silently map to the wrong bytes — the
+  per-shard `assert_eq!(no, i, ...)` catches it and names both values.
+- **Shard 0's metadata wins the merge; later shards may only ADD keys.** Only shard 0 carries
+  architecture/tokenizer KVs, so this makes *any* shard a valid entry point: opening shard 3
+  yields the same model as opening shard 1 (tested).
+- **`split.tensors.count` is checked** against the merged total (754 for this artifact). A
+  truncated download that loses a shard fails loudly at open instead of at `blk.N`.
+- **A split shard with a hand-renamed filename is a clear error**, not a partial load: the message
+  names the declared `split.count` and says sibling shards could not be found.
+- **The entry shard is re-parsed in the merge loop** rather than kept from the probe. One extra
+  header parse + lazy mmap against a 105 GB model is free, and it keeps the loop uniform.
+
+### The second bug the split fix exposed: the spill tier's mmap/offset pairing
+
+`SpillCtx` held ONE `file_map` (shard 0's) and `place_expert` paired it with the absolute offsets
+from `tensor_file_range`. On a split model those offsets are **relative to the owning shard**, so
+that pairing would have read the wrong bytes for every expert in shards 2+ — silently, for any
+shard whose experts fit inside shard 0's length, and as an out-of-bounds slice otherwise. Fixed by
+making it per-shard: `file_maps: Vec<Arc<Mmap>>` / `files: Vec<Arc<File>>` indexed by
+`TensorInfo::shard`, and `place_expert(.., shard)` selects the matching pair. This is a correctness
+fix on the disk-spill path, found by reading the seam rather than by a failing run — the boot never
+reached it (`MEMRA_SPILL_DISK` was unset, and this model went RESIDENT).
+
+### Gates
+
+`cargo test -p memra-gguf`: **75 passed, 0 failed** (70 pre-existing + 5 new). The 5 new tests
+serialize REAL 2-shard GGUF pairs — full header, KV table, tensor infos, aligned data blob — with
+per-tensor fill bytes, so a wrong-shard read is caught **by value**, not merely by length:
+
+| test | what it pins |
+|---|---|
+| `split_model_presents_one_merged_tensor_table` | all 3 tensors visible from shard 0; the shard-1 tensor (the `blk.22` analogue) reads its own bytes; arch KV survives the merge |
+| `any_shard_is_a_valid_entry_point` | opening the LAST shard yields identical `(shard, offset, n_bytes)` and identical bytes for every tensor |
+| `tensor_file_range_is_relative_to_the_owning_shard` | the shard-1 range reproduces shard 1's bytes when applied to shard 1's file; the two shard inodes are distinct `Arc`s |
+| `single_file_gguf_is_unchanged_one_shard` | `n_shards()==1`, `shard==0`, and `tensor_file_range` still equals `data_start + offset` — the historical contract |
+| `split_shard_with_a_nonstandard_filename_is_a_clear_error` | a renamed shard fails at open with a message naming `split.count` and the missing siblings |
+
+`cargo check --workspace --all-targets`: clean. `gguf-inspect` now prints `shards=N` with a
+per-shard tensor count and path, and its data-bounds check runs per shard against that shard's real
+file size (one global max would be meaningless once offsets are per-shard).
