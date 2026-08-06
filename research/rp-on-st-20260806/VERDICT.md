@@ -32,6 +32,22 @@ Net: FP8-ST at c=16 goes 307.0 → 348.3 tok/s on the 96 GB rig (+13.5%, N=5 int
 the gap to GGUF-Q8RP's 454.1 but not the gap. **FP8-ST is not yet the single prod artifact.** The
 honest day-one statement is in §7.
 
+Three things landed after that answer, each with its own section:
+
+4. **The ALU wall confirmed a second way, with no new kernel** (§7b). The existing `MEMRA_ST_E4M3=0`
+   seam sends the same ST bytes down the `dp4a` Q8_0 slab loop: **+15.6% at c=16, +17.1% at c=32,
+   −2.4% at c=1**, +448 MiB (N=5, all cells disjoint). That makes the best measured FP8-ST batch
+   config **401.3 tok/s = 0.88x** of GGUF-Q8RP at **2.5x its throughput per resident GiB**. Not
+   flipped as a default — it is a per-m regression at the single-stream width the owner runs daily.
+5. **A coordinator-routed find, absorbed and shipped** (§7c): the per-block FP8 prefill tile was
+   issuing the slow `kind::f8f6f4` MMA form. Swapping to the block_scale form at the ue8m0 identity
+   scale is **+6.54% e2e pp512, bit-identical** (0 of 993280 logit bytes differ; `fp8-mmq-check`
+   reports byte-for-byte equal across forms).
+6. **The same defect's third site invalidates a published GO** (§7c-bis): the FP8-ST v3 gate's Q1
+   instrument had the *same* form asymmetry against its s32 control, so its "+16.7/+23.1pp weighted
+   → GO" was the MMA form, not the accumulator. Equalized, the sign flips to **−6.7/−8.8pp**. The
+   receipted case for an FP8-ST v3 is refuted on its own instrument.
+
 ---
 
 ## 1. Inversion 1 — the mirror is a no-op on ST (measured, not reasoned)
@@ -330,37 +346,150 @@ Where that leaves the two candidates at c=16 on the 96 GB rig:
 | | tok/s | resident | tok/s per GiB |
 |---|---|---|---|
 | GGUF Q8_0 + q8rp mirror | 454.1 | 52532 MiB | 8.85 |
-| FP8-ST (this branch) | 348.3 | 17812 MiB | **20.02** |
+| FP8-ST, `MEMRA_ST_E4M3=0` dp4a slab (§7b) | 401.3 | 18260 MiB | **22.50** |
+| FP8-ST (this branch, default e4m3) | 348.3 | 17812 MiB | 20.02 |
 | GGUF Q8_0, no mirror | 290.8 | 26580 MiB | 11.20 |
 
-FP8-ST is at **0.77x** of GGUF-Q8RP throughput while using **34%** of its resident bytes. So the
+FP8-ST is at **0.77x** of GGUF-Q8RP throughput on its default path and **0.88x** on the slab seam
+(§7b, not a default), while using **34-35%** of its resident bytes. So the
 honest statement for the 3.8 drop is conditional on the box, and the two cases point opposite ways:
 
 * **On the 24 GB deployment target** (the local 5090, memra's stated final performance target), the
   question does not arise: a 27 GB Q8_0 artifact plus a ~27 GB mirror does not fit, mirror or not.
   FP8-ST at 17.8 GB resident is the only one of the three that serves at all. **FP8-ST is the
   day-one artifact there, and now it reaches the c=16 tier.**
-* **On a 96 GB box serving batch traffic**, GGUF-Q8RP is still 1.31x faster in absolute throughput
-  and remains the pick if VRAM is free. It is 2.3x worse per resident GiB, so it stops being the
-  pick as soon as VRAM is contended (multi-model, longer contexts, more sessions).
+* **On a 96 GB box serving batch traffic**, GGUF-Q8RP is still 1.31x faster than FP8-ST's default
+  path (1.13x against the §7b slab seam) and remains the pick if VRAM is free. It is 2.3-2.5x worse
+  per resident GiB, so it stops being the pick as soon as VRAM is contended (multi-model, longer
+  contexts, more sessions).
 
 So: **FP8-ST is the single prod artifact for the 24 GB target and for any VRAM-contended box, and
 is not yet the single artifact for a VRAM-rich batch box.** Q8_0 GGUF stays in the picture for
 exactly one reason, and it is now a *measured* reason with a named mechanism rather than an
 unexplained +57%.
 
-## 8. What the remaining 0.77x is, and what to do next
+## 7b. The ALU wall, confirmed a second way: the dp4a slab WINS at width on the same bytes
 
-The gap is no longer a mystery to be surveyed; §4 named a mechanism and removed one instance of it.
-The hoist recovered +13.5% of a 1.47x gap, which means the ALU wall was real but not the whole of
-it. Ranked by evidence already in hand:
+§8 item 1 predicted that if the ST batched path is ALU-bound, then sending the *same checkpoint*
+down the Q8_0 slab path — whose batched inner loop is `dp4a`, 4 int8 MACs per instruction — should
+win at width even though it is known to lose at m=1. **It does, and it needed no new kernel**: the
+`MEMRA_ST_E4M3=0` seam already exists (ARM B′ from `research/fp8dec-20260805/`, which measured it
+losing 2.58pp at m=1 — a regime with no column loop, so it never priced this wall).
+
+96 GB pod, same ST-27B bytes on disk, server restarted per arm, arms interleaved within each round,
+**N=5**, spec off, sampled, max_tokens=128, requests=3·c, **0 err / 0 shed across all 30 points**
+(`pod-slab-points.jsonl`, medians as `slab_ab_*` in `RESULTS.jsonl`):
+
+| c | e4m3 native (hoisted, default) | Q8_0 slab (`MEMRA_ST_E4M3=0`) | slab / e4m3 | distributions |
+|---|---|---|---|---|
+| 1 | **71.82** | 70.09 | 0.976x | DISJOINT |
+| 16 | 347.23 | **401.28** | **1.156x** | DISJOINT |
+| 32 | 342.64 | **401.27** | **1.171x** | DISJOINT |
+
+Resident: e4m3 17812 MiB vs slab 18260 MiB — **+448 MiB, 2.5%**. Per-arm spread ≤0.7% everywhere;
+all three cells disjoint.
+
+This is the ALU-bound signature stated twice, independently: hoisting redundant e4m3 converts bought
++13.5% at width and 0% at m=1 (§4); replacing the remaining converts with `dp4a` buys another +15.6%
+at width and **−2.4% at m=1**. The crossover sits between c=1 and c=16 and is exactly where the
+column loop starts amortizing weight fetches. It also re-prices the §7 table: **the best FP8-ST
+config on a batch box is 401.3 tok/s, not 348.3** — 0.88x of GGUF-Q8RP's 454.1 at **22.5 tok/s per
+resident GiB** (2.5x GGUF-Q8RP's 8.85), which moves the day-one statement without changing its shape.
+
+**Not flipped as a default here.** The slab arm is a per-m regression at c=1, and single-stream is
+the interactive path the owner runs daily; a width-conditional residency choice is a dispatch
+decision with its own exactness surface, not a flag flip at the end of a lane. What this measurement
+establishes is the *mechanism* and its size, which is what §8 item 1 needs before it is built.
+
+---
+
+## 7c. A routed find, absorbed: the per-block FP8 prefill tile was on the slow MMA form
+
+Coordinator-routed from `research/w4a8-prefill-20260806/`: `cu/mmq_fp8_blk.cu:214` issued
+`mma.sync.aligned.kind::f8f6f4.m16n8k32` on a live path (the `MEMRA_PP_FP8` direction, default ON
+for `QT_F8_E4M3_BLK` native residency). On sm_120a that form costs **32.02 cyc/warp-MMA**, while
+`kind::mxf8f6f4.block_scale.scale_vec::1X … ue8m0` with the identity scale `0x7F7F7F7F` computes the
+**identical** e4m3×e4m3 m16n8k32 product at **16.06 cyc**. The line's own comment claimed the
+"381-TF class"; the form it issued is a 155-TF class. Absorbed here rather than routed onward because
+this lane was actively editing the file.
+
+**Exactness, proven on this kernel and not inherited** (both directions, `fp8-mmq-check` +
+live-path):
+
+- `fp8-mmq-check` ALL GREEN on both forms, and the two reports are **byte-for-byte identical** —
+  `diff` of the verdict lines is empty. 9 shapes × 2 arms; EXACT arm 0 bit-mismatch in every cell
+  (0/16384 … 0/786432); RAND arm identical `max_abs`/`rms_rel`/mismatch counts everywhere; 254/254
+  legal e4m3 codes covered. (`fp8-mmq-check-blksc.log`, `fp8-mmq-check-plainform-control.log`)
+- Live prefill logits at pp512 on the 27B block-128 checkpoint, **1040 dispatches**: **0 of 993280
+  bytes differ**, md5 `7dc6325379c0` under both forms, two independent passes.
+  (`pplogits-{blksc,plain}-p{1,2}.log`)
+
+**Perf**, N=6 adjacent alternating pairs (pairsweep law), idle card, 368 MiB resident at every pair
+start, clocks 1807–1852 MHz: blksc median **1472.8** tok/s (min 1472.4, max 1473.2) vs plain
+**1382.4** (1382.0–1382.8) → **1.0654x, DISJOINT**, per-arm spread <0.09%.
+(`fp8blk-form-ab.sh`, `fp8blk-form-ab.log`)
+
++6.5% and not +99% is itself consistent with the correction: this tile measures 110–130 TF and was
+never MMA-bound, so halving MMA issue cycles pays only its Amdahl share. The denser W4A8 tile got
+1.2153x from the same one-line change. Rollback seam: `MEMRA_MMQ_FP8BLK_PLAIN=1`. No-regression
+battery in `blksc-noreg.{sh,log}` (kernel-check ALL GREEN, 3/3 argmax MATCH, both 27B ST classes
+`0.000e0`).
+
+### 7c-bis. The same defect's THIRD site — and it invalidates a published GO
+
+Auditing for the routed pattern found it in `cu/mmq_q8_0_f32acc.cu`, the **Q1 instrument of the
+FP8-ST v3 gate** (`research/fp8v3-gate-20260805/`). That instrument's whole claim is that the
+accumulator is its "one free variable": S32 arm on `m16n8k32.s8`, F32 arm on plain
+`kind::f8f6f4.m16n8k32`. Those are 16.06 and 32.02 cyc/warp-MMA respectively — so the published
+`delta_pp` was the **sum** of an accumulator effect and a 2× issue-interval effect. Its SASS census
+validated MMA *count* and never checked MMA *rate*.
+
+Re-measured with the form equalized (3 adjacent alternating binary pairs per cell, both
+`ACCPROBE_DIST` settings, S32-arm time as a drift control: −0.83…+0.33% across 24 shape cells):
+
+| weighted delta (gate's own multiplicity weights) | published arm, re-measured | equalized |
+|---|---|---|
+| m=512 | +17.3pp | **−6.7pp** |
+| m=6257 | +17.6pp | **−8.8pp** |
+
+**The sign flips.** All of Q1's delta was the MMA form; none of it was the accumulator. With the
+interval equalized, f32 accumulate is 5–9% *faster* than s32 at fixed geometry — the s32 arm pays
+512 `I2FP` converts per instantiation, an asymmetry the old census recorded and scored backwards as
+"generous to F32". Q1's ≥10pp bar is not merely missed, it is missed in the wrong direction: **the
+receipted case for an FP8-ST v3 is refuted on its own instrument.** Q2 (native-e4m3 decode) is
+untouched and is not re-priced here, so the gate's "decode-v1 first" recommendation stands on Q2's
+evidence alone.
+
+`research/fp8v3-gate-20260805/VERDICT.md` now carries the correction inline at its head and at each
+of the four claim sites; its `RESULTS.jsonl` carries a `q1_refutation` row. `ACCPROBE_F32_PLAIN=1`
+rebuilds the published arm so the old receipts stay reproducible. Receipts:
+`accprobe-form-ab.{sh,log}`, `accprobe-form-ab-summary.txt`, `accprobe-sass-census.txt`.
+
+The fourth candidate site, `cu/mmq_nvfp4_f8f4.cu:42`, is referenced only by its own definition and
+its launcher sits behind default-OFF `MEMRA_MMQ_F8F4=1` — no live consequence, left alone.
+
+**Law worth keeping:** "one free variable" must be checked at the **cost** level (issue rate), not
+only at the source level (fragment ABI, MMA count). A verdict is only as calibrated as its control
+arm — the H100 lane's LAW 2 generalizes past thresholds to instruments.
+
+---
+
+## 8. What the remaining gap is, and what to do next
+
+The gap is no longer a mystery to be surveyed; §4 named a mechanism and removed one instance of it,
+and §7b confirmed the same mechanism a second way. The hoist recovered +13.5% of a 1.47x gap, and
+the dp4a slab arm shows another +15.6% sitting in the same wall. Ranked by evidence already in hand:
 
 1. **e4m3 still dequantizes to f32 and multiplies with fmaf, one weight at a time.** Q8_0's path is
    `dp4a` — 4 int8 MACs per instruction. That is a ~4-8x instruction-count difference on the
    multiply itself, and the hoist only removed the *redundant* conversions, not the conversion. The
    obvious next arm is an e4m3 → int8 pre-scale so the batched inner loop can use dp4a like every
-   other class. This is a kernel arm, needs its own exactness verdict (it changes numerics), and is
-   the single highest-value item this lane surfaced.
+   other class. **Now measured, not conjectured** (§7b): the existing `MEMRA_ST_E4M3=0` slab arm is
+   **+15.6% at c=16 / +17.1% at c=32** and **−2.4% at c=1** on the same checkpoint bytes for +448 MiB,
+   so the prize is real and the cost of the naive version is a single-stream regression. The kernel
+   arm should keep e4m3 residency and pre-scale *inside* the batched tier so m=1 is untouched; it
+   changes numerics and needs its own exactness verdict. Still the single highest-value item this
+   lane surfaced.
 2. **NVFP4 is 58.8% of the ST artifact and already dp4a-based** — so the ST path's remaining
    e4m3 cost is bounded at 41% of resident weight. That caps what item 1 can win and should be
    modeled before it is built.
