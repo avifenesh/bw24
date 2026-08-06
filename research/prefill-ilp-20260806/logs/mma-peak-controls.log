@@ -1,0 +1,23 @@
+[start] 2026-08-06T06:16:08+03:00
+[gpu] NVIDIA GeForce RTX 5090 Laptop GPU, 1852 MHz, 61, 19.85 W
+# device NVIDIA GeForce RTX 5090 Laptop GPU  SMs=82  (measurement clock LOCKED 1860 MHz via nvidia-smi -lgc)
+
+## CONTROL 1 -- NACC sweep, 1 CTA of 4 warps (1 warp/scheduler), clock64 cycles/warp-MMA
+# if cycles/MMA == LATENCY/NACC it HALVES as NACC doubles; if it is the pipe ISSUE INTERVAL it stays flat
+# NACC           s8.k16       mxf4.k64       mxf8.k32
+  1             27.1284        29.0828        29.0776
+  2             16.1270        17.1263        17.1265
+  4             16.0634        16.0710        16.0710
+  8             16.0607        16.0587        16.0587
+  16            16.0303        16.0293        16.0293
+
+## CONTROL 2 -- full-GPU wall-clock throughput (grid = 82 CTAs x 256 thr, NACC=8)
+# MACs/warp-MMA: s8.k16=16*8*16=2048  mxf4.k64=16*8*64=8192  mxf8.k32=16*8*32=4096
+# form                                ms(best5) cyc/MMA@1860 TOP or TFLOP/s        vs s8
+  m16n8k16.s8.s8.s32                      0.568      16.1179          155.0        1.000x
+  m16n8k64.mxf4nvf4.4X                    0.569      16.1615          618.5        3.989x
+  m16n8k32.mxf8f6f4 e2m1xe4m3             0.570      16.1751          309.0        1.993x
+
+# NOTE: s8 row is TOP/s (integer); mxf4/mxf8 rows are TFLOP/s (float). The 'vs s8' column
+#       is the ratio of raw MAC-rate, which is the quantity the GEMM's runtime depends on.
+[gpu-post] 1852 MHz, 62

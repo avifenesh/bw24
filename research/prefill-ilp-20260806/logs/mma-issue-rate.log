@@ -1,0 +1,51 @@
+[start] 2026-08-06T06:14:26+03:00
+[gpu] NVIDIA GeForce RTX 5090 Laptop GPU, 1852 MHz, 61
+[nvcc] Cuda compilation tools, release 13.1, V13.1.115
+=== WARPS/CTA=8
+# nwarps/CTA=8 (warps/scheduler=2.00), 1 CTA, NACC=8 independent accumulators, ITERS=4096
+# instruction                                                cycles   cyc/warp-MMA
+rep0 m16n8k16.s8.s8.s32                                        1041058        31.7706
+rep0 m16n8k64.mxf4nvf4.block_scale.4X                          1048921        32.0105
+rep0 m16n8k32.mxf8f6f4 e2m1xe4m3                               1048927        32.0107
+rep1 m16n8k16.s8.s8.s32                                        1049063        32.0149
+rep1 m16n8k64.mxf4nvf4.block_scale.4X                          1048916        32.0104
+rep1 m16n8k32.mxf8f6f4 e2m1xe4m3                               1040727        31.7605
+rep2 m16n8k16.s8.s8.s32                                        1040877        31.7650
+rep2 m16n8k64.mxf4nvf4.block_scale.4X                          1040726        31.7604
+rep2 m16n8k32.mxf8f6f4 e2m1xe4m3                               1040724        31.7604
+=== WARPS/CTA=4
+# nwarps/CTA=4 (warps/scheduler=1.00), 1 CTA, NACC=8 independent accumulators, ITERS=4096
+# instruction                                                cycles   cyc/warp-MMA
+rep0 m16n8k16.s8.s8.s32                                         526450        16.0660
+rep0 m16n8k64.mxf4nvf4.block_scale.4X                           526210        16.0587
+rep0 m16n8k32.mxf8f6f4 e2m1xe4m3                                526212        16.0587
+rep1 m16n8k16.s8.s8.s32                                         526273        16.0606
+rep1 m16n8k64.mxf4nvf4.block_scale.4X                           526209        16.0586
+rep1 m16n8k32.mxf8f6f4 e2m1xe4m3                                526212        16.0587
+rep2 m16n8k16.s8.s8.s32                                         526272        16.0605
+rep2 m16n8k64.mxf4nvf4.block_scale.4X                           526211        16.0587
+rep2 m16n8k32.mxf8f6f4 e2m1xe4m3                                526211        16.0587
+=== WARPS/CTA=2
+# nwarps/CTA=2 (warps/scheduler=0.50), 1 CTA, NACC=8 independent accumulators, ITERS=4096
+# instruction                                                cycles   cyc/warp-MMA
+rep0 m16n8k16.s8.s8.s32                                         526449        16.0659
+rep0 m16n8k64.mxf4nvf4.block_scale.4X                           526199        16.0583
+rep0 m16n8k32.mxf8f6f4 e2m1xe4m3                                526200        16.0583
+rep1 m16n8k16.s8.s8.s32                                         526271        16.0605
+rep1 m16n8k64.mxf4nvf4.block_scale.4X                           526197        16.0583
+rep1 m16n8k32.mxf8f6f4 e2m1xe4m3                                526200        16.0583
+rep2 m16n8k16.s8.s8.s32                                         526271        16.0605
+rep2 m16n8k64.mxf4nvf4.block_scale.4X                           526200        16.0583
+rep2 m16n8k32.mxf8f6f4 e2m1xe4m3                                526200        16.0583
+=== WARPS/CTA=1
+# nwarps/CTA=1 (warps/scheduler=0.25), 1 CTA, NACC=8 independent accumulators, ITERS=4096
+# instruction                                                cycles   cyc/warp-MMA
+rep0 m16n8k16.s8.s8.s32                                         526449        16.0659
+rep0 m16n8k64.mxf4nvf4.block_scale.4X                           526199        16.0583
+rep0 m16n8k32.mxf8f6f4 e2m1xe4m3                                526197        16.0583
+rep1 m16n8k16.s8.s8.s32                                         526269        16.0605
+rep1 m16n8k64.mxf4nvf4.block_scale.4X                           526199        16.0583
+rep1 m16n8k32.mxf8f6f4 e2m1xe4m3                                526198        16.0583
+rep2 m16n8k16.s8.s8.s32                                         526270        16.0605
+rep2 m16n8k64.mxf4nvf4.block_scale.4X                           526198        16.0583
+rep2 m16n8k32.mxf8f6f4 e2m1xe4m3                                526196        16.0582

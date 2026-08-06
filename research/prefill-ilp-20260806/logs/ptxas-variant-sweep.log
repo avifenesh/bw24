@@ -1,0 +1,8 @@
+ACCEPTED  m16n8k64 mxf4nvf4 4X ue4m3 (e2m1 x e2m1)  [W4A4]                       SASS=OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X
+REJECTED  m16n8k64 mxf4nvf4 2X ue4m3 (e2m1 x e2m1)  [W4A4]                       Illegal modifier '.scale_vec::2X' for instruction 'mma' with type '.ue4m3'
+ACCEPTED  m16n8k64 mxf4nvf4 4X ue8m0 (e2m1 x e2m1)                               SASS=OMMA.SF.16864.F32.E2M1.E2M1.E8.4X
+ACCEPTED  m16n8k32 mxf8f6f4 1X ue8m0 (e2m1 x e4m3)  [W4A8?]                      SASS=QMMA.SF.16832.F32.E2M1.E4M3.E8
+REJECTED  m16n8k32 mxf8f6f4 1X ue4m3 (e2m1 x e4m3)  [W4A8?]                      Incorrect instruction type specified for mma with shape '.m16n8k32'
+REJECTED  m16n8k32 mxf8f6f4 2X ue4m3 (e2m1 x e4m3)                               Incorrect instruction type specified for mma with shape '.m16n8k32'
+REJECTED  m16n8k32 mxf8f6f4 4X ue4m3 (e2m1 x e4m3)                               Incorrect instruction type specified for mma with shape '.m16n8k32'
+REJECTED  m16n8k64 mxf4nvf4 4X ue4m3 (e2m1 x e4m3)                               Incorrect instruction type specified for mma with shape '.m16n8k64'
