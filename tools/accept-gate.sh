@@ -345,14 +345,19 @@ done
 for key in "${!CELLGRP[@]}"; do
     IFS='|' read -r MODEL DRAFT K CTX <<< "$key"
     group="${CELLGRP[$key]}"
+    # NOTE on indentation, which is load-bearing: fast-gate's cmd-probe runner decides the whole
+    # probe's verdict with `grep -qE "^[a-zA-Z0-9_-]+: *SKIP"`, i.e. a verdict word at column 0.
+    # These are PER-GROUP notes, not the run's verdict — a run where the 27B is absent but the 9B
+    # passed 3 cells is a PASS, not a SKIP. So they are indented, and only the final summary
+    # line below is allowed to speak at column 0.
     if [ ! -f "$MODEL" ]; then
-        echo "accept-gate: SKIP (no model at $MODEL) — cells:$group"
+        echo "  -- skipping (no model at $MODEL) — cells:$group"
         SKIPS=$((SKIPS + $(echo "$group" | wc -w))); continue
     fi
     if [ -n "$DRAFT" ] && [ "$DRAFT" != "-" ] && [ ! -f "$DRAFT" ]; then
         # A missing drafter must NOT silently degrade into a no-spec run that reports PASS —
         # this gate is about the PRODUCTION drafter (the acceptance sign follows the drafter).
-        echo "accept-gate: SKIP (no drafter at $DRAFT) — cells:$group"
+        echo "  -- skipping (no drafter at $DRAFT) — cells:$group"
         SKIPS=$((SKIPS + $(echo "$group" | wc -w))); continue
     fi
     tag=$(basename "$MODEL" .gguf | cut -c1-24)
@@ -457,6 +462,13 @@ if [ "$TEETH" = 1 ]; then
 fi
 
 echo "accept-gate: $PASSES pass, $FAILS fail, $NOREF unpinned, $SKIPS skip"
+if [ "$SKIPS" -gt 0 ] && [ "$PASSES" -gt 0 ]; then
+    # Partial coverage is a pass, but it must be a LOUD pass: the cells that ran are the only
+    # ones this green speaks for, and on this gate a skipped cell is usually a whole model's
+    # worth of coverage (the cells group by artifact).
+    echo "  PARTIAL COVERAGE: $SKIPS cell(s) skipped for missing artifacts — this green speaks"
+    echo "  only for the $PASSES cell(s) that ran. Stage the missing artifacts before a tag."
+fi
 if [ "$NOREF" -gt 0 ]; then
     echo "  $NOREF cell(s) have no pinned reference — run 'tools/accept-gate.sh --pin' at a"
     echo "  full-battery green point with committed crates/."
