@@ -343,9 +343,22 @@ gated by the official `openai` Python SDK against a live server
   at build); the id echoes as the `x-request-id` response header. The first stream delta
   carries `role:"assistant"`. Error bodies are the OpenAI object —
   `{"error": {"message","type","param","code"}}` — and mid-stream worker errors arrive as
-  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive
-  comments flow every 5s (long-prompt prefill streams nothing before first token;
-  OpenRouter cancels silent streams).
+  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive comments
+  flow every 5s (long-prompt prefill streams nothing before first token; OpenRouter cancels
+  silent streams).
+
+  **Precondition — which surface you are talking to.** Everything in this section describes the
+  **OpenAI-shape** surface, and the stream terminator + the mid-stream error shape are gated on
+  `chat || openai_compat()` (main.rs:1966, 2007). `openai_compat()` is true when
+  `MEMRA_COMPAT=openai`, or when `MEMRA_COMPAT` is unset **and `MEMRA_API_KEY` is set** — the pi
+  setup. On a **native-default** server (no `MEMRA_COMPAT`, no `MEMRA_API_KEY`) a streaming
+  `/v1/completions` does the opposite of the sentence above: it emits a named `event: error` and a
+  named `event: done`, with **no `data: [DONE]`**. That is deliberate, not a bug — native clients
+  are memra's own tools, which do parse named events, and the validation harnesses rely on it.
+  `/v1/chat/completions` is always OpenAI-shape (`chat` is true regardless). The shipped unit sets
+  `MEMRA_COMPAT=openai` (`deploy/systemd/memra-server.service:92`), so a deployed server matches
+  this section — but if you are testing a bare `memra-server` and your SDK reads a silent hang,
+  this is why.
 - **Reasoning separation:** on think-open prompts, `<think>` text routes to
   `message.reasoning` / `delta.reasoning` (+ `reasoning_details`, the OpenRouter
   dialect); `content` is post-think only. `include_reasoning:false` (or
@@ -408,6 +421,20 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
 Receipts: `research/serve-hardening-20260806/`. Example unit:
 `deploy/systemd/memra-server.service`.
 
+**The full route table**, since the sections above only introduce routes as they become
+relevant (bind address `MEMRA_ADDR`, default `127.0.0.1:8080`):
+
+| route | notes |
+|---|---|
+| `GET /health`, `GET /livez` | the same handler — inference liveness (below) |
+| `GET /readyz` | routability (below) |
+| `GET /v1/models` | the OR-schema listing (Gateway listing surface, above) |
+| `GET /models` | the plain listing: `{"data":[{"id":"<alias>"},...]}`. Not an OpenAI route and not a `/v1/models` alias — no `context_length`, `architecture`, or `pricing`. It is what `serve-smoke` and `serve-st-gate` assert against |
+| `POST /v1/completions` | raw-prompt completions. **Streaming shape depends on `MEMRA_COMPAT`** — see the compatibility precondition above |
+| `POST /v1/chat/completions` | always OpenAI-shape |
+| `GET /metrics` | counters + the `spec` acceptance block |
+| `GET /yield/metrics` | the dark-lane yield view |
+
 **`/health` == `/livez` — inference liveness, not process liveness.** The GPU worker is
 ONE `std::thread` owning the CUDA context. `/health` used to answer `{"status":"ok"}` off
 the axum task, so a worker panic or a wedged card left a permanently green health check in
@@ -421,9 +448,12 @@ every iteration, plus a phase:
 | `busy` | 200 while the beat advances, 503 past `MEMRA_HEALTH_STALL_S` (120s) | work in flight must make progress; the bound covers a max-context prefill tick (see FLAGS for the derivation) |
 | `dead` / fault latched | 503 immediately | worker panic or fatal Xid — a latch, not a timeout, so the flip is instant |
 
-The response body publishes `worker.{phase, beat_age_ms, tick_max_ms,
-stall_threshold_ms, generation, xid_warnings}`, so a red is self-explaining and
-`tick_max_ms` is the live receipt for revisiting the threshold.
+The response body is `{status, models, worker:{phase, beat_age_ms, tick_max_ms,
+stall_threshold_ms, generation, xid_warnings}}`, plus a top-level `detail` on a red (which is
+where a quoted panic payload lands). `status` is `ok` / `draining` / `unhealthy` on
+`/health`-`/livez` and `ready` / `not_ready` on `/readyz`. So a red is self-explaining and
+`tick_max_ms` — the longest scheduler iteration this process actually observed — is the live
+receipt for revisiting the threshold.
 
 **`/readyz` — should traffic be routed here?** Ready = model loaded AND worker alive AND
 not draining. Unready is NOT a restart request: draining and loading are healthy states
@@ -436,9 +466,16 @@ so a deep queue is work in progress; capacity backpressure belongs on the reques
 `EngineDeadError`) and TGI a single `/health`.
 
 **Worker panic → supervised.** The worker thread runs inside `catch_unwind`: a panic marks
-health dead with the quoted panic payload, then ONE respawn is attempted with backoff
-(`MEMRA_WORKER_RESPAWN`), and failing that the process exits **70** so the supervisor
-restarts it whole. One attempt, deliberately — CUDA errors are sticky per process, so a
+health dead with the quoted panic payload, then ONE respawn is attempted after a **`2 x attempt`
+second** backoff — 2 s at the default max of 1 (`MEMRA_WORKER_RESPAWN`; the sleep exists so a
+panic from a transient device condition gives the driver time to settle instead of re-hitting it
+immediately) — and failing that the process exits **70** so the supervisor restarts it whole.
+**Two distinct paths reach exit 70**, and an operator reading `systemctl status` should be able to
+tell them apart: the respawn budget running out (`STATUS=worker unrecoverable; exiting`), and a
+respawn whose **weight reload itself failed** (`STATUS=respawn load failed; exiting`) — the second
+is not a panic, and it exits rather than looping because a load failure will not fix itself.
+Exit 70 is sysexits' `EX_SOFTWARE`, chosen so it reads distinctly from the startup FATAL paths,
+which exit 1 ("the engine died" vs "bad config"). One attempt, deliberately — CUDA errors are sticky per process, so a
 respawn loop against a poisoned context produces a box that looks alive and serves nothing.
 Proved on a real CUDA worker, not only in tests (`MEMRA_PANIC_AFTER` fault injection,
 `research/serve-hardening-20260806/logs/worker-death.txt`): panic → 503 on all three routes
@@ -451,7 +488,9 @@ queued work survives a worker death.
 **GPU faults (`MEMRA_GPU_WATCH`).** A watcher thread tails Xid lines (`/dev/kmsg`, falling
 back to `journalctl -k -f`) and latches unhealthy on the fatal classes
 (48/64/79/94/95/119/120), counting the rest as warnings. It also probes `nvidia-smi` for
-uncorrectable ECC and row-remap failures. The design constraint: Blackwell's worst wedge
+uncorrectable ECC and row-remap failures every `MEMRA_GPU_WATCH_S` seconds (default 60 — the
+audit's published detection commitment is "checks every 60 s", so treat it as a stated fact about
+the instrumentation rather than a free knob). The design constraint: Blackwell's worst wedge
 (Xid 119/120, GSP RPC timeout) emits nothing to the process **and hangs the query tools**,
 so the probe runs as a killed-on-deadline child and its own timeout
 (`MEMRA_GPU_PROBE_TIMEOUT_S`) is the alarm. Health reads only atomics, so a hung
@@ -474,6 +513,7 @@ class now comes from the producer:
 | unknown `x-lane` value | 400 | `invalid_request_error` | `invalid_lane` | `x-should-retry: false` |
 | batch-class api key requesting `x-lane: interactive` | 403 | `authentication_error` | — | `x-should-retry: false` |
 | bad / disabled api key | 401 / 403 | `authentication_error` | — | `x-should-retry: false` |
+| **worker channel dropped** (`cmd_tx.send` fails) | 503 | `server_error` | **none** | **none** |
 
 Unknown model is a deliberate **400, not 404**: OpenRouter's uptime math counts 404s
 against the provider and excludes 400s, and the `code` is what clients branch on either
@@ -482,6 +522,17 @@ only `0 < v ≤ 60`, openai-python abandons retry past 120s) with a matching
 `retry-after-ms`, which openai-python reads first. A **mid-stream** failure — after the 200
 is committed and no status code is left to change — emits the same error object as a
 `data:` chunk and closes the connection.
+
+**One 503 is still outside the contract** (last row above, `main.rs:1741` and `1819`): when
+`cmd_tx.send()` fails because the worker channel is gone, the body is
+`"worker unavailable"` / `server_error` with **`code: null`, no `Retry-After`, no
+`retry-after-ms`, and no `x-should-retry`** — `error_response` passes `code: None`, and the
+`x-should-retry` header is only attached on 4xx. A client that branches on `code` sees nothing to
+branch on, and a client that honors `Retry-After` gets no delay hint, on precisely the transient
+condition where retrying is the right move. This is the narrow window between a worker dying and
+the respawn ladder re-establishing the channel; the `overloaded` row covers the *restarting*
+case, which is why this one is easy to miss. Documented as-is rather than described as fixed —
+giving it `code: "overloaded"` + the retry pair is a server change, not a docs change.
 
 ## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
 
