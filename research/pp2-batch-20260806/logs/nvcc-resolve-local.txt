@@ -1,0 +1,44 @@
+build.rs nvcc resolution — local 5090 rig compile matrix (2026-08-06, lane/pp2-batch)
+
+Rig: /usr/local/cuda-13.1 (CUDA_HOME default), /usr/local/cuda-12.8, AND a distro
+/usr/bin/nvcc at CUDA 12.4. `which nvcc` = /usr/local/cuda-13.1/bin/nvcc with the
+default PATH; /usr/bin precedes it when the toolkit dir is dropped.
+
+THE FIND (first-hit-on-PATH is WRONG here):
+  $ /usr/bin/nvcc --version | tail -3
+  Cuda compilation tools, release 12.4, V12.4.131
+  $ /usr/bin/nvcc -gencode arch=compute_120a,code=sm_120a -O3 --fatbin -o /tmp/t.fatbin \
+      crates/memra-probe/src/kernels.cu
+  nvcc fatal   : Unsupported gpu architecture 'compute_120a'
+A first-found resolver picks 12.4 and BREAKS a rig the hardcoded pin built fine.
+Hence version-ranked (newest-wins) selection over the whole candidate set.
+
+ARM MATRIX (all release builds, memra-engine unless noted; CPUQuota=800%):
+
+1. env as-is (CUDA_HOME=/usr/local/cuda-13.1)
+   warning: memra-engine@0.71.0: nvcc from $CUDA_HOME: /usr/local/cuda-13.1/bin/nvcc
+   warning: memra-engine@0.71.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0)
+   Finished `release` profile [optimized] target(s) in 2m 48s      -> PASS (--bins, all)
+
+2. -u CUDA_HOME -u CUDA_PATH -u CUDA_ROOT, default PATH
+   warning: memra-engine@0.71.0: nvcc from PATH: /usr/local/cuda-13.1/bin/nvcc
+   Finished `release` profile [optimized] target(s) in 2m 25s      -> PASS
+
+3. -u CUDA_* AND PATH=/usr/bin:/bin:~/.cargo/bin (toolkit dir NOT on PATH; 12.4 IS)
+   pre-fix (first-hit):  nvcc from PATH: /usr/bin/nvcc
+                         error: failed to run custom build command for `memra-engine`
+                         (nvcc fatal: Unsupported gpu architecture 'compute_120a')
+   post-fix (ranked):    nvcc auto-detected CUDA 13.1 at /usr/local/cuda-13.1/bin/nvcc
+                         (newest of 3; also saw 12.8 @ /usr/local/cuda-12.8/bin/nvcc,
+                          12.4 @ /usr/bin/nvcc)
+                         Finished `release` profile in 2m 23s      -> PASS
+
+4. memra-probe, MEMRA_NVCC=/usr/local/cuda-13.1/bin/nvcc
+   Finished `release` profile [optimized] target(s) in 3.01s       -> PASS
+
+5. memra-probe, -u CUDA_* + PATH stripped as in arm 3
+   warning: memra-probe@0.0.0: nvcc CUDA 13.1 at /usr/local/cuda-13.1/bin/nvcc
+   Finished `release` profile [optimized] target(s) in 2.96s       -> PASS
+
+CI is unaffected: .github/workflows/{ci,release,publish}.yml all set
+MEMRA_NVCC=/usr/local/cuda-13.1/bin/nvcc, which is arm 4 (explicit intent, first branch).

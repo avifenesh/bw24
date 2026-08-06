@@ -220,7 +220,13 @@ pub fn pp_sharded_cross_device() -> bool {
     let stages_open = std::env::var("MEMRA_PP_STAGES")
         .map(|v| v.parse::<usize>().map(|n| n >= 2).unwrap_or(false))
         .unwrap_or(false);
-    if !stages_open || pp_shard_off() {
+    // MEMRA_PP_STREAMS=0 (2026-08-06, pp2-batch): the same-stream rollback seam ALSO turns
+    // the sharded loader off — `layer_engine` returns the primary engine whenever
+    // `pp2_streams_off()`, and `new_cache` skips `Cache::new_ppn` on the same condition. So
+    // in that regime every weight and every cache is home on the primary and an unsplit walk
+    // peer-reads NOTHING. Without this term the guard refused that config too: a spurious
+    // refusal of a placement that is sound and full-speed. Found wiring the batched pp arm.
+    if !stages_open || pp_shard_off() || pp2_streams_off() {
         return false;
     }
     match pp2_devices_env() {
@@ -264,6 +270,17 @@ pub fn refuse_unsplit_if_remote(path: &str, alt: &str) -> Result<(), Box<dyn std
         .into());
     }
     Ok(())
+}
+
+/// MEMRA_BATCH_PP=0: rollback/A-B seam for the BATCHED stage split (pp2-batch 2026-08-06).
+/// Default ON — with the ppN door open the batched decode step takes its own stage split
+/// (`decode_step_batch_ppn`) exactly as the eager step does. Setting 0 sends the batched
+/// path back through the unsplit body, which under a sharded cross-device placement is
+/// then caught by `refuse_unsplit_if_remote` (the 28x peer-read regime) rather than run
+/// silently. Exists so the bit-identity gate can A/B split vs unsplit IN ONE PROCESS
+/// against the same loaded weights — read per step, never memoized, for that reason.
+pub fn batch_pp_on() -> bool {
+    std::env::var("MEMRA_BATCH_PP").as_deref() != Ok("0")
 }
 
 /// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
@@ -640,6 +657,14 @@ impl PpNRt {
     /// guard), copy `x` into the slot's persistent buffer via the boundary's transport on
     /// stage-b's stream (the owning-stream/publication law), record ev_tx. Returns the
     /// slot index for the paired rx().
+    ///
+    /// `n` is the PAYLOAD ELEMENT COUNT, not a fixed model constant: the eager arm passes
+    /// `n_embd` (one row), the batched arm passes `b_n * n_embd` (B stacked rows, the
+    /// [B, n_embd] boundary). The slot buffer is GROW-ONLY and the transport moves exactly
+    /// the first `n` elements — batched serving changes B every tick (chunk fill), and a
+    /// realloc-on-every-size-change would host-sync the RX stream per width change (see the
+    /// SLOT FIRST-USE ORDERING note below for why each allocation needs that sync). Growing
+    /// to the high-water mark makes the syncs O(distinct widths) instead of O(width changes).
     pub fn tx(&self, b: usize, x: &CudaSlice<f32>, n: usize)
               -> Result<usize, Box<dyn std::error::Error>> {
         assert_eq!(x.len(), n, "pp tx: residual length mismatch");
@@ -653,7 +678,7 @@ impl PpNRt {
         let s_tx = &self.stages[b].stream;
         s_tx.wait(&sl.ev_rx)?;
         let mut guard = sl.buf.lock().unwrap();
-        if guard.as_ref().map(|bf| bf.len() != n).unwrap_or(true) {
+        if guard.as_ref().map(|bf| bf.len() < n).unwrap_or(true) {
             // allocated on the RX stage's stream: the buffer lives on the RX device.
             let s_rx = &self.stages[b + 1].stream;
             *guard = Some(s_rx.alloc_zeros::<f32>(n)?);
@@ -704,10 +729,14 @@ impl PpNRt {
         s_rx.wait(&sl.ev_tx)?;
         let guard = sl.buf.lock().unwrap();
         let buf = guard.as_ref().expect("pp rx before tx");
+        assert!(buf.len() >= n, "pp rx: slot holds {} < requested {n}", buf.len());
         // uninit working buffer (fully overwritten by the copy), allocated explicitly on
         // the stage stream so rx() is correct even outside an enter() scope.
         let mut work = unsafe { s_rx.alloc::<f32>(n)? };
-        s_rx.memcpy_dtod(buf, &mut work)?;
+        // Slice the slot to the payload: the buffer is grow-only (see tx), so at a narrower
+        // width it is LONGER than `work` and cudarc's memcpy_dtod (dst.len() >= src.len())
+        // would assert. The paired tx wrote exactly these first n elements.
+        s_rx.memcpy_dtod(&buf.slice(0..n), &mut work)?;
         sl.ev_rx.record(s_rx)?;
         Ok(work)
     }
