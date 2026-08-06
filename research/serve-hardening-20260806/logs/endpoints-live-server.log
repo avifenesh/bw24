@@ -9,17 +9,17 @@
 [prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
 [server] worker ready; serving models: ["probe"]
 [server] listening on http://127.0.0.1:8099
-[meter] admit id=chatcmpl-86258be4410bb4735a9ba18b90306945 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-3c8549cfce9520c7982338ed5378ecc4 tenant=default lane=interactive model="probe"
 [worker] observed session VRAM cost for "probe": 101MB (admission gate = 2x)
 [spec-acc] ctx=13 burst=6/6 cum=6/6=1.000
-[meter] admit id=chatcmpl-127c0c9bc0ae3c140b6a74dbaa07a38b tenant=default lane=interactive model="nope"
-[meter] admit id=chatcmpl-20898977d55d32003753136b072df3c8 tenant=default lane=interactive model="probe"
-[meter] admit id=chatcmpl-e82861120f2dbb52569e8cc6632eb17d tenant=default lane=harvest model="probe"
-[meter] admit id=chatcmpl-3acf792b5c3bf006edcaf9eb64d3be19 tenant=default lane=harvest model="probe"
-[meter] admit id=chatcmpl-b4058fdf47875f97f09f0a760801f8b5 tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-f37209f79192edfe0023abb5f3e2f2a3 tenant=default lane=interactive model="nope"
+[meter] admit id=chatcmpl-00d4eb64e04a636bc5ddd0c2b7d585dd tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-5e92534f129a473c7d34cded2e75db5f tenant=default lane=harvest model="probe"
+[meter] admit id=chatcmpl-c5f933e525a7dc84f7387a0dd0c68c48 tenant=default lane=harvest model="probe"
+[meter] admit id=chatcmpl-2afa00ab8969a8d1ceda7ee5b048ee7d tenant=default lane=interactive model="probe"
 [worker] spec-affinity: declined (history diverged at 3 of checkpoint 13; 1 parked, 16 prompt tokens; model probe)
 [spec-acc] ctx=16 burst=6/6 cum=6/6=1.000
-[meter] admit id=chatcmpl-807fcbb79f153b1dba9d2479bc81d0ad tenant=default lane=interactive model="probe"
+[meter] admit id=chatcmpl-fd8207692f4f76ee4964735987ce2b2c tenant=default lane=interactive model="probe"
 [worker] spec-affinity: declined (no room (session ctx 256 < need 984); 2 parked, 20 prompt tokens; model probe)
 [spec-acc] ctx=20 burst=23/27 cum=23/27=0.852
 [spec-acc] ctx=53 burst=23/33 cum=46/60=0.767
@@ -37,8 +37,8 @@
 [spec-acc] ctx=450 burst=20/36 cum=290/513=0.565
 [spec-acc] ctx=482 burst=22/36 cum=312/549=0.568
 [spec-acc] ctx=516 burst=20/45 cum=332/594=0.559
-[server] SIGTERM: draining (1 in flight, deadline 30s)
 [spec-acc] ctx=551 burst=23/30 cum=355/624=0.569
+[server] SIGTERM: draining (1 in flight, deadline 30s)
 [spec-acc] ctx=584 burst=17/45 cum=372/669=0.556
 [spec-acc] ctx=616 burst=20/42 cum=392/711=0.551
 [spec-acc] ctx=650 burst=20/42 cum=412/753=0.547
@@ -50,4 +50,4 @@
 [spec-acc] ctx=848 burst=23/33 cum=533/984=0.542
 [spec-acc] ctx=882 burst=21/33 cum=554/1017=0.545
 [spec-acc] ctx=914 burst=3/9 cum=557/1026=0.543
-[server] drain complete in 2.0s; exiting
+[server] drain complete in 1.9s; exiting

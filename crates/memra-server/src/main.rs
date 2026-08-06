@@ -693,7 +693,22 @@ fn error_body(message: &str, etype: &str, param: Option<&str>, code: Option<&str
 
 fn error_response(status: StatusCode, message: &str, etype: &str, param: Option<&str>)
     -> Response {
-    (status, Json(error_body(message, etype, param, None))).into_response()
+    error_response_coded(status, message, etype, param, None)
+}
+
+/// Same, with an explicit OpenAI `code`. Handler-layer refusals (auth, lane, request parsing)
+/// land here; engine-produced faults land in `engine_error_response`. Both attach
+/// `x-should-retry: false` on a 4xx that retrying the identical bytes cannot fix, so the two
+/// halves of the surface behave identically to a client that retries by status alone.
+fn error_response_coded(status: StatusCode, message: &str, etype: &str,
+                        param: Option<&str>, code: Option<&str>) -> Response {
+    let mut resp = (status, Json(error_body(message, etype, param, code))).into_response();
+    if status.is_client_error() && status != StatusCode::TOO_MANY_REQUESTS
+        && status != StatusCode::REQUEST_TIMEOUT && status != StatusCode::CONFLICT {
+        resp.headers_mut()
+            .insert("x-should-retry", axum::http::HeaderValue::from_static("false"));
+    }
+    resp
 }
 
 fn bad_request(message: &str, param: Option<&str>) -> Response {
@@ -1629,9 +1644,14 @@ fn lane_for_tenant(headers: &axum::http::HeaderMap, tenant: &auth::TenantCtx)
     -> Result<lanes::Lane, Response> {
     let requested = match headers.get("x-lane").map(|v| v.to_str().unwrap_or("?")) {
         None => None,
+        // A bad x-lane really is a client bug, so 400 is the right status — but the body has to
+        // be an OpenAI-compat error OBJECT like every other refusal on this surface. It used to
+        // be a bare `{"error":"unknown x-lane ..."}` string, which makes `e.body["error"]["type"]`
+        // an index error in every SDK that parses the standard shape.
         Some(v) => Some(lanes::Lane::parse(v).ok_or_else(|| {
-            (StatusCode::BAD_REQUEST,
-             Json(json!({ "error": format!("unknown x-lane {v:?}") }))).into_response()
+            error_response_coded(StatusCode::BAD_REQUEST,
+                &format!("unknown x-lane {v:?}; expected one of interactive, judge, harvest"),
+                "invalid_request_error", Some("x-lane"), Some("invalid_lane"))
         })?),
     };
     match tenant.lane_class {
@@ -3227,6 +3247,42 @@ mod tests {
         // unknown lane still 400s for everyone.
         let resp = lane_for_tenant(&hdr(Some("turbo")), &interactive).unwrap_err();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn handler_layer_refusals_are_openai_objects_with_x_should_retry() {
+        // The lane refusals were the last bare-string error bodies on the surface:
+        // `{"error": "unknown x-lane ..."}` indexes as a string in every SDK that reads
+        // error.type / error.code. Both lane refusals now go through error_response_coded,
+        // and both are unfixable-by-retry 4xx, so both must also say so in a header.
+        let hdr = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-lane", axum::http::HeaderValue::from_str(v).unwrap());
+            h
+        };
+        let body = |resp: Response| async move {
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+
+        let resp = lane_for_tenant(&hdr("turbo"), &auth::TenantCtx::default_tenant()).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.headers().get("x-should-retry").unwrap(), "false");
+        let payload = body(resp).await;
+        assert!(payload["error"].is_object(), "bare-string error body: {payload}");
+        assert_eq!(payload["error"]["type"], "invalid_request_error");
+        assert_eq!(payload["error"]["param"], "x-lane");
+        assert_eq!(payload["error"]["code"], "invalid_lane");
+
+        let batch = auth::TenantCtx {
+            tenant: "bulk".into(), lane_class: auth::LaneClass::Batch, rate_limit: None,
+        };
+        let resp = lane_for_tenant(&hdr("interactive"), &batch).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.headers().get("x-should-retry").unwrap(), "false");
+        let payload = body(resp).await;
+        assert_eq!(payload["error"]["type"], "authentication_error");
+        assert_eq!(payload["error"]["param"], "x-lane");
     }
 
     /// Serializes tests that read or flip the process-global DRAINING flag (the drain

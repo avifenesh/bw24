@@ -113,6 +113,17 @@ about what an OOM is.
 | graph promote / graph step failed | **400** | **500** | `server_error` | `engine_error` | none |
 | constraint mask / advance failed | **400** | **500** | `server_error` | `engine_error` | none |
 | new request during a drain | 503, bare `Retry-After`, no code | 503 | `server_error` | `draining` | `Retry-After: 30`, `retry-after-ms: 30000` |
+| unknown `x-lane` value | 400, **bare-string** body | 400 | `invalid_request_error` | `invalid_lane` | `x-should-retry: false` |
+| batch-class key claiming `x-lane: interactive` | 403, no `x-should-retry` | 403 | `authentication_error` | — | `x-should-retry: false` |
+
+The last two rows are the same kind of find as the drain row — swept up on a second pass over the
+whole surface rather than only the engine's own errors. `lane_for_tenant` answered an unknown
+`x-lane` with `{"error": "unknown x-lane \"turbo\""}`: a bare STRING where the rest of the surface
+puts an object, so `e.body["error"]["type"]` is an index error and the message renders blank in
+SDKs that read the standard shape. And the handler-layer refusals (auth, lane) never carried
+`x-should-retry: false`, even though they are exactly as unretryable as the engine-layer 400s that
+do — so `error_response` now routes through `error_response_coded`, which attaches the header on
+any 4xx except the three genuinely-retryable client statuses (429, 408, 409).
 
 The drain row is a gap this lane found while probing, not a pre-existing plan: `drain_response`
 predates the taxonomy and was the last 503 on the surface emitting a bare `Retry-After` with no
@@ -297,6 +308,9 @@ New, taxonomy:
 * `a_closed_worker_channel_is_503_not_500`.
 * `a_dark_lane_shed_is_429_with_an_openai_object_body` — pins the bare-string regression.
 * `interactive_never_peeks_so_its_first_token_is_not_held`.
+* `handler_layer_refusals_are_openai_objects_with_x_should_retry` — pins the *other* bare-string
+  body (unknown `x-lane`) plus the header on both lane refusals, so the handler layer and the
+  engine layer cannot drift apart again.
 
 New, health (the integration arm the lane was asked for):
 
@@ -349,6 +363,7 @@ Measured results:
 | ready | `/health` `/livez` 200 `ok`, `/readyz` 200 `ready`, worker block populated |
 | unknown model | 400 `invalid_request_error` / `model_not_found` / `param:"model"` / `x-should-retry: false` |
 | over-context prompt | 400 `context_length_exceeded` / `param:"messages"` / `x-should-retry: false`, message quotes both numbers (`prompt (410 tok) >= context cap (256)`) |
+| bad `x-lane` | 400 `invalid_request_error` / `invalid_lane` / `param:"x-lane"` / `x-should-retry: false`, message lists the legal values |
 | dark-lane shed | 429 `rate_limit_error` / `rate_limit_exceeded`, `Retry-After: 2` + `retry-after-ms: 2000`; **429 pre-header on the streaming surface too** |
 | worker panic | `/health` `/livez` 503 `unhealthy`, `/readyz` 503 `not_ready`, all three carrying the quoted panic payload in `detail`, within ~200 ms of the panic |
 | respawn | weights reloaded, `generation` 0 → 1, back to 200, and the respawned worker served a real completion (200) |

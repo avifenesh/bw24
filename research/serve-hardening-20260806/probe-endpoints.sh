@@ -121,6 +121,13 @@ except urllib.error.HTTPError as e:
 PY
 
 echo
+echo "--- [6b] G6: bad x-lane -> 400 / code invalid_lane (was a BARE-STRING error body) ---"
+curl -s -D /tmp/probe-hdr -o /tmp/probe-body -m 30 "$BASE/v1/chat/completions" \
+  -H 'Content-Type: application/json' -H 'x-lane: turbo' \
+  -d '{"model":"probe","messages":[{"role":"user","content":"hi"}],"max_tokens":4}'
+grep -iE '^HTTP/|^x-should-retry|^retry-after' /tmp/probe-hdr; cat /tmp/probe-body; echo
+
+echo
 echo "--- [7] G6: dark-lane shed -> 429 rate_limit_error + Retry-After (x-lane: harvest) ---"
 echo "(non-streaming: peek_shed resolves the verdict BEFORE headers, so this is a real"
 echo " pre-header 429 and not a mid-stream death — the OpenRouter-uptime point.)"

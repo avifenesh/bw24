@@ -17,7 +17,7 @@ and the pre-rebase numbers matched to within run-to-run noise.
 
 | gate | command | verdict | log |
 |---|---|---|---|
-| unit tests | `cargo test -p memra-server --release` | **91 passed, 0 failed** (82 before this lane) | `logs/cargo-test-memra-server.txt` |
+| unit tests | `cargo test -p memra-server --release` | **92 passed, 0 failed** (82 before this lane) | `logs/cargo-test-memra-server.txt` |
 | serve-smoke | `tools/serve-smoke.sh` | **0 failed** (`SMOKE_RC=0`) — 16 checks incl. spec-vs-plain greedy identity, the 4-arm sampled truncation matrix (every arm `bangs=0 <= baseline 0`), session-affinity resume (`affinity fired (3 rewind(s))`, `no failed rewinds`) | `logs/serve-smoke.txt`, `logs/serve-smoke-server.log` |
 | api-key auth | `tools/apikeys-gate.sh` | **0 failed / 18 gates** (`APIKEYS_RC=0`) | `logs/apikeys-gate.txt`, `logs/apikeys-gate.jsonl`, `logs/apikeys-gate-server.log` |
 | serve-stress c=64 | `tools/serve-stress-gate.sh` | **ALL GREEN** — `completed 64/64; wall p50=46.0s p95=53.2s max=54.0s; ttfb p50=0.51s p95=5.00s` (ttfb informational), streams well-formed, worker alive, log clean (`STRESS_RC=0`) | `logs/serve-stress-c64.txt`, `logs/serve-stress-c64-server.log` |
