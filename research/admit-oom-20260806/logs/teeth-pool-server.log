@@ -1,0 +1,246 @@
+[server] starting; models config = [("stress", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "stress" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, head_vocab=32768 (trimmed, d2t map)
+[worker] stress: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "stress": 33 layers, eos=248046
+[worker] stress: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] stress: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["stress"]
+[server] listening on http://127.0.0.1:8179
+[meter] admit id=chatcmpl-6865206738673e7f3be9ad310ba5c3d3 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-49b897024fafce08f20cfcd26ce078a7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-aec00806828e1df27fd99d1f2d1f48a0 tenant=default lane=interactive model="stress"
+[worker] observed session VRAM cost for "stress": 201MB (admission gate = 2x)
+[admit-oom] WARN: MEMRA_ADMIT_RESERVE_MB=16 overrides the 1536MB transient reserve (teeth/diagnostics door — NOT a tuning knob)
+[meter] admit id=chatcmpl-6ebf9e85f58aba1be645159c5e33c942 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ee072f749ee33942ae05c11f9fb78836 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-622c45a39324d58c6e4a36f81fa51406 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-3f6522735fb2cebcd4ecca10e1900774 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a607ea51d67b97ad373344869305e4e2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d3a2f7bb04246375c5f5a65ff9e9fa76 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-08bafc30a11089ac7a9446e2df4fd93f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-05e0a6b6d3591e6b20fbfe1d81a4f704 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-52ddb7ab12c88cc8bc0172fafbc9e8eb tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b74d94647d9cc4163503396f429e3458 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-86d7c08eebe9856682053706f7ca4e6b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e7c70cfc0d36da6e9fab78b71dc681d5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-8490bd30fd921cefa4b7764834237038 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-411b2cf76fbbdaa323534dd52a39c98e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-f85cb837dd890568bc5697475dfb7f49 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-874b3a5f591bc2b0315a8fee7488a635 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-64c010addfbaacd6ae0851136db95355 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e85dc5f503475373f28eecd615948617 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6d919a0f3720aa744f8c3eaa6c575a0e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-154cf8e9c44b9545a51f85004ad2f52c tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-0704dfeee107098a02858739916e3b2f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a3614b5df9d19d75fb9f0d5b902b4e49 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-557d76e3486b6ba47987cc963daa57b5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b577e27f8c018911a367f8b470b6d26e tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c071087fe124ab76e44aca96c78c466f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d8a59ea818ba0ea341fedbb2d0c4ebee tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-cee94e67f11f239835ed72682a4dc858 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b60ee73da92cd97fc6a171d5a401209b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-40f857a530793d730680d9e3aac24ecf tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-990fc38f5d88982f6f9024706c5b3d20 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-f50ed1e6c5d93f4d87209b41dd77a441 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c458c2a7a150d58f6ca1b9eb6c9371f2 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-be1b5b53a404aaab699cac9cbe5d92ac tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-d393bc88722add5c956d63c268ef6cfe tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-950e0bfb8ae1a6408395d9d9a19776f7 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b23872a09610427a67e494c667e71091 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6013c409524b770045702a79eb0290fc tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-7172b549ca196909e2452769444593a6 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-706d40087d82e63974b426e5d80aeeb1 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a23f58935b1af3017e940105545bad6a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-42d4a1ac63960a82c4fbbfb4fcf4de0a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-6c09eb93714f81cbc7d7afe03cdfaa1b tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-1de0c5892a15a805dcc4ff63b8e4df7a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ce4b848b7073d01d182387c5da082e89 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-e943096395ae7b1c0b061a26ed0b5ce8 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-aa7306dddfa4a3da5c342c30b98f0684 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-bd3a134dabbf866d7cfcccba062e0da8 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-1cc400699c0af110cc9d365969149153 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b1816368b50c09b08b0a3fdeee1d3aa3 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-75790d08bcafedd8b8cd5c96b1c57159 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-a03a17c209b3ce1c58ccd8ae06d5af5d tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-890bf1c90114c189904a3f4b2b6c3409 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-ff1019a3a5af0aec71c0c025d1986e86 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-06b52b7ca47e110ca8cfd9e0749a8f25 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-035dc588230e7bcadb477e80e24f7520 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-772d3a14400a35d917f5d45705818e64 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-2144af7aa3a3ff495b0be29eaf239839 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-b130be4c6ffc6555823f949e3661e58a tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-1f2399e0cdcdd3bbabdefc55a4340ab5 tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-4a1b7db29c0025ff27344ad45a811b7f tenant=default lane=interactive model="stress"
+[meter] admit id=chatcmpl-c1f806df34733ad26db03f5ebd9d3fe6 tenant=default lane=interactive model="stress"
+[spec-acc] ctx=55 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=57 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=54 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=56 burst=18/39 cum=18/39=0.462
+[spec-acc] ctx=53 burst=22/27 cum=22/27=0.815
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 8): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 7): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 7): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 6): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 6): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 5): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 5): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 5): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 4): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 4): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 4): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 4): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 4): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 3): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 2): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 1): reporting honestly
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 44 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 55 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 57 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 54 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 56 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 53 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 44 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 55 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 57 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 54 prompt tokens; model stress)
+[worker] spec-affinity: declined (history diverged at 6 of checkpoint 56; 2 parked, 56 prompt tokens; model stress)
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=44 burst=21/33 cum=21/33=0.636
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=55 burst=22/30 cum=22/30=0.733
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=57 burst=24/24 cum=24/24=1.000
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=54 burst=24/24 cum=24/24=1.000
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=56 burst=23/30 cum=23/30=0.767
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=53 burst=24/27 cum=24/27=0.889
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=44 burst=21/33 cum=21/33=0.636
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=55 burst=22/30 cum=22/30=0.733
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=57 burst=25/27 cum=25/27=0.926
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=54 burst=24/27 cum=24/27=0.889
+[spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+[spec-acc] ctx=56 burst=23/33 cum=23/33=0.697
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 33): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 35): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 35): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 32): reporting honestly
+[admit-oom] step OOM NOT parked (model stress, retries 0/3, generated 32): reporting honestly
+[spec-acc] ctx=77 burst=24/30 cum=45/63=0.714
+[spec-acc] ctx=88 burst=21/36 cum=43/66=0.652
+[spec-acc] ctx=90 burst=17/42 cum=41/66=0.621
+[spec-acc] ctx=87 burst=22/33 cum=46/57=0.807
+[spec-acc] ctx=90 burst=21/30 cum=44/60=0.733
+[spec-acc] ctx=87 burst=24/30 cum=48/57=0.842
+[spec-acc] ctx=77 burst=23/24 cum=44/57=0.772
+[spec-acc] ctx=88 burst=20/33 cum=42/63=0.667
+[spec-acc] ctx=92 burst=20/36 cum=45/63=0.714
+[spec-acc] ctx=88 burst=23/27 cum=47/54=0.870
+[spec-acc] ctx=91 burst=20/33 cum=43/66=0.652
+[spec-acc] ctx=112 burst=22/36 cum=67/99=0.677
+[spec-acc] ctx=122 burst=21/39 cum=64/105=0.610
+[spec-acc] ctx=122 burst=23/30 cum=64/96=0.667
+[spec-acc] ctx=121 burst=18/42 cum=64/99=0.646
+[spec-acc] ctx=122 burst=19/36 cum=63/96=0.656
+[spec-acc] ctx=122 burst=21/33 cum=69/90=0.767
+[spec-acc] ctx=109 burst=22/30 cum=66/87=0.759
+[spec-acc] ctx=120 burst=22/33 cum=64/96=0.667
+[spec-acc] ctx=125 burst=21/30 cum=66/93=0.710
+[spec-acc] ctx=121 burst=20/33 cum=67/87=0.770
+[spec-acc] ctx=123 burst=18/39 cum=61/105=0.581
+[spec-acc] ctx=147 burst=22/30 cum=89/129=0.690
+[spec-acc] ctx=157 burst=22/30 cum=86/135=0.637
+[spec-acc] ctx=156 burst=22/36 cum=86/132=0.652
+[spec-acc] ctx=154 burst=21/33 cum=85/132=0.644
+[spec-acc] ctx=154 burst=20/39 cum=83/135=0.615
+[spec-acc] ctx=155 burst=17/42 cum=86/132=0.652
+[spec-acc] ctx=142 burst=23/33 cum=89/120=0.742
+[spec-acc] ctx=154 burst=23/30 cum=87/126=0.690
+[spec-acc] ctx=157 burst=17/42 cum=83/135=0.615
+[spec-acc] ctx=153 burst=19/36 cum=86/123=0.699
+[spec-acc] ctx=155 burst=20/24 cum=81/129=0.628
+[spec-acc] ctx=180 burst=9/9 cum=98/138=0.710
+[spec-acc] ctx=190 burst=16/48 cum=102/183=0.557
+[spec-acc] ctx=191 burst=19/42 cum=105/174=0.603
+[spec-acc] ctx=187 burst=18/42 cum=103/174=0.592
+[spec-acc] ctx=188 burst=9/15 cum=92/150=0.613
+[spec-acc] ctx=187 burst=23/30 cum=109/162=0.673
+[spec-acc] ctx=177 burst=20/33 cum=109/153=0.712
+[spec-acc] ctx=188 burst=20/33 cum=107/159=0.673
+[spec-acc] ctx=189 burst=19/36 cum=102/171=0.596
+[spec-acc] ctx=185 burst=18/45 cum=104/168=0.619
+[spec-acc] ctx=223 burst=10/18 cum=112/201=0.557
+[spec-acc] ctx=225 burst=20/36 cum=125/210=0.595
+[spec-acc] ctx=220 burst=10/18 cum=113/192=0.589
+[spec-acc] ctx=221 burst=20/39 cum=129/201=0.642
+[spec-acc] ctx=209 burst=16/24 cum=125/177=0.706
+[spec-acc] ctx=220 burst=10/18 cum=117/177=0.661
+[spec-acc] ctx=221 burst=17/42 cum=119/213=0.559
+[spec-acc] ctx=219 burst=20/33 cum=124/201=0.617
+[spec-acc] ctx=255 burst=2/6 cum=131/207=0.633
+[spec-acc] ctx=253 burst=23/27 cum=142/240=0.592
+[spec-acc] ctx=251 burst=20/36 cum=144/237=0.608
+[spec-acc] ctx=286 burst=16/30 cum=158/270=0.585
+[spec-acc] ctx=284 burst=13/27 cum=157/264=0.595
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

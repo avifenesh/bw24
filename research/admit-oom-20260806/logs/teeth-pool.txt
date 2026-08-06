@@ -1,0 +1,18 @@
+== serve-stress-gate: c=64 staggered short streams (128-256 tok) ==
+completed 11/64; wall p50=4.8s p95=13.3s max=13.6s; ttfb p50=0.87s p95=2.23s  (informational)
+  BAD i=0: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=10 finish_reason=None done=True bad_json=
+  BAD i=1: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=9 finish_reason=None done=True bad_json=
+  BAD i=2: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=9 finish_reason=None done=True bad_json=
+  BAD i=3: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=8 finish_reason=None done=True bad_json=
+  BAD i=4: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=8 finish_reason=None done=True bad_json=
+  BAD i=5: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=7 finish_reason=None done=True bad_json=
+  BAD i=6: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=7 finish_reason=None done=True bad_json=
+  BAD i=7: err=None server_error=step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory") chunks=7 finish_reason=None done=True bad_json=
+  FAIL: not all 64 requests completed well-formed
+  FAIL: server log carries failure lines:
+      [admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+      [admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+      [admit-oom] step OOM parked session back to queue (model stress, retry 1/3, 64 active): DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+      [spec] WARN: sampled draft-graph capture failed (DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")); eager fallback until session resume
+serve-stress-gate: TEETH OK (2 assertion(s) failed at MEMRA_ADMIT_RESERVE_MB=16 — the gate detects a broken admission reserve); server log: research/admit-oom-20260806/logs/teeth-pool-server.log
