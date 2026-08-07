@@ -283,3 +283,77 @@ Wait — correction, quoted from X-points.jsonl: X1-c2 errors_sample shows the S
 the verify fence does not cover — consistent with the INIT FEED (`decode_step_h` ->
 `decode_step_h_ppn`, the eager body) producing h_seed0. 4c72d637 fences the eager and
 batched bodies; the running gate battery is the verdict.
+
+## Gate battery on 4c72d637 (raw/gates-4c/) — one residual left
+
+ppspec bit-identity 0 failing arms (dev01/dev10/singledev + batched pp), run-spec K=1..8
+SELF-CONSISTENCY PASS both placements with acceptance counts IDENTICAL to door-shut
+(27/36, 33/62, 36/84 ... 36/224 — same table all four logs), kernel-check ALL GREEN,
+run-gen MATCH, crash gate c=4 100/100 + c=8 104/104, door-shut smoke 16/16 spec-live at
+548 tok/s. Residual: gate-c2 7/8 — exactly ONE admission-collision trap per c=2 storm,
+still `round 0 ... input-seed NaN 13/4096`. The one stage-stream allocation site outside
+the step bodies is the NEW session's stage-owned KV (`pp::new_cache` -> `Cache::new_ppn`
+alloc_zeros on stage streams): its pool blocks can be reuse of a victim's still-queued
+reads. Admission fence landed (80b2ddf4).
+
+## FINAL battery on 80b2ddf4 (raw/gates-final/) — ALL BARS GREEN
+
+| bar | verdict |
+|---|---|
+| crash gate c=2 (the trigger sequence) | **8/8** (residual closed) |
+| crash gate c=4 x100 | **100/100**, agg 112.2 tok/s |
+| crash gate c=8 x104 | **104/104**, agg 111.8 tok/s |
+| ppspec bit-identity (dev01/dev10/singledev) | 0 failing arms x3 |
+| batched pp bit-identity (dev01) | 0 failing arms |
+| run-spec K=1..8 over PP-2 (both placements) | SELF-CONSISTENCY PASS, acceptance == door-shut |
+| kernel-check | ALL GREEN |
+| run-gen naked | MATCH |
+| door-shut spec serve smoke c=4 | 16/16, spec-acc live, 548 tok/s |
+
+(The battery script's own "failures: 1" is its grep matching the diagnostic door's WARN
+banner, which contains the string "ILLEGAL_ADDRESS" — the server log has no fault line.)
+
+212/212 requests at c=2..8 on the placement whose baseline was 0/48-and-dead.
+
+## THE ROOT CAUSE, one paragraph
+
+`publish_to` (2026-08-06) ordered caller READS behind stage COMPUTE at the verify exit.
+Nothing ordered the REVERSE: buffers allocated on a stage stream (verify logits/hidden,
+ckpt stashes, and at admission the new session's stage-owned KV) drop with `free_async`
+on the ALLOCATING stage stream while the PRIMARY stream still holds queued reads of them
+— with decode-path event tracking elided (the 2026-07-05 default), the drop carries no
+read-guard, the idle stage stream retires the free immediately, and the async pool's
+internal-dependency reuse orders only against the FREE. The next burst's (or the next
+admitted session's) stage-stream allocations then write into blocks the queued primary
+reads have not consumed: the spec round seed reads random bits (13/4096 NaN — the
+uninitialized-bits signature; clean on host re-read microseconds later), one norm spreads
+it to a 4096/4096-NaN head-logits row, the device argmax's 0x7FFFFFFF init sentinel
+survives every NaN comparison, and the next chain step's embed gather dereferences
+`table + 0x7FFFFFFF*2304` = ~4.6 TB past the table — Xid 31 MMU FAULT_PDE, sticky
+context death. c=1 is clean because one session's round loop syncs before its own next
+round; c>=2 interleaves a second session's stage work into the victim's queued-read
+window.
+
+## Fix inventory (all on lane/pp2spec-crash)
+
+- `PpNRt::fence_stages_behind(caller)` — one event on the caller's stream, every stage
+  stream waits it — at the entry of `decode_step_t_core_ppn` (7450928b),
+  `decode_step_h_ppn` + `decode_step_batch_ppn` (4c72d637), and `pp::new_cache`'s
+  stage-KV admission path (80b2ddf4). Door-shut configs never build a PpNRt.
+- Sentinel traps (32d86e21, 746a14ea): every device-argmax token readback refuses
+  `idx >= vocab` with quoted NaN counts instead of dereferencing — correctness armor
+  that also turns any future recurrence into a diagnosis line instead of a dead context.
+- `#87 CLOSED` (c41dc345): `RefuseSpecOverPp2`, the parse-time preflight, the load-path
+  refusal, and the `MEMRA_PP2SPEC_UNQUARANTINE` diagnostic door all removed; docs
+  (FLAGS.md `MEMRA_SERVE_SPEC` + `MEMRA_MTP_DRAFT`, DRAFT-REGIME.md) flipped to lifted,
+  with the dev01 ~20x placement-perf note kept (a scheduling property, not a crash).
+
+## Known non-blockers, recorded
+
+- `MEMRA_EVT=1` (cudarc event-tracking escape hatch) is INCOMPATIBLE with the ppN
+  multi-context runtime: instant `CUDA_ERROR_INVALID_CONTEXT` on the first request
+  (raw/round5/H*). Pre-existing; the flag predates ppN. Do not debug PP-2 with it.
+- dev01 (stage0=dev0) spec-ON remains ~20x slow per the 2026-08-06 perf table — a
+  separate placement-scheduling question, never part of the crash.
+- cuda-gdb `@parameter` reads fail on this driver/dump combo (round 5) — use the
+  in-binary traps for operand forensics on this box, not the dump.
