@@ -147,9 +147,38 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
       **8/8 SELF-CONSISTENCY PASS**, acceptance digit-identical to the chunkfix baseline
       (K=1 14/18=77.8%; K=2..8 all 15 accepted, 44.1%->11.0%) — the fix is inert on the
       single-call spec path, receipted not asserted.
-- [ ] Perf (perf-tickseg.sh): N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1%
-      STOP bar), budget=256 (dark-lane, where arms change), pp512 null control.
-- [ ] Raw logs pulled back; PROGRESS.md finalized.
+- [~] Perf (perf-tickseg.sh, running since 12:14:24Z, raw/perf-tickseg-20260807T115358Z.log):
+      N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1% STOP bar), budget=256
+      (dark-lane, where arms change), pp512 null control. Instrument: ppprime --budget (the
+      serve-shaped multi-call prime — monolithic ppprime and run-gen's prefill line are blind
+      to a multi-call change by construction).
+- [~] Raw logs pulled back as they complete; PROGRESS.md finalized after perf.
+
+## Why the fix is correct-by-construction (not a tolerance argument)
+
+Identical in kind to the chunkfix lane's §2 argument, one level up. The request's absolute end
+position is a property of the REQUEST; `queued_after` merely restores information the caller
+always had and the engine structurally lacked. For any segmentation of the same request,
+`cache.pos + t + queued_after` is the same constant at every call, so step35's arm predicate
+evaluates identically wherever the tick boundaries fall — including the LCP-split boundary
+(bound_rem only shortens a tick's take; the remainder stays in prefill_queue, so the worker's
+post-drain `prefill_queue.len()` is exact at the split too) and an off-grid RESUME (call 2's
+`cache.pos = L` plus its own t and remainder still sums to the same request end).
+
+Why nothing else can move:
+- Only `step35_attn_pre_wo` reads `seq_end`; every other arch's dispatch never sees it. The
+  5090 control (q9/q35) and the box exactness battery prove this on silicon, not just by
+  construction.
+- Every single-call caller passes `queued_after=0`, making `seq_end = cache.pos + t` — the
+  pre-fix expression exactly. Those paths are byte-identical by substitution: same value, same
+  arithmetic (run-gen argmax 6776 unchanged from the chunkfix lane's receipt confirms it).
+- SESSION CONTINUATIONS (a new user turn on a live cache) pass 0 deliberately: a new turn is a
+  new request whose arithmetic keys to its own extent. This preserves the existing serve
+  contract (spec-session turns, kv-reuse resumes) — the fix changes only how ONE request's
+  own segmentation is expressed, never how requests compose.
+- The smem ceiling argument transfers: the arm only flips FA->naive_w on chunks whose t_kv <=
+  win+chunk (the windowed floor's t_kv = win-1+t <= 12287 constraint is per-CALL geometry,
+  untouched by where seq_end comes from).
 
 ## Residual found while fixing (NOT fixed here, named for the record)
 
