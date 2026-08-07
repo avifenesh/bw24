@@ -1,0 +1,104 @@
+=== pp-prefill anatomy 20260807T114137Z ===
+0, 42, 2400 MHz, 78865 MiB
+1, 31, 2325 MHz, 78353 MiB
+lock acquired 2026-08-07T12:06:58Z
+--- arm 1: nsys-traced ppprime (warmup 1 + reps 1) ---
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.87GB (expert budget 94.95GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 45.7978s = 89.4 tok/s
+ppprime MEDIAN: 4096 tok in 45.7978s = 89.4 tok/s (chunk=4096(default) f32chunk0=0)
+Collecting data...
+Generating '/tmp/nsys-report-fcde.qdstrm'
+[1/1] [0%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [0%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [5%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [6%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [7%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [8%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [9%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [10%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [11%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [9%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [10%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==21%                       ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=17%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=15%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [===22%                      ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==19%                       ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=17%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=15%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [14%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [12%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [11%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [10%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [9%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [8%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [7%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [6%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [5%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [0%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [5%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [6%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [7%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [8%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [9%                          ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [10%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [11%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [12%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [13%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [14%                         ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=15%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=16%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=17%                        ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==18%                       ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==19%                       ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==20%                       ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==21%                       ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [===22%                      ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [===23%                      ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [===24%                      ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [====25%                     ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [====26%                     ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [====27%                     ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [====28%                     ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=====29%                    ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=====30%                    ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=====31%                    ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=====32%                    ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [======33%                   ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [======34%                   ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [======35%                   ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=======36%                  ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=======37%                  ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=======38%                  ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=======39%                  ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [========40%                 ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [========41%                 ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [========42%                 ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=========43%                ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=========44%                ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=========45%                ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [=========46%                ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==========47%               ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==========48%               ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [==========49%               ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [===========50%              ] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [========================100%] anatomy-pp4096-20260807T114137Z.nsys-rep[1/1] [========================100%] anatomy-pp4096-20260807T114137Z.nsys-rep
+Generated:
+	/tmp/anatomy-pp4096-20260807T114137Z.nsys-rep
+nsys exit=0
+0, 30, 180 MHz, 0 MiB
+1, 29, 180 MHz, 0 MiB
+--- arm 2: untraced control, same window (nsys overhead check), reps 2 ---
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 47.5098s = 86.2 tok/s
+ppprime rep 1: 4096 tok in 45.0738s = 90.9 tok/s
+ppprime MEDIAN: 4096 tok in 47.5098s = 86.2 tok/s (chunk=4096(default) f32chunk0=0)
+control exit=0
+lock released 2026-08-07T12:11:55Z
+=== window rc=0
+--- nsys stats: kernel summary ---
+Generating SQLite file /tmp/anatomy-pp4096-20260807T114137Z.sqlite from /tmp/anatomy-pp4096-20260807T114137Z.nsys-rep
+Processing [/tmp/anatomy-pp4096-20260807T114137Z.sqlite] with [/opt/nvidia/nsight-systems/2026.1.3/target-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+42.5,37266693366,66,564646869.2,564406970.0,563371994,573463194,1595616.7,sdpa_naive_w_f32
+17.8,15639371174,540,28961798.5,16905822.0,730014,131122668,36661095.7,"void mmq_iq4xs_dense_kernel<(int)64, (bool)0>(const unsigned char *, const int *, float *, int, int, int, long)"
+13.5,11838137742,322767,36677.0,36351.0,33311,51648,1505.4,moe_gate_up_silu8_q8
+11.0,9680097196,322767,29991.0,29952.0,27968,34272,525.8,moe_down8_fma_q8
+4.2,3667213405,90,40746815.6,62753020.5,371615,86674046,40137947.1,qmatvec_iq4_XS_dp4a
+3.8,3353318102,84,39920453.6,67872326.0,680063,79918233,35963928.5,router_gemv_f32_w8_batch
+3.0,2663933010,511128,5211.9,5184.0,4288,8416,502.4,qmatvec_expert_q8
+1.6,1435198552,90,15946650.6,25904475.0,170047,39815418,15629526.2,"void mul_mat_q_q45k<(int)128, (bool)0, (int)5>(const char *, const int *, float *, int, int, int, int, int, int)"
+1.2,1090955377,837299,1302.9,1312.0,1023,106080,1000.2,quantize_q8_1
+0.5,447482130,362,1236138.5,257535.0,32800,4394494,1744868.3,rms_norm_f32
+0.2,139766485,170376,820.3,800.0,736,1472,87.2,axpy_f32
+0.1,107934092,131076,823.4,832.0,768,24128,129.4,swiglu_clamped_mul_scaled_f32
+0.1,80098369,24,3337432.0,3336925.0,3268060,3407800,33976.9,fa_prefill_qw_db_hd128
+0.1,55447512,2,27723756.0,27723756.0,27560710,27886802,230581.9,qmatvec_q6_K_mmvq
+0.0,41704769,39390,1058.8,960.0,896,378527,4672.1,silu_mul_f32
+0.0,35696827,90,396631.4,438016.0,279392,441824,69586.5,attn_head_gate_f32
+0.0,28864961,540,53453.6,51936.0,7520,172383,50668.5,"quantize_mmq_q8_1_d4_kernel(const float *, void *, long, long, long, int)"
+0.0,23801607,90,264462.3,304368.0,150592,311135,67630.0,rope_neox2_f32
+0.0,18519946,180,102888.6,100046.5,81536,130592,12061.5,add_f32
+0.0,8632374,84,102766.4,102736.0,101856,103744,432.3,add_scaled_rows_f32
+0.0,6379067,90,70878.5,70464.0,69632,74880,1417.3,append_quantize_kv_q8_0_q5_1_rows
+0.0,1762911,90,19587.9,19616.0,18848,21888,493.1,"quantize_mmq_q8_1_ds4_kernel(const float *, void *, long, long, long, int)"
+0.0,1689215,66,25594.2,25568.0,25440,26112,109.8,fa_dequant_kv_ws_f32
+0.0,1145248,6,190874.7,191056.0,188640,193312,1607.7,memra_f16_cvt_kernel
+0.0,615838,24,25659.9,25600.0,25504,26080,154.0,fa_dequant_kv_ws_bf16
+0.0,89759,2,44879.5,44879.5,44864,44895,21.9,embed_gather_u32_t
+
+--- nsys stats: api summary ---
+
+NOTICE: Existing SQLite export found: /tmp/anatomy-pp4096-20260807T114137Z.sqlite
+        It is assumed file was previously exported from: /tmp/anatomy-pp4096-20260807T114137Z.nsys-rep
+        Consider using --force-export=true if needed.
+
+Processing [/tmp/anatomy-pp4096-20260807T114137Z.sqlite] with [/opt/nvidia/nsight-systems/2026.1.3/target-linux-x64/reports/cuda_api_sum.py]... 
+Time (%),Total Time (ns),Num Calls,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+60.8,63494008709,86,738302426.8,605976829.5,37071604,1837168919,408436079.9,cuMemcpyDtoHAsync_v2
+12.5,13048746310,1842458,7082.2,2889.0,1912,3937835,16174.0,cuLaunchKernel
+10.4,10824772605,126,85910893.7,85351231.0,83665985,133568429,4376401.6,cuMemHostAlloc
+9.0,9372708904,493599,18988.5,24675.0,1977,3960601,20228.8,cuLaunchKernelEx
+4.1,4294993661,126,34087251.3,34061272.5,33108448,35652245,390630.0,cuMemFreeHost
+1.4,1411375783,2709740,520.9,438.0,297,5957857,8360.5,cuMemAllocAsync
+1.3,1330456571,2709739,491.0,438.0,350,4053326,10608.0,cuMemFreeAsync
+0.4,444711272,26117,17027.7,2315.0,1487,42453985,346321.9,cuMemcpyHtoDAsync_v2
+0.1,123619990,32856,3762.5,3184.0,2395,113481,4603.4,cuMemsetD8Async
+0.0,42956508,1266,33930.9,4233.5,2776,21737811,633276.0,cudaLaunchKernel
+0.0,23479069,16,1467441.8,560454.5,30999,5830511,1944680.5,cuModuleLoadData
+0.0,3077390,7,439627.1,99720.0,8562,1522523,650451.2,cuModuleUnload
+0.0,2155809,378,5703.2,5608.0,3659,17501,1076.8,cuEventSynchronize
+0.0,824403,89,9263.0,9246.0,2923,18770,1636.8,cuStreamSynchronize
+0.0,782398,110,7112.7,7515.5,3311,16641,2199.1,cuMemcpyDtoDAsync_v2
+0.0,342114,3,114038.0,77966.0,57332,206816,81007.8,cuLibraryLoadData
+0.0,262690,134,1960.4,1950.0,171,9896,787.6,cuEventCreate
+0.0,242302,8,30287.8,220.0,97,206201,72094.8,cuDeviceGetDefaultMemPool
+--- nsys stats: memop summary ---
+
+NOTICE: Existing SQLite export found: /tmp/anatomy-pp4096-20260807T114137Z.sqlite
+        It is assumed file was previously exported from: /tmp/anatomy-pp4096-20260807T114137Z.nsys-rep
+        Consider using --force-export=true if needed.
+
+Processing [/tmp/anatomy-pp4096-20260807T114137Z.sqlite] with [/opt/nvidia/nsight-systems/2026.1.3/target-linux-x64/reports/cuda_gpu_mem_time_sum.py]... 
+Time (%),Total Time (ns),Count,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Operation
+96.1,1663609770,26117,63698.3,52384.0,288,42355478,340806.9,[CUDA memcpy Host-to-Device]
+2.1,36602753,32856,1114.0,1184.0,608,22976,300.9,[CUDA memset]
+1.5,26078216,86,303235.1,221296.0,10368,1866463,340695.7,[CUDA memcpy Device-to-Host]
+0.3,5412566,110,49205.1,26208.0,831,253791,67208.3,[CUDA memcpy Device-to-Device]
+
+--- gpu trace gaps: total GPU-busy per device ---
+-rw-rw-r-- 1 ubuntu ubuntu 210713626 Aug  7 12:09 /tmp/anatomy-pp4096-20260807T114137Z.nsys-rep
+-rw-r--r-- 1 ubuntu ubuntu 564015104 Aug  7 12:12 /tmp/anatomy-pp4096-20260807T114137Z.sqlite
+=== done 2026-08-07T12:12:25Z

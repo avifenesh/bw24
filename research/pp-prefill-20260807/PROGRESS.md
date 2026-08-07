@@ -113,3 +113,78 @@ Extraction: `cuda_gpu_kern_sum`, `cuda_api_sum`, `cuda_gpu_mem_time_sum` CSVs �
 If P1/P2 hold, the biggest single lever is the MoE prefill dispatch shape (grouped/batched expert
 GEMMs for the sigmoid-router arch), with the PP chunk pipeline as the second multiplier on top —
 and the increment order below gets re-scoped accordingly per the stop-and-report clause.
+
+---
+
+## Increment 1 — ANATOMY VERDICT: the mission's premise is refuted; three named levers
+
+Receipts: `raw/anatomy-20260807T114137Z{-kernsum,-apisum,-memsum,-gpusum}.csv` + `.log`
+(nsys 2026.1.3, `--trace=cuda --sample=none`, 1 warmup + 1 timed prime; deeper queries run
+against the sqlite export on the box — the queries and outputs are quoted below). One lock
+window 11:41→12:12Z, cards 0 MiB at exit. **nsys distortion check:** traced rep 45.80 s vs
+untraced same-window control 47.51/45.07 s and the capacity baseline 45.04-45.10 s — the trace
+is inside the control spread, numbers are representative.
+
+### Prediction scorecard (honest, against the pre-registration above)
+
+| pred | verdict | measured |
+|---|---|---|
+| P1 m=1 expert kernels dominate | **PARTIAL** | largest *launch count* (835K launches/prime, 28% of GPU time) — but the top kernel was unpredicted (below) |
+| P2 wall dominated by host/launch gaps | **REFUTED** | dev0 kernel-union busy = 93.4% of span (87.63 s of 93.77 s, both primes); 1.84M cuLaunchKernel calls are fully overlapped |
+| P3 H2D staging material, not majority | CONFIRMED | 37 GB H2D per prime (SLRU expert staging), only 0.83 s GPU-side, overlapped |
+| P4 dev1 contributes ~0 FLOPs | **CONFIRMED exactly** | `kernels per device: [(0, 2337323, 87.6s)]` — **zero kernels on dev1 in the whole trace** |
+
+### Where the 45.8 s actually goes (per prime; accounting reaches 44.4 s of 45.8)
+
+| # | cost | s/prime | % | mechanism |
+|---|---|---:|---:|---|
+| 1 | `sdpa_naive_w_f32` | **18.6** | **41%** | 33 SWA layers x 565 ms. The windowed f32 floor from the bring-up ("no windowed FA prefill stamp at hd128"). Its inner loops iterate ALL t_kv=4096 keys per query (mask discards 87%), and thread 0 does a serial 4096-element softmax per (head,query) block. The full-attn layers answer what this should cost: `fa_prefill_qw_db_hd128` = **3.3 ms** for a STRICTLY HARDER workload (causal 4096 vs window 512) — the floor is ~170x off FA class on an easier problem |
+| 2 | peer-read tax (stage-1 weights from dev0) | **10.2** | **22%** | three kernel families are bimodal with the split EXACTLY on the fence [0,22,45]: MMQ `fx132 Sx5fS...` = 22 stage-0 layers x 6 fast, then stage-1 slow (fast med 1.0 ms, slow med 33.5 ms = **34x**); router `fx19 Sx23` = 19 vs 23 MoE layers (0.7 → 72 ms = **100x**); `qmatvec_iq4_XS_dp4a` `fx22 Sx23` (0.4 → 63 ms). Slow classes: mmq 6.89 s + dp4a 1.7 s + router 1.65 s. Same cliff class as decode's 28x, amortized by m=4096 but still 22% of wall |
+| 3 | MoE m=1 per-token dispatch | **12.6** | **28%** | `moe_gate_up_silu8_q8` + `moe_down8_fma_q8` at n=161,383 each (= 4096 tok x ~39 hit layer-tokens, gdec m=1 pairs) 5.9+4.8 s, plus `qmatvec_expert_q8` n=255K (staged misses) 1.3 s + `quantize_q8_1` n=419K 0.55 s. The gdec hit path DID fire for most tokens — but it is still one m=1 launch pair per (token, layer): 67 us of kernel time per token-layer for what grouped m_e≈114 GEMMs do with one weight read per expert per layer |
+| 4 | local MMQ + everything else | 3.0 | 7% | stage-0 trunk GEMMs 0.93 s, q45k 0.72 s, H2D 0.83 s, rms/rope/gate/quantize tails |
+
+Boundary transport is invisible: D2D total 5.4 ms per trace. `cudaMemcpyPeerAsync` is nowhere
+in the cost. The 63.5 s of `cuMemcpyDtoHAsync` API time is the host WAITING behind enqueued GPU
+work at the 84 per-MoE-layer router-logit readbacks (4.6 MB each — sigmoid host routing), not a
+transfer cost; it becomes a real serialization risk only after the kernels shrink.
+
+### The verdict against the brief
+
+The brief's increment 2 ("chunked pipelined prefill... the gap is PP transport + scheduling, not
+GEMM") is **refuted as the primary lever**. dev0 is 93% busy — there is no scheduling stall to
+overlap away; pipelining today's work would at best approach 2x (≈180 tok/s), nowhere near the
+multi-thousand class. The prefill is slow because of three compute-shape defects, and the PP
+split fixes only the second:
+
+**Lever A — windowed FA prefill stamp at hd128** (projected: 18.6 s → ~0.1 s).
+`fa_prefill_qw_db_hd128` exists (used by the 12 full-attn layers, 3.3 ms/layer); every WINDOWED
+prefill stamp is hd256-only (step37-p2 increment 6 named this gap). A windowed hd128 twin (the
+same mask delta the hd256 pair already implements) replaces the f32 floor on all 33 SWA layers.
+Kernel-selection stays keyed on `seq_end` (the chunkfix law) — the class changes UNIFORMLY for
+the whole request, so chunk-invariance holds by the same construction. New numeric class on SWA
+rows → full battery arbitrates (kernel-check cell vs CPU windowed oracle, chunkinv35, run-gen,
+ppn-gate). Single-card measurable. **90.9 → ~154 tok/s alone.**
+
+**Lever B — stage-split chunked prime over PP-2** (projected: kills the 10.2 s tax + doubles
+throughput via overlap + flips expert residency). This IS the brief's increment 2, demoted to
+second: per-stage layer ranges through `decode_layers_eager`-style prime ranges on each stage's
+engine, `[chunk_t, n_embd]` boundary (64 MB at 4096 — 1.1 ms at the measured 56 GB/s, trivially
+hidden). Two receipted side effects the brief did not price: (a) dev1 starts computing at all
+(today: zero kernels); (b) the PP-blind residency numerator (step37-p2 finding B) currently
+compares the WHOLE 101 GB bank against one card — split per stage, each card's ~50 GB share fits
+RESIDENT in ~95 GB free, which kills the 37 GB/prime SLRU staging and makes the gdec hit
+predicate always-true. **A+B ≈ 420-450 tok/s** (17.1 s serial halved across cards + fill).
+
+**Lever C — grouped expert GEMM prefill for the sigmoid-router arch** (projected: 12.6 s → ~3 s).
+`moe_ffn_grouped` (A2) already exists with the bit-identity slot scheme, shexp, and the step35
+clamp threaded — but is env-gated OFF and routes selection through the m-DEPENDENT cuBLASLt
+router GEMM (chunk-dependent routing = the chunkinv class). Adoption = route its selection
+through the same `router_gemv` + sigmoid host oracle the sequential path uses (bit-identical
+selection by construction), then A/B the expert-math class (grouped f32 qmatvec vs sequential q8
+dp4a — the documented ~3.4e-4 divergence; `MEMRA_MOE_Q8=0` is the byte-identity control).
+**A+B+C ≈ 1400-1600 tok/s** — the multi-thousand class the bill needs. C is the largest
+complexity and the most exactness-sensitive; it goes last.
+
+Re-scoped order: **A → B → C**, each with its own exactness battery + interleaved perf receipt
+before the next. TTFT on the 4k prompt (2.18 s p50 today) rides lever A immediately
+(prefill is ~95% of TTFT).
