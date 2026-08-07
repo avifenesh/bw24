@@ -4440,7 +4440,7 @@ static __device__ __forceinline__ void fa_prefill_qw_body(
         const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
         const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
-        float scale, int causal, int kv_dim_k, int kv_dim_v)
+        float scale, int causal, int kv_dim_k, int kv_dim_v, int window = 0)
 {
     constexpr int HEAD_DIM  = HD;
     constexpr int HD_KTILES = HD / K_STEP;
@@ -4491,6 +4491,10 @@ static __device__ __forceinline__ void fa_prefill_qw_body(
             const int nk = min(BK, T_kv - k0);
             const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q - 1);
             if (causal_i && k0 > q_pos_max) break;
+            // window skip (fa_prefill_f32_body's exact form): a tile wholly older than the
+            // CTA's OLDEST query's window masks to p=0 for every row — alpha=1, l+=0, a
+            // bit-exact no-op — so skip it. Uniform branch, no staging.
+            if (window > 0 && (k0 + BK) <= ((T_kv - T) + q_base) - (window - 1)) continue;
 
             // ---- stage K,V tile to smem: VECTORIZED bf16 COPY from the workspace ----
             // 16B (8xbf16) uint4 copies — pure byte copy, bit-identical smem contents to the
@@ -4545,6 +4549,7 @@ static __device__ __forceinline__ void fa_prefill_qw_body(
                     float s = Sc[g].x[l] * scale;
                     if (col >= nk) s = NEG_INF;
                     if (causal_i && (k0 + col) > q_pos) s = NEG_INF;
+                    if (window > 0 && (k0 + col) < q_pos - (window - 1)) s = NEG_INF;
                     Sc[g].x[l] = s;
                     if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
                     else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
@@ -4652,6 +4657,21 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw_h
     fa_prefill_qw_body<128>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
                             scale, causal, kv_dim_k, kv_dim_v);
 }
+// WINDOWED hd128 stamp (lane/pp-prefill 2026-08-07): step35's 33 SWA layers (win=512) ran
+// sdpa_naive_w_f32 at 565 ms/layer on a pp4096 while THIS body did causal-4096 (a strictly
+// harder mask) in 3.3 ms — the windowed-prefill family was hd256-only, the single largest
+// cost in the anatomy profile (41% of the prime; research/pp-prefill-20260807). The window
+// mask is fa_prefill_f32_body's exact predicate (k < q_pos-(win-1) -> NEG_INF) plus the
+// whole-tile skip; window=0 compiles to the default-arg body = the existing stamps' code.
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw_w_hd128(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v, int window)
+{
+    fa_prefill_qw_body<128>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
+                            scale, causal, kv_dim_k, kv_dim_v, window);
+}
 
 // ===================================================================== //
 //  KERNEL 1b-qwdb : fa_prefill_qw_db  (cp.async double-buffered twin)   //
@@ -4700,7 +4720,7 @@ static __device__ __forceinline__ void fa_prefill_qw_db_body(
         const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
         const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
-        float scale, int causal, int kv_dim_k, int kv_dim_v)
+        float scale, int causal, int kv_dim_k, int kv_dim_v, int window = 0)
 {
     constexpr int HEAD_DIM  = HD;
     constexpr int HD_KTILES = HD / K_STEP;
@@ -4752,11 +4772,23 @@ static __device__ __forceinline__ void fa_prefill_qw_db_body(
         const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q - 1);
         int nt = (T_kv + BK - 1) / BK;
         if (causal_i) { int ntc = q_pos_max / BK + 1; nt = min(nt, ntc); }
+        // window start (fa_prefill_f32_body's tile-skip folded into the loop BOUND — a
+        // `continue` would break the double-buffer prefetch chain): tiles wholly older
+        // than the CTA's OLDEST query's window mask to p=0 everywhere (alpha=1, l+=0),
+        // a bit-exact no-op, so start past them. Buffer parity stays (ti & 1) — both
+        // buffers are symmetric, only the prologue's target buffer follows t_start.
+        int t_start = 0;
+        if (window > 0) {
+            const int oldest = ((T_kv - T) + q_base) - (window - 1);
+            if (oldest > 0) t_start = oldest / BK;
+        }
 
-        if (nt > 0)
-            stage_kv_tile_async<HD>(sK0, sV0, Kw, Vw, 0, min(BK, T_kv), kv_dim_k, kv_dim_v, kv_off, bt);
+        if (nt > t_start)
+            stage_kv_tile_async<HD>((t_start & 1) ? sK1 : sK0, (t_start & 1) ? sV1 : sV0,
+                                    Kw, Vw, t_start * BK, min(BK, T_kv - t_start * BK),
+                                    kv_dim_k, kv_dim_v, kv_off, bt);
 
-        for (int ti = 0; ti < nt; ++ti) {
+        for (int ti = t_start; ti < nt; ++ti) {
             const int k0 = ti * BK;
             const int nk = min(BK, T_kv - k0);
             __nv_bfloat16* sK = (ti & 1) ? sK1 : sK0;
@@ -4805,6 +4837,7 @@ static __device__ __forceinline__ void fa_prefill_qw_db_body(
                     float s = Sc[g].x[l] * scale;
                     if (col >= nk) s = NEG_INF;
                     if (causal_i && (k0 + col) > q_pos) s = NEG_INF;
+                    if (window > 0 && (k0 + col) < q_pos - (window - 1)) s = NEG_INF;
                     Sc[g].x[l] = s;
                     if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
                     else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
@@ -4911,6 +4944,18 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_d
 {
     fa_prefill_qw_db_body<128>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
                                scale, causal, kv_dim_k, kv_dim_v);
+}
+// WINDOWED db twin at hd128 (see fa_prefill_qw_w_hd128's note): window folds into the
+// tile-loop BOUNDS (t_start) so the cp.async prefetch chain is unbroken; the per-element
+// mask is the same NEG_INF predicate. window=0 = the unwindowed body bit-for-bit.
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_db_w_hd128(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v, int window)
+{
+    fa_prefill_qw_db_body<128>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
+                               scale, causal, kv_dim_k, kv_dim_v, window);
 }
 
 // ===================================================================== //

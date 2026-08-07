@@ -6906,8 +6906,37 @@ impl HybridModel {
                     base_len
                 };
                 let kvl = cache.kv[il].as_ref().unwrap();
-                // SWA: trim the view to the oldest key any query in this chunk can reach.
-                let off = if swa { base_len.saturating_sub(win - 1) } else { 0 };
+                // The MEMRA_STEP35_SWA_TKV=1 seam restores the FULL pre-fix arithmetic:
+                // the chunk-local arm predicate (below) AND the unaligned view offset (here).
+                // Both halves are load-bearing for the canary: on the FA default the two
+                // predicate arms select kernels that agree bitwise wherever the predicate
+                // can differ (a t_kv<=win view has no maskable key, so windowed==unwindowed
+                // FA bit-for-bit), which made a predicate-only seam INERT — the gate's
+                // CANARY UNEXPECTEDLY MATCHED verdict on battery 2 caught that (the same
+                // vacuous-canary class as step37-p2 GAP 1). The unaligned offset is the
+                // live chunk-variant mechanism on the FA arm (tile grid, below), so the
+                // seam must restore it too. Read once per call, never in a measured default.
+                let legacy_tkv = std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1");
+                // SWA: trim the view to the oldest key any query in this chunk can reach —
+                // ALIGNED DOWN to the FA tile size (BK=32). The raw trim is chunk-DEPENDENT
+                // (off = base_len-(win-1), and base_len is a chunk boundary), and the FA
+                // kernel's online-softmax recurrence groups keys into BK tiles relative to
+                // the VIEW START — so an unaligned off regroups the same absolute keys into
+                // different tiles at different chunk sizes = different (m,l) rounding =
+                // chunk-dependent bits. chunkinv35 caught exactly this on the first FA-arm
+                // battery (first_div == chunk size; raw/leverA-gates-20260807T135541Z.log).
+                // Aligning off to 32 pins tiles to ABSOLUTE key positions for every chunk
+                // size; the <=31 extra leading keys are older than EVERY query's window
+                // (all queries sit at >= base_len, so keys < base_len-(win-1) are masked
+                // for all of them) and a fully-masked key is an exact-0.0 no-op in both
+                // kernels (NEG_INF -> p=0.0; l+=0.0 and O+=0.0 are bitwise identity), so
+                // the floor arm's bits do not move either (gated: G2f, battery 2).
+                let off = if swa {
+                    let raw = base_len.saturating_sub(win - 1);
+                    if legacy_tkv { raw } else { raw & !31usize }
+                } else {
+                    0
+                };
                 let t_kv = base_len + t - off;
                 let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
                                              (off + t_kv) * kvl.k_tok_bytes);
@@ -6916,26 +6945,37 @@ impl HybridModel {
                 // CHUNK-INVARIANT PREDICATE: `seq_end` (the request's absolute end position), not
                 // this chunk's `t_kv`. See the doc note — keying on t_kv made P = c*floor(win/c)
                 // rows take FA and the output a function of MEMRA_PRIME_CHUNK.
-                // MEMRA_STEP35_SWA_TKV=1 is the ROLLBACK SEAM to that pre-fix predicate, and it is
-                // what gives the step35 chunkinv gate its canary teeth: it is chunk-VARIANT by
-                // construction, so the invariance assertion MUST break under it (this is the seam
-                // whose absence made the original canary inert — GAP 1 in
-                // research/step37-p2-20260806). Read per call, not cached, because the probe flips
-                // it in-process between arms. Never on in a measured default run.
-                let swa_naive = if std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1") {
-                    t_kv > win
-                } else {
-                    seq_end > win
-                };
+                // MEMRA_STEP35_SWA_TKV=1 is the ROLLBACK SEAM to the pre-fix arithmetic — BOTH
+                // halves: this predicate AND the unaligned view offset above (`legacy_tkv`).
+                // It is what gives the step35 chunkinv gate its canary teeth: chunk-VARIANT by
+                // construction, so the invariance assertion MUST break under it (the seam whose
+                // absence made the original canary inert — GAP 1 in research/step37-p2-20260806;
+                // and a predicate-only seam went inert AGAIN under the FA default, battery 2's
+                // CANARY UNEXPECTEDLY MATCHED — see the offset comment). Read per call, not
+                // cached (probes flip it in-process). Never on in a measured default run.
+                let swa_naive = if legacy_tkv { t_kv > win } else { seq_end > win };
                 if swa && swa_naive {
-                    // Windowed mask needed (see the doc note). No windowed FA stamp exists at
-                    // head_dim 128 — every windowed prefill twin in flash_attn.cu is hd256 —
-                    // so this takes the f32 quantized-view floor. NOTE t_kv can be <= win here
+                    // Windowed mask needed (see the doc note). DEFAULT since lane/pp-prefill
+                    // 2026-08-07: the windowed hd128 FA stamp (`fa_prefill_view_ws_w_hd128`) —
+                    // the anatomy profile measured the f32 floor at 565 ms/layer on a pp4096
+                    // (41% of the whole prime) while the unwindowed hd128 FA family did the
+                    // strictly harder causal-4096 in 3.3 ms. NOTE t_kv can be <= win here
                     // (a chunk-0 view on a small chunk); the windowed kernel handles that
                     // identically to the unwindowed one modulo the mask, which is the point.
-                    e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
-                                                  t, t_kv, scale, true, win,
-                                                  kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    // NEW NUMERIC CLASS vs the floor (bf16-MMA online softmax vs f32 serial),
+                    // selected on `seq_end` like every arm here, so the class is uniform for
+                    // the whole request at every MEMRA_PRIME_CHUNK — chunkinv holds by the
+                    // same construction as the chunkfix. MEMRA_STEP35_SWA_FA=0 = rollback to
+                    // the f32 floor (the previous numeric config, kept as the A/B seam).
+                    if std::env::var("MEMRA_STEP35_SWA_FA").as_deref() == Ok("0") {
+                        e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh,
+                                                      nkv, t, t_kv, scale, true, win,
+                                                      kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    } else {
+                        e.fa_prefill_view_ws_w_hd128(&q, &k_view, &v_view, &mut attn, hd, nh,
+                                                     nkv, t, t_kv, scale, true, win,
+                                                     kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    }
                 } else if std::env::var("MEMRA_NOFA").is_ok() {
                     e.sdpa_naive_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                                 t, t_kv, scale, true,

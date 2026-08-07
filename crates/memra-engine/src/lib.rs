@@ -9435,6 +9435,91 @@ impl Engine {
         Ok(())
     }
 
+    /// WINDOWED `fa_prefill_view_ws` twin at head_dim 128 (lane/pp-prefill 2026-08-07):
+    /// step35's SWA prefill (win=512, 33 of 45 layers) previously had NO windowed FA prefill
+    /// stamp — every windowed twin was hd256-only — and took `sdpa_naive_w_quantized_view`,
+    /// the f32 floor, at 565 ms/layer on a pp4096 where the hd128 FA family does the harder
+    /// causal-4096 in 3.3 ms (41% of the whole prime; research/pp-prefill-20260807 anatomy).
+    /// Same two-pass shape as the unwindowed function: dequant K/V ONCE into the resident
+    /// bf16 workspace, then the windowed qw kernel (`fa_prefill_qw_db_w_hd128`, cp.async
+    /// double-buffered; MEMRA_PRIME_DEQW_DB=0 selects the single-buffer twin). The window
+    /// mask is `fa_prefill_f32_body`'s exact predicate; `window == 0` is bit-identical to
+    /// `fa_prefill_view_ws` by construction (default-arg body). NEW NUMERIC CLASS vs the
+    /// f32 floor on SWA rows (bf16 MMA online-softmax vs f32 serial softmax) — adoption is
+    /// gated by the full battery, and the class must change UNIFORMLY for a whole request
+    /// (kernel selection keys on seq_end, never per chunk — the chunkfix law).
+    /// hd128-only deliberately: the only windowed-prefill consumer at another head_dim is
+    /// gemma4 (hd256), which already has `fa_prefill_w_f32`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_view_ws_w_hd128(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                                      v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                                      head_dim: usize, n_head: usize, n_head_kv: usize,
+                                      t: usize, t_kv: usize, scale: f32, causal: bool,
+                                      window: usize, k_tok_bytes: usize, v_tok_bytes: usize)
+                                      -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(head_dim, 128, "fa_prefill_view_ws_w_hd128: only the hd128 twin is stamped");
+        if portable_mma_gated() {
+            return self.sdpa_naive_w_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                    t, t_kv, scale, causal, window,
+                                                    k_tok_bytes, v_tok_bytes);
+        }
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        let kv_dim_k = n_head_kv * head_dim;
+        let kv_dim_v = n_head_kv * head_dim;
+        let k_ws_bytes = t_kv * kv_dim_k * 2;   // bf16
+        let v_ws_bytes = t_kv * kv_dim_v * 2;
+        let mut guard = self.prime_deqw_ws.lock().unwrap();
+        let need_grow = match guard.as_ref() {
+            Some((kw, vw)) => kw.len() < k_ws_bytes || vw.len() < v_ws_bytes,
+            None => true,
+        };
+        if need_grow {
+            let grow = |cur: usize, need: usize| if cur >= need { cur } else { need };
+            let (ck, cv) = guard.as_ref().map(|(a, b)| (a.len(), b.len())).unwrap_or((0, 0));
+            *guard = Some((self.alloc_u8(grow(ck, k_ws_bytes))?, self.alloc_u8(grow(cv, v_ws_bytes))?));
+        }
+        let (kw, vw) = guard.as_mut().unwrap();
+        // pass 1: dequant K+V once into the bf16 workspace (identical to fa_prefill_view_ws —
+        // the workspace bytes are the SAME __float2bfloat16(dq(...)) values either way).
+        {
+            let f = self.func("fa_dequant_kv_ws_bf16");
+            let total = (t_kv * (kv_dim_k + kv_dim_v)) as u64;
+            let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+            let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (kdk, kdv, tkvi) = (kv_dim_k as i32, kv_dim_v as i32, t_kv as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
+            b.arg(k).arg(v).arg(&mut *kw).arg(&mut *vw).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+        }
+        // pass 2: the WINDOWED qw twin (db default, same as the unwindowed wrapper).
+        let db = std::env::var("MEMRA_PRIME_DEQW_DB").map(|v| v != "0").unwrap_or(true);
+        {
+            let f = self.func(if db { "fa_prefill_qw_db_w_hd128" } else { "fa_prefill_qw_w_hd128" });
+            let shmem = if db {
+                (2 * (4 * BK * head_dim + BLOCK_Q * BK) + 4 * BLOCK_Q) as u32
+            } else {
+                (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                       + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32
+            };
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+            let (kdk, kdv, wnd) = (kv_dim_k as i32, kv_dim_v as i32, window as i32);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
+            b.arg(q).arg(&*kw).arg(&*vw).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
+             .arg(&kdk).arg(&kdv).arg(&wnd);
+            unsafe { b.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
     /// FA decode (T=1 split-K) over the resident QUANTIZED KV cache (q8_0 K / q5_1 V) as u8 views.
     /// Replaces sdpa_naive_view for decode; inline-dequants per element. k_tok_bytes/v_tok_bytes are
     /// the per-token byte strides (differ: q8_0=34*nblk, q5_1=24*nblk per token).

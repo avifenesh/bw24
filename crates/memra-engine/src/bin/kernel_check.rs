@@ -3612,6 +3612,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let changed = a.iter().zip(&g).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("sdpa_naive_w_quantized_view window={win} differs from unwindowed T={t} Tkv={tkv}: changed={changed}/{} {}",
                      a.len(), if changed > 0 {"OK"} else {fails+=1;"FAIL"});
+
+            // --- fa_prefill_view_ws_w_hd128: the WINDOWED hd128 FA twin (lane/pp-prefill) ---
+            // The serving default for step35 SWA prefill since 2026-08-07 (the f32 floor above
+            // is its MEMRA_STEP35_SWA_FA=0 rollback). Four assertions per case:
+            //   (a) live window vs the same CPU windowed oracle, in the fa_prefill numeric band
+            //       (bf16-MMA online softmax vs f32 serial — 2e-2, the fa_prefill cell's band);
+            //   (b) live window vs the f32 floor: same band (same values, different class);
+            //   (c) the window must BITE: differ from the unwindowed FA output — a dropped
+            //       `window` launch arg passes (a)+(b) marginally but never (c);
+            //   (d) cp.async double-buffered twin vs single-buffer twin: BIT-identical — this
+            //       is the assertion that catches a t_start buffer-PARITY bug in the db
+            //       prologue (case (64,192,32) has t_start=3, an ODD start tile).
+            let mut o_fa = e.zeros(hd*nh*t)?;
+            e.fa_prefill_view_ws_w_hd128(&qd,&kview,&vview,&mut o_fa,hd,nh,nhkv,t,tkv,scale,true,
+                                         win,k_tok_bytes,v_tok_bytes)?;
+            let gf = e.dtoh(&o_fa)?;
+            let rel_cpu = maxdiff(&cpu, &gf) / sc;
+            println!("fa_prefill_view_ws_w_hd128 window={win} vs CPU windowed oracle T={t} Tkv={tkv}: rel={rel_cpu:.2e} {}",
+                     if rel_cpu < 2e-2 {"OK"} else {fails+=1;"FAIL"});
+            let rel_floor = maxdiff(&g, &gf) / sc;
+            println!("fa_prefill_view_ws_w_hd128 window={win} vs f32 floor T={t} Tkv={tkv}: rel={rel_floor:.2e} {}",
+                     if rel_floor < 2e-2 {"OK"} else {fails+=1;"FAIL"});
+            let mut o_fa_unw = e.zeros(hd*nh*t)?;
+            e.fa_prefill_view_ws(&qd,&kview,&vview,&mut o_fa_unw,hd,nh,nhkv,t,tkv,scale,true,
+                                 k_tok_bytes,v_tok_bytes, false)?;
+            let gu = e.dtoh(&o_fa_unw)?;
+            let bite = gu.iter().zip(&gf).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("fa_prefill_view_ws_w_hd128 window={win} differs from unwindowed FA T={t} Tkv={tkv}: changed={bite}/{} {}",
+                     gu.len(), if bite > 0 {"OK"} else {fails+=1;"FAIL"});
+            let mut o_fa_sb = e.zeros(hd*nh*t)?;
+            unsafe { std::env::set_var("MEMRA_PRIME_DEQW_DB", "0") };
+            e.fa_prefill_view_ws_w_hd128(&qd,&kview,&vview,&mut o_fa_sb,hd,nh,nhkv,t,tkv,scale,true,
+                                         win,k_tok_bytes,v_tok_bytes)?;
+            unsafe { std::env::remove_var("MEMRA_PRIME_DEQW_DB") };
+            let gs = e.dtoh(&o_fa_sb)?;
+            let bd_db = gf.iter().zip(&gs).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("fa_prefill_view_ws_w_hd128 window={win} db vs single-buffer T={t} Tkv={tkv}: bitdiff={bd_db} {}",
+                     if bd_db == 0 {"OK"} else {fails+=1;"FAIL"});
+        }
+        // window=0 strict-superset claim for the FA twin: BIT-identical to the unwindowed
+        // wrapper. Both stamps instantiate the same template body (window is a runtime 0 in
+        // one, a default-arg 0 in the other); the repo's 2026-07-12 lesson says separately
+        // compiled twins CAN drift by ULPs, so this is measured, not assumed.
+        {
+            let (t, tkv) = (64usize, 192usize);
+            let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i+5)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+            let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
+            let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
+            for tok in 0..tkv {
+                let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
+            }
+            let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
+            let mut o_unw = e.zeros(hd*nh*t)?;
+            e.fa_prefill_view_ws(&qd,&kview,&vview,&mut o_unw,hd,nh,nhkv,t,tkv,scale,true,
+                                 k_tok_bytes,v_tok_bytes, false)?;
+            let mut o_w0 = e.zeros(hd*nh*t)?;
+            e.fa_prefill_view_ws_w_hd128(&qd,&kview,&vview,&mut o_w0,hd,nh,nhkv,t,tkv,scale,true,
+                                         0,k_tok_bytes,v_tok_bytes)?;
+            let a = e.dtoh(&o_unw)?; let b0 = e.dtoh(&o_w0)?;
+            let bd = a.iter().zip(&b0).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("fa_prefill_view_ws_w_hd128(window=0) vs fa_prefill_view_ws T={t} Tkv={tkv}: bitdiff={bd} {}",
+                     if bd == 0 {"OK"} else {fails+=1;"FAIL"});
         }
     }
 

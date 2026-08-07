@@ -1,0 +1,25 @@
+=== leverA ttft4k 20260807T182804Z (commit 82b216b8 rsync)
+lock acquired 2026-08-07T18:28:04Z
+
+--- arm FA (default), 4k prompt, stream, N=5 + 1 warmup ---
+ready ~30s
+Traceback (most recent call last):
+  File "<stdin>", line 23, in <module>
+TypeError: unsupported format string passed to NoneType.__format__
+Traceback (most recent call last):
+  File "<stdin>", line 23, in <module>
+TypeError: unsupported format string passed to NoneType.__format__
+
+--- arm FLOOR (MEMRA_STEP35_SWA_FA=0), same shape ---
+ready ~30s
+Traceback (most recent call last):
+  File "<stdin>", line 23, in <module>
+TypeError: unsupported format string passed to NoneType.__format__
+Traceback (most recent call last):
+  File "<stdin>", line 23, in <module>
+TypeError: unsupported format string passed to NoneType.__format__
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-07T18:31:47Z
+=== ttft4k rc=0
+=== done 2026-08-07T18:31:47Z
