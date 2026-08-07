@@ -1,0 +1,32 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.548s = 114.92 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 2.504s = 25.16 tok/s (0.22x vs generate; this run's prime 0.005s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 4.057s = 15.53 tok/s (0.14x vs generate; this run's prime 0.005s)
+  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 5.423s = 11.62 tok/s (0.10x vs generate; this run's prime 0.005s)
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 7.090s = 8.89 tok/s (0.08x vs generate; this run's prime 0.005s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 8.768s = 7.19 tok/s (0.06x vs generate; this run's prime 0.005s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 10.475s = 6.01 tok/s (0.05x vs generate; this run's prime 0.005s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 12.103s = 5.21 tok/s (0.05x vs generate; this run's prime 0.005s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 13.778s = 4.57 tok/s (0.04x vs generate; this run's prime 0.005s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
