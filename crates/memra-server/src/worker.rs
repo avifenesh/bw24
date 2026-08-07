@@ -289,6 +289,28 @@ pub struct Metrics {
     pub prefix_hits: u64,
     pub prefix_entries: u64,
     pub prefix_bytes: u64,
+    /// full prefix-cache counter set (lane/cache-metering, 2026-08-07): misses/inserts/
+    /// evictions were already counted inside PrefixCache but never published; hit_tokens
+    /// is the token-weighted hit mass (sum of entry lengths served) — the numerator the
+    /// economics row wants when hits vary in depth.
+    pub prefix_misses: u64,
+    pub prefix_inserts: u64,
+    pub prefix_evictions: u64,
+    pub prefix_hit_tokens: u64,
+    /// LCP length histogram (lane/cache-metering): one sample per prefix-cache PROBE —
+    /// on a hit, the served entry's token length; on a miss, best_lcp against the pool
+    /// (already computed there for the split-learning signal, so the histogram adds no
+    /// scan). Buckets: [0], [1,16), [16,32), [32,64), [64,128), [128,256), [256,512),
+    /// [512,1024), [1024,2048), [2048,4096), [4096,inf) — the [64,512) window is the
+    /// tick-seg segmentation class. Spec-tier and non-batched requests never probe the
+    /// prefix cache and are absent by construction.
+    pub lcp_hist: [u64; 11],
+    /// Per-tenant prompt accounting [prompt_tokens_in, cached_tokens_in], keyed by the
+    /// TENANT half of the PC-ISO namespace (`meter_key`): keyring deployments aggregate
+    /// one row per tenant across its end-user salts; no-keyring deployments key on the
+    /// raw cache_salt ("" = the default namespace). Bounded at METER_TENANT_CAP rows —
+    /// overflow traffic lands in "(other)" so a salt-spraying client cannot grow the map.
+    pub ns_tokens: HashMap<String, [u64; 2]>,
     /// per-lane QoS counters [interactive, judge, harvest] — the x-lane yield gate
     /// (/yield/metrics, sidecar-compatible shape; lane/dl-metering QoS extraction).
     pub lane_admitted: [u64; 3],
@@ -657,6 +679,28 @@ fn affinity_match(prompt: &[u32], committed: &[u32]) -> AffinityMatch {
 /// chat-template header — common to every request of a model — out of the cache).
 const PREFIX_CACHE_MIN_TOKENS: usize = 64;
 
+/// Max distinct per-tenant metering rows in `Metrics::ns_tokens` (lane/cache-metering).
+/// Past the cap, new tenants/salts aggregate under "(other)" — the totals stay exact,
+/// only per-row attribution saturates. 256 covers any realistic keyring; the bound
+/// exists so an unauthenticated client spraying cache_salt values cannot grow the map.
+const METER_TENANT_CAP: usize = 256;
+
+/// Credit one admitted request's prompt/cached token counts to its tenant row
+/// (lane/cache-metering). The key is the tenant half of the PC-ISO namespace
+/// (`auth::meter_key`); past METER_TENANT_CAP distinct rows, overflow aggregates
+/// under "(other)" so the map is bounded while the totals stay exact.
+fn meter_account(ns_tokens: &mut HashMap<String, [u64; 2]>, cache_ns: &str,
+                 n_prompt: u64, n_cached: u64) {
+    let mk = crate::auth::meter_key(cache_ns);
+    let row = if ns_tokens.contains_key(mk) || ns_tokens.len() < METER_TENANT_CAP {
+        ns_tokens.entry(mk.to_string()).or_default()
+    } else {
+        ns_tokens.entry("(other)".to_string()).or_default()
+    };
+    row[0] += n_prompt;
+    row[1] += n_cached;
+}
+
 /// MEMRA_PREFIX_CACHE_MB (default 256): resident byte budget for the prefix cache. 0 = off.
 fn prefix_cache_budget_bytes() -> usize {
     static B: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -966,11 +1010,30 @@ struct PrefixCache {
     inserts: u64,
     evictions: u64,
     hit_tokens: u64,
+    /// LCP histogram (lane/cache-metering): one sample per probe — the served entry's
+    /// token length on a hit, `best_lcp` on a miss (both already computed; no new scan).
+    /// Lower-edge buckets `LCP_HIST_EDGES` (see `lcp_bucket`).
+    lcp_hist: [u64; 11],
 }
+
+/// Lower edges of the LCP histogram buckets: bucket i counts samples in
+/// [EDGES[i], EDGES[i+1]), the last bucket [4096, inf). [64,512) — the tick-seg
+/// segmentation window — is exactly buckets 4+5+6.
+pub const LCP_HIST_EDGES: [usize; 11] = [0, 1, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
 
 impl PrefixCache {
     fn lcp(a: &[u32], b: &[u32]) -> usize {
         a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+    }
+
+    /// Histogram bucket index for an LCP sample (see `LCP_HIST_EDGES`).
+    fn lcp_bucket(n: usize) -> usize {
+        LCP_HIST_EDGES.iter().rposition(|&e| n >= e).unwrap_or(0)
+    }
+
+    /// Record one probe outcome into the LCP histogram (hit: entry length; miss: best_lcp).
+    fn record_lcp(&mut self, n: usize) {
+        self.lcp_hist[Self::lcp_bucket(n)] += 1;
     }
 
     fn n_entries(&self) -> usize {
@@ -1587,6 +1650,11 @@ pub fn run(
     let mut n_tokens_out = 0u64;
     let mut n_prompt_in = 0u64;
     let mut n_cached_in = 0u64;
+    // Per-tenant prompt/cached split (lane/cache-metering): keyed by the tenant half of
+    // the PC-ISO namespace (auth::meter_key). Bounded: past METER_TENANT_CAP distinct
+    // keys, new traffic aggregates under "(other)" — a salt-spraying client cannot grow
+    // worker memory. Updated once per ADMIT (request-frequency, never per-token).
+    let mut ns_tokens: HashMap<String, [u64; 2]> = HashMap::new();
     let mut lane_admitted = [0u64; 3];
     let mut lane_shed = [0u64; 3];
     let mut lane_completed = [0u64; 3];
@@ -1816,6 +1884,10 @@ pub fn run(
                     lane_admitted[lane.idx()] += 1;
                     n_prompt_in += s.n_prompt as u64;
                     n_cached_in += s.n_cached as u64;
+                    // per-tenant split (lane/cache-metering): the tenant half of the
+                    // PC-ISO namespace; bounded map, overflow lands in "(other)".
+                    meter_account(&mut ns_tokens, &s.cache_ns,
+                                  s.n_prompt as u64, s.n_cached as u64);
                     active.push(s);
                     if !session_vram_cost.contains_key(&model_key) {
                         if let (Some(fb), Ok((fa, _))) = (free_before, engine.ctx().mem_get_info()) {
@@ -2700,8 +2772,15 @@ pub fn run(
         // (2026-07-26 live A/B) — publish every 32nd tick. A spec-session retire forces
         // a publish so a one-shot request's acceptance counts land without a 32-tick wait
         // (retires are per-request, not per-token — no hot-path cost class).
+        // LANE/CACHE-METERING: EVERY retire forces a publish (`!finished.is_empty()`),
+        // not just spec retires — otherwise a workload whose last tick lands off the
+        // 32-boundary parks its final prompt/cached counters unpublished while the
+        // worker blocks idle in recv(), and the post-workload /metrics scrape (the
+        // hit-rate receipt query) reads stale totals. Same cost class as the spec
+        // force-publish: per-request, never per-token.
         tick_n = tick_n.wrapping_add(1);
-        if tick_n % 32 == 0 || spec_telem_dirty { if let Ok(mut m) = metrics.lock() {
+        if tick_n % 32 == 0 || spec_telem_dirty || !finished.is_empty() {
+            if let Ok(mut m) = metrics.lock() {
             spec_telem_dirty = false;
             m.admitted = n_admitted;
             m.completed = n_completed;
@@ -2713,6 +2792,12 @@ pub fn run(
             m.prefix_hits = px.hits;
             m.prefix_entries = px.n_entries() as u64;
             m.prefix_bytes = px.total_bytes as u64;
+            m.prefix_misses = px.misses;
+            m.prefix_inserts = px.inserts;
+            m.prefix_evictions = px.evictions;
+            m.prefix_hit_tokens = px.hit_tokens;
+            m.lcp_hist = px.lcp_hist;
+            m.ns_tokens = ns_tokens.clone();
             m.lane_admitted = lane_admitted;
             m.lane_shed = lane_shed;
             m.lane_completed = lane_completed;
@@ -3038,6 +3123,7 @@ fn admit(
                     px.touch(&pool_key, i); // recency-index-aware last_use refresh (Q3)
                     px.hits += 1;
                     px.hit_tokens += entry.fed.len() as u64;
+                    px.record_lcp(entry.fed.len()); // histogram: served-prefix length
                     prefix_hit = true;
                     eprintln!("[prefix-cache] hit: {} of {} prompt tokens from cache (model {})",
                               entry.fed.len(), prompt.len(), req.model);
@@ -3058,6 +3144,7 @@ fn admit(
         if reused.is_none() {
             px.misses += 1;
             let l = px.best_lcp(&pool_key, &prompt);
+            px.record_lcp(l); // histogram: best available LCP on a miss
             if l >= PREFIX_CACHE_MIN_TOKENS && l < prompt.len()
                 && !px.has_key(&pool_key, &prompt[..l])
             {
@@ -4372,6 +4459,7 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
 mod tests {
     use super::{summarize_confidence, utf8_delta};
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
+    use super::{meter_account, HashMap, METER_TENANT_CAP};
     use super::{draft_verdict, draft_verdict_message, preflight_pp2_spec_refusal_inner, DraftVerdict};
 
     // ---- drafter attachment: the loud-failure semantics (lane/step-draft, 2026-08-07) ----
@@ -4514,6 +4602,66 @@ mod tests {
         assert!(px.lookup(&key("tenant-a"), &toks(PREFIX_CACHE_MIN_TOKENS + 32)).is_some());
         assert!(px.has_covering(&key("tenant-a"), &prefix));
         assert_eq!(px.best_lcp(&key("tenant-a"), &prefix), prefix.len());
+    }
+
+    /// LCP histogram bucketing (lane/cache-metering): edges are lower bounds, the last
+    /// bucket is unbounded, and the [64,512) tick-seg window is exactly buckets 4..=6.
+    #[test]
+    fn lcp_histogram_buckets_are_lower_edge_and_record_samples() {
+        assert_eq!(PrefixCache::lcp_bucket(0), 0);
+        assert_eq!(PrefixCache::lcp_bucket(1), 1);
+        assert_eq!(PrefixCache::lcp_bucket(15), 1);
+        assert_eq!(PrefixCache::lcp_bucket(16), 2);
+        assert_eq!(PrefixCache::lcp_bucket(63), 3);
+        assert_eq!(PrefixCache::lcp_bucket(64), 4);   // tick-seg window opens
+        assert_eq!(PrefixCache::lcp_bucket(127), 4);
+        assert_eq!(PrefixCache::lcp_bucket(128), 5);
+        assert_eq!(PrefixCache::lcp_bucket(256), 6);
+        assert_eq!(PrefixCache::lcp_bucket(511), 6);  // tick-seg window closes
+        assert_eq!(PrefixCache::lcp_bucket(512), 7);
+        assert_eq!(PrefixCache::lcp_bucket(4095), 9);
+        assert_eq!(PrefixCache::lcp_bucket(4096), 10);
+        assert_eq!(PrefixCache::lcp_bucket(1 << 20), 10); // unbounded tail
+        let mut px = PrefixCache::default();
+        px.record_lcp(0);
+        px.record_lcp(100);
+        px.record_lcp(100);
+        assert_eq!(px.lcp_hist[0], 1);
+        assert_eq!(px.lcp_hist[4], 2);
+        assert_eq!(px.lcp_hist.iter().sum::<u64>(), 3);
+    }
+
+    /// Per-tenant metering rows (lane/cache-metering): keyring namespaces collapse to
+    /// their tenant (salts within a tenant share a row), raw salts pass through, and the
+    /// row cap saturates into "(other)" without losing tokens.
+    #[test]
+    fn meter_account_keys_by_tenant_and_bounds_rows() {
+        let mut m: HashMap<String, [u64; 2]> = HashMap::new();
+        // keyring: two salts of one tenant share the row; another tenant gets its own.
+        meter_account(&mut m, &crate::auth::scope_namespace("acme", "u1"), 100, 40);
+        meter_account(&mut m, &crate::auth::scope_namespace("acme", "u2"), 50, 10);
+        meter_account(&mut m, &crate::auth::scope_namespace("blue", ""), 30, 0);
+        assert_eq!(m["t:acme"], [150, 50]);
+        assert_eq!(m["t:blue"], [30, 0]);
+        // no keyring: the raw salt is the row key; "" is the default namespace.
+        meter_account(&mut m, "session-7", 20, 20);
+        meter_account(&mut m, "", 10, 5);
+        assert_eq!(m["session-7"], [20, 20]);
+        assert_eq!(m[""], [10, 5]);
+        // cap: fill to METER_TENANT_CAP distinct rows, then overflow lands in "(other)"
+        // while an EXISTING row keeps accumulating under its own key.
+        let mut m: HashMap<String, [u64; 2]> = HashMap::new();
+        for i in 0..METER_TENANT_CAP {
+            meter_account(&mut m, &format!("s{i}"), 1, 0);
+        }
+        meter_account(&mut m, "one-too-many", 7, 3);
+        meter_account(&mut m, "s0", 2, 1);
+        assert_eq!(m.len(), METER_TENANT_CAP + 1);
+        assert_eq!(m["(other)"], [7, 3]);
+        assert_eq!(m["s0"], [3, 1]);
+        // totals stay exact: sum over rows == sum over requests.
+        let total: u64 = m.values().map(|r| r[0]).sum();
+        assert_eq!(total, METER_TENANT_CAP as u64 + 7 + 2);
     }
 
     #[test]

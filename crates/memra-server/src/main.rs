@@ -1378,10 +1378,45 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
         // worker-truth prompt caching split (cached = resumed from any KV cache tier).
         "prompt_tokens_in": m.prompt_tokens_in,
         "cached_tokens_in": m.cached_tokens_in,
+        // computed = actually primed; the denominator of the revenue multiplier
+        // (billed prompt tokens / computed prompt tokens — tools/cache_economics.py).
+        "computed_tokens_in": m.prompt_tokens_in.saturating_sub(m.cached_tokens_in),
+        // token-weighted hit ratio: what fraction of admitted prompt tokens were served
+        // from a cache instead of being computed. THE hit-rate receipt number.
+        "cache_hit_token_ratio": if m.prompt_tokens_in > 0 {
+            m.cached_tokens_in as f64 / m.prompt_tokens_in as f64 } else { 0.0 },
         "prefix_cache_hits": m.prefix_hits,
         "prefix_cache_entries": m.prefix_entries,
         "prefix_cache_bytes": m.prefix_bytes,
+        // full prefix-cache counter set (lane/cache-metering): probe outcomes + churn.
+        "prefix_cache_misses": m.prefix_misses,
+        "prefix_cache_inserts": m.prefix_inserts,
+        "prefix_cache_evictions": m.prefix_evictions,
+        "prefix_cache_hit_tokens": m.prefix_hit_tokens,
+        // LCP length histogram: one sample per prefix-cache probe (hit -> served entry
+        // length; miss -> best LCP against the pool). `edges` are lower bucket edges,
+        // last bucket unbounded. The [64,512) window (buckets 4..=6) is the tick-seg
+        // segmentation class — how often real traffic lands there is this histogram's
+        // reason to exist.
+        "lcp_histogram": {
+            "edges": worker::LCP_HIST_EDGES.to_vec(),
+            "counts": m.lcp_hist.to_vec(),
+        },
     });
+    // Per-tenant prompt/cached breakdown (composes with PC-ISO tenancy): keyring
+    // deployments key rows by tenant (`t:<tenant>`), no-keyring by raw cache_salt
+    // ("" = the default namespace). ABSENT until the first admit, so a fresh server's
+    // /metrics is otherwise unchanged. Bounded rows; overflow aggregates in "(other)".
+    if !m.ns_tokens.is_empty() {
+        let tenants: serde_json::Map<String, serde_json::Value> = m.ns_tokens.iter()
+            .map(|(ns, [p, c])| (ns.clone(), json!({
+                "prompt_tokens_in": p,
+                "cached_tokens_in": c,
+                "cache_hit_token_ratio": if *p > 0 { *c as f64 / *p as f64 } else { 0.0 },
+            })))
+            .collect();
+        body["tenants"] = serde_json::Value::Object(tenants);
+    }
     // Spec-decode acceptance telemetry (lane/accept-telemetry — the llama.cpp #26389 /
     // vLLM per-draft-position counter schema). Per model, cumulative since model load
     // (models load once per process — counters reset on restart, never mid-run). The
