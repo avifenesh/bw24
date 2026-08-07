@@ -835,6 +835,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..warmups {
             let _ = model.forward_last(&e, &prompt)?;
         }
+        // MEMRA_PP_LOGITS=<path>: dump the last-row prefill logits (raw LE f32) — the GGUF twin
+        // of the ST branch's dump above. Diagnostic: cross-arm byte-compare of two builds'
+        // prefill output (e.g. the iq-k32 MMA-form A/B, research/iq-k32-20260807/).
+        if let Ok(f) = std::env::var("MEMRA_PP_LOGITS") {
+            let last = model.forward_last(&e, &prompt)?;
+            let mut raw = Vec::with_capacity(last.len() * 4);
+            for v in &last {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+            std::fs::write(&f, &raw)?;
+            println!("pp-only prefill logits -> {f} ({} f32)", last.len());
+        }
         e.stream().synchronize()?;
         if let Some((hits, misses, staged, n_slots)) = e.moe_cache_stats() {
             println!("pp-only MoE cache after {warmups} warmup(s): {n_slots} slots hits={hits} misses={misses} staged_bytes={staged}");
