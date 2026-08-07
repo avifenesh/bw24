@@ -1,0 +1,5 @@
+{
+ "O1_determinism": "PASS (byte-identical)",
+ "O2_vs_O1": "DIVERGES at byte 659 of 3148/3119 \u2014 the REF/REF_LOAD class reproduced",
+ "O3L_vs_O3S": "IDENTICAL \u2014 H-B confirmed (one program => co-resident invisible)"
+}
