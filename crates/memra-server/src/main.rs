@@ -50,6 +50,10 @@
 /// controllers (the sidecar shape) can share them.
 pub(crate) mod auth;
 pub(crate) mod constrained;
+/// Dead-darklane background jobs (lane/darklane-training, 2026-08-07): valley detection over
+/// worker truth (phase + beat age + pending admits) and a yield-first background job runner —
+/// a lane class BELOW every serving lane. Engine mechanics only; policy lives product-side.
+pub(crate) mod darklane;
 /// Inference-liveness state (lane/serve-hardening, gaps G5 + G24): the worker heartbeat every
 /// health answer is derived from, the Xid/GPU-fault watcher, and the sd_notify half of the
 /// systemd contract. Process liveness is NOT inference liveness — this module is the difference.
@@ -98,6 +102,10 @@ struct AppState {
     /// fault latches, shared with the worker thread and the Xid watcher. /health, /livez and
     /// /readyz read ONLY this — never "the process is up".
     health: health::SharedHealth,
+    /// dead-darklane background job observability (lane/darklane-training): the runner's
+    /// shared counters + its yield mode, for the /metrics "bg" block. None when MEMRA_BG_JOB
+    /// is unset — the block is absent and the payload byte-identical to pre-lane.
+    bg: Option<(Arc<darklane::BgJobState>, &'static str)>,
 }
 
 // ---- rate-limit headers (serve-tail lane, 2026-08-04; gap-scan F12) ----
@@ -1117,6 +1125,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     eprintln!("[server] worker ready; serving models: {model_names:?}");
 
+    // Dead-darklane background job runner (MEMRA_BG_JOB; lane/darklane-training): armed
+    // only after the worker is ready — a weight load is PHASE_LOADING, never a valley.
+    let bg_handle = darklane::spawn_from_env(health_state.clone());
+    let bg_state = bg_handle.as_ref().map(|h| {
+        let mode = darklane::BgConfig::from_env()
+            .map(|c| c.yield_mode.as_str()).unwrap_or("stop");
+        (h.state.clone(), mode)
+    });
+
     let state = AppState {
         cmd_tx, models: model_names, caps, metrics,
         started: std::time::SystemTime::now()
@@ -1125,6 +1142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inflight: Arc::new(Default::default()),
         tenant_inflight: Arc::new(Default::default()),
         health: health_state.clone(),
+        bg: bg_state,
     };
     let inflight_handle = state.inflight.clone();
     let app = Router::new()
@@ -1199,6 +1217,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .await?;
+    // Background job cleanup on the graceful path: SIGCONT+SIGTERM(+KILL past grace) the
+    // job's process group — a SIGSTOPped orphan would stay frozen forever. The ungraceful
+    // path (server SIGKILL) is covered by PDEATHSIG on the child.
+    if let Some(h) = bg_handle {
+        h.shutdown();
+    }
     Ok(())
 }
 
@@ -1369,6 +1393,12 @@ async fn health_ready(State(st): State<AppState>) -> impl IntoResponse {
 /// Flat serving counters + engine-truth step latency percentiles.
 async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
     let m = st.metrics.lock().map(|m| m.clone()).unwrap_or_default();
+    // Valley signal (lane/darklane-training): seconds the worker has been COMPLETELY idle
+    // (no active sessions, no queued admissions, no pending HTTP handoffs) — worker truth
+    // via health phase + beat age + the PENDING_ADMITS gauge, no new hot-path cost.
+    // 0.0 the instant there is any work. Always published: the field is the idle sensor
+    // whether or not a background job is configured.
+    let idle_s = darklane::ValleySignal::new(st.health.clone()).idle_seconds();
     let mut body = json!({
         "admitted": m.admitted,
         "completed": m.completed,
@@ -1402,6 +1432,7 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
             "edges": worker::LCP_HIST_EDGES.to_vec(),
             "counts": m.lcp_hist.to_vec(),
         },
+        "serve_idle_seconds": (idle_s * 1000.0).round() / 1000.0,
     });
     // Per-tenant prompt/cached breakdown (composes with PC-ISO tenancy): keyring
     // deployments key rows by tenant (`t:<tenant>`), no-keyring by raw cache_salt
@@ -1416,6 +1447,11 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
             })))
             .collect();
         body["tenants"] = serde_json::Value::Object(tenants);
+    }
+    // Background-job block: ABSENT unless MEMRA_BG_JOB armed the runner (pre-lane payload
+    // stays byte-identical for every deployment that doesn't use it).
+    if let Some((bg, mode)) = &st.bg {
+        body["bg"] = bg.to_json(mode);
     }
     // Spec-decode acceptance telemetry (lane/accept-telemetry — the llama.cpp #26389 /
     // vLLM per-draft-position counter schema). Per model, cumulative since model load
@@ -3266,6 +3302,15 @@ mod tests {
         std::thread::spawn(move || {
             h.mark_ready();
             while let Ok(Cmd::Generate(req)) = cmd_rx.recv() {
+                // mirror handle_cmd's saturating PENDING_ADMITS decrement: handlers
+                // increment before send, and a fake worker that never decrements leaks
+                // the process-global gauge into every other test (the valley signal
+                // reads it).
+                let _ = worker::PENDING_ADMITS.fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |v| v.checked_sub(1),
+                );
                 h.beat_busy();
                 let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
                 let _ = req.tx.send(Event::Done {
@@ -3290,6 +3335,7 @@ mod tests {
             inflight: Arc::new(Default::default()),
             tenant_inflight: Arc::new(Default::default()),
             health,
+            bg: None,
         }
     }
 

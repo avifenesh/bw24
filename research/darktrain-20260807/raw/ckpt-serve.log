@@ -1,0 +1,12 @@
+pre-traffic bg: {'state': 'running', 'yield_mode': 'checkpoint', 'launches': 1, 'yields': 0, 'resumes': 0, 'preempts': 0, 'ckpt_kills': 0, 'last_yield_signal_us': 0, 'job_pid': 2656781, 'vram_budget_mb': 0}
+post-traffic bg: {'state': 'preempted', 'yield_mode': 'checkpoint', 'launches': 1, 'yields': 0, 'resumes': 0, 'preempts': 1, 'ckpt_kills': 0, 'last_yield_signal_us': 6, 'job_pid': None, 'vram_budget_mb': 0}
+checkpoint after preempt: 129
+next-valley bg: {'state': 'running', 'yield_mode': 'checkpoint', 'launches': 2, 'yields': 0, 'resumes': 0, 'preempts': 1, 'ckpt_kills': 0, 'last_yield_signal_us': 6, 'job_pid': 2660967, 'vram_budget_mb': 0}
+live row after resume: {"pid": 2660978, "step": 293, "t_mono": 189628.089899343}
+[darklane] bg runner armed: cmd="python3 tools/bg-ckpt-counter.py --ckpt /tmp/dtck --steps 100000 --dt 0.02" mode=checkpoint poll=25ms vram_budget=0MB (+2048MB serve headroom must stay free)
+[darklane] job launched (pid 2656781, fresh)
+[ckpt-counter] pid 2656793: fresh start
+[darklane] job exited None during preemption — relaunching from last checkpoint next valley
+[ckpt-counter] pid 2656793: preempted at step 129, checkpointed, exit 75
+[darklane] job launched (pid 2660967, resume from checkpoint)
+[ckpt-counter] pid 2660978: RESUMED at step 129

@@ -1,0 +1,48 @@
+== rep 1: base arm ==
+  ok: base rep 1 bursts
+== rep 1: bg arm ==
+  ok: bg rep 1 yield probe: {"rep": 1, "yield_wall_s": 0.02, "req_wall_s": 0.1716, "state_after": "T"}
+  ok: bg rep 1 bursts
+  bg counters rep 1: launches=1 yields=3 resumes=2
+  ok: bg rep 1 liveness (yields=3 resumes=2)
+== rep 2: base arm ==
+  ok: base rep 2 bursts
+== rep 2: bg arm ==
+  ok: bg rep 2 yield probe: {"rep": 2, "yield_wall_s": 0.0233, "req_wall_s": 0.1737, "state_after": "T"}
+  ok: bg rep 2 bursts
+  bg counters rep 2: launches=1 yields=3 resumes=2
+  ok: bg rep 2 liveness (yields=3 resumes=2)
+== rep 3: base arm ==
+  ok: base rep 3 bursts
+== rep 3: bg arm ==
+  ok: bg rep 3 yield probe: {"rep": 3, "yield_wall_s": 0.0194, "req_wall_s": 0.1722, "state_after": "T"}
+  ok: bg rep 3 bursts
+  bg counters rep 3: launches=1 yields=3 resumes=2
+  ok: bg rep 3 liveness (yields=3 resumes=2)
+== rep 4: base arm ==
+  ok: base rep 4 bursts
+== rep 4: bg arm ==
+  ok: bg rep 4 yield probe: {"rep": 4, "yield_wall_s": 0.0027, "req_wall_s": 0.172, "state_after": "T"}
+  ok: bg rep 4 bursts
+  bg counters rep 4: launches=1 yields=3 resumes=2
+  ok: bg rep 4 liveness (yields=3 resumes=2)
+== rep 5: base arm ==
+  ok: base rep 5 bursts
+== rep 5: bg arm ==
+  ok: bg rep 5 yield probe: {"rep": 5, "yield_wall_s": 0.0074, "req_wall_s": 0.1877, "state_after": "T"}
+  ok: bg rep 5 bursts
+  bg counters rep 5: launches=1 yields=3 resumes=2
+  ok: bg rep 5 liveness (yields=3 resumes=2)
+
+== bg-stress summary (per-burst points; N bursts per arm below) ==
+  lat_p50_s    base median    1.444 (n=10)  bg median    1.449 (n=10)  delta +0.30%
+  lat_p95_s    base median    2.478 (n=10)  bg median    2.497 (n=10)  delta +0.77%
+  ttft_p50_s   base median    0.146 (n=10)  bg median    0.135 (n=10)  delta -7.05%
+  ttft_p95_s   base median    0.514 (n=10)  bg median    0.520 (n=10)  delta +1.11%
+  agg_tok_s    base median  413.057 (n=10)  bg median  410.821 (n=10)  delta -0.54%
+  yield_wall_s  n=5 median 19.4ms max 23.3ms (bound 500ms)
+
+STOP-BAR: bg adds +0.77% to median burst p95 (bar: +2%)
+VERDICT: WITHIN BAR
+probe-bg-stress: 0 failed
+exit=0

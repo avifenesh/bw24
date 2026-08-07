@@ -1,0 +1,11 @@
+valley: idle=5.725 bg.state=running pid=146657
+  ok: PP-2 valley: serve_idle_seconds=5.725
+  ok: job launched in valley (pid 146657)
+yield probe: {"yield_wall_s": 0.0372, "state_during": "T", "req_wall_s": 1.0466, "completion_tokens": 64}
+  ok: PP-2 yield cycle (job 'T' under traffic; request completed)
+post-traffic: bg.state=running yields=1 resumes=1
+  ok: job resumed in the next valley (yields=1 resumes=1)
+vram arm: budget=147252MB vs min-free=97252MB -> bg.state=refused_vram
+  ok: unfittable VRAM budget refused on the pair (min-across-GPUs)
+  ok: refusal logged loudly
+probe-pp2-valley: 0 failed

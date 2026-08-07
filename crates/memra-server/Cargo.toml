@@ -31,6 +31,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 async-stream = "0.3"
 futures-core = "0.3"
 llguidance = "1.7.6"
+# dead-darklane background jobs (lane/darklane-training): process-group signaling
+# (SIGSTOP/SIGCONT yield, SIGUSR1 checkpoint) + PDEATHSIG on the job child.
+libc = "0.2"
 # API-key auth (lane/api-keys): keys are stored as SHA-256 hex, never plaintext.
 sha2 = "0.10"
 # keyring file format (MEMRA_API_KEYS=/path/keys.toml)

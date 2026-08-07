@@ -1,0 +1,116 @@
+[server] starting; models config = [("smoke", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+[worker] smoke: regime draft attached (/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8189
+[meter] admit id=chatcmpl-370e946f5b541da53fb324b32d05c087 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-368d0ecb56ccfa0b0e1f570d77532ba9 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-05c9e5f7b4cc48168dd75d26153fa719 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-8e08fe22bde984d5de124477029905a6 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-2a77cb67a1b16453db2aead0f6989939 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-eb238e161ef953b5c92d40f934eb036e tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-011ca6c445a4f3cd49d72bf5db55bc25 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-7156ceb428fc7d3393f9a0d21c38ee72 tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 168MB (admission gate = 2x)
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[spec-acc] ctx=226 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=227 burst=24/24 cum=24/24=1.000
+[prime-batch] B=6 tokens=1356 in 270.2ms
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model smoke)
+[spec-acc] ctx=260 burst=21/33 cum=45/57=0.789
+[spec-acc] ctx=260 burst=22/27 cum=46/54=0.852
+[spec-acc] ctx=293 burst=18/30 cum=63/87=0.724
+[meter] admit id=chatcmpl-cfb0f4a99c95b3b69728fe50c06a9cf5 tenant=default lane=interactive model="smoke"
+[spec-acc] ctx=292 burst=0/3 cum=46/57=0.807
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-acc] ctx=294 burst=19/24 cum=65/81=0.802
+[meter] admit id=chatcmpl-aef160d6b9f7fea5ba1ee52f5eb2637c tenant=default lane=interactive model="smoke"
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[meter] admit id=chatcmpl-c92ada9e38c0873498457fcd2a39d936 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-1f5967423289aa88a705685a7a052687 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-558c6270250ca05272133dfd5e41cdd8 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-1e5947248ea48544a49be881445d449c tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-a3a2938ffaaf63166f513e579b6220f5 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-c9931018615bbfeb915c0ed6dc9c7e18 tenant=default lane=interactive model="smoke"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[meter] admit id=chatcmpl-5f276a005c7265c05ff63ac1417f9aff tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-0c25eda29ccf53026ab4d5e00ea87e93 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-4004f21a81e1a6254b95318e450f2559 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model smoke)
+[meter] admit id=chatcmpl-c1b44867dd8be4fc9469db375117ef9f tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-de37f64444c59947222a64574a3aa7f8 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-75afcdad8eeeb8b8d7cd9240f67a9ab5 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-04513d302049035e94a1eca308226043 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-39f35d9572cfe089170d9dce2f72bfff tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model smoke)
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-acc] ctx=226 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=227 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=260 burst=21/33 cum=45/57=0.789
+[spec-acc] ctx=260 burst=22/27 cum=46/54=0.852
+[spec-acc] ctx=293 burst=18/30 cum=63/87=0.724
+[meter] admit id=chatcmpl-5ad8e4d83b1f5fc4bce36d97745bb384 tenant=default lane=interactive model="smoke"
+[spec-acc] ctx=292 burst=0/3 cum=46/57=0.807
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-acc] ctx=294 burst=19/24 cum=65/81=0.802
+[meter] admit id=chatcmpl-20b9bc0a130a13b915811725f886a648 tenant=default lane=interactive model="smoke"
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[meter] admit id=chatcmpl-5180c31f6d392ba7b8783835f642dea0 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-74eda3641a76d0c2c95464397dc30bed tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-07005db741e4e5d60a4582e6484bf874 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-db3ec7073a01932f385caa48f2bf70df tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-49c984d8dd7f1a06b1855146a9a25063 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-af508ec8f1df0c611a2c53a10ccc5f6b tenant=default lane=interactive model="smoke"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 4 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 5 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 6 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[spec-gate] admit batched: 7 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model smoke)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
