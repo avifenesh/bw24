@@ -1660,6 +1660,14 @@ impl HybridModel {
         // Taken here, not at the end, because inside the last-stage scope `e.stream()` IS the
         // stage stream and the wait would self-order into a no-op.
         let caller_stream = e.stream();
+        // #87 ROOT-CAUSE FENCE (lane/pp2spec-crash): the PREVIOUS round's stage-allocated
+        // outputs (logits/hidden/ckpt stashes) freed stream-ordered on the STAGE streams while
+        // the primary stream still holds queued reads of them — with event tracking elided,
+        // nothing stops the pool from reusing those blocks for THIS round's stage allocations,
+        // whose writes then race the queued reads (measured: 13/4096-NaN random-bits garbage in
+        // the spec round seed; the full anatomy is on `PpNRt::fence_stages_behind`). Order every
+        // stage stream behind the caller before enqueueing new stage work.
+        rt.fence_stages_behind(&caller_stream)?;
 
         // Per-stage rope positions: in host mode the same [T] iota each stage uploads itself; in
         // stream mode each stage's own `pos_iota` over the shared read-only device counter.

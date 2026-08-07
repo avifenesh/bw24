@@ -792,6 +792,40 @@ impl PpNRt {
         Ok(())
     }
 
+    /// REVERSE PUBLICATION (#87 root cause, lane/pp2spec-crash 2026-08-07): order every
+    /// STAGE stream behind the CALLER's stream — the mirror of `publish_to`.
+    ///
+    /// `publish_to` orders caller READS behind stage COMPUTE. Nothing ordered the other
+    /// direction: buffers ALLOCATED on a stage stream (the verify's returned logits/hidden,
+    /// the VerifyCkpt stashes) are CONSUMED by kernels the caller enqueues on the PRIMARY
+    /// stream, and when they drop, cudarc enqueues `free_async` on the ALLOCATING (stage)
+    /// stream. With event tracking elided (the decode-path default) the drop carries no
+    /// read-guard, so the pool can hand the block to the NEXT stage-stream allocation and
+    /// its writes overwrite memory the queued primary-stream consumer has not read yet.
+    /// Measured (research/pp2spec-crash-20260807): the spec round-seed read 13/4096 NaN =
+    /// the uninitialized-bits signature (P(NaN|random u32) ~ 1/256), clean by host re-read
+    /// time — a read-before-write race, fatal via the argmax-sentinel -> embed_gather MMU
+    /// fault, and gated on c>=2 because a backed-up primary stream widens the window.
+    ///
+    /// Fix law: before a ppN body enqueues NEW stage-stream work (allocations that may
+    /// reuse freed blocks), every stage stream waits the caller's stream at its current
+    /// point. All primary consumers of the previous round's stage-allocated buffers are
+    /// enqueued by then (single host thread), so reuse-writes land strictly after them.
+    /// Call at ppN-body ENTRY with the pre-`enter` caller stream. Door-shut configs never
+    /// build a PpNRt, so single-card behavior is untouched.
+    pub fn fence_stages_behind(&self, src: &Arc<CudaStream>)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let ev = src.context().new_event(None)?;
+        ev.record(src)?;
+        for st in &self.stages {
+            if Arc::ptr_eq(&st.stream, src) {
+                continue;
+            }
+            st.stream.wait(&ev)?;
+        }
+        Ok(())
+    }
+
     /// Deferred readback: record a fresh completion event on the LAST stage's stream
     /// (call after the step's logits matmul has been enqueued there).
     pub fn record_done(&self) -> Result<CudaEvent, Box<dyn std::error::Error>> {
