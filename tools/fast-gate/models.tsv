@@ -14,7 +14,8 @@
 # stays tier-2); their gate is the SELF-CONSISTENCY PASS line plus the same golden pin on
 # the plain-generate `tokens:` line.
 #
-# One model per KERNEL CLASS the dispatch actually forks on (see map.tsv header):
+# Shared-kernel representatives plus variant probes for loader/dispatch surfaces no representative
+# reaches (see map.tsv header and the per-probe notes below):
 g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 # g12d: DEPTH probe (the battery's 1736-id depth prompt) — the gemma fp8-KV g-module FA arms
 # (hd512 dpl16 globals + windowed hd256) actually execute at t_kv ~1740; the 19-id gemma
@@ -26,6 +27,8 @@ g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	re
 # stable across every observed run; a 20-token golden false-fails ~1/8.
 g12d	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/depth-prompt-1736-ids.txt	16	-
 g31	argmax	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+# e4b is not a redundant Q4_0 golden: it is the only arm that reaches Gemma-4's per-layer
+# embeddings, KV-sharing loader/forward path, and the E4B-only glue kernels.
 e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 q9	argmax	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	@tools/fast-gate/prompts/probe.txt	20	-
@@ -53,6 +56,8 @@ q35slru	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gg
 aw35	argmax	/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 o9	argmax	/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 o35	argmax	/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+# kat shares qwen35moe geometry, but it is the only arm with non-expert IQ4_XS trunk weights;
+# it alone reaches qmatvec_iq4_XS_dp4a and the dense IQ4_XS MMQ arm.
 kat	argmax	/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 # spec probes (ONE K each — the K=1..8 sweep is tier-2).
 # kind=spec  -> run-spec at MEMRA_SPEC_K (qwen MTP/NextN family); gate = SELF-CONSISTENCY PASS
@@ -142,6 +147,8 @@ isogapc	cmd	tools/iso-gap-gate.sh	--canary	-	-
 # explained by a margin the config spread can reach across; a WIDE-margin flip (the genuine
 # cache/kernel-bug signature) fails at any position. amarginc is its teeth: it fault-injects a
 # wide-margin flip row and PASSES only if the comparator rejects it.
+# map.tsv dispatches both arms for the forward_last/decode-step implementation surfaces and
+# for this gate's own wrapper/probe; sampled-spec and served acceptance retain samp/accept.
 amargin	cmd	tools/argmax-margin-gate.sh	-	-	-
 amarginc	cmd	tools/argmax-margin-gate.sh	--canary	-	-
 
