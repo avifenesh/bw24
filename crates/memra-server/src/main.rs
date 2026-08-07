@@ -482,9 +482,11 @@ struct ChatCompletionReq {
     /// "auto" (default) | "none". "required"/named-function need constrained decoding -> 400.
     #[serde(default)]
     tool_choice: Option<serde_json::Value>,
-    /// OpenAI reasoning effort: none|minimal|low -> the template's no-think switch;
-    /// medium|high -> the template default (open think). Models without a think switch
-    /// ignore the parameter gracefully.
+    /// OpenAI reasoning effort — ONE surface, per-arch native mapping (see `parse_think`'s
+    /// table): low|medium|high = thinking ON at that budget, none|minimal = thinking OFF,
+    /// absent = the model's own default. Binary-switch templates (qwen enable_thinking,
+    /// gemma4) take the on/off half; level-consuming templates (step35 `Reasoning:`,
+    /// hy3 `reasoning_effort:`) also receive the level.
     #[serde(default)]
     reasoning_effort: Option<String>,
     /// OpenRouter object form: {"effort": "...", "enabled": bool, "exclude": bool}
@@ -961,29 +963,38 @@ fn parse_tool_choice(v: &Option<serde_json::Value>) -> Result<ToolChoice, String
     }
 }
 
-/// Map OpenAI `reasoning_effort` / OpenRouter `reasoning` onto the template's think switch.
-/// Absent -> the template's own default (open think on the qwen3.5/3.6 class — verified
-/// against the committed template dumps; NOT overridden here, the byte-identity contract).
+/// Map OpenAI `reasoning_effort` / OpenRouter `reasoning` onto the model's native thinking
+/// control — ONE serve surface, per-arch mechanism (owner directive 2026-08-07: every
+/// supported model is a thinking model).
 ///
-/// Returns `(think, effort_level)`. `effort_level` is the step35-dialect mapping of the SAME
-/// client field: templates that consume a `reasoning_effort` STRING (`ModelCaps::effort_levels`)
-/// render it into the system turn instead of flipping a think switch. The caller picks the
-/// half that applies to the target model; the other half is inert there by construction
-/// (step35 has no `enable_thinking`, so ThinkMode is a documented no-op on it, and non-step35
-/// templates have no `reasoning_effort` input). Mapping for effort-level models:
-/// low|medium|high pass through; none|minimal clamp to "low" (the template has no
-/// thinking-off level — the tail is unconditional).
+/// The OpenAI/OpenRouter convention for reasoning-capable models: `low|medium|high` all mean
+/// reasoning ON at that budget; `none|minimal` request (near-)zero reasoning; OpenRouter's
+/// `reasoning: {enabled: false}` is the explicit off. Absent means the MODEL'S OWN default —
+/// never overridden here (no silent behavior change for existing deployments):
+///
+/// | field value        | ThinkMode | effort level | qwen class      | gemma4        | hy3        | step35            |
+/// |--------------------|-----------|--------------|-----------------|---------------|------------|-------------------|
+/// | (absent)           | Default   | None         | think ON (tmpl) | think OFF     | no_think   | tail always open  |
+/// | none / minimal     | NoThink   | "low"        | closed <think>  | closed channel| no_think   | Reasoning: low    |
+/// | low                | Think     | "low"        | open <think>    | <\|think\|> ON| low        | Reasoning: low    |
+/// | medium             | Think     | "medium"     | open <think>    | <\|think\|> ON| low (clamp)| Reasoning: medium |
+/// | high               | Think     | "high"       | open <think>    | <\|think\|> ON| high       | Reasoning: high   |
+/// | {enabled: false}   | NoThink   | "low"        | closed <think>  | closed channel| no_think   | Reasoning: low    |
+/// | {enabled: true}    | Think     | None         | open <think>    | <\|think\|> ON| low        | (tmpl default)    |
+///
+/// Returns `(think, effort_level)`. `effort_level` rides `Request::reasoning_effort` only
+/// for templates that consume a level string (`ModelCaps::effort_levels`: step35, hy3);
+/// binary-switch templates are carried by `ThinkMode` alone, so their prompts cannot be
+/// perturbed by a level they never read.
 fn parse_think(reasoning_effort: &Option<String>, reasoning: &Option<serde_json::Value>)
     -> Result<(ThinkMode, Option<String>), String> {
     let mut effort = reasoning_effort.clone();
-    let mut enabled_false = false;
+    let mut enabled = None;
     if let Some(r) = reasoning {
         match r {
             serde_json::Value::Null => {}
             serde_json::Value::Object(obj) => {
-                if obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-                    enabled_false = true;
-                }
+                enabled = obj.get("enabled").and_then(|v| v.as_bool());
                 if let Some(e) = obj.get("effort").and_then(|v| v.as_str()) {
                     effort = Some(e.to_string());
                 }
@@ -991,16 +1002,19 @@ fn parse_think(reasoning_effort: &Option<String>, reasoning: &Option<serde_json:
             _ => return Err("reasoning must be an object".into()),
         }
     }
-    if enabled_false {
+    if enabled == Some(false) {
         // OpenRouter "thinking off": the strongest off-request either surface can express.
         return Ok((ThinkMode::NoThink, Some("low".to_string())));
     }
     let (think, level) = match effort.as_deref() {
-        None => (ThinkMode::Default, None),
+        None => (
+            if enabled == Some(true) { ThinkMode::Think } else { ThinkMode::Default },
+            None,
+        ),
         Some("none") | Some("minimal") => (ThinkMode::NoThink, Some("low".to_string())),
-        Some("low") => (ThinkMode::NoThink, Some("low".to_string())),
-        Some("medium") => (ThinkMode::Default, Some("medium".to_string())),
-        Some("high") => (ThinkMode::Default, Some("high".to_string())),
+        Some("low") => (ThinkMode::Think, Some("low".to_string())),
+        Some("medium") => (ThinkMode::Think, Some("medium".to_string())),
+        Some("high") => (ThinkMode::Think, Some("high".to_string())),
         Some(other) => return Err(format!(
             "bad reasoning_effort {other:?} (none|minimal|low|medium|high)")),
     };
@@ -2520,16 +2534,21 @@ mod tests {
 
     #[test]
     fn reasoning_effort_maps_to_think_switch() {
+        // The reasoning-capable-model convention (owner directive 2026-08-07):
+        // low|medium|high = thinking ON at that budget; none|minimal = thinking OFF;
+        // absent = the model's own default. `low` used to map to NoThink — that read the
+        // OpenAI field as a "how much" dial with off at the bottom, which contradicts how
+        // reasoning models ship (low IS a reasoning mode).
         for (extra, want) in [
             (json!({}), ThinkMode::Default),
-            (json!({"reasoning_effort": "low"}), ThinkMode::NoThink),
+            (json!({"reasoning_effort": "low"}), ThinkMode::Think),
             (json!({"reasoning_effort": "none"}), ThinkMode::NoThink),
             (json!({"reasoning_effort": "minimal"}), ThinkMode::NoThink),
-            (json!({"reasoning_effort": "high"}), ThinkMode::Default),
-            (json!({"reasoning_effort": "medium"}), ThinkMode::Default),
+            (json!({"reasoning_effort": "high"}), ThinkMode::Think),
+            (json!({"reasoning_effort": "medium"}), ThinkMode::Think),
             (json!({"reasoning": {"enabled": false}}), ThinkMode::NoThink),
-            (json!({"reasoning": {"effort": "low"}}), ThinkMode::NoThink),
-            (json!({"reasoning": {"enabled": true}}), ThinkMode::Default),
+            (json!({"reasoning": {"effort": "low"}}), ThinkMode::Think),
+            (json!({"reasoning": {"enabled": true}}), ThinkMode::Think),
         ] {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let plan = build_chat_request(weather_request(extra.clone()),

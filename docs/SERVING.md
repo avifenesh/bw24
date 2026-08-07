@@ -314,20 +314,28 @@ parsing only — zero engine changes**:
   `finish_reason:"tool_calls"`); argument values coerce per the declared JSON-schema types.
   **Malformed policy:** a block that does not parse is surfaced verbatim as content — never
   an error, never dropped bytes; unterminated blocks flush raw at end of generation.
-- `reasoning_effort` `none|minimal|low` → the template's `enable_thinking=false` no-think
-  switch; `medium|high`/absent → the template default (open `<think>`). Models without the
-  switch ignore the parameter. `reasoning: {enabled, effort}` (OpenRouter form) maps the
-  same way.
-- **Effort-level templates (Step-3.7-Flash / arch `step35`):** the same `reasoning_effort`
-  field is that dialect's own three-level control — a **string rendered into the system
-  turn** (`Reasoning: low|medium|high\n\n`), not a think switch (the `<think>` tail is
-  unconditional there). `low|medium|high` pass through; `none|minimal` (and OpenRouter
-  `reasoning: {enabled: false}`) clamp to `low` — the template has no thinking-off level;
-  omitted ⇒ the template's own default (no `Reasoning:` line at all, exactly what the model
-  card ships). Gated on a spawn-time capability probe (`effort_levels`, keyed on the same
-  template marker the renderer dispatches on), so on every other model the field never
-  reaches the render and prompts stay byte-identical by construction. Serve-smoke receipt:
-  `research/step-sku-20260807/raw/effort-smoke-*.log`.
+- **`reasoning_effort` — one surface, per-arch native thinking control** (owner directive
+  2026-08-07: every supported model is a thinking model). The reasoning-capable-model
+  convention: `low|medium|high` = thinking ON at that budget, `none|minimal` = thinking
+  OFF, **absent = the model's own default** (never overridden — no silent behavior change
+  for existing deployments). `reasoning: {enabled, effort}` (OpenRouter form) maps the same
+  way; `{enabled: false}` is the explicit off, `{enabled: true}` thinking on at the
+  template default budget. Unknown values 400. Per-model mapping (goldens rendered from
+  each REAL shipped template: `research/step-sku-20260807/render-thinking-goldens.py`):
+
+  | model class | native mechanism | absent (default) | none/minimal | low | medium | high |
+  |---|---|---|---|---|---|---|
+  | Qwen3.5/3.6, Ornith, AgentWorld, KAT (qwen ChatML class) | `enable_thinking` switch | thinking **ON** (open `<think>\n`, the template default) | closed `<think>\n\n</think>\n\n` | open `<think>` | open `<think>` | open `<think>` |
+  | Gemma-4 family (12B/26B/31B/E4B) | `enable_thinking`, template default **false** | thinking **OFF** (closed `<\|channel>thought\n<channel\|>`) | closed channel | `<\|think\|>` system token + open turn | same | same |
+  | Hy3 | template's own `reasoning_effort:` `no_think\|low\|high` | `no_think` (its jinja default) | `no_think` | `low`, open `<think:opensource>` | `low` (clamp — no medium level) | `high`, open think |
+  | Step-3.7-Flash (`step35`) | `Reasoning: {level}` string in the system turn; `<think>` tail **unconditional** | no `Reasoning:` line (template default) | `Reasoning: low` (clamp — no off level) | `Reasoning: low` | `Reasoning: medium` | `Reasoning: high` |
+
+  Level strings reach only templates that consume one (spawn-time `effort_levels` probe,
+  keyed on the jinja's own `reasoning_effort is defined` input test — true for step35 and
+  Hy3); binary-switch templates are driven by the on/off half alone, so prompts on models
+  that never read a level cannot be perturbed by it. Serve-smoke receipts:
+  `research/step-sku-20260807/raw/effort-smoke-*.log` (step35),
+  `research/step-sku-20260807/raw/think-smoke-*.log` (qwen + gemma4 arms).
 - **Isolation:** non-tools traffic bypasses the tools renderer AND the emission parser
   entirely (legacy render path, byte-identical streams); tools traffic is generation-
   identical for the identical rendered prompt (raw-completions bijection gate). `usage`

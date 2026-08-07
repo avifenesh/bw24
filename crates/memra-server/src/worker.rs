@@ -1528,12 +1528,12 @@ pub fn run(
                 else if t.contains("<start_of_turn>") { Some("gemma".to_string()) }
                 else { None }
             }),
-            // step35 dialect only: keyed on the SAME dispatch marker the renderer uses
-            // (`render_message_content`), not on the bare word `reasoning_effort` — the Hy3
-            // template also contains that word (as its hardcoded `reasoning_effort:no_think`
-            // header) but consumes no input.
-            effort_levels: t.is_some_and(|t| t.contains("render_message_content")
-                && t.contains("reasoning_effort")),
+            // Templates that CONSUME a `reasoning_effort` input, keyed on the jinja input
+            // test itself (`reasoning_effort is defined`) — true for step35 (renders
+            // `Reasoning: {level}` into the system turn) and hy3 (renders
+            // `reasoning_effort:{no_think|low|high}` into its header), false for the
+            // qwen/gemma4 classes (binary `enable_thinking`, carried by ThinkMode instead).
+            effort_levels: t.is_some_and(|t| t.contains("reasoning_effort is defined")),
         };
         eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={} \
                    effort_levels={} ctx={} tok={:?} instruct={:?}",
@@ -3752,6 +3752,17 @@ fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
 /// real MIXED checkpoints. Before that, one missing class refused the whole model, so
 /// chunk 16 was unreachable for every shipped artifact, GGUF and FP8-ST alike.
 fn chunk_cap_for(lm: &LoadedModel) -> usize {
+    // step35 has no B>1 decode arm ANYWHERE (per-layer n_head / partial rope / SWA offset
+    // view / head-wise gate): the unsplit batched body asserts it away, and the ppn body
+    // fails closed since the b2ab receipt (research/step-sku-20260807/raw/b2ab-pre-*.log —
+    // a c=4 serve over PP-2 walked the generic arm and emitted garbage). Cap its chunks at
+    // 1: each session still decodes every tick (B=1 chunks ride decode_layers_eager, the
+    // supported step35 mixer), so concurrency works and only the cross-session launch fusion
+    // is forfeited. Not overridable upward by MEMRA_DECODE_BATCH_CAP — a wider chunk is not
+    // a measurement door here, it is wrong logits.
+    if lm.model.cfg.step35.is_some() {
+        return 1;
+    }
     if let Some(c) = std::env::var("MEMRA_DECODE_BATCH_CAP").ok().and_then(|v| v.parse().ok()) {
         return usize::clamp(c, 1, 32);
     }

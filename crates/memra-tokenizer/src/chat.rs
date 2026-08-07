@@ -38,15 +38,26 @@ pub struct Turn {
     pub tool_calls: Vec<ToolCall>,
 }
 
-/// Generation-prompt think tail. `Default` = the template's own default (the qwen3.5/3.6
-/// class opens `<think>\n` — verified against the committed dumps in
-/// research/onboard-ornith-20260801/templates/); `NoThink` = the template's
-/// `enable_thinking=false` switch (closed `<think>\n\n</think>\n\n`). On templates
-/// without an `enable_thinking` switch the mode is ignored (graceful no-op).
+/// Thinking control (owner directive 2026-08-07: every supported model is a thinking model,
+/// one serve surface maps to each arch's native mechanism).
+///
+/// - `Default` = the template's OWN default, byte-identical to the pre-surface render:
+///   qwen class opens `<think>\n` (thinking ON), gemma4 renders the CLOSED thought channel
+///   (its `enable_thinking | default(false)`), hy3 renders `reasoning_effort:no_think`.
+/// - `NoThink` = thinking OFF via the arch's native off-switch: qwen
+///   `enable_thinking=false` (closed `<think>\n\n</think>\n\n`), gemma4 closed thought
+///   channel, hy3 `no_think`. On step35 — whose `<think>` tail is unconditional — it clamps
+///   to the lowest effort level instead (`Reasoning: low`).
+/// - `Think` = thinking explicitly ON: qwen open `<think>\n` (same bytes as its default),
+///   gemma4 `<|think|>\n` injected into the system turn + an OPEN generation turn, hy3
+///   an open `<think:opensource>` channel at the requested effort.
+///
+/// On templates with no switch at all the non-native direction is a graceful no-op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkMode {
     Default,
     NoThink,
+    Think,
 }
 
 /// Render messages into the prompt string.
@@ -61,8 +72,9 @@ pub fn apply_chat_template_str(
 ) -> String {
     // Tencent Hy3 (`hy_v3`): a completely different special-token dialect (no ChatML).
     // Detected by its `hy_User` token literal; rendered by the dedicated arm below.
+    // Legacy path = the template's own default ("no_think") — byte-identical to history.
     if template.is_some_and(|t| t.contains("hy_User")) {
-        return apply_hy3_template(messages, add_generation_prompt);
+        return apply_hy3_template(messages, add_generation_prompt, "no_think");
     }
     // StepFun Step-3.7-Flash (arch `step35`): a ChatML *dialect* — same `<|im_start|>` framing,
     // different everything else (see `apply_step35_template`). Detected by its
@@ -79,8 +91,9 @@ pub fn apply_chat_template_str(
     // `<|turn>model\n` + the CLOSED thought channel (`<|channel>thought\n<channel|>` — the
     // template's enable_thinking-false default). bos comes from encode(add_special) — the
     // template's `{{ bos_token }}` is NOT re-emitted here (double-BOS trap).
+    // Legacy path = thinking OFF (the template's `default(false)`) — byte-identical to history.
     if template.is_some_and(|t| t.contains("<|turn>")) {
-        return apply_gemma4_template(messages, add_generation_prompt);
+        return apply_gemma4_template(messages, add_generation_prompt, false);
     }
     // qwen3.5 template emits a `<think>\n` tail on the generation prompt by default.
     let qwen_think = template
@@ -199,14 +212,30 @@ pub fn apply_chat_template_tools(
     }
     if template.is_some_and(|t| t.contains("hy_User") || t.contains("<|turn>")) {
         // hy3 / gemma4 dialects: no committed tools rendering reference — reject tool
-        // features even if the raw jinja happens to mention <tools>; the plain path stays
-        // on the legacy arms and ThinkMode is ignored (graceful, per the mission contract).
+        // features even if the raw jinja happens to mention <tools>. ThinkMode maps to each
+        // arch's native mechanism (thinking goldens, render-thinking-goldens.py):
+        //   hy3    -> the template's own reasoning_effort input: no_think (its default,
+        //             = ThinkMode::Default/NoThink) or low/high (open think, ThinkMode::Think
+        //             at the level the caller resolved — effort carries it).
+        //   gemma4 -> enable_thinking: default(false) = Default/NoThink;
+        //             Think = <|think|> system token + open generation turn.
         if has_tool_features {
             return Err("tools are not supported on this model's chat-template dialect".into());
         }
         let messages: Vec<(&str, &str)> =
             turns.iter().map(|t| (t.role.as_str(), t.content.as_str())).collect();
-        return Ok(apply_chat_template_str(template, &messages, add_generation_prompt));
+        if template.is_some_and(|t| t.contains("hy_User")) {
+            // hy3's accepted set is exactly no_think|low|high; OpenAI medium clamps to low
+            // (the template has no medium level and raises on unknown strings).
+            let effort = match (think, reasoning_effort) {
+                (ThinkMode::Think, Some("high")) => "high",
+                (ThinkMode::Think, _) => "low",
+                _ => "no_think",
+            };
+            return Ok(apply_hy3_template(&messages, add_generation_prompt, effort));
+        }
+        return Ok(apply_gemma4_template(&messages, add_generation_prompt,
+                                        think == ThinkMode::Think));
     }
     let qwen_think = template
         .map(|t| t.contains("<think>") && t.contains("add_generation_prompt"))
@@ -511,16 +540,23 @@ fn apply_step35_template(turns: &[Turn], add_generation_prompt: bool, tools_json
     out
 }
 
-/// Text-only reproduction of the Hy3 `chat_template.jinja` default path (no tools, no
-/// `is_training`, `reasoning_effort` undefined => template defaults it to `'no_think'`):
-///   - `{bos}{system…}<｜reasoning_mode:opensource｜>reasoning_effort:no_think` header
+/// Text-only reproduction of the Hy3 `chat_template.jinja` (no tools, no `is_training`).
+/// `effort` is the template's own `reasoning_effort` input — `"no_think"` / `"low"` /
+/// `"high"`, its full accepted set (the jinja `raise_exception`s on anything else; undefined
+/// defaults to `'no_think'`, so callers with no opinion pass `"no_think"`):
+///   - `{bos}{system…}<｜reasoning_mode:opensource｜>reasoning_effort:{effort}` header
 ///     (system turns concatenate into the header, before any user turn);
 ///   - `user`      -> `<｜hy_User:opensource｜>{content}`
 ///   - `assistant` -> `<｜hy_Assistant:opensource｜><think:opensource></think:opensource>{content}<｜hy_eos:opensource｜>`
-///     (non-last turns; thinking is not preserved on the text path);
-///   - generation prompt (no_think): `<｜hy_Assistant:opensource｜><think:opensource></think:opensource>`.
-/// Content is NOT trimmed (the Hy3 template applies no `|trim`).
-fn apply_hy3_template(messages: &[(&str, &str)], add_generation_prompt: bool) -> String {
+///     (non-last turns; history turns render CLOSED think at every effort — the template
+///     opens only turns past `last_user_index`, and OpenAI history carries no reasoning);
+///   - generation prompt: `<｜hy_Assistant:opensource｜><think:opensource></think:opensource>`
+///     at no_think, `…<think:opensource>` (OPEN think) at low/high.
+/// Content is NOT trimmed (the Hy3 template applies no `|trim`). Goldens: rendered from the
+/// pinned tencent/Hy3 template (sha 7fc351fe…, snapshot 716aa724) by
+/// `research/step-sku-20260807/render-thinking-goldens.py`.
+fn apply_hy3_template(messages: &[(&str, &str)], add_generation_prompt: bool,
+                      effort: &str) -> String {
     const BOS: &str = "<\u{ff5c}hy_begin_of_sentence:opensource\u{ff5c}>";
     const USER: &str = "<\u{ff5c}hy_User:opensource\u{ff5c}>";
     const ASSISTANT: &str = "<\u{ff5c}hy_Assistant:opensource\u{ff5c}>";
@@ -529,13 +565,16 @@ fn apply_hy3_template(messages: &[(&str, &str)], add_generation_prompt: bool) ->
     const THINK_BEGIN: &str = "<think:opensource>";
     const THINK_END: &str = "</think:opensource>";
 
+    debug_assert!(matches!(effort, "no_think" | "low" | "high"),
+                  "hy3 reasoning_effort must be no_think|low|high, got {effort:?}");
     let mut out = String::from(BOS);
     for (role, content) in messages.iter().filter(|(r, _)| *r == "system") {
         let _ = role;
         out.push_str(content);
     }
     out.push_str(REASONING);
-    out.push_str("reasoning_effort:no_think");
+    out.push_str("reasoning_effort:");
+    out.push_str(effort);
 
     let mut last_is_assistant = false;
     let n = messages.len();
@@ -557,18 +596,43 @@ fn apply_hy3_template(messages: &[(&str, &str)], add_generation_prompt: bool) ->
     if add_generation_prompt && !last_is_assistant {
         out.push_str(ASSISTANT);
         out.push_str(THINK_BEGIN);
-        out.push_str(THINK_END);
+        if effort == "no_think" {
+            out.push_str(THINK_END); // low/high leave the think channel OPEN (the golden)
+        }
     }
     out
 }
 
 
 /// gemma4 turn dialect (text-only path of the GGUF template, verified against the dumped
-/// jinja): roles map assistant->model; each turn = `<|turn>{role}\n{content|trim}<turn|>\n`;
-/// generation prompt = `<|turn>model\n<|channel>thought\n<channel|>`.
-fn apply_gemma4_template(messages: &[(&str, &str)], add_generation_prompt: bool) -> String {
+/// jinja — sha 36e3a42e…, goldens `research/step-sku-20260807/raw/thinking-goldens.txt`):
+/// roles map assistant->model; each turn = `<|turn>{role}\n{content|trim}<turn|>\n`.
+///
+/// THINKING is `enable_thinking`, and its default is OFF (`enable_thinking | default(false)`)
+/// — the inverse of the qwen class:
+///   - thinking OFF (default): generation prompt = `<|turn>model\n<|channel>thought\n<channel|>`
+///     (the CLOSED thought channel — the model may not think);
+///   - thinking ON: a `<|think|>\n` token is injected at the very top of the FIRST system
+///     turn (a system turn is CREATED if the request has none), and the generation prompt is
+///     the bare `<|turn>model\n` — the thought channel is left to the model.
+fn apply_gemma4_template(messages: &[(&str, &str)], add_generation_prompt: bool,
+                         thinking: bool) -> String {
     let mut out = String::new();
-    for (role, content) in messages {
+    let mut msgs = messages;
+    // System header block: fires when thinking is on OR a leading system turn exists.
+    let leading_system = msgs.first().filter(|(r, _)| *r == "system");
+    if thinking || leading_system.is_some() {
+        out.push_str("<|turn>system\n");
+        if thinking {
+            out.push_str("<|think|>\n");
+        }
+        if let Some((_, content)) = leading_system {
+            out.push_str(content.trim());
+            msgs = &msgs[1..];
+        }
+        out.push_str("<turn|>\n");
+    }
+    for (role, content) in msgs {
         let role = if *role == "assistant" { "model" } else { role };
         out.push_str("<|turn>");
         out.push_str(role);
@@ -577,7 +641,10 @@ fn apply_gemma4_template(messages: &[(&str, &str)], add_generation_prompt: bool)
         out.push_str("<turn|>\n");
     }
     if add_generation_prompt {
-        out.push_str("<|turn>model\n<|channel>thought\n<channel|>");
+        out.push_str("<|turn>model\n");
+        if !thinking {
+            out.push_str("<|channel>thought\n<channel|>");
+        }
     }
     out
 }
@@ -713,6 +780,99 @@ mod tests {
         // tool-role turns need the branch too.
         let tool_turns = vec![Turn { role: "tool".into(), content: "r".into(), tool_calls: Vec::new() }];
         assert!(apply_chat_template_tools(None, &tool_turns, true, &[], ThinkMode::Default, None).is_err());
+    }
+
+    // ---- per-arch thinking control (owner directive 2026-08-07) -------------------------
+    // Every `expected` below is the EXACT string the arch's REAL shipped template renders,
+    // from research/step-sku-20260807/raw/thinking-goldens.txt (render-thinking-goldens.py:
+    // jinja2 trim_blocks/lstrip_blocks over the pinned template dumps — gemma4 sha 36e3a42e
+    // from the local QAT GGUF header, hy3 sha 7fc351fe from the pinned tencent/Hy3 snapshot).
+
+    fn one_user() -> Vec<Turn> {
+        vec![turn("user", "Hi")]
+    }
+
+    #[test]
+    fn gemma4_thinking_maps_to_the_think_token_and_open_turn() {
+        let g = |think: ThinkMode| {
+            apply_chat_template_tools(Some("... <|turn> ..."), &one_user(), true, &[], think,
+                                      None).unwrap()
+        };
+        // Default AND NoThink = the template's own default(false): closed thought channel.
+        // Byte-identical to the legacy renderer (no silent behavior change).
+        let closed = "<|turn>user\nHi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>";
+        assert_eq!(g(ThinkMode::Default), closed);
+        assert_eq!(g(ThinkMode::NoThink), closed);
+        assert_eq!(apply_chat_template_str(Some("... <|turn> ..."), &[("user", "Hi")], true),
+                   closed, "legacy renderer = the default arm");
+        // Think = enable_thinking=true: <|think|> injected into a CREATED system turn and
+        // the generation turn left open (golden: gemma4 enable_thinking=true, no system).
+        assert_eq!(g(ThinkMode::Think),
+                   "<|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n");
+        // with a client system turn the token lands at the very top of it (golden).
+        let turns = vec![turn("system", "Be terse."), turn("user", "Hi")];
+        let s = apply_chat_template_tools(Some("... <|turn> ..."), &turns, true, &[],
+                                          ThinkMode::Think, None).unwrap();
+        assert_eq!(s, "<|turn>system\n<|think|>\nBe terse.<turn|>\n\
+                       <|turn>user\nHi<turn|>\n<|turn>model\n");
+    }
+
+    #[test]
+    fn hy3_thinking_maps_to_its_reasoning_effort_levels() {
+        const HY_TMPL: Option<&str> = Some("... hy_User ...");
+        let h = |think: ThinkMode, effort: Option<&str>| {
+            apply_chat_template_tools(HY_TMPL, &one_user(), true, &[], think, effort).unwrap()
+        };
+        // Default AND NoThink = the template's own default: no_think header + CLOSED think.
+        // Byte-identical to the legacy renderer.
+        let closed = "<\u{ff5c}hy_begin_of_sentence:opensource\u{ff5c}>\
+                      <\u{ff5c}reasoning_mode:opensource\u{ff5c}>reasoning_effort:no_think\
+                      <\u{ff5c}hy_User:opensource\u{ff5c}>Hi\
+                      <\u{ff5c}hy_Assistant:opensource\u{ff5c}>\
+                      <think:opensource></think:opensource>";
+        assert_eq!(h(ThinkMode::Default, None), closed);
+        assert_eq!(h(ThinkMode::NoThink, Some("low")), closed,
+                   "NoThink wins over a level: thinking off IS no_think");
+        assert_eq!(apply_chat_template_str(HY_TMPL, &[("user", "Hi")], true), closed,
+                   "legacy renderer = the default arm");
+        // Think at low/high = the template's own open-think levels (goldens: header carries
+        // the level, generation prompt ends with an OPEN <think:opensource>).
+        let low = h(ThinkMode::Think, Some("low"));
+        assert!(low.contains("reasoning_effort:low"), "{low:?}");
+        assert!(low.ends_with("<think:opensource>"), "{low:?}");
+        let high = h(ThinkMode::Think, Some("high"));
+        assert!(high.contains("reasoning_effort:high"), "{high:?}");
+        assert!(high.ends_with("<think:opensource>"), "{high:?}");
+        // medium clamps to low (hy3's accepted set is exactly no_think|low|high — the jinja
+        // raise_exceptions on anything else); Think with no level also lands at low.
+        assert_eq!(h(ThinkMode::Think, Some("medium")), low);
+        assert_eq!(h(ThinkMode::Think, None), low);
+        // History assistant turns stay CLOSED-think at every effort (the template opens only
+        // turns past last_user_index; golden: "hy3 assistant history stays closed-think").
+        let turns = vec![turn("user", "q"), turn("assistant", "a"), turn("user", "more")];
+        let s = apply_chat_template_tools(HY_TMPL, &turns, true, &[], ThinkMode::Think,
+                                          Some("low")).unwrap();
+        assert_eq!(s, "<\u{ff5c}hy_begin_of_sentence:opensource\u{ff5c}>\
+                       <\u{ff5c}reasoning_mode:opensource\u{ff5c}>reasoning_effort:low\
+                       <\u{ff5c}hy_User:opensource\u{ff5c}>q\
+                       <\u{ff5c}hy_Assistant:opensource\u{ff5c}>\
+                       <think:opensource></think:opensource>a\
+                       <\u{ff5c}hy_eos:opensource\u{ff5c}>\
+                       <\u{ff5c}hy_User:opensource\u{ff5c}>more\
+                       <\u{ff5c}hy_Assistant:opensource\u{ff5c}><think:opensource>");
+    }
+
+    #[test]
+    fn qwen_think_mode_covers_all_three_directions() {
+        let q = |think: ThinkMode| {
+            apply_chat_template_tools(Some(QWEN_TOOLS_TMPL), &one_user(), true, &[], think,
+                                      None).unwrap()
+        };
+        // qwen's template default IS thinking-on, so Default and Think render identically.
+        assert!(q(ThinkMode::Default).ends_with("<|im_start|>assistant\n<think>\n"));
+        assert_eq!(q(ThinkMode::Think), q(ThinkMode::Default));
+        assert!(q(ThinkMode::NoThink)
+            .ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
     }
 
     // ---- StepFun Step-3.7-Flash (arch step35) -------------------------------------------
