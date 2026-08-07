@@ -6868,6 +6868,17 @@ impl HybridModel {
                     base_len
                 };
                 let kvl = cache.kv[il].as_ref().unwrap();
+                // The MEMRA_STEP35_SWA_TKV=1 seam restores the FULL pre-fix arithmetic:
+                // the chunk-local arm predicate (below) AND the unaligned view offset (here).
+                // Both halves are load-bearing for the canary: on the FA default the two
+                // predicate arms select kernels that agree bitwise wherever the predicate
+                // can differ (a t_kv<=win view has no maskable key, so windowed==unwindowed
+                // FA bit-for-bit), which made a predicate-only seam INERT — the gate's
+                // CANARY UNEXPECTEDLY MATCHED verdict on battery 2 caught that (the same
+                // vacuous-canary class as step37-p2 GAP 1). The unaligned offset is the
+                // live chunk-variant mechanism on the FA arm (tile grid, below), so the
+                // seam must restore it too. Read once per call, never in a measured default.
+                let legacy_tkv = std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1");
                 // SWA: trim the view to the oldest key any query in this chunk can reach —
                 // ALIGNED DOWN to the FA tile size (BK=32). The raw trim is chunk-DEPENDENT
                 // (off = base_len-(win-1), and base_len is a chunk boundary), and the FA
@@ -6881,8 +6892,13 @@ impl HybridModel {
                 // (all queries sit at >= base_len, so keys < base_len-(win-1) are masked
                 // for all of them) and a fully-masked key is an exact-0.0 no-op in both
                 // kernels (NEG_INF -> p=0.0; l+=0.0 and O+=0.0 are bitwise identity), so
-                // the floor arm's bits do not move either.
-                let off = if swa { base_len.saturating_sub(win - 1) & !31usize } else { 0 };
+                // the floor arm's bits do not move either (gated: G2f, battery 2).
+                let off = if swa {
+                    let raw = base_len.saturating_sub(win - 1);
+                    if legacy_tkv { raw } else { raw & !31usize }
+                } else {
+                    0
+                };
                 let t_kv = base_len + t - off;
                 let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
                                              (off + t_kv) * kvl.k_tok_bytes);
@@ -6891,17 +6907,15 @@ impl HybridModel {
                 // CHUNK-INVARIANT PREDICATE: `seq_end` (the request's absolute end position), not
                 // this chunk's `t_kv`. See the doc note — keying on t_kv made P = c*floor(win/c)
                 // rows take FA and the output a function of MEMRA_PRIME_CHUNK.
-                // MEMRA_STEP35_SWA_TKV=1 is the ROLLBACK SEAM to that pre-fix predicate, and it is
-                // what gives the step35 chunkinv gate its canary teeth: it is chunk-VARIANT by
-                // construction, so the invariance assertion MUST break under it (this is the seam
-                // whose absence made the original canary inert — GAP 1 in
-                // research/step37-p2-20260806). Read per call, not cached, because the probe flips
-                // it in-process between arms. Never on in a measured default run.
-                let swa_naive = if std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1") {
-                    t_kv > win
-                } else {
-                    seq_end > win
-                };
+                // MEMRA_STEP35_SWA_TKV=1 is the ROLLBACK SEAM to the pre-fix arithmetic — BOTH
+                // halves: this predicate AND the unaligned view offset above (`legacy_tkv`).
+                // It is what gives the step35 chunkinv gate its canary teeth: chunk-VARIANT by
+                // construction, so the invariance assertion MUST break under it (the seam whose
+                // absence made the original canary inert — GAP 1 in research/step37-p2-20260806;
+                // and a predicate-only seam went inert AGAIN under the FA default, battery 2's
+                // CANARY UNEXPECTEDLY MATCHED — see the offset comment). Read per call, not
+                // cached (probes flip it in-process). Never on in a measured default run.
+                let swa_naive = if legacy_tkv { t_kv > win } else { seq_end > win };
                 if swa && swa_naive {
                     // Windowed mask needed (see the doc note). DEFAULT since lane/pp-prefill
                     // 2026-08-07: the windowed hd128 FA stamp (`fa_prefill_view_ws_w_hd128`) —
