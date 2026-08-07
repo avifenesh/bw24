@@ -241,5 +241,67 @@ arm reproduces the capacity baseline (85.7 ≈ the 86-91 window). TTFT p50 2.182
 and the 228-token TTFT probe prompt sits under the 512 window where both arms ride
 `fa_prefill_view_ws` anyway; the 4k-prompt TTFT is the one lever A moves.
 
-Battery 2 (running): G2 must flip INVARIANT, G2c canary stays red, G2f floor unmoved,
-G3/G5 re-receipts, G6 N=5 interleaved on the aligned arm.
+### Battery 2 (`raw/leverA-gates2-20260807T144832Z.log`) — the alignment fix holds, and the gate's teeth check fired AGAIN
+
+- **G2 chunkinv35 naked: INVARIANT** — bit-identical logits + hidden rows + 24-step greedy
+  streams at chunks {4096, 513, 512, 256, 64} on the aligned FA arm.
+- **G2f floor arm (`MEMRA_STEP35_SWA_FA=0`): INVARIANT** — the fully-masked-key no-op claim
+  measured, not argued: the alignment did not move the floor's bits.
+- G3 run-gen MATCH (argmax 6776 / 6776, batched-prime MATCH), G5 run-spec 8/8 PASS with
+  acceptance digit-for-digit at the pinned baseline (14/17 = 82.4% K=1, flat-15 K=2..8).
+- G6 aligned FA arm N=5 interleaved: **153.3 / 140.6 / 141.2 / 140.8 / 140.9** vs floor
+  85.7-85.9 — the alignment cost nothing.
+- **G2c: CANARY UNEXPECTEDLY MATCHED.** With the FA arm as default, flipping only the
+  predicate seam selects between windowed-FA and unwindowed-FA on views where no key is
+  maskable — bit-identical outputs, so the canary went vacuous (the same class as
+  step37-p2 GAP 1, second occurrence on this arch, caught both times by the gate's own
+  teeth check). Fix `82b216b8`: `MEMRA_STEP35_SWA_TKV=1` now restores BOTH halves of the
+  pre-fix arithmetic — the chunk-local predicate AND the unaligned view offset (the live
+  chunk-variant mechanism on the FA arm).
+
+### Battery 3 (`raw/leverA-gates3-20260807T172342Z.log`) — all three arms green
+
+| arm | verdict |
+|---|---|
+| G2 chunkinv35 naked | **INVARIANT** (no regression from the seam change) |
+| G2c canary | **BREAKS as required** — gate has teeth again |
+| G2v expect-variant control | **PASS** — the legacy seam reproduces the pinned divergence |
+
+### The TTFT receipt on the shape the traffic sends (`raw/leverA-ttft4k-20260807T183226Z.log`)
+
+The battery-1 TTFT probe (228-token prompt, p50 2.182 s) sits under the 512 SWA window —
+both arms ride the same kernels there, so it could not move and did not. The 4k prompt is
+lever A's shape (and the 89.5:1 traffic's). Serve-level, streaming, N=5 + 1 warmup per arm,
+one lock hold, spec OFF per #87, drafter attached (probe counts the first delta of either
+`content` or `reasoning` — step35 opens `<think>` unconditionally, the step-sku trap):
+
+| arm | 4k-prompt TTFT p50 | p95 |
+|---|---|---|
+| FA (default) | **32.04 s** | 32.08 s |
+| FLOOR (`MEMRA_STEP35_SWA_FA=0`) | 38.18 s | 38.30 s |
+
+FA saves 6.1 s p50 (1.19x). Note the serve delta is smaller than the probe's 1.64x because
+the worker primes in `PREFILL_TICK_T=1024` chunks — the floor's quadratic naive cost is
+bounded per tick (t_kv ≤ 511+1024), so serve-floor runs faster than probe-floor; the FA
+arm is tick-shape-insensitive. Also recorded: a 4k TTFT of ~32 s is the real serving
+number — the 2.18 s p50 in the capacity receipts is the SHORT-turn cell, not this shape.
+
+### LEVER A CLOSED — summary
+
+| metric | before | after | receipt |
+|---|---|---|---|
+| pp4096 prefill (ppprime, N=5) | 90.9 tok/s (capacity) / 85.7 floor-arm same-binary | **~141 tok/s** (153.3 first-warm, 140.6-141.2 steady) | gates2 G6 |
+| 4k TTFT p50 (serve, stream) | 38.2 s (floor arm) | **32.0 s** | ttft4k |
+| kernel-check | — | ALL GREEN local 5090 + box (13 new assertions) | gates G1, kc-5090 |
+| chunkinv35 + canary + expect-variant | — | INVARIANT / RED / PASS | gates3 |
+| run-gen / ppn-gate / run-spec K=1..8 | — | MATCH / BIT-IDENTICAL both arms / 8/8 PASS at pinned acceptance | gates, gates2 |
+
+Commits: `8b425742` (stamp + wiring + cells), `5c523d5e` (tile-grid alignment — found by
+chunkinv35), `82b216b8` (both-halves canary seam — found by the gate's teeth check).
+Two gate catches in one lever is the receipt that the exactness battery is load-bearing on
+this path; neither defect was reachable by kernel-check alone.
+
+**What lever A does NOT do:** dev1 still runs zero prefill kernels, the peer-read tax
+(22% of the pre-A profile) and the MoE m=1 dispatch (28%) stand. Those are levers B and C
+(`Increment 1`'s projections: A+B ≈ 420-450, A+B+C ≈ 1400-1600 tok/s). B is next in this
+lane.

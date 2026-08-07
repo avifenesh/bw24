@@ -1,0 +1,29 @@
+=== leverA ttft4k 20260807T183326Z (commit 82b216b8 rsync)
+lock acquired 2026-08-07T18:33:26Z
+
+--- arm FA (default), 4k prompt, stream, N=5 + 1 warmup ---
+ready ~30s
+  req 0: ttft=33.757s
+warmup-fa: N=1 ttft p50=33.757s p95=33.757s min=33.757 max=33.757
+  req 0: ttft=33.461s
+  req 1: ttft=32.044s
+  req 2: ttft=31.922s
+  req 3: ttft=32.082s
+  req 4: ttft=32.026s
+FA: N=5 ttft p50=32.044s p95=32.082s min=31.922 max=33.461
+
+--- arm FLOOR (MEMRA_STEP35_SWA_FA=0), same shape ---
+ready ~30s
+  req 0: ttft=39.930s
+warmup-floor: N=1 ttft p50=39.930s p95=39.930s min=39.930 max=39.930
+  req 0: ttft=39.624s
+  req 1: ttft=38.178s
+  req 2: ttft=38.110s
+  req 3: ttft=38.302s
+  req 4: ttft=38.144s
+FLOOR: N=5 ttft p50=38.178s p95=38.302s min=38.110 max=39.624
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-07T18:41:50Z
+=== ttft4k rc=0
+=== done 2026-08-07T18:41:50Z
