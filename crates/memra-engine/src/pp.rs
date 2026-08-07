@@ -886,6 +886,15 @@ pub fn new_cache(e: &Engine, cfg: &memra_gguf::config::ModelConfig, max_ctx: usi
                 rt.n_stages(), n_st,
                 "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
             );
+            // #87 REVERSE PUBLICATION at ADMISSION (lane/pp2spec-crash): this is the one
+            // stage-stream allocation site OUTSIDE the ppN step bodies — a NEW session's
+            // KV alloc_zeros enqueue on the STAGE streams, and their pool blocks can be
+            // reuse of buffers freed from ANOTHER session's in-flight verify whose
+            // primary-stream reads are still queued (the c=2 residual: exactly one trap
+            // per admission collision, round 0, after the step-body fences landed).
+            // Order the stage streams behind the caller before the memsets can clobber.
+            // Anatomy: `PpNRt::fence_stages_behind`.
+            rt.fence_stages_behind(&e.stream())?;
             let devs: Vec<&dyn memra_kv::KvDev> =
                 (0..n_st).map(|s| rt.engine(s, e) as &dyn memra_kv::KvDev).collect();
             let cache = crate::cache::Cache::new_ppn(&devs, &fence, cfg, max_ctx)?;
