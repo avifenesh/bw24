@@ -16,9 +16,10 @@
 //!   GET  /readyz                 -> routability, same payload shape with
 //!                                     "status":"ready"|"not_ready". Unready is NOT a restart
 //!                                     request — draining and loading are healthy-but-unroutable.
-//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
-//!   GET  /v1/models              -> OR-schema model list (context_length, architecture,
-//!                                     pricing stub, top_provider; serve-tail 2026-08-04).
+//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish);
+//!                                     ?schema=openrouter -> Provider Monitor schema 2.4.
+//!   GET  /v1/models              -> existing catalog-style model list (context_length,
+//!                                     architecture, pricing stub, top_provider; serve-tail).
 //!   GET  /metrics                -> flat serving counters + step latency percentiles.
 //!   GET  /yield/metrics          -> per-lane x-lane QoS counters + engine-truth step p50/p99
 //!                                     (lane/qos-p95 2026-08-02).
@@ -68,7 +69,7 @@ use std::sync::mpsc::Sender;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{sse::{Event as SseEvent, Sse}, IntoResponse, Response},
     routing::{get, post},
@@ -82,11 +83,269 @@ use memra_tokenizer::chat::{ThinkMode, ToolCall as TmplToolCall, Turn as TmplTur
 use toolcall::{ParsedToolCall, Piece, ToolStreamParser};
 use worker::{Cmd, Event, ModelCaps, Request, SharedMetrics};
 
+const OPENROUTER_SCHEMA_VERSION: &str = "2.4";
+const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterMetadataFile {
+    #[serde(default)]
+    models: HashMap<String, OpenRouterModelMetadata>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterModelMetadata {
+    #[serde(default)]
+    hugging_face_id: Option<String>,
+    #[serde(default)]
+    created: Option<u64>,
+    #[serde(default)]
+    quantization: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    max_prompt_length: Option<u64>,
+    #[serde(default)]
+    max_output_length: Option<u64>,
+    #[serde(default)]
+    pricing: OpenRouterPricing,
+    #[serde(default)]
+    capacity: OpenRouterCapacity,
+    #[serde(default)]
+    is_ready: Option<bool>,
+    #[serde(default)]
+    is_free: Option<bool>,
+    #[serde(default)]
+    discount_to_user: Option<f64>,
+    #[serde(default)]
+    openrouter_slug: Option<String>,
+    #[serde(default)]
+    datacenters: Vec<OpenRouterDatacenter>,
+    #[serde(default)]
+    zdr: Option<bool>,
+    #[serde(default)]
+    hipaa: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterPricing {
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    cached_prompt: Option<String>,
+    #[serde(default)]
+    cache_write: Option<String>,
+    #[serde(default)]
+    completion: Option<String>,
+    #[serde(default)]
+    internal_reasoning: Option<String>,
+    #[serde(default)]
+    request: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterCapacity {
+    #[serde(default)]
+    prompt_tpm: Option<u64>,
+    #[serde(default)]
+    cached_prompt_tpm: Option<u64>,
+    #[serde(default)]
+    completion_tpm: Option<u64>,
+    #[serde(default)]
+    request_rpm: Option<u64>,
+    #[serde(default)]
+    concurrency: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterDatacenter {
+    country_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+}
+
+impl OpenRouterMetadataFile {
+    fn from_toml(text: &str) -> Result<HashMap<String, OpenRouterModelMetadata>, String> {
+        let file: Self = toml::from_str(text)
+            .map_err(|e| format!("models metadata TOML parse: {e}"))?;
+        for (alias, metadata) in &file.models {
+            validate_openrouter_metadata(alias, metadata)?;
+        }
+        Ok(file.models)
+    }
+}
+
+fn valid_price_string(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    !whole.is_empty()
+        && whole.bytes().all(|b| b.is_ascii_digit())
+        && fraction.is_none_or(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
+fn validate_openrouter_metadata(
+    alias: &str,
+    metadata: &OpenRouterModelMetadata,
+) -> Result<(), String> {
+    if alias.is_empty() {
+        return Err("models metadata contains an empty model alias".into());
+    }
+    if let Some(q) = metadata.quantization.as_deref()
+        && !matches!(
+            q,
+            "int4" | "int8" | "fp4" | "mxfp4" | "nvfp4" | "fp6" | "fp8" | "mxfp8"
+                | "fp16" | "bf16" | "fp32"
+        )
+    {
+        return Err(format!(
+            "model {alias:?}: quantization {q:?} is not in the OpenRouter schema 2.4 enum"
+        ));
+    }
+    for (field, value) in [
+        ("pricing.prompt", metadata.pricing.prompt.as_deref()),
+        (
+            "pricing.cached_prompt",
+            metadata.pricing.cached_prompt.as_deref(),
+        ),
+        (
+            "pricing.cache_write",
+            metadata.pricing.cache_write.as_deref(),
+        ),
+        (
+            "pricing.completion",
+            metadata.pricing.completion.as_deref(),
+        ),
+        (
+            "pricing.internal_reasoning",
+            metadata.pricing.internal_reasoning.as_deref(),
+        ),
+        ("pricing.request", metadata.pricing.request.as_deref()),
+    ] {
+        if let Some(value) = value
+            && !valid_price_string(value)
+        {
+            return Err(format!(
+                "model {alias:?}: {field} must be a non-negative per-unit USD decimal string"
+            ));
+        }
+    }
+    for (field, value) in [
+        ("created", metadata.created),
+        ("max_prompt_length", metadata.max_prompt_length),
+        ("max_output_length", metadata.max_output_length),
+        ("capacity.prompt_tpm", metadata.capacity.prompt_tpm),
+        (
+            "capacity.cached_prompt_tpm",
+            metadata.capacity.cached_prompt_tpm,
+        ),
+        (
+            "capacity.completion_tpm",
+            metadata.capacity.completion_tpm,
+        ),
+        ("capacity.request_rpm", metadata.capacity.request_rpm),
+        ("capacity.concurrency", metadata.capacity.concurrency),
+    ] {
+        if let Some(value) = value
+            && value > JSON_SAFE_INTEGER_MAX
+        {
+            return Err(format!(
+                "model {alias:?}: {field} exceeds OpenRouter's JSON safe-integer maximum"
+            ));
+        }
+    }
+    for (field, value) in [
+        ("max_prompt_length", metadata.max_prompt_length),
+        ("max_output_length", metadata.max_output_length),
+        ("capacity.prompt_tpm", metadata.capacity.prompt_tpm),
+        (
+            "capacity.cached_prompt_tpm",
+            metadata.capacity.cached_prompt_tpm,
+        ),
+        (
+            "capacity.completion_tpm",
+            metadata.capacity.completion_tpm,
+        ),
+        ("capacity.request_rpm", metadata.capacity.request_rpm),
+        ("capacity.concurrency", metadata.capacity.concurrency),
+    ] {
+        if value == Some(0) {
+            return Err(format!(
+                "model {alias:?}: {field} must be greater than zero when declared"
+            ));
+        }
+    }
+    if let Some(discount) = metadata.discount_to_user
+        && (!discount.is_finite() || discount >= 1.0)
+    {
+        return Err(format!(
+            "model {alias:?}: discount_to_user must be finite and less than 1"
+        ));
+    }
+    if metadata
+        .openrouter_slug
+        .as_deref()
+        .is_some_and(str::is_empty)
+    {
+        return Err(format!(
+            "model {alias:?}: openrouter_slug must not be empty when declared"
+        ));
+    }
+    for dc in &metadata.datacenters {
+        if dc.country_code.len() != 2
+            || !dc.country_code.bytes().all(|b| b.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "model {alias:?}: datacenter country_code {:?} must be two uppercase ASCII letters",
+                dc.country_code
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn load_openrouter_metadata(
+    models: &[(String, String, Option<String>)],
+) -> Result<HashMap<String, OpenRouterModelMetadata>, String> {
+    let path = match std::env::var("MEMRA_MODEL_METADATA") {
+        Ok(path) => path,
+        Err(_) => return Ok(HashMap::new()),
+    };
+    let p = std::path::Path::new(&path);
+    if !p.is_file() {
+        return Err(format!(
+            "MEMRA_MODEL_METADATA={path:?} is not an existing TOML file"
+        ));
+    }
+    let text = std::fs::read_to_string(p)
+        .map_err(|e| format!("MEMRA_MODEL_METADATA {path:?}: {e}"))?;
+    let metadata = OpenRouterMetadataFile::from_toml(&text)
+        .map_err(|e| format!("MEMRA_MODEL_METADATA {path:?}: {e}"))?;
+    for alias in metadata.keys() {
+        if !models.iter().any(|(name, _, _)| name == alias) {
+            return Err(format!(
+                "MEMRA_MODEL_METADATA {path:?}: model alias {alias:?} is not present in MEMRA_MODELS"
+            ));
+        }
+    }
+    eprintln!(
+        "[server] OpenRouter metadata loaded: {} model(s) from {path}",
+        metadata.len()
+    );
+    Ok(metadata)
+}
+
 #[derive(Clone)]
 struct AppState {
     cmd_tx: Sender<Cmd>,
     models: Arc<Vec<String>>,
     caps: Arc<HashMap<String, ModelCaps>>,
+    openrouter_metadata: Arc<HashMap<String, OpenRouterModelMetadata>>,
     metrics: SharedMetrics,
     /// unix seconds at worker-ready — the /v1/models `created` value (when this server
     /// instance made the model available; the honest timestamp we actually know).
@@ -1112,6 +1371,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     auth::init_from_env();
 
     let models = parse_models_config();
+    let openrouter_metadata = match load_openrouter_metadata(&models) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("[server] FATAL: {err}");
+            std::process::exit(1);
+        }
+    };
     eprintln!("[server] starting; models config = {models:?}");
 
     // Inference-liveness state (G5). Created BEFORE the worker so the whole weight load is
@@ -1147,7 +1413,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let state = AppState {
-        cmd_tx, models: model_names, caps, metrics,
+        cmd_tx, models: model_names, caps,
+        openrouter_metadata: Arc::new(openrouter_metadata),
+        metrics,
         started: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(0),
@@ -1505,12 +1773,303 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
     Json(body)
 }
 
-async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
-    let data: Vec<_> = st.models.iter().map(|m| json!({ "id": m, "object": "model" })).collect();
-    Json(json!({ "object": "list", "data": data }))
+#[derive(Debug, Default, Deserialize)]
+struct ModelsQuery {
+    #[serde(default)]
+    schema: Option<String>,
 }
 
-/// One /v1/models entry in the OpenRouter model schema (serve-tail lane, 2026-08-04).
+fn models_openai_body(models: &[String]) -> serde_json::Value {
+    let data: Vec<_> = models
+        .iter()
+        .map(|m| json!({ "id": m, "object": "model" }))
+        .collect();
+    json!({ "object": "list", "data": data })
+}
+
+fn openrouter_supported_parameters(
+    caps: Option<&ModelCaps>,
+    max_output_length: Option<u64>,
+) -> serde_json::Value {
+    let mut parameters = serde_json::Map::new();
+    for name in [
+        "temperature",
+        "top_p",
+        "min_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "stop",
+    ] {
+        parameters.insert(name.into(), json!({ "type": "unknown" }));
+    }
+    parameters.insert("top_k".into(), json!({ "type": "integer", "min": 0 }));
+    parameters.insert(
+        "seed".into(),
+        json!({ "type": "integer", "min": 0, "max": JSON_SAFE_INTEGER_MAX }),
+    );
+    let mut max_tokens = json!({ "type": "integer", "min": 1, "unit": "token" });
+    if let Some(max) = max_output_length {
+        max_tokens["max"] = json!(max);
+    }
+    parameters.insert("max_tokens".into(), max_tokens);
+    parameters.insert("json_mode".into(), json!({ "type": "boolean" }));
+    parameters.insert(
+        "structured_outputs".into(),
+        json!({ "type": "boolean" }),
+    );
+    if caps.is_some_and(|c| c.tools_branch) {
+        parameters.insert("tools".into(), json!({ "type": "boolean" }));
+        parameters.insert(
+            "tool_choice".into(),
+            json!({ "type": "enum", "values": ["auto", "none"] }),
+        );
+    }
+    if caps.is_some_and(|c| c.qwen_think || c.effort_levels || c.gemma_think) {
+        parameters.insert("reasoning".into(), json!({ "type": "boolean" }));
+    }
+    serde_json::Value::Object(parameters)
+}
+
+fn model_entry_openrouter(
+    name: &str,
+    caps: Option<&ModelCaps>,
+    metadata: Option<&OpenRouterModelMetadata>,
+) -> serde_json::Value {
+    let empty = OpenRouterModelMetadata::default();
+    let metadata = metadata.unwrap_or(&empty);
+    let context_length = caps
+        .map(|c| c.context_length as u64)
+        .filter(|&v| v > 0 && v <= JSON_SAFE_INTEGER_MAX);
+    let tokenizer = caps
+        .map(|c| c.tokenizer.as_str())
+        .filter(|tokenizer| !tokenizer.is_empty());
+
+    let mut input = serde_json::Map::new();
+    input.insert("type".into(), json!("text"));
+    let mut supported_inputs = serde_json::Map::new();
+    if let Some(value) = context_length {
+        supported_inputs.insert(
+            "max_context_length".into(),
+            json!({ "value": value, "unit": "token" }),
+        );
+    }
+    if let Some(value) = metadata.max_prompt_length {
+        supported_inputs.insert(
+            "max_prompt_length".into(),
+            json!({ "value": value, "unit": "token" }),
+        );
+    }
+    if !supported_inputs.is_empty() {
+        input.insert(
+            "supported_inputs".into(),
+            serde_json::Value::Object(supported_inputs),
+        );
+    }
+    let mut input_pricing = Vec::new();
+    for (kind, cost) in [
+        ("prompt", metadata.pricing.prompt.as_deref()),
+        (
+            "cached_prompt",
+            metadata.pricing.cached_prompt.as_deref(),
+        ),
+        ("cache_write", metadata.pricing.cache_write.as_deref()),
+    ] {
+        if let Some(cost) = cost {
+            input_pricing.push(json!({
+                "type": kind,
+                "unit": "token",
+                "cost_usd": cost,
+            }));
+        }
+    }
+    if !input_pricing.is_empty() {
+        input.insert("pricing".into(), serde_json::Value::Array(input_pricing));
+    }
+    let mut input_capacity = Vec::new();
+    for (kind, value) in [
+        ("prompt", metadata.capacity.prompt_tpm),
+        ("cached_prompt", metadata.capacity.cached_prompt_tpm),
+    ] {
+        if let Some(value) = value {
+            input_capacity.push(json!({
+                "type": kind,
+                "unit": "token",
+                "per": "minute",
+                "value": value,
+            }));
+        }
+    }
+    if !input_capacity.is_empty() {
+        input.insert(
+            "capacity".into(),
+            serde_json::Value::Array(input_capacity),
+        );
+    }
+
+    let mut output = serde_json::Map::new();
+    output.insert("type".into(), json!("text"));
+    output.insert(
+        "supported_parameters".into(),
+        openrouter_supported_parameters(caps, metadata.max_output_length),
+    );
+    output.insert("streaming".into(), json!(true));
+    if let Some(value) = metadata.max_output_length {
+        output.insert(
+            "max_length".into(),
+            json!({ "value": value, "unit": "token" }),
+        );
+    }
+    let mut output_pricing = Vec::new();
+    for (kind, cost) in [
+        ("completion", metadata.pricing.completion.as_deref()),
+        (
+            "internal_reasoning",
+            metadata.pricing.internal_reasoning.as_deref(),
+        ),
+    ] {
+        if let Some(cost) = cost {
+            output_pricing.push(json!({
+                "type": kind,
+                "unit": "token",
+                "cost_usd": cost,
+            }));
+        }
+    }
+    if !output_pricing.is_empty() {
+        output.insert(
+            "pricing".into(),
+            serde_json::Value::Array(output_pricing),
+        );
+    }
+    let mut output_capacity = Vec::new();
+    if let Some(value) = metadata.capacity.completion_tpm {
+        output_capacity.push(json!({
+            "type": "completion",
+            "unit": "token",
+            "per": "minute",
+            "value": value,
+        }));
+    }
+    if let Some(value) = metadata.capacity.concurrency {
+        output_capacity.push(json!({
+            "type": "concurrency",
+            "unit": "request",
+            "value": value,
+        }));
+    }
+    if !output_capacity.is_empty() {
+        output.insert(
+            "capacity".into(),
+            serde_json::Value::Array(output_capacity),
+        );
+    }
+
+    let mut entry = serde_json::Map::new();
+    entry.insert("schema_version".into(), json!(OPENROUTER_SCHEMA_VERSION));
+    entry.insert("id".into(), json!(name));
+    entry.insert("name".into(), json!(name));
+    if let Some(value) = metadata.hugging_face_id.as_deref() {
+        entry.insert("hugging_face_id".into(), json!(value));
+    }
+    if let Some(value) = metadata.created {
+        entry.insert("created".into(), json!(value));
+    }
+    if let Some(value) = metadata.quantization.as_deref() {
+        entry.insert("quantization".into(), json!(value));
+    }
+    if let Some(value) = tokenizer {
+        entry.insert("tokenizer".into(), json!(value));
+    }
+    if let Some(value) = metadata.description.as_deref() {
+        entry.insert("description".into(), json!(value));
+    }
+    entry.insert(
+        "input_modalities".into(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(input)]),
+    );
+    entry.insert(
+        "output_modalities".into(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(output)]),
+    );
+    if let Some(cost) = metadata.pricing.request.as_deref() {
+        entry.insert(
+            "pricing".into(),
+            json!([{ "type": "request", "unit": "request", "cost_usd": cost }]),
+        );
+    }
+    if let Some(value) = metadata.capacity.request_rpm {
+        entry.insert(
+            "capacity".into(),
+            json!([{
+                "type": "request",
+                "unit": "request",
+                "per": "minute",
+                "value": value,
+            }]),
+        );
+    }
+    if let Some(value) = metadata.is_ready {
+        entry.insert("is_ready".into(), json!(value));
+    }
+    if let Some(value) = metadata.is_free {
+        entry.insert("is_free".into(), json!(value));
+    }
+    if let Some(value) = metadata.discount_to_user {
+        entry.insert("discount_to_user".into(), json!(value));
+    }
+    if let Some(value) = metadata.openrouter_slug.as_deref() {
+        entry.insert("openrouter".into(), json!({ "slug": value }));
+    }
+    if !metadata.datacenters.is_empty() {
+        entry.insert("datacenters".into(), json!(metadata.datacenters));
+    }
+    let mut compliance = serde_json::Map::new();
+    if let Some(value) = metadata.zdr {
+        compliance.insert("zdr".into(), json!(value));
+    }
+    if let Some(value) = metadata.hipaa {
+        compliance.insert("hipaa".into(), json!(value));
+    }
+    if !compliance.is_empty() {
+        entry.insert(
+            "compliance".into(),
+            serde_json::Value::Object(compliance),
+        );
+    }
+    serde_json::Value::Object(entry)
+}
+
+fn models_openrouter_body(st: &AppState) -> serde_json::Value {
+    let data: Vec<_> = st
+        .models
+        .iter()
+        .map(|model| {
+            model_entry_openrouter(
+                model,
+                st.caps.get(model),
+                st.openrouter_metadata.get(model),
+            )
+        })
+        .collect();
+    json!({ "data": data })
+}
+
+async fn list_models(
+    State(st): State<AppState>,
+    Query(query): Query<ModelsQuery>,
+) -> Response {
+    match query.schema.as_deref() {
+        None | Some("openai") => Json(models_openai_body(st.models.as_ref())).into_response(),
+        Some("openrouter") => Json(models_openrouter_body(&st)).into_response(),
+        Some(schema) => bad_request(
+            &format!("unsupported models schema {schema:?}; expected openai or openrouter"),
+            Some("schema"),
+        ),
+    }
+}
+
+/// One /v1/models entry in the existing OpenRouter catalog-style schema (serve-tail lane).
 /// Values are worker truth from the loaded model plan (ModelCaps probed at spawn);
 /// anything the plan doesn't know is an honest null, never an invented value.
 /// Pricing is the self-hosted stub ("0" USD strings, the OR convention for an
@@ -1546,7 +2105,7 @@ fn model_entry_v1(name: &str, caps: Option<&ModelCaps>, created: u64) -> serde_j
     })
 }
 
-/// GET /v1/models — the OpenAI/OpenRouter model listing, enriched with per-model
+/// GET /v1/models — the existing OpenAI/OpenRouter catalog listing, enriched with per-model
 /// metadata from the loaded plan (context length, tokenizer, instruct family).
 async fn list_models_v1(State(st): State<AppState>) -> impl IntoResponse {
     let data: Vec<_> = st.models.iter()
@@ -3397,6 +3956,7 @@ mod tests {
             cmd_tx,
             models: Arc::new(vec!["m".into()]),
             caps: Arc::new(HashMap::new()),
+            openrouter_metadata: Arc::new(HashMap::new()),
             metrics: SharedMetrics::default(),
             started: 1,
             inflight: Arc::new(Default::default()),
@@ -3746,7 +4306,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_models_entry_matches_or_schema_with_honest_nulls() {
+    fn v1_models_entry_keeps_catalog_shape_with_honest_nulls() {
         // KNOWN plan metadata populates every OR-schema field from worker truth.
         let caps = ModelCaps {
             tools_branch: true, qwen_think: true, think_switch: true, chat_ok: true,
@@ -3783,6 +4343,179 @@ mod tests {
         assert!(e["context_length"].is_null());
         assert!(e["architecture"]["tokenizer"].is_null());
         assert!(e["architecture"]["instruct_type"].is_null());
+    }
+
+    #[test]
+    fn models_openai_default_body_stays_byte_identical() {
+        let body = models_openai_body(&["main".into(), "judge".into()]);
+        let bytes = serde_json::to_vec(&body).unwrap();
+        assert_eq!(
+            bytes,
+            br#"{"object":"list","data":[{"id":"main","object":"model"},{"id":"judge","object":"model"}]}"#
+        );
+    }
+
+    #[test]
+    fn openrouter_models_entry_serializes_complete_metadata() {
+        let metadata = OpenRouterMetadataFile::from_toml(
+            r#"
+[models.main]
+hugging_face_id = "Qwen/Qwen3.6-27B"
+created = 1786032000
+quantization = "nvfp4"
+description = "Qwen3.6 27B served by memra."
+max_prompt_length = 245760
+max_output_length = 16384
+is_ready = true
+is_free = false
+discount_to_user = 0.1
+openrouter_slug = "qwen/qwen3.6-27b"
+datacenters = [{ country_code = "US", region = "us-east-1" }]
+zdr = true
+hipaa = false
+
+[models.main.pricing]
+prompt = "0.000000234"
+cached_prompt = "0.0000000585"
+cache_write = "0.000000234"
+completion = "0.000001872"
+internal_reasoning = "0.000001872"
+request = "0.01"
+
+[models.main.capacity]
+prompt_tpm = 1000000
+cached_prompt_tpm = 2000000
+completion_tpm = 500000
+request_rpm = 1000
+concurrency = 64
+"#,
+        )
+        .unwrap();
+        let caps = ModelCaps {
+            tools_branch: true,
+            qwen_think: true,
+            think_switch: true,
+            chat_ok: true,
+            context_length: 262144,
+            tokenizer: "qwen2".into(),
+            instruct_type: Some("chatml".into()),
+            ..Default::default()
+        };
+        let entry = model_entry_openrouter("main", Some(&caps), metadata.get("main"));
+
+        assert_eq!(entry["schema_version"], "2.4");
+        assert_eq!(entry["id"], "main");
+        assert_eq!(entry["name"], "main");
+        assert_eq!(entry["hugging_face_id"], "Qwen/Qwen3.6-27B");
+        assert_eq!(entry["created"], 1786032000u64);
+        assert_eq!(entry["quantization"], "nvfp4");
+        assert_eq!(entry["tokenizer"], "qwen2");
+        assert_eq!(entry["description"], "Qwen3.6 27B served by memra.");
+        assert!(
+            entry.get("object").is_none(),
+            "OpenRouter schema 2.4 rejects unknown OpenAI fields"
+        );
+
+        let input = &entry["input_modalities"][0];
+        assert_eq!(input["type"], "text");
+        assert_eq!(
+            input["supported_inputs"]["max_context_length"]["value"],
+            262144
+        );
+        assert_eq!(
+            input["supported_inputs"]["max_prompt_length"]["value"],
+            245760
+        );
+        let input_prices = input["pricing"].as_array().unwrap();
+        let input_price = |kind: &str| {
+            input_prices
+                .iter()
+                .find(|price| price["type"] == kind)
+                .unwrap()
+        };
+        assert_eq!(input_price("prompt")["cost_usd"], "0.000000234");
+        assert_eq!(
+            input_price("cached_prompt")["cost_usd"],
+            "0.0000000585"
+        );
+        assert_eq!(input_price("cache_write")["cost_usd"], "0.000000234");
+        assert_eq!(input["capacity"][0]["value"], 1000000);
+        assert_eq!(input["capacity"][1]["value"], 2000000);
+
+        let output = &entry["output_modalities"][0];
+        assert_eq!(output["type"], "text");
+        assert_eq!(output["max_length"]["value"], 16384);
+        assert_eq!(output["streaming"], true);
+        assert_eq!(output["supported_parameters"]["tools"]["type"], "boolean");
+        assert_eq!(
+            output["supported_parameters"]["structured_outputs"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            output["supported_parameters"]["reasoning"]["type"],
+            "boolean"
+        );
+        assert_eq!(output["pricing"][0]["type"], "completion");
+        assert_eq!(output["pricing"][0]["cost_usd"], "0.000001872");
+        assert_eq!(output["pricing"][1]["type"], "internal_reasoning");
+        assert_eq!(output["capacity"][0]["value"], 500000);
+        assert_eq!(output["capacity"][1]["type"], "concurrency");
+        assert_eq!(output["capacity"][1]["value"], 64);
+
+        assert_eq!(entry["pricing"][0]["type"], "request");
+        assert_eq!(entry["pricing"][0]["cost_usd"], "0.01");
+        assert_eq!(entry["capacity"][0]["value"], 1000);
+        assert_eq!(entry["is_ready"], true);
+        assert_eq!(entry["is_free"], false);
+        assert_eq!(entry["discount_to_user"], 0.1);
+        assert_eq!(entry["openrouter"]["slug"], "qwen/qwen3.6-27b");
+        assert_eq!(entry["datacenters"][0]["country_code"], "US");
+        assert_eq!(entry["compliance"]["zdr"], true);
+        assert_eq!(entry["compliance"]["hipaa"], false);
+    }
+
+    #[test]
+    fn openrouter_models_entry_omits_undeclared_optional_fields() {
+        let entry = model_entry_openrouter("minimal", None, None);
+        let object = entry.as_object().unwrap();
+        for field in [
+            "hugging_face_id",
+            "created",
+            "quantization",
+            "tokenizer",
+            "description",
+            "pricing",
+            "capacity",
+            "is_ready",
+            "is_free",
+            "discount_to_user",
+            "openrouter",
+            "datacenters",
+            "compliance",
+        ] {
+            assert!(
+                !object.contains_key(field),
+                "optional field {field} must be absent, not null"
+            );
+        }
+        assert_eq!(entry["schema_version"], "2.4");
+        assert_eq!(entry["input_modalities"][0]["type"], "text");
+        assert!(
+            entry["input_modalities"][0]
+                .get("supported_inputs")
+                .is_none()
+        );
+        assert!(entry["input_modalities"][0].get("pricing").is_none());
+        assert!(entry["input_modalities"][0].get("capacity").is_none());
+        assert_eq!(entry["output_modalities"][0]["type"], "text");
+        assert_eq!(entry["output_modalities"][0]["streaming"], true);
+        assert!(
+            entry["output_modalities"][0]["supported_parameters"]
+                .is_object()
+        );
+        assert!(entry["output_modalities"][0].get("max_length").is_none());
+        assert!(entry["output_modalities"][0].get("pricing").is_none());
+        assert!(entry["output_modalities"][0].get("capacity").is_none());
     }
 
     #[tokio::test]

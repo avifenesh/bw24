@@ -444,15 +444,81 @@ gated by the official `openai` Python SDK against a live server
   accepted and ignored. Streams exclude stop-sequence text exactly like non-stream
   responses (holdback buffer).
 
-## Gateway listing surface (serve-tail lane, 2026-08-04)
+## Gateway listing surface
 
-The OR-listing tail — the last three surface gaps between memra and a marketplace
-gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`):
+OpenRouter's current Provider Monitor schema is version **2.4**, but it is not the old
+flat/catalog shape: new integrations declare typed `input_modalities` and
+`output_modalities`, with pricing and capacity nested on the modality they belong to.
+The older flat provider document remains supported only for existing integrations.
 
-- **`/v1/models` OR-schema:** each entry carries `context_length` (from the loaded
-  plan's config), `architecture` (`modality`, `tokenizer`, `instruct_type` — probed at
-  spawn from the model itself, not hardcoded), and an OR-convention `pricing` stub.
-  Unknowns are honest `null`s, never guesses.
+memra keeps three views separate because the current provider schema rejects unknown
+fields (`additionalProperties: false`):
+
+- **`GET /models`** keeps the historical OpenAI-style body byte-for-byte:
+  `{"object":"list","data":[{"id":"<alias>","object":"model"}]}`. Existing pill/Hermes
+  consumers stay on this default.
+- **`GET /models?schema=openrouter`** is the OpenRouter Provider Monitor 2.4 document
+  for a new provider integration. Use this full URL for the OpenRouter application.
+- **`GET /v1/models`** keeps the existing catalog-style enrichment
+  (`context_length`, `architecture`, `pricing`, `top_provider`) for current clients.
+  It is not the strict Provider Monitor document.
+
+The Provider Monitor view derives what the process knows:
+
+- `id` and `name` are the exact `MEMRA_MODELS` alias.
+- Text `max_context_length` and `tokenizer` come from the loaded model.
+- Streaming and supported generation parameters come from the real HTTP surface;
+  `tools` and `reasoning` appear only when the loaded template exposes them.
+
+Everything else is operator-declared in a TOML file named by
+`MEMRA_MODEL_METADATA`. The file is optional for local serving. If configured, it is
+parsed before the GPU worker starts; unknown fields, invalid price strings, invalid
+quantization names, zero limits, or aliases absent from `MEMRA_MODELS` are fatal.
+
+```toml
+# /etc/memra/models.toml
+[models."provider/model-id"]
+description = "Qwen3.6 27B served by memra."
+quantization = "nvfp4"
+max_prompt_length = 245760
+max_output_length = 16384
+is_ready = true
+# Set the real deployment location before submitting the application:
+# datacenters = [{ country_code = "US", region = "actual-region" }]
+
+[models."provider/model-id".pricing]
+# Per-token USD strings, not per-million-token numbers.
+prompt = "0.000000234"        # $0.234 / 1M input tokens
+cached_prompt = "0.0000000585" # 25% cache-read price
+completion = "0.000001872"    # $1.872 / 1M output tokens
+
+[models."provider/model-id".capacity]
+# Optional honest declarations; omit values that are not measured.
+prompt_tpm = 1000000
+completion_tpm = 500000
+request_rpm = 1000
+concurrency = 16
+```
+
+```bash
+MEMRA_MODELS="provider/model-id=/path/to/model.gguf" \
+MEMRA_MODEL_METADATA=/etc/memra/models.toml \
+memra-server
+
+curl 'http://127.0.0.1:8080/models?schema=openrouter'
+```
+
+Supported metadata fields are `hugging_face_id`, `created`, `quantization`,
+`description`, `max_prompt_length`, `max_output_length`, `is_ready`, `is_free`,
+`discount_to_user`, `openrouter_slug`, `datacenters`, `zdr`, and `hipaa`.
+`pricing` accepts `prompt`, `cached_prompt`, `cache_write`, `completion`,
+`internal_reasoning`, and `request`; `capacity` accepts `prompt_tpm`,
+`cached_prompt_tpm`, `completion_tpm`, `request_rpm`, and `concurrency`.
+Prices and capacities are omitted when undeclared. memra never turns an absent price
+into `"0"`; use an explicit zero only for a genuinely free SKU.
+
+The remaining gateway controls are battery-gated (`research/serve-tail-20260804/`):
+
 - **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` (emitted
   lowercase on the wire, as HTTP/2 requires; capitalized here by convention — a client
   parsing headers into a case-sensitive dict must key on `x-ratelimit-*`) on both
@@ -479,8 +545,9 @@ relevant (bind address `MEMRA_ADDR`, default `127.0.0.1:8080`):
 |---|---|
 | `GET /health`, `GET /livez` | the same handler — inference liveness (below) |
 | `GET /readyz` | routability (below) |
-| `GET /v1/models` | the OR-schema listing (Gateway listing surface, above) |
-| `GET /models` | the plain listing: `{"data":[{"id":"<alias>"},...]}`. Not an OpenAI route and not a `/v1/models` alias — no `context_length`, `architecture`, or `pricing`. It is what `serve-smoke` and `serve-st-gate` assert against |
+| `GET /v1/models` | the existing catalog-style enriched listing |
+| `GET /models` | the byte-compatible OpenAI-style listing used by existing clients and smoke gates |
+| `GET /models?schema=openrouter` | strict OpenRouter Provider Monitor schema 2.4; operator metadata comes from `MEMRA_MODEL_METADATA` |
 | `POST /v1/completions` | raw-prompt completions. **Streaming shape depends on `MEMRA_COMPAT`** — see the compatibility precondition above |
 | `POST /v1/chat/completions` | always OpenAI-shape |
 | `GET /metrics` | counters + the cache-hit metering surface (below) + the `spec` acceptance block |
