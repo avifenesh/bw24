@@ -39,13 +39,13 @@ you meant to gate it: it reports success having run **zero** probes. Found on th
 battery, where the rsync'd tree had no `.git` and the k27 regression check "passed" without
 executing (`fast-gate.sh:80-88`). Naming arms with `--probes` suppresses the short-circuit.
 
-It is also the **only** way to reach four registered probes. `tools/fast-gate/map.tsv` dispatches
-`accept, aw35, chunkinv, chunkinvc, chunkinv35, chunkinv35c, g12, g12d, g26, g31, gwstress,
-isogap, isogapc, k27, o35, o9, q35, q35slru, q9, samp, sampt, sstress, tickinv35, tickinv35c`
-(+ spec probes `q35spec, g31spec`), with `DEFAULT = g12,q9,q35,gwstress`.
-Not in any row, including DEFAULT: **`amargin`, `amarginc`, `e4b`, `kat`**. They are registered in
-`models.tsv` and run correctly when named, but nothing dispatches them automatically — so treat
-the amargin gate below as an explicit-invocation gate, not a standing one.
+As of 2026-08-07, every probe registered in `models.tsv` has at least one automatic dispatch home.
+The four formerly orphaned arms are scoped rather than added to `DEFAULT`: `amargin`/`amarginc`
+follow the `forward_last`-vs-`decode_step` implementation and their own wrapper/probe; `e4b`
+follows its PLE/KV-sharing forward/load, attention, and glue surfaces; `kat` follows the
+non-expert IQ4_XS qmatvec/dense-MMQ path plus its forward/load surfaces. `DEFAULT` remains
+`g12,q9,q35,gwstress`. Use `--probes` for clean trees and deliberate explicit subsets, not to
+compensate for an unreachable registry entry.
 
 ## Change-scoped gating (tier 0)
 
@@ -146,7 +146,9 @@ margin (see `research/q8-argmax-20260806/`). Flags:
 [--margin-floor F] [--canary] [--logdir D]`. **Effective `--window` default is 12**, not the 24
 the probe binary advertises in its own usage line — the wrapper always passes its own
 `WINDOW=12` (`argmax-margin-gate.sh:70,111`). Worth knowing, since window width *is* this gate's
-coverage. And per the dispatch note above, `amargin` fires only when named with `--probes`.
+coverage. Automatic dispatch is limited to `decode.rs`, `forward.rs`, `hybrid_forward.rs`, and
+the gate's own wrapper/probe implementation; `--probes amargin,amarginc` remains the clean-tree
+or deliberate explicit invocation.
 
 Also 2026-08-06: `accept` (`tools/accept-gate.sh` — the **served-spec acceptance +
 long-text** assertion). It exists because the battery was *provably* blind to a class:
