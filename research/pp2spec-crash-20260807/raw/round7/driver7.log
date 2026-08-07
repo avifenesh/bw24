@@ -1,0 +1,14 @@
+gpu lock acquired 2026-08-07T19:56:02Z
+=== FENCE rep 1: exact A sequence ===
+--- rep 1 trap/illegal lines ---
+(rep 1 CLEAN)
+=== FENCE rep 2: exact A sequence ===
+--- rep 2 trap/illegal lines ---
+(rep 2 CLEAN)
+=== FENCE rep 3: exact A sequence ===
+--- rep 3 trap/illegal lines ---
+(rep 3 CLEAN)
+=== CRASH GATE: c=4 x 100 + c=8 x 104 on one server (fresh) ===
+--- gate trap/illegal lines ---
+(gate CLEAN)
+PP2CRASH_ROUND7_DONE

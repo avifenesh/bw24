@@ -226,3 +226,60 @@ What this establishes:
 Refined trap (746a14ea) re-running: g_seed (self-fed = head OUTPUT at j) vs h_seed_buf
 (round INPUT, untouched since round-start copy) — discriminates poisoned-arrival from
 head-compute-NaN. j=0 with g_seed=NaN could still be either (the replay had already run).
+
+## Round 6b — the dual-seed trap names the producer side (raw/round6b/)
+
+Same battery on 746a14ea, quoted (T1/T2; T3 differs in one number):
+
+    step error: draft(graph) argmax sentinel 0x7fffffff >= d_vocab 248320 at round 0 j=0
+    pos=296: head-out NaN 4096/4096, round-input-seed NaN 13/4096 — refusing ... (#87 trap)
+
+    (T3: head-out NaN 4096/4096, round-input-seed NaN 0/4096)
+
+**The round INPUT seed is the poisoned buffer — with a PARTIAL, random-looking NaN count.**
+13/4096 is the uninitialized/garbage-bits signature (P(NaN | random u32) ~ 1/256 ->
+E[NaN] ~ 16 of 4096), not a compute overflow (which gives 0 or ~all). One norm over a
+garbage row spreads it: head-out 4096/4096. T3's 0/4096 re-read is the smoking gun for a
+READ-BEFORE-WRITE race: the DRAFT GRAPH read the buffer while garbage, the trap's host
+re-read (microseconds later, after the error sync) saw it already written clean.
+
+h_seed_buf at round 0 = `e.clone_dtod(h_seed0)` + prompt_h/continuation overwrite —
+device-to-device copies on the PRIMARY stream from buffers produced by the STAGE-SPLIT
+trunk (`decode_step_h_ppn` h_seed / `prime_cache` hiddens). The dtod reads its source
+BEFORE the producer wrote it — or reads a pool block whose previous owner's free-reuse
+raced — exactly the class `publish_to` fixed for the verify EXIT, one seam over.
+
+## Round 7 — ROOT CAUSE + FIX: reverse publication (raw/round7/)
+
+`publish_to` orders caller reads behind stage compute. NOTHING ordered the reverse:
+stage-allocated buffers (verify logits/hidden, ckpt stashes) drop with `free_async` on
+the ALLOCATING stage stream while the primary stream still holds queued reads of them
+(cudarc `Drop`: with event tracking elided there is no read-guard, and the pool's
+internal-dependency reuse orders only against the FREE). The next burst's stage-stream
+allocations reuse those blocks and their writes race the queued primary reads. c>=2
+gates it because a second session's interleaved burst is what enqueues reusing stage
+work while the first session's commit reads are still queued.
+
+Fix (7450928b + 4c72d637): `PpNRt::fence_stages_behind(caller)` — one event on the
+caller's stream, every stage stream waits it — at the entry of all three ppN bodies
+(verify, eager, batched). Door-shut configs never build a PpNRt: single-card untouched.
+
+Verdict battery on 7450928b (raw/round7/, x3 exact-A reps + one long gate):
+
+| arm | result |
+|---|---|
+| X1/X2/X3 c=2 (the trigger) | 7/8+16/16 x3, ZERO trap lines, ZERO illegal |
+| XG crash gate c=4 x100 | **100/100**, agg 112.4 tok/s |
+| XG crash gate c=8 x104 | **104/104**, agg 111.5 tok/s |
+
+(The 1 err per c=2 rep in X1-X3 was the WARMUP-phase trap on the pre-fence binary's
+leftover... no — X ran ON the fence binary; the 1 err is the c=2 phase's single
+trap-refused request from the UNFENCED eager/batched bodies still in 7450928b. 4c72d637
+fenced those too; the full gate battery re-runs the sequence on it.)
+
+Wait — correction, quoted from X-points.jsonl: X1-c2 errors_sample shows the SAME
+`draft(graph) ... head-out NaN 4096/4096, round-input-seed NaN 13/4096` trap. So on
+7450928b (verify-body fence only) the c=2 trigger still fired ONCE per rep via a path
+the verify fence does not cover — consistent with the INIT FEED (`decode_step_h` ->
+`decode_step_h_ppn`, the eager body) producing h_seed0. 4c72d637 fences the eager and
+batched bodies; the running gate battery is the verdict.
