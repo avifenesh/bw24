@@ -1,0 +1,16 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/tmp/step-draft-not-a-gguf-1784883.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+
+thread 'memra-gpu-worker' (1785163) panicked at crates/memra-gguf/src/lib.rs:238:5:
+assertion `left == right` failed: bad GGUF magic: 0x73696874 in /tmp/step-draft-not-a-gguf-1784883.gguf
+  left: 1936287860
+ right: 1179993927
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[worker] PANIC in the GPU worker thread: assertion `left == right` failed: bad GGUF magic: 0x73696874 in /tmp/step-draft-not-a-gguf-1784883.gguf
+  left: 1936287860
+ right: 1179993927
+[worker] respawn attempt 1/1 in 2s (reloading weights)
+[server] FATAL: worker init failed: worker died during init

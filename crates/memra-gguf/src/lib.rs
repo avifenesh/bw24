@@ -234,10 +234,42 @@ fn parse_one(path: PathBuf) -> std::io::Result<(Shard, u32, BTreeMap<String, Met
     let mmap = unsafe { Mmap::map(file.as_ref())? };
     let mut c = Cursor::new(&mmap);
 
+    // The header checks RETURN, they do not panic (lane/step-draft 2026-08-07). `parse_one` is
+    // already `io::Result`, and "this file is not a GGUF" / "wrong GGUF version" is the most
+    // ordinary caller error there is — an operator typo'ing a path onto some other file. As a
+    // panic it crossed a thread boundary and came out the far side unrecognizable: the server's
+    // worker thread caught it, printed `PANIC in the GPU worker thread`, spent a full respawn
+    // attempt RELOADING EVERY WEIGHT, and then told the operator `worker init failed: worker died
+    // during init` — with the drafter-attach refusal text, which names the offending path and
+    // says what to do, unreachable because the error never came back as an Err. Found by this
+    // lane's own arm C on a card that had finally freed up (raw/armC-refuse-baddraft-
+    // 20260807T001704Z.log): the FIRST run of that arm, on a contended card, had reported a
+    // trunk OOM and never reached here.
+    //
+    // Bytes are quoted, not summarized, and the expected value comes along: a wrong-magic file is
+    // usually a wrong FILE, and the magic bytes are the fastest way to see what it actually is.
     let magic = c.u32();
-    assert_eq!(magic, GGUF_MAGIC, "bad GGUF magic: {magic:#x} in {}", path.display());
+    if magic != GGUF_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "bad GGUF magic: {magic:#010x} (expected {GGUF_MAGIC:#010x} = \"GGUF\") in {} — \
+                 this file is not a GGUF",
+                path.display()
+            ),
+        ));
+    }
     let version = c.u32();
-    assert_eq!(version, 3, "only GGUF v3 supported, got {version}");
+    if version != 3 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "only GGUF v3 supported, got v{version} in {} — requantize or re-export with a \
+                 current converter",
+                path.display()
+            ),
+        ));
+    }
     let n_tensors = c.i64();
     let n_kv = c.i64();
 
@@ -576,6 +608,45 @@ mod split_tests {
         };
         assert!(msg.contains("split.count=3") && msg.contains("sibling shards"),
                 "error must name the split count and the missing siblings, got: {msg}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_non_gguf_file_is_an_error_not_a_panic() {
+        // Regression, lane/step-draft 2026-08-07. This used to `assert_eq!` on the magic, and a
+        // panic here does not survive a thread boundary usefully: memra-server's worker caught
+        // it, burned a full respawn attempt reloading every weight, and reported `worker died
+        // during init` — while the caller's own error text, which names the offending path and
+        // says what to do about it, was unreachable because nothing ever came back as an Err.
+        let dir = std::env::temp_dir().join(format!("memra-badmagic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("not-a-gguf.gguf");
+        std::fs::write(&p, b"this is not a GGUF file").unwrap();
+        let msg = match GgufFile::open(&p) {
+            Ok(_) => panic!("a non-GGUF file must not open"),
+            Err(e) => e.to_string(),
+        };
+        // The observed bytes AND the expected value: a wrong magic is usually a wrong FILE, and
+        // the magic is the fastest way to see what the file actually is.
+        assert!(msg.contains("bad GGUF magic"), "got: {msg}");
+        assert!(msg.contains("0x73696874"), "the observed magic must be quoted, got: {msg}");
+        assert!(msg.contains("GGUF"), "the expected magic must be shown, got: {msg}");
+        assert!(msg.contains("not-a-gguf.gguf"), "the path must be named, got: {msg}");
+
+        // Same for a wrong VERSION: real header, v2 — the other panic on this path.
+        let p2 = dir.join("v2.gguf");
+        let mut h: Vec<u8> = Vec::new();
+        h.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        h.extend_from_slice(&2u32.to_le_bytes());
+        h.extend_from_slice(&0i64.to_le_bytes());
+        h.extend_from_slice(&0i64.to_le_bytes());
+        std::fs::write(&p2, &h).unwrap();
+        let msg2 = match GgufFile::open(&p2) {
+            Ok(_) => panic!("a GGUF v2 file must not open"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg2.contains("v2") && msg2.contains("v3"),
+                "the error must name both the version found and the one supported, got: {msg2}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

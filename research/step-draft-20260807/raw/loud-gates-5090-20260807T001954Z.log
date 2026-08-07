@@ -1,0 +1,23 @@
+=== lane/step-draft loud-drafter gates 20260807T001954Z
+=== commit: 97edc284 on lane/step-draft
+=== rig: NVIDIA GeForce RTX 5090 Laptop GPU
+=== model: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+=== draft: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf
+lock acquired 2026-08-07T03:19:54+03:00
+########## ARM A: '+draft' attaches, no warning ##########
+  ok: A: drafter attached line present
+  ok: A: no spurious warning
+  ok: A: generation served
+########## ARM B: non-step35, no drafter -> quiet ##########
+  ok: B: quiet on non-step35
+########## ARM C: bad drafter path -> refuse to start ##########
+  ok: C: refused to start (did not degrade to plain decode)
+  ok: C: refusal is FATAL, not a warning
+  ok: C: refusal names the silent-degradation it is preventing
+  ok: C: refusal quotes the offending path
+########## ARM D: missing drafter path -> parse-time refusal ##########
+  ok: D: refused to start on a nonexistent drafter path
+  ok: D: cause is quoted and names the DRAFTER (not the trunk)
+  ok: D: refused BEFORE any GPU/model work
+lock released 2026-08-07T03:20:05+03:00
+=== FAILS=0

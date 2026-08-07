@@ -1,0 +1,11 @@
+=== arm D against the PRE-FIX binary (97d0bd75, before ef9a884b) — the product bug, reproduced
+=== a nonexistent '+draft' path survives parse and the hf resolve, and fails only AFTER the trunk load.
+=== 5090 at 768 MiB, 24463 MiB — the shared-card case where the operator's FATAL names the TRUNK, not their typo'd drafter path.
+=== env: MEMRA_MODELS=m=<trunk>+/nonexistent/draft.gguf
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/nonexistent/draft.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[server] FATAL: worker init failed: draft m: No such file or directory (os error 2) (drafter path "/nonexistent/draft.gguf" was requested via the MEMRA_MODELS '+draft' attach — refusing to start rather than silently serving plain decode)
+EXIT=1
