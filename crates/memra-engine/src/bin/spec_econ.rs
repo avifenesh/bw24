@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
 
     // Prime + collect a real greedy continuation of t_max tokens (rolled back afterwards).
-    let (logits, _h, _hs) = model.prime_cache(&e, &prompt, &mut cache)?;
+    let (logits, _h, _hs) = model.prime_cache(&e, &prompt, &mut cache, 0)?;
     e.stream().synchronize()?;
     let snap = cache.snapshot(&e)?;
     let pos0 = cache.pos;

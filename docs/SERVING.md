@@ -1165,22 +1165,26 @@ What this changes and what it does not:
 
 **Scope: this is a per-architecture property.** The fix above is a property of the
 `full_attn_prime_fa_dispatch` path, and the gate runs on the shipped arches. A different
-attention family can re-enter the class through its own door, and one has: the `step35`
-bring-up arch (Step-3.7-Flash) is **chunk-DEPENDENT past its 512-token SWA window** —
-`MEMRA_PRIME_CHUNK` changes prefill logits, hidden rows, and generated text for any prompt
-over the window. The mechanism is kernel *selection*, not reduction order: a chunk whose
-`t_kv` exceeds the window takes the f32 windowed floor `sdpa_naive_w_quantized_view` while a
-chunk that fits takes the dequant-once `fa_prefill_view_ws`, so the FA rows form a contiguous
-prefix `P = c*floor(win/c)` and the verdict depends only on `P`. A pre-registered 4/4
-falsification battery pinned it — including a one-token verdict flip at c=513 vs c=512 at
-identical chunk count in one process, and a 20-chunks-vs-10-chunks pair that is bit-identical
-because `P` matches, which no fold-order account permits. The shipped default (4096) has
-`P=0`, so a naked single-rig run is self-consistent; the exposure is two rigs at different
-chunk sizes returning different text. Fix shape is named and correct-by-construction (force
-`naive_w` on SWA layers whenever `T>win`, making `P` identically 0, which cannot move the
-default's numbers since that path is already `P=0`); its chunkinv gate at T=4883 is written
-and legitimately red until the fix lands. Receipts:
-[`research/step37-p2-20260806/`](../research/step37-p2-20260806/) (commit `66a81371`).
+attention family can re-enter the class through its own door, and one did: the `step35`
+bring-up arch (Step-3.7-Flash) was **chunk-DEPENDENT past its 512-token SWA window** —
+`MEMRA_PRIME_CHUNK` changed prefill logits, hidden rows, and generated text for any prompt
+over the window. The mechanism was kernel *selection*, not reduction order: a chunk whose
+`t_kv` exceeded the window took the f32 windowed floor `sdpa_naive_w_quantized_view` while a
+chunk that fit took the dequant-once `fa_prefill_view_ws`, so the FA rows formed a contiguous
+prefix `P = c*floor(win/c)` and the verdict depended only on `P`. A pre-registered 4/4
+falsification battery pinned it (receipts
+[`research/step37-p2-20260806/`](../research/step37-p2-20260806/), commit `66a81371`).
+**FIXED 2026-08-07 in two stages, both gated:**
+(1) *within one `prime_cache` call* — the SWA arm keys on the request's `seq_end`, not the
+chunk's `t_kv`, making `P` identically 0 at every chunk size; gate `chunkinv35` (+
+`chunkinv35c` canary via `MEMRA_STEP35_SWA_TKV`), default measured +0.009%
+([`research/step35-chunkfix-20260807/`](../research/step35-chunkfix-20260807/));
+(2) *across calls* — serve splits a prompt over SEVERAL `prime_cache` calls (per-tick budgets,
+dark lanes SLO-capped = load-dependent; plus the prefix-cache LCP split), so `prime_cache` now
+carries `queued_after` and `seq_end = cache.pos + t + queued_after` is request-level whatever
+the tick segmentation; gate `tickinv35` (+ `tickinv35c` canary via `MEMRA_PRIME_CALLLOCAL`,
+whose `sp<L>` split arms also pin the off-grid-resume hole — vLLM #51113's second law)
+([`research/tick-seg-20260807/`](../research/tick-seg-20260807/)).
 
 The behavior is **gated in both directions**: fast-gate ids `chunkinv` / `chunkinvc`
 (routed from the `hybrid_forward.rs` map row): the default arm asserts byte-identity naked;

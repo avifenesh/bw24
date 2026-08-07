@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // eager A/B on the same prompt (policy record)
     let mut c = Cache::new(&e, &model.cfg, prompt.len() + steps + 8)?;
-    let _ = model.prime_cache(&e, &prompt, &mut c)?;
+    let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
     let mut t = *prompt.last().unwrap();
     let t0 = std::time::Instant::now();
     for _ in 0..steps {

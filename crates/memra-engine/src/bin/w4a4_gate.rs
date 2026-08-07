@@ -150,7 +150,7 @@ fn run_arm(
     //     numeric class throughout — not just in the seed token. Priming tokenwise instead
     //     (the earlier shape of this gate) hides the fork almost entirely.
     let mut cache = memra_engine::cache::Cache::new(e, &model.cfg, max_ctx)?;
-    let (prime_logits, _h, _x) = model.prime_cache(e, prompt, &mut cache)?;
+    let (prime_logits, _h, _x) = model.prime_cache(e, prompt, &mut cache, 0)?;
     let prime_argmax = argmax(&prime_logits);
 
     let mut tokens = Vec::with_capacity(ngen);

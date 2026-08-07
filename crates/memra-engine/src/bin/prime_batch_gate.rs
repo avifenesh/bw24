@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ref_argmax: Vec<u32> = Vec::with_capacity(b);
     for p in &prompts {
         let mut c = Cache::new(&e, &model.cfg, ctx)?;
-        let (logits, _, _) = model.prime_cache(&e, p, &mut c)?;
+        let (logits, _, _) = model.prime_cache(&e, p, &mut c, 0)?;
         let mut t = argmax(&logits) as u32;
         ref_argmax.push(t);
         let mut stream = Vec::with_capacity(steps);
@@ -94,8 +94,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ref_argmax: Vec<u32> = Vec::with_capacity(b);
         for s in 0..b {
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prefixes[s], &mut c)?;
-            let (logits, _, _) = model.prime_cache(&e, &suffixes[s], &mut c)?;
+            let _ = model.prime_cache(&e, &prefixes[s], &mut c, 0)?;
+            let (logits, _, _) = model.prime_cache(&e, &suffixes[s], &mut c, 0)?;
             let mut t = argmax(&logits) as u32;
             ref_argmax.push(t);
             let mut stream = Vec::with_capacity(steps);
@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // batched continuation: fresh prefix primes (single), then ONE batched suffix prime
         let mut caches: Vec<Cache> = (0..b).map(|_| Cache::new(&e, &model.cfg, ctx)).collect::<Result<_, _>>()?;
         for s in 0..b {
-            let _ = model.prime_cache(&e, &prefixes[s], &mut caches[s])?;
+            let _ = model.prime_cache(&e, &prefixes[s], &mut caches[s], 0)?;
         }
         {
             let suffix_refs: Vec<&[u32]> = suffixes.iter().map(|p| p.as_slice()).collect();
@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t0 = std::time::Instant::now();
             for p in &bp {
                 let mut c = Cache::new(&e, &model.cfg, bt + 64)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
             }
             e.stream().synchronize()?;
             seq_times.push(t0.elapsed().as_secs_f64());

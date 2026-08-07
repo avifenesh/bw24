@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // eager reference
     let mut c_ref = Cache::new(&e, &model.cfg, t + 64)?;
-    let (l_ref, _, _) = model.prime_cache(&e, &prompt, &mut c_ref)?;
+    let (l_ref, _, _) = model.prime_cache(&e, &prompt, &mut c_ref, 0)?;
     let a_ref = argmax(&l_ref) as u32;
 
     // graph arm: stable input buffers + capture

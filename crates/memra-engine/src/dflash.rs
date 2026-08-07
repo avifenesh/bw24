@@ -550,7 +550,7 @@ impl crate::hybrid::HybridModel {
             hidden: n_embd, t: tp,
         });
         let t_prime = std::time::Instant::now();
-        let (logits, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache)?;
+        let (logits, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache, 0)?;
         let mut last = crate::forward::argmax(&logits) as u32;
         // draft KV cache: ingest the prompt's ctx features once; per round only the kept
         // rows ingest + the block projects (round cost O(block), not O(ctx)).

@@ -79,7 +79,10 @@
 # isogap/isogapc pin the STAGGERED-DEPTH batched-decode isolation contract (decode_batch's
 # rung guard + the seqs kernel's ONE-PARTITION law) — the rung-crossing shape no other arm
 # reaches. research/iso-gap-20260807.
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,gwstress,isogap,isogapc	q35spec
+# tickinv35/tickinv35c pin the axis ONE LEVEL UP: serve splits a prompt across SEVERAL
+# prime_cache CALLS (per-tick budgets + the prefix-cache LCP split), so the request-level
+# seq_end must survive call boundaries too. research/tick-seg-20260807.
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,isogap,isogapc	q35spec
 # --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
 ^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
 # --- gate/bench binaries: build-only (they ARE the gates) ---
@@ -98,7 +101,10 @@
 # here is the CONCURRENCY contract — sstress (c=64 streaming burst) covers the admission VRAM
 # gate + step-OOM park seams that a worker.rs edit can silently break with a green build.
 # Engine-side effects are covered by the DEFAULT row only if engine files are also touched.
-^crates/memra-server/	none	sstress,accept	-
+# tickinv35: the worker's per-tick prime loop is the very segmentation the gate replicates —
+# a worker.rs change to tick budgets/LCP-split chunking must re-prove tick-invariance
+# (research/tick-seg-20260807; the probe's loop is a pinned replica of prefill_tick).
+^crates/memra-server/	none	sstress,accept,tickinv35,tickinv35c	-
 # --- no-gate paths ---
 ^(docs/|research/|agent-knowledge/|probe/|\.github/|tools/)	none	-	-
 ^[^/]*\.(md|svg|png|txt|json|lock)$	none	-	-

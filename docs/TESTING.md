@@ -53,8 +53,8 @@ executing (`fast-gate.sh:80-88`). Naming arms with `--probes` suppresses the sho
 
 It is also the **only** way to reach four registered probes. `tools/fast-gate/map.tsv` dispatches
 `accept, aw35, chunkinv, chunkinvc, chunkinv35, chunkinv35c, g12, g12d, g26, g31, gwstress,
-isogap, isogapc, k27, o35, o9, q35, q35slru, q9, samp, sampt, sstress` (+ spec probes
-`q35spec, g31spec`), with `DEFAULT = g12,q9,q35,gwstress`.
+isogap, isogapc, k27, o35, o9, q35, q35slru, q9, samp, sampt, sstress, tickinv35, tickinv35c`
+(+ spec probes `q35spec, g31spec`), with `DEFAULT = g12,q9,q35,gwstress`.
 Not in any row, including DEFAULT: **`amargin`, `amarginc`, `e4b`, `kat`**. They are registered in
 `models.tsv` and run correctly when named, but nothing dispatches them automatically — so treat
 the amargin gate below as an explicit-invocation gate, not a standing one.
@@ -114,9 +114,13 @@ the greedy token goldens structurally cannot see (the sampler chain). Three land
 2026-08-05: `chunkinv` (chunked-prefill byte-identity across `MEMRA_PRIME_CHUNK` values,
 naked env — the grain-free default's contract; note its **coverage is per-architecture and
 prompt-length-bounded** — the pinned probe prompts are short, which is precisely why they could
-not reach the `step35` chunk-dependence defect that lives past a 512-token SWA window. A
-long-prompt arm for that arch is written and legitimately red until the fix lands:
-[`research/step37-p2-20260806/`](../research/step37-p2-20260806/). Standalone, the probe is
+not reach the `step35` chunk-dependence defect that lives past a 512-token SWA window. The
+long-prompt arm for that arch is `chunkinv35`/`chunkinv35c` (landed green with the fix,
+`research/step35-chunkfix-20260807/`), and the axis one level up — serve splitting a prompt
+across several `prime_cache` CALLS (per-tick budgets + the prefix-cache LCP split) — is
+`tickinv35`/`tickinv35c` (`tools/tick-invariance-gate.sh`, landed with the request-level
+`seq_end` fix, `research/tick-seg-20260807/`; its `--splits` arms pin the off-grid-resume hole,
+vLLM #51113's second law). Standalone, the probe is
 `tools/chunk-invariance-gate.sh [<model.gguf>] [--chunks 2048,64,32] [--steps 48]
 [--expect-invariant|--expect-variant] [--canary]` — `--expect-variant` is how you assert a known
 chunk-DEPENDENT arch stays detected rather than silently passing, and `--chunks` is how you widen

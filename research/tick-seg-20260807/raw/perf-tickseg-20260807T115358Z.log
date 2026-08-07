@@ -1,0 +1,179 @@
+=== lane/tick-seg serve-prime perf, interleaved N=5 20260807T115358Z commit=cbf4a7d0 lane/tick-seg (prime_cache queued_after request-level seq_end; tickinv35 gate + MEMRA_PRIME_CALLLOCAL seam)
+lock acquired 2026-08-07T12:14:24Z
+0, 0 MiB, 33, 2407 MHz
+1, 0 MiB, 33, 2325 MHz
+
+########## CELL pp6257 budget=1024 : interleaved AFTER/BEFORE x5 ##########
+--- rep 1 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.9101s = 111.2 tok/s
+ppprime rep 1: 4883 tok in 43.8076s = 111.5 tok/s
+ppprime rep 2: 4883 tok in 43.8169s = 111.4 tok/s
+ppprime MEDIAN: 4883 tok in 43.8169s = 111.4 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 1 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.8410s = 111.4 tok/s
+ppprime rep 1: 4883 tok in 43.7708s = 111.6 tok/s
+ppprime rep 2: 4883 tok in 43.7930s = 111.5 tok/s
+ppprime MEDIAN: 4883 tok in 43.7930s = 111.5 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 40, 2400 MHz 1, 32, 2325 MHz 
+--- rep 2 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.4868s = 112.3 tok/s
+ppprime rep 1: 4883 tok in 43.3927s = 112.5 tok/s
+ppprime rep 2: 4883 tok in 43.3853s = 112.5 tok/s
+ppprime MEDIAN: 4883 tok in 43.3927s = 112.5 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 2 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.5649s = 112.1 tok/s
+ppprime rep 1: 4883 tok in 43.4525s = 112.4 tok/s
+ppprime rep 2: 4883 tok in 43.4294s = 112.4 tok/s
+ppprime MEDIAN: 4883 tok in 43.4525s = 112.4 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 40, 2400 MHz 1, 32, 2325 MHz 
+--- rep 3 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.6027s = 112.0 tok/s
+ppprime rep 1: 4883 tok in 43.6026s = 112.0 tok/s
+ppprime rep 2: 4883 tok in 43.4791s = 112.3 tok/s
+ppprime MEDIAN: 4883 tok in 43.6026s = 112.0 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 3 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.6084s = 112.0 tok/s
+ppprime rep 1: 4883 tok in 43.4928s = 112.3 tok/s
+ppprime rep 2: 4883 tok in 43.4723s = 112.3 tok/s
+ppprime MEDIAN: 4883 tok in 43.4928s = 112.3 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 40, 2400 MHz 1, 32, 2325 MHz 
+--- rep 4 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.6030s = 112.0 tok/s
+ppprime rep 1: 4883 tok in 43.4993s = 112.3 tok/s
+ppprime rep 2: 4883 tok in 43.5225s = 112.2 tok/s
+ppprime MEDIAN: 4883 tok in 43.5225s = 112.2 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 4 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.5648s = 112.1 tok/s
+ppprime rep 1: 4883 tok in 43.4408s = 112.4 tok/s
+ppprime rep 2: 4883 tok in 43.4635s = 112.3 tok/s
+ppprime MEDIAN: 4883 tok in 43.4635s = 112.3 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 40, 2392 MHz 1, 32, 2325 MHz 
+--- rep 5 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.6164s = 112.0 tok/s
+ppprime rep 1: 4883 tok in 43.4847s = 112.3 tok/s
+ppprime rep 2: 4883 tok in 43.4589s = 112.4 tok/s
+ppprime MEDIAN: 4883 tok in 43.4847s = 112.3 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 5 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 4883 tok in 43.5837s = 112.0 tok/s
+ppprime rep 1: 4883 tok in 43.4870s = 112.3 tok/s
+ppprime rep 2: 4883 tok in 43.4963s = 112.3 tok/s
+ppprime MEDIAN: 4883 tok in 43.4963s = 112.3 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 39, 2392 MHz 1, 31, 2325 MHz 
+
+########## CELL pp6257 budget=256 : interleaved AFTER/BEFORE x5 ##########
+--- rep 1 AFTER (naked default, request-level seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.7469s = 102.3 tok/s
+ppprime rep 1: 4883 tok in 47.6946s = 102.4 tok/s
+ppprime rep 2: 4883 tok in 47.6920s = 102.4 tok/s
+ppprime MEDIAN: 4883 tok in 47.6946s = 102.4 tok/s (budget=256 chunk=4096(default) calllocal=0)
+--- rep 1 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.6081s = 102.6 tok/s
+ppprime rep 1: 4883 tok in 47.4883s = 102.8 tok/s
+ppprime rep 2: 4883 tok in 47.5141s = 102.8 tok/s
+ppprime MEDIAN: 4883 tok in 47.5141s = 102.8 tok/s (budget=256 chunk=4096(default) calllocal=1)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+--- rep 2 AFTER (naked default, request-level seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.7301s = 102.3 tok/s
+ppprime rep 1: 4883 tok in 47.7263s = 102.3 tok/s
+ppprime rep 2: 4883 tok in 47.7236s = 102.3 tok/s
+ppprime MEDIAN: 4883 tok in 47.7263s = 102.3 tok/s (budget=256 chunk=4096(default) calllocal=0)
+--- rep 2 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.7081s = 102.4 tok/s
+ppprime rep 1: 4883 tok in 47.5380s = 102.7 tok/s
+ppprime rep 2: 4883 tok in 47.5126s = 102.8 tok/s
+ppprime MEDIAN: 4883 tok in 47.5380s = 102.7 tok/s (budget=256 chunk=4096(default) calllocal=1)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+--- rep 3 AFTER (naked default, request-level seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.6770s = 102.4 tok/s
+ppprime rep 1: 4883 tok in 47.6551s = 102.5 tok/s
+ppprime rep 2: 4883 tok in 47.6865s = 102.4 tok/s
+ppprime MEDIAN: 4883 tok in 47.6770s = 102.4 tok/s (budget=256 chunk=4096(default) calllocal=0)
+--- rep 3 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.5582s = 102.7 tok/s
+ppprime rep 1: 4883 tok in 47.5023s = 102.8 tok/s
+ppprime rep 2: 4883 tok in 47.5587s = 102.7 tok/s
+ppprime MEDIAN: 4883 tok in 47.5582s = 102.7 tok/s (budget=256 chunk=4096(default) calllocal=1)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+--- rep 4 AFTER (naked default, request-level seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.7931s = 102.2 tok/s
+ppprime rep 1: 4883 tok in 47.7783s = 102.2 tok/s
+ppprime rep 2: 4883 tok in 47.7619s = 102.2 tok/s
+ppprime MEDIAN: 4883 tok in 47.7783s = 102.2 tok/s (budget=256 chunk=4096(default) calllocal=0)
+--- rep 4 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.7271s = 102.3 tok/s
+ppprime rep 1: 4883 tok in 47.6199s = 102.5 tok/s
+ppprime rep 2: 4883 tok in 47.5661s = 102.7 tok/s
+ppprime MEDIAN: 4883 tok in 47.6199s = 102.5 tok/s (budget=256 chunk=4096(default) calllocal=1)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+--- rep 5 AFTER (naked default, request-level seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.7747s = 102.2 tok/s
+ppprime rep 1: 4883 tok in 47.7027s = 102.4 tok/s
+ppprime rep 2: 4883 tok in 47.7224s = 102.3 tok/s
+ppprime MEDIAN: 4883 tok in 47.7224s = 102.3 tok/s (budget=256 chunk=4096(default) calllocal=0)
+--- rep 5 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=256
+ppprime rep 0: 4883 tok in 47.5708s = 102.6 tok/s
+ppprime rep 1: 4883 tok in 47.5444s = 102.7 tok/s
+ppprime rep 2: 4883 tok in 47.5326s = 102.7 tok/s
+ppprime MEDIAN: 4883 tok in 47.5444s = 102.7 tok/s (budget=256 chunk=4096(default) calllocal=1)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+
+########## CELL pp512 budget=1024 : interleaved AFTER/BEFORE x5 ##########
+--- rep 1 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6592s = 109.9 tok/s
+ppprime rep 1: 402 tok in 3.6515s = 110.1 tok/s
+ppprime rep 2: 402 tok in 3.6557s = 110.0 tok/s
+ppprime MEDIAN: 402 tok in 3.6557s = 110.0 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 1 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6553s = 110.0 tok/s
+ppprime rep 1: 402 tok in 3.6733s = 109.4 tok/s
+ppprime rep 2: 402 tok in 3.6657s = 109.7 tok/s
+ppprime MEDIAN: 402 tok in 3.6657s = 109.7 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 36, 2392 MHz 1, 32, 2325 MHz 
+--- rep 2 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6580s = 109.9 tok/s
+ppprime rep 1: 402 tok in 3.6570s = 109.9 tok/s
+ppprime rep 2: 402 tok in 3.6522s = 110.1 tok/s
+ppprime MEDIAN: 402 tok in 3.6570s = 109.9 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 2 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6670s = 109.6 tok/s
+ppprime rep 1: 402 tok in 3.6508s = 110.1 tok/s
+ppprime rep 2: 402 tok in 3.6445s = 110.3 tok/s
+ppprime MEDIAN: 402 tok in 3.6508s = 110.1 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 36, 2400 MHz 1, 32, 2325 MHz 
+--- rep 3 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6593s = 109.9 tok/s
+ppprime rep 1: 402 tok in 3.6655s = 109.7 tok/s
+ppprime rep 2: 402 tok in 3.6544s = 110.0 tok/s
+ppprime MEDIAN: 402 tok in 3.6593s = 109.9 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 3 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6688s = 109.6 tok/s
+ppprime rep 1: 402 tok in 3.6510s = 110.1 tok/s
+ppprime rep 2: 402 tok in 3.6583s = 109.9 tok/s
+ppprime MEDIAN: 402 tok in 3.6583s = 109.9 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 36, 2400 MHz 1, 32, 2325 MHz 
+--- rep 4 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6557s = 110.0 tok/s
+ppprime rep 1: 402 tok in 3.6580s = 109.9 tok/s
+ppprime rep 2: 402 tok in 3.6581s = 109.9 tok/s
+ppprime MEDIAN: 402 tok in 3.6580s = 109.9 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 4 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6538s = 110.0 tok/s
+ppprime rep 1: 402 tok in 3.6879s = 109.0 tok/s
+ppprime rep 2: 402 tok in 3.6441s = 110.3 tok/s
+ppprime MEDIAN: 402 tok in 3.6538s = 110.0 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 35, 2400 MHz 1, 31, 2325 MHz 
+--- rep 5 AFTER (naked default, request-level seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6685s = 109.6 tok/s
+ppprime rep 1: 402 tok in 3.6608s = 109.8 tok/s
+ppprime rep 2: 402 tok in 3.6593s = 109.9 tok/s
+ppprime MEDIAN: 402 tok in 3.6608s = 109.8 tok/s (budget=1024 chunk=4096(default) calllocal=0)
+--- rep 5 BEFORE (MEMRA_PRIME_CALLLOCAL=1, per-call seq_end) budget=1024
+ppprime rep 0: 402 tok in 3.6741s = 109.4 tok/s
+ppprime rep 1: 402 tok in 3.6579s = 109.9 tok/s
+ppprime rep 2: 402 tok in 3.6628s = 109.8 tok/s
+ppprime MEDIAN: 402 tok in 3.6628s = 109.8 tok/s (budget=1024 chunk=4096(default) calllocal=1)
+0, 35, 2400 MHz 1, 32, 2325 MHz 
+0, 0 MiB, 35, 2400 MHz
+1, 0 MiB, 31, 2325 MHz
+lock released 2026-08-07T13:36:13Z
+=== done 2026-08-07T13:36:13Z

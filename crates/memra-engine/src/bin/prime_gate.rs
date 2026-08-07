@@ -144,10 +144,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // batched prime (the config that seeds generation) + determinism rerun
         let mut c_bp = Cache::new(&e, &model.cfg, ctx)?;
-        let (l_bp, _, _) = model.prime_cache(&e, &toks, &mut c_bp)?;
+        let (l_bp, _, _) = model.prime_cache(&e, &toks, &mut c_bp, 0)?;
         let det_ok = {
             let mut c2 = Cache::new(&e, &model.cfg, ctx)?;
-            let (l2, _, _) = model.prime_cache(&e, &toks, &mut c2)?;
+            let (l2, _, _) = model.prime_cache(&e, &toks, &mut c2, 0)?;
             l_bp.iter().zip(&l2).all(|(a, b)| a.to_bits() == b.to_bits())
         };
         if !det_ok {

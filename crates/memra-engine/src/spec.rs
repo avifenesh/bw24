@@ -3453,7 +3453,7 @@ impl HybridModel {
         if continuation {
             prime_logits = Vec::new();
         } else if batched_prime {
-            let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut *cache)?;
+            let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut *cache, 0)?;
             prime_logits = l;
             prompt_h = Some(hiddens);
         } else {
