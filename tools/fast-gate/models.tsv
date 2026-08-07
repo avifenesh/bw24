@@ -95,6 +95,18 @@ chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
 # Artifact is box-staged (MEMRA_STEP37_GGUF or ~/step37/...); SKIPs cleanly when absent.
 chunkinv35	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24	-	-
 chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24 --canary	-	-
+# tickinv35/tickinv35c: the SECOND segmentation axis on the launch SKU — serve's per-tick
+# prime_cache calls (one per scheduler tick), the level ABOVE chunkinv35's inside-one-call split.
+# Each call computed its own seq_end, so step35's SWA arm predicate differed BETWEEN calls:
+# budgets 1024/513 EXACT, 512/256/64 DIFFER 1.813e0 at greedy step 6 (the original defect's exact
+# signature — research/step35-chunkfix-20260807 §9, raw/tickinv35-20260807T022010Z.log). Dark
+# lanes default to budget 256 AND cap by live SLO headroom = LOAD-DEPENDENT segmentation; the
+# interactive lane is reachable via the prefix-cache LCP split (any LCP in [64,512]) — the
+# --splits arms pin that off-grid-resume hole (vLLM #51113's second law). REGISTERED RED by
+# lane/tick-seg 2026-08-07; the fix in the adjacent commits turns it green. Seam
+# MEMRA_PRIME_CALLLOCAL = rollback to per-call seq_end (tick-variant by construction — teeth).
+tickinv35	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24	-	-
+tickinv35c	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary	-	-
 # gwstress: the MEMRA_GRAPH_WARMUPS=1 pool-growth adversarial gate (lane/graph-warmups) —
 # large<->small session cycles + overlap arm force captures over freed async-pool blocks;
 # bit-identity vs eager is the arbiter (#68's class corrupts without faulting) and the

@@ -35,6 +35,7 @@
 //!           diverging hidden-stack ROW so a boundary-localized leak is distinguishable
 //!           from a global one. Engine-level twin of the server-side chunk-order-probe.py.
 //!   tickinv <model> tickinv --prompt-a <txt|@file> [--budgets 0,1024,256,64] [--steps N]
+//!                           [--splits 64,256,512]
 //!           the SECOND segmentation axis, one level ABOVE chunkinv. `chunkinv` varies
 //!           MEMRA_PRIME_CHUNK *inside one* prime_cache call; serve additionally splits a
 //!           prompt across SEVERAL prime_cache CALLS — one per scheduler tick, `take` tokens
@@ -45,6 +46,12 @@
 //!           replicates that loop faithfully — including the tail-merge that keeps the last
 //!           chunk >= PRIME_MIN_T — and asserts the resulting logits/hiddens are
 //!           budget-independent. budget 0 = one monolithic call (the chunkinv regime).
+//!           --splits adds OFF-GRID-RESUME arms (vLLM #51113's second hole, upstream-sweeps
+//!           08-07): prime [0,L) then [L,T) as TWO calls — serve's prefix-cache LCP-split
+//!           shape, where the first call stops exactly at the snapshot boundary L regardless
+//!           of budget (worker.rs prefill_tick bound_rem) and the second call RESUMES at the
+//!           unaligned position L. Any LCP in [64, win=512] reproduced the FA-prefix defect
+//!           on an interactive request. Rows print as `sp<L>`.
 
 use memra_engine::cache::Cache;
 use memra_engine::forward::argmax;
@@ -1028,24 +1035,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // just one level out. This mode exists so that axis has a MEASURED receipt instead of an
         // enumeration argument.
         //   tickinv <model> tickinv --prompt-a <txt|@f> [--budgets 0,1024,256,64] [--steps N]
+        //                           [--splits 64,256,512]
         "tickinv" => {
             let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
             let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(24);
             let budgets: Vec<usize> = arg(&rest, "--budgets")
                 .unwrap_or_else(|| "0,1024,256,64".into())
                 .split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let splits: Vec<usize> = arg(&rest, "--splits").unwrap_or_default()
+                .split(',').filter_map(|s| s.trim().parse().ok()).collect();
             let ta = encode_prompt(&cx.tok, &pa, chat);
             let t = ta.len();
             let n_embd = cx.model.cfg.n_embd as usize;
             let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
-            println!("tickinv: T={t} chat={chat} budgets={budgets:?} steps={steps} \
-                      PRIME_MIN_T={min_t} (budget 0 = single monolithic call)");
+            println!("tickinv: T={t} chat={chat} budgets={budgets:?} splits={splits:?} \
+                      steps={steps} PRIME_MIN_T={min_t} (budget 0 = single monolithic call)");
 
+            // An arm is a SEGMENTATION of [0,T): either the worker's budget loop, or an
+            // explicit two-call split at L (the prefix-cache LCP shape — off-grid RESUME,
+            // vLLM #51113's second hole: call 2 starts at the unaligned position L).
+            enum Seg { Budget(usize), Split(usize) }
             // FAITHFUL replica of the worker's prefill tick loop (worker.rs:3551-3568): take
             // min(queue, budget) per call, and if the remainder would fall below PRIME_MIN_T
             // take the whole rest instead (the tail merge). Each `take` is ONE prime_cache call
             // on the SAME cache, so cache.pos advances across calls exactly as it does in serve.
-            let arm = |budget: usize| -> Result<(Vec<f32>, Vec<f32>, Vec<u32>, usize), Box<dyn std::error::Error>> {
+            let arm = |seg: &Seg| -> Result<(Vec<f32>, Vec<f32>, Vec<u32>, usize), Box<dyn std::error::Error>> {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + steps + 8))?;
                 let mut hid_all: Vec<f32> = Vec::with_capacity(t * n_embd);
                 let mut logits = Vec::new();
@@ -1053,7 +1067,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut calls = 0usize;
                 while fed < t {
                     let q = t - fed;
-                    let mut take = if budget == 0 { q } else { q.min(budget) };
+                    let mut take = match *seg {
+                        Seg::Budget(0) => q,
+                        Seg::Budget(b) => q.min(b),
+                        // LCP split: first call stops EXACTLY at L (worker.rs prefill_tick
+                        // bound_rem — the snapshot boundary overrides the budget), the second
+                        // call resumes at pos=L and takes the whole rest.
+                        Seg::Split(l) => if fed == 0 { l.min(q) } else { q },
+                    };
                     if q - take > 0 && q - take < min_t { take = q; }
                     let (l, _, hid) = cx.model.prime_cache(&cx.e, &ta[fed..fed + take], &mut c)?;
                     hid_all.extend_from_slice(&cx.e.dtoh(&hid)?);
@@ -1071,12 +1092,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok((logits, hid_all, stream, calls))
             };
             let bits = |a: &[f32]| -> Vec<u32> { a.iter().map(|v| v.to_bits()).collect() };
-            let (l_ref, h_ref, s_ref, c_ref) = arm(budgets[0])?;
+            let (l_ref, h_ref, s_ref, c_ref) = arm(&Seg::Budget(budgets[0]))?;
             println!("ref budget={} calls={c_ref} argmax={}", budgets[0], argmax(&l_ref));
             let mut defects = 0usize;
             println!(" budget | calls | logits | first_div_row | maxdiff   | argmax | stream_div");
-            for &b in &budgets[1..] {
-                let (l, h, s, calls) = arm(b)?;
+            let arms: Vec<(String, Seg)> = budgets[1..].iter()
+                .map(|&b| (format!("{b}"), Seg::Budget(b)))
+                .chain(splits.iter().filter(|&&l| l >= min_t && l + min_t <= t)
+                       .map(|&l| (format!("sp{l}"), Seg::Split(l))))
+                .collect();
+            for (name, seg) in &arms {
+                let (l, h, s, calls) = arm(seg)?;
                 let log_same = bits(&l) == bits(&l_ref);
                 let mut first_div: i64 = -1;
                 for p in 0..t.min(h.len() / n_embd).min(h_ref.len() / n_embd) {
@@ -1089,7 +1115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if !log_same { defects += 1; }
                 let sd = s.iter().zip(&s_ref).position(|(a, bb)| a != bb);
-                println!("{b:>7} | {calls:>5} | {} | {:13} | {:.3e} | {} | {}",
+                println!("{name:>7} | {calls:>5} | {} | {:13} | {:.3e} | {} | {}",
                          if log_same { "EXACT" } else { "DIFFER" },
                          first_div, maxdiff(&l, &l_ref),
                          if argmax(&l) == argmax(&l_ref) { "-" } else { "FLIP" },
