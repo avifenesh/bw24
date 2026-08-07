@@ -125,8 +125,43 @@ INTERNAL_DEPENDENCIES=1, but those govern ONE device's pool and same-pool reuse 
 (b) the table OnceLock is initialized by a different Engine (stage engine vs primary) in
 one session and dereferenced under the other stage's context.
 
-## Round 4 — running: FULL coredump for operand readout
+## The SENTINEL-TOKEN arithmetic (the round-3 VA decoded)
 
-Lightweight dumps omit param memory. The full dump (`run-pp2crash-round4.sh`) reads the
-faulting kernel's params (embd*, token_d*), token_d[0], and probes whether the fault VA
-falls inside the live table mapping.
+The q9 artifact's `token_embd.weight` is NVFP4 (`ggml_dtype 40`), dims [4096, 248320]
+(read off the GGUF header on-box). NVFP4 block = 64 elems -> 36 bytes, so
+`row_bytes = 4096/64*36 = 2304`. The device argmax kernels (`argmax_partial_f32` /
+`argmax_final_f32`, kernels.cu:122/161) initialize `best_i = 0x7fffffff` and only replace
+it when a comparison WINS — if every logit is NaN (`v > best_v` false, `v == best_v`
+false), the sentinel survives and `token_out[0] = 0x7FFFFFFF`. And:
+
+    0x4_C6B3_CE00 + 0x7FFFFFFF * 2304 = 0x484_C6B3_C500  (the fault VA, exactly)
+
+i.e. the fault VA IS `embd_base + 0x7fffffff * row_bytes` for a table based at
+0x4C6B3CE00 — a plausible dev0 async-pool VA, and the SAME across processes because the
+pool's VA reservation is deterministic at equal load points. Both draft arms read the
+argmax output as the next chain token (graph: in-graph argmax -> `g_tok` -> next replay's
+embed; eager: `argmax_token_device` -> `tok_d` -> `embed_gather_device_t`), so ONE
+all-NaN draft-head logits row poisons the chain's next embed lookup identically in both
+arms. This also explains stickiness (the MMU fault kills the context) and why
+launch-blocking/sanitizer mask it (the NaN producer is a cross-stream race that
+serialization removes).
+
+What makes the logits NaN is now the question — h_seed (the verify's hidden handed to the
+draft chain, produced INSIDE the stage-split verify and published via `publish_to`) is
+the leading candidate operand; a WAR/UAF on spec scratch between two concurrent sessions
+is the leading mechanism class.
+
+## Round 4 — aborted (box contention)
+
+The first FULL-coredump attempt timed out on the GPU flock (a co-tenant lane held a
+long window: `probe-pp2-valley.sh`). Re-dispatched as round 5 with a 4h flock wait.
+
+## Round 5 — running: operand readout + event-tracking probe
+
+`run-pp2crash-round5.sh`, two arms:
+- **G**: FULL coredump (param+global memory) -> quote `token_d[0]` (predict: 0x7FFFFFFF)
+  and the `embd` param (predict: 0x4C6B3CE00).
+- **H**: `MEMRA_EVT=1` (re-enable cudarc cross-stream event tracking, the
+  `disable_event_tracking` elision's escape hatch, lib.rs:986) x2 reps. If H is clean,
+  the NaN producer is a cross-stream hazard that implicit event tracking guards —
+  narrowing the fix to an explicit event on that seam.
