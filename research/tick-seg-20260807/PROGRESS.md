@@ -147,6 +147,14 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
       **8/8 SELF-CONSISTENCY PASS**, acceptance digit-identical to the chunkfix baseline
       (K=1 14/18=77.8%; K=2..8 all 15 accepted, 44.1%->11.0%) — the fix is inert on the
       single-call spec path, receipted not asserted.
+- [x] Change-scoped fast-gate on the 5090 (raw/fastgate-5090-20260807T123337Z.log): tier 0
+      GREEN, tier 1 **0 fail** — 12 PASS including sstress (c=64 concurrency, the worker.rs
+      edit's dedicated arm), accept, q35spec/g31spec; the 4 step35 arms SKIP cleanly (artifact
+      box-staged), proving the SKIP word survives the dispatcher end-to-end.
+- [x] serve-smoke on the 5090 (raw/servesmoke-5090-20260807T124017Z.log): **0 failed** — the
+      real serve tick loop end-to-end (chat/stream/completions, greedy determinism, 3
+      concurrent, spec==plain serving exactness, truncation matrix, session-affinity resume).
+- [x] Host unit tests: memra-server 97/97 pass.
 - [~] Perf (perf-tickseg.sh, running since 12:14:24Z, raw/perf-tickseg-20260807T115358Z.log):
       N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1% STOP bar), budget=256
       (dark-lane, where arms change), pp512 null control. Instrument: ppprime --budget (the
