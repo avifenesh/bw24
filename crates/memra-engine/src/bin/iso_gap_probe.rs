@@ -50,16 +50,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rest.iter().position(|a| a == k)
             .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(d)
     };
-    let dx = get("--dx", 480);
+    let mut dx = get("--dx", 480);
     // --dys: COMMA LIST of co-resident depths (B = 1 + len). Sweeps the batched mmvq tier
     // width alongside the FA rung mix — the "regardless of co-residents' depths" bar is over
     // the WIDTH axis too, not only B=2. Default = the single --dy.
-    let dys: Vec<usize> = rest.iter().position(|a| a == "--dys")
+    let mut dys: Vec<usize> = rest.iter().position(|a| a == "--dys")
         .and_then(|i| rest.get(i + 1))
         .map(|v| v.split(',').filter_map(|p| p.trim().parse().ok()).collect::<Vec<usize>>())
         .filter(|v: &Vec<usize>| !v.is_empty())
         .unwrap_or_else(|| vec![get("--dy", 800)]);
     let steps = get("--steps", 96);
+    // --auto: RIG-INDEPENDENT straddle placement. The split ladder is rig-keyed
+    // (fa_split_keys reads the SM count: 82-SM boundary at 512, 188-SM at 2048) and
+    // model-keyed (n_head_kv), so hardcoded depths straddle nothing on another rig. This
+    // mode scans the ladder through the public twin and puts X 32 tokens BELOW the first
+    // rung boundary (X crosses mid-run — the straddle window is live for ~32 steps, then
+    // the batch re-merges) with Y beyond it. The gate arm uses this.
+    let auto = rest.iter().any(|a| a == "--auto");
     let ctx = get("--ctx", 4096);
     // --canary: TEETH. Feed the TEST arm's X one wrong token at step 1 (the
     // MEMRA_GATE_CANARY precedent) — the comparator MUST report FAIL, proving a real
@@ -73,6 +80,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = &model.cfg;
     let nhkv = cfg.n_head_kv as usize;
     let hd = cfg.head_dim_k as usize;
+    if auto {
+        // first rung boundary on THIS rig/model: the smallest t_kv in [64, 32768) where the
+        // ladder value changes from its value at the previous t_kv.
+        let mut boundary = None;
+        let mut prev = memra_engine::fa_split_keys_pub(64, nhkv);
+        for t in 65..32768 {
+            let s = memra_engine::fa_split_keys_pub(t, nhkv);
+            if s != prev { boundary = Some(t); break; }
+            prev = s;
+        }
+        let b = boundary.expect("no ladder rung below 32768 — straddle unreachable");
+        dx = b - 32;
+        dys = vec![b + 288];
+        println!("auto straddle: rung boundary at t_kv={b} -> dx={dx} dys={dys:?}");
+    }
     println!("loaded {arch} ({} layers, n_head_kv={nhkv}, head_dim={hd}); \
               dx={dx} dys={dys:?} steps={steps}{}", model.layers.len(),
              if canary { " CANARY" } else { "" });

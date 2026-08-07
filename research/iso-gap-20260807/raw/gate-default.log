@@ -1,0 +1,4 @@
+loaded qwen35 (32 layers, n_head_kv=4, head_dim=256); dx=481 dys=[801] steps=96
+B=1 reference arm: batched body (fast path pinned OFF; live default = ON)
+VERDICT dx=481 dys=[801]: PASS — X bit-identical solo-vs-coresident, all 96 steps
+iso-gap-gate: PASS (log /tmp/iso-gap-gate-RQgNt2.log)
