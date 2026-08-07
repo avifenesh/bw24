@@ -1,0 +1,62 @@
+gpu lock acquired 2026-08-07T20:26:07Z
+=== /home/ubuntu/receipts/pp2crash/gates/kernel-check.log: env[] target/release/kernel-check
+=== /home/ubuntu/receipts/pp2crash/gates/ppspec-q9-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+=== /home/ubuntu/receipts/pp2crash/gates/ppspec-q9-dev10.log: env[MEMRA_PP_DEVICES=1,0] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+=== /home/ubuntu/receipts/pp2crash/gates/ppspec-q9-singledev.log: env[] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode ppspec --stages 2 --steps 16 --ts 2,5,9 --reps 3
+=== /home/ubuntu/receipts/pp2crash/gates/ppbatch-q9-dev01.log: env[MEMRA_PP_DEVICES=0,1] target/release/decode-batch-gate /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf --mode pp --stages 2 --steps 16 --batch 1,4,8 --reps 2
+=== /home/ubuntu/receipts/pp2crash/gates/runspec-q9-dev10.log: env[MEMRA_PP_DEVICES=1,0 MEMRA_PP_STAGES=2 MEMRA_QWEN_DC=0 MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+=== /home/ubuntu/receipts/pp2crash/gates/runspec-q9-dev01.log: env[MEMRA_PP_DEVICES=0,1 MEMRA_PP_STAGES=2 MEMRA_QWEN_DC=0 MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+=== /home/ubuntu/receipts/pp2crash/gates/runspec-q9-doorshut-dc0.log: env[MEMRA_QWEN_DC=0 MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+=== /home/ubuntu/receipts/pp2crash/gates/runspec-q9-doorshut.log: env[MEMRA_NGEN=64] target/release/run-spec /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+=== /home/ubuntu/receipts/pp2crash/gates/run-gen-q9-naked.log: env[MEMRA_NGEN=8] target/release/run-gen /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+FAIL: crash gate saw sentinel/illegal lines
+
+==== verdicts ====
+ppspec-q9-dev01.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-dev10.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=1,0 splits=default(even) shard=per-stage streams=per-stage
+ppspec-q9-singledev.log:ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=per-stage streams=per-stage
+ppbatch-q9-dev01.log:pp mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+runspec-q9-dev01.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev01.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-dev10.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-dev10.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-doorshut-dc0.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut-dc0.log:=== SELF-CONSISTENCY PASS ===
+runspec-q9-doorshut.log:  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+runspec-q9-doorshut.log:=== SELF-CONSISTENCY PASS ===
+kernel-check.log:ALL GREEN: kernels match CPU reference.
+run-gen-q9-naked.log:prefill argmax=268  decode argmax=268  logit maxdiff=5.987e-1  MATCH
+gate-c2 ok 7 err 1 agg 99.9
+gate-c4x100 ok 100 err 0 agg 112.1
+gate-c8x104 ok 104 err 0 agg 111.9
+smoke-c4 ok 16 err 0 agg 548.5
+script-detected failures: 1
+PP2CRASH_GATES_DONE
