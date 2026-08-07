@@ -4456,12 +4456,19 @@ impl HybridModel {
                     // VA arithmetic). Refuse loudly instead; the diagnostics name the first-NaN
                     // buffer (g_seed = the verify-side handoff vs head-side compute).
                     if (idx as usize) >= d_vocab {
+                        // g_seed is SELF-FED (the replay writes h_nextn back into it), so it
+                        // reads as the head's OUTPUT at j; h_seed_buf is the round's INPUT
+                        // seed, untouched since the round-start copy — the pair discriminates
+                        // "seed arrived poisoned" from "head forward produced NaN".
                         let seed_h = e.dtoh(&dctx.g_seed)?;
                         let seed_nan = seed_h.iter().filter(|v| v.is_nan()).count();
+                        let in_h = e.dtoh(&h_seed_buf)?;
+                        let in_nan = in_h.iter().filter(|v| v.is_nan()).count();
                         return Err(format!(
                             "draft(graph) argmax sentinel 0x{idx:08x} >= d_vocab {d_vocab} at \
-                             round {round} j={j} pos={pos}: round-seed NaN {seed_nan}/{n_embd} \
-                             — refusing to dereference the embed row (#87 trap)"
+                             round {round} j={j} pos={pos}: head-out NaN {seed_nan}/{n_embd}, \
+                             round-input-seed NaN {in_nan}/{n_embd} — refusing to dereference \
+                             the embed row (#87 trap)"
                         )
                         .into());
                     }
