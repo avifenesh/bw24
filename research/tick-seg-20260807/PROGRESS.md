@@ -137,7 +137,9 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
       pre-fix restoration, hence a legitimate perf BEFORE arm), and the split arms give the
       FIRST MEASURED receipt of the LCP-split exposure (prior lane only enumerated it):
       sp64 DIFFER 1.735e0 @ step 10, sp256 1.594e0 @ step 6, sp512 1.813e0 @ step 6 — every
-      LCP class in [64,512] steers the served text pre-fix. chunkinv35 no-regress running.
+      LCP class in [64,512] steers the served text pre-fix.
+      **chunkinv35 no-regress PASS + chunkinv35c teeth intact** — axis 1 undisturbed by the
+      queued_after threading. Battery complete 4/4 rc=0, one flock window 11:40:01Z-12:06:58Z.
 - [ ] Box exactness (exact-tickseg.sh): kernel-check FULL, run-gen PP-2, ppn-gate, run-spec.
 - [ ] Perf (perf-tickseg.sh): N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1%
       STOP bar), budget=256 (dark-lane, where arms change), pp512 null control.
