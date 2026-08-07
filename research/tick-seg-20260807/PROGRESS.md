@@ -128,8 +128,10 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
       raw/unaffected-q9-q35-5090-20260807T114112Z.log): qwen chunkinv PASS + canary teeth;
       q9 tickinv budgets 64/32 + sp64 ALL EXACT (arch never reads seq_end); q9/q35 run-gen
       argmax MATCH at prior-receipt speeds.
-- [ ] Box gate battery (gate-tickseg.sh, dispatched 11:39Z): tickinv35 GREEN + tickinv35c teeth
-      + chunkinv35/c no-regress.
+- [~] Box gate battery (gate-tickseg.sh, dispatched 11:39Z, raw/gate-tickseg-20260807T113933Z.log):
+      **tickinv35 GREEN** — T=4883, budgets 1024(5 calls)/513(10)/512(10)/256(20)/64(77) ALL
+      EXACT (0.000e0, identical greedy), and sp64/sp256/sp512 off-grid-resume arms ALL EXACT.
+      Pre-fix 512/256/64 DIFFERed 1.813e0. Canary + chunkinv35 no-regress still running.
 - [ ] Box exactness (exact-tickseg.sh): kernel-check FULL, run-gen PP-2, ppn-gate, run-spec.
 - [ ] Perf (perf-tickseg.sh): N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1%
       STOP bar), budget=256 (dark-lane, where arms change), pp512 null control.
