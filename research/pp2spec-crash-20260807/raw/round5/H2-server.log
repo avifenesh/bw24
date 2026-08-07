@@ -1,0 +1,41 @@
+[server] starting; models config = [("q9", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8123
+[meter] admit id=chatcmpl-235ac3b91a3152d360d87e274e506614 tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 134MB (admission gate = 2x)
+[meter] admit id=chatcmpl-32a46ec2dbbf89e57623fdc2ace394fa tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-9bd820ff87d4cab273de7826b700f0ff tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-c47d3ce8badf1446f889528b2f991a2c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-ed15470b156b4065a8002b6c69719121 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-68f2985fe64bb8f43441443e5289fd44 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-cbc4e236e9936b8fc0cc940a6b9ef2cc tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-e98ca9b925be7c0b7647805c90262053 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-a607ca3a2edcd4db86eec48a1b801a32 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-647bcef74009fceaa3ca06a53131cce4 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-a7473f2c88b2c2eca304f6a1ab32b227 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-f4719dc937658e48b4407ab66faf0665 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-5e4878d3ff09dc9b8181e74708378ad4 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-891f951e31f340f792979526bd6ad612 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-3f2008e2a6038e698404fcfe836125d5 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-d2d3b10fc6a859b02d265a5290c0ca9d tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-98ebbc0de3cac60c09fecc8e6a70ca54 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-5c35adc74649e62d22b75a35419de1a7 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-76c67f4a0d57595c216105ecca01bb21 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-32efbe0e5bbcdd87f6141d114d08b167 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4421abad4212932aa2ac1aa4c5173d24 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-b2570261cc43d69fa43a8854695878af tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-1bb6a8b5c0917316cc14f109d91803d6 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-821b939240583ba511b41862adc02ae5 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-3fe5beb0bc81ed53145335572f1bed92 tenant=default lane=interactive model="q9"
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

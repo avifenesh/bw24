@@ -156,12 +156,42 @@ is the leading mechanism class.
 The first FULL-coredump attempt timed out on the GPU flock (a co-tenant lane held a
 long window: `probe-pp2-valley.sh`). Re-dispatched as round 5 with a 4h flock wait.
 
-## Round 5 — running: operand readout + event-tracking probe
+## Round 5 — operand readout blocked; EVT escape hatch is itself broken under PP-2 (raw/round5/)
 
-`run-pp2crash-round5.sh`, two arms:
-- **G**: FULL coredump (param+global memory) -> quote `token_d[0]` (predict: 0x7FFFFFFF)
-  and the `embd` param (predict: 0x4C6B3CE00).
-- **H**: `MEMRA_EVT=1` (re-enable cudarc cross-stream event tracking, the
-  `disable_event_tracking` elision's escape hatch, lib.rs:986) x2 reps. If H is clean,
-  the NaN producer is a cross-stream hazard that implicit event tracking guards —
-  narrowing the fix to an explicit event on that seam.
+- **G** (full coredump): reproduced (same `embed_gather_u32`, grid 13073, dev0), but
+  cuda-gdb cannot read param memory even from the full dump
+  (`CUDBG_ERROR_INVALID_MEMORY_ACCESS` on every `@parameter` read — the param-space
+  readout appears broken for this driver/dump combination, it misattributes the param
+  window to `fa_decode_vec_q_rows_v4_512_tb`), and global probes of the predicted table
+  base come back `Cannot access memory`. Operand-level confirmation via the dump is a
+  dead end on this toolchain; the VA arithmetic (exact to the byte, three processes)
+  stands as the evidence.
+- **H** (`MEMRA_EVT=1` x2): INSTANT hard failure, 0/8 at c=2 INCLUDING the solo warmup,
+  wall 0.03s, quoted: `step error: DriverError(CUDA_ERROR_INVALID_CONTEXT, ...)`. No
+  illegal address anywhere. The cross-stream event-tracking escape hatch is INCOMPATIBLE
+  with the ppN multi-context runtime (cudarc records events in one context and waits on
+  them in another) — the probe is INCONCLUSIVE for the race question, and the flag is a
+  landmine for any future PP-2 debugging (documented here so nobody burns a day on it).
+
+### The mechanism, restated precisely
+
+The MMU fault needs NO stale mapping: `0x7FFFFFFF * 2304 = ~4.6 TB` past the table base
+— a VA that was never mapped. The whole crash is: **draft-head logits row reads as
+all-NaN under 2+ concurrent spec sessions over the PP-2 split; the device argmax's
+sentinel (0x7FFFFFFF) survives every NaN comparison; both draft arms feed that token id
+straight into the next chain step's embed gather; the gather dereferences
+table+sentinel*row_bytes; MMU fault; context dies.** c=1 never trips because the NaN
+producer needs a second session's interleaved GPU work.
+
+Localization to the DRAFT chain (not the verify) is pinned by the faulting kernels:
+sentinel-fed `embed_gather_u32{,_t}` at T=1/grid-16 exist only in the draft chain; a
+verify-side sentinel would fault the T=K+1 gather (`embed_gather_device_td`) or panic
+the d2t map indexing first.
+
+## Round 6 — next: instrumented build (find the NaN producer)
+
+Host-side guards at every draft-token readback: `idx >= d_vocab` -> quote round/j/burst,
+read back the head-logits row prefix and h_seed prefix (NaN counts), BREAK the chain
+instead of dereferencing. Same guard on verify preds. This converts the crash into a
+loud log that names the first-NaN buffer (h_seed = verify-side producer vs dl_d-only =
+draft-side compute), per session, per round.

@@ -1,0 +1,23 @@
+Opening GPU coredump: /home/ubuntu/receipts/pp2crash/core-full-155895.nvcudmp
+[Current focus set to CUDA kernel 0, grid 13073, block (0,0,0), thread (160,0,0), device 0, sm 0, warp 6, lane 0]
+
+CUDA Exception: Warp MMU Fault
+The exception was triggered at PC 0x7b48037ad960  embed_gather_u32
+#0  0x00007b48037ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()
+  Kernel Parent Dev Grid Status                                           SMs Mask  GridDim  BlockDim Invocation         
+*      0      -   0 13073 Active 0x00000000000000000000000000000000000000000000ffff (16,1,1) (256,1,1) embed_gather_u32() 
+
+--- raw params @0x0 (embd, token_d, x_out, n_embd|qtype, row_bytes) ---
+0x0 <fa_decode_vec_q_rows_v4_512_tb>:	Error: read_param_memory(0, 0, 6): failed to read param memory at address 0x0 size 8, error=CUDBG_ERROR_INVALID_MEMORY_ACCESS, error message=
+
+Error: read_param_memory(0, 0, 6): failed to read param memory at address 0x0 size 8, error=CUDBG_ERROR_INVALID_MEMORY_ACCESS, error message=
+
+Error: read_param_memory(0, 0, 6): failed to read param memory at address 0x8 size 8, error=CUDBG_ERROR_INVALID_MEMORY_ACCESS, error message=
+
+embd=Value can't be converted to integer.
+
+--- token_d[0] (the token id the gather dereferenced) ---
+Value can't be converted to integer.
+
+--- embd base readable? ---
+Value can't be converted to integer.
