@@ -5,8 +5,9 @@
 #   tools/local-ci.sh --perf         correctness + full perf battery (~15 min)
 #   tools/local-ci.sh --perf-quick   correctness + gemma-31B cells only (~6 min)
 #
-# Correctness stage: kernel-check, run-gen argmax gate, spec self-consistency,
-# VERIFY-GATE logit maxdiff at depth — the standing exactness battery, one command.
+# Correctness stage: kernel-check, run-gen argmax gate, run-spec K=1..8 self-consistency,
+# Gemma stream agreement, and VERIFY-GATE logit maxdiff at depth — the standing exactness
+# battery, one command.
 #
 # Perf stage: the cell battery from research/tune-data/perf-cells.json. Every spec cell
 # records tok/s + ACCEPTANCE + tok/round — the drift class that silently cost the spec
@@ -80,6 +81,7 @@ echo "kernel-check: GREEN"
 # prime-gate (#46): batched-prime vs tokenwise first-token agreement on the mixed prompt
 # set — near-tie flips report, structured divergence or non-determinism exits non-zero.
 Q35="$MODELS/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+Q35_DRAFT="$MODELS/qwen36-35b-moe/draft-35b-owntrim-nvfp4head-q4blk.gguf"
 if [ -f "$Q35" ]; then
     if ! target/release/prime-gate "$Q35" \
             --prompts-file research/prime-gate-coverage-20260802/prompts-mixed.txt \
@@ -89,6 +91,60 @@ if [ -f "$Q35" ]; then
     grep "prime-gate" /tmp/prime-gate-ci.log | tail -2
 else
     echo "prime-gate: SKIP (no q35 model at $Q35)"
+fi
+
+# The standing MTP exactness gate. A naked run-spec invocation sweeps K=1..8; explicitly clear
+# single-K and alternate-mode env so a caller cannot silently narrow or change the gate.
+# The Gemma-4 31B target below uses a separate assistant-drafter API, so its independent
+# stream-agreement check remains on gemma-gate. MEMRA_CI_RUNSPEC=0 skips this sweep.
+if [ "${MEMRA_CI_RUNSPEC:-1}" = "1" ]; then
+    if [ -f "$Q35" ] && [ -f "$Q35_DRAFT" ]; then
+        [ -x target/release/run-spec ] \
+            || cargo build --release -p memra-engine --bin run-spec >/dev/null
+        RUNSPEC_LOG=/tmp/local-ci-run-spec.log
+        runspec_rc=0
+        (
+            unset MEMRA_PROMPT_DIR MEMRA_SPEC_K MEMRA_GEN_ONLY
+            MEMRA_SPEC_TEMP=0 MEMRA_MTP_DRAFT="$Q35_DRAFT" MEMRA_NGEN=32 \
+                MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt \
+                timeout 900 target/release/run-spec "$Q35"
+        ) 2>&1 | tee "$RUNSPEC_LOG" >/dev/null || runspec_rc=$?
+        runspec_passes=$(grep -c "self-consistency: PASS" "$RUNSPEC_LOG" || true)
+        runspec_ks=$(grep -cE '^\[generate_spec K=[1-8]\]' "$RUNSPEC_LOG" || true)
+        if [ "$runspec_rc" -ne 0 ] || [ "$runspec_passes" -ne 8 ] \
+                || [ "$runspec_ks" -ne 8 ] \
+                || ! grep -q "=== SELF-CONSISTENCY PASS ===" "$RUNSPEC_LOG"; then
+            fail_detail=$(awk '
+                /^\[generate_spec K=[0-9]+\]/ {
+                    k = $0
+                    sub(/^.*K=/, "", k)
+                    sub(/\].*$/, "", k)
+                }
+                /self-consistency: FAIL/ { failed_k = k }
+                /FIRST DIVERGENCE at index [0-9]+:/ && failed_k != "" {
+                    pos = $0
+                    sub(/^.*FIRST DIVERGENCE at index /, "", pos)
+                    sub(/:.*/, "", pos)
+                    print failed_k " " pos
+                    exit
+                }
+            ' "$RUNSPEC_LOG")
+            if [ -n "$fail_detail" ]; then
+                echo "run-spec self-consistency FAIL (K=${fail_detail%% *}, FIRST DIVERGENCE at index ${fail_detail#* })"
+            else
+                echo "run-spec K=1..8 FAIL (exit $runspec_rc, $runspec_passes/8 per-K passes)"
+            fi
+            tail -12 "$RUNSPEC_LOG"
+            exit 1
+        fi
+        echo "run-spec K=1..8 self-consistency: PASS (Qwen 35B, 8/8)"
+    elif [ ! -f "$Q35" ]; then
+        echo "run-spec K=1..8: SKIP (no q35 model at $Q35)"
+    else
+        echo "run-spec K=1..8: SKIP (no q35 draft at $Q35_DRAFT)"
+    fi
+else
+    echo "run-spec K=1..8: SKIP (MEMRA_CI_RUNSPEC=0)"
 fi
 
 G31="$MODELS/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf"

@@ -10,28 +10,16 @@ merge/tag bar — a fast-gate green is a *keep going* signal, never a *ship* sig
 |---|---|---|---|
 | 0 | seconds (~2 s kernel-check scoped + build) | workspace compile + kernel-check scoped to the touched sections | every edit-compile loop |
 | 1 | ~1–2 min | tier 0 + golden-token argmax probe on ONE model per affected kernel class (+ one single-K spec probe when the diff touches the spec pipeline) | before every dev-loop commit |
-| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), accept-gate (`tools/accept-gate.sh` — exact served-spec acceptance counts + a 128-token text sha at the production drafter/K, wired 2026-08-06; smoke cell by default, `--full` for the 6-cell matrix, `MEMRA_CI_ACCEPT=0` skips) | **every merge, every tag** (unchanged) |
+| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, `run-spec` K=1..8 self-consistency on the Qwen 35B target + external MTP draft (`MEMRA_CI_RUNSPEC=0` skips), Gemma-4 31B stream agreement 64/64, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), accept-gate (`tools/accept-gate.sh` — exact served-spec acceptance counts + a 128-token text sha at the production drafter/K, wired 2026-08-06; smoke cell by default, `--full` for the 6-cell matrix, `MEMRA_CI_ACCEPT=0` skips) | **every merge, every tag** (unchanged) |
 
-**Two corrections to how tier 2 is described elsewhere** (audited 2026-08-07 — both are gaps
-between the doctrine and the script, recorded rather than papered over):
+The docs-fit owner call is closed: tier 2 now runs the full `run-spec` K=1..8 sweep and requires
+eight per-K PASS lines plus the final `SELF-CONSISTENCY PASS` marker. The raw run is logged before
+parsing; a red quotes the failing K and `FIRST DIVERGENCE` index.
 
-1. **`local-ci.sh` does NOT run `run-spec` K=1..8.** `grep -n run-spec tools/local-ci.sh` returns
-   nothing. CLAUDE.md, CONTRIBUTING.md, and `fast-gate.sh`'s own header contract all name
-   "`run-spec` K=1..8 self-consistency" as one of the three standing merge gates, and this table
-   used to imply the battery covers it. What local-ci.sh actually runs under the label "spec
-   self-consistency" is `MEMRA_SPEC=6 MEMRA_DRAFT=$D31 gemma-gate` asserting
-   `stream agreement 64/64` (local-ci.sh:102-105) — **one K, one model, the gemma drafter**, not
-   the K=1..8 sweep over the qwen MTP family. The sweep is real and is run, but by
-   `tools/acceptance_battery.sh`, `tools/full-board-bench.sh`, `tools/run_hy3_local_5090.sh`, and
-   the per-lane batteries whose receipts live in `research/` — i.e. by hand at merge time, not by
-   the script. Until it is wired in, "the battery ran" is not evidence that K=1..8 passed: quote
-   the `run-spec` log. (Wiring it is a tooling change, out of scope for a docs sweep — flagged as
-   an owner call in `research/docs-fit-20260807/SWEEP.md`.)
-2. **`--tier 2` does not run the perf stage.** `fast-gate.sh:68` is `exec tools/local-ci.sh` with
-   no arguments, and local-ci.sh gates its perf cells behind `--perf` / `--perf-quick`
-   (local-ci.sh:4-6, 341). So `--tier 2` is correctness-only; run `tools/local-ci.sh --perf`
-   directly for the cell battery. The `--perf` entry was removed from the row above for that
-   reason.
+**One correction to how tier 2 is described elsewhere:** `--tier 2` does not run the perf stage.
+`fast-gate.sh:68` is `exec tools/local-ci.sh` with no arguments, and local-ci.sh gates its perf
+cells behind `--perf` / `--perf-quick`. So `--tier 2` is correctness-only; run
+`tools/local-ci.sh --perf` directly for the cell battery.
 
 Entry point:
 
