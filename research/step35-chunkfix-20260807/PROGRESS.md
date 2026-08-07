@@ -412,3 +412,36 @@ What this lane's fix *does* still buy, unchanged by the above: `MEMRA_PRIME_CHUN
 `docs/FLAGS.md` invites an operator to set per rig — is now a pure memory knob on step35, and every
 single-call prefill (`run-gen`, `run-spec`, the probes, and interactive serve at the default tick
 budget) is chunk-invariant.
+
+### Why `tickinv` is NOT registered as a fast-gate arm (yet)
+
+Deliberate, and the same call the finding lane made about `chunkinv35`: a gate that asserts
+tick-invariance would be **legitimately red today**, and landing a known-red check trains everyone
+to ignore red. The rule this lane followed for its own gate — *the assertion ships green, in the
+same commit as the fix that makes it green* — applies to the follow-up lane too. `tickinv` exists in
+the probe binary, is documented in the probe's header, and its arms are scripted in `tickinv35.sh`,
+so the follow-up lane starts with the instrument and the receipt already built; registering it in
+`tools/fast-gate/models.tsv` is that lane's first commit, not this one's.
+
+---
+
+## 10. Deliverable summary
+
+| BAR item | status |
+|---|---|
+| 1. Implement on `lane/step35-chunkfix` off `origin/restructure/public-split` | done, `c809181d` |
+| 2. red `chunkinv35` gate goes GREEN | **GREEN** (§4.1), canary has teeth (§4.2) |
+| 2. finding lane's falsification battery returns EXACT everywhere | **4/4 predictions dead** (§5) |
+| 2. `run-gen` argmax MATCH | **MATCH** (§6) |
+| 2. `kernel-check` ALL GREEN | **ALL GREEN**, model-backed on the SKU's bytes (§6) |
+| 2. `ppn-gate` still bit-identical | **PASS serial + pipelined** (§6) |
+| 3. before/after prefill perf, N>=5 interleaved, same lock hold | done (§7); **default +0.009%**, null control -0.093% |
+| 3. STOP if the default moves >1% | not triggered — 0.009% is ~100x inside the bar |
+| 4. q27/q9 unaffected | q9 + q35 argmax MATCH on the 5090, qwen `chunkinv` + canary PASS (§6.1); path is `cfg.step35.is_some()`-scoped by construction |
+| extra | `run-spec` K=1..8 PASS, acceptance now chunk-invariant too (§8) |
+| extra | second segmentation axis named, enumerated, measured, scoped to a follow-up lane (§9) |
+
+**Ship verdict: the fix is correct, gated, and free at the shipped default.** The one thing a
+reader should carry away beyond the green ticks is §9: `MEMRA_PRIME_CHUNK` is now a pure memory knob
+on step35, but the *tick-budget* axis above it still steers arithmetic on the dark lanes and via the
+prefix-cache LCP split, and that is unfixed.
