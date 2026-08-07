@@ -1,0 +1,179 @@
+=== lane/step35-chunkfix prefill perf, interleaved N=5 20260807T004722Z commit=c809181d lane/step35-chunkfix (step35 SWA arm keyed on seq_end; chunkinv35 gate + MEMRA_STEP35_SWA_TKV seam)
+lock acquired 2026-08-07T00:47:22Z
+0, 0 MiB, 32, 2407 MHz
+1, 0 MiB, 32, 2325 MHz
+
+########## CELL pp6257 chunk=4096 : interleaved AFTER/BEFORE x5 ##########
+--- rep 1 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1910s = 93.6 tok/s
+ppprime rep 1: 4883 tok in 52.2052s = 93.5 tok/s
+ppprime rep 2: 4883 tok in 52.1687s = 93.6 tok/s
+ppprime MEDIAN: 4883 tok in 52.1910s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+--- rep 1 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.3031s = 93.4 tok/s
+ppprime rep 1: 4883 tok in 52.2517s = 93.5 tok/s
+ppprime rep 2: 4883 tok in 52.2072s = 93.5 tok/s
+ppprime MEDIAN: 4883 tok in 52.2517s = 93.5 tok/s (chunk=4096 f32chunk0=0)
+0, 40, 2400 MHz 1, 32, 2325 MHz 
+--- rep 2 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1779s = 93.6 tok/s
+ppprime rep 1: 4883 tok in 52.2058s = 93.5 tok/s
+ppprime rep 2: 4883 tok in 52.2992s = 93.4 tok/s
+ppprime MEDIAN: 4883 tok in 52.2058s = 93.5 tok/s (chunk=4096 f32chunk0=0)
+--- rep 2 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1956s = 93.6 tok/s
+ppprime rep 1: 4883 tok in 52.2258s = 93.5 tok/s
+ppprime rep 2: 4883 tok in 52.1919s = 93.6 tok/s
+ppprime MEDIAN: 4883 tok in 52.1956s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+0, 40, 2392 MHz 1, 32, 2325 MHz 
+--- rep 3 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1815s = 93.6 tok/s
+ppprime rep 1: 4883 tok in 52.1762s = 93.6 tok/s
+ppprime rep 2: 4883 tok in 52.1851s = 93.6 tok/s
+ppprime MEDIAN: 4883 tok in 52.1815s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+--- rep 3 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1838s = 93.6 tok/s
+ppprime rep 1: 4883 tok in 52.2290s = 93.5 tok/s
+ppprime rep 2: 4883 tok in 52.1870s = 93.6 tok/s
+ppprime MEDIAN: 4883 tok in 52.1870s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+0, 40, 2400 MHz 1, 32, 2325 MHz 
+--- rep 4 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1292s = 93.7 tok/s
+ppprime rep 1: 4883 tok in 52.1758s = 93.6 tok/s
+ppprime rep 2: 4883 tok in 52.1437s = 93.6 tok/s
+ppprime MEDIAN: 4883 tok in 52.1437s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+--- rep 4 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.2206s = 93.5 tok/s
+ppprime rep 1: 4883 tok in 52.3012s = 93.4 tok/s
+ppprime rep 2: 4883 tok in 52.2118s = 93.5 tok/s
+ppprime MEDIAN: 4883 tok in 52.2206s = 93.5 tok/s (chunk=4096 f32chunk0=0)
+0, 40, 2392 MHz 1, 32, 2325 MHz 
+--- rep 5 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1919s = 93.6 tok/s
+ppprime rep 1: 4883 tok in 52.2136s = 93.5 tok/s
+ppprime rep 2: 4883 tok in 52.1921s = 93.6 tok/s
+ppprime MEDIAN: 4883 tok in 52.1921s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+--- rep 5 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 4883 tok in 52.1226s = 93.7 tok/s
+ppprime rep 1: 4883 tok in 52.1571s = 93.6 tok/s
+ppprime rep 2: 4883 tok in 52.2080s = 93.5 tok/s
+ppprime MEDIAN: 4883 tok in 52.1571s = 93.6 tok/s (chunk=4096 f32chunk0=0)
+0, 40, 2400 MHz 1, 32, 2325 MHz 
+
+########## CELL pp6257 chunk=512 : interleaved AFTER/BEFORE x5 ##########
+--- rep 1 AFTER (naked default, seq_end predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.4613s = 107.4 tok/s
+ppprime rep 1: 4883 tok in 45.4296s = 107.5 tok/s
+ppprime rep 2: 4883 tok in 45.4239s = 107.5 tok/s
+ppprime MEDIAN: 4883 tok in 45.4296s = 107.5 tok/s (chunk=512 f32chunk0=0)
+--- rep 1 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.2330s = 108.0 tok/s
+ppprime rep 1: 4883 tok in 45.3687s = 107.6 tok/s
+ppprime rep 2: 4883 tok in 45.2005s = 108.0 tok/s
+ppprime MEDIAN: 4883 tok in 45.2330s = 108.0 tok/s (chunk=512 f32chunk0=0)
+0, 40, 2392 MHz 1, 32, 2325 MHz 
+--- rep 2 AFTER (naked default, seq_end predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.4441s = 107.5 tok/s
+ppprime rep 1: 4883 tok in 45.4335s = 107.5 tok/s
+ppprime rep 2: 4883 tok in 45.4845s = 107.4 tok/s
+ppprime MEDIAN: 4883 tok in 45.4441s = 107.5 tok/s (chunk=512 f32chunk0=0)
+--- rep 2 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.2320s = 108.0 tok/s
+ppprime rep 1: 4883 tok in 45.2287s = 108.0 tok/s
+ppprime rep 2: 4883 tok in 45.3761s = 107.6 tok/s
+ppprime MEDIAN: 4883 tok in 45.2320s = 108.0 tok/s (chunk=512 f32chunk0=0)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+--- rep 3 AFTER (naked default, seq_end predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.4959s = 107.3 tok/s
+ppprime rep 1: 4883 tok in 45.4997s = 107.3 tok/s
+ppprime rep 2: 4883 tok in 45.4891s = 107.3 tok/s
+ppprime MEDIAN: 4883 tok in 45.4959s = 107.3 tok/s (chunk=512 f32chunk0=0)
+--- rep 3 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.2187s = 108.0 tok/s
+ppprime rep 1: 4883 tok in 45.1737s = 108.1 tok/s
+ppprime rep 2: 4883 tok in 45.2251s = 108.0 tok/s
+ppprime MEDIAN: 4883 tok in 45.2187s = 108.0 tok/s (chunk=512 f32chunk0=0)
+0, 39, 2400 MHz 1, 32, 2325 MHz 
+--- rep 4 AFTER (naked default, seq_end predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.4463s = 107.4 tok/s
+ppprime rep 1: 4883 tok in 45.3968s = 107.6 tok/s
+ppprime rep 2: 4883 tok in 45.5374s = 107.2 tok/s
+ppprime MEDIAN: 4883 tok in 45.4463s = 107.4 tok/s (chunk=512 f32chunk0=0)
+--- rep 4 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.3044s = 107.8 tok/s
+ppprime rep 1: 4883 tok in 45.2670s = 107.9 tok/s
+ppprime rep 2: 4883 tok in 45.3035s = 107.8 tok/s
+ppprime MEDIAN: 4883 tok in 45.3035s = 107.8 tok/s (chunk=512 f32chunk0=0)
+0, 39, 2392 MHz 1, 32, 2325 MHz 
+--- rep 5 AFTER (naked default, seq_end predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.3780s = 107.6 tok/s
+ppprime rep 1: 4883 tok in 45.3676s = 107.6 tok/s
+ppprime rep 2: 4883 tok in 45.3739s = 107.6 tok/s
+ppprime MEDIAN: 4883 tok in 45.3739s = 107.6 tok/s (chunk=512 f32chunk0=0)
+--- rep 5 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=512
+ppprime rep 0: 4883 tok in 45.2000s = 108.0 tok/s
+ppprime rep 1: 4883 tok in 45.2175s = 108.0 tok/s
+ppprime rep 2: 4883 tok in 45.2244s = 108.0 tok/s
+ppprime MEDIAN: 4883 tok in 45.2175s = 108.0 tok/s (chunk=512 f32chunk0=0)
+0, 39, 2400 MHz 1, 32, 2325 MHz 
+
+########## CELL pp512 chunk=4096 : interleaved AFTER/BEFORE x5 ##########
+--- rep 1 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6495s = 110.2 tok/s
+ppprime rep 1: 402 tok in 3.6498s = 110.1 tok/s
+ppprime rep 2: 402 tok in 3.6646s = 109.7 tok/s
+ppprime MEDIAN: 402 tok in 3.6498s = 110.1 tok/s (chunk=4096 f32chunk0=0)
+--- rep 1 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6307s = 110.7 tok/s
+ppprime rep 1: 402 tok in 3.6505s = 110.1 tok/s
+ppprime rep 2: 402 tok in 3.6401s = 110.4 tok/s
+ppprime MEDIAN: 402 tok in 3.6401s = 110.4 tok/s (chunk=4096 f32chunk0=0)
+0, 35, 2400 MHz 1, 32, 2325 MHz 
+--- rep 2 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6548s = 110.0 tok/s
+ppprime rep 1: 402 tok in 3.6436s = 110.3 tok/s
+ppprime rep 2: 402 tok in 3.6367s = 110.5 tok/s
+ppprime MEDIAN: 402 tok in 3.6436s = 110.3 tok/s (chunk=4096 f32chunk0=0)
+--- rep 2 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6464s = 110.2 tok/s
+ppprime rep 1: 402 tok in 3.6748s = 109.4 tok/s
+ppprime rep 2: 402 tok in 3.6376s = 110.5 tok/s
+ppprime MEDIAN: 402 tok in 3.6464s = 110.2 tok/s (chunk=4096 f32chunk0=0)
+0, 35, 2392 MHz 1, 31, 2325 MHz 
+--- rep 3 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6602s = 109.8 tok/s
+ppprime rep 1: 402 tok in 3.6585s = 109.9 tok/s
+ppprime rep 2: 402 tok in 3.6444s = 110.3 tok/s
+ppprime MEDIAN: 402 tok in 3.6585s = 109.9 tok/s (chunk=4096 f32chunk0=0)
+--- rep 3 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6503s = 110.1 tok/s
+ppprime rep 1: 402 tok in 3.6483s = 110.2 tok/s
+ppprime rep 2: 402 tok in 3.6486s = 110.2 tok/s
+ppprime MEDIAN: 402 tok in 3.6486s = 110.2 tok/s (chunk=4096 f32chunk0=0)
+0, 35, 2392 MHz 1, 32, 2325 MHz 
+--- rep 4 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6718s = 109.5 tok/s
+ppprime rep 1: 402 tok in 3.6481s = 110.2 tok/s
+ppprime rep 2: 402 tok in 3.6495s = 110.2 tok/s
+ppprime MEDIAN: 402 tok in 3.6495s = 110.2 tok/s (chunk=4096 f32chunk0=0)
+--- rep 4 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6405s = 110.4 tok/s
+ppprime rep 1: 402 tok in 3.6519s = 110.1 tok/s
+ppprime rep 2: 402 tok in 3.6398s = 110.4 tok/s
+ppprime MEDIAN: 402 tok in 3.6405s = 110.4 tok/s (chunk=4096 f32chunk0=0)
+0, 36, 2392 MHz 1, 32, 2325 MHz 
+--- rep 5 AFTER (naked default, seq_end predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6516s = 110.1 tok/s
+ppprime rep 1: 402 tok in 3.6553s = 110.0 tok/s
+ppprime rep 2: 402 tok in 3.6359s = 110.6 tok/s
+ppprime MEDIAN: 402 tok in 3.6516s = 110.1 tok/s (chunk=4096 f32chunk0=0)
+--- rep 5 BEFORE (MEMRA_STEP35_SWA_TKV=1, t_kv predicate) chunk=4096
+ppprime rep 0: 402 tok in 3.6437s = 110.3 tok/s
+ppprime rep 1: 402 tok in 3.6590s = 109.9 tok/s
+ppprime rep 2: 402 tok in 3.6494s = 110.2 tok/s
+ppprime MEDIAN: 402 tok in 3.6494s = 110.2 tok/s (chunk=4096 f32chunk0=0)
+0, 36, 2392 MHz 1, 32, 2325 MHz 
+0, 0 MiB, 36, 2392 MHz
+1, 0 MiB, 32, 2325 MHz
+lock released 2026-08-07T02:12:39Z
+=== done 2026-08-07T02:12:39Z

@@ -82,6 +82,19 @@ g31spec	gspec	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf
 # gate script's header because this lane wrote it wrong twice.
 chunkinv	cmd	tools/chunk-invariance-gate.sh	-	-	-
 chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
+# chunkinv35/chunkinv35c: the SAME assertion on the LAUNCH SKU (Step-3.7-Flash), whose SWA prefill
+# had its own chunk-variant door — different arch, different mechanism, therefore its own arm
+# (lane/step35-chunkfix, research/step35-chunkfix-20260807). Two things make the qwen arm above
+# blind to it: (1) its pinned prompts are 96/147 tokens, BELOW step35's 512-token SWA window, so
+# every chunk took the same kernel and the gate compared one kernel against itself; (2) its canary
+# seam (MEMRA_PRIME_F32CHUNK0) is read in full_attn_prime_fa_dispatch, which step35 never reaches
+# — the canary was INERT on this arch. This arm fixes both: prompt-pp6257 (T=4883, past the
+# window) and the MEMRA_STEP35_SWA_TKV seam (the pre-fix predicate, chunk-variant by construction).
+# The chunk set spans both sides of the defect's closed form P = c*floor(win/c): 4096/513 gave P=0,
+# 512/256/64 gave P=512, and pre-fix those families disagreed pairwise while agreeing within.
+# Artifact is box-staged (MEMRA_STEP37_GGUF or ~/step37/...); SKIPs cleanly when absent.
+chunkinv35	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24	-	-
+chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24 --canary	-	-
 # gwstress: the MEMRA_GRAPH_WARMUPS=1 pool-growth adversarial gate (lane/graph-warmups) —
 # large<->small session cycles + overlap arm force captures over freed async-pool blocks;
 # bit-identity vs eager is the arbiter (#68's class corrupts without faulting) and the

@@ -34,6 +34,17 @@
 //!           values (zero reuse) must give bit-identical prefill logits. Reports the first
 //!           diverging hidden-stack ROW so a boundary-localized leak is distinguishable
 //!           from a global one. Engine-level twin of the server-side chunk-order-probe.py.
+//!   tickinv <model> tickinv --prompt-a <txt|@file> [--budgets 0,1024,256,64] [--steps N]
+//!           the SECOND segmentation axis, one level ABOVE chunkinv. `chunkinv` varies
+//!           MEMRA_PRIME_CHUNK *inside one* prime_cache call; serve additionally splits a
+//!           prompt across SEVERAL prime_cache CALLS — one per scheduler tick, `take` tokens
+//!           each (worker.rs:3555 / :3111, budget = MEMRA_PREFILL_TICK 1024 interactive,
+//!           MEMRA_PREFILL_JUDGE/HARVEST 256 dark-lane). Each CALL sees its own cache.pos, so
+//!           any per-call quantity (e.g. step35's seq_end arm predicate) can differ between
+//!           tick budgets even when every call is internally chunk-invariant. This mode
+//!           replicates that loop faithfully — including the tail-merge that keeps the last
+//!           chunk >= PRIME_MIN_T — and asserts the resulting logits/hiddens are
+//!           budget-independent. budget 0 = one monolithic call (the chunkinv regime).
 
 use memra_engine::cache::Cache;
 use memra_engine::forward::argmax;
@@ -1007,6 +1018,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      if defects == 0 { "CHUNK-INVARIANT — prefill logits bit-identical at every \
                                         chunk size" }
                      else { "*** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***" });
+        }
+
+        // TICK-BUDGET INVARIANCE (lane/step35-chunkfix, 2026-08-07): the segmentation axis one
+        // level ABOVE chunkinv. chunkinv varies the split INSIDE one prime_cache call; serve also
+        // splits a prompt across SEVERAL calls, one per scheduler tick. Each call has its own
+        // cache.pos, so a per-CALL quantity is free to differ between budgets even when every
+        // call is internally chunk-invariant — which is exactly the shape of the step35 defect,
+        // just one level out. This mode exists so that axis has a MEASURED receipt instead of an
+        // enumeration argument.
+        //   tickinv <model> tickinv --prompt-a <txt|@f> [--budgets 0,1024,256,64] [--steps N]
+        "tickinv" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(24);
+            let budgets: Vec<usize> = arg(&rest, "--budgets")
+                .unwrap_or_else(|| "0,1024,256,64".into())
+                .split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let ta = encode_prompt(&cx.tok, &pa, chat);
+            let t = ta.len();
+            let n_embd = cx.model.cfg.n_embd as usize;
+            let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
+            println!("tickinv: T={t} chat={chat} budgets={budgets:?} steps={steps} \
+                      PRIME_MIN_T={min_t} (budget 0 = single monolithic call)");
+
+            // FAITHFUL replica of the worker's prefill tick loop (worker.rs:3551-3568): take
+            // min(queue, budget) per call, and if the remainder would fall below PRIME_MIN_T
+            // take the whole rest instead (the tail merge). Each `take` is ONE prime_cache call
+            // on the SAME cache, so cache.pos advances across calls exactly as it does in serve.
+            let arm = |budget: usize| -> Result<(Vec<f32>, Vec<f32>, Vec<u32>, usize), Box<dyn std::error::Error>> {
+                let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + steps + 8))?;
+                let mut hid_all: Vec<f32> = Vec::with_capacity(t * n_embd);
+                let mut logits = Vec::new();
+                let mut fed = 0usize;
+                let mut calls = 0usize;
+                while fed < t {
+                    let q = t - fed;
+                    let mut take = if budget == 0 { q } else { q.min(budget) };
+                    if q - take > 0 && q - take < min_t { take = q; }
+                    let (l, _, hid) = cx.model.prime_cache(&cx.e, &ta[fed..fed + take], &mut c)?;
+                    hid_all.extend_from_slice(&cx.e.dtoh(&hid)?);
+                    logits = l;
+                    fed += take;
+                    calls += 1;
+                }
+                let mut tk = argmax(&logits) as u32;
+                let mut stream = vec![tk];
+                for _ in 0..steps {
+                    let (l, _) = cx.model.decode_step_h(&cx.e, tk, &mut c)?;
+                    tk = argmax(&l) as u32;
+                    stream.push(tk);
+                }
+                Ok((logits, hid_all, stream, calls))
+            };
+            let bits = |a: &[f32]| -> Vec<u32> { a.iter().map(|v| v.to_bits()).collect() };
+            let (l_ref, h_ref, s_ref, c_ref) = arm(budgets[0])?;
+            println!("ref budget={} calls={c_ref} argmax={}", budgets[0], argmax(&l_ref));
+            let mut defects = 0usize;
+            println!(" budget | calls | logits | first_div_row | maxdiff   | argmax | stream_div");
+            for &b in &budgets[1..] {
+                let (l, h, s, calls) = arm(b)?;
+                let log_same = bits(&l) == bits(&l_ref);
+                let mut first_div: i64 = -1;
+                for p in 0..t.min(h.len() / n_embd).min(h_ref.len() / n_embd) {
+                    let (x, y) = (&h[p * n_embd..(p + 1) * n_embd],
+                                  &h_ref[p * n_embd..(p + 1) * n_embd]);
+                    if x.iter().zip(y).any(|(a, bb)| a.to_bits() != bb.to_bits()) {
+                        first_div = p as i64;
+                        break;
+                    }
+                }
+                if !log_same { defects += 1; }
+                let sd = s.iter().zip(&s_ref).position(|(a, bb)| a != bb);
+                println!("{b:>7} | {calls:>5} | {} | {:13} | {:.3e} | {} | {}",
+                         if log_same { "EXACT" } else { "DIFFER" },
+                         first_div, maxdiff(&l, &l_ref),
+                         if argmax(&l) == argmax(&l_ref) { "-" } else { "FLIP" },
+                         match sd { None => "identical".to_string(), Some(i) => format!("step {i}") });
+            }
+            println!("tickinv verdict: {}",
+                     if defects == 0 { "TICK-INVARIANT — prefill logits bit-identical at every \
+                                        per-tick prefill budget" }
+                     else { "*** TICK-DEPENDENT: prefill logits move with the per-tick prefill \
+                             budget (MEMRA_PREFILL_TICK / _JUDGE / _HARVEST) ***" });
         }
 
         // NLL WINDOW THROUGH THE SERVING PRIME (lane/chunkinv-flip, 2026-08-05): mean token

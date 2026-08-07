@@ -458,8 +458,13 @@ impl HybridModel {
         // MEMRA_PRIME_INVARIANT/MEMRA_PRIME_GRAIN pin-the-boundary door was superseded by that
         // fix and KILLED at v0.71 per the flags doctrine (the jsonl + VERDICT.md are the
         // record); the chunkinv gate asserts byte-identity across chunk sizes naked.
+        // The REQUEST's absolute end position, computed ONCE before the loop: every chunk sees the
+        // same value, whatever the chunk size. step35's SWA arm selects on it so that kernel
+        // selection — and therefore the logits — cannot depend on MEMRA_PRIME_CHUNK
+        // (research/step35-chunkfix-20260807; see step35_attn_pre_wo's doc note).
+        let seq_end = cache.pos + t;
         if chunk == 0 || t <= chunk {
-            return self.prime_chunk(e, tokens, cache);
+            return self.prime_chunk(e, tokens, cache, seq_end);
         }
         let mut hiddens = e.uninit(t * n_embd)?;
         let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
@@ -468,7 +473,7 @@ impl HybridModel {
             // keep the tail chunk >= PRIME_MIN_T (the stateful conv needs T >= d_conv-1).
             let mut end = (start + chunk).min(t);
             if t - end > 0 && t - end < PRIME_MIN_T { end = t; }
-            let (l, hs, x) = self.prime_chunk(e, &tokens[start..end], cache)?;
+            let (l, hs, x) = self.prime_chunk(e, &tokens[start..end], cache, seq_end)?;
             e.copy_into(&mut hiddens, start * n_embd, &x, (end - start) * n_embd)?;
             last = Some((l, hs));
             start = end;
@@ -533,13 +538,17 @@ impl HybridModel {
         Ok(g)
     }
 
-    fn prime_chunk(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+    /// `seq_end` = the whole REQUEST's absolute end position (`cache.pos + prompt_len` at
+    /// `prime_cache` entry), NOT this chunk's end. Chunk-size-invariant by construction; step35's
+    /// SWA arm selects on it (see `step35_attn_pre_wo`). Every other arch ignores it.
+    fn prime_chunk(&self, e: &Engine, tokens: &[u32], cache: &mut Cache, seq_end: usize)
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let t = tokens.len();
         let eps = cfg.rms_eps;
         let base = cache.pos;
+        debug_assert!(seq_end >= base + t, "prime_chunk: seq_end must cover this chunk");
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
 
@@ -700,7 +709,8 @@ impl HybridModel {
                 }
             } else {
                 let mixed = match &layer.mixer {
-                    Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
+                    Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il,
+                                                            seq_end)?,
                     Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
                     Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 };
@@ -885,7 +895,11 @@ impl HybridModel {
                 e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache, il)?,
+                // The captured prime is ONE unchunked bucket over a FRESH cache (pos == 0), so the
+                // request ends at t. If bucketed capture ever composes with chunking, seq_end must
+                // come from the caller (see step35_attn_pre_wo's doc note).
+                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache,
+                                                        il, t)?,
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
@@ -1282,12 +1296,19 @@ impl HybridModel {
     /// bytes are BIT-IDENTICAL to the decode append (same per-warp quant kernel per row; the
     /// batched `append_kv_quantized_rows` runs that exact warp math on a (block, token) grid).
     /// The attention itself is unchanged prefill math (fa_prefill over the f32 K/V).
+    ///
+    /// `seq_end` = the ABSOLUTE end position of the WHOLE prime request (`cache.pos + prompt_len`
+    /// measured BEFORE the chunk loop starts), i.e. a chunk-size-invariant property of the request.
+    /// Only step35's SWA arm reads it (`step35_attn_pre_wo`'s doc note explains why keying on the
+    /// chunk's own `t_kv` made the output depend on MEMRA_PRIME_CHUNK); every other arch ignores it.
+    #[allow(clippy::too_many_arguments)]
     fn full_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                        hx: Option<&CudaSlice<u8>>,
-                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize,
+                       seq_end: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         if self.cfg.step35.is_some() {
-            return self.step35_attn_prime(e, fa, h, hx, pos_d, t, cache, il);
+            return self.step35_attn_prime(e, fa, h, hx, pos_d, t, cache, il, seq_end);
         }
         // PROJ/CORE SPLIT (task #13, 2026-07-26): the q/k/v group projection is hoisted so
         // the cross-request batch driver can run it at m = sum_T over concatenated tokens;
@@ -6773,10 +6794,41 @@ impl HybridModel {
     /// Note the f32 `sdpa_naive_w` floor's shared memory is `t_kv*4` bytes, so the SWA arm needs
     /// `t_kv = win-1+t <= 12287` — i.e. it relies on chunked prefill (MEMRA_PRIME_CHUNK, default
     /// 4096). A monolithic 32k prime would exceed the 48 KiB dynamic-smem default.
+    ///
+    /// SWA ARM SELECTION IS KEYED ON `seq_end`, NOT ON THE CHUNK'S OWN `t_kv` (lane/step35-chunkfix,
+    /// 2026-08-07). `seq_end` = the ABSOLUTE end position of the whole prime call
+    /// (`cache.pos + prompt_len` at entry; `t` on the cacheless prefill path) — a property of the
+    /// REQUEST, identical at every MEMRA_PRIME_CHUNK value. The old predicate `swa && t_kv > win`
+    /// read the chunk's own extent, which made kernel selection — and therefore the logits, the
+    /// hidden rows, and the generated text — a function of the chunk size:
+    ///   a chunk [b,e) has off = max(0, b-(win-1)), t_kv = e-off, so b <= win-1 => off=0 => FA iff
+    ///   e <= win, while every later chunk has t_kv = t+(win-1) > win. The FA rows were therefore a
+    ///   contiguous PREFIX [0,P) with P = c*floor(win/c) for c <= win (else 0), and the output
+    ///   depended only on P. Measured (research/step37-p2-20260806, closed-form receipt
+    ///   `raw/chunkinv-step35-GAP2-CONFIRMED-20260807.txt`): at T=4883, c=512 and c=64 (P=512) are
+    ///   byte-identical to each other but DIFFER from the c=4096 default (P=0) by maxdiff 1.813e0
+    ///   with greedy text diverging at step 6; c=513 (P=0) is bit-identical to the default. A
+    ///   one-token change in a documented machine-config knob changed the answer.
+    /// So the pre-fix comment "same cache bytes, same numeric class" was false as written: same
+    /// bytes, DIFFERENT numeric class — swapping `fa_prefill_view_ws` for the f32 windowed floor on
+    /// the same rows moves the logits by ~1.8.
+    ///
+    /// Keying on `seq_end` makes P identically 0 for every chunk size, so MEMRA_PRIME_CHUNK is a
+    /// pure memory/transient knob again (research/step35-chunkfix-20260807). It is
+    /// correct-by-construction rather than a tolerance argument — the windowed kernel computes the
+    /// same masked attention the FA arm computed (for e <= win the window mask is a no-op under
+    /// causal, which is exactly why FA was legal there), it is now simply the ONLY arm used once
+    /// the request passes the window. It also cannot move the shipped default: at chunk=4096 every
+    /// chunk of a `seq_end > win` prime ALREADY had t_kv > win (chunk 0 has t_kv = min(chunk,
+    /// seq_end) > win; every later chunk has t_kv >= t+win-1 > win since `PRIME_MIN_T` keeps
+    /// t >= 16), and a `seq_end <= win` prime keeps every chunk on FA exactly as before — so this
+    /// is a no-op on both default regimes and only removes the FA prefix at small chunk values.
+    /// The `t_kv <= 12287` smem ceiling is respected: the chunks whose arm changes are precisely
+    /// those with t_kv <= win = 512.
     #[allow(clippy::too_many_arguments)]
     fn step35_attn_pre_wo(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
                           hg: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
-                          cache: Option<&mut Cache>, il: usize)
+                          cache: Option<&mut Cache>, il: usize, seq_end: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
         let eps = self.cfg.rms_eps;
@@ -6823,11 +6875,26 @@ impl HybridModel {
                                              (off + t_kv) * kvl.k_tok_bytes);
                 let v_view = e.view_u8_range(&kvl.v, off * kvl.v_tok_bytes,
                                              (off + t_kv) * kvl.v_tok_bytes);
-                if swa && t_kv > win {
+                // CHUNK-INVARIANT PREDICATE: `seq_end` (the request's absolute end position), not
+                // this chunk's `t_kv`. See the doc note — keying on t_kv made P = c*floor(win/c)
+                // rows take FA and the output a function of MEMRA_PRIME_CHUNK.
+                // MEMRA_STEP35_SWA_TKV=1 is the ROLLBACK SEAM to that pre-fix predicate, and it is
+                // what gives the step35 chunkinv gate its canary teeth: it is chunk-VARIANT by
+                // construction, so the invariance assertion MUST break under it (this is the seam
+                // whose absence made the original canary inert — GAP 1 in
+                // research/step37-p2-20260806). Read per call, not cached, because the probe flips
+                // it in-process between arms. Never on in a measured default run.
+                let swa_naive = if std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1") {
+                    t_kv > win
+                } else {
+                    seq_end > win
+                };
+                if swa && swa_naive {
                     // Windowed mask needed (see the doc note). No windowed FA stamp exists at
                     // head_dim 128 — every windowed prefill twin in flash_attn.cu is hd256 —
-                    // so this takes the f32 quantized-view floor. Same cache bytes, same
-                    // numeric class as the unwindowed quantized-view fallback.
+                    // so this takes the f32 quantized-view floor. NOTE t_kv can be <= win here
+                    // (a chunk-0 view on a small chunk); the windowed kernel handles that
+                    // identically to the unwindowed one modulo the mask, which is the point.
                     e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                                   t, t_kv, scale, true, win,
                                                   kvl.k_tok_bytes, kvl.v_tok_bytes)?;
@@ -6836,8 +6903,10 @@ impl HybridModel {
                                                 t, t_kv, scale, true,
                                                 kvl.k_tok_bytes, kvl.v_tok_bytes)?;
                 } else {
-                    // t_kv <= win (or a full-attn layer): the window mask is a no-op under
-                    // causal, so ride the hd128 dequant-once FA prefill.
+                    // seq_end <= win (or a full-attn layer): no query in the WHOLE request can
+                    // reach past the window, so the window mask is a no-op under causal and every
+                    // chunk rides the hd128 dequant-once FA prefill — one arm for the whole
+                    // request either way, which is what makes the chunk size arithmetic-free.
                     e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                          t, t_kv, scale, true,
                                          kvl.k_tok_bytes, kvl.v_tok_bytes,
@@ -6845,7 +6914,12 @@ impl HybridModel {
                 }
             }
             None => {
-                if swa && t > win {
+                // Cacheless prefill (forward/forward_last/t2probe) is MONOLITHIC — there is no
+                // chunk loop on this path, so seq_end == t and the predicate is unchanged. The
+                // assert pins that: if a chunked cacheless prefill is ever added, it must thread
+                // seq_end here too or it re-opens the same door.
+                debug_assert_eq!(seq_end, t, "step35 cacheless prefill is monolithic (seq_end == t)");
+                if swa && seq_end > win {
                     e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
                 } else if std::env::var("MEMRA_NOFA").is_ok() {
                     e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
@@ -6871,22 +6945,27 @@ impl HybridModel {
                               pos_d: &CudaSlice<i32>, t: usize, il: usize)
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
-        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, None, il)?;
+        // Monolithic path: the request ends at t (no chunk loop). See step35_attn_pre_wo's note.
+        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, None, il, t)?;
         Ok(e.matmul(&fa.wo, &ag, t)?)
     }
 
     /// step35 PRIME mixer (the `full_attn_prime` contract: append this chunk's K/V into the
     /// resident quantized cache, attend through the cache view). Post-`wo`.
+    ///
+    /// `seq_end` = the ABSOLUTE end position of the whole prime request (chunk-invariant); it
+    /// selects the SWA arm. See `step35_attn_pre_wo`'s doc note for why it cannot be this chunk's
+    /// own extent.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn step35_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                                     hx: Option<&CudaSlice<u8>>, pos_d: &CudaSlice<i32>, t: usize,
-                                    cache: &mut Cache, il: usize)
+                                    cache: &mut Cache, il: usize, seq_end: usize)
                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let g3 = match hx {
             Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
             None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
         };
-        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, Some(cache), il)?;
+        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, Some(cache), il, seq_end)?;
         Ok(e.matmul(&fa.wo, &ag, t)?)
     }
 

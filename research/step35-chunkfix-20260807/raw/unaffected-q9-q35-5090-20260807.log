@@ -1,0 +1,64 @@
+=== lane/step35-chunkfix: q9/q35 UNAFFECTED check on the local 5090, commit 6f32f9f2
+lock acquired 2026-08-07T00:19:16Z
+0, 768 MiB
+
+########## qwen chunkinv (default label/seam/prompts) ##########
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-PlAZgW.log)
+=== rc=0
+
+########## qwen chunkinvc canary ##########
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=on got=variant canary=1 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.269e-1 | - | identical
+         32 | DIFFER |            32 | 6.375e-1 | - | step 18
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 3.909e-1 | - | step 47
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/chunkinv-gate-hPjg8W.log)
+=== rc=0
+
+########## run-gen argmax q9 ##########
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory."
+prompt tokens: [760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083, 3545, 4779, 11, 1332, 9966, 1452, 5344, 3947, 61369, 23304, 1070, 13, 8618, 6228, 369, 16384, 3658, 440, 279, 3672, 11, 1521, 264, 10281, 9705, 628, 9959, 264, 795, 1395, 14043, 29551, 13, 58737, 11, 2923, 539, 2923, 11, 1204, 264, 20340, 8404, 17830, 15089, 23776, 47493, 321, 49703, 1141, 11312, 364, 264, 3074, 3817, 11, 321, 10033, 864, 6228, 80018, 37972, 948, 279, 6009, 5883, 34105, 3545, 4779, 13]
+prefill argmax=271  decode argmax=271  logit maxdiff=9.967e-1  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=1.007e0  MATCH
+prefill 89 tok in 0.0358s = 2486.5 tok/s (pp89)
+generated 20 tokens in 0.148s = 134.79 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.036s) [stop: MaxNew]
+tokens: [271, 760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083]
+OUTPUT TEXT: "\n\nThe storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into"
+--- generated text ---
+
+
+The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into
+=== rc=0
+
+########## run-gen argmax q35 ##########
+[moe] resident-experts decision: experts 15.60GB + trunk 2.60GB vs free 23.57GB (expert budget 18.97GB) -> RESIDENT
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory."
+prompt tokens: [760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083, 3545, 4779, 11, 1332, 9966, 1452, 5344, 3947, 61369, 23304, 1070, 13, 8618, 6228, 369, 16384, 3658, 440, 279, 3672, 11, 1521, 264, 10281, 9705, 628, 9959, 264, 795, 1395, 14043, 29551, 13, 58737, 11, 2923, 539, 2923, 11, 1204, 264, 20340, 8404, 17830, 15089, 23776, 47493, 321, 49703, 1141, 11312, 364, 264, 3074, 3817, 11, 321, 10033, 864, 6228, 80018, 37972, 948, 279, 6009, 5883, 34105, 3545, 4779, 13]
+prefill argmax=271  decode argmax=271  logit maxdiff=8.195e-1  MATCH
+batched-prime argmax=271  tokenwise argmax=271  logit maxdiff=8.235e-1  MATCH
+prefill 89 tok in 0.0526s = 1693.3 tok/s (pp89)
+generated 20 tokens in 0.111s = 180.73 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.053s) [stop: MaxNew]
+tokens: [271, 248068, 198, 8160, 579, 264, 7047, 1817, 25, 271, 16, 13, 220, 2972, 1847, 7355, 279, 2570, 57491, 64700]
+OUTPUT TEXT: "\n\n<think>\nHere's a thinking process:\n\n1.  **Deconstruct the User Prompt:**"
+--- generated text ---
+
+
+<think>
+Here's a thinking process:
+
+1.  **Deconstruct the User Prompt:**
+=== rc=0
+0, 768 MiB
+lock released 2026-08-07T00:19:43Z
+=== done 2026-08-07T00:19:43Z
