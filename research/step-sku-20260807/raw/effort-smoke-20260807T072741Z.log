@@ -1,0 +1,23 @@
+=== effort-smoke 20260807T072741Z ===
+0, 0 MiB
+1, 0 MiB
+ready after ~30s
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+--- absent (template default) ---
+prompt_tokens=19 completion_tokens=8 content=''
+--- low ---
+prompt_tokens=29 completion_tokens=8 content=''
+--- medium ---
+prompt_tokens=29 completion_tokens=8 content=''
+--- high ---
+prompt_tokens=29 completion_tokens=8 content=''
+--- none -> clamps to low ---
+prompt_tokens=29 completion_tokens=8 content=''
+--- openrouter object form high ---
+prompt_tokens=29 completion_tokens=8 content=''
+--- invalid level (expect 400) ---
+ERROR: {"message": "bad reasoning_effort \"extreme\" (none|minimal|low|medium|high)", "type": "invalid_request_error", "param": null, "code": null}
+=== smoke done; killing server ===
+0, 0 MiB
+1, 0 MiB
+=== end effort-smoke 20260807T072741Z ===

@@ -1,0 +1,50 @@
+Running as unit: run-p3383457-i171003197.scope; invocation ID: 39129f0bef1a4dadaa11c19de8c8bac7
+[server] starting; models config = [("qwen", "/home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf", None), ("gemma", "/home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[worker]   loaded "gemma": 48 layers, eos=1
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] qwen: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] gemma: decode chunk cap 8
+[worker] qwen: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["qwen", "gemma"]
+[server] listening on http://127.0.0.1:8094
+[meter] admit id=chatcmpl-ca211f43aefd2b9df413274e88ac8ade tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-ac885a7f2948dbdd1467d2b7025277ad tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-fa31dcf706178b15b994898b7a717bcd tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-da584c25392cdc524bd5ff522e020321 tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-cbdec2d8bbc5f15fbfb9a38c07738275 tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-ec7aa258efc948241bf82e5d4c4f9fab tenant=default lane=interactive model="gemma"
+[worker] observed session VRAM cost for "gemma": 705MB (admission gate = 2x)
+
+thread 'memra-gpu-worker' (3383480) panicked at crates/memra-engine/src/decode_batch.rs:553:9:
+decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[meter] admit id=chatcmpl-1cf3df291cecbd9bddf76bb9f69e8857 tenant=default lane=interactive model="gemma"
+[worker] PANIC in the GPU worker thread: decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+[worker] respawn attempt 1/1 in 2s (reloading weights)
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[worker]   loaded "gemma": 48 layers, eos=1
+[worker] qwen: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] gemma: decode chunk cap 8
+[worker] qwen: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+
+thread 'memra-gpu-worker' (3383480) panicked at crates/memra-engine/src/decode_batch.rs:553:9:
+decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+[meter] admit id=chatcmpl-33f53880c9733a942b1b4d561d0a0779 tenant=default lane=interactive model="gemma"
+[worker] PANIC in the GPU worker thread: decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+[worker] FATAL: worker unrecoverable after 1 respawn attempt(s) — exiting the process so the supervisor can restart it whole (CUDA errors are sticky per process; a live HTTP listener with a dead worker serves nothing)

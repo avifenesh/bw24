@@ -33,7 +33,7 @@
 '한국어 테스트'
   -> ['한국어', ' 테스트']
 'emoji 🚀 and symbols ~ ^ | $ +'
-  -> ['emoji', ' 🚀', ' and', ' symbols', ' ', '~', ' ^', ' |', ' $', ' +']
+  -> ['emoji', ' 🚀', ' and', ' symbols', ' ~', ' ^', ' |', ' $', ' +']
 'naïve café résumé'
   -> ['naïve', ' café', ' résumé']
 'Ünïcödé mÄrks'

@@ -96,7 +96,12 @@ def collapse(cpts):
 L_CLS = rb"\xd2\x41-\x5a\x61-\x7a"
 M_CLS = rb"\xd4"
 P_CLS = rb"\xd3\x21-\x23\x25-\x2a\x2c-\x2f\x3a-\x3b\x3f-\x40\x5b-\x5d\x5f\x7b\x7d"
-S_CLS = rb"\xd5\x24\x2b\x3c-\x3e\x5e\x60\x7c"
+# S_CLS diverges from upstream's k_ucat_map ON PURPOSE: \x7e (~, category Sm) is missing from
+# upstream's SYMBOL expansion ("$+<=>^`|", unicode.cpp:1244) — the one printable-ASCII codepoint
+# where that map disagrees with real Unicode P/S. The HF training-time tokenizer's \p{S} DOES
+# match '~' (" ~" pre-tokenizes to one word, 'Ġ~' id 6883). memra matches HF, not the upstream
+# omission. Receipt: research/step-sku-20260807/raw/tok-parity-20260807T0640Z.log.
+S_CLS = rb"\xd5\x24\x2b\x3c-\x3e\x5e\x60\x7c\x7e"
 
 P1 = re.compile(rb"[\xd1\x30-\x39]{1,3}")
 P2 = re.compile("[一-龥぀-ゟ゠-ヿ]+")
@@ -191,8 +196,8 @@ CORPUS = [
     "  123  ",
     "-abc",               # alt1: ASCII-punct + [A-Za-z]+
     "-abc1",              # alt1 stops at the digit
-    "~abc",               # ~ is in the ASCII literal class but NOT collapsed \\p{S}
-    "~",                  # ~ alone matches no alternative -> survives as a gap
+    "~abc",               # alt1 (ASCII literal + letters) wins over alt3's \\p{S} run
+    "~",                  # ~ alone is a \\p{S} run (memra includes \\x7e; upstream omits it)
     "~ ^",
     " nbsp",         # non-ASCII whitespace -> 0x0B stand-in
     "a  b",

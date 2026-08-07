@@ -801,17 +801,19 @@ impl Tokenizer {
     }
 
     /// Tools-capable chat rendering (OpenAI `tools` / `tool_calls` / role:"tool" surface +
-    /// the think-tail switch). Plain requests render byte-identically to
-    /// `apply_chat_template`; see `chat::apply_chat_template_tools`.
+    /// the think-tail switch + the step35 `reasoning_effort` string). Plain requests render
+    /// byte-identically to `apply_chat_template`; see `chat::apply_chat_template_tools`.
     pub fn apply_chat_template_tools(
         &self,
         turns: &[chat::Turn],
         add_generation_prompt: bool,
         tools_json: &[String],
         think: chat::ThinkMode,
+        reasoning_effort: Option<&str>,
     ) -> Result<String, String> {
         chat::apply_chat_template_tools(
-            self.chat_template.as_deref(), turns, add_generation_prompt, tools_json, think)
+            self.chat_template.as_deref(), turns, add_generation_prompt, tools_json, think,
+            reasoning_effort)
     }
 }
 

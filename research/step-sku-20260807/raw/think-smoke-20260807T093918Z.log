@@ -1,0 +1,55 @@
+=== think-smoke 20260807T093918Z (local 5090) ===
+0, 768 MiB
+ready after ~9s
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] qwen: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+
+########## qwen class (thinking default ON) ##########
+--- qwen / absent (default=thinking ON) ---
+prompt_tokens=17 reasoning='Thinking Process:\n\n1.  **Analyze the Req' content=''
+--- qwen / high (same open think as default) ---
+prompt_tokens=17 reasoning='Thinking Process:\n\n1.  **Analyze the Req' content=''
+--- qwen / low (thinking stays ON) ---
+prompt_tokens=17 reasoning='Thinking Process:\n\n1.  **Analyze the Req' content=''
+--- qwen / none (thinking OFF, closed think block) ---
+prompt_tokens=19 reasoning='' content='ok'
+--- qwen / openrouter enabled:false ---
+prompt_tokens=19 reasoning='' content='ok'
+
+########## gemma4 class (thinking default OFF) ##########
+--- gemma / absent (default=thinking OFF) ---
+ERROR: {"message": "worker closed the stream without completing (worker restart in progress)", "type": "server_error", "param": null, "code": "overloaded"}
+--- gemma / none (same as default) ---
+ERROR: {"message": "worker closed the stream without completing (worker restart in progress)", "type": "server_error", "param": null, "code": "overloaded"}
+--- gemma / low (thinking ON: <|think|> system turn appears) ---
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+--- gemma / high (same ON shape) ---
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/hermes-agent/.hermes-runtime/python/generation-1785863877-57526-3c165979/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+0, 768 MiB
+=== end think-smoke 20260807T093918Z ===

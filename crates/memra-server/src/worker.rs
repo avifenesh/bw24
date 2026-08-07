@@ -188,6 +188,12 @@ pub struct Request {
     /// Tool schemas pre-serialized (client key order preserved) for the template's <tools> block.
     pub tools_json: Vec<String>,
     pub think: memra_tokenizer::chat::ThinkMode,
+    /// step35-dialect reasoning level ("low"/"medium"/"high"), rendered as a string into the
+    /// system turn (`Reasoning: {level}\n\n`). Only set by the HTTP layer when the model's
+    /// template consumes it (`ModelCaps::effort_levels`); None = the template's own default
+    /// (no `Reasoning:` line). Orthogonal to `think`: on switch-carrying templates
+    /// `reasoning_effort` maps to ThinkMode instead and this stays None.
+    pub reasoning_effort: Option<String>,
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
@@ -244,6 +250,10 @@ pub struct ModelCaps {
     pub tokenizer: String,
     /// chat-template family ("chatml" / "gemma"); None = no template or unrecognized.
     pub instruct_type: Option<String>,
+    /// template consumes a `reasoning_effort` STRING (the step35 dialect: rendered into the
+    /// system turn as `Reasoning: {level}\n\n`). When true, the HTTP layer maps the OpenAI
+    /// `reasoning_effort` body field onto `Request::reasoning_effort` instead of ThinkMode.
+    pub effort_levels: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -1230,6 +1240,7 @@ struct ReplayPlan {
     chat_turns: Vec<memra_tokenizer::chat::Turn>,
     tools_json: Vec<String>,
     think: memra_tokenizer::chat::ThinkMode,
+    reasoning_effort: Option<String>,
     params: GenParams,
     sampler_cfg: SamplerConfig,
     grammar: Option<crate::constrained::GrammarSpec>,
@@ -1517,11 +1528,17 @@ pub fn run(
                 else if t.contains("<start_of_turn>") { Some("gemma".to_string()) }
                 else { None }
             }),
+            // Templates that CONSUME a `reasoning_effort` input, keyed on the jinja input
+            // test itself (`reasoning_effort is defined`) — true for step35 (renders
+            // `Reasoning: {level}` into the system turn) and hy3 (renders
+            // `reasoning_effort:{no_think|low|high}` into its header), false for the
+            // qwen/gemma4 classes (binary `enable_thinking`, carried by ThinkMode instead).
+            effort_levels: t.is_some_and(|t| t.contains("reasoning_effort is defined")),
         };
         eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={} \
-                   ctx={} tok={:?} instruct={:?}",
+                   effort_levels={} ctx={} tok={:?} instruct={:?}",
                   caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok,
-                  caps.context_length, caps.tokenizer, caps.instruct_type);
+                  caps.effort_levels, caps.context_length, caps.tokenizer, caps.instruct_type);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
@@ -2778,6 +2795,7 @@ fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Bo
         chat_turns: p.chat_turns.clone(),
         tools_json: p.tools_json.clone(),
         think: p.think,
+        reasoning_effort: p.reasoning_effort.clone(),
         params: p.params.clone(),
         sampler_cfg: p.sampler_cfg.clone(),
         stop_strings: s.stop_strings.clone(),
@@ -2820,6 +2838,7 @@ fn admit(
         chat_turns: req.chat_turns.clone(),
         tools_json: req.tools_json.clone(),
         think: req.think,
+        reasoning_effort: req.reasoning_effort.clone(),
         params: req.params.clone(),
         sampler_cfg: req.sampler_cfg.clone(),
         grammar: req.grammar.clone(),
@@ -2833,9 +2852,11 @@ fn admit(
     } else if !req.chat_turns.is_empty() {
         // ISOLATION CONTRACT (serve-tools lane): a request with no tools features renders
         // through the EXACT legacy path — the tools renderer is entered only when the
-        // request carries tools / tool turns / a non-default think switch.
+        // request carries tools / tool turns / a non-default think switch / a
+        // reasoning-effort level (step35 dialect: the level is a render input).
         let plain = req.tools_json.is_empty()
             && req.think == memra_tokenizer::chat::ThinkMode::Default
+            && req.reasoning_effort.is_none()
             && req.chat_turns.iter().all(|t| t.role != "tool" && t.tool_calls.is_empty());
         let rendered = if plain {
             let messages: Vec<_> = req.chat_turns.iter()
@@ -2844,7 +2865,8 @@ fn admit(
             lm.tok.apply_chat_template(&messages, true)
         } else {
             match lm.tok.apply_chat_template_tools(&req.chat_turns, true,
-                                                   &req.tools_json, req.think) {
+                                                   &req.tools_json, req.think,
+                                                   req.reasoning_effort.as_deref()) {
                 Ok(rendered) => rendered,
                 Err(err) => return Err((req.tx,
                     EngineError::invalid_param(format!("chat template: {err}"), "messages"))),
@@ -3730,6 +3752,17 @@ fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
 /// real MIXED checkpoints. Before that, one missing class refused the whole model, so
 /// chunk 16 was unreachable for every shipped artifact, GGUF and FP8-ST alike.
 fn chunk_cap_for(lm: &LoadedModel) -> usize {
+    // step35 has no B>1 decode arm ANYWHERE (per-layer n_head / partial rope / SWA offset
+    // view / head-wise gate): the unsplit batched body asserts it away, and the ppn body
+    // fails closed since the b2ab receipt (research/step-sku-20260807/raw/b2ab-pre-*.log —
+    // a c=4 serve over PP-2 walked the generic arm and emitted garbage). Cap its chunks at
+    // 1: each session still decodes every tick (B=1 chunks ride decode_layers_eager, the
+    // supported step35 mixer), so concurrency works and only the cross-session launch fusion
+    // is forfeited. Not overridable upward by MEMRA_DECODE_BATCH_CAP — a wider chunk is not
+    // a measurement door here, it is wrong logits.
+    if lm.model.cfg.step35.is_some() {
+        return 1;
+    }
     if let Some(c) = std::env::var("MEMRA_DECODE_BATCH_CAP").ok().and_then(|v| v.parse().ok()) {
         return usize::clamp(c, 1, 32);
     }

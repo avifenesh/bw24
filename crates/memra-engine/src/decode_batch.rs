@@ -742,6 +742,23 @@ impl HybridModel {
             && self.cfg.gemma4.is_none()
             && self.cfg.m3.is_none()
             && !e.verify_exact_on();
+        // step35: `decode_batch_layers` below is the generic Full arm — the SAME body the
+        // unsplit path refuses step35 for (decode_batch.rs:561), but the ppn door sits
+        // BEFORE that assert, so over a PP split (this SKU's only placement) a B>1 tick
+        // walked it silently: global n_head (the 96 max) over-reading wq on the 12
+        // full-attn layers, 128-dim rope on all 45 layers, no SWA window, no head-wise
+        // gate. Plausible-but-wrong logits, observed as garbage text on a c=4 serve
+        // (research/step-sku-20260807/raw/b2ab-pre-20260807T091553Z.log). B=1 is fine —
+        // `b1_stage_fast` rides `decode_layers_eager`, which has the step35 mixer — so the
+        // refusal binds exactly where the generic body would run. The server keeps c>1
+        // WORKING by chunking step35 at B=1 (`chunk_cap_for`); this Err is the engine-side
+        // fail-closed for any other caller.
+        if self.cfg.step35.is_some() && !b1_stage_fast {
+            return Err("decode_step_batch_ppn has no step35 arm outside the B=1 eager \
+                        stage walk (per-layer n_head / partial rope / SWA offset view / \
+                        head-wise gate) — serve step35 with B=1 chunks (chunk_cap_for) or \
+                        MEMRA_SERVE_B1FAST left on".into());
+        }
         // Hoisted: `caches[0].pos` as a value argument alongside `caches[0]` as `&mut` in one
         // call is a borrow conflict; `pos` is Copy and the epilogue is what advances it.
         let pos0 = if b1_stage_fast { caches[0].pos } else { 0 };

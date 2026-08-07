@@ -1,0 +1,85 @@
+=== step-sku capacity 20260807T075551Z ===
+lock acquired 2026-08-07T07:55:51Z
+0, 27, 180 MHz, 0 MiB
+1, 27, 180 MHz, 0 MiB
+
+########## P1: prefill rate, pp4096, ppprime N=5 (median of 5 timed reps, 1 warmup) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 45.0865s = 90.8 tok/s
+ppprime rep 1: 4096 tok in 45.0438s = 90.9 tok/s
+ppprime rep 2: 4096 tok in 45.1000s = 90.8 tok/s
+ppprime rep 3: 4096 tok in 45.0636s = 90.9 tok/s
+ppprime rep 4: 4096 tok in 45.0467s = 90.9 tok/s
+ppprime MEDIAN: 4096 tok in 45.0636s = 90.9 tok/s (chunk=4096(default) f32chunk0=0)
+ppprime exit=0
+0, 40, 2400 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+
+########## D0: batched-mode c=2 probe (EXPECTED step35 B>1 refusal receipt) ##########
+server ready after ~35s
+{"ts": "2026-08-07T08:01:42+0000", "label": "cap-d0-batched-c2", "base": "http://127.0.0.1:8092", "concurrency": 2, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 32, "greedy": true, "wall_s": 7.973615057999268, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 128, "prompt_tokens_total": 912, "agg_tok_s": 16.052944501200642, "req_per_s": 0.5016545156625201, "lat_p50_s": 7.309306976996595, "lat_p95_s": 7.309860602996196, "lat_mean_s": 3.976045528499526, "lat_max_s": 7.309860602996196, "errors_sample": []}
+d0 exit=0
+[prime-batch] failed (prime_cache_batch: step35 has no batched prime core (per-layer n_head / partial rope / SWA / head-wise gate) — use prime_cache per sequence); single primes serve
+
+########## D1: decode c-sweep, MEMRA_SERVE_BATCH=0 legacy eager, spec OFF, N=3 per c ##########
+server ready after ~35s
+--- D1 c=1 rep=1 ---
+{"ts": "2026-08-07T08:02:45+0000", "label": "cap-d1-c1-r1", "base": "http://127.0.0.1:8092", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 15.712265310008661, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 912, "agg_tok_s": 32.58600780333423, "req_per_s": 0.2545781859635487, "lat_p50_s": 3.848748397998861, "lat_p95_s": 4.262503343998105, "lat_mean_s": 3.927919958248822, "lat_max_s": 4.262503343998105, "errors_sample": []}
+0, 39, 2355 MHz, 79249 MiB
+1, 36, 2287 MHz, 79089 MiB
+--- D1 c=1 rep=2 ---
+{"ts": "2026-08-07T08:03:02+0000", "label": "cap-d1-c1-r2", "base": "http://127.0.0.1:8092", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 15.002709517008043, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 912, "agg_tok_s": 34.12716879038174, "req_per_s": 0.26661850617485733, "lat_p50_s": 3.7514470189926215, "lat_p95_s": 3.7535548729938455, "lat_mean_s": 3.7505362112497096, "lat_max_s": 3.7535548729938455, "errors_sample": []}
+0, 40, 2347 MHz, 79249 MiB
+1, 36, 2287 MHz, 79089 MiB
+--- D1 c=1 rep=3 ---
+{"ts": "2026-08-07T08:03:20+0000", "label": "cap-d1-c1-r3", "base": "http://127.0.0.1:8092", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 14.989449250002508, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 912, "agg_tok_s": 34.157359050394355, "req_per_s": 0.2668543675812059, "lat_p50_s": 3.748673748996225, "lat_p95_s": 3.75108208200254, "lat_mean_s": 3.7472322477515263, "lat_max_s": 3.75108208200254, "errors_sample": []}
+0, 41, 2347 MHz, 79249 MiB
+1, 38, 2280 MHz, 79089 MiB
+--- D1 c=2 rep=1 ---
+{"ts": "2026-08-07T08:03:53+0000", "label": "cap-d1-c2-r1", "base": "http://127.0.0.1:8092", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 30.109529904992087, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1024, "prompt_tokens_total": 1824, "agg_tok_s": 34.00916597605941, "req_per_s": 0.2656966091879641, "lat_p50_s": 7.544689928996377, "lat_p95_s": 7.581411135994131, "lat_mean_s": 7.525661980998848, "lat_max_s": 7.581411135994131, "errors_sample": []}
+0, 40, 2347 MHz, 79569 MiB
+1, 39, 2287 MHz, 79409 MiB
+--- D1 c=2 rep=2 ---
+{"ts": "2026-08-07T08:04:25+0000", "label": "cap-d1-c2-r2", "base": "http://127.0.0.1:8092", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 30.027361099011614, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1024, "prompt_tokens_total": 1824, "agg_tok_s": 34.10223084950699, "req_per_s": 0.26642367851177334, "lat_p50_s": 7.522424515002058, "lat_p95_s": 7.531131943993387, "lat_mean_s": 7.505110852998769, "lat_max_s": 7.531131943993387, "errors_sample": []}
+0, 41, 2355 MHz, 79569 MiB
+1, 38, 2280 MHz, 79409 MiB
+--- D1 c=2 rep=3 ---
+{"ts": "2026-08-07T08:04:58+0000", "label": "cap-d1-c2-r3", "base": "http://127.0.0.1:8092", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 29.98931895599526, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1024, "prompt_tokens_total": 1824, "agg_tok_s": 34.145490316154344, "req_per_s": 0.2667616430949558, "lat_p50_s": 7.503725599992322, "lat_p95_s": 7.529461230995366, "lat_mean_s": 7.49560426874632, "lat_max_s": 7.529461230995366, "errors_sample": []}
+0, 42, 2347 MHz, 79569 MiB
+1, 38, 2287 MHz, 79409 MiB
+--- D1 c=4 rep=1 ---
+{"ts": "2026-08-07T08:06:00+0000", "label": "cap-d1-c4-r1", "base": "http://127.0.0.1:8092", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 59.767576163998456, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 3648, "agg_tok_s": 34.26607086056857, "req_per_s": 0.26770367859819194, "lat_p50_s": 14.942623729992192, "lat_p95_s": 15.009411135004484, "lat_mean_s": 14.939313921813664, "lat_max_s": 15.009780951004359, "errors_sample": []}
+0, 41, 2347 MHz, 80209 MiB
+1, 38, 2287 MHz, 80081 MiB
+--- D1 c=4 rep=2 ---
+{"ts": "2026-08-07T08:07:02+0000", "label": "cap-d1-c4-r2", "base": "http://127.0.0.1:8092", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 59.70178295299411, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 3648, "agg_tok_s": 34.30383313028494, "req_per_s": 0.2679986963303511, "lat_p50_s": 14.92080965200148, "lat_p95_s": 14.969116716994904, "lat_mean_s": 14.92290238118676, "lat_max_s": 14.969270168992807, "errors_sample": []}
+0, 42, 2347 MHz, 80209 MiB
+1, 39, 2287 MHz, 80081 MiB
+--- D1 c=4 rep=3 ---
+{"ts": "2026-08-07T08:08:04+0000", "label": "cap-d1-c4-r3", "base": "http://127.0.0.1:8092", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 59.75178932400013, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 3648, "agg_tok_s": 34.27512419577689, "req_per_s": 0.26777440777950695, "lat_p50_s": 14.927928550998331, "lat_p95_s": 14.980382284004008, "lat_mean_s": 14.935413049002818, "lat_max_s": 14.980382441004622, "errors_sample": []}
+0, 42, 2355 MHz, 80209 MiB
+1, 38, 2287 MHz, 80081 MiB
+--- D1 c=8 rep=1 ---
+{"ts": "2026-08-07T08:10:07+0000", "label": "cap-d1-c8-r1", "base": "http://127.0.0.1:8092", "concurrency": 8, "requests": 32, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 119.93943767699238, "n_ok": 32, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 7296, "agg_tok_s": 34.150568648077986, "req_per_s": 0.26680131756310926, "lat_p50_s": 30.007673493993934, "lat_p95_s": 30.058313787012594, "lat_mean_s": 28.105874131905694, "lat_max_s": 30.05891189801332, "errors_sample": []}
+0, 42, 2355 MHz, 80209 MiB
+1, 39, 2287 MHz, 80081 MiB
+--- D1 c=8 rep=2 ---
+{"ts": "2026-08-07T08:12:09+0000", "label": "cap-d1-c8-r2", "base": "http://127.0.0.1:8092", "concurrency": 8, "requests": 32, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 119.96376390800287, "n_ok": 32, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 7296, "agg_tok_s": 34.143643601755585, "req_per_s": 0.2667472156387155, "lat_p50_s": 29.976529438004945, "lat_p95_s": 30.04744490799203, "lat_mean_s": 28.11341017809309, "lat_max_s": 30.04804506599612, "errors_sample": []}
+0, 42, 2347 MHz, 80209 MiB
+1, 39, 2287 MHz, 80081 MiB
+--- D1 c=8 rep=3 ---
+{"ts": "2026-08-07T08:14:11+0000", "label": "cap-d1-c8-r3", "base": "http://127.0.0.1:8092", "concurrency": 8, "requests": 32, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 119.2488703840063, "n_ok": 32, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 7296, "agg_tok_s": 34.34833375620267, "req_per_s": 0.26834635747033336, "lat_p50_s": 29.797781291999854, "lat_p95_s": 29.86370461099432, "lat_mean_s": 27.946581951468033, "lat_max_s": 29.8641372500133, "errors_sample": []}
+0, 42, 2347 MHz, 80209 MiB
+1, 38, 2287 MHz, 80081 MiB
+
+########## T1: TTFT short-turn, streaming, c=1 greedy, N=8 ##########
+{"ts": "2026-08-07T08:14:34+0000", "label": "cap-t1-ttft", "base": "http://127.0.0.1:8092", "concurrency": 1, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 32, "greedy": true, "wall_s": 20.434885802009376, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 256, "prompt_tokens_total": 1824, "agg_tok_s": 12.527596311540306, "req_per_s": 0.39148738473563455, "lat_p50_s": 2.5548054030077765, "lat_p95_s": 2.5596324640064267, "lat_mean_s": 2.554280599251797, "lat_max_s": 2.5596324640064267, "errors_sample": [], "ttft_p50_s": 2.1827300309960265, "ttft_p95_s": 2.1868510030035395, "ttft_mean_s": 2.181897092872532, "ttft_max_s": 2.1868510030035395, "n_ttft": 8}
+t1 exit=0
+0, 36, 180 MHz, 0 MiB
+1, 32, 180 MHz, 0 MiB
+lock released 2026-08-07T08:14:41Z
+=== capacity rc=0
+=== done 2026-08-07T08:14:41Z

@@ -482,9 +482,11 @@ struct ChatCompletionReq {
     /// "auto" (default) | "none". "required"/named-function need constrained decoding -> 400.
     #[serde(default)]
     tool_choice: Option<serde_json::Value>,
-    /// OpenAI reasoning effort: none|minimal|low -> the template's no-think switch;
-    /// medium|high -> the template default (open think). Models without a think switch
-    /// ignore the parameter gracefully.
+    /// OpenAI reasoning effort — ONE surface, per-arch native mapping (see `parse_think`'s
+    /// table): low|medium|high = thinking ON at that budget, none|minimal = thinking OFF,
+    /// absent = the model's own default. Binary-switch templates (qwen enable_thinking,
+    /// gemma4) take the on/off half; level-consuming templates (step35 `Reasoning:`,
+    /// hy3 `reasoning_effort:`) also receive the level.
     #[serde(default)]
     reasoning_effort: Option<String>,
     /// OpenRouter object form: {"effort": "...", "enabled": bool, "exclude": bool}
@@ -961,19 +963,38 @@ fn parse_tool_choice(v: &Option<serde_json::Value>) -> Result<ToolChoice, String
     }
 }
 
-/// Map OpenAI `reasoning_effort` / OpenRouter `reasoning` onto the template's think switch.
-/// Absent -> the template's own default (open think on the qwen3.5/3.6 class — verified
-/// against the committed template dumps; NOT overridden here, the byte-identity contract).
+/// Map OpenAI `reasoning_effort` / OpenRouter `reasoning` onto the model's native thinking
+/// control — ONE serve surface, per-arch mechanism (owner directive 2026-08-07: every
+/// supported model is a thinking model).
+///
+/// The OpenAI/OpenRouter convention for reasoning-capable models: `low|medium|high` all mean
+/// reasoning ON at that budget; `none|minimal` request (near-)zero reasoning; OpenRouter's
+/// `reasoning: {enabled: false}` is the explicit off. Absent means the MODEL'S OWN default —
+/// never overridden here (no silent behavior change for existing deployments):
+///
+/// | field value        | ThinkMode | effort level | qwen class      | gemma4        | hy3        | step35            |
+/// |--------------------|-----------|--------------|-----------------|---------------|------------|-------------------|
+/// | (absent)           | Default   | None         | think ON (tmpl) | think OFF     | no_think   | tail always open  |
+/// | none / minimal     | NoThink   | "low"        | closed <think>  | closed channel| no_think   | Reasoning: low    |
+/// | low                | Think     | "low"        | open <think>    | <\|think\|> ON| low        | Reasoning: low    |
+/// | medium             | Think     | "medium"     | open <think>    | <\|think\|> ON| low (clamp)| Reasoning: medium |
+/// | high               | Think     | "high"       | open <think>    | <\|think\|> ON| high       | Reasoning: high   |
+/// | {enabled: false}   | NoThink   | "low"        | closed <think>  | closed channel| no_think   | Reasoning: low    |
+/// | {enabled: true}    | Think     | None         | open <think>    | <\|think\|> ON| low        | (tmpl default)    |
+///
+/// Returns `(think, effort_level)`. `effort_level` rides `Request::reasoning_effort` only
+/// for templates that consume a level string (`ModelCaps::effort_levels`: step35, hy3);
+/// binary-switch templates are carried by `ThinkMode` alone, so their prompts cannot be
+/// perturbed by a level they never read.
 fn parse_think(reasoning_effort: &Option<String>, reasoning: &Option<serde_json::Value>)
-    -> Result<ThinkMode, String> {
+    -> Result<(ThinkMode, Option<String>), String> {
     let mut effort = reasoning_effort.clone();
+    let mut enabled = None;
     if let Some(r) = reasoning {
         match r {
             serde_json::Value::Null => {}
             serde_json::Value::Object(obj) => {
-                if obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-                    return Ok(ThinkMode::NoThink);
-                }
+                enabled = obj.get("enabled").and_then(|v| v.as_bool());
                 if let Some(e) = obj.get("effort").and_then(|v| v.as_str()) {
                     effort = Some(e.to_string());
                 }
@@ -981,13 +1002,23 @@ fn parse_think(reasoning_effort: &Option<String>, reasoning: &Option<serde_json:
             _ => return Err("reasoning must be an object".into()),
         }
     }
-    match effort.as_deref() {
-        None => Ok(ThinkMode::Default),
-        Some("none") | Some("minimal") | Some("low") => Ok(ThinkMode::NoThink),
-        Some("medium") | Some("high") => Ok(ThinkMode::Default),
-        Some(other) => Err(format!(
-            "bad reasoning_effort {other:?} (none|minimal|low|medium|high)")),
+    if enabled == Some(false) {
+        // OpenRouter "thinking off": the strongest off-request either surface can express.
+        return Ok((ThinkMode::NoThink, Some("low".to_string())));
     }
+    let (think, level) = match effort.as_deref() {
+        None => (
+            if enabled == Some(true) { ThinkMode::Think } else { ThinkMode::Default },
+            None,
+        ),
+        Some("none") | Some("minimal") => (ThinkMode::NoThink, Some("low".to_string())),
+        Some("low") => (ThinkMode::Think, Some("low".to_string())),
+        Some("medium") => (ThinkMode::Think, Some("medium".to_string())),
+        Some("high") => (ThinkMode::Think, Some("high".to_string())),
+        Some(other) => return Err(format!(
+            "bad reasoning_effort {other:?} (none|minimal|low|medium|high)")),
+    };
+    Ok((think, level))
 }
 
 /// Validate tool schemas and pre-serialize them for the template's <tools> block; also
@@ -1506,6 +1537,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         chat_turns: Vec::new(),
         tools_json: Vec::new(),
         think: ThinkMode::Default,
+        reasoning_effort: None, // /v1/completions is a raw-prompt surface (no template render)
         params,
         sampler_cfg,
         stop_strings: req.stop.clone().into_vec(),
@@ -1546,7 +1578,16 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                 req.model));
         }
     }
-    let mut think = parse_think(&req.reasoning_effort, &req.reasoning)?;
+    let (mut think, effort_level) = parse_think(&req.reasoning_effort, &req.reasoning)?;
+    // Effort-level templates (step35 dialect): the client's reasoning_effort is a RENDER
+    // input ("Reasoning: {level}\n\n" in the system turn), not a think switch. Gate on the
+    // capability so every other model's prompt stays byte-identical; the ThinkMode half is
+    // already a documented no-op on switchless templates, so both controls stay consistent.
+    let reasoning_effort = if caps.map(|c| c.effort_levels).unwrap_or(false) {
+        effort_level
+    } else {
+        None
+    };
     // response_format -> grammar spec (constrained decoding). None/text = unconstrained,
     // the exact legacy path; unknown/malformed forms are loud 400s.
     let grammar = constrained::parse_response_format(req.response_format.as_ref())?;
@@ -1627,6 +1668,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             chat_turns: turns,
             tools_json,
             think,
+            reasoning_effort,
             params: GenParams {
                 max_new: req.max_tokens.unwrap_or(worker::MAX_NEW_CTX_BOUNDED),
                 max_ctx: req.max_ctx,
@@ -2492,16 +2534,21 @@ mod tests {
 
     #[test]
     fn reasoning_effort_maps_to_think_switch() {
+        // The reasoning-capable-model convention (owner directive 2026-08-07):
+        // low|medium|high = thinking ON at that budget; none|minimal = thinking OFF;
+        // absent = the model's own default. `low` used to map to NoThink — that read the
+        // OpenAI field as a "how much" dial with off at the bottom, which contradicts how
+        // reasoning models ship (low IS a reasoning mode).
         for (extra, want) in [
             (json!({}), ThinkMode::Default),
-            (json!({"reasoning_effort": "low"}), ThinkMode::NoThink),
+            (json!({"reasoning_effort": "low"}), ThinkMode::Think),
             (json!({"reasoning_effort": "none"}), ThinkMode::NoThink),
             (json!({"reasoning_effort": "minimal"}), ThinkMode::NoThink),
-            (json!({"reasoning_effort": "high"}), ThinkMode::Default),
-            (json!({"reasoning_effort": "medium"}), ThinkMode::Default),
+            (json!({"reasoning_effort": "high"}), ThinkMode::Think),
+            (json!({"reasoning_effort": "medium"}), ThinkMode::Think),
             (json!({"reasoning": {"enabled": false}}), ThinkMode::NoThink),
-            (json!({"reasoning": {"effort": "low"}}), ThinkMode::NoThink),
-            (json!({"reasoning": {"enabled": true}}), ThinkMode::Default),
+            (json!({"reasoning": {"effort": "low"}}), ThinkMode::Think),
+            (json!({"reasoning": {"enabled": true}}), ThinkMode::Think),
         ] {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let plan = build_chat_request(weather_request(extra.clone()),
@@ -2511,6 +2558,39 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"reasoning_effort": "extreme"})),
                                    Some(&tool_caps()), tx, lanes::Lane::Interactive, None).is_err());
+    }
+
+    #[test]
+    fn reasoning_effort_maps_to_effort_level_on_step35_class_templates() {
+        // ModelCaps::effort_levels=true (the step35 dialect): the SAME client field becomes
+        // a render input (Request::reasoning_effort) — low/medium/high pass through,
+        // none/minimal clamp to "low" (the template has no thinking-off level), absent stays
+        // None (the template's own default: no `Reasoning:` line).
+        let effort_caps = ModelCaps { effort_levels: true, ..tool_caps() };
+        for (extra, want) in [
+            (json!({}), None),
+            (json!({"reasoning_effort": "low"}), Some("low")),
+            (json!({"reasoning_effort": "medium"}), Some("medium")),
+            (json!({"reasoning_effort": "high"}), Some("high")),
+            (json!({"reasoning_effort": "none"}), Some("low")),
+            (json!({"reasoning_effort": "minimal"}), Some("low")),
+            (json!({"reasoning": {"effort": "high"}}), Some("high")),
+            (json!({"reasoning": {"enabled": false}}), Some("low")),
+        ] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let plan = build_chat_request(weather_request(extra.clone()),
+                                          Some(&effort_caps), tx, lanes::Lane::Interactive, None).unwrap();
+            assert_eq!(plan.request.reasoning_effort.as_deref(), want, "extra={extra}");
+        }
+        // effort_levels=false (every other template): the field NEVER reaches the render —
+        // byte-identity for non-step35 prompts is a caps gate, not a template accident.
+        for extra in [json!({}), json!({"reasoning_effort": "high"}),
+                      json!({"reasoning": {"effort": "low"}})] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let plan = build_chat_request(weather_request(extra.clone()),
+                                          Some(&tool_caps()), tx, lanes::Lane::Interactive, None).unwrap();
+            assert_eq!(plan.request.reasoning_effort, None, "extra={extra}");
+        }
     }
 
     #[test]
@@ -3489,6 +3569,7 @@ mod tests {
             context_length: 262144,
             tokenizer: "qwen2".into(),
             instruct_type: Some("chatml".into()),
+            effort_levels: false,
         };
         let e = model_entry_v1("main", Some(&caps), 1_754_000_000);
         assert_eq!(e["id"], "main");
