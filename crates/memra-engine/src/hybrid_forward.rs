@@ -984,8 +984,14 @@ impl HybridModel {
         assert!(b >= 1 && b == caches.len());
         let pos0s: Vec<usize> = caches.iter().map(|c| c.pos).collect();
         let carried = pos0s.iter().any(|&p| p > 0);
-        if carried && cfg.gemma4.is_some() {
-            return Err("prime_cache_batch: gemma4 has no continuation prime (v0 fresh-only)".into());
+        // gemma4: refuse UNCONDITIONALLY (2026-08-07, lane/gemma4-serve-gaps). The old guard
+        // covered only `carried` — two concurrent FRESH gemma4 prompts batched into the
+        // generic concat attn core below (uniform geometry, no per-layer swa window, no
+        // softcapped head): compiles, runs, wrong logits. Same silent-wrong class as the
+        // step35 refusal beneath. The per-sequence `gemma4_prime` is the supported prefill.
+        if cfg.gemma4.is_some() {
+            return Err("prime_cache_batch: gemma4 has no batched prime core (per-layer \
+                        swa/global geometry, softcapped head) — use gemma4_prime per sequence".into());
         }
         // step35: the cross-request batch driver splits the concat projection outputs and feeds
         // them to `full_attn_prime_core_inner` (the GENERIC attn core — uniform n_head, 128-dim
@@ -5382,7 +5388,14 @@ impl HybridModel {
     /// pre-output_norm hidden, hiddens = full pre-output_norm stack [T, n_embd]).
     pub(crate) fn gemma4_prime(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
                                -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        assert_eq!(cache.pos, 0, "gemma4 prime v0 is fresh-prompt only");
+        // Err, not assert (2026-08-07, lane/gemma4-serve-gaps): a served gemma4 prompt longer
+        // than the worker's prefill tick used to chunk here, and chunk 2 (pos > 0) killed the
+        // whole worker process on this line. The worker now primes gemma4 monolithically and
+        // routes continuation suffixes tokenwise; this is the per-request backstop.
+        if cache.pos != 0 {
+            return Err("gemma4 prime v0 is fresh-prompt only (no continuation/chunked prime) \
+                        — prime the full prompt in one call or decode tokenwise".into());
+        }
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
@@ -7598,7 +7611,12 @@ impl HybridModel {
     /// fast; the prefill fa arms come later.
     pub(crate) fn gemma4_e4b_prime(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
                                    -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        assert_eq!(cache.pos, 0, "e4b prime is fresh-prompt only (v0)");
+        // Err, not assert (2026-08-07, lane/gemma4-serve-gaps): same served-chunked-prompt
+        // process-kill as gemma4_prime — refuse per-request.
+        if cache.pos != 0 {
+            return Err("e4b prime is fresh-prompt only (v0) — prime the full prompt in one \
+                        call or decode tokenwise".into());
+        }
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
         let (ld, x) = self.gemma4_e4b_trunk(e, tokens, 0, cache, true)?;

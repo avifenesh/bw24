@@ -1555,6 +1555,21 @@ pub fn run(
         eprintln!("[worker] {n}: decode chunk cap {c}{}",
                   if *c > 8 { " (exact-16 tier)" } else { "" });
     }
+    // EAGER-ONLY models (lane/gemma4-serve-gaps, 2026-08-07): no batched decode arm, no
+    // batched prime core, no step-wise graph capture — every batched-scheduler entry point
+    // below routes around them (per-session eager decode, monolithic prefill, no graph
+    // promotion, no prime batching). Before this route existed, ONE request to a gemma4
+    // model on the default scheduler panicked the worker on decode_step_batch's gemma4
+    // assert, the respawn re-panicked on the queued request, and the process FATALed
+    // (research/gemma4-serve-20260807/raw/repro-panic-server-*.log).
+    let eager_only: std::collections::HashSet<String> = loaded.iter()
+        .filter(|(_, lm)| eager_only_model(lm))
+        .map(|(n, _)| n.clone()).collect();
+    for n in &eager_only {
+        eprintln!("[worker] {n}: EAGER-ONLY serving (gemma4 class — no batched decode arm): \
+                   per-session eager decode, monolithic prefill, no graph promotion, \
+                   no prime batching");
+    }
 
     // ---- scheduler loop ----
     let mut active: Vec<Session> = Vec::new();
@@ -1928,7 +1943,12 @@ pub fn run(
                 // chain already has (spec.rs sctr_inc), so it is wiring, not new math.
                 let constr_graph_ok = s.constraint.is_none()
                     || (!constrain_host() && devsample_meta(s).is_some());
+                // EAGER-ONLY models never graph-promote (lane/gemma4-serve-gaps): the
+                // step-wise capture body (decode_step_dc_cap_masked) walks the GENERIC
+                // qwen-class layer stack — over gemma4 weights that is silently wrong
+                // logits (the round-45 g12 argmax-INIT class), not an error.
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
+                    && !eager_only.contains(&s.model)
                     && constr_graph_ok
                     && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
@@ -2278,6 +2298,8 @@ pub fn run(
                             && s.lane == crate::lanes::Lane::Interactive
                             && s.fed.is_empty()
                             && s.cache.as_ref().is_some_and(|c| c.pos == 0)
+                            // eager-only models have no batched prime core (engine refuses)
+                            && !eager_only.contains(&s.model)
                             // prefix-cache LCP split primes alone (the boundary snapshot
                             // needs a per-session stop inside the prompt; concat can't stop).
                             && s.snapshot_at.is_none()
@@ -2366,10 +2388,40 @@ pub fn run(
             // (c) batched decode, interactive rows first (stable sort by lane index: chunks
             // fill with protected-class rows before dark rows).
             let t_decode = Instant::now();
+            // (c-) EAGER-ONLY per-session decode (lane/gemma4-serve-gaps, 2026-08-07):
+            // models with no batched decode arm advance through step_session — the legacy
+            // round-robin body, whose decode_step routes to the supported eager arm
+            // (gemma4_decode_step_h) — INSIDE the batched scheduler, one token per tick per
+            // session. Before this route, these sessions entered the batched chunks below
+            // and decode_step_batch's gemma4 assert KILLED THE WORKER on the first request
+            // (research/gemma4-serve-20260807/raw/repro-panic-server-*.log). They are
+            // excluded from the batched chunks by the `decoding` filter beneath.
+            for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
+                if !eager_only.contains(&active[i].model) { continue; }
+                if active[i].spec.is_some() || !active[i].prefill_done
+                    || active[i].cache.is_none() { continue; }
+                let was_interactive = active[i].lane == crate::lanes::Lane::Interactive;
+                match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
+                    Ok(true) => {
+                        // prefill_done rows: Ok(true) == one token emitted (decode phase).
+                        n_tokens_out += 1;
+                        lane_tokens[active[i].lane.idx()] += 1;
+                        if was_interactive { last_interactive_decode = Instant::now(); }
+                    }
+                    Ok(false) => finished.push(i),
+                    Err(err) => {
+                        let _ = active[i].tx.send(Event::Error(
+                            EngineError::engine(format!("step error: {err}"))));
+                        finished.push(i);
+                    }
+                }
+            }
             let mut decoding: Vec<usize> = (0..active.len())
                 .filter(|&i| !finished.contains(&i)
                         && active[i].spec.is_none() && active[i].prefill_done
-                        && active[i].cache.is_some())
+                        && active[i].cache.is_some()
+                        && !eager_only.contains(&active[i].model))
                 .collect();
             decoding.sort_by_key(|&i| active[i].lane.idx());
             let mut had_interactive = false;
@@ -2537,7 +2589,9 @@ pub fn run(
                     if s.spec.is_some() || s.prefill_done || s.graph.is_some()
                         || s.snapshot_at.is_some()
                         || !s.cache.as_ref().is_some_and(|c| c.pos == s.fed.len()) { continue; }
-                    if !s.fed.is_empty() && loaded[&s.model].model.cfg.gemma4.is_some() { continue; }
+                    // eager-only models never join a prime batch (no batched prime core —
+                    // the engine refuses fresh AND carried since lane/gemma4-serve-gaps).
+                    if eager_only.contains(&s.model) { continue; }
                     let cap = budgets[li].min(adaptive_cap);
                     if ql < min_t || dsum + ql > cap { continue; }
                     if dlane.is_some_and(|l| l != li) { continue; }
@@ -3504,6 +3558,18 @@ fn prefill_tick(
         return Ok(0);
     }
     let mut consumed = 0usize;
+    // EAGER-ONLY prime shape (lane/gemma4-serve-gaps, 2026-08-07): gemma4's prime is
+    // fresh-monolithic ONLY — no chunked and no continuation prime (the engine refuses
+    // pos > 0; before it refused, chunk 2 of a >tick-budget prompt KILLED the worker on
+    // gemma4_prime's assert, in both scheduler modes). So: fresh prompts prime WHOLE
+    // (budget uncapped — a long gemma4 prompt trades one long tick for correctness),
+    // carried suffixes (reuse/prefix resume) ride the tokenwise decode_step path, and the
+    // LCP split is skipped (its boundary-stop would turn the tail into a continuation).
+    let eager_mono = eager_only_model(lm);
+    let carried = s.cache.as_ref().is_some_and(|c| c.pos > 0);
+    if eager_mono {
+        s.snapshot_at = None;
+    }
     // PREFIX-CACHE LCP SPLIT: tokens left until the snapshot boundary. Chunks stop exactly
     // there; a residual below the prime floor rides the tokenwise path (unreachable at the
     // current PREFILL_TICK_T, guarded for smaller budgets).
@@ -3511,9 +3577,10 @@ fn prefill_tick(
     if !confidence_trace_enabled()
         && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2)
         && budget >= memra_engine::hybrid_forward::PRIME_MIN_T
+        && !(eager_mono && carried)
         && bound_rem.is_none_or(|r| r >= memra_engine::hybrid_forward::PRIME_MIN_T)
     {
-        let mut take = q.min(budget);
+        let mut take = if eager_mono { q } else { q.min(budget) };
         if q - take > 0 && q - take < memra_engine::hybrid_forward::PRIME_MIN_T {
             take = if q <= budget { q } else { take };
         }
@@ -3559,6 +3626,17 @@ fn prefill_tick(
 /// mask reflects the post-consume grammar state, exactly the set legal for the NEXT token.
 /// No-op (mask_words = 0 -> host fallback) for unconstrained sessions, fallback sampler
 /// configs (penalties/filters host-sample), and the MEMRA_CONSTRAIN_HOST=1 oracle.
+/// EAGER-ONLY predicate (lane/gemma4-serve-gaps, 2026-08-07): models the batched scheduler
+/// must serve through the per-session eager body. gemma4 (12B/26B/31B and E4B): the batched
+/// decode bodies have no arm for its per-layer swa/global geometry + softcapped head (the
+/// engine refuses), `prime_cache_batch` has no gemma4 core, `gemma4_prime` is fresh-only
+/// (no chunked/continuation prime), and the step-wise graph capture walks the generic
+/// qwen-class dc step. One predicate, consumed at every batched entry point, so a future
+/// arch with the same gaps joins by predicate rather than scattered call-site checks.
+fn eager_only_model(lm: &LoadedModel) -> bool {
+    lm.model.cfg.gemma4.is_some() || lm.model.is_gemma4_e4b()
+}
+
 fn stage_grammar_mask(engine: &Engine, s: &mut Session) -> Result<(), String> {
     s.mask_words = 0;
     if s.constraint.is_none() || constrain_host() || devsample_meta(s).is_none() {
@@ -3979,9 +4057,17 @@ fn step_session(
     // Tails below PRIME_MIN_T keep the tokenwise decode_step path (prime_cache floor).
     if !s.prefill_done {
         let q = s.prefill_queue.len();
-        if !confidence_trace_enabled() && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2) {
+        // EAGER-ONLY prime shape (lane/gemma4-serve-gaps): same law as prefill_tick —
+        // gemma4 primes fresh prompts WHOLE (no chunked prime in the engine; chunk 2 used
+        // to kill the worker) and carried suffixes tokenwise (no continuation prime).
+        let eager_mono = eager_only_model(lm);
+        let carried = s.cache.as_ref().is_some_and(|c| c.pos > 0);
+        if !confidence_trace_enabled()
+            && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2)
+            && !(eager_mono && carried)
+        {
             // leave a tail chunk >= PRIME_MIN_T if this tick doesn't finish the queue
-            let mut take = q.min(PREFILL_TICK_T);
+            let mut take = if eager_mono { q } else { q.min(PREFILL_TICK_T) };
             if q - take > 0 && q - take < memra_engine::hybrid_forward::PRIME_MIN_T { take = q; }
             let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
             let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
