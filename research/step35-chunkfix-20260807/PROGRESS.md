@@ -298,3 +298,117 @@ sweep across T and its own memory-headroom accounting (the chunk default exists 
 transient allocation — the long-ctx OOM fix), and changing it would be a board-moving change under
 a different lane. Flagged here because the number was measured cleanly and would otherwise be lost;
 this lane does not change the default.
+
+---
+
+## 8. RESULTS — run-spec K=1..8 (the third correctness gate)
+
+Raw: `raw/spec35-20260807T005750Z.log` (window 02:12:39Z-02:20:04Z) and
+`raw/spec35b-20260807T023100Z.log` (02:31:00Z-02:36:54Z). Drafter: the standalone
+`Step3.7-flash-mtp-Q8_0.gguf` attached via `MEMRA_MTP_DRAFT` (the base shards declare
+`nextn_predict_layers=0`, so the external-draft door is the only attach path on this SKU).
+
+Why this is not covered by §6's argmax gate: `generate_spec` primes through `prime_cache` — the
+changed path — and then feeds that KV to the draft head, so a prefill numeric change propagates into
+the drafter's read set. `research/f8f4-flip-20260806` receipted exactly that: a change that moved
+acceptance by -9.5pp while every self-consistency and golden probe stayed green. So **acceptance is
+recorded alongside the PASS line**, not hidden behind it.
+
+| arm | acceptance | self-consistency |
+|---|---|---|
+| **S1** K=1..8, n=32, short prompt (T=19) | K=1 14/18 = 77.8%; K=2..8 all 15 accepted (44.1% -> 11.0%) | `=== SELF-CONSISTENCY PASS ===`, identical to generate at every K |
+| **S2a** K=3, n=32, long prompt T=4883, **default chunk** | 16/45 = 35.6% | PASS |
+| **S2b** same, `MEMRA_STEP35_SWA_TKV=1` (BEFORE) | 16/45 = 35.6% | PASS |
+| **S3a** K=3, n=32, T=4883, **`MEMRA_PRIME_CHUNK=512`** (AFTER) | **16/45 = 35.6%** | PASS |
+| **S3b** same cell, BEFORE | **16/51 = 31.4%** | PASS |
+
+S1 reproduces the pre-fix baseline (`raw/mtp-draft-20260806T215132Z.log`, the finding lane's own
+run) **digit for digit** at all eight K values — same accepted counts, same drafted counts, same
+percentages. That is the strongest statement available that the fix is inert on the short-prompt
+regime: not "still passes", but "identical numbers".
+
+S3 is the cell that justified running this at all, and it is worth being precise about why the first
+pass nearly missed it. S2a/S2b compare AFTER vs BEFORE at the **default** chunk — where §2.1 says the
+arm sequence is identical pre- and post-fix, so their agreement (16/45 both) confirms the default is
+untouched but is **structurally incapable** of showing acceptance movement. Re-running the same
+comparison at `MEMRA_PRIME_CHUNK=512`, where the fix genuinely changes an arm, does show it:
+**BEFORE needed 51 drafted tokens to land 16 accepted; AFTER needed 45.** The number of *accepted*
+tokens is identical (16) — which is why self-consistency and every greedy golden stay green in both
+arms — while the *rounds* differ, exactly the signature f8f4-flip warned about.
+
+And the direction is the point: post-fix, the chunk=512 run's acceptance (35.6%) is **identical to
+the default chunk's** (35.6%), whereas pre-fix it was 31.4%. The fix does not merely leave spec
+alone — it makes speculative acceptance chunk-invariant too, which is downstream evidence that the
+prefill KV is now genuinely chunk-independent rather than merely producing chunk-independent
+last-row logits.
+
+---
+
+## 9. A SECOND segmentation axis, found while measuring — serve's per-tick `prime_cache` calls
+
+**This is a residual defect of the same class, one level up. It is NOT fixed by this lane, and it is
+not a regression this lane introduced — it predates the fix.** Recorded here with receipts because
+finding it and hiding it in a summary would be worse than not finding it.
+
+`chunkinv` and the fix both concern the split **inside one `prime_cache` call**. But serve does not
+prime a long prompt in one call. `worker.rs:3551-3568` (and `prefill_tick` at `:3074-3115`) primes
+**up to a per-tick budget per scheduler tick**, one `prime_cache` call each, so a long prompt is
+segmented **twice**: once across calls, then again inside each call. Each call gets its own
+`cache.pos`, hence its own `seq_end` — so the arm predicate is free to differ *between* calls even
+though this lane made it fixed *within* one.
+
+Budgets come from `LanePolicy::prefill_budget` (`crates/memra-lanes/src/lib.rs:118`):
+`MEMRA_PREFILL_TICK=1024` (interactive), `MEMRA_PREFILL_JUDGE=MEMRA_PREFILL_HARVEST=256` (dark).
+
+**Enumerated first** (`enum-tick-budget.py`, replicating the real loop incl. the `PRIME_MIN_T` tail
+merge), then measured. Prediction stated before the run: budget >= 513 is byte-identical to a
+monolithic prime at every T in [2,40000); budget <= 512 diverges at every T >= 513.
+
+**Measured** — `raw/tickinv35-20260807T022010Z.log`, new `tickinv` probe mode, PP-2, one flock
+window 02:20:12Z-02:30:36Z:
+
+| arm | budget | calls | logits | maxdiff | greedy |
+|---|---|---|---|---|---|
+| A: T=4883 (past win) | 1024 | 5 | EXACT | 0.000e0 | identical |
+| | 513 | 10 | EXACT | 0.000e0 | identical |
+| | 512 | 10 | **DIFFER** | 1.813e0 | **step 6** |
+| | 256 | 20 | **DIFFER** | 1.813e0 | **step 6** |
+| | 64 | 77 | **DIFFER** | 1.813e0 | **step 6** |
+| B: CONTROL T=402 (below win) | 1024 / 256 / 64 | 1 / 2 / 7 | EXACT | 0.000e0 | identical |
+| C: T=4883 nested, `MEMRA_PRIME_CHUNK=64` | 1024 | 5 | EXACT | 0.000e0 | identical |
+| | 256 | 20 | **DIFFER** | 1.813e0 | **step 6** |
+
+The enumeration was exactly right, including the 512/513 boundary. Note the divergence signature:
+maxdiff `1.813e0`, first diverging row 0, greedy split at step 6 — **the same numbers as the
+original defect** (§1, §4.2), which is the strongest possible evidence it is the same mechanism
+reached through a different door rather than a new one. Arm C also shows the two axes are
+independent: the inner split is invariant (that is the fix) while the outer one is not.
+
+### What this does and does not mean for the shipped serve config
+
+- **Interactive lane: not exposed via the tick budget.** Default 1024 > 512, measured EXACT.
+- **Dark lanes (judge/harvest): exposed.** Default 256, measured DIFFER. Worse, `worker.rs:2113`
+  caps dark budgets by `adaptive_cap = headroom_ms * prime_tok_per_ms`, i.e. the effective budget is
+  a function of *live SLO headroom* — so on a loaded box the dark-lane segmentation is not merely
+  small, it is **load-dependent**, and two identical judge requests can be primed differently.
+- **The interactive lane IS still exposed by a different door:** the prefix-cache LCP split. With
+  `snapshot_at = L` set, chunks stop exactly at `L` (`worker.rs:3092-3110`) so the first call ends at
+  `L` regardless of budget; `PREFIX_CACHE_MIN_TOKENS=64` and `win=512` mean **any LCP landing in
+  [64, 512] reproduces the FA-prefix shape** on an interactive request. Enumerated: 1347 (T,L) pairs
+  over T in {600,1024,4883}, up to 512 FA rows.
+
+### Why this lane does not fix it here
+
+The obvious fix is to thread the *request's* total prompt length rather than the call's, but
+`prime_cache`'s public contract is per-call (its own doc comment defines continuation priming as
+"a NEW SUFFIX onto a live session cache"), so the correct fix changes an engine **API** and touches
+every caller — engine, server, spec, probes. That is a different change class from this lane's
+one-predicate fix, it needs its own before/after numbers, and merging it into a lane whose whole
+claim is "cannot move the default" would destroy that claim. The honest deliverable is: this axis is
+now **named, enumerated, measured, and reproducible on demand** (`tickinv`), with the exposure
+mapped per lane. A follow-up lane owns the fix.
+
+What this lane's fix *does* still buy, unchanged by the above: `MEMRA_PRIME_CHUNK` — the knob
+`docs/FLAGS.md` invites an operator to set per rig — is now a pure memory knob on step35, and every
+single-call prefill (`run-gen`, `run-spec`, the probes, and interactive serve at the default tick
+budget) is chunk-invariant.
