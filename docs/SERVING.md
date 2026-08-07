@@ -1000,6 +1000,13 @@ Exit 0 = complete, never relaunched; any other exit = failed, loud, never relaun
 job that outlives `MEMRA_BG_CKPT_GRACE_MS` (5 s) after SIGUSR1 is SIGKILLed — the yield
 bound holds even against a wedged job, and semantics are at-least-once (a training step
 may repeat, never be lost; checkpoint writes must be atomic — write-tmp-then-rename).
+Write single-command jobs as `MEMRA_BG_JOB="exec python3 train.py ..."`: the command runs
+under `sh -c`, and without `exec` the shell parent dies of the unhandled SIGUSR1 before
+the job's exit 75 can propagate. The live-server receipt caught exactly this
+(`raw/ckpt-serve.log`: "job exited None during preemption") — the runner's
+during-preemption branch classifies ANY exit after SIGUSR1 as checkpointed-and-relaunch,
+so the cycle still resumed from step 129 correctly, but `exec` is what makes the
+protocol exit visible.
 Toy proof: `tools/bg-ckpt-counter.py` (counter checkpoints on SIGUSR1, exits 75, resumes
 from the file; the unit test `checkpoint_mode_preempts_and_resumes_counter` pins the whole
 cycle GPU-free). An in-process trainer API can replace this seam later without touching
