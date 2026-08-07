@@ -506,6 +506,12 @@ where a quoted panic payload lands). `status` is `ok` / `draining` / `unhealthy`
 `tick_max_ms` — the longest scheduler iteration this process actually observed — is the live
 receipt for revisiting the threshold.
 
+Every red probe 503 follows the same retry-header contract as request-path overloads.
+Worker-related `/health` and `/readyz` failures use the worker supervisor's 2-second respawn
+backoff (`Retry-After: 2` + `retry-after-ms: 2000`). A draining `/readyz` uses
+`MEMRA_DRAIN_S`, clamped to the SDK-honored 1..=60 second window, with the matching millisecond
+twin. Retryable probe responses never carry the contradictory `x-should-retry: false`.
+
 **`/readyz` — should traffic be routed here?** Ready = model loaded AND worker alive AND
 not draining. Unready is NOT a restart request: draining and loading are healthy states
 that simply must not be routed to, which is exactly why liveness and readiness are
@@ -589,7 +595,7 @@ class now comes from the producer:
 | unknown `x-lane` value | 400 | `invalid_request_error` | `invalid_lane` | `x-should-retry: false` |
 | batch-class api key requesting `x-lane: interactive` | 403 | `authentication_error` | — | `x-should-retry: false` |
 | bad / disabled api key | 401 / 403 | `authentication_error` | — | `x-should-retry: false` |
-| **worker channel dropped** (`cmd_tx.send` fails) | 503 | `server_error` | **none** | **none** |
+| worker channel dropped (`cmd_tx.send` fails) | 503 | `server_error` | `overloaded` | `Retry-After: 2` + `retry-after-ms: 2000` |
 
 Unknown model is a deliberate **400, not 404**: OpenRouter's uptime math counts 404s
 against the provider and excludes 400s, and the `code` is what clients branch on either
@@ -599,16 +605,10 @@ only `0 < v ≤ 60`, openai-python abandons retry past 120s) with a matching
 is committed and no status code is left to change — emits the same error object as a
 `data:` chunk and closes the connection.
 
-**One 503 is still outside the contract** (last row above, `main.rs:1741` and `1819`): when
-`cmd_tx.send()` fails because the worker channel is gone, the body is
-`"worker unavailable"` / `server_error` with **`code: null`, no `Retry-After`, no
-`retry-after-ms`, and no `x-should-retry`** — `error_response` passes `code: None`, and the
-`x-should-retry` header is only attached on 4xx. A client that branches on `code` sees nothing to
-branch on, and a client that honors `Retry-After` gets no delay hint, on precisely the transient
-condition where retrying is the right move. This is the narrow window between a worker dying and
-the respawn ladder re-establishing the channel; the `overloaded` row covers the *restarting*
-case, which is why this one is easy to miss. Documented as-is rather than described as fixed —
-giving it `code: "overloaded"` + the retry pair is a server change, not a docs change.
+The channel-drop path uses the same 2-second constant as the supervisor's first respawn delay, so
+the HTTP hint cannot drift from the recovery ladder. The control-plane probe 503s described above
+also pass through the shared contract builder; there are no bare 503 producers left in
+`crates/memra-server/src`.
 
 ## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
 
