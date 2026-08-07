@@ -1,0 +1,3 @@
+loaded qwen35 (32 layers, n_head_kv=4, head_dim=256); dx=800 dy=480 steps=96
+B=1 reference arm: batched body (fast path pinned OFF; live default = ON)
+VERDICT dx=800 dy=480: PASS — X bit-identical solo-vs-coresident, all 96 steps
