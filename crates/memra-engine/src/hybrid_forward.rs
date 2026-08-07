@@ -6868,8 +6868,21 @@ impl HybridModel {
                     base_len
                 };
                 let kvl = cache.kv[il].as_ref().unwrap();
-                // SWA: trim the view to the oldest key any query in this chunk can reach.
-                let off = if swa { base_len.saturating_sub(win - 1) } else { 0 };
+                // SWA: trim the view to the oldest key any query in this chunk can reach —
+                // ALIGNED DOWN to the FA tile size (BK=32). The raw trim is chunk-DEPENDENT
+                // (off = base_len-(win-1), and base_len is a chunk boundary), and the FA
+                // kernel's online-softmax recurrence groups keys into BK tiles relative to
+                // the VIEW START — so an unaligned off regroups the same absolute keys into
+                // different tiles at different chunk sizes = different (m,l) rounding =
+                // chunk-dependent bits. chunkinv35 caught exactly this on the first FA-arm
+                // battery (first_div == chunk size; raw/leverA-gates-20260807T135541Z.log).
+                // Aligning off to 32 pins tiles to ABSOLUTE key positions for every chunk
+                // size; the <=31 extra leading keys are older than EVERY query's window
+                // (all queries sit at >= base_len, so keys < base_len-(win-1) are masked
+                // for all of them) and a fully-masked key is an exact-0.0 no-op in both
+                // kernels (NEG_INF -> p=0.0; l+=0.0 and O+=0.0 are bitwise identity), so
+                // the floor arm's bits do not move either.
+                let off = if swa { base_len.saturating_sub(win - 1) & !31usize } else { 0 };
                 let t_kv = base_len + t - off;
                 let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
                                              (off + t_kv) * kvl.k_tok_bytes);
