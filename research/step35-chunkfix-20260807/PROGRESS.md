@@ -230,3 +230,71 @@ braces: (1) the predicate change lives inside `step35_attn_pre_wo`, reachable on
 `usize` argument, which no other arch reads. The qwen `chunkinv` pair also confirms the generalized
 `chunk-invariance-gate.sh` (new `--label` / `--prompts` / `--seam` flags, rewritten summary grep)
 did not break its original arm — the script change is as load-bearing as the engine change here.
+
+---
+
+## 7. RESULTS — prefill perf, before vs after (BAR-3)
+
+Raw: `raw/perf35-20260807T004722Z.log`. **One flock window** 00:47:22Z -> 02:12:39Z (85 min), 30 arm
+invocations, cards 0/0 MiB at release. Thermal regime: warm steady-state throughout — GPU 0 held
+36-39 C at 2392-2400 MHz and GPU 1 32 C at 2325 MHz across the whole window (per-rep
+`nvidia-smi` samples in the log), so no arm ran on a cold or throttled card.
+
+**Instrument.** `concat-prime-probe ppprime`, which times `prime_cache` — the path this fix changes.
+`run-gen`'s "prefill tok/s" line times `forward_last`, the **cacheless monolithic** path where
+`seq_end == t` by construction, so it cannot see this change at all. Recorded so nobody
+re-measures the wrong thing and concludes "no effect" from an instrument that is blind by design.
+
+**Arms.** Same binary, one process per arm, strictly alternating AFTER/BEFORE (the repo's
+interleaved law — cross-run and cross-day comparisons are clock-drift-invalid, including for a
+self-comparison). AFTER = naked default (`seq_end` predicate, the shipped path). BEFORE =
+`MEMRA_STEP35_SWA_TKV=1`, the rollback seam. The seam is a legitimate BEFORE arm because §4.2
+showed it reproduces the pre-fix receipt's arithmetic to the digit; using it avoids a second build
+of `c809181d^` and therefore avoids comparing two different compilations.
+
+Each printed median is itself the median of 3 timed reps after 1 warmup, so each cell is
+5 interleaved arm-medians per side (N=5 of the quantity compared), 15 timed primes per side.
+
+| cell | arm | N | median | tok/s | within-arm spread | delta |
+|---|---|---|---|---|---|---|
+| **pp6257 (T=4883) chunk=4096 — THE SHIPPED DEFAULT** | AFTER | 5 | 52.1910 s | **93.56** | 0.119% | **+0.009%** |
+| | BEFORE | 5 | 52.1956 s | 93.55 | 0.181% | |
+| pp6257 (T=4883) chunk=512 — where the fix changes an arm | AFTER | 5 | 45.4441 s | 107.45 | 0.268% | **-0.467%** |
+| | BEFORE | 5 | 45.2320 s | 107.95 | 0.190% | |
+| pp512 (T=402) chunk=4096 — null control, below the window | AFTER | 5 | 3.6498 s | 110.14 | 0.408% | **-0.093%** |
+| | BEFORE | 5 | 3.6464 s | 110.25 | 0.255% | |
+
+### Verdict against the BAR's stop condition
+
+The bar was: *if the default moves >1%, STOP and report rather than ship.* **The default moved
++0.009%** — three orders of magnitude inside the threshold, and an order of magnitude below the
+arms' own within-arm spread. The lane ships.
+
+Read the null control first, because it calibrates everything above it. At T=402 the two arms are
+**the same machine code taking the same branch** (`seq_end = t = 402 <= win`, so both predicates
+evaluate false and select FA): the only honest expected delta is 0. It measured **-0.093%**. That
+is this box's noise floor for this instrument, and it means a delta of a few tenths of a percent
+carries no signal. The default cell's +0.009% is comfortably below even that.
+
+The chunk=512 cell's -0.467% is the only delta larger than the null control, and it is the one cell
+where the fix genuinely changes work: pre-fix, rows [0,512) took dequant-once FA; post-fix they take
+the f32 windowed kernel, one chunk out of ten. It is a **non-default** configuration, it is still
+half the STOP threshold, and it is only ~2.5x the null control's magnitude, so calling it "a real
+0.47% cost" rather than "noise with a plausible story" would be over-reading three tenths of a
+percent. What can be said without over-claiming: at the one chunk size where the fix does extra
+work, the cost is bounded well under 1%, and it buys exactness.
+
+§2.1's enumeration predicted the default's arm sequence is **identical** pre- and post-fix at every
+T, hence a zero delta. That prediction is now confirmed on silicon rather than argued. The purpose
+of a measurement whose result is known in advance is exactly this: it converts "the code should not
+be able to move" into "the code did not move".
+
+### Incidental finding, recorded not acted on
+
+At T=4883 the **non-default** `MEMRA_PRIME_CHUNK=512` primes **14.8% faster** than the shipped
+default 4096 (107.45 vs 93.56 tok/s, both AFTER arms, same window, same thermal state). That is a
+prefill-tuning lead, not this lane's business: it is a *serving default* question that needs its own
+sweep across T and its own memory-headroom accounting (the chunk default exists to bound per-layer
+transient allocation — the long-ctx OOM fix), and changing it would be a board-moving change under
+a different lane. Flagged here because the number was measured cleanly and would otherwise be lost;
+this lane does not change the default.
