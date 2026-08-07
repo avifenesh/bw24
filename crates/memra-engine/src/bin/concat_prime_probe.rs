@@ -1236,18 +1236,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
             let reps: usize = arg(&rest, "--reps").and_then(|v| v.parse().ok()).unwrap_or(3);
             let warmup: usize = arg(&rest, "--warmup").and_then(|v| v.parse().ok()).unwrap_or(1);
+            // --budget: time the SERVE-SHAPED multi-call prime (the worker's tick loop replica,
+            // incl. PRIME_MIN_T tail merge) instead of one monolithic call — the path the
+            // tick-seg fix changes. 0 (default) = monolithic, the pre-existing behavior.
+            let budget: usize = arg(&rest, "--budget").and_then(|v| v.parse().ok()).unwrap_or(0);
             let ids = cx.tok.encode(&pa, true);
             let t = ids.len();
+            let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
+            let run = |c: &mut Cache| -> Result<(), Box<dyn std::error::Error>> {
+                let mut fed = 0usize;
+                while fed < t {
+                    let q = t - fed;
+                    let mut take = if budget == 0 { q } else { q.min(budget) };
+                    if q - take > 0 && q - take < min_t { take = q; }
+                    let _ = cx.model.prime_cache(&cx.e, &ids[fed..fed + take], c, t - fed - take)?;
+                    fed += take;
+                }
+                Ok(())
+            };
             for _ in 0..warmup {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
-                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
+                run(&mut c)?;
             }
             cx.e.stream().synchronize()?;
             let mut times = Vec::with_capacity(reps);
             for r in 0..reps {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
                 let t0 = std::time::Instant::now();
-                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
+                run(&mut c)?;
                 cx.e.stream().synchronize()?;
                 let dt = t0.elapsed().as_secs_f64();
                 println!("ppprime rep {r}: {t} tok in {dt:.4}s = {:.1} tok/s", t as f64 / dt);
@@ -1255,10 +1271,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             times.sort_by(f64::total_cmp);
             let med = times[times.len() / 2];
-            println!("ppprime MEDIAN: {t} tok in {med:.4}s = {:.1} tok/s (chunk={} f32chunk0={})",
+            println!("ppprime MEDIAN: {t} tok in {med:.4}s = {:.1} tok/s (budget={budget} chunk={} \
+                      calllocal={})",
                      t as f64 / med,
                      std::env::var("MEMRA_PRIME_CHUNK").unwrap_or_else(|_| "4096(default)".into()),
-                     std::env::var("MEMRA_PRIME_F32CHUNK0").unwrap_or_else(|_| "0".into()));
+                     std::env::var("MEMRA_PRIME_CALLLOCAL").unwrap_or_else(|_| "0".into()));
         }
 
         m => return Err(format!("unknown mode {m}").into()),
