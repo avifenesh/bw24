@@ -2,10 +2,11 @@
 //!
 //! WHY a dedicated thread: the CUDA context is THREAD-AFFINE. `Engine` (and every `CudaStream` /
 //! `CudaSlice` it owns) must only ever be touched from the one thread that created the context.
-//! So we spawn ONE OS thread, build `Engine::new(0)` on it, load every `HybridModel` on it, and
-//! never let an `Engine`/`Cache`/`CudaSlice` cross a thread boundary. Async HTTP handlers run on a
-//! separate tokio runtime and submit work over an `mpsc` channel; each request carries a `tokio`
-//! mpsc Sender back which the worker uses to stream tokens (and a final Done) to that one request.
+//! So we spawn ONE OS thread, build the primary `Engine` on it, load every `HybridModel` on it,
+//! and never let an `Engine`/`Cache`/`CudaSlice` cross a thread boundary. Async HTTP handlers run
+//! on a separate tokio runtime and submit work over an `mpsc` channel; each request carries a
+//! `tokio` mpsc Sender back which the worker uses to stream tokens (and a final Done) to that one
+//! request.
 //!
 //! SCHEDULER LOOP: the worker holds a `Vec<Session>` of active generations. Each iteration it
 //! round-robin steps EVERY active session by exactly ONE `decode_step` (one token of prefill OR
@@ -1420,6 +1421,23 @@ impl Session {
     }
 }
 
+/// Primary CUDA ordinal for the serving worker. CUDA_VISIBLE_DEVICES already remaps physical GPUs
+/// into a process-local ordinal space, so the non-PP default remains logical device 0. Under PP,
+/// stage 0 is the primary engine and therefore follows MEMRA_PP_DEVICES[0], matching the gate and
+/// benchmark harnesses.
+fn worker_device(pp_devices: Option<&str>) -> Result<usize, String> {
+    let Some(devices) = pp_devices.filter(|v| !v.trim().is_empty()) else {
+        return Ok(0);
+    };
+    let first = devices.split(',').next().unwrap().trim();
+    first.parse::<usize>().map_err(|_| {
+        format!(
+            "MEMRA_PP_DEVICES={devices} has invalid first device {first:?} \
+             (want <d0>,..,<dN-1> e.g. 0,1)"
+        )
+    })
+}
+
 /// The worker entry point. Runs on its OWN std::thread. Builds the Engine + loads every model on
 /// THIS thread (CUDA-context affinity), then runs the scheduler loop until the command channel
 /// closes. `models` = (name, gguf_path) pairs. Sends `ready_tx` once load completes (or the error).
@@ -1435,14 +1453,19 @@ pub fn run(
     health: crate::health::SharedHealth,
 ) {
     // ---- one-time init on the worker thread: Engine + all models resident ----
-    let engine = match Engine::new(0) {
+    let pp_devices = std::env::var("MEMRA_PP_DEVICES").ok();
+    let device = match worker_device(pp_devices.as_deref()) {
+        Ok(device) => device,
+        Err(err) => { let _ = ready_tx.send(Err(err)); return; }
+    };
+    let engine = match Engine::new(device) {
         Ok(e) => e,
         Err(err) => { let _ = ready_tx.send(Err(format!("Engine::new failed: {err}"))); return; }
     };
     // MEMRA_FAST is read ONCE here (same handling as run_gen): the matmul path consults the env var
     // per-call, but logging it once keeps the worker's behavior explicit and stable for the run.
     let fast = std::env::var("MEMRA_FAST").as_deref() != Ok("0");
-    eprintln!("[worker] Engine ready (MEMRA_FAST={})", fast);
+    eprintln!("[worker] Engine ready (device={device}, MEMRA_FAST={})", fast);
 
     let mut loaded: HashMap<String, LoadedModel> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -4582,6 +4605,22 @@ mod tests {
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
     use super::{meter_account, HashMap, METER_TENANT_CAP};
     use super::{draft_verdict, draft_verdict_message, preflight_pp2_spec_refusal_inner, DraftVerdict};
+    use super::worker_device;
+
+    #[test]
+    fn worker_device_defaults_to_cuda_visible_zero_and_follows_pp_stage_zero() {
+        assert_eq!(worker_device(None), Ok(0));
+        assert_eq!(worker_device(Some("")), Ok(0));
+        assert_eq!(worker_device(Some("1,0")), Ok(1));
+        assert_eq!(worker_device(Some(" 3 , 4 ")), Ok(3));
+    }
+
+    #[test]
+    fn worker_device_rejects_an_invalid_pp_primary() {
+        let err = worker_device(Some("gpu0,1")).unwrap_err();
+        assert!(err.contains("invalid first device"), "{err}");
+        assert!(err.contains("gpu0"), "{err}");
+    }
 
     // ---- drafter attachment: the loud-failure semantics (lane/step-draft, 2026-08-07) ----
     //
