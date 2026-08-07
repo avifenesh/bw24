@@ -85,7 +85,24 @@ MEMRA_BG_CKPT_GRACE_MS, MEMRA_BG_VRAM_MB.
   mechanism ships (opt-in by construction: unset MEMRA_BG_JOB = no runner, no /metrics
   block, pre-lane payload byte-identical). (N=1 shakeout's +3.17% was n=2-bursts noise;
   the N=5 interleave is the citable number.)
-- PP-2 box receipt: pending (one valley+yield cycle on the pair under flock).
+- ckpt-serve (raw/ckpt-serve.log, REAL server, 5090): valley launch → one chat request
+  preempts (SIGUSR1, preempts=1, ckpt_kills=0, yield signal 6 µs) → checkpoint holds 129 →
+  next valley relaunches "resume from checkpoint" → counter continues 129→293. Trap found:
+  under `sh -c` the shell parent dies of the unhandled SIGUSR1 before exit-75 propagates
+  ("job exited None during preemption") — the during-preemption branch already treats that
+  as checkpointed, and SERVING.md now says to `exec` single-command jobs.
+- PP-2 box receipt: queued on the box behind the tick-seg lane's /tmp/memra-gpu.lock hold
+  (probe-pp2-valley.sh, flock -w 3600, dispatched 12:51Z).
+
+## Gates
+
+- serve-smoke: 16/16 ok (raw/serve-smoke.log).
+- bg-stress N=5: 0 failed, STOP-bar WITHIN (raw/bgstress-n5.log).
+- kernel-check: ALL GREEN (raw/kernel-check-tail.log). First attempt OOM'd against a
+  concurrent 14.6 GB gemma-gate tenant (quoted CUDA_ERROR_OUT_OF_MEMORY, compute-apps
+  recorded in the log) — rerun clean after it exited. Zero engine/kernel files touched
+  by this lane (`git diff --name-only e54dd2e6..HEAD`: crates/memra-server only).
+- workspace tests: all crates green (memra-server 103/103; full `cargo test --workspace`).
 
 ## Follow-up lane should build
 
