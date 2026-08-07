@@ -76,6 +76,36 @@ same-backbone DONOR GGUF that carries the block, trimmed with the TARGET's own r
   Qwen3.6-35B-A3B-UD-IQ4_XS (blk.40) → Ornith-1.0-35B, KAT-Coder-V2.5-Dev
   (receipts: `research/ornith-drafters-20260801/`).
 
+## Targets that ship their NextN head as a SEPARATE file (step35 / Step-3.7-Flash)
+
+StepFun publishes the three chained NextN/MTP blocks in their own GGUF
+(`Step3.7-flash-mtp-Q8_0.gguf`), so the trunk parses `nextn_predict_layers=0` and loads
+with no head. **`nextn=0` on this arch does not mean the model has no drafter** — nothing
+needs to be built, the published head just has to be attached:
+
+```bash
+MEMRA_MODELS="step=/models/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/models/Step3.7-flash-mtp-Q8_0.gguf" \
+  ./target/release/memra-server
+```
+
+Same `+draft` convention as every regime drafter above; `MEMRA_MTP_DRAFT=<head.gguf>` is
+the global equivalent. The loader resolves step35's PER-LAYER draft geometry (64 vs 96
+q-heads, the SWA(512) window, the head-wise `attn_gate` width) from the drafter file's own
+arrays, so no geometry flags are involved.
+
+Serve a step35 trunk **without** the head and the server says so at load — one WARN naming
+plain decode and the attach string. Point `+draft` at a path that is missing or unloadable
+and the server **refuses to start** with the cause quoted, rather than quietly serving plain
+decode under a config that asked for spec.
+
+**Spec over PP-2 is quarantined (#87).** Step is 105 GB, so it needs PP-2 on 96 GB cards,
+and spec over a sharded cross-device PP placement is not shippable in either placement
+(`research/pp2-spec-20260806/`). That config refuses at startup with a pointer to the issue;
+`MEMRA_SERVE_SPEC=0` serves plain decode over PP-2 at 875 tok/s at c=8. Attaching the head
+today is still worth doing — it stays loaded, so the config is ready when #87 lifts — and
+spec is fully live on any single-card-capable placement. Receipts:
+`research/step-draft-20260807/`.
+
 ## Prebuilt drafts
 
 Every board model's draft (built by exactly this pipeline, from exactly the published

@@ -992,6 +992,18 @@ consistently), but the model forgoes the MTP win this lane just proved works. Wi
 `+draft` path to accept a standalone step35 drafter is the named follow-up — a serve-surface
 change, deliberately not bundled into bring-up.
 
+> **CLOSED 2026-08-07 by `lane/step-draft`** (`research/step-draft-20260807/RESULTS.md`). One
+> correction to the finding above: the server load path *does* reach `MEMRA_MTP_DRAFT` —
+> `load_from_source_impl` reads it (`hybrid.rs:1277`) and `HybridModel::load` funnels through
+> there — and the `+draft` per-model spelling already worked for the two-file shape too, since
+> `MtpHead::load_draft` resolves step35 geometry from the drafter file's own arrays. So the attach
+> needed no new spelling. **The silence was the whole defect**, and it is now impossible: a step35
+> model loaded without a drafter WARNS with the exact attach string (verified on the real 45-layer
+> trunk, `raw/box-armE-warn-20260807T000837Z.log`), a `+draft` path that is missing or unloadable
+> refuses to start with the cause quoted, and drafter + armed spec over sharded cross-device PP-2
+> refuses before `Engine::new` with the #87 pointer. What remains for spec-*served* Step is only
+> #87 — Step needs PP-2 to fit at all, and spec over PP-2 stays quarantined.
+
 **(B) The MoE residency decision is PP-blind in its numerator.** `build_dev_exps`
 (`hybrid.rs:244-280`) resolves `free` from the owning stage's engine — correct, `layer_engine`
 hands it the per-stage engine (`pp.rs:755`) — but projects `exps` by summing **every**
