@@ -188,10 +188,41 @@ sentinel-fed `embed_gather_u32{,_t}` at T=1/grid-16 exist only in the draft chai
 verify-side sentinel would fault the T=K+1 gather (`embed_gather_device_td`) or panic
 the d2t map indexing first.
 
-## Round 6 — next: instrumented build (find the NaN producer)
+## Round 6 — the traps fired, and they change the game (raw/round6/)
 
-Host-side guards at every draft-token readback: `idx >= d_vocab` -> quote round/j/burst,
-read back the head-logits row prefix and h_seed prefix (NaN counts), BREAK the chain
-instead of dereferencing. Same guard on verify preds. This converts the crash into a
-loud log that names the first-NaN buffer (h_seed = verify-side producer vs dl_d-only =
-draft-side compute), per session, per round.
+Four sentinel traps landed (32d86e21: greedy graph, sampled graph, eager chain, verify
+accept walk — each refuses `idx >= vocab` with quoted NaN counts instead of feeding
+0x7FFFFFFF into `embed_row()`). Trap build, exact-A x3 reps:
+
+| rep | c=2 | c=4 | recovery (c=1 x4 after) |
+|---|---|---|---|
+| T1 | 7/8 | **16/16** | 4/4 |
+| T2 | 7/8 | **16/16** | 4/4 |
+| T3 | 7/8 | **16/16** | 4/4 |
+
+The trap line, quoted (identical in all three reps):
+
+    step error: draft(graph) argmax sentinel 0x7fffffff >= d_vocab 248320 at round 0
+    j=0 pos=296: round-seed NaN 4096/4096 — refusing to dereference the embed row (#87 trap)
+
+What this establishes:
+
+1. **The NaN theory is CONFIRMED at the operand level**: the draft-graph seed buffer
+   read back 4096/4096 NaN — the ENTIRE [n_embd] hidden is NaN, round 0, j=0.
+2. **Stickiness is architecturally gone with the trap in place**: one request errors
+   (7/8 at c=2), everything else — including the previously-100%-fatal c=4 phase —
+   serves. 48/48 requests after the trap vs 0/48 in the finding lane. The MMU fault WAS
+   the whole process-killing mechanism; refusing the dereference contains the blast to
+   the one poisoned burst.
+3. `round 0, j=0, pos=296`: the poison arrives with the FIRST chain step of a burst —
+   the seed was NaN BEFORE any drafting. The seed at round 0 comes from the pre-loop
+   init: `decode_step_h(last_token)` (the INIT FEED, spec.rs:3750) or a continuation's
+   carried `last_h`/`prompt_h` tail — all products of the STAGE-SPLIT trunk walk
+   (`decode_step_h_ppn` / `prime_cache`) handed across streams.
+4. 7/8+16/16 serving at a c=4 that used to be 0/48 ALSO means: with the fault contained,
+   spec+PP-2 concurrency fundamentally works — the remaining bug is "one burst's
+   entry hidden is NaN under concurrent session traffic", a much smaller animal.
+
+Refined trap (746a14ea) re-running: g_seed (self-fed = head OUTPUT at j) vs h_seed_buf
+(round INPUT, untouched since round-start copy) — discriminates poisoned-arrival from
+head-compute-NaN. j=0 with g_seed=NaN could still be either (the replay had already run).
