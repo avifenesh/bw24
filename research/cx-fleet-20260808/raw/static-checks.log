@@ -1,0 +1,8 @@
+bash -n tools/fleet-meter.sh
+PASS: bash syntax
+python3 -m py_compile tools/fleet-report.py tools/test_fleet_report.py tools/cache_economics.py
+PASS: Python compile
+shellcheck tools/fleet-meter.sh
+PASS: shellcheck
+systemd-analyze verify (site paths substituted in /tmp)
+PASS: systemd units

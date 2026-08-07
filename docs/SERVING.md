@@ -777,6 +777,34 @@ computed_prompt_tokens` at a chosen cached-token billing factor (`--cache-billin
 1.0 = cached bills full price, 0.25 = the OR cached-input tier), plus per-tenant multipliers
 and the tick-seg window share. JSON row on stdout (ledger-appendable), summary on stderr.
 
+**Fleet receipt accumulator** (`tools/fleet-meter.sh`): the pre-listing hit-rate receipt for
+the owner's own agent traffic. A one-shot scrape of `http://127.0.0.1:8002/metrics` appends
+only the UTC timestamp, prompt/cached/computed counters, hit ratio, LCP histogram, tenants,
+and a `restart` marker to `research/fleet-meter/rig5090-fleet.jsonl`. An unchanged scrape is
+idempotently skipped. A failed scrape logs `skip` and exits successfully; it never starts,
+stops, or otherwise mutates the owner-critical server.
+
+```bash
+tools/fleet-meter.sh --once                         # cron/timer-safe snapshot
+tools/fleet-meter.sh --loop --interval-minutes 30  # foreground accumulator
+python3 tools/fleet-report.py                       # all UTC days
+python3 tools/fleet-report.py --days 7              # rolling weekly view
+```
+
+The example `deploy/systemd/memra-fleet-meter.{service,timer}` runs the one-shot form every
+30 minutes. Copy the units, override their `/opt/memra` path and service account for the
+host, then enable the timer; do not point the meter at a public endpoint.
+
+The report diffs cumulative counters and histograms. A counter regression (or an explicit
+`restart=true`) starts a new segment whose current values count from zero, so restarts never
+produce negative traffic. The first snapshot intentionally counts the server's existing
+cumulative receipt. Later intervals are attributed to the UTC day of their ending snapshot,
+which bounds day-edge uncertainty to the snapshot cadence. Each daily row shows fleet prompt
+tokens, cached/computed splits, hit-token ratio and day-over-day change, the revenue
+multiplier band at cached-token billing factors 0.25 and 1.0, tick-seg `[64,512)` probe
+share, and detected restart count. Revenue and tick-seg math comes directly from
+`tools/cache_economics.py`; the report does not carry a second formula.
+
 **Exactness gate** (`tools/cache-meter-gate.py`, serve-smoke arm 7b): N requests sharing a
 K-token `prompt_ids` prefix must meter exactly — seed/LCP-split requests `cached_tokens: 0`,
 steady-state hits `cached_tokens == K`, a same-prefix request under a different `cache_salt`

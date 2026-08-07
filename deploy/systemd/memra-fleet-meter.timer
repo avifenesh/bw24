@@ -1,0 +1,14 @@
+# Half-hour fleet receipt snapshots. Override OnCalendar in a timer drop-in when
+# a different cadence is required; the default matches fleet-meter.sh's 30 min loop.
+
+[Unit]
+Description=Snapshot memra fleet cache economics every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+AccuracySec=1min
+Unit=memra-fleet-meter.service
+
+[Install]
+WantedBy=timers.target

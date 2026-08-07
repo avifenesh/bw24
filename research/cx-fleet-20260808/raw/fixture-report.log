@@ -1,0 +1,6 @@
+fleet-report: 5 snapshots, 3 UTC day(s); first snapshot and restart rows count from zero
+UTC day     tokens/day  cached  computed  hit-token  trend    revenue x @0.25..1.0  tick-seg  restarts
+----------  ----------  ------  --------  ---------  -------  --------------------  --------  --------
+2026-08-05  1,000       400     600       40.0%      -        1.1667x..1.6667x      40.0%     0
+2026-08-06  1,200       550     650       45.8%      +5.83pp  1.2115x..1.8462x      50.0%     1
+2026-08-07  300         150     150       50.0%      +4.17pp  1.2500x..2.0000x      75.0%     0
