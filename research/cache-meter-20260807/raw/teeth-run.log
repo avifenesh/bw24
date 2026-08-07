@@ -1,0 +1,28 @@
+  ok: A-req1 cached_tokens == 0
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 cached_tokens == 0
+  ok: A-req2 prompt_tokens == 272
+  FAIL: A-req3 cached_tokens == 256 — got 0
+  ok: A-req3 prompt_tokens == 272
+  FAIL: A-req4 cached_tokens == 256 — got 0
+  ok: A-req4 prompt_tokens == 272
+  FAIL: A-req5 cached_tokens == 256 — got 0
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: prompt_tokens_in == 1632
+  FAIL: cached_tokens_in == 768 — got 0
+  FAIL: computed_tokens_in == prompt - cached — got 1632
+  FAIL: cache_hit_token_ratio matches arithmetic — got 0.0
+  FAIL: prefix_cache_hits == N-2 — got 0
+  FAIL: prefix_cache_misses == 3 — got 0
+  FAIL: prefix_cache_inserts == 3 (A seed + A split + B seed) — got 0
+  FAIL: prefix_cache_hit_tokens == 768 — got 0
+  FAIL: lcp_histogram: 6 probes total — got 0
+  FAIL: lcp_histogram: 2 cold probes in bucket [0] — got [0]
+  FAIL: lcp_histogram: 4 probes in K's bucket (edge 256) — got 0
+  FAIL: tick-seg [64,512) window carries the shared-prefix probes — got 0
+  FAIL: tenants[meter-A] split exact — got {'prompt_tokens_in': 1360, 'cached_tokens_in': 0, 'cache_hit_token_ratio': 0.0}
+  ok: tenants[meter-B] split exact (0 cached)
+  FAIL: economics revenue_multiplier == 1.8889 (factor 1.0) — got 1.0
+cache-meter-gate: 16 failed
+gate rc=1

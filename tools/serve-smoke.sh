@@ -114,6 +114,25 @@ echo "$R" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["usage
 PLAIN_MUTEX=$A
 stop_server
 
+# 7b. CACHE-METERING exactness (lane/cache-metering): synthetic shared-prefix workload,
+# per-request usage.prompt_tokens_details.cached_tokens exact against the learning
+# sequence (seed/split/hit + cross-salt cold), /metrics totals closed-form, LCP
+# histogram bucket-exact, per-tenant split exact, economics row crosschecked.
+# MEMRA_SERVE_SPEC=0: the smoke model embeds an MTP head and spec sessions bypass the
+# prefix cache by policy — the gate must run the batched bulk tier the cache serves.
+# A FRESH server so the /metrics counters start from zero (the closed forms assume it).
+echo "== serve-smoke: cache-metering exactness =="
+export MEMRA_SERVE_SPEC=0
+if start_server "smoke=$MODEL"; then
+  python3 tools/cache-meter-gate.py $BASE smoke --n 5 --k 256 --suffix 16 \
+    && PASS "cache-metering accounting exact (per-request + /metrics + economics)" \
+    || FAIL "cache-metering gate"
+  stop_server
+else
+  FAIL "cache-metering server did not start"
+fi
+unset MEMRA_SERVE_SPEC
+
 # 8. spec serving: same greedy prompt must produce IDENTICAL text to plain serving
 if [ -f "$DRAFT" ]; then
   echo "== serve-smoke: spec serving (draft attached) =="
