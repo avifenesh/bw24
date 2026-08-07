@@ -1,0 +1,40 @@
+# memra-fleet-meter - one cache-receipt snapshot for memra-fleet-meter.timer
+#
+# COPY, DO NOT SYMLINK. The repo path and service account are site-specific:
+#
+#   sudo install -m 0644 deploy/systemd/memra-fleet-meter.{service,timer} \
+#       /etc/systemd/system/
+#   sudo systemctl edit memra-fleet-meter   # override /opt/memra and User/Group
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now memra-fleet-meter.timer
+#   systemctl list-timers memra-fleet-meter.timer
+#   journalctl -u memra-fleet-meter.service
+#
+# This unit only reads the loopback /metrics endpoint and appends one JSONL row.
+# It never starts, stops, or probes the GPU-serving process beyond that HTTP GET.
+
+[Unit]
+Description=Snapshot memra fleet cache economics
+Documentation=https://github.com/avifenesh/memra
+After=network.target
+
+[Service]
+Type=oneshot
+User=memra
+Group=memra
+WorkingDirectory=/opt/memra
+Environment=FLEET_METRICS_URL=http://127.0.0.1:8002/metrics
+Environment=FLEET_LEDGER=/opt/memra/research/fleet-meter/rig5090-fleet.jsonl
+ExecStart=/opt/memra/tools/fleet-meter.sh --once
+TimeoutStartSec=30
+
+# Receipt files are owner-readable by default. The script locks the ledger while
+# checking the prior row and appending, so a manual or cron invocation is safe.
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
