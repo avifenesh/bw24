@@ -686,6 +686,13 @@ impl HybridModel {
             rt.n_stages(), n_st,
             "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
         );
+        // #87 REVERSE PUBLICATION (lane/pp2spec-crash): order every stage stream behind
+        // the caller before this body's first stage allocation can reuse a pool block
+        // whose queued primary-stream consumer has not read it yet. Anatomy:
+        // `PpNRt::fence_stages_behind`. (This body dtoh+syncs its own logits, but its
+        // PP-mode callers interleave with the spec verify's device-resident outputs in
+        // the same worker, so the entry fence is the uniform law, not an optimization.)
+        rt.fence_stages_behind(&e.stream())?;
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let payload = b_n * n_embd;

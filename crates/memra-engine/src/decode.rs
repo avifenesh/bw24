@@ -840,6 +840,13 @@ impl HybridModel {
             rt.n_stages(), n_st,
             "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
         );
+        // #87 REVERSE PUBLICATION (lane/pp2spec-crash): this body's stage-stream
+        // allocations may reuse pool blocks freed from a PREVIOUS ppn call's outputs
+        // (h_seed, verify vx/ckpt) whose primary-stream consumers are still queued —
+        // the reuse-write races the queued read. Order every stage stream behind the
+        // caller's stream before the first stage allocation. Full anatomy:
+        // `PpNRt::fence_stages_behind`.
+        rt.fence_stages_behind(&e.stream())?;
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
