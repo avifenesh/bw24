@@ -91,8 +91,14 @@ MEMRA_BG_CKPT_GRACE_MS, MEMRA_BG_VRAM_MB.
   under `sh -c` the shell parent dies of the unhandled SIGUSR1 before exit-75 propagates
   ("job exited None during preemption") — the during-preemption branch already treats that
   as checkpointed, and SERVING.md now says to `exec` single-command jobs.
-- PP-2 box receipt: queued on the box behind the tick-seg lane's /tmp/memra-gpu.lock hold
-  (probe-pp2-valley.sh, flock -w 3600, dispatched 12:51Z).
+- PP-2 box receipt (raw/pp2-valley.log + server logs; 2x PRO 6000, q27 NVFP4 over
+  MEMRA_PP_DEVICES=0,1 + MEMRA_SERVE_SPEC=0, under flock /tmp/memra-gpu.lock behind the
+  tick-seg hold): 7/7 ok — valley idle=5.725 s, job launched; ONE chat request flipped the
+  job to /proc 'T' in **37.2 ms** while the PP-2 request completed normally (64 tok,
+  1.05 s); next valley resumed (yields=1 resumes=1); the unfittable-budget arm
+  (147252 MB vs min-free) landed `refused_vram` with the loud
+  `[darklane] REFUSED ... min free Some(82514)MB` line — the min-across-GPUs term read the
+  pair with q27 shards resident on both cards. Single cycle, labeled as such.
 
 ## Gates
 
