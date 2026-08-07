@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- REF: X alone, B=1 ----
     let mut c_ref = Cache::new(&e, cfg, ctx)?;
-    let _ = model.prime_cache(&e, &px, &mut c_ref)?;
+    let _ = model.prime_cache(&e, &px, &mut c_ref, 0)?;
     let mut t = tx0;
     let mut ref_logits: Vec<Vec<f32>> = Vec::with_capacity(steps);
     let mut ref_toks: Vec<u32> = Vec::with_capacity(steps);
@@ -131,11 +131,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- TEST: X with the Y herd, B = 1 + |dys|, identically primed ----
     let mut c_x = Cache::new(&e, cfg, ctx)?;
-    let _ = model.prime_cache(&e, &px, &mut c_x)?;
+    let _ = model.prime_cache(&e, &px, &mut c_x, 0)?;
     let mut c_ys: Vec<Cache> = Vec::with_capacity(pys.len());
     for py in &pys {
         let mut c = Cache::new(&e, cfg, ctx)?;
-        let _ = model.prime_cache(&e, py, &mut c)?;
+        let _ = model.prime_cache(&e, py, &mut c, 0)?;
         c_ys.push(c);
     }
     let mut toks: Vec<u32> = std::iter::once(tx0)
