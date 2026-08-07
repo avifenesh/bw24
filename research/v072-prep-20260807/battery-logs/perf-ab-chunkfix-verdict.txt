@@ -1,0 +1,23 @@
+== perf-ab: 31b-plain-short, N=5 interleaved, one lock hold ==
+   A = 5557fc49 baseline, B = merged tip (006aca75 code)
+   entry: 62, 180 MHz, 10.07 W
+   co-residents at entry:
+     144655, 332 MiB
+     7600, 394 MiB
+     2601975, 1390 MiB
+  [warmup, discarded]
+  A    rep1: 37.13    tok/s  (exit 0, 71,1710MHz)
+  B    rep1: 36.94    tok/s  (exit 0, 73,1710MHz)
+  A    rep2: 36.90    tok/s  (exit 0, 76,1702MHz)
+  B    rep2: 36.70    tok/s  (exit 0, 78,1650MHz)
+  A    rep3: 36.64    tok/s  (exit 0, 76,1725MHz)
+  B    rep3: 36.54    tok/s  (exit 0, 80,1657MHz)
+  A    rep4: 37.01    tok/s  (exit 0, 80,1680MHz)
+  B    rep4: 37.45    tok/s  (exit 0, 77,1687MHz)
+  A    rep5: 38.76    tok/s  (exit 0, 81,1777MHz)
+  B    rep5: 37.90    tok/s  (exit 0, 81,1755MHz)
+== VERDICT (this window only, N=5 each, interleaved, exclusive lock) ==
+   A median: 37.01   [37.13 36.90 36.64 37.01 38.76 ]
+   B median: 36.94   [36.94 36.70 36.54 37.45 37.90 ]
+   B vs A: -0.19%
+   => NO code regression in this cell; the rolling-median tripwire was window noise.
