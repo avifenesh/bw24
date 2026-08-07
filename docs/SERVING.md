@@ -318,6 +318,16 @@ parsing only — zero engine changes**:
   switch; `medium|high`/absent → the template default (open `<think>`). Models without the
   switch ignore the parameter. `reasoning: {enabled, effort}` (OpenRouter form) maps the
   same way.
+- **Effort-level templates (Step-3.7-Flash / arch `step35`):** the same `reasoning_effort`
+  field is that dialect's own three-level control — a **string rendered into the system
+  turn** (`Reasoning: low|medium|high\n\n`), not a think switch (the `<think>` tail is
+  unconditional there). `low|medium|high` pass through; `none|minimal` (and OpenRouter
+  `reasoning: {enabled: false}`) clamp to `low` — the template has no thinking-off level;
+  omitted ⇒ the template's own default (no `Reasoning:` line at all, exactly what the model
+  card ships). Gated on a spawn-time capability probe (`effort_levels`, keyed on the same
+  template marker the renderer dispatches on), so on every other model the field never
+  reaches the render and prompts stay byte-identical by construction. Serve-smoke receipt:
+  `research/step-sku-20260807/raw/effort-smoke-*.log`.
 - **Isolation:** non-tools traffic bypasses the tools renderer AND the emission parser
   entirely (legacy render path, byte-identical streams); tools traffic is generation-
   identical for the identical rendered prompt (raw-completions bijection gate). `usage`

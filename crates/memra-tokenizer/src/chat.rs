@@ -166,12 +166,20 @@ not tell the user about function calls\n</IMPORTANT>";
 /// that want the hard isolation guarantee keep calling the legacy function on that path.
 /// Errors (never on the plain path): tools/tool turns on a template without a tools branch
 /// (hy3 / gemma4 / bare ChatML).
+///
+/// `reasoning_effort` is the step35 dialect's three-level control ("low"/"medium"/"high" —
+/// a STRING rendered into the system turn, not a think switch; see `apply_step35_template`).
+/// Every other dialect ignores it (their templates have no `reasoning_effort` input), and
+/// `None` is the step35 template's own default (no `Reasoning:` line). The server only
+/// supplies `Some` for models whose template consumes it (`ModelCaps::effort_levels`), so
+/// non-step35 prompts stay byte-identical by construction, not by luck.
 pub fn apply_chat_template_tools(
     template: Option<&str>,
     turns: &[Turn],
     add_generation_prompt: bool,
     tools_json: &[String],
     think: ThinkMode,
+    reasoning_effort: Option<&str>,
 ) -> Result<String, String> {
     let has_tool_features = !tools_json.is_empty()
         || turns.iter().any(|t| t.role == "tool" || !t.tool_calls.is_empty());
@@ -183,9 +191,11 @@ pub fn apply_chat_template_tools(
     // reject tool features — step35 HAS a tools branch and it is reproduced). Must precede the
     // qwen arm: the step35 template contains `<tools>`, `<think>` and `add_generation_prompt`,
     // so every qwen marker check below matches it. `ThinkMode` is ignored (no `enable_thinking`
-    // in this template => `think_switch` is false => NoThink is already a documented no-op).
+    // in this template => `think_switch` is false => NoThink is already a documented no-op);
+    // `reasoning_effort` is this dialect's own control and is honored here.
     if template.is_some_and(|t| t.contains("render_message_content")) {
-        return Ok(apply_step35_template(turns, add_generation_prompt, tools_json, None));
+        return Ok(apply_step35_template(turns, add_generation_prompt, tools_json,
+                                        reasoning_effort));
     }
     if template.is_some_and(|t| t.contains("hy_User") || t.contains("<|turn>")) {
         // hy3 / gemma4 dialects: no committed tools rendering reference — reject tool
@@ -345,9 +355,11 @@ format: an inner <function=...>\n...\n</function> block must be nested within <t
 ///
 /// `reasoning_effort` is the model's headline three-level control (low/medium/high per the
 /// StepFun model card). It is a parameter here rather than a `ThinkMode`: the value is a
-/// *string in the system turn*, so a bool cannot carry it. Nothing on the serve path supplies
-/// it yet — `Request` has no field — so both call sites pass `None` (the template's own default:
-/// no `Reasoning:` line at all). Plumbing it is a serve-surface change, tracked separately.
+/// *string in the system turn*, so a bool cannot carry it. The serve path supplies it through
+/// `apply_chat_template_tools` (worker `Request::reasoning_effort`, mapped from the OpenAI
+/// `reasoning_effort` body field when `ModelCaps::effort_levels` is set); `None` — the
+/// legacy-str path and every non-step35 model — renders the template's own default
+/// (no `Reasoning:` line at all).
 ///
 /// BOS is NOT emitted (the jinja's `{{bos_token}}` is dropped): memra's `encode(add_special)`
 /// prepends it from `tokenizer.ggml.add_bos_token`/`bos_token_id` — the same double-BOS trap the
@@ -606,7 +618,7 @@ mod tests {
                 let turns: Vec<Turn> = msgs.iter().map(|(r, c)| Turn {
                     role: r.to_string(), content: c.to_string(), tool_calls: Vec::new(),
                 }).collect();
-                let ext = apply_chat_template_tools(tmpl, &turns, true, &[], ThinkMode::Default)
+                let ext = apply_chat_template_tools(tmpl, &turns, true, &[], ThinkMode::Default, None)
                     .unwrap();
                 assert_eq!(legacy, ext, "template={tmpl:?} msgs={msgs:?}");
             }
@@ -626,7 +638,7 @@ mod tests {
             Turn { role: "tool".into(), content: "{\"temp_c\": 21}".into(), tool_calls: Vec::new() },
         ];
         let s = apply_chat_template_tools(Some(QWEN_TOOLS_TMPL), &turns, true, &tools,
-                                          ThinkMode::Default).unwrap();
+                                          ThinkMode::Default, None).unwrap();
         let expected = concat!(
             "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n",
             "<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\"}}\n</tools>",
@@ -662,7 +674,7 @@ mod tests {
             Turn { role: "tool".into(), content: "r2".into(), tool_calls: Vec::new() },
         ];
         let s = apply_chat_template_tools(Some(QWEN_TOOLS_TMPL), &turns, false, &[],
-                                          ThinkMode::Default).unwrap();
+                                          ThinkMode::Default, None).unwrap();
         assert_eq!(s, concat!(
             "<|im_start|>user\nboth<|im_end|>\n",
             "<|im_start|>assistant\nchecking\n\n",
@@ -678,15 +690,15 @@ mod tests {
         let turns = vec![Turn { role: "user".into(), content: "hi".into(), tool_calls: Vec::new() }];
         // switch present: NoThink renders the closed think block.
         let s = apply_chat_template_tools(Some(QWEN_TOOLS_TMPL), &turns, true, &[],
-                                          ThinkMode::NoThink).unwrap();
+                                          ThinkMode::NoThink, None).unwrap();
         assert!(s.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"), "{s:?}");
         // no enable_thinking switch: NoThink is ignored (template default stands).
         let tmpl_no_switch = "... add_generation_prompt ... '<think>\\n' ...";
         let s = apply_chat_template_tools(Some(tmpl_no_switch), &turns, true, &[],
-                                          ThinkMode::NoThink).unwrap();
+                                          ThinkMode::NoThink, None).unwrap();
         assert!(s.ends_with("<|im_start|>assistant\n<think>\n"), "{s:?}");
         // no template at all: plain ChatML, no tail either way.
-        let s = apply_chat_template_tools(None, &turns, true, &[], ThinkMode::NoThink).unwrap();
+        let s = apply_chat_template_tools(None, &turns, true, &[], ThinkMode::NoThink, None).unwrap();
         assert!(s.ends_with("<|im_start|>assistant\n"), "{s:?}");
     }
 
@@ -695,12 +707,12 @@ mod tests {
         let turns = vec![Turn { role: "user".into(), content: "hi".into(), tool_calls: Vec::new() }];
         let tools = vec!["{}".to_string()];
         for tmpl in [None, Some("... hy_User ..."), Some("... <|turn> ...")] {
-            let err = apply_chat_template_tools(tmpl, &turns, true, &tools, ThinkMode::Default);
+            let err = apply_chat_template_tools(tmpl, &turns, true, &tools, ThinkMode::Default, None);
             assert!(err.is_err(), "template={tmpl:?}");
         }
         // tool-role turns need the branch too.
         let tool_turns = vec![Turn { role: "tool".into(), content: "r".into(), tool_calls: Vec::new() }];
-        assert!(apply_chat_template_tools(None, &tool_turns, true, &[], ThinkMode::Default).is_err());
+        assert!(apply_chat_template_tools(None, &tool_turns, true, &[], ThinkMode::Default, None).is_err());
     }
 
     // ---- StepFun Step-3.7-Flash (arch step35) -------------------------------------------
@@ -722,7 +734,7 @@ mod tests {
     }
 
     fn s35_turns(turns: Vec<Turn>, genp: bool, tools: &[String]) -> String {
-        apply_chat_template_tools(Some(STEP35_TMPL), &turns, genp, tools, ThinkMode::Default)
+        apply_chat_template_tools(Some(STEP35_TMPL), &turns, genp, tools, ThinkMode::Default, None)
             .unwrap()
     }
 
@@ -765,8 +777,6 @@ mod tests {
 
     #[test]
     fn step35_reasoning_effort_renders_in_the_system_turn() {
-        // Not reachable from the serve path yet (no Request field) — assert the renderer
-        // directly so the plumbing has a proven target.
         assert_eq!(
             apply_step35_template(&[turn("user", "Hi")], true, &[], Some("high")),
             "<|im_start|>system\nReasoning: high\n\n<|im_end|>\n\
@@ -782,6 +792,29 @@ mod tests {
                                       &tools, Some("medium"));
         assert!(s.starts_with("<|im_start|>system\nReasoning: medium\n\nBe terse.\n\n# Tools\n"),
                 "{s:?}");
+    }
+
+    #[test]
+    fn reasoning_effort_reaches_step35_through_the_public_entry_and_only_step35() {
+        // The serve path enters via apply_chat_template_tools: the level must land in the
+        // rendered system turn on the step35 dialect...
+        let turns = vec![turn("user", "Hi")];
+        let s = apply_chat_template_tools(Some(STEP35_TMPL), &turns, true, &[],
+                                          ThinkMode::Default, Some("high")).unwrap();
+        assert!(s.starts_with("<|im_start|>system\nReasoning: high\n\n<|im_end|>\n"), "{s:?}");
+        // ...None keeps the template's own default (no Reasoning: line at all)...
+        let s = apply_chat_template_tools(Some(STEP35_TMPL), &turns, true, &[],
+                                          ThinkMode::Default, None).unwrap();
+        assert!(!s.contains("Reasoning:"), "{s:?}");
+        // ...and every non-step35 dialect ignores the parameter (their templates have no
+        // reasoning_effort input) — byte-identical with and without it.
+        for tmpl in [None, Some(QWEN_TOOLS_TMPL), Some("... hy_User ..."), Some("... <|turn> ...")] {
+            let with = apply_chat_template_tools(tmpl, &turns, true, &[],
+                                                 ThinkMode::Default, Some("high")).unwrap();
+            let without = apply_chat_template_tools(tmpl, &turns, true, &[],
+                                                    ThinkMode::Default, None).unwrap();
+            assert_eq!(with, without, "template={tmpl:?}");
+        }
     }
 
     #[test]
@@ -875,7 +908,7 @@ mod tests {
         // silently emitted `<think>\n\n</think>\n\n` would be a prompt the model never saw.
         let turns = vec![turn("user", "hi")];
         for mode in [ThinkMode::Default, ThinkMode::NoThink] {
-            let s = apply_chat_template_tools(Some(STEP35_TMPL), &turns, true, &[], mode).unwrap();
+            let s = apply_chat_template_tools(Some(STEP35_TMPL), &turns, true, &[], mode, None).unwrap();
             assert!(s.ends_with("<|im_start|>assistant\n<think>\n"), "mode={mode:?} {s:?}");
         }
     }

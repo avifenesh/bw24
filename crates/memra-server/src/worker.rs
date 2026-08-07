@@ -188,6 +188,12 @@ pub struct Request {
     /// Tool schemas pre-serialized (client key order preserved) for the template's <tools> block.
     pub tools_json: Vec<String>,
     pub think: memra_tokenizer::chat::ThinkMode,
+    /// step35-dialect reasoning level ("low"/"medium"/"high"), rendered as a string into the
+    /// system turn (`Reasoning: {level}\n\n`). Only set by the HTTP layer when the model's
+    /// template consumes it (`ModelCaps::effort_levels`); None = the template's own default
+    /// (no `Reasoning:` line). Orthogonal to `think`: on switch-carrying templates
+    /// `reasoning_effort` maps to ThinkMode instead and this stays None.
+    pub reasoning_effort: Option<String>,
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
@@ -244,6 +250,10 @@ pub struct ModelCaps {
     pub tokenizer: String,
     /// chat-template family ("chatml" / "gemma"); None = no template or unrecognized.
     pub instruct_type: Option<String>,
+    /// template consumes a `reasoning_effort` STRING (the step35 dialect: rendered into the
+    /// system turn as `Reasoning: {level}\n\n`). When true, the HTTP layer maps the OpenAI
+    /// `reasoning_effort` body field onto `Request::reasoning_effort` instead of ThinkMode.
+    pub effort_levels: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -1230,6 +1240,7 @@ struct ReplayPlan {
     chat_turns: Vec<memra_tokenizer::chat::Turn>,
     tools_json: Vec<String>,
     think: memra_tokenizer::chat::ThinkMode,
+    reasoning_effort: Option<String>,
     params: GenParams,
     sampler_cfg: SamplerConfig,
     grammar: Option<crate::constrained::GrammarSpec>,
@@ -1517,11 +1528,17 @@ pub fn run(
                 else if t.contains("<start_of_turn>") { Some("gemma".to_string()) }
                 else { None }
             }),
+            // step35 dialect only: keyed on the SAME dispatch marker the renderer uses
+            // (`render_message_content`), not on the bare word `reasoning_effort` — the Hy3
+            // template also contains that word (as its hardcoded `reasoning_effort:no_think`
+            // header) but consumes no input.
+            effort_levels: t.is_some_and(|t| t.contains("render_message_content")
+                && t.contains("reasoning_effort")),
         };
         eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={} \
-                   ctx={} tok={:?} instruct={:?}",
+                   effort_levels={} ctx={} tok={:?} instruct={:?}",
                   caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok,
-                  caps.context_length, caps.tokenizer, caps.instruct_type);
+                  caps.effort_levels, caps.context_length, caps.tokenizer, caps.instruct_type);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
@@ -2778,6 +2795,7 @@ fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Bo
         chat_turns: p.chat_turns.clone(),
         tools_json: p.tools_json.clone(),
         think: p.think,
+        reasoning_effort: p.reasoning_effort.clone(),
         params: p.params.clone(),
         sampler_cfg: p.sampler_cfg.clone(),
         stop_strings: s.stop_strings.clone(),
@@ -2820,6 +2838,7 @@ fn admit(
         chat_turns: req.chat_turns.clone(),
         tools_json: req.tools_json.clone(),
         think: req.think,
+        reasoning_effort: req.reasoning_effort.clone(),
         params: req.params.clone(),
         sampler_cfg: req.sampler_cfg.clone(),
         grammar: req.grammar.clone(),
@@ -2833,9 +2852,11 @@ fn admit(
     } else if !req.chat_turns.is_empty() {
         // ISOLATION CONTRACT (serve-tools lane): a request with no tools features renders
         // through the EXACT legacy path — the tools renderer is entered only when the
-        // request carries tools / tool turns / a non-default think switch.
+        // request carries tools / tool turns / a non-default think switch / a
+        // reasoning-effort level (step35 dialect: the level is a render input).
         let plain = req.tools_json.is_empty()
             && req.think == memra_tokenizer::chat::ThinkMode::Default
+            && req.reasoning_effort.is_none()
             && req.chat_turns.iter().all(|t| t.role != "tool" && t.tool_calls.is_empty());
         let rendered = if plain {
             let messages: Vec<_> = req.chat_turns.iter()
@@ -2844,7 +2865,8 @@ fn admit(
             lm.tok.apply_chat_template(&messages, true)
         } else {
             match lm.tok.apply_chat_template_tools(&req.chat_turns, true,
-                                                   &req.tools_json, req.think) {
+                                                   &req.tools_json, req.think,
+                                                   req.reasoning_effort.as_deref()) {
                 Ok(rendered) => rendered,
                 Err(err) => return Err((req.tx,
                     EngineError::invalid_param(format!("chat template: {err}"), "messages"))),
