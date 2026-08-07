@@ -188,3 +188,58 @@ complexity and the most exactness-sensitive; it goes last.
 Re-scoped order: **A → B → C**, each with its own exactness battery + interleaved perf receipt
 before the next. TTFT on the 4k prompt (2.18 s p50 today) rides lever A immediately
 (prefill is ~95% of TTFT).
+
+---
+
+## Increment 2 — LEVER A: the windowed hd128 FA prefill stamp (commit `8b425742` + fix `5c523d5e`)
+
+### What landed
+
+- `flash_attn.cu`: `fa_prefill_qw_body` / `fa_prefill_qw_db_body` gain `int window = 0` —
+  `fa_prefill_f32_body`'s exact mask predicate (`k < q_pos-(win-1)` → NEG_INF) plus its
+  whole-tile skip; in the db twin the skip folds into the loop **bound** (`t_start`) so the
+  cp.async prefetch chain is unbroken, buffer parity following `t_start`. `window=0` is the
+  default-arg body — the existing stamps are byte-unchanged. New stamps
+  `fa_prefill_qw_w_hd128` / `fa_prefill_qw_db_w_hd128`.
+- `lib.rs`: `fa_prefill_view_ws_w_hd128` — the windowed twin of `fa_prefill_view_ws` (same
+  dequant-once bf16 workspace/slab, db default, `MEMRA_PRIME_DEQW_DB=0` seam).
+- `hybrid_forward.rs` `step35_attn_pre_wo`: the SWA arm defaults to the FA twin; selection
+  still keys on `seq_end` (chunkfix law). **`MEMRA_STEP35_SWA_FA=0`** = rollback to the f32
+  floor (documented in docs/FLAGS.md).
+- `kernel_check.rs`: 4 assertions x 3 shapes (CPU windowed oracle at the 2e-2 fa band; vs the
+  floor same band; window BITES vs unwindowed FA; db-vs-single-buffer **bit-identical**, incl.
+  the odd-`t_start` shape) + `window=0` bitdiff=0 vs `fa_prefill_view_ws`.
+
+### The gate that earned its keep: chunkinv35 caught a NEW chunk-dependence door
+
+Battery 1 (`raw/leverA-gates-20260807T135541Z.log`): G1 kernel-check ALL GREEN, G3 run-gen
+MATCH, G4 ppn-gate bit-identical both arms, G5 run-spec 8/8 PASS at baseline acceptance
+(82.4% K=1) — and **G2 chunkinv35 FAILED**: 513 diverging at row 513 (1.115e0), 512/256/64
+mutually identical diverging at row 512 (1.164e0). Mechanism, distinct from the chunkfix
+class: the SWA view offset `off = base_len-(win-1)` starts the FA **tile grid** at a
+chunk-dependent absolute position; the qw kernel's online-softmax recurrence groups keys into
+BK=32 tiles **relative to the view start**, so the same absolute keys regroup at different
+chunk sizes → different (m,l) rounding → different bits. The f32 floor was immune (serial
+per-key softmax, no tile grouping), which is exactly why the chunkfix lane never saw this door.
+
+Fix (`5c523d5e`): `off &= !31` — the tile grid pins to absolute key positions at every chunk
+size. The ≤31 extra leading keys are older than every query's window (all queries ≥
+`base_len`) and a fully-masked key is a bitwise no-op in both kernels (NEG_INF → p = exact
+0.0; l += 0.0 / O += 0.0 are IEEE identities), so the floor arm's bits cannot move either —
+battery 2 measures that claim (G2f) rather than arguing it.
+
+### Perf (battery 1, N=5 interleaved FA/floor in one hold, pre-alignment arm)
+
+| arm | pp4096 tok/s (5 reps) |
+|---|---|
+| FA (default) | 153.4, 140.8, 140.6, 140.6, 141.0 |
+| FLOOR (`MEMRA_STEP35_SWA_FA=0`) | 85.6, 85.8, 85.8, 85.8, 85.7 |
+
+**90.9 → ~141 tok/s (1.55x)** — the anatomy's lever-A projection (~154) was close; the floor
+arm reproduces the capacity baseline (85.7 ≈ the 86-91 window). TTFT p50 2.182 s (G7) —
+**unchanged**, which is itself a finding: the serve prime path chunks at `PREFILL_TICK_T=1024`
+and the 228-token TTFT probe prompt sits under the 512 window where both arms ride
+`fa_prefill_view_ws` anyway; the 4k-prompt TTFT is the one lever A moves.
+
+Battery 2 (running): G2 must flip INVARIANT, G2c canary stays red, G2f floor unmoved,
+G3/G5 re-receipts, G6 N=5 interleaved on the aligned arm.
