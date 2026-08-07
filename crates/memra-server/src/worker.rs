@@ -4313,6 +4313,9 @@ fn panic_injection_due(n_completed: u64) -> bool {
 /// disables (straight to loud failure, i.e. let the supervisor restart the process).
 const WORKER_RESPAWN_MAX: u32 = 1;
 
+/// Base delay for the respawn ladder and the HTTP retry hint while the worker is unavailable.
+pub(crate) const WORKER_RESPAWN_BACKOFF_BASE_S: u64 = 2;
+
 fn worker_respawn_max() -> u32 {
     static R: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *R.get_or_init(|| std::env::var("MEMRA_WORKER_RESPAWN").ok()
@@ -4447,7 +4450,8 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
                         // Backoff before reloading weights: a panic caused by a transient
                         // device condition needs the driver to settle, and an immediate
                         // reload would just re-hit it.
-                        let backoff = std::time::Duration::from_secs(2 * attempt as u64);
+                        let backoff = std::time::Duration::from_secs(
+                            WORKER_RESPAWN_BACKOFF_BASE_S * attempt as u64);
                         eprintln!("[worker] respawn attempt {attempt}/{} in {:?} \
                                    (reloading weights)", worker_respawn_max(), backoff);
                         std::thread::sleep(backoff);
