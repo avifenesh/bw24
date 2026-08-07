@@ -152,7 +152,12 @@ router tuning open). Receipts and bring-up notes:
 ## Serving
 
 OpenAI-compatible server (axum): batched decode, cross-request prefill batching,
-speculative serving, `/metrics`. OpenAI tool calling (`tools`/`tool_choice`, streaming
+speculative serving, `/metrics`. Speculative and batched serving are **one gated process, not
+two deployments**: spec is a single-stream latency tier (1.82x plain at c=1) that loses to plain
+batching by c=4, so the scheduler admits spec only at low concurrency and demotes live spec
+sessions into the batched phase as load arrives — byte-exact for greedy, so a demoted stream is
+identical to one batched from the start. The result tracks whichever tier is winning at the
+current concurrency instead of picking one at deploy time. OpenAI tool calling (`tools`/`tool_choice`, streaming
 `tool_calls` deltas, `role:"tool"` turns) rides the model's own chat template — zero engine
 changes. Constrained decoding (`response_format` `json_object`/`json_schema`) applies the
 grammar mask on device and keeps every fast path — device sampling, CUDA-graph decode,
@@ -186,10 +191,18 @@ streams on a 24GB card (peak 23.1 GB), with a teeth arm that forces a broken hea
 reserve and proves the gate still catches it. Requests should send an explicit `max_tokens`
 — omitting it sizes the KV ladder from the context ceiling and strands measurable VRAM
 ([docs/SERVING.md](docs/SERVING.md)).
-The contract: greedy serving is isolated-identical under concurrent load — a request's
-output tokens are byte-identical whether it arrives alone or inside a full batch, gated by
-replaying the same prompts at c=1 and c=16 against the same server and byte-comparing every
-stream — and chunk-size-invariant on the shipped architectures: chunked prefill produces
+The contract: greedy serving is isolated-identical under concurrent load **at equal depth** — a
+request's output tokens are byte-identical whether it arrives alone or inside a full batch, gated
+by replaying the same prompts at c=1 and c=16 against the same server and byte-comparing every
+stream. Read the scope, because it is narrower than the sentence sounds: the gate runs 16 prompts
+at 96 max_tokens with all sessions arriving **together**, and outside that shape the guarantee is
+not established — a 768-token greedy request sharing batched decode with sessions staggered to
+*different* depths diverges from its own solo reference (byte 1347 on one run, byte 2379 on
+another; the byte moving is the proof the configuration is nondeterministic). That is pre-existing
+engine behavior, not a regression — a single `split_keys` across mixed-depth sessions, plus
+B-dependent tier selection — and long staggered-depth batches are an
+[open gap](#known-gaps), not a covered case. Serving is also chunk-size-invariant on the shipped
+architectures: chunked prefill produces
 bit-identical logits across `MEMRA_PRIME_CHUNK` values (one canonical greedy output per
 prompt, gated by the chunkinv battery arm). (That is the scoped claim; it is not an identity
 claim against a single-token reference decode — the batched-plain path has a documented,
@@ -249,6 +262,14 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
   closed form with a pre-registered 4/4 falsification battery; fix shape named, gate written
   and red until it lands ([research/step37-p2-20260806/](research/step37-p2-20260806/)). The
   shipped architectures are chunk-invariant and gated so.
+- The concurrent-load isolation contract is **gated at equal depth only** (16 prompts,
+  96 max_tokens, simultaneous arrival). A long greedy request batched with sessions at
+  *different* depths diverges from its solo reference — first divergence at token ~331 on one
+  run and later on another, which is itself the receipt that the configuration is
+  nondeterministic. Pre-existing engine behavior with a named mechanism (one `split_keys` across
+  mixed-depth sessions in `fa_decode_batch_seqs_v4`, plus B-dependent tier selection), not a
+  regression from any recent lane; no gate covers the staggered-depth shape yet
+  ([research/spec-gate-20260806/](research/spec-gate-20260806/), arm `REF_LOAD`).
 - Speculative decoding over PP-2 is exact (7/7 bit-identical arms) but **not shippable for
   concurrent serving**: one placement is ~20x slow, the other trips a sticky
   `CUDA_ERROR_ILLEGAL_ADDRESS` that kills the worker's CUDA context (100% of requests lost at

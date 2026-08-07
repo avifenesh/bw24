@@ -367,7 +367,43 @@ Receipts: [`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/),
 fail-closed guard battery), [`research/m2-pp8-20260802/`](../research/m2-pp8-20260802/) (N=2/4/8
 on an 8xH100 box).
 
+## Serve-path exactness — mode switches, and the law they are pinned under
+
+`local-ci.sh` covers the serve surface's *shape* (`serve-smoke`, `serve-st-gate`,
+`serve-stress-gate`, `apikeys-gate`). What it does not cover is a session **changing execution
+mode mid-stream**, which the concurrency-gated spec scheduler does by design
+(`MEMRA_SPEC_GATE`, default ON — see [SERVING.md](SERVING.md) and [FLAGS.md §1](FLAGS.md)): a
+demoted session's stream must be byte-identical to one batched from the start. That harness is
+`research/spec-gate-20260806/exactness.py` — 5 arms, one server boot per arm, greedy, 768-token
+budget — and it is **not** wired into any battery. Re-run it by hand for any change to the
+scheduler's phase order, the demotion handoff, or `Session.device_next`.
+
+Two things about it are load-bearing, and both are the kind of thing a later reader re-breaks:
+
+1. **Load-triggered demotion can never be a clean exactness test**, so the harness does not try.
+   Both the arrival timing and the batch composition are nondeterministic, and — with the spec
+   path OFF and none of the scheduler's code involved — the same greedy request already diverges
+   between a solo run and one sharing batched decode with concurrent rows. Two runs put the first
+   divergence at byte **2379** and byte **1347**; the byte *moving between runs* is the proof.
+   That is the engine's own documented behavior (`fa_decode_batch_seqs_v4` carries a single
+   `split_keys` for sessions at different depths — the ladder-rung straddle law — and the
+   batched-linear tier selection changes with B), not a new bug. So the handoff is pinned at a
+   **fixed batch shape** through a diagnostics-only door, `MEMRA_SPEC_DEMOTE_AT=N`, which forces
+   demotion at a pinned generated-token count with no load at all, holding B=1 across the
+   boundary. Never set it in production. The generalizable rule: **when the property under test
+   sits inside a nondeterministic configuration, pin the configuration and force the transition
+   — do not try to provoke it under load and diff the result.**
+2. **Three of its own arms exist to stop a false green**, each recorded because it produced one:
+   a *vacuous pass* (q9 is a thinking model — every token lands in `message.reasoning` and
+   `content` is empty, so the first version compared 0 bytes on three arms and called it PASS;
+   now it compares both fields and hard-fails a near-empty stream), a *wrong session* (load fired
+   after the target had finished, so a background filler took the spec slot — the verdict now
+   requires the demote line to prove it fired on the target), and a *wrong reference*, whose
+   discriminator arm `REF_LOAD` is what surfaced the batch-vs-solo finding above.
+
 ## Receipts
 
 Timings, the deliberate-break catch demonstrations (diffs, consoles, per-probe raw logs),
 and the depth-determinism sweeps: [`research/fast-gate-20260802/`](../research/fast-gate-20260802/).
+The serve-path mode-switch exactness harness and its verdicts:
+[`research/spec-gate-20260806/`](../research/spec-gate-20260806/) (`RESULTS.md` §2, `exactness.py`).
