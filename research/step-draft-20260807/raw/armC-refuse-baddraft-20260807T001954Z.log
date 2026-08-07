@@ -1,0 +1,6 @@
+[server] starting; models config = [("m", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/tmp/step-draft-not-a-gguf-1834885.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "m" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[server] FATAL: worker init failed: draft m: bad GGUF magic: 0x73696874 (expected 0x46554747 = "GGUF") in /tmp/step-draft-not-a-gguf-1834885.gguf — this file is not a GGUF (drafter path "/tmp/step-draft-not-a-gguf-1834885.gguf" was requested via the MEMRA_MODELS '+draft' attach — refusing to start rather than silently serving plain decode)

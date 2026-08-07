@@ -1228,7 +1228,33 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
                     eprintln!("[server] FATAL: model {name:?}: {err}");
                     std::process::exit(1);
                 }
-                out.push((name.trim().to_string(), mpath, dpath.map(resolve)));
+                // The DRAFT path gets the same parse-time existence check as the model path
+                // (lane/step-draft, 2026-08-07). It did not, and the asymmetry cost a class of
+                // late failure: a typo'd or unmounted drafter path survived parse, survived the
+                // hf resolve, and only failed after the worker had already spent the whole
+                // trunk load on the GPU — so on a busy card the operator got
+                // `CUDA_ERROR_OUT_OF_MEMORY` on the TRUNK and never learned the drafter path
+                // was wrong at all. Found by this lane's own gate arm D. A drafter must be a
+                // FILE: `load_draft` opens it as a GGUF, so the dir forms `validate_model_path`
+                // admits are not valid here.
+                let dpath = dpath.map(|d| {
+                    let d = resolve(d);
+                    let p = std::path::Path::new(&d);
+                    if !p.exists() {
+                        eprintln!("[server] FATAL: model {name:?}: drafter path {d:?} does not \
+                                   exist (MEMRA_MODELS '+draft' attach). Refusing to start \
+                                   rather than serving plain decode under a config that asked \
+                                   for speculative decoding.");
+                        std::process::exit(1);
+                    }
+                    if !p.is_file() {
+                        eprintln!("[server] FATAL: model {name:?}: drafter path {d:?} is not a \
+                                   file — a '+draft' attach must be a NextN/MTP GGUF file.");
+                        std::process::exit(1);
+                    }
+                    d
+                });
+                out.push((name.trim().to_string(), mpath, dpath));
             } else {
                 eprintln!("[server] WARN: bad MEMRA_MODELS entry {entry:?} (want name=/path[+/draft]); skipping");
             }

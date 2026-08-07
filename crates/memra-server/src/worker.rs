@@ -741,6 +741,127 @@ fn spec_gate_high() -> usize {
     })
 }
 
+/// What the load path must SAY (and whether it must refuse) about one model's drafter
+/// attachment. Pure data so the decision is unit-testable without a GPU or a 105 GB artifact —
+/// the whole point of this seam is that the silent-degradation class it removes was invisible
+/// to every gate in the repo (see `research/step-draft-20260807/`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum DraftVerdict {
+    /// A drafter is attached (embedded NextN head or an external `+draft` file). Spec is live
+    /// as far as the load path is concerned; `spec_eligible` still arbitrates per request.
+    Attached,
+    /// No drafter and none was asked for, on an arch whose published artifact ships its MTP
+    /// head as a SEPARATE file. Serving works — it just silently forgoes spec, which is the
+    /// exact defect this lane exists to make audible. WARN, do not refuse.
+    NoDrafterExternalMtpArch,
+    /// No drafter, on an arch whose head (if any) rides in the trunk file. Nothing to say
+    /// beyond the existing load line: an artifact with `nextn=0` here genuinely has no head.
+    NoDrafterQuiet,
+    /// A drafter IS attached, the ppN door is open across 2+ devices, and spec serving is
+    /// armed — the #87 quarantine regime. REFUSE to start rather than boot a server whose
+    /// first pair of concurrent spec sessions kills the CUDA context for the process.
+    RefuseSpecOverPp2,
+}
+
+/// The drafter-attachment verdict for one loaded model — pure over the four inputs that
+/// decide it, so the refusal and the warning are both pinned by GPU-free tests.
+///
+/// `external_mtp_arch` = "this arch's published artifact ships its MTP head in a separate
+/// GGUF, so `nextn=0` on the trunk does NOT mean the model has no drafter available." Today
+/// that is step35 (Step-3.7-Flash: trunk declares `nextn_predict_layers=0`, the three chained
+/// NextN blocks ship in `Step3.7-flash-mtp-Q8_0.gguf`). It is a property of the ARCH, not of
+/// the file in hand, which is why it cannot be read off the trunk config.
+pub fn draft_verdict(
+    has_drafter: bool,
+    external_mtp_arch: bool,
+    spec_armed: bool,
+    pp_sharded_cross_device: bool,
+) -> DraftVerdict {
+    if has_drafter {
+        // #87 (research/pp2-spec-20260806): spec over a sharded cross-device PP placement is
+        // NOT shippable in either placement — `dev01` is 20x slow, `dev10` dies under
+        // concurrency with a STICKY CUDA_ERROR_ILLEGAL_ADDRESS that takes every later request
+        // in the process with it (c=4 -> 0/48 ok, 100% reproducible 3/3). The quarantine is
+        // MEMRA_SERVE_SPEC=0. Refusing at LOAD is the honest place: the alternative is a
+        // server that boots green and then loses the whole process on the second concurrent
+        // spec session.
+        if spec_armed && pp_sharded_cross_device {
+            return DraftVerdict::RefuseSpecOverPp2;
+        }
+        return DraftVerdict::Attached;
+    }
+    if external_mtp_arch {
+        DraftVerdict::NoDrafterExternalMtpArch
+    } else {
+        DraftVerdict::NoDrafterQuiet
+    }
+}
+
+/// The one-line operator message for a verdict, or `None` when there is nothing to say.
+/// Separated from `draft_verdict` so the TEXT is testable too — a warning nobody can act on
+/// is the same defect as no warning (the attach spelling has to be IN the line).
+pub fn draft_verdict_message(v: &DraftVerdict, name: &str, path: &str) -> Option<String> {
+    match v {
+        DraftVerdict::Attached | DraftVerdict::NoDrafterQuiet => None,
+        DraftVerdict::NoDrafterExternalMtpArch => Some(format!(
+            "[worker] WARN: {name}: step35: no MTP drafter attached — serving plain decode, \
+             no speculative decoding. This arch ships its MTP/NextN head in a SEPARATE GGUF, \
+             so the trunk's nextn_predict_layers=0 is expected and does NOT mean the model \
+             has no drafter. Attach with MEMRA_MODELS=\"{name}={path}+/path/to/\
+             Step3.7-flash-mtp-Q8_0.gguf\" (the same '+draft' convention every regime drafter \
+             uses; docs/DRAFT-REGIME.md)."
+        )),
+        DraftVerdict::RefuseSpecOverPp2 => Some(format!(
+            "{name}: REFUSING to start — a drafter is attached AND spec serving is armed AND \
+             the ppN door is open across 2+ devices. Spec over a sharded cross-device PP \
+             placement is QUARANTINED (#87, receipts research/pp2-spec-20260806): one \
+             placement is 20x slow, the other provokes a CUDA_ERROR_ILLEGAL_ADDRESS that is \
+             STICKY for the CUDA context — measured c=4 -> 0/48 requests served, and every \
+             later request in the process inherits it. Fixes: MEMRA_SERVE_SPEC=0 (serve plain \
+             decode over PP-2 — the configuration that actually serves, 872-875 tok/s at \
+             c=8); or drop the '+draft' attach; or close the pp door (single-card configs are \
+             unaffected and spec is fully live there)."
+        )),
+    }
+}
+
+/// The #87 refusal, decided BEFORE any model load — for the case where it can be.
+///
+/// A `+draft` attach in MEMRA_MODELS is a promise that a drafter WILL be attached, so the
+/// (drafter + spec armed + sharded cross-device PP) regime is knowable from the config string
+/// and the environment alone: `pp_sharded_cross_device()` and `serve_spec_enabled()` are both
+/// pure env reads with no runtime dependency. Deciding it here matters concretely — Step-3.7-
+/// Flash is 105 GB over PP-2, so the load-path refusal would spend ~20 minutes streaming
+/// weights across two cards before announcing a verdict that was fixed at startup. A gate that
+/// takes 20 minutes to say "no" is a gate operators route around.
+///
+/// The load-path verdict (`draft_verdict` at the load site) still stands, and still has work to
+/// do: it covers the EMBEDDED-head case, where `mtp.is_some()` is only known after the trunk is
+/// parsed. This is the subset that does not need the model.
+pub fn preflight_pp2_spec_refusal(models: &[(String, String, Option<String>)]) -> Option<String> {
+    preflight_pp2_spec_refusal_inner(
+        models,
+        serve_spec_enabled(),
+        memra_engine::pp::pp_sharded_cross_device(),
+    )
+}
+
+/// `preflight_pp2_spec_refusal` with the two env reads lifted into arguments. Both real readers
+/// memoize in a `OnceLock`, so a test cannot drive them by setting env — the pure core is the
+/// only seam through which the preflight's own decision (and its message) can be pinned.
+fn preflight_pp2_spec_refusal_inner(
+    models: &[(String, String, Option<String>)],
+    spec_armed: bool,
+    pp_sharded_cross_device: bool,
+) -> Option<String> {
+    if !spec_armed || !pp_sharded_cross_device {
+        return None;
+    }
+    models.iter().find(|(_, _, d)| d.is_some()).and_then(|(name, path, _)| {
+        draft_verdict_message(&DraftVerdict::RefuseSpecOverPp2, name, path)
+    })
+}
+
 /// Admission transient-reserve override in BYTES (lane/admit-oom, 2026-08-06). This exists for
 /// exactly one reason: the c=64 stress gate's TEETH arm. A gate that can only be observed
 /// passing proves nothing, so `tools/serve-stress-gate.sh --teeth` forces the reserve tiny
@@ -1297,23 +1418,73 @@ pub fn run(
         // Per-model regime draft (MEMRA_MODELS "+<draft.gguf>" syntax): replace the embedded
         // MTP head with the standalone regime draft — same load path as MEMRA_MTP_DRAFT but
         // scoped to THIS model, so a multi-model server drafts each model with its own file.
+        //
+        // THIS IS ALSO THE step35 EXTERNAL-MTP ATTACH (lane/step-draft, 2026-08-07). Step-3.7-
+        // Flash ships its three chained NextN blocks in a SEPARATE GGUF, so the trunk parses
+        // `nextn_predict_layers=0` and loads with `mtp == None`. No new spelling was added:
+        // `+draft` already means "replace this model's MTP head with the head in that file",
+        // and `MtpHead::load_draft` already resolves step35's per-layer draft geometry from the
+        // drafter file's own arrays (d316162c). The gap was never the attach syntax — it was
+        // that a step35 model loaded WITHOUT one said nothing. See the verdict below.
         let model = {
             let mut model = model;
             if let Some(dpath) = draft {
                 let dg = match GgufFile::open(dpath) {
                     Ok(g) => g,
-                    Err(err) => { let _ = ready_tx.send(Err(format!("draft {name}: {err}"))); return; }
+                    // REFUSE, don't degrade: a drafter path was GIVEN, so booting without it
+                    // would serve plain decode under a config that explicitly asked for spec.
+                    // The error text is the driver's/loader's own, quoted, never inferred.
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(format!(
+                            "draft {name}: {err} (drafter path {dpath:?} was requested via the \
+                             MEMRA_MODELS '+draft' attach — refusing to start rather than \
+                             silently serving plain decode)")));
+                        return;
+                    }
                 };
                 match memra_engine::hybrid::MtpHead::load_draft(&engine, &dg, &model.cfg) {
                     Ok(head) => {
                         eprintln!("[worker] {name}: regime draft attached ({dpath})");
                         model.mtp = Some(head);
                     }
-                    Err(err) => { let _ = ready_tx.send(Err(format!("draft {name}: {err}"))); return; }
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(format!(
+                            "draft {name}: {err} (drafter path {dpath:?} was requested via the \
+                             MEMRA_MODELS '+draft' attach — refusing to start rather than \
+                             silently serving plain decode)")));
+                        return;
+                    }
                 }
             }
             model
         };
+
+        // LOUD DRAFTER SEMANTICS (lane/step-draft, 2026-08-07). The silent-degradation class
+        // this closes: `spec_eligible` requires `lm.model.mtp.is_some()`, so a step35 trunk
+        // served without a drafter took plain decode on every request with NO log line saying
+        // so — named as defect (A) in `research/step37-p2-20260806/PROGRESS.md`. A server that
+        // forgoes its whole felt-latency story must say it out loud.
+        //
+        // The verdict is computed from a PURE function (`draft_verdict`) so both branches are
+        // pinned by GPU-free tests. `pp_sharded_cross_device` is env-only and callable here.
+        let verdict = draft_verdict(
+            model.mtp.is_some(),
+            model.cfg.arch.is_step35(),
+            serve_spec_enabled(),
+            memra_engine::pp::pp_sharded_cross_device(),
+        );
+        if let Some(msg) = draft_verdict_message(&verdict, name, path) {
+            match verdict {
+                // #87: refuse at LOAD. `ready_tx.send(Err(..))` is the established refusal
+                // channel — main() prints it as `FATAL: worker init failed` and exits 1, so
+                // this cannot be mistaken for a warning.
+                DraftVerdict::RefuseSpecOverPp2 => {
+                    let _ = ready_tx.send(Err(msg));
+                    return;
+                }
+                _ => eprintln!("{msg}"),
+            }
+        }
 
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
@@ -4045,6 +4216,14 @@ const EXIT_WORKER_UNRECOVERABLE: i32 = 70;
 #[allow(clippy::type_complexity)]
 pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::health::SharedHealth)
     -> Result<(Sender<Cmd>, Arc<Vec<String>>, Arc<HashMap<String, ModelCaps>>, SharedMetrics), String> {
+    // #87 preflight, before the thread and before a single byte of weights: refuse a config
+    // that pairs a '+draft' attach with armed spec over a sharded cross-device PP placement.
+    // Step is 105 GB over PP-2 — the load-path refusal is correct but arrives ~20 minutes late,
+    // and this verdict never depended on the model. (Load-path `draft_verdict` still covers the
+    // embedded-head case, which genuinely needs the parsed trunk.)
+    if let Some(msg) = preflight_pp2_spec_refusal(&models) {
+        return Err(msg);
+    }
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) =
         std::sync::mpsc::channel::<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>();
@@ -4160,6 +4339,114 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
 mod tests {
     use super::{summarize_confidence, utf8_delta};
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
+    use super::{draft_verdict, draft_verdict_message, preflight_pp2_spec_refusal_inner, DraftVerdict};
+
+    // ---- drafter attachment: the loud-failure semantics (lane/step-draft, 2026-08-07) ----
+    //
+    // These pin the class of bug that NO gate in this repo could catch: a step35 model served
+    // without its external MTP drafter runs plain decode and produces CORRECT output, so
+    // kernel-check is model-free, run-gen argmax MATCHes, and run-spec is never even reached.
+    // Only a log line can flag it, so the log line is what gets tested.
+
+    #[test]
+    fn step35_without_drafter_warns_and_names_the_attach_spelling() {
+        let v = draft_verdict(false, true, true, false);
+        assert_eq!(v, DraftVerdict::NoDrafterExternalMtpArch);
+        let msg = draft_verdict_message(&v, "step", "/m/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf")
+            .expect("a step35 model with no drafter MUST produce a line");
+        // The defect is silence, so the line has to be findable and actionable.
+        assert!(msg.contains("no MTP drafter attached"), "{msg}");
+        assert!(msg.contains("plain decode"), "{msg}");
+        // ACTIONABLE: the exact attach spelling, not just a complaint.
+        assert!(msg.contains("MEMRA_MODELS"), "{msg}");
+        assert!(msg.contains("+/path/to/"), "the '+draft' convention must be spelled: {msg}");
+        // And it must not read as a defect in the artifact — nextn=0 is CORRECT here.
+        assert!(msg.contains("SEPARATE GGUF"), "{msg}");
+        assert!(msg.contains("does NOT mean"), "{msg}");
+    }
+
+    #[test]
+    fn attached_drafter_is_quiet_and_so_is_a_non_step35_model_without_one() {
+        // Attached: nothing to warn about; spec_eligible arbitrates per request from here.
+        let v = draft_verdict(true, true, true, false);
+        assert_eq!(v, DraftVerdict::Attached);
+        assert!(draft_verdict_message(&v, "step", "/m.gguf").is_none());
+
+        // A non-step35 model with no head: `nextn=0` there genuinely means no head, and the
+        // existing load line already says the layer count. Warning would be noise on every
+        // plain model the server has ever hosted — which is how a real warning gets ignored.
+        let v = draft_verdict(false, false, true, false);
+        assert_eq!(v, DraftVerdict::NoDrafterQuiet);
+        assert!(draft_verdict_message(&v, "q27", "/m.gguf").is_none());
+    }
+
+    #[test]
+    fn spec_over_sharded_pp_refuses_and_points_at_87() {
+        // The quarantine regime: drafter attached + spec armed + ppN door open across cards.
+        let v = draft_verdict(true, true, true, true);
+        assert_eq!(v, DraftVerdict::RefuseSpecOverPp2);
+        let msg = draft_verdict_message(&v, "step", "/m.gguf").expect("refusal must explain itself");
+        assert!(msg.contains("REFUSING to start"), "{msg}");
+        assert!(msg.contains("#87"), "the refusal must point at the quarantine: {msg}");
+        // The cause is QUOTED, per the evidence discipline — not "it's unstable".
+        assert!(msg.contains("CUDA_ERROR_ILLEGAL_ADDRESS"), "{msg}");
+        assert!(msg.contains("research/pp2-spec-20260806"), "receipts must be reachable: {msg}");
+        // And it must name the fix that actually serves.
+        assert!(msg.contains("MEMRA_SERVE_SPEC=0"), "{msg}");
+    }
+
+    #[test]
+    fn the_quarantine_binds_only_where_all_three_conditions_hold() {
+        // This is the no-collateral half of the refusal: PP-2 serving is a SUPPORTED config
+        // (it is the only way the 105 GB SKU fits at all), so a refusal that fired one term
+        // too wide would take the whole SKU offline instead of just its spec path.
+
+        // spec disarmed (the standing MEMRA_SERVE_SPEC=0 quarantine) -> boots, drafter kept.
+        // Keeping the head attached matters: it is what makes the wiring ready for when #87
+        // lifts, and `spec_eligible`'s serve_spec term already holds the door shut.
+        assert_eq!(draft_verdict(true, true, false, true), DraftVerdict::Attached);
+        // Single-card / door-shut with spec armed -> spec fully live, no refusal. This is the
+        // configuration the wiring exists to serve today.
+        assert_eq!(draft_verdict(true, true, true, false), DraftVerdict::Attached);
+        // Sharded PP-2 with no drafter -> plain decode over PP-2 = the config that serves
+        // (872-875 tok/s at c=8, arm F1). Must warn, must NOT refuse.
+        assert_eq!(draft_verdict(false, true, true, true), DraftVerdict::NoDrafterExternalMtpArch);
+        // ... and the same with spec disarmed: still just the warning.
+        assert_eq!(draft_verdict(false, true, false, true), DraftVerdict::NoDrafterExternalMtpArch);
+    }
+
+    #[test]
+    fn the_87_refusal_lands_before_the_load_when_a_draft_was_attached() {
+        // The preflight's reason for existing: Step over PP-2 is a ~20-minute, 105 GB load, and
+        // this verdict is fixed at startup. Refusing after the load is correct-but-useless.
+        let with = vec![("step".into(), "/m/step.gguf".into(), Some("/m/mtp.gguf".into()))];
+        let msg = preflight_pp2_spec_refusal_inner(&with, true, true)
+            .expect("a '+draft' attach under armed spec over sharded PP-2 must refuse at parse");
+        // Same text as the load-path refusal — one message, one place, so the operator cannot
+        // get a differently-worded verdict depending on which check happened to fire.
+        assert_eq!(msg, draft_verdict_message(&DraftVerdict::RefuseSpecOverPp2,
+                                              "step", "/m/step.gguf").unwrap());
+
+        // No attach = nothing knowable pre-load: an EMBEDDED head only shows up once the trunk
+        // is parsed, so this case MUST fall through to the load-path verdict, not be waved past.
+        let without = vec![("step".into(), "/m/step.gguf".into(), None)];
+        assert!(preflight_pp2_spec_refusal_inner(&without, true, true).is_none());
+
+        // And the preflight must not fire one term too wide — the standing quarantine config
+        // (drafter attached, MEMRA_SERVE_SPEC=0) and every single-card config still boot.
+        assert!(preflight_pp2_spec_refusal_inner(&with, false, true).is_none());
+        assert!(preflight_pp2_spec_refusal_inner(&with, true, false).is_none());
+
+        // Multi-model: one offending model in the list is enough. The quarantine is a property
+        // of the CUDA context, which the whole process shares — a second, drafter-less model
+        // does not make the first one's spec sessions safe.
+        let mixed = vec![
+            ("plain".into(), "/m/a.gguf".into(), None),
+            ("step".into(), "/m/step.gguf".into(), Some("/m/mtp.gguf".into())),
+        ];
+        let m = preflight_pp2_spec_refusal_inner(&mixed, true, true).expect("must still refuse");
+        assert!(m.contains("step"), "the refusal must name the offending model: {m}");
+    }
 
     /// Device-free PrefixEntry (empty kv/conv/ssm planes) — the namespace-visibility laws
     /// under test live entirely in the host-side key/toks matching.

@@ -1,0 +1,1 @@
+[server] FATAL: model "m": drafter path "/nonexistent/draft.gguf" does not exist (MEMRA_MODELS '+draft' attach). Refusing to start rather than serving plain decode under a config that asked for speculative decoding.
