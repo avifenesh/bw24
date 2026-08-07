@@ -1,0 +1,9 @@
+Opening GPU coredump: /home/ubuntu/receipts/pp2crash/core-r1-125335.nvcudmp
+[Current focus set to CUDA kernel 0, grid 13073, block (0,0,0), thread (128,0,0), device 0, sm 0, warp 5, lane 0]
+
+CUDA Exception: Warp MMU Fault
+The exception was triggered at PC 0x7c986b7ad960  embed_gather_u32
+#0  0x00007c986b7ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()
+  Kernel Parent Dev Grid Status                                           SMs Mask  GridDim  BlockDim Invocation         
+*      0      -   0 13073 Active 0x00000000000000000000000000000000000000000000ffff (16,1,1) (256,1,1) embed_gather_u32() 
+#0  0x00007c986b7ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()

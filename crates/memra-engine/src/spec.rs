@@ -1660,6 +1660,14 @@ impl HybridModel {
         // Taken here, not at the end, because inside the last-stage scope `e.stream()` IS the
         // stage stream and the wait would self-order into a no-op.
         let caller_stream = e.stream();
+        // #87 ROOT-CAUSE FENCE (lane/pp2spec-crash): the PREVIOUS round's stage-allocated
+        // outputs (logits/hidden/ckpt stashes) freed stream-ordered on the STAGE streams while
+        // the primary stream still holds queued reads of them — with event tracking elided,
+        // nothing stops the pool from reusing those blocks for THIS round's stage allocations,
+        // whose writes then race the queued reads (measured: 13/4096-NaN random-bits garbage in
+        // the spec round seed; the full anatomy is on `PpNRt::fence_stages_behind`). Order every
+        // stage stream behind the caller before enqueueing new stage work.
+        rt.fence_stages_behind(&caller_stream)?;
 
         // Per-stage rope positions: in host mode the same [T] iota each stage uploads itself; in
         // stream mode each stage's own `pos_iota` over the shared read-only device counter.
@@ -4448,6 +4456,30 @@ impl HybridModel {
                     gr.launch()?;
                     scratch.kv.len += 1; // host mirror (len_d advanced in-graph)
                     let idx = e.dtoh_u32_one(&dctx.g_tok)?;
+                    // #87 SENTINEL TRAP: an all-NaN head-logits row leaves the device argmax's
+                    // init sentinel (0x7FFFFFFF) in g_tok — feeding it onward dereferences
+                    // embed_row(sentinel) = table + ~4.6TB (never mapped) inside the NEXT graph
+                    // replay's embed node, and the MMU fault kills the CUDA context for the
+                    // whole process (research/pp2spec-crash-20260807: 3 coredumps, byte-exact
+                    // VA arithmetic). Refuse loudly instead; the diagnostics name the first-NaN
+                    // buffer (g_seed = the verify-side handoff vs head-side compute).
+                    if (idx as usize) >= d_vocab {
+                        // g_seed is SELF-FED (the replay writes h_nextn back into it), so it
+                        // reads as the head's OUTPUT at j; h_seed_buf is the round's INPUT
+                        // seed, untouched since the round-start copy — the pair discriminates
+                        // "seed arrived poisoned" from "head forward produced NaN".
+                        let seed_h = e.dtoh(&dctx.g_seed)?;
+                        let seed_nan = seed_h.iter().filter(|v| v.is_nan()).count();
+                        let in_h = e.dtoh(&h_seed_buf)?;
+                        let in_nan = in_h.iter().filter(|v| v.is_nan()).count();
+                        return Err(format!(
+                            "draft(graph) argmax sentinel 0x{idx:08x} >= d_vocab {d_vocab} at \
+                             round {round} j={j} pos={pos}: head-out NaN {seed_nan}/{n_embd}, \
+                             round-input-seed NaN {in_nan}/{n_embd} — refusing to dereference \
+                             the embed row (#87 trap)"
+                        )
+                        .into());
+                    }
                     // trimmed draft vocab -> target token id (identity when no d2t map)
                     let d = match &mtp.d2t {
                         Some(map) => map[idx as usize],
@@ -4501,6 +4533,18 @@ impl HybridModel {
                                // round's slot j (stream-ordered after the replay, before the next one).
                     e.copy_into(&mut dctx.q_slots[j], 0, &dctx.g_q, d_vocab)?;
                     let idx = e.dtoh_u32_one(&dctx.g_tok)?;
+                    // #87 SENTINEL TRAP (see the greedy graph arm above).
+                    if (idx as usize) >= d_vocab {
+                        let seed_h = e.dtoh(&dctx.g_seed)?;
+                        let seed_nan = seed_h.iter().filter(|v| v.is_nan()).count();
+                        return Err(format!(
+                            "draft(graph-sampled) argmax sentinel 0x{idx:08x} >= d_vocab \
+                             {d_vocab} at round {round} j={j} pos={pos}: round-seed NaN \
+                             {seed_nan}/{n_embd} — refusing to dereference the embed row \
+                             (#87 trap)"
+                        )
+                        .into());
+                    }
                     let d = match &mtp.d2t {
                         Some(map) => map[idx as usize],
                         None => idx,
@@ -4609,6 +4653,22 @@ impl HybridModel {
                         e.argmax_token_device(&dl_d, d_vocab)?
                     };
                     let idx = e.dtoh_u32_one(&tok_d)?;
+                    // #87 SENTINEL TRAP (eager twin — see the graph arm). Extra diagnostics
+                    // here because the eager chain's operands are all readable: dl_d (the head
+                    // logits row) and d_seed (this step's h_seed) name the first-NaN buffer.
+                    if (idx as usize) >= d_vocab {
+                        let dl_h = e.dtoh(&dl_d)?;
+                        let dl_nan = dl_h.iter().filter(|v| v.is_nan()).count();
+                        let seed_h = e.dtoh(&d_seed)?;
+                        let seed_nan = seed_h.iter().filter(|v| v.is_nan()).count();
+                        return Err(format!(
+                            "draft(eager) argmax sentinel 0x{idx:08x} >= d_vocab {d_vocab} at \
+                             round {round} j={j} pos={pos}: head-logits NaN {dl_nan}/{d_vocab}, \
+                             step-seed NaN {seed_nan}/{n_embd} — refusing to dereference the \
+                             embed row (#87 trap)"
+                        )
+                        .into());
+                    }
                     let d = match &mtp.d2t {
                         Some(map) => map[idx as usize],
                         None => idx,
@@ -4685,6 +4745,24 @@ impl HybridModel {
                     e.argmax_token_device_col(&tlogits_d, j, n_vocab, &mut preds_d, j)?;
                 }
                 preds = e.dtoh_u32(&preds_d)?; // <- the verify-GPU wait lands here
+                // #87 SENTINEL TRAP, verify side: a sentinel pred becomes the round's bonus =
+                // next round's last_token = the next chain's embed lookup. Catch it at the
+                // source with the column named — an all-NaN VERIFY column implicates the
+                // stage-split trunk (decode_step_t_core_ppn), not the draft head.
+                if let Some(bad) = preds[..t_v].iter().position(|&p| (p as usize) >= n_vocab) {
+                    let col = &tlogits_d.slice(bad * n_vocab..(bad + 1) * n_vocab);
+                    let mut probe = e.zeros(n_vocab)?;
+                    e.copy_view_into(&mut probe, 0, col, n_vocab)?;
+                    let col_h = e.dtoh(&probe)?;
+                    let col_nan = col_h.iter().filter(|v| v.is_nan()).count();
+                    return Err(format!(
+                        "verify argmax sentinel 0x{:08x} >= n_vocab {n_vocab} at round {round} \
+                         col {bad}/{t_v} pos={pos}: verify-logits col NaN {col_nan}/{n_vocab} \
+                         — the stage-split verify produced a poisoned column (#87 trap)",
+                        preds[bad]
+                    )
+                    .into());
+                }
             }
             ph_mark(&mut ph_wait, phase_on);
             let t_pred = |j: usize| -> u32 {

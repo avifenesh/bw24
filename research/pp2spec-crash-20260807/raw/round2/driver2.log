@@ -1,0 +1,17 @@
+gpu lock acquired 2026-08-07T08:14:41Z
+=== PHASE D rep 1: coredump env, EXACT A sequence (c=2+warmup, then c=4) ===
+/home/ubuntu/run-pp2crash-coredump2.sh: line 35: 125335 Aborted                 (core dumped) env MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,0 MEMRA_PP2SPEC_UNQUARANTINE=1 MEMRA_SPEC_GATE=0 MEMRA_MODELS="q9=$Q9" MEMRA_ADDR=$ADDR CUDA_ENABLE_COREDUMP_ON_EXCEPTION=1 CUDA_ENABLE_LIGHTWEIGHT_COREDUMP=1 CUDA_COREDUMP_FILE="$OUT/core-r${rep}-%p.nvcudmp" $BIN/memra-server > "$OUT/D${rep}-server.log" 2>&1
+--- rep 1 hits ---
+2:[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+-rw-rw-r-- 1 ubuntu ubuntu 142463354 Aug  7 08:14 /home/ubuntu/receipts/pp2crash/core-r1-125335.nvcudmp
+=== cuda-gdb analysis: /home/ubuntu/receipts/pp2crash/core-r1-125335.nvcudmp ===
+Opening GPU coredump: /home/ubuntu/receipts/pp2crash/core-r1-125335.nvcudmp
+[Current focus set to CUDA kernel 0, grid 13073, block (0,0,0), thread (128,0,0), device 0, sm 0, warp 5, lane 0]
+
+CUDA Exception: Warp MMU Fault
+The exception was triggered at PC 0x7c986b7ad960  embed_gather_u32
+#0  0x00007c986b7ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()
+  Kernel Parent Dev Grid Status                                           SMs Mask  GridDim  BlockDim Invocation         
+*      0      -   0 13073 Active 0x00000000000000000000000000000000000000000000ffff (16,1,1) (256,1,1) embed_gather_u32() 
+#0  0x00007c986b7ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()
+PP2CRASH_COREDUMP2_DONE

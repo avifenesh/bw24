@@ -1,0 +1,14 @@
+gpu lock acquired 2026-08-07T18:44:33Z
+=== TRAP rep 1: exact A sequence + recovery probe ===
+--- rep 1 trap lines ---
+--- rep 1 illegal/fatal lines ---
+2:[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+=== TRAP rep 2: exact A sequence + recovery probe ===
+--- rep 2 trap lines ---
+--- rep 2 illegal/fatal lines ---
+2:[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+=== TRAP rep 3: exact A sequence + recovery probe ===
+--- rep 3 trap lines ---
+--- rep 3 illegal/fatal lines ---
+2:[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+PP2CRASH_ROUND6_DONE
