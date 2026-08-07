@@ -947,6 +947,68 @@ gone: B128 buys +8.4% (c=1) / +8.5% (c=8) and now trails B32's contended first t
 29 ms round-cadence quantum instead of a 3x cliff — a live owner call, per the
 `MEMRA_SPEC_BURST` row in FLAGS.md.
 
+## Dead-darklane background jobs — valleys carry owner work (lane/darklane-training, 2026-08-07)
+
+The standing lab thesis: idle serve capacity carries owner research/training jobs, yielding
+instantly to paying traffic. This section is the ENGINE mechanics only — which jobs run,
+what a valley is worth, and every scheduling-policy/economics question live in the product
+repo; the seam between the two is exactly `MEMRA_BG_JOB` + the checkpoint protocol below.
+
+**Valley detection** invents no sensor. The scheduler already flips its health phase to
+IDLE precisely when `active` and `queue` are both empty, and the phase stamp refreshes the
+heartbeat — so `phase == IDLE` + heartbeat age IS the idle duration, at zero new hot-path
+cost. The `PENDING_ADMITS` gauge closes the HTTP→worker handoff gap (a submitted request
+the worker hasn't popped is traffic, not idleness). Exposed two ways: **`/metrics
+serve_idle_seconds`** (always published; 0.0 the instant there is any work) and the
+in-process `ValleySignal` hook (`darklane.rs`) the runner polls. Receipt — signal accrues
+while idle, reads 0.0 sampled mid-generation, re-accrues from a fresh epoch after:
+`research/darktrain-20260807/raw/valley-signal.log`.
+
+**The lane class sits BELOW every serving lane.** Harvest is still a *request* class the
+engine admits, schedules, and sheds; a background job is not a request at all — it runs
+only while the engine has NOTHING (no interactive, no judge, no harvest, no queue, no
+pending admits) and yields on the first sign of any of them. The hysteresis is asymmetric
+on purpose: yield fires on the busy EDGE with no debounce (paying traffic never waits for
+a threshold), resume waits a full `MEMRA_VALLEY_S` (default 2 s) of quiet, because a
+between-requests gap in a live conversation is not a valley.
+
+**Yield mechanism v1 — simplest honest first.** The job (`MEMRA_BG_JOB`, arbitrary
+command) is a child process in its own process group; yield is SIGSTOP to the group,
+resume SIGCONT. The bound is the poll interval (`MEMRA_BG_POLL_MS`, 25 ms) plus signal
+delivery — **measured 19.4 ms median / 23.3 ms max** request-fired-to-job-stopped (N=5,
+one per rep, i.e. one poll interval; target <500 ms). Serve-impact stress (N=5 interleaved
+reps, fresh boot per rep per arm, c=8×16 streaming bursts vs an 8-spinner CPU job, 5090):
+burst p95 delta **+0.77%**, TTFT p95 **+1.11%**, agg tok/s **−0.54%** — under the 2% bar
+(`research/darktrain-20260807/raw/bgstress-n5.log`). Two operator truths: a SIGSTOPped
+process KEEPS its memory (VRAM included — the budget is carved out for the life of the
+job, not per valley), and the runner cleans up on drain (CONT→TERM→KILL past grace) while
+PDEATHSIG covers the SIGKILL path, so no orphan ever stays frozen.
+
+**GPU memory discipline** is fits-or-refused at launch: `MEMRA_BG_VRAM_MB` (default 0 =
+CPU-only) is granted only while `min free across visible GPUs >= budget +
+MEMRA_MOE_RESIDENT_HEADROOM_GB` — min, not sum, because on a PP-2 pair both cards carry
+serve shards. Unreadable `nvidia-smi` = refusal (fail closed); a refused job retries next
+valley (headroom moves as sessions retire). v1 enforces fit at launch; staying inside the
+budget at runtime is the job's contract, and the VRAM-aware admission gate defends serving
+against a job that lies the same way it defends against everything else.
+
+**Checkpoint/resume — the training-class seam** (`MEMRA_BG_YIELD_MODE=checkpoint`), for
+jobs whose stopped working set must not squat on VRAM. The "checkpoint callback" is
+process-level: SIGUSR1 to the group means *checkpoint now and exit 75* (EX_TEMPFAIL); the
+runner relaunches the same command next valley and the job resumes from its own file.
+Exit 0 = complete, never relaunched; any other exit = failed, loud, never relaunched. A
+job that outlives `MEMRA_BG_CKPT_GRACE_MS` (5 s) after SIGUSR1 is SIGKILLed — the yield
+bound holds even against a wedged job, and semantics are at-least-once (a training step
+may repeat, never be lost; checkpoint writes must be atomic — write-tmp-then-rename).
+Toy proof: `tools/bg-ckpt-counter.py` (counter checkpoints on SIGUSR1, exits 75, resumes
+from the file; the unit test `checkpoint_mode_preempts_and_resumes_counter` pins the whole
+cycle GPU-free). An in-process trainer API can replace this seam later without touching
+the valley/scheduler half.
+
+Observability: `/metrics` gains a `bg` block only when `MEMRA_BG_JOB` is set (state,
+launches/yields/resumes/preempts, ckpt_kills, last yield-signal micros, job pid, budget)
+— unset deployments see the pre-lane payload byte-identical.
+
 ## Knobs
 
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are
