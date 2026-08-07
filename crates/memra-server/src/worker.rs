@@ -672,27 +672,6 @@ fn serve_spec_enabled() -> bool {
     *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
 }
 
-/// #87 DIAGNOSTIC DOOR (lane/pp2spec-crash, 2026-08-07): boot the quarantined spec+PP-2
-/// regime anyway. Exists so the crash lane can run the repro/sanitizer batteries against a
-/// server binary that otherwise refuses the regime at parse time — the refusal is correct
-/// for operators and would otherwise also be a wall for the debugger. NEVER a serving
-/// config: the regime loses 100% of requests at c=4 and poisons the CUDA context
-/// (research/pp2-spec-20260806). Loud at startup so a log can never be mistaken for a
-/// production run. Dies with the quarantine itself when #87 is fixed.
-fn pp2spec_quarantine_override() -> bool {
-    static O: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *O.get_or_init(|| {
-        let on = std::env::var("MEMRA_PP2SPEC_UNQUARANTINE").as_deref() == Ok("1");
-        if on {
-            eprintln!(
-                "[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine \
-                 is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS \
-                 under concurrent spec sessions; this is not a serving configuration."
-            );
-        }
-        on
-    })
-}
 
 /// ---- CONCURRENCY-GATED SPEC (lane/spec-gate, task #89, 2026-08-07) ----
 ///
@@ -779,10 +758,6 @@ pub enum DraftVerdict {
     /// No drafter, on an arch whose head (if any) rides in the trunk file. Nothing to say
     /// beyond the existing load line: an artifact with `nextn=0` here genuinely has no head.
     NoDrafterQuiet,
-    /// A drafter IS attached, the ppN door is open across 2+ devices, and spec serving is
-    /// armed — the #87 quarantine regime. REFUSE to start rather than boot a server whose
-    /// first pair of concurrent spec sessions kills the CUDA context for the process.
-    RefuseSpecOverPp2,
 }
 
 /// The drafter-attachment verdict for one loaded model — pure over the four inputs that
@@ -796,20 +771,15 @@ pub enum DraftVerdict {
 pub fn draft_verdict(
     has_drafter: bool,
     external_mtp_arch: bool,
-    spec_armed: bool,
-    pp_sharded_cross_device: bool,
 ) -> DraftVerdict {
+    // (#87 CLOSED, lane/pp2spec-crash 2026-08-08: this fn used to refuse spec + drafter over
+    // a sharded cross-device PP placement — the sticky CUDA_ERROR_ILLEGAL_ADDRESS regime.
+    // Root cause was the ppN reverse-publication hole: stage-stream pool blocks freed while
+    // the primary stream held queued reads, reused by the next burst's stage allocations.
+    // Fixed by `PpNRt::fence_stages_behind` at all three ppN bodies + stage-cache admission;
+    // crash gate 212/212 at c=2..8 on the placement that lost 48/48, run-spec K=1..8 PASS
+    // with acceptance identical to door-shut. research/pp2spec-crash-20260807/.)
     if has_drafter {
-        // #87 (research/pp2-spec-20260806): spec over a sharded cross-device PP placement is
-        // NOT shippable in either placement — `dev01` is 20x slow, `dev10` dies under
-        // concurrency with a STICKY CUDA_ERROR_ILLEGAL_ADDRESS that takes every later request
-        // in the process with it (c=4 -> 0/48 ok, 100% reproducible 3/3). The quarantine is
-        // MEMRA_SERVE_SPEC=0. Refusing at LOAD is the honest place: the alternative is a
-        // server that boots green and then loses the whole process on the second concurrent
-        // spec session.
-        if spec_armed && pp_sharded_cross_device {
-            return DraftVerdict::RefuseSpecOverPp2;
-        }
         return DraftVerdict::Attached;
     }
     if external_mtp_arch {
@@ -833,58 +803,7 @@ pub fn draft_verdict_message(v: &DraftVerdict, name: &str, path: &str) -> Option
              Step3.7-flash-mtp-Q8_0.gguf\" (the same '+draft' convention every regime drafter \
              uses; docs/DRAFT-REGIME.md)."
         )),
-        DraftVerdict::RefuseSpecOverPp2 => Some(format!(
-            "{name}: REFUSING to start — a drafter is attached AND spec serving is armed AND \
-             the ppN door is open across 2+ devices. Spec over a sharded cross-device PP \
-             placement is QUARANTINED (#87, receipts research/pp2-spec-20260806): one \
-             placement is 20x slow, the other provokes a CUDA_ERROR_ILLEGAL_ADDRESS that is \
-             STICKY for the CUDA context — measured c=4 -> 0/48 requests served, and every \
-             later request in the process inherits it. Fixes: MEMRA_SERVE_SPEC=0 (serve plain \
-             decode over PP-2 — the configuration that actually serves, 872-875 tok/s at \
-             c=8); or drop the '+draft' attach; or close the pp door (single-card configs are \
-             unaffected and spec is fully live there)."
-        )),
     }
-}
-
-/// The #87 refusal, decided BEFORE any model load — for the case where it can be.
-///
-/// A `+draft` attach in MEMRA_MODELS is a promise that a drafter WILL be attached, so the
-/// (drafter + spec armed + sharded cross-device PP) regime is knowable from the config string
-/// and the environment alone: `pp_sharded_cross_device()` and `serve_spec_enabled()` are both
-/// pure env reads with no runtime dependency. Deciding it here matters concretely — Step-3.7-
-/// Flash is 105 GB over PP-2, so the load-path refusal would spend ~20 minutes streaming
-/// weights across two cards before announcing a verdict that was fixed at startup. A gate that
-/// takes 20 minutes to say "no" is a gate operators route around.
-///
-/// The load-path verdict (`draft_verdict` at the load site) still stands, and still has work to
-/// do: it covers the EMBEDDED-head case, where `mtp.is_some()` is only known after the trunk is
-/// parsed. This is the subset that does not need the model.
-pub fn preflight_pp2_spec_refusal(models: &[(String, String, Option<String>)]) -> Option<String> {
-    if pp2spec_quarantine_override() {
-        return None; // #87 diagnostic door — the override fn already shouted at startup.
-    }
-    preflight_pp2_spec_refusal_inner(
-        models,
-        serve_spec_enabled(),
-        memra_engine::pp::pp_sharded_cross_device(),
-    )
-}
-
-/// `preflight_pp2_spec_refusal` with the two env reads lifted into arguments. Both real readers
-/// memoize in a `OnceLock`, so a test cannot drive them by setting env — the pure core is the
-/// only seam through which the preflight's own decision (and its message) can be pinned.
-fn preflight_pp2_spec_refusal_inner(
-    models: &[(String, String, Option<String>)],
-    spec_armed: bool,
-    pp_sharded_cross_device: bool,
-) -> Option<String> {
-    if !spec_armed || !pp_sharded_cross_device {
-        return None;
-    }
-    models.iter().find(|(_, _, d)| d.is_some()).and_then(|(name, path, _)| {
-        draft_verdict_message(&DraftVerdict::RefuseSpecOverPp2, name, path)
-    })
 }
 
 /// Admission transient-reserve override in BYTES (lane/admit-oom, 2026-08-06). This exists for
@@ -1491,25 +1410,12 @@ pub fn run(
         // forgoes its whole felt-latency story must say it out loud.
         //
         // The verdict is computed from a PURE function (`draft_verdict`) so both branches are
-        // pinned by GPU-free tests. `pp_sharded_cross_device` is env-only and callable here.
-        let verdict = draft_verdict(
-            model.mtp.is_some(),
-            model.cfg.arch.is_step35(),
-            serve_spec_enabled(),
-            memra_engine::pp::pp_sharded_cross_device(),
-        );
+        // pinned by GPU-free tests. (#87's spec-over-PP-2 refusal used to live here too —
+        // CLOSED 2026-08-08, see `draft_verdict`; spec+PP-2 now serves, gates in
+        // research/pp2spec-crash-20260807/.)
+        let verdict = draft_verdict(model.mtp.is_some(), model.cfg.arch.is_step35());
         if let Some(msg) = draft_verdict_message(&verdict, name, path) {
-            match verdict {
-                // #87: refuse at LOAD. `ready_tx.send(Err(..))` is the established refusal
-                // channel — main() prints it as `FATAL: worker init failed` and exits 1, so
-                // this cannot be mistaken for a warning.
-                DraftVerdict::RefuseSpecOverPp2 if !pp2spec_quarantine_override() => {
-                    let _ = ready_tx.send(Err(msg));
-                    return;
-                }
-                DraftVerdict::RefuseSpecOverPp2 => { /* diagnostic door — warned at boot */ }
-                _ => eprintln!("{msg}"),
-            }
+            eprintln!("{msg}");
         }
 
         let eos_id = tok.eos_id();
@@ -4242,14 +4148,9 @@ const EXIT_WORKER_UNRECOVERABLE: i32 = 70;
 #[allow(clippy::type_complexity)]
 pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::health::SharedHealth)
     -> Result<(Sender<Cmd>, Arc<Vec<String>>, Arc<HashMap<String, ModelCaps>>, SharedMetrics), String> {
-    // #87 preflight, before the thread and before a single byte of weights: refuse a config
-    // that pairs a '+draft' attach with armed spec over a sharded cross-device PP placement.
-    // Step is 105 GB over PP-2 — the load-path refusal is correct but arrives ~20 minutes late,
-    // and this verdict never depended on the model. (Load-path `draft_verdict` still covers the
-    // embedded-head case, which genuinely needs the parsed trunk.)
-    if let Some(msg) = preflight_pp2_spec_refusal(&models) {
-        return Err(msg);
-    }
+    // (#87's parse-time spec-over-PP-2 preflight refusal lived here — CLOSED 2026-08-08.
+    // The ppN reverse-publication fences make spec+PP-2 serve; receipts and the crash gate
+    // are in research/pp2spec-crash-20260807/.)
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) =
         std::sync::mpsc::channel::<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>();
@@ -4365,7 +4266,7 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
 mod tests {
     use super::{summarize_confidence, utf8_delta};
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
-    use super::{draft_verdict, draft_verdict_message, preflight_pp2_spec_refusal_inner, DraftVerdict};
+    use super::{draft_verdict, draft_verdict_message, DraftVerdict};
 
     // ---- drafter attachment: the loud-failure semantics (lane/step-draft, 2026-08-07) ----
     //
@@ -4376,7 +4277,7 @@ mod tests {
 
     #[test]
     fn step35_without_drafter_warns_and_names_the_attach_spelling() {
-        let v = draft_verdict(false, true, true, false);
+        let v = draft_verdict(false, true);
         assert_eq!(v, DraftVerdict::NoDrafterExternalMtpArch);
         let msg = draft_verdict_message(&v, "step", "/m/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf")
             .expect("a step35 model with no drafter MUST produce a line");
@@ -4394,85 +4295,27 @@ mod tests {
     #[test]
     fn attached_drafter_is_quiet_and_so_is_a_non_step35_model_without_one() {
         // Attached: nothing to warn about; spec_eligible arbitrates per request from here.
-        let v = draft_verdict(true, true, true, false);
+        // (#87 CLOSED 2026-08-08: a drafter over sharded cross-device PP-2 used to refuse
+        // here — the ppN reverse-publication fences made the regime serve, receipts
+        // research/pp2spec-crash-20260807/. Attached is now unconditional.)
+        let v = draft_verdict(true, true);
         assert_eq!(v, DraftVerdict::Attached);
         assert!(draft_verdict_message(&v, "step", "/m.gguf").is_none());
 
         // A non-step35 model with no head: `nextn=0` there genuinely means no head, and the
         // existing load line already says the layer count. Warning would be noise on every
         // plain model the server has ever hosted — which is how a real warning gets ignored.
-        let v = draft_verdict(false, false, true, false);
+        let v = draft_verdict(false, false);
         assert_eq!(v, DraftVerdict::NoDrafterQuiet);
         assert!(draft_verdict_message(&v, "q27", "/m.gguf").is_none());
     }
 
-    #[test]
-    fn spec_over_sharded_pp_refuses_and_points_at_87() {
-        // The quarantine regime: drafter attached + spec armed + ppN door open across cards.
-        let v = draft_verdict(true, true, true, true);
-        assert_eq!(v, DraftVerdict::RefuseSpecOverPp2);
-        let msg = draft_verdict_message(&v, "step", "/m.gguf").expect("refusal must explain itself");
-        assert!(msg.contains("REFUSING to start"), "{msg}");
-        assert!(msg.contains("#87"), "the refusal must point at the quarantine: {msg}");
-        // The cause is QUOTED, per the evidence discipline — not "it's unstable".
-        assert!(msg.contains("CUDA_ERROR_ILLEGAL_ADDRESS"), "{msg}");
-        assert!(msg.contains("research/pp2-spec-20260806"), "receipts must be reachable: {msg}");
-        // And it must name the fix that actually serves.
-        assert!(msg.contains("MEMRA_SERVE_SPEC=0"), "{msg}");
-    }
-
-    #[test]
-    fn the_quarantine_binds_only_where_all_three_conditions_hold() {
-        // This is the no-collateral half of the refusal: PP-2 serving is a SUPPORTED config
-        // (it is the only way the 105 GB SKU fits at all), so a refusal that fired one term
-        // too wide would take the whole SKU offline instead of just its spec path.
-
-        // spec disarmed (the standing MEMRA_SERVE_SPEC=0 quarantine) -> boots, drafter kept.
-        // Keeping the head attached matters: it is what makes the wiring ready for when #87
-        // lifts, and `spec_eligible`'s serve_spec term already holds the door shut.
-        assert_eq!(draft_verdict(true, true, false, true), DraftVerdict::Attached);
-        // Single-card / door-shut with spec armed -> spec fully live, no refusal. This is the
-        // configuration the wiring exists to serve today.
-        assert_eq!(draft_verdict(true, true, true, false), DraftVerdict::Attached);
-        // Sharded PP-2 with no drafter -> plain decode over PP-2 = the config that serves
-        // (872-875 tok/s at c=8, arm F1). Must warn, must NOT refuse.
-        assert_eq!(draft_verdict(false, true, true, true), DraftVerdict::NoDrafterExternalMtpArch);
-        // ... and the same with spec disarmed: still just the warning.
-        assert_eq!(draft_verdict(false, true, false, true), DraftVerdict::NoDrafterExternalMtpArch);
-    }
-
-    #[test]
-    fn the_87_refusal_lands_before_the_load_when_a_draft_was_attached() {
-        // The preflight's reason for existing: Step over PP-2 is a ~20-minute, 105 GB load, and
-        // this verdict is fixed at startup. Refusing after the load is correct-but-useless.
-        let with = vec![("step".into(), "/m/step.gguf".into(), Some("/m/mtp.gguf".into()))];
-        let msg = preflight_pp2_spec_refusal_inner(&with, true, true)
-            .expect("a '+draft' attach under armed spec over sharded PP-2 must refuse at parse");
-        // Same text as the load-path refusal — one message, one place, so the operator cannot
-        // get a differently-worded verdict depending on which check happened to fire.
-        assert_eq!(msg, draft_verdict_message(&DraftVerdict::RefuseSpecOverPp2,
-                                              "step", "/m/step.gguf").unwrap());
-
-        // No attach = nothing knowable pre-load: an EMBEDDED head only shows up once the trunk
-        // is parsed, so this case MUST fall through to the load-path verdict, not be waved past.
-        let without = vec![("step".into(), "/m/step.gguf".into(), None)];
-        assert!(preflight_pp2_spec_refusal_inner(&without, true, true).is_none());
-
-        // And the preflight must not fire one term too wide — the standing quarantine config
-        // (drafter attached, MEMRA_SERVE_SPEC=0) and every single-card config still boot.
-        assert!(preflight_pp2_spec_refusal_inner(&with, false, true).is_none());
-        assert!(preflight_pp2_spec_refusal_inner(&with, true, false).is_none());
-
-        // Multi-model: one offending model in the list is enough. The quarantine is a property
-        // of the CUDA context, which the whole process shares — a second, drafter-less model
-        // does not make the first one's spec sessions safe.
-        let mixed = vec![
-            ("plain".into(), "/m/a.gguf".into(), None),
-            ("step".into(), "/m/step.gguf".into(), Some("/m/mtp.gguf".into())),
-        ];
-        let m = preflight_pp2_spec_refusal_inner(&mixed, true, true).expect("must still refuse");
-        assert!(m.contains("step"), "the refusal must name the offending model: {m}");
-    }
+    // (#87's refusal tests — `spec_over_sharded_pp_refuses_and_points_at_87`,
+    // `the_quarantine_binds_only_where_all_three_conditions_hold`, and
+    // `the_87_refusal_lands_before_the_load_when_a_draft_was_attached` — retired with the
+    // quarantine itself, 2026-08-08. The regime they refused now serves: root cause was the
+    // ppN reverse-publication hole, fixed by `PpNRt::fence_stages_behind`; crash gate
+    // 212/212 at c=2..8, run-spec K=1..8 PASS. research/pp2spec-crash-20260807/.)
 
     /// Device-free PrefixEntry (empty kv/conv/ssm planes) — the namespace-visibility laws
     /// under test live entirely in the host-side key/toks matching.

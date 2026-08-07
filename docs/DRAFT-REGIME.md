@@ -98,12 +98,13 @@ plain decode and the attach string. Point `+draft` at a path that is missing or 
 and the server **refuses to start** with the cause quoted, rather than quietly serving plain
 decode under a config that asked for spec.
 
-**Spec over PP-2 is quarantined (#87).** Step is 105 GB, so it needs PP-2 on 96 GB cards,
-and spec over a sharded cross-device PP placement is not shippable in either placement
-(`research/pp2-spec-20260806/`). That config refuses at startup with a pointer to the issue;
-`MEMRA_SERVE_SPEC=0` serves plain decode over PP-2 at 875 tok/s at c=8. Attaching the head
-today is still worth doing — it stays loaded, so the config is ready when #87 lifts — and
-spec is fully live on any single-card-capable placement. Receipts:
+**Spec over PP-2 is live (#87 closed 2026-08-08).** The 2026-08-06 quarantine (sticky
+`CUDA_ERROR_ILLEGAL_ADDRESS` at c>=2, `research/pp2-spec-20260806/`) was the ppN
+reverse-publication hole, fixed by `PpNRt::fence_stages_behind` — crash gate 212/212 at
+c=2..8 on the previously-fatal placement, run-spec K=1..8 PASS with acceptance identical
+to door-shut (`research/pp2spec-crash-20260807/`). Spec + a drafter now boots and serves
+over any PP placement; benchmark placement order (dev01 spec-ON measured ~20x slow on the
+2026-08-06 rig — a scheduling property, not a crash). Receipts:
 `research/step-draft-20260807/`.
 
 ## Prebuilt drafts
