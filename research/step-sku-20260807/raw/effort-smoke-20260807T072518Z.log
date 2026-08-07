@@ -1,0 +1,44 @@
+=== effort-smoke 20260807T072518Z ===
+0, 0 MiB
+1, 0 MiB
+ready after ~30s
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+--- absent (template default) ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+--- low ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+--- medium ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+--- high ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+--- none -> clamps to low ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+--- openrouter object form high ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+--- invalid level (expect 400) ---
+  File "<string>", line 9
+    print(f"prompt_tokens={u.get(\"prompt_tokens\")} completion_tokens={u.get(\"completion_tokens\")} content={c!r}")
+                                  ^
+SyntaxError: unexpected character after line continuation character
+=== smoke done; killing server ===
+0, 0 MiB
+1, 0 MiB
+=== end effort-smoke 20260807T072518Z ===
