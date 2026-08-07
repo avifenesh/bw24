@@ -97,11 +97,46 @@ Fix shape:
 - kernel-check ALL GREEN (no kernel touched — proven, not assumed).
 - memra-server + memra-tokenizer test suites green.
 
+## Results
+
+**Gap 1 — SHIPPED, fail-closed shape (option b).** `eager_only_model()` predicate
+(gemma4 + e4b), computed once at spawn, loud `EAGER-ONLY serving` log line. Sessions on
+those models: per-session `step_session` eager decode inside the batched scheduler
+(phase c-), excluded from batched chunks, never graph-promote, never join prime batches,
+fresh prompts prime WHOLE (no chunked prime exists), carried suffixes tokenwise, LCP split
+off. Engine backstops: the two `decode_step_batch*` gemma4 asserts → per-request `Err`,
+`prime_cache_batch` refuses gemma4 unconditionally (was carried-only — fresh pairs walked
+the generic concat core silently), `gemma4_prime`/`e4b_prime` pos==0 asserts → `Err`.
+Receipts: `raw/postfix-*` (1-request 200 on DEFAULT scheduler, 3-concurrent all served,
+EAGER-ONLY log line, zero panic lines). Commit 3809ae56.
+
+**Gap 2 — SHIPPED, both defects.** (1) `params.eos` unions `tok.eog_ids()` — `<turn|>`
+now stops generation (finish=stop at 2 tokens on the OFF arm, was finish=length with tag
+soup) and never streams as text. (2) `ToolStreamParser::gemma_thought()` — the
+`<|channel>thought\n…\n<channel|>` dialect routes to `reasoning`, tags/label/newlines are
+syntax, channels split at any stream position; armed via `ModelCaps.gemma_think`
+(template contains `<|channel>`) on every non-tools gemma4 chat request. 4 new unit tests
+(one-shot == char-by-char, mid-stream channel, unclosed flush, partial-tag holdback).
+Receipts: `raw/gap2-*` (OFF/ON/none/stream arms all clean, stream deltas separated).
+Commit a97f3b03.
+
+## Gates (all local 5090, CPU-capped via systemd-run, GPU verified idle before/after)
+
+| gate | result |
+|---|---|
+| serve-smoke incl. NEW gemma4 arm (default-scheduler 1-request + thinking separation + alive + zero panics) | **0 failed** — `raw/serve-smoke-20260807T*.log`, 20/20 checks |
+| run-gen argmax, gemma4 12B q4_0, depth prompt 1736 ids | **MATCH** (prefill==decode==batched-prime argmax 623) — `raw/rungen-g12-*.log` |
+| kernel-check | **ALL GREEN** — `raw/kernel-check-*.log` |
+| memra-server tests | **102/102** (98 + 4 new gemma-dialect) |
+| memra-engine lib tests | 46 passed, 1 ignored |
+| memra-tokenizer tests | 26 passed |
+
 ## Ledger
 
 | item | state |
 |---|---|
 | gap-1 repro receipt on this binary | **DONE** — commit 6e94b2ab |
-| gap-1 fix (fail-closed eager route + engine Err backstops) | in progress |
-| gap-2 fix (eog stop union + gemma reasoning dialect) | queued behind gap-1 gates |
-| gates | queued |
+| gap-1 fix (fail-closed eager route + engine Err backstops) | **DONE** — commit 3809ae56 |
+| gap-2 fix (eog stop union + gemma reasoning dialect) | **DONE** — commit a97f3b03 |
+| gates (serve-smoke gemma4 arm, run-gen, kernel-check, test suites) | **ALL GREEN** |
+| docs (SERVING.md reasoning-separation + gemma dialect) | **DONE** |
