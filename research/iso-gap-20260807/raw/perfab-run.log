@@ -1,0 +1,36 @@
+rep 0 default: 135.12 tok/s
+rep 0 pinned: 125.08 tok/s
+rep 1 default: 137.00 tok/s
+rep 1 pinned: 124.97 tok/s
+rep 2 default: 136.72 tok/s
+rep 2 pinned: 124.73 tok/s
+rep 3 default: 136.56 tok/s
+rep 3 pinned: 123.86 tok/s
+rep 4 default: 125.90 tok/s
+rep 4 pinned: 124.56 tok/s
+{
+ "n": 5,
+ "tok": 512,
+ "runs": {
+  "default": [
+   135.12133755153394,
+   137.00040578427547,
+   136.71768126783064,
+   136.55650784759064,
+   125.89724699597969
+  ],
+  "pinned": [
+   125.07772582109982,
+   124.96999948151603,
+   124.73449100269283,
+   123.86402299542608,
+   124.55652934081603
+  ]
+ },
+ "medians": {
+  "default": 136.55650784759064,
+  "pinned": 124.73449100269283
+ },
+ "pinned_over_default": 0.9134276569367734,
+ "note": "solo (c=1) greedy serve, spec OFF, warm boot, rep-adjacent interleave"
+}

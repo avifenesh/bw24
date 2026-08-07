@@ -116,3 +116,101 @@ where B also fluctuates). So the repro must separate:
 
 Local 5090 (24.5 GB): owner's llama-server (332 MiB) + hermes python (394 MiB) resident, GPU
 idle (0% util). q9 artifact + drafter present under /data. Build green at HEAD 006aca75.
+
+## 4. VERDICT (2026-08-07, local 5090, q9)
+
+### 4.1 H-A is DEAD at the engine tick — the named class does not exist in the shipped code
+
+`iso-gap-probe` (new bin): X solo (B=1, batched body, `b1fast` pinned OFF via the gate2 seam)
+vs X co-resident (B=2..8), per-step full-vocab logits bit-compare, greedy. Eight shapes, zero
+bit diffs (raw/ probe-*.log):
+
+| arm | dx / dys | steps | verdict |
+|---|---|---|---|
+| control-same-rung | 300 / 310 | 96 | PASS bit-identical |
+| straddle (X crosses 512 rung mid-run) | 480 / 800 | 96 | PASS |
+| straddle-reverse | 800 / 480 | 96 | PASS |
+| deep-control | 800 / 810 | 96 | PASS |
+| straddle long-horizon | 400 / 800 | 300 | PASS |
+| B=4 mixed rungs | 480 / 800,2100,300 | 96 | PASS |
+| B=8 three-rung herd | 480 / 300..3000 | 64 | PASS |
+| auto (rig-scanned boundary 513) | 481 / 801 | 96 | PASS |
+
+Canary (wrong token into X's co-resident feed at step 1): caught, ndiff=248320 (full vocab).
+Why it holds: `batch_layer_ctx` (decode_batch.rs:891-896) is per-session-correct — every row
+either shares ONE `fa_split_keys` rung (the seqs kernel then derives each z's split partition
+from its OWN `pos_seq[z]+1`, flash_attn.cu:7871 ONE-PARTITION law) or ALL rows take the
+per-seq eager loop at their own t_kv. The issue-#10 row-axis fix pattern was already applied
+to the seqs axis at its birth (a98f51b1). No fix needed; the property was UNGATED, not broken.
+
+### 4.2 The serve receipt reproduced and attributed — the carrier is the solo<->batched
+### program flip at the CO-RESIDENCE boundary, not depth
+
+serve-ab.py / serve-ab2.py (one boot per arm, spec OFF, greedy 768 tok, q9 thinking-stream
+comparator per the spec-gate vacuous-pass trap; raw/serveab-*):
+
+| arm | env | shape | vs O1 (solo default) |
+|---|---|---|---|
+| O1R | default | solo repeat | byte-identical (deterministic) |
+| O2 | default | Y first, X joins | DIVERGES at byte 659 |
+| O3S | B1FAST=0 GS=0 | solo | diverges at 659 (= the config gap itself) |
+| O3L | B1FAST=0 GS=0 | Y first, X joins | == O3S byte-identical; also == O2 |
+| O4a/O4b | default | X first, Y at 2.0s | diverges at 1248 / 1361 (jitter) |
+| O5 | default | X first, Y at 6.0s (X done) | byte-identical |
+
+Kill shots: O2 == O3S == O3L. With the program family pinned, a staggered-depth co-resident
+moves ZERO bytes (the engine probe's serve echo), and the loaded default stream equals the
+pinned stream byte-for-byte — the flip accounts for the ENTIRE solo-vs-loaded divergence.
+The receipt's moving byte (1347/2379) is arrival-tick jitter of the flip boundary
+(reproduced: 1248 vs 1361 at fixed 2.0s delay). The docs' second suspect (batched-linear
+tier changes with B) is also innocent at serving widths (O2==O3L across B 1<->2 under load).
+
+### 4.3 Fix scope (the honest one)
+
+The mission's fix principle — selection keyed on the session's OWN state — is ALREADY the
+shipped batched-path design (4.1). The remaining program-flip is not a per-session-keyable
+selection: the m=1 fused trunk and GraphSession replay are structurally solo-only (their
+fusion/capture premise is b_n==1), so "one program regardless of co-residents" = run the
+batched body always. That is the existing deployment pin `MEMRA_SERVE_B1FAST=0
+MEMRA_SERVE_GS=0`, and its cost crosses the 1% stop-and-report bar by an order of magnitude:
+
+**Perf (N=5 rep-adjacent interleave, one boot per run, warm, solo c=1 greedy 512 tok,
+spec OFF, raw/perfab-*):** default median 136.56 tok/s (135.1/137.0/136.7/136.6/125.9),
+pinned median 124.73 (125.1/125.0/124.7/123.9/124.6) -> pinned/default = **0.913x, -8.7%**
+(consistent with the H3 lane's +8.33% q9 receipt). Per the brief: REPORT the tradeoff, do
+not ship it. The default stays; the contract prose now states the real scope and the pin.
+c>1 is unaffected (the fast path only fires as the batch drains to 1 — FLAGS.md receipt).
+
+### 4.4 What ships instead
+
+1. `isogap`/`isogapc` fast-gate arms (tools/iso-gap-gate.sh): pin the staggered-depth
+   within-config isolation ACROSS the rung boundary — the shape every prior gate missed
+   (kernel-check seqs pin: one rung; serve gate: equal depth; decode-batch-gate: 20-55-token
+   prompts). Straddle placed per-rig (`--auto` scans the SM-keyed ladder: 5090 boundary 513,
+   188-SM pod 2049). Registered on the decode/decode_batch map row + flash_attn.cu row.
+   Verified live through fast-gate --probes (both PASS; canary catches).
+2. docs/SERVING.md isolation contract re-scoped: the "open gap" paragraph's two-mechanism
+   attribution replaced with the measured one; deployment pin named with its measured cost.
+   docs/TESTING.md documents the new arms.
+
+### 4.5 Gate battery (this tree, local 5090)
+
+- kernel-check: ALL GREEN (raw/kernel-check.log)
+- run-gen q9: argmax MATCH prefill==decode 268 (raw/run-gen-q9.log)
+- run-spec q9 K=1,2,4,8: SELF-CONSISTENCY PASS x4 (raw/run-spec-q9-k*.log)
+- serve-smoke: 0 failed (raw/serve-smoke.log)
+- fast-gate --probes isogap,isogapc: PASS + canary-caught (raw/fastgate-isogap.log)
+- Shipped-binary invariance: lane adds a probe bin + gate script + docs only; memra-server
+  sha256 identical before/after lane commits (32b716a23c00abbb) — no perf surface moved,
+  no board update owed.
+
+### 4.6 Known residuals (stated, not hidden)
+
+- The engine probe and gate cover the default flash module (q9 class, hd256 v4). The
+  gemma hd512/g-module and fp8-KV batched arms route through the same rung guard but are
+  not exercised by the isogap arm (its model is q9); their seqs arm is fp8-excluded by
+  `fa_seqs_eligible` so they always take the per-seq loop — lower risk, zero straddle
+  surface, but unpinned.
+- Two mid-battery OOMs from peer-lane co-residency were recorded with GPU state
+  (raw/probe-straddle-oom-gpustate.txt) and re-run clean per the evidence discipline —
+  no conclusion rests on a dead run.
