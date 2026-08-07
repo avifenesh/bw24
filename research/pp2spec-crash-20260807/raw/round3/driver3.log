@@ -1,0 +1,74 @@
+gpu lock acquired 2026-08-07T11:37:07Z
+=== ARM nograph (exact A sequence under coredump env) ===
+/home/ubuntu/run-pp2crash-round3.sh: line 39: 132048 Aborted                 (core dumped) env MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,0 MEMRA_PP2SPEC_UNQUARANTINE=1 MEMRA_SPEC_GATE=0 MEMRA_MODELS="q9=$Q9" MEMRA_ADDR=$ADDR CUDA_ENABLE_COREDUMP_ON_EXCEPTION=1 CUDA_ENABLE_LIGHTWEIGHT_COREDUMP=1 CUDA_COREDUMP_FILE="$OUT/core-$arm-%p.nvcudmp" "${extra[@]}" $BIN/memra-server > "$OUT/E-$arm-server.log" 2>&1
+--- nograph hits ---
+2:[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+-rw-rw-r-- 1 ubuntu ubuntu 142463358 Aug  7 11:37 /home/ubuntu/receipts/pp2crash/core-nograph-132048.nvcudmp
+=== ARM graph2 (exact A sequence under coredump env) ===
+/home/ubuntu/run-pp2crash-round3.sh: line 39: 132146 Aborted                 (core dumped) env MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1,0 MEMRA_PP2SPEC_UNQUARANTINE=1 MEMRA_SPEC_GATE=0 MEMRA_MODELS="q9=$Q9" MEMRA_ADDR=$ADDR CUDA_ENABLE_COREDUMP_ON_EXCEPTION=1 CUDA_ENABLE_LIGHTWEIGHT_COREDUMP=1 CUDA_COREDUMP_FILE="$OUT/core-$arm-%p.nvcudmp" "${extra[@]}" $BIN/memra-server > "$OUT/E-$arm-server.log" 2>&1
+--- graph2 hits ---
+2:[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+-rw-rw-r-- 1 ubuntu ubuntu 142463354 Aug  7 11:37 /home/ubuntu/receipts/pp2crash/core-graph2-132146.nvcudmp
+=== cuda-gdb: /home/ubuntu/receipts/pp2crash/core-nograph-132048.nvcudmp ===
+Opening GPU coredump: /home/ubuntu/receipts/pp2crash/core-nograph-132048.nvcudmp
+[Current focus set to CUDA kernel 0, grid 47059, block (0,0,0), thread (0,0,0), device 0, sm 0, warp 1, lane 0]
+
+CUDA Exception: Warp MMU Fault
+The exception was triggered at PC 0x7dfe416f54f0  embed_gather_u32_t
+#0  0x00007dfe416f5590 in embed_gather_u32_t<<<(16,1,1),(256,1,1)>>> ()
+  Kernel Parent Dev Grid Status                                           SMs Mask  GridDim  BlockDim Invocation           
+*      0      -   0 47059 Active 0x00000000000000000000000000000000000000000000ffff (16,1,1) (256,1,1) embed_gather_u32_t() 
+pc             0x7dfe416f5590      0x7dfe416f5590 <embed_gather_u32_t+8080>
+errorpc        0x7dfe416f54f0      0x7dfe416f54f0 <embed_gather_u32_t+7920>
+R0             0x0                 0
+R1             0xfffdb0            16776624
+R2             0xc6b3c500          3333670144
+R3             0x484               1156
+R4             0x0                 0
+R5             0x484               1156
+R6             0x0                 0
+R7             0x0                 0
+R8             0x0                 0
+R9             0x200               512
+R10            0xc6b3c500          3333670144
+R11            0x484               1156
+R12            0x0                 0
+R13            0x0                 0
+R14            0x1000              4096
+R15            0x0                 0
+R16            0x4bd5d9d3          1272306131
+R17            0xfffdc0            16776640
+R18            0xf4f1c500          4109485312
+R19            0x4                 4
+=== cuda-gdb: /home/ubuntu/receipts/pp2crash/core-graph2-132146.nvcudmp ===
+Opening GPU coredump: /home/ubuntu/receipts/pp2crash/core-graph2-132146.nvcudmp
+[Current focus set to CUDA kernel 0, grid 13073, block (0,0,0), thread (128,0,0), device 0, sm 0, warp 4, lane 0]
+
+CUDA Exception: Warp MMU Fault
+The exception was triggered at PC 0x721beb7ad960  embed_gather_u32
+#0  0x0000721beb7ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()
+  Kernel Parent Dev Grid Status                                           SMs Mask  GridDim  BlockDim Invocation         
+*      0      -   0 13073 Active 0x00000000000000000000000000000000000000000000ffff (16,1,1) (256,1,1) embed_gather_u32() 
+pc             0x721beb7ad9f0      0x721beb7ad9f0 <embed_gather_u32+7408>
+errorpc        0x721beb7ad960      0x721beb7ad960 <embed_gather_u32+7264>
+R0             0xb374f7db          3010787291
+R1             0xfffdb0            16776624
+R2             0x2000200           33554944
+R3             0x63                99
+R4             0x0                 0
+R5             0x484               1156
+R6             0x2000000           33554432
+R7             0x63                99
+R8             0xd05b87ee          3495659502
+R9             0x1000              4096
+R10            0xc6b3c500          3333670144
+R11            0x484               1156
+R12            0x0                 0
+R13            0x484               1156
+R14            0x80                128
+R15            0xb73a4dcf          3074051535
+R16            0x8bcfbbdd          2345647069
+R17            0x26cafb3f          650836799
+R18            0xdfdd236e          3755811694
+R19            0xea35874a          3929376586
+PP2CRASH_ROUND3_DONE

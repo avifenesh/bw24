@@ -72,9 +72,61 @@ never-mapped device pointer, not an out-of-bounds offset within a live allocatio
    (`Engine::func` tries 5 modules in sequence, lib.rs:1123-1131) — benign, present in
    every clean run.
 
-## Round 2 — next: name the kernel
+## Round 2 — the faulting kernel is NAMED (raw/round2/)
 
-`CUDA_LAUNCH_BLOCKING` and the sanitizer both perturb timing too much; coredump-on-
-exception does not (async until the trap, then the driver dumps the faulting kernel).
-Running: `run-pp2crash-coredump.sh` — c=4 bare repro with
-`CUDA_ENABLE_COREDUMP_ON_EXCEPTION=1` + lightweight dump + `cuda-gdb` batch readout.
+Coredump-on-exception preserves async timing until the trap. Two data points:
+
+- **Phase C** (coredump env, c=4 only, NO c=2 warmup phase): 16/16 CLEAN — the trigger
+  wants the c=2+warmup arrival pattern; raw c=4 on a fresh server didn't fire this time.
+- **Phase D** (coredump env, exact phase-A sequence): c=2 1/8, c=4 0/16 — the A signature,
+  and the driver caught the trap. `cuda-gdb` on `core-r1-125335.nvcudmp`
+  (raw/round2/D-cudagdb-core-r1-125335.log), quoted:
+
+      CUDA Exception: Warp MMU Fault
+      The exception was triggered at PC 0x7c986b7ad960  embed_gather_u32
+      #0  0x00007c986b7ad9f0 in embed_gather_u32<<<(16,1,1),(256,1,1)>>> ()
+      [device 0, sm 0, warp 5, lane 0]
+
+  Registers R10/R11 = 0x484_c6b3c500 — the SAME PAGE as round 1's Xid 31
+  (`faulted @ 0x484_c6b3c000`). A reproducible fault VA across independent runs is a
+  pointer-valued read of a stale/unmapped mapping, not a random-offset overrun.
+
+`embed_gather_u32` at grid (16,1,1) = the T=1 single-token gather (n_embd 4096 / 256).
+In the spec serving path that shape is the DRAFT CHAIN's first node.
+
+## Round 3 — both draft arms fault at the SAME VA (raw/round3/)
+
+Two arms, exact-A sequence, coredump env, fresh server each (`run-pp2crash-round3.sh`):
+
+| arm | draft path | c=2 / c=4 | faulting kernel | fault VA (R10:R11) |
+|---|---|---|---|---|
+| nograph (`MEMRA_SPEC_NOGRAPH=1`) | eager chain | 1/8, 0/16 | `embed_gather_u32_t` (grid 16,1,1) | 0x484_c6b3c500 |
+| graph2 (default) | captured graph replay | 1/8, 0/16 | `embed_gather_u32` (grid 16,1,1) | 0x484_c6b3c500 |
+
+Same fault VA in three independent server processes, two different kernels, both being
+the draft chain's embed gather (eager arm: `mtp_head_forward_dev` op A
+`embed_gather_device_t(g, &[e_tok], ..)` spec.rs:735; graph arm: `mtp_head_forward_cap`
+`embed_gather_device` spec.rs:1281). Both kernels read exactly two device buffers: the
+resident embed TABLE (`model.embd_gpu`, a per-model `OnceLock` uploaded once) and the
+tiny token-id buffer. The token-id buffers differ per arm (fresh `htod_u32_v` vs the
+session's persistent `g_tok`) — but the fault VA is IDENTICAL across arms and processes,
+so the common operand — **the resident embed table pointer** — is the stale mapping.
+(An identical VA also kills "garbage token index": a wild index would fault at
+table_base + garbage*row_bytes, different every time.)
+
+Working hypothesis, to be settled by operand readout (round 4): the embed table is
+uploaded through the PRIMARY engine's stream (dev0-homed under placement 1,0 — note the
+primary is stage 1 here) via `embd_gpu.get_or_init(|| e.upload_u8(..))`, while a second
+live spec session's traffic runs concurrently; the table allocation lands in the async
+pool and something stream-ordered frees or remaps that VA range. Candidate mechanisms to
+discriminate: (a) the upload races a pool free from another session's dropped transients
+(alloc reuse across streams without dependency — pool has REUSE_ALLOW_OPPORTUNISTIC=0,
+INTERNAL_DEPENDENCIES=1, but those govern ONE device's pool and same-pool reuse only);
+(b) the table OnceLock is initialized by a different Engine (stage engine vs primary) in
+one session and dereferenced under the other stage's context.
+
+## Round 4 — running: FULL coredump for operand readout
+
+Lightweight dumps omit param memory. The full dump (`run-pp2crash-round4.sh`) reads the
+faulting kernel's params (embd*, token_d*), token_d[0], and probes whether the fault VA
+falls inside the live table mapping.
