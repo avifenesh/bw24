@@ -80,7 +80,70 @@ the same dense-kernel class as KAT (IQ4_XS trunk, sigmoid-router MoE never reach
 expert kernel), so KAT is the local proxy and the AWS-box Step measurement is precision,
 not gate-deciding.
 
-## 2. Evidence
+## 2. The k32 rewrite + the audit claim verified-and-corrected
+
+Change (`cu/mmq_iq_experts.cu`): `vec_dot_mma` now issues ONE `m16n8k32.s8` per 32-value k
+step where the k16 form issued two `m16n8k16.s8` — tile shapes `tile<16,8>`/`tile<8,8>`
+(the mmq_q8_0.cu canonical k32 ABI), same ldmatrix loads, B pair merged into one
+`load_generic` over the same 8 ints, fold arity halved (1 C tile / 1 dA load / 1 FMA per
+element vs 2/2/2). Serves BOTH kernels in the file (expert-segmented + iq4xs-dense).
+Rollback: `MEMRA_IQEXP_K16=1` build seam keeps the k16 form verbatim
+(`-DMEMRA_IQEXP_K16_MMA`).
+
+SASS census (the audit's own law): k32 object = 1536x `IMMA.16832.S8.S8`, k16 object =
+3072x `IMMA.16816.S8.S8` — exactly the intended 2:1 instruction halving, correct opcodes.
+
+**The audit's "candidate bit-identical" claim is REFUTED on real weights — and the reason
+is instructive.** The s32 accumulator merge IS exact (the audit's evidence — both per-16
+x_df slots of a 32-block hold the same value — is correct and re-verified in source). What
+the audit missed is the f32 FOLD: k16 computes `dB*(C0*d + C1*d)` (two rounded products,
+then an add), k32 computes `dB*((C0+C1)*d)` (one rounded product on the exact int sum).
+Same real-number value, different rounding shape → last-ulp drift that accumulates across
+the k-walk. Measured (md5-pinned binary pair, same commit, one flock hold, prime-logits
+byte-compare via the new `MEMRA_PP_LOGITS` GGUF dump):
+
+| model | differing bytes | logit maxdiff | rel (vs absmax) | argmax | top-10 |
+|---|---|---|---|---|---|
+| gemma26b (expert kernel) | 831999/1048576 | 1.66e0 | 9.3e-2 | MATCH | same set, tail order swaps |
+| KAT (dense kernel) | 733381/993280 | 6.69e-1 | 5.4e-2 | MATCH | 9/10 shared, tail swap |
+
+So the exactness class is **branch-(b)** (MEMRA_ST_E4M3_BLK pattern): bit-identity is the
+wrong bar for a changed reduction shape; the kernel's own contract (file header: argmax
+MATCH + spec self-consistency + closeness, never byte-identity vs dp4a) is the bar — and it
+was already branch-(b) vs dp4a before this change. Receipt: `raw/logits-ab-verdict.txt`.
+
+## 3. Gates (k32 build)
+
+- kernel-check model-backed on KAT IQ4_XS: **ALL GREEN** — iq4xs-mmq vs dp4a rel <= 2.7e-4
+  (bar 1e-3) on synth + real trunk tensor at T=16/64/128/512; fused act+quant 0 byte
+  mismatch. `raw/kernel-check-k32-kat.log`.
+- run-gen argmax: **MATCH** on gemma26b (prefill=decode=236786, batched-prime=tokenwise)
+  and KAT (271, both gates). `raw/rungen-k32-{gemma,kat}.log`.
+- run-spec K=1..8 on KAT (owntrim drafter, real 2048-tok prompt): **8/8 PASS** — every K
+  token-identical to plain generate, acceptance 64.1% -> 22.3% (the normal K decay), plus
+  the "=== SELF-CONSISTENCY PASS ===" aggregate line. `raw/runspec-k32-kat.log`.
+
+## 4. Perf A/B — N=5 interleaved, ONE flock hold, adjacent alternating pairs
+
+`run-ab.sh perf`: pp-only median-of-3 per point, 5 pairs per model, order alternating
+(k16,k32),(k32,k16),..., both md5-pinned binaries from the same commit, one lock hold for
+the whole battery. Thermal 60-63C across the window (per-row temp in perf-ab.jsonl).
+Prompt = depth-2048-kat.txt (gemma pp2311 / kat pp2048).
+
+| model | kernel class | k16 median (N=5) | k32 median (N=5) | delta | separation |
+|---|---|---|---|---|---|
+| gemma26b Q4_0 | expert-segmented | 6893.4 tok/s | 7248.5 tok/s | **+5.15%** | DISJOINT (min k32 7244.4 > max k16 6896.9), 5/5 pairwise |
+| KAT IQ4_XS | dense-trunk | 3903.6 tok/s | 4013.5 tok/s | **+2.82%** | DISJOINT (min k32 3964.7 > max k16 3914.4), 5/5 pairwise |
+
+Cross-check vs the share gate: gemma-bal mmq_iq share 17.8% x 0.296 = 5.3% predicted
+ceiling — measured +5.15%, i.e. the tile realizes ~97% of its predicted e2e ceiling at
+this shape. KAT 16.4% x 0.296 = 4.9% predicted, measured +2.82% (~58% of ceiling — the
+dense kernel is less MMA-bound; its instances include cp.async-stall-heavy small-m
+tiles). Both above zero with disjoint distributions; the k32 form wins clean.
+
+Rows: `perf-ab.jsonl` (20 rows, cell iqk32-perf); raw logs `raw/perf-*-p*.log`.
+
+## 5. Evidence
 
 raw logs: `research/iq-k32-20260807/raw/` (nsys .nsys-rep binaries stay OUT of git —
 CSV summaries + console logs are committed; reps parked in /tmp/iqk32-nsys).
