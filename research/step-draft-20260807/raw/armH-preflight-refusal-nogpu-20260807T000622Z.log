@@ -1,0 +1,6 @@
+=== arm H: #87 preflight refuses BEFORE any GPU work (no card, no artifact needed)
+=== env: MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_MODELS=step=<trunk>+<draft>
+[server] starting; models config = [("step", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[server] FATAL: worker init failed: step: REFUSING to start — a drafter is attached AND spec serving is armed AND the ppN door is open across 2+ devices. Spec over a sharded cross-device PP placement is QUARANTINED (#87, receipts research/pp2-spec-20260806): one placement is 20x slow, the other provokes a CUDA_ERROR_ILLEGAL_ADDRESS that is STICKY for the CUDA context — measured c=4 -> 0/48 requests served, and every later request in the process inherits it. Fixes: MEMRA_SERVE_SPEC=0 (serve plain decode over PP-2 — the configuration that actually serves, 872-875 tok/s at c=8); or drop the '+draft' attach; or close the pp door (single-card configs are unaffected and spec is fully live there).
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+EXIT=1

@@ -31,9 +31,15 @@ mkdir -p "$R"
 [ -f "$D" ] || { echo "SKIP: no Step MTP head at $D"; exit 0; }
 [ -x target/release/memra-server ] || { echo "FAIL: build memra-server first"; exit 1; }
 
-# PP-2 across both cards. Same door the step37 lane booted Step through (research/step37-p2-
-# 20260806): 2 stages, streams off, shard off — the placement that actually serves.
-PP=(MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_PP_STREAMS=0 MEMRA_PP_SHARD=0)
+# PP-2 across both cards, exactly as the step37 lane booted Step (research/step37-p2-20260806:
+# `MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1`, nothing else) — which is ALSO the #87 regime.
+#
+# The placement matters and an earlier draft of this script had it wrong: `MEMRA_PP_SHARD=0` or
+# `MEMRA_PP_STREAMS=0` both make `pp_sharded_cross_device()` FALSE — those seams bring every
+# weight home to the primary, so nothing is remote and the quarantine legitimately does not
+# bind. Setting either would have produced a script whose arm F "passed" by never entering the
+# regime under test. Defaults (shard on, streams on) are the regime that measured c=4 -> 0/48.
+PP=(MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1)
 
 FAILF=$(mktemp /tmp/step-draft-box-fails.XXXXXX)
 PASS() { echo "  ok: $1" | tee -a "$LOG"; }
