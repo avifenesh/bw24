@@ -233,18 +233,10 @@ fn drain_deadline_s() -> u64 {
 /// `Retry-After` with no code and no ms twin — i.e. a client that trusted `retry-after-ms`
 /// exclusively saw no window at all on the most predictable outage memra has.
 fn drain_response() -> Response {
-    let mut resp = (StatusCode::SERVICE_UNAVAILABLE,
+    let resp = (StatusCode::SERVICE_UNAVAILABLE,
         Json(error_body("server is draining (shutdown in progress); retry",
                         "server_error", None, Some("draining")))).into_response();
-    let secs = drain_deadline_s().min(60);
-    let h = resp.headers_mut();
-    if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
-        h.insert(axum::http::header::RETRY_AFTER, v);
-    }
-    if let Ok(v) = axum::http::HeaderValue::from_str(&(secs * 1000).to_string()) {
-        h.insert("retry-after-ms", v);
-    }
-    resp
+    retry_contract_response(resp, Some(drain_deadline_s()))
 }
 
 /// One request's header values, computed at submission time (the "at admit" snapshot).
@@ -818,8 +810,8 @@ fn retry_contract_response(mut resp: Response, retry_after_s: Option<u64>) -> Re
     let h = resp.headers_mut();
     match retry_after_s {
         Some(secs) => {
-            // Integer seconds, always <= 60 by construction (see the contract note above).
-            let secs = secs.min(60);
+            // Integer seconds in the SDK-honored 1..=60 window (see the contract note above).
+            let secs = secs.clamp(1, 60);
             if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
                 h.insert(axum::http::header::RETRY_AFTER, v);
             }
@@ -1406,10 +1398,18 @@ async fn health_live(State(st): State<AppState>) -> impl IntoResponse {
 /// and never sheds, so a deep queue is work in progress, not unreadiness. Capacity backpressure
 /// belongs on the request path as 429/503 (G6), where a client can act on it.
 async fn health_ready(State(st): State<AppState>) -> impl IntoResponse {
-    match st.health.ready(draining()) {
+    let is_draining = draining();
+    match st.health.ready(is_draining) {
         Ok(()) => (StatusCode::OK, Json(health_payload(&st, "ready", None))).into_response(),
-        Err(why) => (StatusCode::SERVICE_UNAVAILABLE,
-                     Json(health_payload(&st, "not_ready", Some(&why)))).into_response(),
+        Err(why) => retry_contract_response(
+            (StatusCode::SERVICE_UNAVAILABLE,
+             Json(health_payload(&st, "not_ready", Some(&why)))).into_response(),
+            Some(if is_draining {
+                drain_deadline_s()
+            } else {
+                worker::WORKER_RESPAWN_BACKOFF_BASE_S
+            }),
+        ),
     }
 }
 
@@ -3632,6 +3632,14 @@ mod tests {
         // Rotation is /readyz's job: unready while draining, so the LB stops sending.
         let resp = health_ready(State(st.clone())).await.into_response();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let retry_s = drain_deadline_s().clamp(1, 60);
+        let retry_s_text = retry_s.to_string();
+        let retry_ms_text = (retry_s * 1000).to_string();
+        assert_eq!(retry_after(&resp).as_deref(), Some(retry_s_text.as_str()));
+        assert_eq!(resp.headers().get("retry-after-ms").unwrap(),
+                   retry_ms_text.as_str());
+        assert_ne!(resp.headers().get("x-should-retry")
+            .and_then(|v| v.to_str().ok()), Some("false"));
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(payload["status"], "not_ready");
@@ -3694,6 +3702,21 @@ mod tests {
         st.health.mark_dead("worker thread panicked: retry-contract-test");
 
         let resp = health_live(State(st)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+        assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
+        assert_ne!(resp.headers().get("x-should-retry")
+            .and_then(|v| v.to_str().ok()), Some("false"));
+    }
+
+    #[tokio::test]
+    async fn readiness_failure_obeys_the_retry_contract() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let st = fake_worker_state();
+        st.health.mark_dead("worker thread panicked: retry-contract-test");
+
+        let resp = health_ready(State(st)).await.into_response();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(retry_after(&resp).as_deref(), Some("2"));
         assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
