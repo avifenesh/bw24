@@ -1,0 +1,26 @@
+loaded qwen35 (32 layers, n_head_kv=4, head_dim=256); dx=480 dys=[800] steps=24 CANARY
+B=1 reference arm: batched body (fast path pinned OFF; live default = ON)
+step 1: X BIT-DIFF vs solo (t_kv X=482 sp8 / Y=[802], seqs_arm=false) ndiff=248320 maxdiff=1.621e1 ARGMAX FLIP 1992 -> 6293
+step 2: X BIT-DIFF vs solo (t_kv X=483 sp8 / Y=[803], seqs_arm=false) ndiff=248320 maxdiff=1.739e1 ARGMAX FLIP 2015 -> 6316
+step 3: X BIT-DIFF vs solo (t_kv X=484 sp8 / Y=[804], seqs_arm=false) ndiff=248320 maxdiff=1.930e1 ARGMAX FLIP 2038 -> 6339
+step 4: X BIT-DIFF vs solo (t_kv X=485 sp8 / Y=[805], seqs_arm=false) ndiff=248320 maxdiff=1.845e1 ARGMAX FLIP 2061 -> 6362
+step 5: X BIT-DIFF vs solo (t_kv X=486 sp8 / Y=[806], seqs_arm=false) ndiff=248320 maxdiff=1.774e1 ARGMAX FLIP 2084 -> 6385
+step 6: X BIT-DIFF vs solo (t_kv X=487 sp8 / Y=[807], seqs_arm=false) ndiff=248320 maxdiff=1.998e1 ARGMAX FLIP 2107 -> 6408
+step 7: X BIT-DIFF vs solo (t_kv X=488 sp8 / Y=[808], seqs_arm=false) ndiff=248320 maxdiff=1.916e1 ARGMAX FLIP 2130 -> 62195
+step 8: X BIT-DIFF vs solo (t_kv X=489 sp8 / Y=[809], seqs_arm=false) ndiff=248320 maxdiff=1.717e1 ARGMAX FLIP 2153 -> 6454
+step 9: X BIT-DIFF vs solo (t_kv X=490 sp8 / Y=[810], seqs_arm=false) ndiff=248320 maxdiff=1.732e1 ARGMAX FLIP 2176 -> 6477
+step 10: X BIT-DIFF vs solo (t_kv X=491 sp8 / Y=[811], seqs_arm=false) ndiff=248320 maxdiff=2.258e1 ARGMAX FLIP 2199 -> 6500
+step 11: X BIT-DIFF vs solo (t_kv X=492 sp8 / Y=[812], seqs_arm=false) ndiff=248320 maxdiff=1.969e1 ARGMAX FLIP 2222 -> 6523
+step 12: X BIT-DIFF vs solo (t_kv X=493 sp8 / Y=[813], seqs_arm=false) ndiff=248320 maxdiff=1.830e1 ARGMAX FLIP 2245 -> 6546
+step 13: X BIT-DIFF vs solo (t_kv X=494 sp8 / Y=[814], seqs_arm=false) ndiff=248320 maxdiff=2.423e1 ARGMAX FLIP 2268 -> 6569
+step 14: X BIT-DIFF vs solo (t_kv X=495 sp8 / Y=[815], seqs_arm=false) ndiff=248319 maxdiff=1.756e1 ARGMAX FLIP 2291 -> 6592
+step 15: X BIT-DIFF vs solo (t_kv X=496 sp8 / Y=[816], seqs_arm=false) ndiff=248320 maxdiff=1.813e1 ARGMAX FLIP 2314 -> 6615
+step 16: X BIT-DIFF vs solo (t_kv X=497 sp8 / Y=[817], seqs_arm=false) ndiff=248320 maxdiff=2.160e1 ARGMAX FLIP 2337 -> 6638
+step 17: X BIT-DIFF vs solo (t_kv X=498 sp8 / Y=[818], seqs_arm=false) ndiff=248320 maxdiff=2.381e1 ARGMAX FLIP 2360 -> 6661
+step 18: X BIT-DIFF vs solo (t_kv X=499 sp8 / Y=[819], seqs_arm=false) ndiff=248320 maxdiff=2.204e1 ARGMAX FLIP 2383 -> 6684
+step 19: X BIT-DIFF vs solo (t_kv X=500 sp8 / Y=[820], seqs_arm=false) ndiff=248320 maxdiff=2.185e1 ARGMAX FLIP 2406 -> 6707
+step 20: X BIT-DIFF vs solo (t_kv X=501 sp8 / Y=[821], seqs_arm=false) ndiff=248320 maxdiff=1.536e1 ARGMAX FLIP 2429 -> 6730
+step 21: X BIT-DIFF vs solo (t_kv X=502 sp8 / Y=[822], seqs_arm=false) ndiff=248320 maxdiff=2.079e1 ARGMAX FLIP 403 -> 6753
+step 22: X BIT-DIFF vs solo (t_kv X=503 sp8 / Y=[823], seqs_arm=false) ndiff=248320 maxdiff=1.699e1 ARGMAX FLIP 2475 -> 6776
+step 23: X BIT-DIFF vs solo (t_kv X=504 sp8 / Y=[824], seqs_arm=false) ndiff=248320 maxdiff=2.222e1 ARGMAX FLIP 2498 -> 6799
+VERDICT dx=480 dys=[800]: CANARY-OK — injected wrong token caught at step 1 (teeth proven)

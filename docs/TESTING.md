@@ -52,8 +52,9 @@ battery, where the rsync'd tree had no `.git` and the k27 regression check "pass
 executing (`fast-gate.sh:80-88`). Naming arms with `--probes` suppresses the short-circuit.
 
 It is also the **only** way to reach four registered probes. `tools/fast-gate/map.tsv` dispatches
-`accept, aw35, chunkinv, chunkinvc, g12, g12d, g26, g31, gwstress, k27, o35, o9, q35, q35slru, q9,
-samp, sampt, sstress` (+ spec probes `q35spec, g31spec`), with `DEFAULT = g12,q9,q35,gwstress`.
+`accept, aw35, chunkinv, chunkinvc, chunkinv35, chunkinv35c, g12, g12d, g26, g31, gwstress,
+isogap, isogapc, k27, o35, o9, q35, q35slru, q9, samp, sampt, sstress` (+ spec probes
+`q35spec, g31spec`), with `DEFAULT = g12,q9,q35,gwstress`.
 Not in any row, including DEFAULT: **`amargin`, `amarginc`, `e4b`, `kat`**. They are registered in
 `models.tsv` and run correctly when named, but nothing dispatches them automatically — so treat
 the amargin gate below as an explicit-invocation gate, not a standing one.
@@ -130,6 +131,20 @@ contract, which no exactness golden can see, and the regression proof for the ad
 spec-headroom fix). Its own teeth: `--teeth` forces the admission reserve to 16 MB and the
 verdict must invert. It also closed a map hole where `crates/memra-server/` diffs mapped to
 no gate at all.
+
+`isogap` / `isogapc` landed 2026-08-07 (`tools/iso-gap-gate.sh`, lane/iso-gap task #91): the
+**staggered-depth serve isolation** contract at the engine tick — a session's logits must be
+bit-identical solo-vs-coresident **across a `fa_split_keys` ladder-rung boundary**, the shape
+both the equal-depth serve gate and the kernel-check seqs-vs-loop pin (whose depths all sit
+inside one rung) were structurally blind to. The straddle is placed **per-rig** (`iso-gap-probe
+--auto` scans the SM-keyed ladder: the 82-SM 5090's first boundary is t_kv=513, a 188-SM pod's
+is 2049), so the arm has teeth on both rigs instead of straddling nothing off-rig. One run
+covers same-rung batched (seqs arm), the straddling per-seq fallback window, and both
+transitions. `isogapc` injects a wrong token into the co-resident arm's feed (changes the
+world, not the label) and must be caught. Note: the serve-level solo-vs-loaded byte drift
+(`spec-gate` REF/REF_LOAD) is **not** this class — it is the `b_n==1` fused-trunk↔batched-body
+config flip at the co-residence boundary (`research/iso-gap-20260807/`); this arm pins the
+within-config isolation that any fix for that flip relies on.
 
 `amargin` / `amarginc` landed 2026-08-06 (`tools/argmax-margin-gate.sh`, + its `--canary` teeth):
 run-gen's prefill-vs-decode argmax assert calibrated against the **top-2 margin at the deciding

@@ -1,0 +1,4 @@
+step 94: X BIT-DIFF vs solo (t_kv X=576 sp64 / Y=[896], seqs_arm=true) ndiff=248320 maxdiff=1.860e1 ARGMAX FLIP 4154 -> 92
+step 95: X BIT-DIFF vs solo (t_kv X=577 sp64 / Y=[897], seqs_arm=true) ndiff=248320 maxdiff=1.512e1 ARGMAX FLIP 4177 -> 198
+VERDICT dx=481 dys=[801]: CANARY-OK — injected wrong token caught at step 1 (teeth proven)
+iso-gap-gate (canary): PASS — injected break caught (log /tmp/iso-gap-gate-SnT4q7.log)

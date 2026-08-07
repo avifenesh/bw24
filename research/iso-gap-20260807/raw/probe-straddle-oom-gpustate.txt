@@ -1,0 +1,3 @@
+144655, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+498376, /tmp/iqk32-bins/run-gen-k16, 6754 MiB

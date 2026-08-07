@@ -1,0 +1,23 @@
+== fast-gate plan (diff vs HEAD) ==
+  changed: crates/memra-engine/src/bin/iso_gap_probe.rs
+  changed: research/iso-gap-20260807/raw/fastgate-isogap.log
+  changed: research/iso-gap-20260807/raw/gate-canary.log
+  changed: research/iso-gap-20260807/raw/gate-default.log
+  changed: tools/fast-gate/map.tsv
+  changed: tools/fast-gate/models.tsv
+  changed: tools/iso-gap-gate.sh
+  kernel-check scope: none
+  tier-1 argmax probes: isogap,isogapc
+  tier-1 spec probes:   none
+  logs: /tmp/fast-gate-20260807-123000
+== fast-gate tier 0 ==
+  build: OK (1s)
+  kernel-check: SKIP (no matched kernel scope)
+tier 0: GREEN (1s total)
+== fast-gate tier 1 ==
+  isogap: PASS (self-gating check green, 3s)
+  isogapc: PASS (self-gating check green, 3s)
+tier 1: 0 fail (8s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.

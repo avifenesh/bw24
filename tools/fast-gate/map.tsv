@@ -43,7 +43,9 @@
 # vec_q, smem twin, q8_0 globals under MEMRA_GEMMA_GKV=0) are DEFAULT-DEAD: invisible to
 # naked probes by construction (verified: a lane-swap break there passed everything,
 # break-fa-decode2-*); flipping those seams is battery/A-B territory. docs/TESTING.md.
-^crates/memra-engine/cu/(flash_attn|fa3_prefill|fattn_vendor)\.cu$	synthetic	g12d,g31,q9,q35	-
+# isogap adds the RUNG-CROSSING shape (the seqs_v4/combine_seqs ONE-PARTITION law under a
+# straddle + the per-seq fallback window) that the fixed-depth synthetic pins never reach.
+^crates/memra-engine/cu/(flash_attn|fa3_prefill|fattn_vendor)\.cu$	synthetic	g12d,g31,q9,q35,isogap	-
 ^crates/memra-engine/cu/(f16_prefill|fp8_prefill|moe_f16_grouped)\.cu$	f16g-kq-direct	g26,q35	-
 ^crates/memra-engine/cu/moe_router\.cu$	fast-router-batch,d2-cache-bit-identity	q35,g26	-
 ^crates/memra-engine/cu/hybrid\.cu$	synthetic	q9,q35	-
@@ -74,7 +76,10 @@
 # is a SEPARATE mechanism in the same file (kernel selection keyed on the request's seq_end, not
 # the chunk's t_kv) and was invisible to the qwen arm — both the prompts and the canary seam
 # differ. research/step35-chunkfix-20260807. SKIPs where the artifact is not staged.
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,gwstress	q35spec
+# isogap/isogapc pin the STAGGERED-DEPTH batched-decode isolation contract (decode_batch's
+# rung guard + the seqs kernel's ONE-PARTITION law) — the rung-crossing shape no other arm
+# reaches. research/iso-gap-20260807.
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,gwstress,isogap,isogapc	q35spec
 # --- engine Rust: dispatch/FFI/load seams (these ARE what kernel-check calls through) ---
 ^crates/memra-engine/src/(hybrid|model|mmq_ffi|f16_ffi|fp8_ffi|cutlass_ffi|lib)\.rs$	all	g12,q9,q35	q35spec
 # --- gate/bench binaries: build-only (they ARE the gates) ---

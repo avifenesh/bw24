@@ -102,6 +102,19 @@ chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts rese
 # 3 cycles at tier-1; local-ci runs the full 10). Guards capture_graph + the GraphSession
 # capture/recapture path.
 gwstress	cmd	tools/graph-warmup-stress-gate.sh	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 3	-	-
+# isogap/isogapc: the STAGGERED-DEPTH serve isolation contract at the engine tick
+# (lane/iso-gap, task #91, research/iso-gap-20260807/): a session's logits bit-identical
+# solo-vs-coresident ACROSS a fa_split_keys rung boundary — the shape both the equal-depth
+# serve gate and the kernel-check seqs-vs-loop pin were blind to (all their depths sit in one
+# rung). The straddle is placed per-rig (--auto scans the SM-keyed ladder), so the arm has
+# teeth on the 82-SM 5090 AND the 188-SM pod. isogapc = canary (wrong token injected into the
+# co-resident arm's feed; comparator must catch it — changes the WORLD, not the label).
+# NOTE the serve-level solo-vs-loaded byte drift (spec-gate REF/REF_LOAD, byte 1347) is NOT
+# this class: it is the documented b_n==1 fused-trunk<->batched-body config flip at the
+# co-residence boundary (measured: O2==O3S==O3L byte-identical under B1FAST=0+GS=0). This arm
+# pins the within-config isolation that fix relies on.
+isogap	cmd	tools/iso-gap-gate.sh	-	-	-
+isogapc	cmd	tools/iso-gap-gate.sh	--canary	-	-
 # amargin/amarginc: the CALIBRATED prefill-vs-decode argmax gate (lane/q8-argmax,
 # research/q8-argmax-20260806/VERDICT.md). run-gen's own gate asserts forward_last and the
 # decode_step loop agree at ONE position (the last) and calls any disagreement a "cache
