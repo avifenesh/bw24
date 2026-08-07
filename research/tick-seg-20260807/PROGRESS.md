@@ -252,6 +252,27 @@ every short interactive prompt, i.e. its own measured lane, not a rider on this 
 lane guarantees: a single request is bit-identical under every segmentation serve can produce
 (tick budgets, SLO-capped budgets, LCP splits, off-grid resumes of its own prefix).
 
+## Deliverable summary
+
+| BAR item | status |
+|---|---|
+| 1. tickinv registered as fast-gate arm (first commit, red) | done — bd7c2c30 (`tickinv35`/`tickinv35c`, tools/tick-invariance-gate.sh, map routes hybrid_forward-class + memra-server) |
+| 2. fix: request-level seq_end survives tick splits, API + every caller | done — 6b535472 (`prime_cache(.., queued_after)`; worker passes prefill_queue.len(); ~60 single-shot callers pass 0) |
+| 2. off-grid-resume arm (vLLM #51113 second law) | done — probe `--splits`, arms sp64/sp256/sp512 in the registered gate |
+| 3. tickinv all budgets EXACT on the pair box | **GREEN** — 1024/513/512/256/64 + sp64/sp256/sp512 all EXACT (was RED: 512/256/64 DIFFER 1.813e0) |
+| 3. canary teeth | **PASS** — seam restores the receipt digit-for-digit; splits give the FIRST MEASURED LCP receipts (1.735/1.594/1.813) |
+| 3. chunkinv35 no-regression | **PASS** + its canary intact |
+| 3. kernel-check / run-gen / ppn-gate / run-spec on box | ALL GREEN / argmax 6776 MATCH PP-2 / BIT-IDENTICAL serial+pipelined / K=1..8 8/8 PASS, acceptance digit-identical to baseline |
+| 3. unaffected-arch control | 5090: qwen chunkinv+canary PASS, q9 tickinv EXACT, q9/q35 argmax MATCH; plus change-scoped fast-gate tier1 0 fail (incl. sstress c=64) and serve-smoke 0 failed |
+| 4. perf N=5 interleaved, STOP bar 1% on the default | **+0.068%** (default), +0.374% (dark-lane 256), -0.008% (null) — not triggered, ships |
+| 5. evidence | all raw logs in raw/ (incl. per-probe tables pulled off box /tmp before spot reclaim); every claim receipted |
+
+**What a reader should carry away:** serve can no longer steer step35's prefill arithmetic by
+HOW it segments a request — tick budgets, SLO-capped dark budgets, LCP splits, and off-grid
+resumes are all bit-identical to a monolithic prime, gated in both directions. The residual
+worth knowing is the extent-class prefix-cache note above (creator-extent-keyed KV bytes,
+inside the documented contract, canonical fix = one numeric class — its own measured lane).
+
 ## State log
 
 - 2026-08-07: worktree clean at 006aca75 (lane/tick-seg). Three restart kills burned context on
