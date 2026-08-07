@@ -1,6 +1,7 @@
 # docs-fit sweep — 2026-08-07 (lane/docs-fit)
 
-Base: `origin/restructure/public-split` @ `9971e7f8`. Scope: make README + docs describe the
+Base: `origin/restructure/public-split` @ `9971e7f8`, **rebased mid-lane onto `d873240e`** when
+`lane/spec-gate` merged (see Deferred 1, now resolved). Scope: make README + docs describe the
 product as it now is, after v0.71.0 and the merged lane run (pp2-batch, pp2-spec, pp2-hardening,
 serve-hardening, spec-scaling, accept-gate, step37-p2, chunkinv-flip, f8f4-flip, q8-argmax,
 ptx-audit). No code touched, nothing built, no `PERF-*` marker block hand-edited;
@@ -12,17 +13,21 @@ on this base, and — after cross-checking an audit against the step37 receipts 
 error I had myself written into an earlier commit in this lane**. Each is recorded below rather
 than quietly corrected.
 
-Three passes, because the first one read prose and the later ones read the artifact. Pass 1 worked
+Four passes, because the first one read prose and the later ones read the artifact. Pass 1 worked
 from the assignment's change list. Pass 2 read every gate wrapper's argument parsing and refusal
 logic instead of its description. Pass 3 read the serve code paths behind each documented contract.
-Passes 2 and 3 found 16 further drifts, including the two inverted statements — a doc audit that
-only reads docs cannot find a sentence whose negation is the code.
+Pass 4 was forced by the base moving under the lane. Passes 2-4 found 19 further drifts, including
+both inverted statements and one of the two over-claimed contracts — a doc audit that only reads
+docs cannot find a sentence whose negation is the code.
 
-Totals: **34 drifts fixed** (13 first-pass + 5 FLAGS.md + 2 cross-doc + 6 TESTING.md + 10 SERVING.md
-including the code's own stale module header), **4 deferred with reason**, **6 owner calls**.
-Two of the fixes are corrections to statements that were **inverted** rather than merely stale
-(accept-gate's `--force`, the SSE error shape) — those are the ones that would have cost a reader
-real time.
+Totals: **37 drifts fixed** (13 first-pass + 5 FLAGS.md + 2 cross-doc + 6 TESTING.md + 10 SERVING.md
+including the code's own stale module header + 3 spec-gate), **3 still deferred with reason** (a
+fourth resolved when its lane merged mid-sweep), **6 owner calls**.
+
+Two of the fixes correct statements that were **inverted** rather than merely stale (accept-gate's
+`--force`, the SSE error shape) and two more are **over-claimed contracts** — chunk-invariance and
+concurrent-load isolation, both real properties asserted more broadly than their gates establish.
+Those four are the ones that would have cost a reader real time; the rest are staleness.
 
 ## Fixed (13)
 
@@ -185,17 +190,49 @@ Method: read every gate wrapper's argument parsing and refusal logic instead of 
   `worker` object. Rewritten to the real set, pointing at `router()` as the authority. The only
   non-`.md` edit in this lane, and comment-only.
 
-## Deferred, with reason (4)
+### Fourth pass — the base moved: lane/spec-gate coverage (3 more, `f329e951`)
 
-1. **`lane/spec-gate` / concurrency-gated spec scheduler — NOT ON THIS BASE.** The brief flagged
-   it as "may merge while you work — check the train tip". Checked after a fresh fetch: tip is
-   still `9971e7f8`, and `git branch -r --contains faba56cf` returns nothing. Related: the brief's
-   `MEMRA_SPEC_GATE` **does not exist anywhere in the repo** — zero hits in `crates/`, `tools/`,
-   or `research/`. Documenting a flag by name from a brief, without a read site, is exactly the
-   failure mode that left `MEMRA_MOE_GDEC_GATE` listed for a month. The refutation that motivated
-   the lane *is* on this base (`fe2b3740`, spec serializes at `worker.rs:1686`, obvious fix
-   refuted by the m=16 exact-kernel ceiling); when the scheduler lands, its flag and its
-   concurrency threshold need a FLAGS.md row and a SERVING.md paragraph.
+Base advanced `9971e7f8` → `d873240e` mid-lane. Rebased; the merge's own docs commit
+(`446c5203`) covered FLAGS.md and SERVING.md, leaving three surfaces:
+
+- **README described spec and batched serving as two listed features**, which is how the
+  superseded guidance read ("run spec and bulk as separate server processes"). Rewritten as one
+  gated process — spec admitted at low concurrency, live sessions demoted into the batched phase
+  as load arrives, byte-exact for greedy — stated as the reader-facing property (the server
+  tracks whichever tier wins at the current concurrency instead of picking at deploy time) with
+  thresholds left in FLAGS.md.
+- **README's concurrent-load isolation contract was unconditional** — "byte-identical whether it
+  arrives alone or inside a full batch" — while SERVING.md had just scoped it to *equal depth*.
+  Exactly the same class as the chunk-invariance drift found in pass 1: a real contract,
+  over-claimed. Scoped with the receipt (768-token greedy vs staggered-depth batchmates diverges
+  at byte 1347 on one run, 2379 on another — the byte *moving* is the proof the configuration is
+  nondeterministic), named as pre-existing engine behavior with its mechanism (one `split_keys`
+  across mixed-depth sessions in `fa_decode_batch_seqs_v4` + B-dependent tier selection), and
+  added as a Known gap so the exposure is listed rather than merely qualified.
+- **TESTING.md had no serve-path exactness section at all**, so `exactness.py` (5 arms, one server
+  boot each) was invisible and its not-in-any-battery status unstated. Added with the two
+  load-bearing facts: the pinned-shape method (`MEMRA_SPEC_DEMOTE_AT` forces the transition at
+  B=1 with no load, because under load neither arrival timing nor batch composition is
+  deterministic — generalized into a rule for any property under test inside a nondeterministic
+  config) and the three arms that each once produced a false green.
+
+## Deferred, with reason (4 → 3 live)
+
+1. ~~**`lane/spec-gate` — NOT ON THIS BASE.**~~ **RESOLVED: it merged mid-lane and is now
+   covered.** The brief flagged it as "may merge while you work — check the train tip", and it
+   did: base moved `9971e7f8` → `d873240e` (`Merge lane/spec-gate: concurrency-gated spec ships
+   as DEFAULT`). Rebased onto it; one FLAGS.md conflict, resolved by keeping the base's two new
+   `MEMRA_SPEC_GATE*` rows and this lane's `MEMRA_SERVE_SPEC` row with its PP-2 addendum — both
+   changes are needed and neither supersedes the other. The merge brought its own FLAGS.md and
+   SERVING.md coverage, so what remained were the surfaces it did not reach, fixed in `f329e951`:
+   README described "speculative serving" as a listed feature (reading as two deployment choices,
+   which was literally the superseded guidance) rather than as one gated process; README's
+   isolation contract was **unconditional** where SERVING.md had just scoped it to equal depth;
+   and TESTING.md had no serve-path exactness section, leaving the mode-switch harness invisible.
+   Note the sequencing lesson: had this lane trusted the brief and documented `MEMRA_SPEC_GATE`
+   from its name, the row would have been wrong in detail (the flag ships with `_LOW`/`_HIGH`
+   thresholds, a hysteresis band, and one-way demotion — none of which a name implies) and would
+   have collided with the real one. Waiting for a read site was correct.
 2. **The brief's crash id "#87" has no in-repo trace.** Zero hits in any `.md`. Every reference
    in the docs I wrote cites `research/pp2-spec-20260806/` and commit `5882b753` instead. If #87
    is a tracker id, the docs should carry the link — owner call on whether to add it.
