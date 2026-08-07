@@ -1,0 +1,6 @@
+verification_utc=2026-08-07T23:25:52Z
+curl -fsS --max-time 5 http://127.0.0.1:8002/metrics
+curl: (7) Failed to connect to 127.0.0.1 port 8002 after 0 ms: Could not connect to server
+curl_exit=7
+live_server=false
+five_minute_replay=not_run

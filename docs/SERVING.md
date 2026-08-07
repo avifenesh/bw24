@@ -778,11 +778,21 @@ computed_prompt_tokens` at a chosen cached-token billing factor (`--cache-billin
 and the tick-seg window share. JSON row on stdout (ledger-appendable), summary on stderr.
 
 **Fleet receipt accumulator** (`tools/fleet-meter.sh`): the pre-listing hit-rate receipt for
-the owner's own agent traffic. A one-shot scrape of `http://127.0.0.1:8002/metrics` appends
-only the UTC timestamp, prompt/cached/computed counters, hit ratio, LCP histogram, tenants,
-and a `restart` marker to `research/fleet-meter/rig5090-fleet.jsonl`. An unchanged scrape is
+controlled replay traffic. A one-shot scrape of `http://127.0.0.1:8002/metrics` appends only
+the UTC timestamp, prompt/cached/computed counters, hit ratio, LCP histogram, tenants, and a
+`restart` marker to `research/fleet-meter/rig5090-fleet.jsonl`. An unchanged scrape is
 idempotently skipped. A failed scrape logs `skip` and exits successfully; it never starts,
 stops, or otherwise mutates the owner-critical server.
+
+**Fleet replay driver** (`tools/fleet-replay.py`): run only in dev-idle windows against the
+existing port-8002 deployment. Its low defaults are five minutes at 3 requests/minute,
+89.5:1 prompt:completion, 12 carried synthetic sessions, four tenant-scoped `cache_salt`
+values, and eight shared 1k-4k-token system-prompt/tool-schema templates; exponential
+inter-arrival times and 2-4-turn session bursts exercise both prefix sharing and continuation.
+Set `MEMRA_API_KEY` to the local deployment key and run
+`tools/fleet-replay.py --duration 300`. Any meter interval driven by this tool is labeled
+**replay-calibrated**: it is a controlled synthetic workload and must never be described as
+organic traffic.
 
 ```bash
 tools/fleet-meter.sh --once                         # cron/timer-safe snapshot
