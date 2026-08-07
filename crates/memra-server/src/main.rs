@@ -808,7 +808,13 @@ fn engine_error_response_with_retry_after(
     retry_after_s: Option<u64>,
 ) -> Response {
     let (status, _, _) = class_http(e.class);
-    let mut resp = (status, Json(engine_error_body(e))).into_response();
+    let resp = (status, Json(engine_error_body(e))).into_response();
+    retry_contract_response(resp, retry_after_s)
+}
+
+/// Apply memra's retry headers to any response body.
+fn retry_contract_response(mut resp: Response, retry_after_s: Option<u64>) -> Response {
+    let status = resp.status();
     let h = resp.headers_mut();
     match retry_after_s {
         Some(secs) => {
@@ -1381,8 +1387,11 @@ async fn health_live(State(st): State<AppState>) -> impl IntoResponse {
     }
     match st.health.live() {
         Ok(()) => (StatusCode::OK, Json(health_payload(&st, "ok", None))).into_response(),
-        Err(why) => (StatusCode::SERVICE_UNAVAILABLE,
-                     Json(health_payload(&st, "unhealthy", Some(&why)))).into_response(),
+        Err(why) => retry_contract_response(
+            (StatusCode::SERVICE_UNAVAILABLE,
+             Json(health_payload(&st, "unhealthy", Some(&why)))).into_response(),
+            Some(worker::WORKER_RESPAWN_BACKOFF_BASE_S),
+        ),
     }
 }
 
@@ -3677,6 +3686,19 @@ mod tests {
         st.health.mark_ready();
         assert_eq!(health_live(State(st.clone())).await.into_response().status(),
                    StatusCode::OK, "mark_ready must clear the latch (a successful respawn)");
+    }
+
+    #[tokio::test]
+    async fn liveness_failure_obeys_the_retry_contract() {
+        let st = fake_worker_state();
+        st.health.mark_dead("worker thread panicked: retry-contract-test");
+
+        let resp = health_live(State(st)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+        assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
+        assert_ne!(resp.headers().get("x-should-retry")
+            .and_then(|v| v.to_str().ok()), Some("false"));
     }
 
     #[tokio::test]
