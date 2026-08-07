@@ -348,6 +348,30 @@ window.
   (FLAGS.md `MEMRA_SERVE_SPEC` + `MEMRA_MTP_DRAFT`, DRAFT-REGIME.md) flipped to lifted,
   with the dev01 ~20x placement-perf note kept (a scheduling property, not a crash).
 
+## Quarantine-lifted perf (raw/perf/) — N=5 interleaved (c=1: N=3), dev10, fixed binary
+
+**Naked boot proof**: the quarantine-removed binary boots `MEMRA_PP_STAGES=2
+MEMRA_PP_DEVICES=1,0` + embedded-MTP q9 with NO override env (the variable no longer
+exists), serves 16/16 at c=4, `[spec-acc]` lines live, zero illegal/sentinel lines.
+
+| arm | c=1 | c=2 | c=4 |
+|---|---|---|---|
+| S: spec ON (`MEMRA_SPEC_GATE=0`, pure spec path) | 112.5 | 112.3 | 112.1 |
+| N: spec OFF (batched plain) | 223.3 | 340.3 | 593.4 |
+
+(agg tok/s, medians; spreads < 1 tok/s on every cell — the arms are stable.)
+
+The concurrency-gated spec scheduler's (#89) premise HOLDS on PP-2 — with a twist: on
+THIS placement spec-ON never wins, even at c=1 (112 vs 223). The spec-scaling law
+reproduces (S flat 112.5 -> 112.1 across 4x load: the serial-burst queue shape; N scales
+2.7x), but the door-shut c=1 spec WIN (253 vs 139 on single-card, research/spec-scaling)
+does not transfer to dev10 PP-2 at these settings. So the CRASH is fixed and the gate's
+demote-at-c>=4 policy is directionally right on PP-2; whether spec-ON should engage at
+all on this placement is a PERF question for the spec-gate/placement lane (T_LOW=0 for
+PP-2, or a placement-aware gate), not a correctness one. #89's default gate (LOW=2,
+HIGH=4) already keeps c>=4 traffic off the spec path; the c<=2 window on PP-2 leaves
+~2-3x on the table until that tuning happens — flagged, not silently shipped.
+
 ## Known non-blockers, recorded
 
 - `MEMRA_EVT=1` (cudarc event-tracking escape hatch) is INCOMPATIBLE with the ppN
