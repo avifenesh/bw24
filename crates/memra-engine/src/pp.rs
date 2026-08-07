@@ -283,6 +283,32 @@ pub fn batch_pp_on() -> bool {
     std::env::var("MEMRA_BATCH_PP").as_deref() != Ok("0")
 }
 
+/// MEMRA_PRIME_PP=0: rollback/A-B seam for the PRIME (chunked prefill) stage split
+/// (lane/pp-leverb 2026-08-08). Default ON — with the ppN door open the chunked prime takes
+/// its own per-stage range walk exactly as the eager/batched/verify steps do. Setting 0 sends
+/// prime back through the unsplit whole-trunk walk. NOTE: unlike batch/dc/graph/spec, prime
+/// keeps NO `refuse_unsplit_if_remote` — its unsplit walk over a sharded placement is the
+/// measured 22% amortized peer-read tax (research/pp-prefill-20260807 anatomy: m=4096
+/// amortizes the weight reads), not the decode 28x cliff, and the unsplit walk IS the
+/// split-vs-unsplit gate's reference arm (`prime-split-gate`), so it must stay callable.
+/// Read per call, never memoized (the gate A/Bs both arms in one process).
+pub fn prime_pp_on() -> bool {
+    std::env::var("MEMRA_PRIME_PP").as_deref() != Ok("0")
+}
+
+/// SPLIT-LIVENESS COUNTER for the prime stage split: bumped ONCE per prime chunk that
+/// actually executed the per-stage walk. The `prime-split-gate` requires this to ADVANCE
+/// during its split arm — bit-identity of two identical UNSPLIT walks is vacuous, so a gate
+/// that only compared bits would go green while the walker doesn't exist. With the counter,
+/// the gate is RED until the walker lands (the tickinv35 pattern: the gate exists and fails
+/// before the mechanism does). Relaxed ordering: single-threaded host issue, count-only.
+pub static PRIME_SPLIT_CHUNKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the split-liveness counter (gate-side).
+pub fn prime_split_chunks() -> usize {
+    PRIME_SPLIT_CHUNKS.load(Ordering::Relaxed)
+}
+
 /// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).
 /// Default ON — with the ppN door open the verify forward (`decode_step_t_core_ppn`) takes its
 /// own stage split exactly as the eager and batched steps do. Setting 0 sends verify back through

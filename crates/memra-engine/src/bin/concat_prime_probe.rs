@@ -1278,6 +1278,129 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      std::env::var("MEMRA_PRIME_CALLLOCAL").unwrap_or_else(|_| "0".into()));
         }
 
+        // SPLIT-VS-UNSPLIT PRIME BIT-IDENTITY (lane/pp-leverb, 2026-08-08): the Lever-B gate,
+        // built RED before the walker exists (the tickinv35 pattern). Two arms in ONE process
+        // over the SAME sharded load (the door must be open BEFORE the probe starts — the
+        // gate script exports MEMRA_PP_STAGES/MEMRA_PP_DEVICES; a door-off load of a >VRAM
+        // SKU doesn't fit one card, so the reference is the door-open UNSPLIT walk, which
+        // prime deliberately keeps callable — its 22% amortized tax is this gate's reference
+        // arm, not a refusal case):
+        //   arm REF:   MEMRA_PRIME_PP=0  — today's whole-trunk prime on the primary engine;
+        //   arm SPLIT: MEMRA_PRIME_PP unset — the per-stage prime walker.
+        // Compared bit-for-bit: last-row logits, h_seed, the full [T, n_embd] hidden stack,
+        // and `--steps` TEACHER-FORCED decode steps replaying the reference greedy stream —
+        // the decode steps read the KV the prime WROTE, so a split prime that lands stage-1
+        // KV bytes wrong fails here even if its returned logits agree.
+        // SPLIT LIVENESS TEETH: bit-identity of two identical unsplit walks is vacuous, so
+        // the split arm must ADVANCE pp::PRIME_SPLIT_CHUNKS by the chunk count (and the ref
+        // arm must NOT) — walker absent => counter frozen => RED. `--force-unsplit` is the
+        // canary injection (runs the "split" arm with MEMRA_PRIME_PP=0): once the gate is
+        // green it must flip it back to RED, proving the liveness check has teeth.
+        //   ppsplit <model> ppsplit --prompt-a <txt|@f> [--chunks 4096,513] [--steps 8]
+        //                           [--force-unsplit]
+        "ppsplit" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let chunks_s = arg(&rest, "--chunks").unwrap_or_else(|| "4096,513".into());
+            let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(8);
+            let force_unsplit = rest.iter().any(|a| a == "--force-unsplit");
+            let ids = cx.tok.encode(&pa, true);
+            let t = ids.len();
+            let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
+            assert!(t >= min_t, "ppsplit needs a prompt of >= {min_t} tokens");
+            let door_open = memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some();
+            println!(
+                "ppsplit: T={t} steps={steps} chunks={chunks_s} door={} devices={} \
+                 force_unsplit={force_unsplit}",
+                if door_open { "OPEN" } else { "SHUT" },
+                std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into())
+            );
+            if !door_open {
+                // A door-shut run compares the unsplit walk against itself — vacuously green.
+                // Refuse loudly instead of faking a PASS.
+                println!("ppsplit verdict: *** DOOR-SHUT (export MEMRA_PP_STAGES before load)");
+                std::process::exit(2);
+            }
+            let bits = |a: &[f32], b: &[f32]| {
+                a.iter().zip(b).filter(|(x, y)| x.to_bits() != y.to_bits()).count()
+            };
+            type ArmOut = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<Vec<f32>>, Vec<u32>, usize);
+            // `replay`: None = greedy self-feed (reference); Some = teacher-force (split arm
+            // consumes the reference stream so a divergence cannot desync the comparison).
+            let run_arm = |split: bool, replay: Option<&[u32]>|
+                          -> Result<ArmOut, Box<dyn std::error::Error>> {
+                unsafe {
+                    if split && !force_unsplit {
+                        std::env::remove_var("MEMRA_PRIME_PP");
+                    } else {
+                        std::env::set_var("MEMRA_PRIME_PP", "0");
+                    }
+                }
+                let c0 = memra_engine::pp::prime_split_chunks();
+                let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + steps + 8)?;
+                let (logits, h_seed, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
+                let split_chunks = memra_engine::pp::prime_split_chunks() - c0;
+                let hid_h = cx.e.dtoh(&hid)?;
+                let hs_h = cx.e.dtoh(&h_seed)?;
+                let mut inputs: Vec<u32> = Vec::with_capacity(steps);
+                let mut dec: Vec<Vec<f32>> = Vec::with_capacity(steps);
+                let mut tok = argmax(&logits) as u32;
+                for s in 0..steps {
+                    let inp = replay.map(|r| r[s]).unwrap_or(tok);
+                    inputs.push(inp);
+                    let l = cx.model.decode_step(&cx.e, inp, &mut c)?;
+                    tok = argmax(&l) as u32;
+                    dec.push(l);
+                }
+                Ok((logits, hs_h, hid_h, dec, inputs, split_chunks))
+            };
+            let mut fail = false;
+            for cv in chunks_s.split(',') {
+                let cv = cv.trim();
+                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
+                // expected chunk count = prime_cache's own loop (incl. the PRIME_MIN_T tail
+                // merge), so the liveness bar tracks the real segmentation at every --chunks.
+                let chunk: usize = cv.parse().unwrap_or(0);
+                let expected = if chunk == 0 || t <= chunk {
+                    1
+                } else {
+                    let (mut n, mut start) = (0usize, 0usize);
+                    while start < t {
+                        let mut end = (start + chunk).min(t);
+                        if t - end > 0 && t - end < min_t { end = t; }
+                        n += 1;
+                        start = end;
+                    }
+                    n
+                };
+                let (l_ref, hs_ref, hid_ref, dec_ref, inp_ref, n_ref) = run_arm(false, None)?;
+                let (l_sp, hs_sp, hid_sp, dec_sp, _, n_sp) = run_arm(true, Some(&inp_ref))?;
+                let dl = bits(&l_ref, &l_sp);
+                let dhs = bits(&hs_ref, &hs_sp);
+                let dh = bits(&hid_ref, &hid_sp);
+                let ddec: usize = dec_ref.iter().zip(&dec_sp).map(|(a, b)| bits(a, b)).sum();
+                let exact = dl + dhs + dh + ddec == 0;
+                let live = n_sp >= expected && n_ref == 0;
+                println!(
+                    "  chunk {cv} | logits diff {dl}/{} | h_seed diff {dhs}/{} | hidden diff \
+                     {dh}/{} | decode diff {ddec} over {steps} steps | split_chunks ref={n_ref} \
+                     split={n_sp} (need split >= {expected}, ref == 0) | {}",
+                    l_ref.len(), hs_ref.len(), hid_ref.len(),
+                    match (exact, live) {
+                        (true, true) => "EXACT+LIVE",
+                        (true, false) => "*** SPLIT-NOT-LIVE (bit-identity vacuous)",
+                        (false, _) => "*** MISMATCH",
+                    }
+                );
+                if !(exact && live) { fail = true; }
+            }
+            unsafe { std::env::remove_var("MEMRA_PRIME_PP") };
+            if fail {
+                println!("ppsplit verdict: *** RED (split prime absent, not live, or not bit-identical)");
+                std::process::exit(1);
+            }
+            println!("ppsplit verdict: SPLIT BIT-IDENTICAL + LIVE (T={t}, chunks={chunks_s}, {steps} decode steps)");
+        }
+
         m => return Err(format!("unknown mode {m}").into()),
     }
     Ok(())
