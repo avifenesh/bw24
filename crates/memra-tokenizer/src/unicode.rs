@@ -419,9 +419,18 @@ fn c_is_punct(b: u8) -> bool {
             0x21..=0x23 | 0x25..=0x2A | 0x2C..=0x2F | 0x3A..=0x3B | 0x3F..=0x40
             | 0x5B..=0x5D | 0x5F | 0x7B | 0x7D)
 }
+/// DELIBERATE divergence from upstream llama.cpp: `0x7E` (`~`, U+007E, category Sm) is
+/// included here but MISSING from upstream's `k_ucat_map` SYMBOL expansion
+/// (``"$+<=>^`|"``, `unicode.cpp:1244`, verified on master 2026-08-07) — the single
+/// printable-ASCII codepoint where that map disagrees with real Unicode P/S (enumerated
+/// over 0x21..0x7E). The HF reference tokenizer's `\p{S}` DOES match `~`, so upstream
+/// splits `" ~"` as `[" ", "~"]` while the tokenizer the model was TRAINED with produces
+/// `[" ~"]` (one pre-token, `Ġ~`). memra matches the training-time ground truth; receipt:
+/// `research/step-sku-20260807/raw/tok-parity-20260807T0640Z.log` (the one corpus
+/// mismatch before this fix, `symbols-spaced`, id 6883 `Ġ~` vs `223,96`).
 #[inline]
 fn c_is_symbol(b: u8) -> bool {
-    b == 0xD5 || matches!(b, 0x24 | 0x2B | 0x3C..=0x3E | 0x5E | 0x60 | 0x7C)
+    b == 0xD5 || matches!(b, 0x24 | 0x2B | 0x3C..=0x3E | 0x5E | 0x60 | 0x7C | 0x7E)
 }
 #[inline]
 fn c_is_number(b: u8) -> bool {
@@ -651,7 +660,7 @@ mod tests {
         ("混合 English 中文 123", &["混合", " English", " ", "中文", " ", "123"]),
         ("日本語のテスト、カタカナ", &["日本語のテスト", "、", "カタカナ"]),
         ("한국어 테스트", &["한국어", " 테스트"]),
-        ("emoji 🚀 and symbols ~ ^ | $ +", &["emoji", " 🚀", " and", " symbols", " ", "~", " ^", " |", " $", " +"]),
+        ("emoji 🚀 and symbols ~ ^ | $ +", &["emoji", " 🚀", " and", " symbols", " ~", " ^", " |", " $", " +"]),
         ("naïve café résumé", &["naïve", " café", " résumé"]),
         ("Ünïcödé mÄrks", &["Ünïcödé", " mÄrks"]),
         ("áb̧c", &["áb̧c"]),
@@ -744,11 +753,17 @@ mod tests {
         assert_eq!(d("▁escaped▁space"), ["▁", "escaped", "▁", "space"]);
         assert_eq!(q("▁escaped▁space"), ["▁escaped", "▁space"]);
 
-        // A space before a \p{P}/\p{S} run is absorbed by alt 3 only when the run is
-        // punct/symbol; '~' is \p{S} sub-128 in the collapsed map, so " ~" splits differently
-        // from qwen35's complement class.
-        assert_eq!(d(" symbols ~ ^"), [" symbols", " ", "~", " ^"]);
-        assert_eq!(q(" symbols ~ ^"), [" symbols", " ~", " ^"]);
+        // alt 3 is ' ?[\p{P}\p{S}]+' — a STRICT class, unlike qwen35's complement
+        // [^\s\p{L}\p{N}]+ which also swallows format/control codepoints. ZWSP (U+200B, Cf)
+        // is in neither \p{P} nor \p{S}, so deepseek-v3 leaves it as its own gap word while
+        // qwen35 absorbs it into the punct run.
+        assert_eq!(d("a\u{200b}!"), ["a", "\u{200b}", "!"]);
+        assert_eq!(q("a\u{200b}!"), ["a", "\u{200b}!"]);
+        // '~' IS \p{S} (U+007E, Sm) — upstream llama.cpp's k_ucat_map omits it from the
+        // sub-128 SYMBOL expansion; memra deliberately includes it to match the HF
+        // training-time tokenizer (see c_is_symbol). Pre-fix this split as
+        // [" symbols", " ", "~", " ^"], which is what upstream still produces.
+        assert_eq!(d(" symbols ~ ^"), [" symbols", " ~", " ^"]);
 
         // alt 1 has no counterpart in qwen35 at all: ASCII punctuation immediately followed by
         // ASCII letters is ONE token, and it stops at a non-letter.
