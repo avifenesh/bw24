@@ -672,6 +672,28 @@ fn serve_spec_enabled() -> bool {
     *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// #87 DIAGNOSTIC DOOR (lane/pp2spec-crash, 2026-08-07): boot the quarantined spec+PP-2
+/// regime anyway. Exists so the crash lane can run the repro/sanitizer batteries against a
+/// server binary that otherwise refuses the regime at parse time — the refusal is correct
+/// for operators and would otherwise also be a wall for the debugger. NEVER a serving
+/// config: the regime loses 100% of requests at c=4 and poisons the CUDA context
+/// (research/pp2-spec-20260806). Loud at startup so a log can never be mistaken for a
+/// production run. Dies with the quarantine itself when #87 is fixed.
+fn pp2spec_quarantine_override() -> bool {
+    static O: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *O.get_or_init(|| {
+        let on = std::env::var("MEMRA_PP2SPEC_UNQUARANTINE").as_deref() == Ok("1");
+        if on {
+            eprintln!(
+                "[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine \
+                 is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS \
+                 under concurrent spec sessions; this is not a serving configuration."
+            );
+        }
+        on
+    })
+}
+
 /// ---- CONCURRENCY-GATED SPEC (lane/spec-gate, task #89, 2026-08-07) ----
 ///
 /// THE MEASUREMENT THAT FORCES THIS (research/spec-scaling-20260806, merged fe2b3740, N=3
@@ -839,6 +861,9 @@ pub fn draft_verdict_message(v: &DraftVerdict, name: &str, path: &str) -> Option
 /// do: it covers the EMBEDDED-head case, where `mtp.is_some()` is only known after the trunk is
 /// parsed. This is the subset that does not need the model.
 pub fn preflight_pp2_spec_refusal(models: &[(String, String, Option<String>)]) -> Option<String> {
+    if pp2spec_quarantine_override() {
+        return None; // #87 diagnostic door — the override fn already shouted at startup.
+    }
     preflight_pp2_spec_refusal_inner(
         models,
         serve_spec_enabled(),
@@ -1478,10 +1503,11 @@ pub fn run(
                 // #87: refuse at LOAD. `ready_tx.send(Err(..))` is the established refusal
                 // channel — main() prints it as `FATAL: worker init failed` and exits 1, so
                 // this cannot be mistaken for a warning.
-                DraftVerdict::RefuseSpecOverPp2 => {
+                DraftVerdict::RefuseSpecOverPp2 if !pp2spec_quarantine_override() => {
                     let _ = ready_tx.send(Err(msg));
                     return;
                 }
+                DraftVerdict::RefuseSpecOverPp2 => { /* diagnostic door — warned at boot */ }
                 _ => eprintln!("{msg}"),
             }
         }
