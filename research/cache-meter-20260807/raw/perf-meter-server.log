@@ -1,0 +1,220 @@
+[server] starting; models config = [("smoke", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8179
+[meter] admit id=cmpl-96faff16625a48ed2090f951f908e60b tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 272 tokens, 58.9MB (resident 58.9MB / 268MB, model smoke, ns "perf-meter")
+[meter] admit id=cmpl-30c3d2a27875cd5bbfac39cbd0d3344e tenant=default lane=interactive model="smoke"
+[prefix-cache] insert (lcp-split): 256 tokens, 58.7MB (resident 117.6MB / 268MB, model smoke, ns "perf-meter")
+[meter] admit id=cmpl-f9f2340da6003f7682c29bf31e95281c tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-f8d18e1672def304357ee315a0f06e5d tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-73cd7da22e66c95a31232b550f54c4d8 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2d78b47a29df73a6f86e1331975ea857 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-1778267c489b310a4e44746a77c17f5a tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-dccf4abcdb727dbfa49dd31797a92fba tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-cba425ec076981174df81550be3e6a3a tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-30fd988c9dd55d2e9c60b9e0d61d408f tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-4c1bd4493042669e6373f48bc2343d5a tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-96b6bdbcf84828240102407fdce5517f tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-a9cdcc0a9fe6d34ede5a8e17450e8399 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2d944b2c8fec685e1b46ac2390961f1e tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-9cd9db4a9887d57495b8439b66b2203b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-a7f8f472dc9c9fe71a5915b2cb991a08 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-5ca318cce6ad16e9fd24589136aaef41 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-eca2976df3113c7299e136e192248be7 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-803e1910d02d14d882466fe2c92e7685 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-ce3dd2219d49220092a19b8c2edd89ec tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-a2cb2b76a02a68f5f1348231be88c33f tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2e60b86dc4ac50c90eae03c430c9e545 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-e60aece35a7340217202e6a8d9a0ac2f tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-547b75dd182274cbc8ff5f7fa244b7ac tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-75f9f90e6227d5c315a033c2c9c2f90d tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-cea0709d18a7fba9dfcce1fb33224839 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-3ac9b76083ec0fe3aa1de76115a3dbe2 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-28bcb80707e38fc92ae699931ed7a311 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-1aafd4a8a0a61117a68f72e6710ba116 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-4a7d300828fad8ae52fcec6fcd134910 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-d51bdff70fef85b560ae848ea6be1884 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-d73e9458ba885a05c30316116a614de2 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-250b02eeb318d18b3c83a122c0aebd24 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-59206ac761237590c534dff8c3d199f1 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-46626e5f896e641901c0fde105c5a23c tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-113de146b0c42b770fc31b40ca06b687 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-b485c01757bc7acc91f38729204f2cf6 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-77fc2fcfd557e598cd001c0ef2954a58 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-64bac16edc415492a42694b48995ad85 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-aaf379a77040b51fb76e6256de9d4890 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-66782f0cf9af7e6010c4a7e0c8bddeff tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-6fb894d33afe5be9ee41eb5d6dce9f0b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-c2143d0a0fe83592f9fe0bc5da12e5ed tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-05669034f483b39249d8de7b10b5ef36 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2149bcfbb14dc7a009e4c89b92eaf23b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-4e3ee90d0b310ac752f1128c0e09d016 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-3f5985971f6f6b1bea414aa7c99e1ede tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-82d91267f67992eec19a0055d8cb81cc tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-ad15446741f60031aa7480c45a4770da tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-f967e8d831912b47275a01083c3c13de tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-568a70f2a7ce75abe2deee2a779a30d9 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-fa4798db58a0f6f7050e992731a158f7 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-496723d44fd78f8b64c6c532d26f29c7 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-cf0e5645545dbaccbd0d56665dec45eb tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-f4adfa3d3efbb99575fa9ad68076c73c tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-0f7807103b7affc4efa8eaa5b9e0e3e1 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-0b1978529672457071d7b13c9293c009 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2120cfbebab8c444c3df274c1db7c150 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-e7e3ddfb7db77997f01d5b7b3a2687e5 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-b9f2933dc716bbc8ffbaf0267d9c2b39 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-3db5c4e9eb3e01260ed683da94f25c62 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-0cfc6b008cbb1093979f6c93170c7823 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-02f898ea51108f3643e7142695d8e180 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-c180aa47c6d8dc88b6b94ed2c822eade tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-e4355b98c359565fbe4968e2c9de47b5 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-8fddda7660f5880483a3892fe286e3e9 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-986daef2ef8f344fc1b18aeb61224e69 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-6b5087ebbd98463ff46a000cb35305b9 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-84acb874dbc37eda2557d2c05bae9961 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-a7be08ebd63b915921316a435028843d tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-d7013fb73e020698e51d73a9ee99a851 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-ab1f65d47e8e2bf8799c97ef09c8c31d tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-56b5bf9518b33a14d27ee496c851bd02 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-ece0e306d1b8a5eb6590fae7ba38ca9b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-e69af1059b53d54a2ea2415ff9857ee7 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-066a1a2df78c553acd92bb587248104b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2f79f37a683b593d7641a1448921fc6b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-f561e4290138cd3390bf4b034dd775d8 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-7eaabfe108a57e0aa78c9e180cf470f7 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-2c7f8a6226bb0d335fa7f8d06108a7cc tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-8f00860175db9a6b30a9543576b70b57 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-7ddb0fdbf9f62d9183d8e410ec2d43bc tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-1b8f53006ad16598fffb6f3db6b136d4 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-7d1d5e38befc4a287523981eafb8129b tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-05cbf57fb34cc1c191232f4de47994e9 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-50e60df25f2e6077509a8fe8e327935d tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-fe5a72f81188ad58b5bde20f3fdeff40 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-b6e6bc82428b3f9e770f120ddebd2edb tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-3bd48479d7bf0da96ea5cd15e7cf30de tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-a9422fd45567a1a5fb9fa124c1100946 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-ad32c93c06d68becc91c4c093c4c16ef tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-c6389300f036fff4026abf9e67fb8035 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-252d02837c6b4f0b0cb30e828fe25dca tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-9e7ca2a4357dda3b72b32f67d41c9256 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-a2f13922161488577a195cc2778b67f2 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-c4c151564aa082f22c96093669bcca3c tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-648139204c1cb2f67ff9ebe31a262df7 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-6118ead72f53b5b4f2dbe8acb63937f9 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-c363a3d57230bd34b2ca3a279039b46c tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-3c57f6fecff42a00317481aa0176b057 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-957c49f28bf8b6d6586254496d649372 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-51a182cabcacdd2d505038b550b7ffb3 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-83c78afea50084c88daf2c22b41cceb6 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

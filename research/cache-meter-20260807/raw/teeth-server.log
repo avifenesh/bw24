@@ -1,0 +1,19 @@
+[server] starting; models config = [("smoke", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 16 (exact-16 tier)
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=cmpl-3a4990ba643cf2309e3dd0ae39f11d4c tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 235MB (admission gate = 2x)
+[meter] admit id=cmpl-c38e86897821bb7f5a449770a558c49b tenant=default lane=interactive model="smoke"
+[meter] admit id=cmpl-2c11b3e60010ef3c4185148479f85b8a tenant=default lane=interactive model="smoke"
+[meter] admit id=cmpl-931cd498dc16997f22eb4ef596aa7903 tenant=default lane=interactive model="smoke"
+[meter] admit id=cmpl-91381643b72a6c5c48d683d16388d3f3 tenant=default lane=interactive model="smoke"
+[meter] admit id=cmpl-01116f9355f700bdb5e8d52752fa887f tenant=default lane=interactive model="smoke"
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
