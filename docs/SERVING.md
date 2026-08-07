@@ -478,7 +478,7 @@ relevant (bind address `MEMRA_ADDR`, default `127.0.0.1:8080`):
 | `GET /models` | the plain listing: `{"data":[{"id":"<alias>"},...]}`. Not an OpenAI route and not a `/v1/models` alias — no `context_length`, `architecture`, or `pricing`. It is what `serve-smoke` and `serve-st-gate` assert against |
 | `POST /v1/completions` | raw-prompt completions. **Streaming shape depends on `MEMRA_COMPAT`** — see the compatibility precondition above |
 | `POST /v1/chat/completions` | always OpenAI-shape |
-| `GET /metrics` | counters + the `spec` acceptance block |
+| `GET /metrics` | counters + the cache-hit metering surface (below) + the `spec` acceptance block |
 | `GET /yield/metrics` | the dark-lane yield view |
 
 **`/health` == `/livez` — inference liveness, not process liveness.** The GPU worker is
@@ -735,10 +735,51 @@ re-run unmodified as the no-salt regression).
 **Accounting:** every response shape carries OpenAI-schema usage with the worker-truth split —
 `usage.prompt_tokens`, `completion_tokens`, `total_tokens`, and
 `prompt_tokens_details.cached_tokens` (tokens resumed from ANY cache tier: continuation pool,
-spec resume, or prefix cache). `/metrics` exposes the cumulative split
-(`prompt_tokens_in`/`cached_tokens_in`) plus `prefix_cache_hits`/`entries`/`bytes`. Cached
+spec resume, or prefix cache — the field name providers report cached reads under: OpenAI,
+OpenRouter, and Grok chat all use `prompt_tokens_details.cached_tokens`). Cached
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
+
+## Cache-hit metering (lane/cache-metering, 2026-08-07)
+
+The aggregate receipt surface for the caching economics — the first-listed-week hit-rate
+number is one query away. `GET /metrics` carries (cumulative since process start,
+worker-truth, published every 32nd tick AND on every request retire so a post-workload
+scrape is never stale):
+
+| field | meaning |
+|---|---|
+| `prompt_tokens_in` / `cached_tokens_in` | every prompt token admitted / the subset served from any cache tier |
+| `computed_tokens_in` | `prompt - cached` — the denominator of the revenue multiplier |
+| `cache_hit_token_ratio` | `cached / prompt`, token-weighted — THE hit-rate number |
+| `prefix_cache_hits/misses/inserts/evictions` | prefix-cache probe outcomes + churn |
+| `prefix_cache_hit_tokens` | token-weighted hit mass (sum of served entry lengths) |
+| `prefix_cache_entries/bytes` | resident state |
+| `lcp_histogram` | `{edges, counts}`: one sample per prefix-cache probe — served entry length on a hit, best LCP on a miss. Lower-edge buckets `[0,1,16,32,64,128,256,512,1024,2048,4096]`, last unbounded; `[64,512)` (buckets 4..=6) is the tick-seg segmentation window |
+| `tenants` | per-tenant `{prompt_tokens_in, cached_tokens_in, cache_hit_token_ratio}` rows — absent until the first admit |
+
+`tenants` composes with PC-ISO tenancy: rows key on the TENANT half of the namespace
+(keyring deployments get one row per tenant across its end-user salts, `t:<tenant>`;
+no-keyring deployments key on the raw `cache_salt`, `""` = the default namespace). Rows are
+bounded (256): overflow traffic aggregates under `"(other)"`, so totals stay exact while a
+salt-spraying client cannot grow the map. Spec-tier and non-batched requests never probe the
+prefix cache and are absent from the histogram by construction (their cached tokens still
+count in `cached_tokens_in` via the continuation/spec pools).
+
+**The economics query** (`tools/cache_economics.py <metrics-url-or-json>`): turns a scrape
+into the earning-model row — `revenue_multiplier = billed_prompt_tokens /
+computed_prompt_tokens` at a chosen cached-token billing factor (`--cache-billing-factor`,
+1.0 = cached bills full price, 0.25 = the OR cached-input tier), plus per-tenant multipliers
+and the tick-seg window share. JSON row on stdout (ledger-appendable), summary on stderr.
+
+**Exactness gate** (`tools/cache-meter-gate.py`, serve-smoke arm 7b): N requests sharing a
+K-token `prompt_ids` prefix must meter exactly — seed/LCP-split requests `cached_tokens: 0`,
+steady-state hits `cached_tokens == K`, a same-prefix request under a different `cache_salt`
+cold (PC-ISO), `/metrics` totals closed-form, histogram bucket-exact, economics row
+crosschecked. 26/26 on the 5090; disabling the cache inverts 16/26 (teeth). Overhead A/B
+(pre-lane binary vs instrumented, both resident, interleaved x5, N=100/arm, prefix-hit
+steady state): p50 −0.03%, p95 −0.19% — no measurable serve overhead (<0.5% p95 bar).
+Receipts: `research/cache-meter-20260807/`.
 
 ## Spec-decode acceptance telemetry (lane/accept-telemetry, 2026-08-05)
 
