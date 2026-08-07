@@ -116,19 +116,45 @@ byte-compares every stream.
 
 **Read the gate's exact scope before quoting the contract as unconditional.** The gate runs
 16 prompts at **96 max_tokens** with all sessions arriving together, i.e. at *equal* depth.
-Outside that shape the guarantee is not established, and lane/spec-gate has a receipt for
-where it stops holding: a 768-token greedy request diverged from its own solo reference at
-byte 1347 (≈ token **331**) when it shared batched decode with sessions **staggered to
-different depths**, and on a second run the divergence moved to byte 2379 — the byte moving
-between runs is itself the proof that the loaded configuration is nondeterministic. Spec was
-OFF and the gate lane's code was absent, so this is pre-existing, not a regression:
-`fa_decode_batch_seqs_v4` carries a single `split_keys` for sessions at different depths (the
-LADDER-RUNG STRADDLE law `fa_decode_rows` documents for the row axis), and the batched-linear
-tier selection changes with B. So the honest statement of the contract today is: **byte-identical
-at equal depth, gated to 96 tokens; long staggered-depth batches are an open gap**
-(receipts `research/spec-gate-20260806/logs/exact/`, arm `REF_LOAD`). It is also why that lane
-had to test its demotion handoff at a pinned batch shape (`MEMRA_SPEC_DEMOTE_AT`) rather than by
-triggering it with load — under load, no comparison isolates the property under test.
+Outside that shape a 768-token greedy request diverged from its own solo reference at byte
+1347 (≈ token **331**) when it shared batched decode with sessions **staggered to different
+depths**, and on a second run the divergence moved to byte 2379 (lane/spec-gate receipt,
+`research/spec-gate-20260806/logs/exact/`, arm `REF_LOAD`).
+
+**lane/iso-gap (task #91, 2026-08-07) reproduced that receipt on demand and attributed it —
+the two mechanisms this paragraph used to name are both innocent** (receipts
+`research/iso-gap-20260807/`):
+
+- *Depth staggering moves nothing.* At the engine tick, with the program family held fixed,
+  a co-resident session at ANY other depth — including across a `fa_split_keys` ladder-rung
+  boundary, B=2..8, three rungs, 300-step horizons — changes **zero bits** of a session's
+  logits (`iso-gap-probe`, 8 arms + canary). `decode_step_batch`'s rung guard is
+  per-session-correct: every row either shares one rung (the seqs kernel then derives each
+  session's split partition from its OWN `t_kv` — the ONE-PARTITION law) or all rows take the
+  per-seq eager loop. The property is now pinned by the `isogap` fast-gate arm, which places
+  the straddle per-rig.
+- *The real carrier is the solo↔batched **program flip at the co-residence boundary**.* A solo
+  session runs the m=1 fused trunk (`MEMRA_SERVE_B1FAST`) or GraphSession replay
+  (`MEMRA_SERVE_GS`); the moment a second session arrives mid-stream, its ticks flip to the
+  batched body — a *different documented FP composition* (`decode-batch-gate` gate1's config
+  jurisdiction), and a near-tie can flip. Measured: solo-vs-loaded diverges at byte 659 under
+  defaults, while with the program family pinned (`MEMRA_SERVE_B1FAST=0 MEMRA_SERVE_GS=0`)
+  solo and loaded streams are **byte-identical** — and the loaded default stream equals the
+  pinned stream byte-for-byte, so the flip accounts for the *entire* divergence. The moving
+  byte (1347 → 2379; reproduced 1248 → 1361 at a fixed 2 s co-arrival delay) is the
+  **arrival-tick jitter** of the flip boundary, and a co-resident arriving after the stream
+  finished (6 s delay) leaves it byte-identical.
+
+So the honest statement of the contract today: **byte-identical at equal depth (gated to 96
+tokens) and depth-isolation-clean within a program family (the `isogap` gate); a session whose
+co-residency CHANGES mid-stream crosses the solo↔batched config boundary, and its stream may
+legally differ from its solo twin from that tick on — the token-level cross-config gap this
+doc already documents for `MEMRA_SERVE_B1FAST`.** Deployments that need solo-vs-loaded
+byte-equality pin one program family (`MEMRA_SERVE_B1FAST=0 MEMRA_SERVE_GS=0`) and pay the
+measured solo cost (−8.33% q9 decode-only at c=1; the flag table below). It is also why
+lane/spec-gate had to test its demotion handoff at a pinned batch shape
+(`MEMRA_SPEC_DEMOTE_AT`) rather than by triggering it with load — under load, no comparison
+isolates the property under test.
 
 The contract is over **tokens**, not over the FP program that produces them, and since
 2026-08-05 (`MEMRA_SERVE_B1FAST`, serve-path phase 2) a solo tick deliberately runs a
