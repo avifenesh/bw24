@@ -156,3 +156,77 @@ restoration of the pre-fix arithmetic and therefore a legitimate BEFORE arm for 
 It also newly shows `256 | DIFFER`, which the finding lane measured only against `ref=512` (where it
 was EXACT, `P` matching). Against `ref=4096` the closed form predicts DIFFER (`P=512` vs `P=0`) and
 it does — a 14th arm-pair consistent with the model.
+
+---
+
+## 5. RESULTS — the finding lane's own falsification battery, re-run post-fix
+
+Raw: `raw/battery35-20260807T001751Z.log`. One flock window 00:17:51Z -> 00:38:44Z (21 min), cards
+0 MiB at release. `battery35.sh` re-runs the bodies of the finding lane's committed
+`chunkinv-long.sh` and `chunkinv-knife.sh` against the fixed build, plus a wider boundary sweep and
+the below-window control. The finding lane pre-registered four falsification predictions and hit
+4/4; every one of them is now dead:
+
+| arm | pre-fix (the receipt) | post-fix |
+|---|---|---|
+| LONG `prompt-pp6257` T=4883, chunks 4096,2048,512,64 | 512 and 64 **DIFFER**, maxdiff `1.813e0`, greedy step 6 | **all EXACT** (`-1`, `0.000e0`, identical) |
+| KNIFE PRED-1+2 ref=4096 vs 513,512 (the one-token flip) | 513 EXACT, 512 **DIFFER** | **both EXACT** |
+| KNIFE PRED-3+4 ref=512 vs 384,256 | 384 **DIFFER** @row 384, 256 EXACT | **both EXACT** |
+| BOUNDARY T=4883, chunks 4096,1024,600,128,32,16 | `P` in {0,0,512,384,512,512} -> mixed | **all EXACT** |
+| CONTROL T=402 (below the 512 window), chunks 4096,512,64,32 | all EXACT (nothing to break) | **all EXACT** — unchanged |
+
+Every arm returns `chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk
+size`, `rc=0`. The KNIFE arms matter most: they were built to be the sharpest possible probe of the
+closed form (a **one-token** change in chunk size flipping the verdict, because `P` jumps 512 -> 0
+between `c=512` and `c=513`). A fix that merely moved the boundary would still show a flip
+somewhere in 384/512/513/600; none does. The T=402 control is the guard against the trivial way to
+pass this battery — breaking prefill so badly that everything agrees on garbage: it exercises the
+same code with `seq_end <= win` and is byte-identical to its pre-fix self.
+
+---
+
+## 6. RESULTS — exactness battery (BAR-2)
+
+Raw: `raw/exact35-20260807T004546Z.log`. One flock window 00:45:46Z -> 00:47:22Z, cards 0/0 MiB at
+release. Same `c809181d` binaries the gate and battery ran on (`BOX-COMMIT.txt`).
+
+| gate | result |
+|---|---|
+| `kernel-check` model-backed on the step35 IQ4_XS artifact, FULL (no `MEMRA_KC_FAST` / `MEMRA_KC_ONLY`) | **`ALL GREEN: kernels match CPU reference.`** exit 0 |
+| `run-gen` argmax, PP-2, ngen=64 | `prefill argmax=6776 decode argmax=6776 ... MATCH` + `batched-prime argmax=6776 tokenwise argmax=6776 MATCH`, exit 0 |
+| `ppn-gate` stages=2 (this is the pair-topology receipt) | **`ppn gate PASS [serial]`** and **`PASS [pipelined]`**: 24 steps (8 prime + 16 gen) **BIT-IDENTICAL** logits vs the door-OFF reference, `n_vocab=128896`, `fence=[0, 22, 45]`, exit 0 |
+
+`ppn-gate` is the load-bearing one here, and worth being precise about what it does and does not
+cover. It asserts the PP-2 split path is bit-identical to the unsplit walk over the same sharded
+placement, i.e. the fix did not perturb anything at the stage boundary (stage 0 = layers 0-21,
+stage 1 = 22-44 — both stages carry SWA layers, so both run the changed arm). It runs 8 prime
+tokens, so it does not itself cross the window; the window-crossing assertion is §4/§5's job.
+
+The `kernel-check` run is model-backed on the SKU's own bytes: `iq4xs-mmq
+[Step-3.7-flash-IQ4_XS-00001-of-00003.gguf token_embd.weight]` at T=16/64/128/512 all OK
+(`rel<=2.04e-4`). The many `KC-SKIP [section] <other model>.gguf: absent on this box` lines are
+this box holding only the step artifact — they are pre-existing coverage gaps of this *box*, not of
+this change, and the arms they gate (qwen/gemma/ornith NVFP4, Q4_0, Q8_0) are covered on the 5090
+in §7. Recorded rather than glossed because a reader counting green lines would otherwise
+overcount.
+
+### 6.1 q9/q35 unaffected (BAR-4)
+
+Raw: `raw/unaffected-q9-q35-5090-20260807.log`. Local RTX 5090 Laptop, under
+`systemd-run --scope -p CPUQuota=1200% -p MemoryMax=48G` with `flock /tmp/memra-gpu.lock` held
+(desktop stays responsive; no uncapped saturation).
+
+| check | result |
+|---|---|
+| qwen `chunkinv` (the pre-existing arm, default label/seam/prompts) | PASS — CHUNK-INVARIANT on both pinned prompts |
+| qwen `chunkinvc` canary | PASS — still has teeth (64 DIFFER `5.269e-1`, 32 DIFFER `6.375e-1`) |
+| `run-gen` q9 (Qwen3.5-9B-NVFP4-MTP) | `prefill argmax=271 decode argmax=271 MATCH`, `batched-prime MATCH`, pp89 2486.5 tok/s, decode 134.79 tok/s |
+| `run-gen` q35 (Qwen3.6-35B-A3B IQ4_XS) | `prefill argmax=271 decode argmax=271 MATCH`, `batched-prime MATCH`, pp89 1693.3 tok/s, decode 180.73 tok/s |
+
+Two independent reasons the other arches cannot move, and the receipts above are the belt to that
+braces: (1) the predicate change lives inside `step35_attn_pre_wo`, reachable only through
+`full_attn_prime`'s `self.cfg.step35.is_some()` divert at `:1289` — every other arch takes the
+`full_attn_prime_fa_dispatch` path, untouched; (2) the only shared-path edit is threading one
+`usize` argument, which no other arch reads. The qwen `chunkinv` pair also confirms the generalized
+`chunk-invariance-gate.sh` (new `--label` / `--prompts` / `--seam` flags, rewritten summary grep)
+did not break its original arm — the script change is as load-bearing as the engine change here.

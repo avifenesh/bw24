@@ -1,0 +1,92 @@
+=== lane/step35-chunkfix: finding-lane battery re-run POST-FIX 20260807T001751Z commit=c809181d lane/step35-chunkfix (step35 SWA arm keyed on seq_end; chunkinv35 gate + MEMRA_STEP35_SWA_TKV seam)
+lock acquired 2026-08-07T00:17:51Z
+0, 0 MiB
+1, 0 MiB
+
+########## LONG prompt-pp512.txt : chunks 4096,2048,512,64 (pre-fix: pp6257 512/64 DIFFER) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=402 chat=false chunks=["4096", "2048", "512", "64"] steps=24
+ref chunk=4096 argmax=128799 margin=0.925798
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   2048 | EXACT |            -1 | 0.000e0 | - | identical
+    512 | EXACT |            -1 | 0.000e0 | - | identical
+     64 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+exit=0
+
+########## LONG prompt-pp6257.txt : chunks 4096,2048,512,64 (pre-fix: pp6257 512/64 DIFFER) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=4883 chat=false chunks=["4096", "2048", "512", "64"] steps=24
+ref chunk=4096 argmax=128799 margin=4.505838
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   2048 | EXACT |            -1 | 0.000e0 | - | identical
+    512 | EXACT |            -1 | 0.000e0 | - | identical
+     64 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+exit=0
+
+########## KNIFE PRED-1+2: ref=4096 vs 513,512 (pre-fix: 513 EXACT, 512 DIFFER) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=4883 chat=false chunks=["4096", "513", "512"] steps=24
+ref chunk=4096 argmax=128799 margin=4.505838
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+    513 | EXACT |            -1 | 0.000e0 | - | identical
+    512 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== rc=0
+
+########## KNIFE PRED-3+4: ref=512 vs 384,256 (pre-fix: 384 DIFFER@row384, 256 EXACT) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=4883 chat=false chunks=["512", "384", "256"] steps=24
+ref chunk=512 argmax=128799 margin=4.505838
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+    384 | EXACT |            -1 | 0.000e0 | - | identical
+    256 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== rc=0
+
+########## BOUNDARY: T=4883 chunks 0(monolithic),4096,1024,600,128,32,16 ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=4883 chat=false chunks=["4096", "1024", "600", "128", "32", "16"] steps=24
+ref chunk=4096 argmax=128799 margin=4.505838
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+   1024 | EXACT |            -1 | 0.000e0 | - | identical
+    600 | EXACT |            -1 | 0.000e0 | - | identical
+    128 | EXACT |            -1 | 0.000e0 | - | identical
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+     16 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== rc=0
+
+########## CONTROL T=402 (below window) chunks 4096,512,64,32 — must stay EXACT ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=402 chat=false chunks=["4096", "512", "64", "32"] steps=24
+ref chunk=4096 argmax=128799 margin=0.925798
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+    512 | EXACT |            -1 | 0.000e0 | - | identical
+     64 | EXACT |            -1 | 0.000e0 | - | identical
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+=== rc=0
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-07T00:38:44Z
+=== done 2026-08-07T00:38:44Z
