@@ -303,5 +303,29 @@ this path; neither defect was reachable by kernel-check alone.
 
 **What lever A does NOT do:** dev1 still runs zero prefill kernels, the peer-read tax
 (22% of the pre-A profile) and the MoE m=1 dispatch (28%) stand. Those are levers B and C
-(`Increment 1`'s projections: A+B ≈ 420-450, A+B+C ≈ 1400-1600 tok/s). B is next in this
-lane.
+(`Increment 1`'s projections: A+B ≈ 420-450, A+B+C ≈ 1400-1600 tok/s).
+
+**Lane cut decision (2026-08-07, coordinator's 2-hour line):** Lever B is EXPLICITLY more
+than ~2 h from its own receipts and moves to its own lane off the fresh train. The honest
+shape of B, from this lane's reading: (1) a per-stage prime range walker — `prime_chunk`'s
+slabs (`prime_slabs_get`) are single-engine and its ~70 `e.` call sites need per-stage
+engines threaded the way `decode_step_batch_ppn` did it; (2) the MoE SLRU is per-Engine
+(`e.with_moe_cache`) — each stage engine needs its OWN cache pool with a per-card budget,
+and that is the residency-flip design decision (each card's ~50 GB expert share fits
+RESIDENT per-stage, killing the 37 GB/prime staging), not a wiring detail; (3) a prime
+bit-identity gate in the ppn-gate/decode-batch-gate `--mode pp` pattern (split vs unsplit
+in one process — note prime deliberately has NO `refuse_unsplit_if_remote`, its unsplit
+walk is a 22% tax, not the decode 28x cliff, and it must stay callable as the gate's
+reference arm); (4) chunk-pipelined stage overlap (stage-0 chunk N+1 vs stage-1 chunk N)
+with the SGLang #33666 per-stage-budget and TRT-LLM #16170 drain-before-block laws.
+Boundary payload `[chunk_t, n_embd]` = 64 MB at 4096² — 1.1 ms at the measured 56 GB/s,
+trivially hidden. Everything B needs from this lane is receipted here and in the anatomy.
+
+### Receipt-validity note across the three commits
+
+Battery 2's G3/G5/G6 receipts bind the FINAL commit (`82b216b8`) too: the canary-seam fix
+only changes behavior under `MEMRA_STEP35_SWA_TKV=1` (the default path is byte-identical
+code). Battery 1's G4 ppn-gate shape (8 prime + 16 gen) sits entirely under the 512 window
+with `base_len=0` → `off=0`, where both later fixes are no-ops, so its BIT-IDENTICAL verdict
+holds across all three commits. kernel-check re-ran locally post-alignment (ALL GREEN); its
+cells call the wrappers with their own offsets and are unaffected by the dispatch-side fixes.
