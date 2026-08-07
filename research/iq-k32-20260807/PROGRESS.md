@@ -143,7 +143,27 @@ tiles). Both above zero with disjoint distributions; the k32 form wins clean.
 
 Rows: `perf-ab.jsonl` (20 rows, cell iqk32-perf); raw logs `raw/perf-*-p*.log`.
 
-## 5. Evidence
+## 5. Verdict: k32 is the default; the k16 seam stays for the NUMERIC class, not for perf
+
+Winners-are-defaults: naked builds get k32 (no flag). Perf shows NO ambiguity — DISJOINT
+distributions, 5/5 pairwise on both kernel classes — so by the perf clause alone the k16 arm
+would die. It stays as a **build-time** seam (`MEMRA_IQEXP_K16=1`, `-DMEMRA_IQEXP_K16_MMA`)
+for one reason: the swap is branch-(b), NOT bit-identical (§2), and the repo's discipline for
+a numeric-class change (the `MEMRA_ST_E4M3_BLK` pattern the task itself cites; also
+`MEMRA_MMQ_FP8BLK_PLAIN`, which kept its form seam even for a bit-identical swap) is that the
+old arithmetic remains reproducible for A/B and for any downstream logit-shift investigation.
+Zero runtime cost: the seam is an #ifdef, the naked binary contains only the k32 form
+(SASS census: 1536x IMMA.16832, zero IMMA.16816).
+
+Board impact: none — the tracked boards publish decode (tg) rows for these models, and this
+change is prefill-only (m>=16 / t>=16; decode and spec-verify ride dp4a by the
+dispatch-parity law). No `current-board.json` change, no regeneration needed.
+
+Step-3.7-Flash: gets k32 automatically through `mmq_iq4xs_dense_kernel` (its IQ4_XS trunk is
+the same dispatch class as KAT's; its expert path rides `moe_ffn_grouped`/`qmatvec_view` and
+never reaches these tiles). AWS-box share measurement = precision on THE SKU, below.
+
+## 6. Evidence
 
 raw logs: `research/iq-k32-20260807/raw/` (nsys .nsys-rep binaries stay OUT of git —
 CSV summaries + console logs are committed; reps parked in /tmp/iqk32-nsys).
