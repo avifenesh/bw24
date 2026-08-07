@@ -155,12 +155,57 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
       real serve tick loop end-to-end (chat/stream/completions, greedy determinism, 3
       concurrent, spec==plain serving exactness, truncation matrix, session-affinity resume).
 - [x] Host unit tests: memra-server 97/97 pass.
-- [~] Perf (perf-tickseg.sh, running since 12:14:24Z, raw/perf-tickseg-20260807T115358Z.log):
-      N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1% STOP bar), budget=256
-      (dark-lane, where arms change), pp512 null control. Instrument: ppprime --budget (the
-      serve-shaped multi-call prime — monolithic ppprime and run-gen's prefill line are blind
-      to a multi-call change by construction).
-- [~] Raw logs pulled back as they complete; PROGRESS.md finalized after perf.
+- [x] Perf (raw/perf-tickseg-20260807T115358Z.log): COMPLETE — see §Perf below. Default
+      +0.068%, STOP bar not triggered.
+- [x] Raw logs pulled back; PROGRESS.md finalized.
+
+## Perf — before/after on the serve-shaped prime, N=5 interleaved, one lock hold
+
+One flock window 12:14:24Z -> 13:36:13Z (82 min), 30 arm invocations, cards 0 MiB at release.
+Thermal regime: warm steady-state — GPU0 35-40 C at 2400-2407 MHz, GPU1 32 C at 2325 MHz across
+the whole window (per-rep nvidia-smi samples in the log); no arm ran cold or throttled.
+
+**Instrument:** `concat-prime-probe ppprime --budget B` — times the worker-replica multi-call
+prime, the exact path the fix changes. Monolithic ppprime and run-gen's prefill line are blind
+to a multi-call change by construction (recorded so nobody re-measures the wrong thing).
+**Arms:** same binary, one process per arm, strictly alternating AFTER (naked default,
+request-level seq_end) / BEFORE (`MEMRA_PRIME_CALLLOCAL=1` — §gate battery proved the seam
+reproduces the pre-fix arithmetic digit-for-digit, so it is a true BEFORE without a second
+build). Each printed median = median of 3 timed reps after 1 warmup; each cell = 5 interleaved
+arm-medians per side (N=5 of the compared quantity, 15 timed primes per side).
+
+| cell | arm | N | median | tok/s | within-arm spread | delta |
+|---|---|---|---|---|---|---|
+| **pp6257 (T=4883) budget=1024 — THE SHIPPED INTERACTIVE DEFAULT** | AFTER | 5 | 43.5225 s | 112.20 | 0.975% | **+0.068%** |
+| | BEFORE | 5 | 43.4928 s | 112.30 | 0.783% | |
+| pp6257 (T=4883) budget=256 — dark-lane default, where the fix changes arms | AFTER | 5 | 47.7224 s | 102.30 | 0.212% | **+0.374%** |
+| | BEFORE | 5 | 47.5444 s | 102.70 | 0.223% | |
+| pp512 (T=402) budget=1024 — null control, below the window | AFTER | 5 | 3.6580 s | 109.90 | 0.139% | **-0.008%** |
+| | BEFORE | 5 | 3.6583 s | 109.90 | 0.407% | |
+
+### Verdict against the STOP bar
+
+The bar: *if the shipped default moves >1%, STOP and report rather than ship.* **The default
+moved +0.068%** — 15x inside the bar, and an order of magnitude below the cell's own within-arm
+spread (0.78-0.98%). The lane ships.
+
+Read the null control first: at T=402 both arms are the same machine code taking the same
+branch (seq_end <= win either way, single call, queued_after=0), honest expected delta 0 —
+measured **-0.008%**, this instrument's noise floor on this box. The default cell's +0.068% is
+well within its own spread and carries no signal.
+
+The budget=256 cell is the one place the fix does real extra work: pre-fix, the first two
+256-token calls' rows rode FA (per-call seq_end = 256/512 <= win); post-fix every call of the
+T=4883 request takes the windowed arm. Cost: **+0.374%** on the DARK-LANE (non-interactive)
+path — a third of the STOP bar, ~2.5x the prior lane's chunk=512 analog (-0.467% there,
++0.374% here, both bounded well under 1%), and it buys the judge/harvest lanes deterministic
+arithmetic under load. Also visible in the absolute numbers: budget=256 primes ~9% slower than
+budget=1024 in BOTH arms — the per-call overhead of 20 calls vs 5, pre-existing and
+fix-independent (the interleaving isolates it away from the delta).
+
+Enumeration predicted the interactive default could not move (budget 1024 > win means every
+call's per-call seq_end already exceeded 512, so the arm sequence is identical pre/post); the
+measurement converts "cannot move" into "did not move".
 
 ## Why the fix is correct-by-construction (not a tolerance argument)
 
