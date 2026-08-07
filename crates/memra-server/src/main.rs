@@ -5,12 +5,23 @@
 //! Engine + every loaded HybridModel (CUDA context is thread-affine). Handlers submit `Cmd`s over a
 //! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
 //!
-//! Endpoints:
-//!   GET  /health                 -> {"status":"ok"|"draining","models":[...]}
+//! Endpoints (the full set — `router()` below is the authority):
+//!   GET  /health, GET /livez     -> the SAME handler (`health_live`): INFERENCE liveness, not
+//!                                     process liveness. {"status":"ok"|"draining"|"unhealthy",
+//!                                     "models":[...], "worker":{phase, beat_age_ms, tick_max_ms,
+//!                                     stall_threshold_ms, generation, xid_warnings}} + a
+//!                                     top-level "detail" on a red. Draining stays 200; dead /
+//!                                     GPU-faulted / stalled / loading is 503 (serve-hardening
+//!                                     2026-08-06).
+//!   GET  /readyz                 -> routability, same payload shape with
+//!                                     "status":"ready"|"not_ready". Unready is NOT a restart
+//!                                     request — draining and loading are healthy-but-unroutable.
 //!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
 //!   GET  /v1/models              -> OR-schema model list (context_length, architecture,
 //!                                     pricing stub, top_provider; serve-tail 2026-08-04).
 //!   GET  /metrics                -> flat serving counters + step latency percentiles.
+//!   GET  /yield/metrics          -> per-lane x-lane QoS counters + engine-truth step p50/p99
+//!                                     (lane/qos-p95 2026-08-02).
 //!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
 //!                                     seed?,stop?,chat?,stream?,cache_salt?}. stream=true => SSE
 //!                                     token-by-token; else a single JSON {text,tokens,stop_reason}.

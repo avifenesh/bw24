@@ -10,7 +10,28 @@ merge/tag bar — a fast-gate green is a *keep going* signal, never a *ship* sig
 |---|---|---|---|
 | 0 | seconds (~2 s kernel-check scoped + build) | workspace compile + kernel-check scoped to the touched sections | every edit-compile loop |
 | 1 | ~1–2 min | tier 0 + golden-token argmax probe on ONE model per affected kernel class (+ one single-K spec probe when the diff touches the spec pipeline) | before every dev-loop commit |
-| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), accept-gate (`tools/accept-gate.sh` — exact served-spec acceptance counts + a 128-token text sha at the production drafter/K, wired 2026-08-06; smoke cell by default, `--full` for the 6-cell matrix, `MEMRA_CI_ACCEPT=0` skips), `--perf` cell battery | **every merge, every tag** (unchanged) |
+| 2 | tens of minutes | the full battery: `tools/local-ci.sh` — kernel-check ALL GREEN (~4.5 min), prime-gate, run-gen argmax per model, VERIFY-GATE, spec self-consistency, decode-batch-gate (config + Q8_0 strict — the serving tick's exactness, wired in 2026-08-05), graph-warmup stress (`tools/graph-warmup-stress-gate.sh` — pool-growth adversarial bit-identity behind the `MEMRA_GRAPH_WARMUPS=1` default, wired 2026-08-05), serve-smoke, serve-stress (`tools/serve-stress-gate.sh` — the c=64 concurrency contract behind the admission spec-headroom fix, wired 2026-08-06; `MEMRA_CI_STRESS=0` skips), accept-gate (`tools/accept-gate.sh` — exact served-spec acceptance counts + a 128-token text sha at the production drafter/K, wired 2026-08-06; smoke cell by default, `--full` for the 6-cell matrix, `MEMRA_CI_ACCEPT=0` skips) | **every merge, every tag** (unchanged) |
+
+**Two corrections to how tier 2 is described elsewhere** (audited 2026-08-07 — both are gaps
+between the doctrine and the script, recorded rather than papered over):
+
+1. **`local-ci.sh` does NOT run `run-spec` K=1..8.** `grep -n run-spec tools/local-ci.sh` returns
+   nothing. CLAUDE.md, CONTRIBUTING.md, and `fast-gate.sh`'s own header contract all name
+   "`run-spec` K=1..8 self-consistency" as one of the three standing merge gates, and this table
+   used to imply the battery covers it. What local-ci.sh actually runs under the label "spec
+   self-consistency" is `MEMRA_SPEC=6 MEMRA_DRAFT=$D31 gemma-gate` asserting
+   `stream agreement 64/64` (local-ci.sh:102-105) — **one K, one model, the gemma drafter**, not
+   the K=1..8 sweep over the qwen MTP family. The sweep is real and is run, but by
+   `tools/acceptance_battery.sh`, `tools/full-board-bench.sh`, `tools/run_hy3_local_5090.sh`, and
+   the per-lane batteries whose receipts live in `research/` — i.e. by hand at merge time, not by
+   the script. Until it is wired in, "the battery ran" is not evidence that K=1..8 passed: quote
+   the `run-spec` log. (Wiring it is a tooling change, out of scope for a docs sweep — flagged as
+   an owner call in `research/docs-fit-20260807/SWEEP.md`.)
+2. **`--tier 2` does not run the perf stage.** `fast-gate.sh:68` is `exec tools/local-ci.sh` with
+   no arguments, and local-ci.sh gates its perf cells behind `--perf` / `--perf-quick`
+   (local-ci.sh:4-6, 341). So `--tier 2` is correctness-only; run `tools/local-ci.sh --perf`
+   directly for the cell battery. The `--perf` entry was removed from the row above for that
+   reason.
 
 Entry point:
 
@@ -20,7 +41,22 @@ tools/fast-gate/fast-gate.sh --tier 0              # compile + scoped kernel-che
 tools/fast-gate/fast-gate.sh --diff main           # scope = everything since main
 tools/fast-gate/fast-gate.sh --tier 2              # execs tools/local-ci.sh (the real gate)
 tools/fast-gate/fast-gate.sh --smoke               # add the perf tripwire (see below)
+tools/fast-gate/fast-gate.sh --probes k27,amargin  # name the arms explicitly (see below)
 ```
+
+**`--probes` is not optional convenience — it is how you gate a tree with no diff.** A clean tree
+(release candidate, a fresh rsync onto another rig, a tree with no `.git` at all) has an empty
+`CHANGED` set, and the diff-driven path exits 0 with "nothing to gate". That is a FALSE GREEN if
+you meant to gate it: it reports success having run **zero** probes. Found on the v0.71.0 pod
+battery, where the rsync'd tree had no `.git` and the k27 regression check "passed" without
+executing (`fast-gate.sh:80-88`). Naming arms with `--probes` suppresses the short-circuit.
+
+It is also the **only** way to reach four registered probes. `tools/fast-gate/map.tsv` dispatches
+`accept, aw35, chunkinv, chunkinvc, g12, g12d, g26, g31, gwstress, k27, o35, o9, q35, q35slru, q9,
+samp, sampt, sstress` (+ spec probes `q35spec, g31spec`), with `DEFAULT = g12,q9,q35,gwstress`.
+Not in any row, including DEFAULT: **`amargin`, `amarginc`, `e4b`, `kat`**. They are registered in
+`models.tsv` and run correctly when named, but nothing dispatches them automatically — so treat
+the amargin gate below as an explicit-invocation gate, not a standing one.
 
 ## Change-scoped gating (tier 0)
 
@@ -75,7 +111,16 @@ The K=1..8 sweep stays tier-2.
 gates like `sample-check` — whose gate is exit 0. They pin no golden and exist for code
 the greedy token goldens structurally cannot see (the sampler chain). Three landed
 2026-08-05: `chunkinv` (chunked-prefill byte-identity across `MEMRA_PRIME_CHUNK` values,
-naked env — the grain-free default's contract), `chunkinvc` (its canary: injects the
+naked env — the grain-free default's contract; note its **coverage is per-architecture and
+prompt-length-bounded** — the pinned probe prompts are short, which is precisely why they could
+not reach the `step35` chunk-dependence defect that lives past a 512-token SWA window. A
+long-prompt arm for that arch is written and legitimately red until the fix lands:
+[`research/step37-p2-20260806/`](../research/step37-p2-20260806/). Standalone, the probe is
+`tools/chunk-invariance-gate.sh [<model.gguf>] [--chunks 2048,64,32] [--steps 48]
+[--expect-invariant|--expect-variant] [--canary]` — `--expect-variant` is how you assert a known
+chunk-DEPENDENT arch stays detected rather than silently passing, and `--chunks` is how you widen
+past the default triple), `chunkinvc` (its canary:
+injects the
 `MEMRA_PRIME_F32CHUNK0=1` legacy arithmetic and must FAIL, proving the gate detects the
 mechanism), and `gwstress` (the graph-warmup pool-growth stress gate behind the
 `MEMRA_GRAPH_WARMUPS=1` default). A fourth landed 2026-08-06: `sstress`
@@ -89,7 +134,12 @@ no gate at all.
 `amargin` / `amarginc` landed 2026-08-06 (`tools/argmax-margin-gate.sh`, + its `--canary` teeth):
 run-gen's prefill-vs-decode argmax assert calibrated against the **top-2 margin at the deciding
 position**, because a near-tie flip and a real cache bug are the same red until you measure the
-margin (see `research/q8-argmax-20260806/`).
+margin (see `research/q8-argmax-20260806/`). Flags:
+`tools/argmax-margin-gate.sh [<model.gguf>] [--prompt f] [--window N] [--max-flips N]
+[--margin-floor F] [--canary] [--logdir D]`. **Effective `--window` default is 12**, not the 24
+the probe binary advertises in its own usage line — the wrapper always passes its own
+`WINDOW=12` (`argmax-margin-gate.sh:70,111`). Worth knowing, since window width *is* this gate's
+coverage. And per the dispatch note above, `amargin` fires only when named with `--probes`.
 
 Also 2026-08-06: `accept` (`tools/accept-gate.sh` — the **served-spec acceptance +
 long-text** assertion). It exists because the battery was *provably* blind to a class:
@@ -110,8 +160,15 @@ prompt) and *inverted* between the GGUF's embedded MTP head and the regime draft
 models the same day, so a bare-head number is not evidence about a served config. References
 live in `tools/fast-gate/accept-refs/<cell>.{ref,text}`; cells in
 `tools/fast-gate/accept-cells.tsv`. `--pin` is the only writer and **refuses on a dirty
-`crates/` with no `--force`** — pinning references beside an uncommitted kernel change is exactly
-the receipted failure mode. Its teeth: `tools/accept-gate.sh --teeth` sets `MEMRA_MMQ_F8F4=1` and
+`crates/`. There is deliberately no `--force`** — that is the gate's central law, not a default
+you can override (`tools/accept-gate.sh:120` says so verbatim), because pinning references beside
+an uncommitted kernel change is exactly the receipted failure mode: the new arm's numbers become
+the reference and the gate then defends the regression (`research/f8f4-flip-20260806`). A dirty
+tree OUTSIDE `crates/` is allowed and merely noted — engine code is what must be committed.
+`--pin` has a **second** guard for the same trap wearing a different hat: it refuses when any of
+`MEMRA_MMQ_F8F4`, `MEMRA_MMQ_F8F4_PLAIN`, `MEMRA_MMQ_FP8BLK_PLAIN`, `MEMRA_FAST`, or
+`MEMRA_PRIME_F32CHUNK0` is set in the environment, since references must describe the NAKED
+default build (flags doctrine: winners are defaults). Its teeth: `tools/accept-gate.sh --teeth` sets `MEMRA_MMQ_F8F4=1` and
 the verdict must invert (proven both directions, `research/accept-gate-20260806/`); `--control`
 re-measures in a second independent server boot, which is what licenses the single-shot read.
 
@@ -233,7 +290,19 @@ Two holes in this stage were closed by that same red (2026-08-06):
 ## What fast-gate does NOT cover
 
 - **Serving surface** (`crates/memra-server/`): run `tools/serve-smoke.sh` (fast-gate prints
-  the pointer when the diff touches it).
+  the pointer when the diff touches it). Three more serving gates exist and are **not** wired
+  into fast-gate or `local-ci.sh` — invoke them by hand for any diff in their area:
+  - `tools/serve-st-gate.sh [st_dir]` — an HF **safetensors dir** served end-to-end: `/models`
+    lists it, `/v1/chat/completions` returns coherent text through the checkpoint's *own* chat
+    template, and the CLI-vs-server exactness contract (same checkpoint, same prompt, same
+    template, greedy → `run-gen`'s ST-dir tokenwise branch and the server's batched-prime +
+    serving decode must produce IDENTICAL id streams). Runs `MEMRA_SERVE_SPEC=0` because with
+    spec on a Token event carries one id per flush.
+  - `tools/apikeys-gate.sh [model] [out_dir]` — auth refusals (401/403), single-key
+    back-compat, the two-tenant **cache-isolation proof** via a cache-hit oracle, per-tenant
+    rate-limit headers, the batch-class lane law, and hot revoke.
+  - `tools/serve-stress-gate.sh [--teeth] [model [draft [n_clients]]]` — the c=64 concurrency
+    contract (this one *is* in local-ci.sh; `MEMRA_CI_STRESS=0` skips it).
 - **Acceptance drift**: invisible to every *exactness* gate by construction (decode and verify
   shift together, so spec still equals plain). Two things catch it, and they are not
   interchangeable: the tier-2 perf battery's per-cell acceptance verdicts (a rolling-median
@@ -242,11 +311,99 @@ Two holes in this stage were closed by that same red (2026-08-06):
   clock-independent: an acceptance FAIL is real evidence, unlike a tok/s FAIL (below).
   fast-gate's tier-1 probes still do not see it — a spec-pipeline or NVFP4-prefill diff maps
   `accept`, but running it costs a server boot, so it lands at tier 2.
-- **H100/sm_90a lane**: `tools/validate-h100.sh` on an H100, per its own laws.
+- **H100/sm_90a lane**: `tools/validate-h100.sh [--quick]` on an H100, per its own laws. Its
+  contents are worth naming here, because three of them exist in no other battery: kernel-check
+  with config pins, `decode-batch-gate --mode config` (B=8) and `--mode strict` (B=4 equalized),
+  then the **graph lane** — `decode-dc-gate`, `graph-decode-gate`, `graph-session-gate`. The
+  script's own header explains why they live there: `graph-decode-gate` "rotted OUTSIDE this
+  battery for weeks" (an emission off-by-one in the gate masqueraded as 171/256 stream
+  corruption), which is the origin of law 3 — anything guarding a live lane belongs inside the
+  battery.
 - **Cross-model blast radius**: tier 1 probes one model per kernel class; the full per-model
   matrix runs at tier 2.
+- **Multi-GPU (PP-N) exactness**: needs 2+ cards, so it is neither in fast-gate nor in
+  `local-ci.sh` — it runs on the multi-card box for any diff touching `pp.rs`, the stage-split
+  dispatch, or a decode path a split reaches. See below.
+
+## Multi-GPU (PP-N) exactness gates — run on the multi-card box
+
+These are not in `tools/local-ci.sh`: the single owned rig has one GPU, so a green local
+battery says nothing about them. Any change to `pp.rs`, the stage-split dispatch, or a decode
+path a split walks needs these re-run on a 2+ card box.
+
+| gate | invocation | what it proves |
+|---|---|---|
+| `ppn-gate` | `MEMRA_PP_DEVICES=0,1 ppn-gate <model.gguf> [stages=2] [P=16] [N=32]` | the eager stage-split decode (`decode_step_h_ppn`) is bit-identical to the unsplit walk, serial and pipelined arms |
+| `decode-batch-gate --mode pp` | `decode-batch-gate <model.gguf> --mode pp [--batch 1,4,8] [--stages N] [--reps R]` | the **batched** stage split (`decode_step_batch_ppn`) is bit-identical per row per step. Honours `MEMRA_PP_DEVICES` / `MEMRA_PP_SPLITS` / `MEMRA_PP_SHARD` from the caller |
+| `decode-batch-gate --mode ppspec` | `decode-batch-gate <model.gguf> --mode ppspec [--ts 2,5,9] [--stages N] [--reps R]` | the **spec-verify** stage split (`decode_step_t_core_ppn`, T=K+1) is bit-identical per logit column per round, plus the `h_seed` column the drafter is re-seeded from. `--ts 2,5,9` = K=1,4,8 |
+| `pp2-gate` | `MEMRA_PP_DEVICES=0,1 pp2-gate <model.gguf> [P=16] [N=32] [split=n_layers/2]` | the N=2 spelling of the eager gate, with M1 binary semantics. It **owns the door** — it resets `MEMRA_PP_STAGES`/`SPLITS` itself regardless of the caller's environment, while the increment-2 knobs (`STREAMS`/`OVERLAP`/`DEVICES`) deliberately pass through. Keep it alongside `ppn-gate`: it is the gate the gemma4 N=2 arm is validated by |
+| `pp-transport-smoke` | `pp-transport-smoke` | the peer boundary transport primitive alone |
+
+Three properties of these gates are load-bearing and were learned by measurement:
+
+1. **`--reps` defaults to 2 because the class they must catch was a 35% FLAKE.** The
+   shared-`Engine` scratch race (`fa_part_pool` / `argmax_partials` / `fa_vf16_scratch` are
+   stable-pointer pools, single-stream-safe by design) surfaced as an intermittent failure on
+   2026-08-02. One green replay is not evidence of absence — always run reps.
+2. **The door must open BEFORE load**, because weight sharding is a load-time decision. The
+   gates set `MEMRA_PP_STAGES` themselves for exactly this reason; a battery that opened it
+   after load would be measuring the wrong placement.
+3. **Two arms make these localizers rather than coin flips.** The `unsplit@ppncache` arm
+   replays the unsplit walk over the *same* stage-owned caches, holding cache placement
+   constant so only the walk varies — a red split arm then points at the stage split and
+   nothing else. The `epilogue` arm runs mixed per-row metas and checks the lean
+   `last_logits_dev` park through UVA from the primary context, the same read the server's
+   retire path does.
+
+Arm 4 of the pp battery deserves its own note: the B=1 fast path's exactness bar is
+bit-identity **to the eager split** (`decode_step_h`), not to the batched body — against which
+it carries the accepted m=1 fusion FP gap by design. That is why arms 1-3 pin
+`set_b1_fast(false)`, and why arm 4 also asserts per-step `pos` equality, so a double-advance
+cannot hide behind matching logits.
+
+Receipts: [`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/),
+[`research/pp2-spec-20260806/`](../research/pp2-spec-20260806/),
+[`research/pp2-hardening-20260806/`](../research/pp2-hardening-20260806/) (the 20-arm
+fail-closed guard battery), [`research/m2-pp8-20260802/`](../research/m2-pp8-20260802/) (N=2/4/8
+on an 8xH100 box).
+
+## Serve-path exactness — mode switches, and the law they are pinned under
+
+`local-ci.sh` covers the serve surface's *shape* (`serve-smoke`, `serve-st-gate`,
+`serve-stress-gate`, `apikeys-gate`). What it does not cover is a session **changing execution
+mode mid-stream**, which the concurrency-gated spec scheduler does by design
+(`MEMRA_SPEC_GATE`, default ON — see [SERVING.md](SERVING.md) and [FLAGS.md §1](FLAGS.md)): a
+demoted session's stream must be byte-identical to one batched from the start. That harness is
+`research/spec-gate-20260806/exactness.py` — 5 arms, one server boot per arm, greedy, 768-token
+budget — and it is **not** wired into any battery. Re-run it by hand for any change to the
+scheduler's phase order, the demotion handoff, or `Session.device_next`.
+
+Two things about it are load-bearing, and both are the kind of thing a later reader re-breaks:
+
+1. **Load-triggered demotion can never be a clean exactness test**, so the harness does not try.
+   Both the arrival timing and the batch composition are nondeterministic, and — with the spec
+   path OFF and none of the scheduler's code involved — the same greedy request already diverges
+   between a solo run and one sharing batched decode with concurrent rows. Two runs put the first
+   divergence at byte **2379** and byte **1347**; the byte *moving between runs* is the proof.
+   That is the engine's own documented behavior (`fa_decode_batch_seqs_v4` carries a single
+   `split_keys` for sessions at different depths — the ladder-rung straddle law — and the
+   batched-linear tier selection changes with B), not a new bug. So the handoff is pinned at a
+   **fixed batch shape** through a diagnostics-only door, `MEMRA_SPEC_DEMOTE_AT=N`, which forces
+   demotion at a pinned generated-token count with no load at all, holding B=1 across the
+   boundary. Never set it in production. The generalizable rule: **when the property under test
+   sits inside a nondeterministic configuration, pin the configuration and force the transition
+   — do not try to provoke it under load and diff the result.**
+2. **Three of its own arms exist to stop a false green**, each recorded because it produced one:
+   a *vacuous pass* (q9 is a thinking model — every token lands in `message.reasoning` and
+   `content` is empty, so the first version compared 0 bytes on three arms and called it PASS;
+   now it compares both fields and hard-fails a near-empty stream), a *wrong session* (load fired
+   after the target had finished, so a background filler took the spec slot — the verdict now
+   requires the demote line to prove it fired on the target), and a *wrong reference*, whose
+   discriminator arm `REF_LOAD` is what surfaced the batch-vs-solo finding above.
 
 ## Receipts
 
 Timings, the deliberate-break catch demonstrations (diffs, consoles, per-probe raw logs),
 and the depth-determinism sweeps: [`research/fast-gate-20260802/`](../research/fast-gate-20260802/).
+The serve-path mode-switch exactness harness and its verdicts:
+[`research/spec-gate-20260806/`](../research/spec-gate-20260806/) (`RESULTS.md` §2, `exactness.py`).

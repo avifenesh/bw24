@@ -12,10 +12,21 @@ edges of batched serving.
 > same SKU and ~2x between a 188-SM and an 82-SM board. The open gaps stated below travel
 > with the wins.
 
-memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
-placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
-processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
-(M0 comms floor measured — ARCHITECTURE-H100.md).
+Multi-GPU serving has two shapes, and which one applies is decided by whether the model fits
+on one card:
+
+- **Replica fleet** (the default for a model that fits): N independent `memra-server`
+  processes, one engine per GPU (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the placement
+  mechanism), fronted by an admission proxy. This is the throughput shape — see
+  [Fleet tooling](#fleet-tooling).
+- **Pipeline-parallel PP-2** (for a model that fits only across the pair): ONE engine
+  process, the layer trunk cut into stages, each stage's weights and KV resident on its own
+  card. Opt-in via `MEMRA_PP_STAGES` / `MEMRA_PP_DEVICES`; see
+  [Pipeline-parallel serving](#pipeline-parallel-pp-2-serving) below for what is gated and
+  what is refused.
+
+Tensor parallelism is neither — it is a separate in-progress build (M0 comms floor measured
+— ARCHITECTURE-H100.md).
 
 ## Fleet tooling
 
@@ -28,6 +39,7 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 | `tools/serve-proxy.py` | least-outstanding reverse proxy with per-backend admission cap (default 8 = the engine's exactness-tier batch width and the two-replicas-per-GPU anti-thrash bound). Bounded FIFO queue with deadline → 429 + Retry-After; `/health` + `/metrics` JSON |
 | `tools/load-serve.py` | concurrent OpenAI-format load harness: aggregate output tok/s, p50/p95 latency, JSONL per load point |
 | `tools/serve-smoke.sh` | OpenAI-surface smoke gate for a single server |
+| `deploy/systemd/memra-server.service` | example unit for a **single supervised instance** (the other deployment shape — `serve-fleet.sh` is the systemd-free multi-replica path). `Type=notify` with `READY=1` after the models load and the socket binds, `WATCHDOG=1` pings only while inference is live, `STOPPING=1` + `EXTEND_TIMEOUT_USEC` so a drain is not SIGKILLed, and exit 70 (unrecoverable GPU) distinguished from exit 1 (bad config). Copy, do not symlink: every path is site-specific and the value is the supervision contract in the directive choices, each commented with the failure it prevents |
 
 ## Measured numbers (Qwen3.5-9B Q8_0; receipts in `research/`)
 
@@ -203,6 +215,87 @@ pre-admission-wait receipts; ~27 sessions fit — since the VRAM-aware admission
 overflow queues instead of erroring). Set `MEMRA_CTX` to the workload — 2048 clears the
 same cell (machine-specific config per the flags doctrine).
 
+## Pipeline-parallel (PP-2) serving
+
+For a model that fits only across two cards. Receipts:
+[`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/) (batched decode),
+[`research/pp2-spec-20260806/`](../research/pp2-spec-20260806/) (the spec verdict),
+[`research/pp2-hardening-20260806/`](../research/pp2-hardening-20260806/) (the fail-closed
+guard). Rig for all three: 2x RTX PRO 6000 Blackwell Server Edition 96 GB, sm_120a, CUDA
+13.2, SPOT box — **rented**, not owned. Flag reference: [FLAGS.md](FLAGS.md) `MEMRA_PP_*`.
+
+The serving config, minimally:
+
+```bash
+MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
+MEMRA_SERVE_SPEC=0 \
+MEMRA_MODELS="big=/path/to/model.gguf" memra-server
+```
+
+`MEMRA_SERVE_SPEC=0` is **load-bearing, not tidiness** (see below). The server logs
+`[pp] cross-device transport: stage0=dev0 stage1=dev1` when the split is live — a config that
+silently did not split is the failure mode that banner exists to rule out.
+
+**Exactness: the split adds zero deviation.** `decode-batch-gate --mode pp` records a
+reference with the door OFF over the same loaded weights, replays the same token sequence
+through the split, and compares every f32 logit of every row of every step bit by bit.
+**0 differing bits** on all seven configs — `dev01`, `dev10` (reversed placement),
+`singledev` (seam only, one card), `split5` (uneven cut), N=4 (`devices 0,0,1,1`), q27 (64
+layers), and `wide` (B=12/16 under the `MEMRA_DECODE_BATCH_CAP=16` door). The B=1 fast path
+is its own gate arm (arm 4) against the eager split, since it carries the accepted m=1 fusion
+FP gap vs the batched body by design: **3,973,120 f32 logits bit-identical, 0 differing
+bits**, across the same six configs.
+
+**Cost: the boundary transfer does not bite at m>1.** q9, 64 steps, 512-token prompts,
+greedy, N=5 rep-major interleaved in one lock hold on one binary (medians; cross-run
+comparison would be clock-drift invalid):
+
+| arm | B=1 | B=4 | B=8 |
+|---|---|---|---|
+| door shut, single device | 208.4 | 489.3 | 654.0 |
+| split dev01 (**the serving config**) | **204.7** | 487.0 | 646.9 |
+| ratio | 0.982x | **0.995x** | **0.989x** |
+
+So batched PP-2 costs **0.5–1.5%** at B=4/8/16, and of that, transport is 0.986–0.997x of the
+seam — almost all of the small loss is the seam, not PCIe. Both placement orders agree within
+0.3%. Aggregate scaling survives the split: B=8 reaches 3.65x B=1's aggregate.
+
+The B=1 row has history worth keeping: opening the pp door originally dropped every solo
+session off the m=1 fusion chain (the `b1_fast` guard included `pp_cuts().is_none()`), a
+permanent **−14.9%** tax on exactly the request shape an interactive 2-card box serves. Fixed
+by giving the split its own B=1 path — each stage runs its layer range through
+`decode_layers_eager`. `MEMRA_SERVE_B1FAST=0` is the rollback control and still measures the
+old 177 (0.851x).
+
+**Why `MEMRA_SERVE_SPEC=0`.** Speculative serving over PP-2 is *correct* — the verify trunk
+takes its own stage split and the bit-identity battery is 7/7 ALL GREEN — and it is still
+**not shippable for concurrent serving**:
+
+- On the reversed placement it provokes a deterministic `CUDA_ERROR_ILLEGAL_ADDRESS` that is
+  **sticky for the CUDA context**: once it fires, every later `new_session` inherits it. At
+  c=4 that is **100% of requests lost** (0/48, wall 0.008 s), reproducible 3/3.
+- On the other placement it is ~20x slow.
+- The same placement with spec OFF is 96/96 clean and the fastest arm measured.
+
+So PP-2 serves the **plain** path today. An artifact carrying an embedded MTP head self-specs
+by default, which is why the flag must be explicit: without it every request funnels into the
+verify trunk. `serve-smoke.sh` over the split (PP-2 dev01, spec off) returns **0 failed
+checks** across `/models`, non-stream chat, SSE streaming, `/v1/completions`, greedy
+determinism, 3 concurrent chats, and long generation — identical to the door-shut control,
+i.e. the split adds nothing observable to the OpenAI surface.
+
+**What refuses, deliberately.** The four decode paths that have no stage split
+(`decode_step_batch`'s unsplit body, `decode_step_dc`, the graph capture wrapping dc, and
+`decode_step_t*` spec verify) **fail closed** under an open pp door with a sharded
+cross-device placement, behind one shared guard (`pp::refuse_unsplit_if_remote`). They were
+not wrong, they were a silent perf cliff with a green battery: an unsplit trunk peer-reads
+every remote stage's weights every step, measured **7.4 vs 208.9 tok/s at B=1 (28x)** and
+**47.4 vs 657.0 at B=8 (13.9x)**. Exactness was never affected (peer reads return identical
+bytes), which is exactly why a refusal rather than a warning was the right call.
+`MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` re-admits them as a measurement door only;
+`MEMRA_PP_SHARD=0` is the non-measurement escape (weights all home — full speed, forfeits the
+capacity PP-2 exists for).
+
 ## OpenAI tools surface (serve-tools lane, 2026-08-02)
 
 `/v1/chat/completions` accepts `tools`, `tool_choice` (`"auto"`|`"none"`; `"required"` and
@@ -250,9 +343,22 @@ gated by the official `openai` Python SDK against a live server
   at build); the id echoes as the `x-request-id` response header. The first stream delta
   carries `role:"assistant"`. Error bodies are the OpenAI object —
   `{"error": {"message","type","param","code"}}` — and mid-stream worker errors arrive as
-  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive
-  comments flow every 5s (long-prompt prefill streams nothing before first token;
-  OpenRouter cancels silent streams).
+  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive comments
+  flow every 5s (long-prompt prefill streams nothing before first token; OpenRouter cancels
+  silent streams).
+
+  **Precondition — which surface you are talking to.** Everything in this section describes the
+  **OpenAI-shape** surface, and the stream terminator + the mid-stream error shape are gated on
+  `chat || openai_compat()` (main.rs:1966, 2007). `openai_compat()` is true when
+  `MEMRA_COMPAT=openai`, or when `MEMRA_COMPAT` is unset **and `MEMRA_API_KEY` is set** — the pi
+  setup. On a **native-default** server (no `MEMRA_COMPAT`, no `MEMRA_API_KEY`) a streaming
+  `/v1/completions` does the opposite of the sentence above: it emits a named `event: error` and a
+  named `event: done`, with **no `data: [DONE]`**. That is deliberate, not a bug — native clients
+  are memra's own tools, which do parse named events, and the validation harnesses rely on it.
+  `/v1/chat/completions` is always OpenAI-shape (`chat` is true regardless). The shipped unit sets
+  `MEMRA_COMPAT=openai` (`deploy/systemd/memra-server.service:92`), so a deployed server matches
+  this section — but if you are testing a bare `memra-server` and your SDK reads a silent hang,
+  this is why.
 - **Reasoning separation:** on think-open prompts, `<think>` text routes to
   `message.reasoning` / `delta.reasoning` (+ `reasoning_details`, the OpenRouter
   dialect); `content` is post-think only. `include_reasoning:false` (or
@@ -298,7 +404,9 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
   plan's config), `architecture` (`modality`, `tokenizer`, `instruct_type` — probed at
   spawn from the model itself, not hardcoded), and an OR-convention `pricing` stub.
   Unknowns are honest `null`s, never guesses.
-- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` on both
+- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` (emitted
+  lowercase on the wire, as HTTP/2 requires; capitalized here by convention — a client
+  parsing headers into a case-sensitive dict must key on `x-ratelimit-*`) on both
   completion routes with concurrency-slot semantics — a per-lane atomic gauge whose
   RAII slot rides the SSE stream to completion, so `Remaining` is truthful for the
   whole life of a stream. Sheds carry `429 + Retry-After`; `MEMRA_RL_RESET_S` is the
@@ -315,6 +423,20 @@ gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`
 Receipts: `research/serve-hardening-20260806/`. Example unit:
 `deploy/systemd/memra-server.service`.
 
+**The full route table**, since the sections above only introduce routes as they become
+relevant (bind address `MEMRA_ADDR`, default `127.0.0.1:8080`):
+
+| route | notes |
+|---|---|
+| `GET /health`, `GET /livez` | the same handler — inference liveness (below) |
+| `GET /readyz` | routability (below) |
+| `GET /v1/models` | the OR-schema listing (Gateway listing surface, above) |
+| `GET /models` | the plain listing: `{"data":[{"id":"<alias>"},...]}`. Not an OpenAI route and not a `/v1/models` alias — no `context_length`, `architecture`, or `pricing`. It is what `serve-smoke` and `serve-st-gate` assert against |
+| `POST /v1/completions` | raw-prompt completions. **Streaming shape depends on `MEMRA_COMPAT`** — see the compatibility precondition above |
+| `POST /v1/chat/completions` | always OpenAI-shape |
+| `GET /metrics` | counters + the `spec` acceptance block |
+| `GET /yield/metrics` | the dark-lane yield view |
+
 **`/health` == `/livez` — inference liveness, not process liveness.** The GPU worker is
 ONE `std::thread` owning the CUDA context. `/health` used to answer `{"status":"ok"}` off
 the axum task, so a worker panic or a wedged card left a permanently green health check in
@@ -328,9 +450,12 @@ every iteration, plus a phase:
 | `busy` | 200 while the beat advances, 503 past `MEMRA_HEALTH_STALL_S` (120s) | work in flight must make progress; the bound covers a max-context prefill tick (see FLAGS for the derivation) |
 | `dead` / fault latched | 503 immediately | worker panic or fatal Xid — a latch, not a timeout, so the flip is instant |
 
-The response body publishes `worker.{phase, beat_age_ms, tick_max_ms,
-stall_threshold_ms, generation, xid_warnings}`, so a red is self-explaining and
-`tick_max_ms` is the live receipt for revisiting the threshold.
+The response body is `{status, models, worker:{phase, beat_age_ms, tick_max_ms,
+stall_threshold_ms, generation, xid_warnings}}`, plus a top-level `detail` on a red (which is
+where a quoted panic payload lands). `status` is `ok` / `draining` / `unhealthy` on
+`/health`-`/livez` and `ready` / `not_ready` on `/readyz`. So a red is self-explaining and
+`tick_max_ms` — the longest scheduler iteration this process actually observed — is the live
+receipt for revisiting the threshold.
 
 **`/readyz` — should traffic be routed here?** Ready = model loaded AND worker alive AND
 not draining. Unready is NOT a restart request: draining and loading are healthy states
@@ -343,9 +468,16 @@ so a deep queue is work in progress; capacity backpressure belongs on the reques
 `EngineDeadError`) and TGI a single `/health`.
 
 **Worker panic → supervised.** The worker thread runs inside `catch_unwind`: a panic marks
-health dead with the quoted panic payload, then ONE respawn is attempted with backoff
-(`MEMRA_WORKER_RESPAWN`), and failing that the process exits **70** so the supervisor
-restarts it whole. One attempt, deliberately — CUDA errors are sticky per process, so a
+health dead with the quoted panic payload, then ONE respawn is attempted after a **`2 x attempt`
+second** backoff — 2 s at the default max of 1 (`MEMRA_WORKER_RESPAWN`; the sleep exists so a
+panic from a transient device condition gives the driver time to settle instead of re-hitting it
+immediately) — and failing that the process exits **70** so the supervisor restarts it whole.
+**Two distinct paths reach exit 70**, and an operator reading `systemctl status` should be able to
+tell them apart: the respawn budget running out (`STATUS=worker unrecoverable; exiting`), and a
+respawn whose **weight reload itself failed** (`STATUS=respawn load failed; exiting`) — the second
+is not a panic, and it exits rather than looping because a load failure will not fix itself.
+Exit 70 is sysexits' `EX_SOFTWARE`, chosen so it reads distinctly from the startup FATAL paths,
+which exit 1 ("the engine died" vs "bad config"). One attempt, deliberately — CUDA errors are sticky per process, so a
 respawn loop against a poisoned context produces a box that looks alive and serves nothing.
 Proved on a real CUDA worker, not only in tests (`MEMRA_PANIC_AFTER` fault injection,
 `research/serve-hardening-20260806/logs/worker-death.txt`): panic → 503 on all three routes
@@ -358,12 +490,39 @@ queued work survives a worker death.
 **GPU faults (`MEMRA_GPU_WATCH`).** A watcher thread tails Xid lines (`/dev/kmsg`, falling
 back to `journalctl -k -f`) and latches unhealthy on the fatal classes
 (48/64/79/94/95/119/120), counting the rest as warnings. It also probes `nvidia-smi` for
-uncorrectable ECC and row-remap failures. The design constraint: Blackwell's worst wedge
+uncorrectable ECC and row-remap failures every `MEMRA_GPU_WATCH_S` seconds (default 60 — the
+audit's published detection commitment is "checks every 60 s", so treat it as a stated fact about
+the instrumentation rather than a free knob). The design constraint: Blackwell's worst wedge
 (Xid 119/120, GSP RPC timeout) emits nothing to the process **and hangs the query tools**,
 so the probe runs as a killed-on-deadline child and its own timeout
 (`MEMRA_GPU_PROBE_TIMEOUT_S`) is the alarm. Health reads only atomics, so a hung
 `nvidia-smi` can never block a health answer. A GPU fault survives a worker respawn: a new
 thread on a wedged card is not recovery.
+
+**The supervision contract (`deploy/systemd/memra-server.service`) has three couplings you can
+break silently.** The unit is an example to copy, but these are not stylistic choices — each is
+sized against a server-side default, and changing one side alone produces a unit that looks
+correct and misbehaves only during a failure:
+
+| directive | value | the coupling |
+|---|---|---|
+| `WatchdogSec` | 180 | MUST exceed `MEMRA_HEALTH_STALL_S` (default 120). The heartbeat that feeds `/health` also feeds systemd, so a watchdog under the legitimate-stall bound restarts a *healthy* server mid-prefill. Raise both together if you raise `MEMRA_MAX_SESSIONS` or the context |
+| `TimeoutStopSec` | 60 | MUST exceed `MEMRA_DRAIN_S` (default 30), or systemd SIGKILLs a drain that is finishing streams correctly. The server also sends `EXTEND_TIMEOUT_USEC`; the static floor covers a build that does not |
+| `TimeoutStartSec` | 600 | MUST exceed the slowest cold load (~120 s measured for a 27B NVFP4 from page cache; cold NVMe on a large bank is slower). Startup silence is a load, not a hang |
+| `StartLimitIntervalSec` / `StartLimitBurst` | 3600 / 4 | systemd's defaults (10 s / 5) are sized for millisecond daemons and **cannot trip at all** here — 5 starts do not fit in 10 s when each start takes ~120 s, so a crash loop restarts forever instead of failing the unit for a human. 4 starts per hour ≈ "if it cannot survive four full loads, page someone" |
+| `RestartSec` / `RestartSteps` / `RestartMaxDelaySec` | 10 / 4 / 160 | a card that just threw an Xid needs the driver to settle; a tight loop makes recovery less likely. The ramp needs systemd ≥ 254 — on older systemd delete the last two lines and keep the flat 10 s |
+| `OOMPolicy` | `kill` | the default `stop` reaps only the offending process, and the kernel OOM killer can take out ONE thread — classically the worker — leaving a process that accepts connections and can never serve them, which is the exact invisible death this lane removes. **Host memory only**: CUDA OOM is the 503 above, never a process kill |
+
+Two more worth knowing before you deploy. `Type=notify` + `NotifyAccess=main` means `READY=1`
+fires after the models load **and** the socket binds — `systemctl start` returning is a real
+readiness signal, which is why `TimeoutStartSec` must be generous. And Xid visibility can be
+silently absent: `kernel.dmesg_restrict=1` makes `/dev/kmsg` root-only, so an unprivileged unit
+sees Xids only through `journalctl`; grant `AmbientCapabilities=CAP_SYSLOG` +
+`CapabilityBoundingSet=CAP_SYSLOG` or accept the fallback to the probe-hang and ECC/remap
+detectors, which need no kernel log. The watcher logs which source it got, so this is never a
+silent downgrade. The unit is deliberately **not** `ProtectSystem=strict` — model paths,
+`/dev/nvidia*`, and the CUDA cache need real filesystem access, and a wrong sandbox fails at
+load time looking like a model bug.
 
 **Error taxonomy.** Every engine failure used to be `400 invalid_request_error` — which no
 OpenAI SDK retries, and which a router cannot distinguish from a malformed request. The
@@ -381,6 +540,7 @@ class now comes from the producer:
 | unknown `x-lane` value | 400 | `invalid_request_error` | `invalid_lane` | `x-should-retry: false` |
 | batch-class api key requesting `x-lane: interactive` | 403 | `authentication_error` | — | `x-should-retry: false` |
 | bad / disabled api key | 401 / 403 | `authentication_error` | — | `x-should-retry: false` |
+| **worker channel dropped** (`cmd_tx.send` fails) | 503 | `server_error` | **none** | **none** |
 
 Unknown model is a deliberate **400, not 404**: OpenRouter's uptime math counts 404s
 against the provider and excludes 400s, and the `code` is what clients branch on either
@@ -389,6 +549,17 @@ only `0 < v ≤ 60`, openai-python abandons retry past 120s) with a matching
 `retry-after-ms`, which openai-python reads first. A **mid-stream** failure — after the 200
 is committed and no status code is left to change — emits the same error object as a
 `data:` chunk and closes the connection.
+
+**One 503 is still outside the contract** (last row above, `main.rs:1741` and `1819`): when
+`cmd_tx.send()` fails because the worker channel is gone, the body is
+`"worker unavailable"` / `server_error` with **`code: null`, no `Retry-After`, no
+`retry-after-ms`, and no `x-should-retry`** — `error_response` passes `code: None`, and the
+`x-should-retry` header is only attached on 4xx. A client that branches on `code` sees nothing to
+branch on, and a client that honors `Retry-After` gets no delay hint, on precisely the transient
+condition where retrying is the right move. This is the narrow window between a worker dying and
+the respawn ladder re-establishing the channel; the `overloaded` row covers the *restarting*
+case, which is why this one is easy to miss. Documented as-is rather than described as fixed —
+giving it `code: "overloaded"` + the retry pair is a server change, not a docs change.
 
 ## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
 
@@ -737,8 +908,18 @@ gone: B128 buys +8.4% (c=1) / +8.5% (c=8) and now trails B32's contended first t
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are
 cataloged in [FLAGS.md §7](FLAGS.md) under "Serving (memra-server)"; fleet topology knobs
 (`GPUS`, `REPLICAS_PER_GPU`, `CAP`, ports, health cadence) are env-overridable at the top of
-`tools/serve-fleet.sh`. The exactness contract holds under batching: the decode-batch gate
-battery (gate1-3, gate3c lean-vs-full) runs inside `tools/validate-h100.sh`.
+`tools/serve-fleet.sh`. The exactness contract holds under batching: `decode-batch-gate` runs
+inside `tools/validate-h100.sh` **twice** — `--mode config --batch 8` (the default-env battery,
+fused tier live in the reference) and `--mode strict --batch 4` under the equalized composition
+(`MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1`). Each invocation runs gate1 (B=1 vs `decode_step_h`),
+gate2 (per-seq isolation — batchmates must not change your stream), and gate3, whose three
+sub-checks are (a) device-argmax == host-argmax of the same row, (b) sampled draws at B=N ==
+the same metas at B=1, and (c) `gate3c`, lean-vs-full logits identity. **`gate3c` is a
+sub-check of gate3, not a fourth gate** — gate3 prints one PASS/FAIL line covering all three,
+so a green line is the only signal that (c) ran; the sub-check names surface in the output only
+when one fails. The stage-split modes (`--mode pp`, `--mode ppspec`) SKIP gate1/2/3 by design —
+they are single-device jurisdiction — and neither PP mode is wired into `validate-h100.sh`; PP
+exactness has its own invocations (see [TESTING.md](TESTING.md)).
 
 ## First-token cross-config drift (batched prime) — stated honestly
 
@@ -827,6 +1008,25 @@ What this changes and what it does not:
    reads quantized KV — the same arithmetic long prompts always had past the first boundary.
    Near-tie argmax flips vs the old f32-first-chunk output are the documented contract
    change (quantified teacher-forced in `research/chunkinv-flip-20260805/`), not a bug.
+
+**Scope: this is a per-architecture property.** The fix above is a property of the
+`full_attn_prime_fa_dispatch` path, and the gate runs on the shipped arches. A different
+attention family can re-enter the class through its own door, and one has: the `step35`
+bring-up arch (Step-3.7-Flash) is **chunk-DEPENDENT past its 512-token SWA window** —
+`MEMRA_PRIME_CHUNK` changes prefill logits, hidden rows, and generated text for any prompt
+over the window. The mechanism is kernel *selection*, not reduction order: a chunk whose
+`t_kv` exceeds the window takes the f32 windowed floor `sdpa_naive_w_quantized_view` while a
+chunk that fits takes the dequant-once `fa_prefill_view_ws`, so the FA rows form a contiguous
+prefix `P = c*floor(win/c)` and the verdict depends only on `P`. A pre-registered 4/4
+falsification battery pinned it — including a one-token verdict flip at c=513 vs c=512 at
+identical chunk count in one process, and a 20-chunks-vs-10-chunks pair that is bit-identical
+because `P` matches, which no fold-order account permits. The shipped default (4096) has
+`P=0`, so a naked single-rig run is self-consistent; the exposure is two rigs at different
+chunk sizes returning different text. Fix shape is named and correct-by-construction (force
+`naive_w` on SWA layers whenever `T>win`, making `P` identically 0, which cannot move the
+default's numbers since that path is already `P=0`); its chunkinv gate at T=4883 is written
+and legitimately red until the fix lands. Receipts:
+[`research/step37-p2-20260806/`](../research/step37-p2-20260806/) (commit `66a81371`).
 
 The behavior is **gated in both directions**: fast-gate ids `chunkinv` / `chunkinvc`
 (routed from the `hybrid_forward.rs` map row): the default arm asserts byte-identity naked;

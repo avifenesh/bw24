@@ -2635,3 +2635,37 @@ receipts (`research/fa-decode-deep-20260802/`); the deep twins' smem bank-confli
 premise (padded rows vs the 32-way score-phase conflict) is silicon-sensitive and
 Hopper's smem banking may price it differently. The sm_90a validation — battery +
 depth A/B — rides the next box battery window per the standing LAW 1/LAW 2 rules.
+
+## Round 57 — the M0 "PP ~free" floor, priced (2026-08-02/06 — docs-lane ledger entry, scoping a round-49 line)
+
+Round 49's closing line banked the M0 comms spike's multi-GPU floor as "PP ~free, EP<=4,
+graphed a2a mandatory". That parenthetical has since been measured, and "~free" holds only
+at N=2 and only for the serial arm. This ledger is append-only, so the round-49 line stands
+as written and this entry is its scope.
+
+**What "free" covers** (8xH100 SXM NVSwitch, `research/m2-pp8-20260802/RESULTS.md`, N=5
+medians, same-session denominator, box otherwise idle): serial cross-device N=2 is
+185.39 vs a 185.83 door-shut baseline on one GPU — inside the round-to-round band, which is
+what confirms M0's 0.3-0.5% per-tick prediction. **What it does not cover, recorded as the
+negative:** N=4 serial is 167.73 (0.90x) and N=8 is 165.12 (0.89x) — 3 to 7 boundary
+crossings per token with no overlap to hide them, so ~10% is the honest N>2 serial cost, not
+"~free". And the floor is only free if weights are placed per stage: the `MEMRA_PP_SHARD=0`
+peer-read arms measure 55.53 / 42.76 / 38.65 tok/s at N=2/4/8 = a **3-4x cliff**. Sharding
+is not an optimization on this box, it is the difference between a working and a broken
+multi-GPU config.
+
+The 1.87-1.88x pipelined figures in the same table are NOT a serving throughput claim — they
+come from the deferred-readback bench loop keeping 3 tokens in flight, which plain
+autoregressive serving cannot do (token N+1's input is token N's output). The pipelined arm
+also remains QUARANTINED: same-device is refused outright (a reproduced 35% co-located-stream
+race) and the cross-device record is ~69/70, one battery-5 dev01 flake with an OPEN root
+cause. No H100 default changes on this entry.
+
+Cross-rig note, since it bears on how the floor generalizes: the 2026-08-06 PP-2 batched work
+on a rented 2x RTX PRO 6000 pair (`research/pp2-batch-20260806/`) priced the *batched* split
+at 0.995x/0.989x/0.986x of the unsplit walk at B=4/8/16 with 0 differing bits across 7
+configs, and found the same fail-closed necessity from the opposite direction — the unsplit
+batched body under a sharded cross-device placement measured 28x slow at B=1 with all three
+`decode-batch-gate` gates PASSING, because peer reads are byte-exact and only perf broke.
+Those are sm_120a numbers on a Gen5 x16 pair, not NVSwitch, and are not promoted to this
+ledger as H100 cells.
