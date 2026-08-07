@@ -1655,6 +1655,15 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             .with_include_reasoning(include_reasoning))
     } else if think_open {
         Some(ToolStreamParser::reasoning_only(include_reasoning))
+    } else if caps.map(|c| c.gemma_think).unwrap_or(false) {
+        // gemma4 thought-channel dialect (lane/gemma4-serve-gaps): thought text used to
+        // land VERBATIM in content — `<|channel>thought\n…` with thinking on, and the tags
+        // leaked with it (think-smoke receipt, step-sku lane). Armed on EVERY gemma4 chat
+        // request, not just thinking-on: the closed-channel prompt still leaves the model
+        // free to open a channel mid-stream (observed live), and the template's own
+        // strip_thinking law applies wherever the tags appear. gemma4 templates carry no
+        // tools branch, so this arm never competes with the tool scanner.
+        Some(ToolStreamParser::gemma_thought(include_reasoning))
     } else {
         None
     };
@@ -3570,6 +3579,7 @@ mod tests {
             tokenizer: "qwen2".into(),
             instruct_type: Some("chatml".into()),
             effort_levels: false,
+            gemma_think: false,
         };
         let e = model_entry_v1("main", Some(&caps), 1_754_000_000);
         assert_eq!(e["id"], "main");

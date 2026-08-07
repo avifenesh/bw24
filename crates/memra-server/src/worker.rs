@@ -254,6 +254,11 @@ pub struct ModelCaps {
     /// system turn as `Reasoning: {level}\n\n`). When true, the HTTP layer maps the OpenAI
     /// `reasoning_effort` body field onto `Request::reasoning_effort` instead of ThinkMode.
     pub effort_levels: bool,
+    /// gemma4 thought-channel dialect (lane/gemma4-serve-gaps, 2026-08-07): the template's
+    /// `strip_thinking` splits on `<|channel>thought…<channel|>`. When true, chat requests
+    /// arm the gemma-dialect reasoning splitter so thought text routes to `reasoning` and
+    /// the channel tags never reach the client as content.
+    pub gemma_think: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -1534,11 +1539,18 @@ pub fn run(
             // `reasoning_effort:{no_think|low|high}` into its header), false for the
             // qwen/gemma4 classes (binary `enable_thinking`, carried by ThinkMode instead).
             effort_levels: t.is_some_and(|t| t.contains("reasoning_effort is defined")),
+            // keyed on the dialect's own thought-channel marker in the shipped template
+            // (research/step-sku-20260807/templates/gemma4-12b-qat.chat_template.jinja:
+            // strip_thinking splits on `<|channel>`). Template-keyed like every other cap —
+            // a gemma4 GGUF without its template falls back to ChatML rendering, where
+            // arming a channel splitter would be guessing.
+            gemma_think: t.is_some_and(|t| t.contains("<|channel>")),
         };
         eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={} \
-                   effort_levels={} ctx={} tok={:?} instruct={:?}",
+                   effort_levels={} gemma_think={} ctx={} tok={:?} instruct={:?}",
                   caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok,
-                  caps.effort_levels, caps.context_length, caps.tokenizer, caps.instruct_type);
+                  caps.effort_levels, caps.gemma_think, caps.context_length, caps.tokenizer,
+                  caps.instruct_type);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
@@ -3135,9 +3147,19 @@ fn admit(
         None => (None, Vec::new(), Vec::new()),
     };
 
-    // EOS: union of caller-supplied eos + the model's own eos id.
+    // EOS: union of caller-supplied eos + the model's END-OF-GENERATION set (eos + the
+    // turn-end control tokens present in the vocab — llama's special_eog: <|im_end|>,
+    // <turn|>, <end_of_turn>). eog_ids(), not eos_id alone (lane/gemma4-serve-gaps,
+    // 2026-08-07): gemma4's GGUF eos is <eos>=1, but its chat turns end with <turn|> —
+    // with only eos_id in the set, generation blew straight through the turn end and the
+    // client received literal '<turn|><turn|>thought…' as content
+    // (research/gemma4-serve-20260807/raw/postfix-client1-*.json). run_gen and gemma-gate
+    // already stop on eog_ids(); the serve path now matches. The EOS token's text is never
+    // streamed (existing rule), so the turn token also stops leaking as text.
     let mut params = req.params;
-    if !params.eos.contains(&lm.eos_id) { params.eos.push(lm.eos_id); }
+    for id in lm.tok.eog_ids() {
+        if !params.eos.contains(&id) { params.eos.push(id); }
+    }
 
     // Suffix-only prefill on a reuse hit; sampler penalty history replayed over the whole prefix.
     for &t in &seed_fed { sampler.accept(t); }
