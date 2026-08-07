@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, depth + max_m + 32)?;
     let t_prime = std::time::Instant::now();
     let mut last_logits: Vec<f32> = if depth >= memra_engine::hybrid_forward::PRIME_MIN_T {
-        let (l, _h, _hiddens) = model.prime_cache(&e, &prompt, &mut cache)?;
+        let (l, _h, _hiddens) = model.prime_cache(&e, &prompt, &mut cache, 0)?;
         l
     } else {
         let mut l = Vec::new();

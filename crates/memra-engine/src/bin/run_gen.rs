@@ -174,14 +174,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(1);
             for _ in 0..warmups {
                 let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
-                let _ = model.prime_cache(&e, &prompt, &mut c)?;
+                let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             }
             e.stream().synchronize()?;
             let mut times = Vec::with_capacity(reps);
             for r in 0..reps {
                 let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
                 let tp = std::time::Instant::now();
-                let _ = model.prime_cache(&e, &prompt, &mut c)?;
+                let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
                 e.stream().synchronize()?;
                 let dt = tp.elapsed().as_secs_f64();
                 times.push(dt);
@@ -233,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // though it is not prime's own m=1 head.
             {
                 let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
-                let (last, _h_seed, hiddens) = model.prime_cache(&e, &prompt, &mut c)?;
+                let (last, _h_seed, hiddens) = model.prime_cache(&e, &prompt, &mut c, 0)?;
                 if let Ok(f) = std::env::var("MEMRA_PP_LOGITS") {
                     let mut raw = Vec::with_capacity(last.len() * 4);
                     for v in &last {
@@ -937,7 +937,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use memra_engine::forward::PrimeGateClass;
         let mut pc = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 8)?;
-        let (l_bp, _, _) = model.prime_cache(&e, &prompt, &mut pc)?;
+        let (l_bp, _, _) = model.prime_cache(&e, &prompt, &mut pc, 0)?;
         let v = memra_engine::forward::prime_gate_verdict(&dec_logits, &l_bp);
         println!(
             "batched-prime argmax={}  tokenwise argmax={}  logit maxdiff={:.3e}  {}",

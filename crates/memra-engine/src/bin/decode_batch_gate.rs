@@ -210,8 +210,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let p0: Vec<u32> = (0..20).map(|j| 55 + (seed + gs) * 13 + j * 31).collect();
         let mut c_ref = Cache::new(&e, &model.cfg, ctx)?;
         let mut c_bat = Cache::new(&e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(&e, &p0, &mut c_ref)?;
-        let _ = model.prime_cache(&e, &p0, &mut c_bat)?;
+        let _ = model.prime_cache(&e, &p0, &mut c_ref, 0)?;
+        let _ = model.prime_cache(&e, &p0, &mut c_bat, 0)?;
         let mut t_ref = *p0.last().unwrap();
         let mut t_bat = t_ref;
         let mut diverged: Option<usize> = None;
@@ -290,7 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ref_logits: Vec<Vec<Vec<f32>>> = Vec::new();
     for p in prompts.iter().take(b_n) {
         let mut c = Cache::new(&e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(&e, p, &mut c)?;
+        let _ = model.prime_cache(&e, p, &mut c, 0)?;
         let mut t = *p.last().unwrap();
         let mut out = Vec::with_capacity(steps);
         let mut ls = Vec::with_capacity(steps);
@@ -312,7 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut caches: Vec<Cache> = Vec::new();
     for p in prompts.iter().take(b_n) {
         let mut c = Cache::new(&e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(&e, p, &mut c)?;
+        let _ = model.prime_cache(&e, p, &mut c, 0)?;
         caches.push(c);
     }
     let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
@@ -365,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut caches: Vec<Cache> = Vec::new();
         for p in prompts.iter().take(b_n) {
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, p, &mut c)?;
+            let _ = model.prime_cache(&e, p, &mut c, 0)?;
             caches.push(c);
         }
         let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
@@ -390,7 +390,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut iso: Vec<Vec<u32>> = Vec::with_capacity(b_n);
         for bi in 0..b_n {
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prompts[bi], &mut c)?;
+            let _ = model.prime_cache(&e, &prompts[bi], &mut c, 0)?;
             let mut t = *prompts[bi].last().unwrap();
             let mut out = Vec::with_capacity(n_s);
             for s in 0..n_s {
@@ -407,7 +407,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut caches: Vec<Cache> = Vec::new();
             for p in prompts.iter().take(b_n) {
                 let mut c = Cache::new(&e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
                 caches.push(c);
             }
             let mut toks: Vec<u32> =
@@ -442,10 +442,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut caches_l: Vec<Cache> = Vec::new();
             for p in prompts.iter().take(b_n) {
                 let mut c = Cache::new(&e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
                 caches_f.push(c);
                 let mut c = Cache::new(&e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
                 caches_l.push(c);
             }
             let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
@@ -647,7 +647,7 @@ fn pp_battery(
             let mut caches: Vec<Cache> = Vec::with_capacity(b);
             for p in prompts.iter() {
                 let mut c = Cache::new(e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(e, p, &mut c)?;
+                let _ = model.prime_cache(e, p, &mut c, 0)?;
                 caches.push(c);
             }
             let mut toks: Vec<u32> = prompts.iter().map(|p| *p.last().unwrap()).collect();
@@ -672,7 +672,7 @@ fn pp_battery(
             let mut caches: Vec<Cache> = Vec::with_capacity(b);
             for p in prompts.iter() {
                 let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(e, p, &mut c)?;
+                let _ = model.prime_cache(e, p, &mut c, 0)?;
                 caches.push(c);
             }
             for (s, toks) in inputs.iter().enumerate() {
@@ -691,7 +691,7 @@ fn pp_battery(
             let mut caches: Vec<Cache> = Vec::with_capacity(b);
             for p in prompts.iter() {
                 let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(e, p, &mut c)?;
+                let _ = model.prime_cache(e, p, &mut c, 0)?;
                 caches.push(c);
             }
             // MEMRA_BATCH_PP=0 selects the unsplit body; the ALLOW override is required
@@ -740,9 +740,9 @@ fn pp_battery(
         // b1_fast ON is the whole point of the arm (arms 1-2 left it OFF).
         HybridModel::set_b1_fast(true);
         let mut c_eager = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(e, &prompt, &mut c_eager)?;
+        let _ = model.prime_cache(e, &prompt, &mut c_eager, 0)?;
         let mut c_batch = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(e, &prompt, &mut c_batch)?;
+        let _ = model.prime_cache(e, &prompt, &mut c_batch, 0)?;
         let mut tok = *prompt.last().unwrap();
         for s in 0..n_s {
             let (ref_row, _) = model.decode_step_h(e, tok, &mut c_eager)?;
@@ -779,10 +779,10 @@ fn pp_battery(
         let mut caches_l: Vec<Cache> = Vec::with_capacity(b);
         for p in prompts.iter() {
             let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(e, p, &mut c)?;
+            let _ = model.prime_cache(e, p, &mut c, 0)?;
             caches_f.push(c);
             let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(e, p, &mut c)?;
+            let _ = model.prime_cache(e, p, &mut c, 0)?;
             caches_l.push(c);
         }
         let mut toks: Vec<u32> = prompts.iter().map(|p| *p.last().unwrap()).collect();
@@ -933,7 +933,7 @@ fn ppspec_battery(
         let mut ref_pos: Vec<usize> = Vec::with_capacity(rounds);
         {
             let mut c = Cache::new(e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(e, &prompt, &mut c)?;
+            let _ = model.prime_cache(e, &prompt, &mut c, 0)?;
             // Round 0's chunk = the prompt's last token repeated forward through the reference's
             // own argmax columns; every later chunk is derived from the PREVIOUS round's logits,
             // so the token stream is the reference's and the arms replay it exactly (a mismatch
@@ -964,7 +964,7 @@ fn ppspec_battery(
             let mut chk = BitCheck::new(format!("verify-split T={t} rep{rep}"));
             let mut hchk = BitCheck::new(format!("verify-split h_seed T={t} rep{rep}"));
             let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(e, &prompt, &mut c)?;
+            let _ = model.prime_cache(e, &prompt, &mut c, 0)?;
             for (r, (pos0, chunk)) in inputs.iter().enumerate() {
                 assert_eq!(c.pos, *pos0,
                            "verify-split pos {} != reference pos {pos0} at round {r} — one arm \
@@ -986,7 +986,7 @@ fn ppspec_battery(
         {
             let mut chk = BitCheck::new(format!("verify-unsplit@ppncache T={t}"));
             let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(e, &prompt, &mut c)?;
+            let _ = model.prime_cache(e, &prompt, &mut c, 0)?;
             // MEMRA_SPEC_PP=0 selects the unsplit trunk; the ALLOW override is required because
             // that trunk is exactly what `refuse_unsplit_if_remote` fails closed on under a
             // sharded cross-device placement. Both are restored right after.

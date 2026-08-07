@@ -69,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prompt: Vec<u32> = (0..(prompt_t as u32) + i as u32 * 7)
                 .map(|j| 55 + i as u32 * 97 + j * 31).collect();
             let mut c = new_cache(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             toks.push(*prompt.last().unwrap());
             caches.push(c);
         }
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prompt: Vec<u32> = (0..(prompt_t as u32) + i as u32 * 7)
                 .map(|j| 55 + i as u32 * 97 + j * 31).collect();
             let mut c = new_cache(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             toks.push(*prompt.last().unwrap());
             caches.push(c);
         }
@@ -170,7 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0..b_n {
             let prompt: Vec<u32> = (0..512u32).map(|j| 55 + i as u32 * 97 + j * 31).collect();
             let mut c = new_cache(&e, &model.cfg, 640)?;
-            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             toks.push(*prompt.last().unwrap());
             caches.push(c);
         }

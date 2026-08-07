@@ -404,7 +404,22 @@ impl HybridModel {
     /// hiddens = the full pre-output_norm hidden stack [T, n_embd] — generate_spec's prompt_h).
     /// FRESH-PROMPT ONLY (cache.pos == 0): the fa_prefill tiles attend within `tokens` alone.
     /// forward_last itself stays untouched (kernel-check / run-gen gate on it).
-    pub fn prime_cache(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+    ///
+    /// `queued_after` (lane/tick-seg, 2026-08-07): the number of prompt tokens of the SAME
+    /// REQUEST that the caller will prime in LATER calls — 0 when this call is the whole
+    /// request (every single-shot caller). Serve splits a long prompt across SEVERAL
+    /// prime_cache calls (one per scheduler tick, plus the prefix-cache LCP split), and the
+    /// request's absolute end position `seq_end = cache.pos + t + queued_after` steers step35's
+    /// SWA prefill arm — computing it per CALL made the arm a function of the tick budget
+    /// (budgets 512/256/64 DIFFER 1.813e0 vs monolithic, greedy diverging at step 6; dark lanes
+    /// default to 256 AND cap by live SLO headroom, so identical judge requests primed
+    /// differently under load — research/tick-seg-20260807, receipt in
+    /// research/step35-chunkfix-20260807 §9). The parameter is what prime_cache structurally
+    /// lacked: it cannot know from `tokens` and `cache` alone whether more of the request is
+    /// coming. A SESSION CONTINUATION (a NEW user turn primed onto a live cache) is a NEW
+    /// request — its arithmetic is keyed to its own extent, so those callers pass 0; only a
+    /// caller that SPLITS one request across calls passes the remainder.
+    pub fn prime_cache(&self, e: &Engine, tokens: &[u32], cache: &mut Cache, queued_after: usize)
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
@@ -462,7 +477,17 @@ impl HybridModel {
         // same value, whatever the chunk size. step35's SWA arm selects on it so that kernel
         // selection — and therefore the logits — cannot depend on MEMRA_PRIME_CHUNK
         // (research/step35-chunkfix-20260807; see step35_attn_pre_wo's doc note).
-        let seq_end = cache.pos + t;
+        // `+ queued_after` closes the SECOND axis (lane/tick-seg): when serve splits the request
+        // across calls, the request still ends at the same absolute position, whatever the tick
+        // budget or LCP split point. MEMRA_PRIME_CALLLOCAL=1 is the ROLLBACK SEAM to the per-call
+        // value — tick-VARIANT by construction, which is what gives the tickinv35 gate its canary
+        // teeth. Read per call, not cached (the probe flips it in-process between arms). Never on
+        // in a measured default run.
+        let seq_end = if std::env::var("MEMRA_PRIME_CALLLOCAL").as_deref() == Ok("1") {
+            cache.pos + t
+        } else {
+            cache.pos + t + queued_after
+        };
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache, seq_end);
         }

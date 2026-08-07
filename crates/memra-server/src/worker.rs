@@ -3505,7 +3505,13 @@ fn prefill_tick(
             }
         }
         let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
-        let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
+        // REQUEST-LEVEL seq_end (lane/tick-seg, 2026-08-07): the tokens still queued after this
+        // tick are the SAME request — pass them so the engine's arm selection is keyed to the
+        // request's end, not this tick's. Without it the tick budget (dark lanes: 256 AND
+        // SLO-headroom-capped) and the LCP-split boundary steered step35's prefill arithmetic
+        // (budgets 512/256/64 DIFFER 1.813e0 vs monolithic — tickinv35 gate).
+        let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap(),
+                                               s.prefill_queue.len())?;
         s.last_logits = l;
         for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         consumed = take;
@@ -3951,7 +3957,10 @@ fn step_session(
             let mut take = q.min(PREFILL_TICK_T);
             if q - take > 0 && q - take < memra_engine::hybrid_forward::PRIME_MIN_T { take = q; }
             let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
-            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
+            // REQUEST-LEVEL seq_end: the rest of prefill_queue is the same request's remainder
+            // (see prefill_tick — the tick-budget segmentation must not steer arithmetic).
+            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap(),
+                                                   s.prefill_queue.len())?;
             s.last_logits = l;
             for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         } else if let Some(tok) = s.prefill_queue.pop_front() {

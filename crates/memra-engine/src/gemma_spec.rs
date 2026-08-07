@@ -648,7 +648,7 @@ impl HybridModel {
         let t_prime = std::time::Instant::now();
         // short prompts fall below prime_cache's T floor — the batched verify IS a prime.
         let (pl, h_seed) = if prompt.len() >= crate::hybrid_forward::PRIME_MIN_T {
-            let (l, hs, _hh) = self.prime_cache(e, prompt, &mut cache)?;
+            let (l, hs, _hh) = self.prime_cache(e, prompt, &mut cache, 0)?;
             (l, hs)
         } else if self.is_gemma4_e4b() {
             // E4B short-prompt prime: TOKENWISE — the batched e4b trunk at base_len==0

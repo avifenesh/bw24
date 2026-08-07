@@ -2102,7 +2102,7 @@ impl HybridModel {
             && std::env::var("MEMRA_PRIME_TOKENWISE").is_err()
             && !e.frozen_cpu_experts_prefer_tokenwise_prime();
         if batched_prime {
-            let (l, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache)?;
+            let (l, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache, 0)?;
             last_logits = l;
         } else {
             for &tok in prompt {
@@ -2346,7 +2346,7 @@ impl HybridModel {
             && std::env::var("MEMRA_PRIME_TOKENWISE").is_err()
             && !e.frozen_cpu_experts_prefer_tokenwise_prime();
         if batched {
-            let (l, _h, _x) = self.prime_cache(e, prompt, &mut cache)?;
+            let (l, _h, _x) = self.prime_cache(e, prompt, &mut cache, 0)?;
             last_logits = l;
             for &tok in prompt {
                 sampler.accept(tok);

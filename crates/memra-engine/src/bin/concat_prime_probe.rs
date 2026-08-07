@@ -112,7 +112,7 @@ impl Ctx {
     fn solo_stream(&self, toks: &[u32], steps: usize)
                    -> Result<(Vec<u32>, Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
         let mut c = Cache::new(&self.e, &self.model.cfg, self.ctx_len)?;
-        let (logits, _, _) = self.model.prime_cache(&self.e, toks, &mut c)?;
+        let (logits, _, _) = self.model.prime_cache(&self.e, toks, &mut c, 0)?;
         let mut t = argmax(&logits) as u32;
         let (_, v1, _, v2) = top2(&logits);
         let mut margins = vec![v1 - v2];
@@ -196,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // replay solo stream against a re-primed solo cache in lockstep with the batch
             // cache so per-step logit maxdiff is observable until divergence.
             let mut c_solo = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len)?;
-            let _ = cx.model.prime_cache(&cx.e, &ta, &mut c_solo)?;
+            let _ = cx.model.prime_cache(&cx.e, &ta, &mut c_solo, 0)?;
             let mut t_solo = stream_solo[0];
             for step in 1..=steps {
                 let (ls, _) = cx.model.decode_step_h(&cx.e, t_solo, &mut c_solo)?;
@@ -246,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // solo hidden stack for A (pre-output-norm [T, n_embd])
             let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len)?;
-            let (_, _, hid_solo) = cx.model.prime_cache(&cx.e, &ta, &mut c)?;
+            let (_, _, hid_solo) = cx.model.prime_cache(&cx.e, &ta, &mut c, 0)?;
             let h_solo = cx.e.dtoh(&hid_solo)?;
 
             // concat hidden stack for A
@@ -417,7 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let mut c_solo = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len)?;
-            let (l_solo, _, h_solo) = cx.model.prime_cache(&cx.e, &ta, &mut c_solo)?;
+            let (l_solo, _, h_solo) = cx.model.prime_cache(&cx.e, &ta, &mut c_solo, 0)?;
             let solo = (l_solo, cx.e.dtoh(&h_solo)?);
             let b1 = batch(&[&ta], 0)?;
             let ab_a = batch(&[&ta, &tb], 0)?;
@@ -461,7 +461,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      ta.len(), co.len(), );
 
             let mut c_solo = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len)?;
-            let (l_solo, _, _) = cx.model.prime_cache(&cx.e, &ta, &mut c_solo)?;
+            let (l_solo, _, _) = cx.model.prime_cache(&cx.e, &ta, &mut c_solo, 0)?;
             let (a_solo, sv1, _, sv2) = top2(&l_solo);
             println!("solo: argmax={a_solo} margin={:.6}", sv1 - sv2);
 
@@ -520,7 +520,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             assert!(tb.len() >= lmax, "co prompt too short ({}) for --lmax {lmax}; use --pad-token", tb.len());
             let mut c_solo = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len)?;
-            let (l_solo, _, _) = cx.model.prime_cache(&cx.e, &ta, &mut c_solo)?;
+            let (l_solo, _, _) = cx.model.prime_cache(&cx.e, &ta, &mut c_solo, 0)?;
             let (a_solo, sv1, _, sv2) = top2(&l_solo);
             println!("mscan: T_a={} co_max={} L={lmin}..{lmax} solo_argmax={a_solo} solo_margin={:.6}",
                      ta.len(), tb.len(), sv1 - sv2);
@@ -682,7 +682,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("route: which={which} T_a={} colen={colen}", ta.len());
             if which == "solo" {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len)?;
-                let (l, _, _) = cx.model.prime_cache(&cx.e, &ta, &mut c)?;
+                let (l, _, _) = cx.model.prime_cache(&cx.e, &ta, &mut c, 0)?;
                 let (a1, v1, _, v2) = top2(&l);
                 println!("solo argmax={a1} margin={:.6}", v1 - v2);
             } else {
@@ -822,7 +822,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // batched prime -> full pre-output-norm hidden stack
             let mut cb = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + 8))?;
-            let (_, _, hid) = cx.model.prime_cache(&cx.e, &ta, &mut cb)?;
+            let (_, _, hid) = cx.model.prime_cache(&cx.e, &ta, &mut cb, 0)?;
             let h_batch = cx.e.dtoh(&hid)?;
             assert_eq!(h_batch.len(), t * n_embd);
             let logits_row = |host: &[f32], p: usize|
@@ -882,7 +882,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let prime_hid = |toks: &[u32]| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(toks.len() + 8))?;
-                let (_, _, hid) = cx.model.prime_cache(&cx.e, toks, &mut c)?;
+                let (_, _, hid) = cx.model.prime_cache(&cx.e, toks, &mut c, 0)?;
                 Ok(cx.e.dtoh(&hid)?)
             };
             let logits_row = |host: &[f32], p: usize|
@@ -951,7 +951,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // single-threaded probe main; no other thread reads the environment here.
                 unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, cx.ctx_len.max(t + steps + 8))?;
-                let (logits, _, hid) = cx.model.prime_cache(&cx.e, &ta, &mut c)?;
+                let (logits, _, hid) = cx.model.prime_cache(&cx.e, &ta, &mut c, 0)?;
                 let h = cx.e.dtoh(&hid)?;
                 let mut tk = argmax(&logits) as u32;
                 let mut stream = vec![tk];
@@ -1076,7 +1076,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Seg::Split(l) => if fed == 0 { l.min(q) } else { q },
                     };
                     if q - take > 0 && q - take < min_t { take = q; }
-                    let (l, _, hid) = cx.model.prime_cache(&cx.e, &ta[fed..fed + take], &mut c)?;
+                    // queued_after = the request's remainder — EXACTLY what the worker passes
+                    // (prefill_tick / step_session hand prime_cache their prefill_queue.len()
+                    // after the drain). The probe stays a faithful replica of serve.
+                    let (l, _, hid) = cx.model.prime_cache(&cx.e, &ta[fed..fed + take], &mut c,
+                                                           t - fed - take)?;
                     hid_all.extend_from_slice(&cx.e.dtoh(&hid)?);
                     logits = l;
                     fed += take;
@@ -1147,7 +1151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let n_embd = cx.model.cfg.n_embd as usize;
             let n_vocab = cx.model.output.out_features();
             let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
-            let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+            let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
             // hid = [T, n_embd] pre-output-norm hiddens; lm_head each row like forward()
             let mut hn = cx.e.uninit(t * n_embd)?;
             cx.e.rms_norm(&hid, cx.model.output_norm.float_data(), &mut hn, n_embd, t,
@@ -1189,7 +1193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let run_arm = |seam: &str| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
                 unsafe { std::env::set_var("MEMRA_PRIME_F32CHUNK0", seam) };
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
-                let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+                let (_, _, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
                 let mut hn = cx.e.uninit(t * n_embd)?;
                 cx.e.rms_norm(&hid, cx.model.output_norm.float_data(), &mut hn, n_embd, t,
                               cx.model.cfg.rms_eps)?;
@@ -1236,14 +1240,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t = ids.len();
             for _ in 0..warmup {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
-                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
             }
             cx.e.stream().synchronize()?;
             let mut times = Vec::with_capacity(reps);
             for r in 0..reps {
                 let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
                 let t0 = std::time::Instant::now();
-                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c)?;
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
                 cx.e.stream().synchronize()?;
                 let dt = t0.elapsed().as_secs_f64();
                 println!("ppprime rep {r}: {t} tok in {dt:.4}s = {:.1} tok/s", t as f64 / dt);
