@@ -8,6 +8,7 @@ use memra_gguf::config::{LayerKind, MlaConfig, ModelConfig};
 use memra_gguf::source::{GgufSource, TensorSource};
 use memra_gguf::{GgmlType, GgufFile};
 use cudarc::driver::CudaSlice;
+use std::collections::HashMap;
 
 // Source-agnostic load helpers (GGUF or safetensors). The GGUF wrappers below keep `load()`
 // byte-identical; only the source object differs.
@@ -24,6 +25,151 @@ fn load_opt(
     name: &str,
 ) -> Result<Option<GpuTensor>, Box<dyn std::error::Error>> {
     GpuTensor::load_opt_from_source(e, src, name)
+}
+
+struct ResidencyBytes {
+    experts: HashMap<usize, usize>,
+    rest: usize,
+    saw_experts: bool,
+}
+
+fn block_index(name: &str) -> Option<usize> {
+    name.strip_prefix("blk.")?.split('.').next()?.parse().ok()
+}
+
+fn residency_bytes_by_device<'a>(
+    tensors: impl IntoIterator<Item = (&'a str, usize)>,
+    layer_devices: &[usize],
+    primary_device: usize,
+) -> ResidencyBytes {
+    let mut out = ResidencyBytes {
+        experts: HashMap::new(),
+        rest: 0,
+        saw_experts: false,
+    };
+    for (name, bytes) in tensors {
+        if name.starts_with("blk.") && name.contains("_exps.") {
+            let device = block_index(name)
+                .and_then(|il| layer_devices.get(il).copied())
+                .unwrap_or(primary_device);
+            *out.experts.entry(device).or_default() += bytes;
+            out.saw_experts = true;
+        } else {
+            out.rest += bytes;
+        }
+    }
+    out
+}
+
+/// Load-local resident-expert capacity decisions. PP stages on distinct devices are charged only
+/// for their own layer slices; co-located stages share a device key and are charged together.
+pub(crate) struct ResidentPlan {
+    primary_device: usize,
+    layer_devices: Vec<usize>,
+    layer_counts: HashMap<usize, usize>,
+    exact_expert_bytes: Option<HashMap<usize, usize>>,
+    trunk_bytes: usize,
+    decisions: HashMap<usize, bool>,
+    pp: bool,
+}
+
+impl ResidentPlan {
+    fn from_layout(
+        src: &dyn TensorSource,
+        primary_device: usize,
+        layer_devices: Vec<usize>,
+        pp: bool,
+    ) -> Self {
+        let mut layer_counts = HashMap::new();
+        for &device in &layer_devices {
+            *layer_counts.entry(device).or_default() += 1;
+        }
+        let (exact_expert_bytes, trunk_bytes) = match src.gguf() {
+            Some(g) => {
+                let bytes = residency_bytes_by_device(
+                    g.tensors.iter().map(|t| (t.name.as_str(), t.n_bytes as usize)),
+                    &layer_devices,
+                    primary_device,
+                );
+                if bytes.saw_experts {
+                    (Some(bytes.experts), bytes.rest)
+                } else {
+                    (None, 0)
+                }
+            }
+            None => (None, 0),
+        };
+        Self {
+            primary_device,
+            layer_devices,
+            layer_counts,
+            exact_expert_bytes,
+            trunk_bytes,
+            decisions: HashMap::new(),
+            pp,
+        }
+    }
+
+    pub(crate) fn unsharded(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig) -> Self {
+        let device = e.ctx().ordinal();
+        Self::from_layout(src, device, vec![device; cfg.n_layer as usize], false)
+    }
+
+    pub(crate) fn pp(
+        e: &Engine,
+        src: &dyn TensorSource,
+        cfg: &ModelConfig,
+        n_trunk: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let primary = e.ctx().ordinal();
+        let Some(_fence) = crate::pp::pp_cuts(n_trunk) else {
+            return Ok(Self::unsharded(e, src, cfg));
+        };
+        let mut layer_devices = vec![primary; cfg.n_layer as usize];
+        for (il, device) in layer_devices.iter_mut().take(n_trunk).enumerate() {
+            *device = crate::pp::layer_engine(e, n_trunk, il)?.ctx().ordinal();
+        }
+        Ok(Self::from_layout(src, primary, layer_devices, true))
+    }
+
+    fn should_reside(&mut self, e: &Engine, il: usize, per_layer: usize) -> bool {
+        let device = self.layer_devices.get(il).copied().unwrap_or(self.primary_device);
+        debug_assert_eq!(e.ctx().ordinal(), device);
+        if let Some(&decision) = self.decisions.get(&device) {
+            return decision;
+        }
+        if std::env::var("MEMRA_MOE_RESIDENT").as_deref() == Ok("0") {
+            self.decisions.insert(device, false);
+            return false;
+        }
+        let (free, _total) = match e.ctx().mem_get_info() {
+            Ok(v) => v,
+            Err(_) => {
+                self.decisions.insert(device, false);
+                return false;
+            }
+        };
+        let projected = self.exact_expert_bytes.as_ref()
+            .map(|bytes| bytes.get(&device).copied().unwrap_or(0))
+            .unwrap_or(per_layer * self.layer_counts.get(&device).copied().unwrap_or(1));
+        let budget = std::env::var("MEMRA_MOE_RESIDENT_GB").ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|gb| (gb * 1e9) as usize)
+            .unwrap_or_else(|| {
+                let reserve = std::env::var("MEMRA_MOE_RESIDENT_HEADROOM_GB").ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|gb| (gb * 1e9) as usize)
+                    .unwrap_or(2_000_000_000);
+                (free as usize).saturating_sub(self.trunk_bytes + reserve)
+            });
+        let ok = projected <= budget;
+        eprintln!("[moe] resident-experts decision ({}dev{}): experts {:.2}GB + trunk {:.2}GB vs free {:.2}GB (expert budget {:.2}GB) -> {}",
+                  if self.pp { "PP " } else { "" }, device, projected as f64 / 1e9,
+                  self.trunk_bytes as f64 / 1e9, free as f64 / 1e9, budget as f64 / 1e9,
+                  if ok { "RESIDENT" } else { "SLRU cache" });
+        self.decisions.insert(device, ok);
+        ok
+    }
 }
 
 /// Load the mixer (full-attn, linear-attn, or MLA) for block `il`. Shared by the trunk loop and
@@ -98,6 +244,7 @@ pub(crate) fn load_ffn(
     cfg: &ModelConfig,
     il: u32,
     spill: Option<(&GgufFile, &mut crate::spill::SpillCtx)>,
+    resident: &mut ResidentPlan,
 ) -> Result<Ffn, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
     // MiniMax-M3: moe_layer_freq[il]==0 -> this layer is a DENSE-FFN layer (layers 0..2) even
@@ -168,12 +315,13 @@ pub(crate) fn load_ffn(
                     }
                 }
             };
-            // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs to device when a global
-            // budget (MEMRA_MOE_RESIDENT_GB override; default = free VRAM minus the file's non-expert
-            // bytes minus a measured headroom reserve) covers the whole model's expert bytes, summed
-            // exactly from the GGUF header. Decision is made ONCE (first MoE layer). Failure to fit
-            // => None => the SLRU spill machinery.
-            let dev_exps = build_dev_exps(e, src, cfg, &gate_exps, &up_exps, &down_exps)?;
+            // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs when the owning
+            // device's budget (MEMRA_MOE_RESIDENT_GB override; default = free VRAM minus the file's
+            // non-expert bytes minus a measured headroom reserve) covers the expert bytes assigned
+            // to that device, summed exactly from the GGUF header. Decision is made once per device
+            // (first MoE layer there). Failure to fit => None => the SLRU spill machinery.
+            let dev_exps =
+                build_dev_exps(e, resident, il as usize, &gate_exps, &up_exps, &down_exps)?;
             // Device macro row [3*n_expert]: gate, up, down (ones when the artifact carries none).
             let mut macro_row = vec![1.0f32; 3 * n_expert];
             for (slot, exps) in [(0usize, &gate_exps), (1, &up_exps), (2, &down_exps)] {
@@ -213,7 +361,7 @@ pub(crate) fn load_ffn(
     )
 }
 
-/// Decide + build the resident expert slabs for one layer. Budget check runs once (static),
+/// Decide + build the resident expert slabs for one layer. Budget check runs once per device,
 /// RESIDENT-IF-FITS (2026-08-02, research/residency-cap-20260802/): the bank is resident when
 /// its EXACT byte total (summed from the GGUF header — UD-quants make per-layer bytes
 /// non-uniform, Ornith-35B blk.0 is +7% over the mean, so first-layer x n_layer misprojects)
@@ -223,11 +371,12 @@ pub(crate) fn load_ffn(
 /// need beside the weights at board shape is ~1.7GB (CUDA ctx + KV + workspace); reserve
 /// default 2.0GB, machine-specific override `MEMRA_MOE_RESIDENT_HEADROOM_GB` (VRAM-budget
 /// class). `MEMRA_MOE_RESIDENT_GB` stays the absolute expert-budget override;
-/// MEMRA_MOE_RESIDENT=0 forces the SLRU path. Fits => every subsequent layer uploads too.
+/// MEMRA_MOE_RESIDENT=0 forces the SLRU path. Fits => every subsequent layer on that device
+/// uploads too.
 fn build_dev_exps(
     e: &Engine,
-    src: &dyn TensorSource,
-    cfg: &ModelConfig,
+    resident: &mut ResidentPlan,
+    il: usize,
     gate: &HostExps,
     up: &HostExps,
     down: &HostExps,
@@ -237,47 +386,12 @@ fn build_dev_exps(
     if !gate.is_uniform_layout() || !up.is_uniform_layout() || !down.is_uniform_layout() {
         return Ok(None);
     }
-    use std::sync::OnceLock;
-    static DECISION: OnceLock<bool> = OnceLock::new();
     let per_layer =
         gate.bytes.as_bytes().len() + up.bytes.as_bytes().len() + down.bytes.as_bytes().len();
-    let fits = *DECISION.get_or_init(|| {
-        if std::env::var("MEMRA_MOE_RESIDENT").as_deref() == Ok("0") { return false; }
-        if gate.tiers.is_some() { return false; }   // tiered/spill loads keep the cache path
-        let (free, _total) = match e.ctx().mem_get_info() { Ok(v) => v, Err(_) => return false };
-        // EXACT bank + trunk accounting from the GGUF header (metadata only, no data reads).
-        // Non-GGUF sources keep the first-layer upper bound with trunk unknown (the ST spill
-        // profiles load tiered and never reach this decision).
-        let (projected, trunk) = match src.gguf() {
-            Some(g) => {
-                let (mut exps, mut rest) = (0usize, 0usize);
-                for t in &g.tensors {
-                    if t.name.starts_with("blk.") && t.name.contains("_exps.") {
-                        exps += t.n_bytes as usize;
-                    } else {
-                        rest += t.n_bytes as usize;
-                    }
-                }
-                if exps > 0 { (exps, rest) } else { (per_layer * cfg.n_layer as usize, 0) }
-            }
-            None => (per_layer * cfg.n_layer as usize, 0),
-        };
-        let budget = std::env::var("MEMRA_MOE_RESIDENT_GB").ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|gb| (gb * 1e9) as usize)
-            .unwrap_or_else(|| {
-                let reserve = std::env::var("MEMRA_MOE_RESIDENT_HEADROOM_GB").ok()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .map(|gb| (gb * 1e9) as usize)
-                    .unwrap_or(2_000_000_000);
-                (free as usize).saturating_sub(trunk + reserve)
-            });
-        let ok = projected <= budget;
-        eprintln!("[moe] resident-experts decision: experts {:.2}GB + trunk {:.2}GB vs free {:.2}GB (expert budget {:.2}GB) -> {}",
-                  projected as f64 / 1e9, trunk as f64 / 1e9, free as f64 / 1e9, budget as f64 / 1e9,
-                  if ok { "RESIDENT" } else { "SLRU cache" });
-        ok
-    });
+    if gate.tiers.is_some() {
+        return Ok(None); // tiered/spill loads keep the cache path
+    }
+    let fits = resident.should_reside(e, il, per_layer);
     if !fits {
         return Ok(None);
     }
@@ -967,6 +1081,7 @@ impl MtpHead {
             }
         );
 
+        let mut resident = ResidentPlan::unsharded(e, &src, &dcfg);
         Ok(MtpHead {
             enorm: load_t(e, &src, &p("nextn.enorm.weight"))?,
             hnorm: load_t(e, &src, &p("nextn.hnorm.weight"))?,
@@ -977,7 +1092,7 @@ impl MtpHead {
                 .expect("draft NextN block needs post_attention_norm or ffn_norm"),
             mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref(),
                                    dcfg.attn_gate_separate())?,
-            ffn: load_ffn(e, &src, &dcfg, n, None)?,
+            ffn: load_ffn(e, &src, &dcfg, n, None, &mut resident)?,
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
             d2t,
@@ -1103,6 +1218,7 @@ impl HybridModel {
         } else {
             load_t(e_head, src, "token_embd.weight")?
         };
+        let mut resident = ResidentPlan::pp(e, src, &cfg, n_trunk)?;
 
         // SPILLING-PLAN §2: build the tiered-spill context ONCE, before loading any experts, but
         // only for a MoE model with the disk tier forced on (`MEMRA_SPILL_DISK`). It probes free VRAM
@@ -1167,7 +1283,8 @@ impl HybridModel {
                                         cfg.attn_gate_separate())?
                     }
                 },
-                ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
+                ffn: load_ffn(e, src, &cfg, il,
+                              spill.as_mut().map(|c| (gguf.unwrap(), c)), &mut resident)?,
                 gemma4: if cfg.gemma4.is_some() {
                     let scalar = |n: &str| -> f32 {
                         let t = src.find(&p(n)).unwrap_or_else(|| panic!("missing {n}"));
@@ -1251,7 +1368,8 @@ impl HybridModel {
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
                     mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref(),
                                            cfg.attn_gate_separate())?,
-                    ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
+                    ffn: load_ffn(e, src, &cfg, n,
+                                  spill.as_mut().map(|c| (gguf.unwrap(), c)), &mut resident)?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
                     // `nextn.shared_head_head` is the name the convert script and upstream both
                     // use (LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD -> "blk.%d.nextn.shared_head_head");
@@ -1849,6 +1967,42 @@ impl HybridModel {
         }
         let x = self.embd.gather(n_embd, tokens);
         Ok(e.htod(&x)?)
+    }
+}
+
+#[cfg(test)]
+mod residency_tests {
+    use super::residency_bytes_by_device;
+
+    #[test]
+    fn pp_residency_counts_only_each_devices_expert_slice() {
+        let tensors = [
+            ("blk.0.ffn_gate_exps.weight", 10usize),
+            ("blk.0.ffn_up_exps.weight", 20),
+            ("blk.1.ffn_down_exps.weight", 30),
+            ("blk.2.ffn_gate_exps.weight", 40),
+            ("blk.3.ffn_up_exps.weight", 50),
+            ("blk.0.attn_q.weight", 7),
+            ("output.weight", 11),
+        ];
+        let bytes = residency_bytes_by_device(tensors, &[0, 0, 1, 1], 0);
+        assert_eq!(bytes.experts.get(&0), Some(&60));
+        assert_eq!(bytes.experts.get(&1), Some(&90));
+        assert_eq!(bytes.rest, 18);
+        assert!(bytes.saw_experts);
+    }
+
+    #[test]
+    fn pp_residency_combines_stages_that_share_one_device() {
+        let tensors = [
+            ("blk.0.ffn_gate_exps.weight", 10usize),
+            ("blk.1.ffn_gate_exps.weight", 20),
+            ("blk.2.ffn_gate_exps.weight", 30),
+            ("blk.3.ffn_gate_exps.weight", 40),
+        ];
+        let bytes = residency_bytes_by_device(tensors, &[0, 0, 0, 0], 0);
+        assert_eq!(bytes.experts.get(&0), Some(&100));
+        assert_eq!(bytes.experts.len(), 1);
     }
 }
 

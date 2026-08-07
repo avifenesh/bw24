@@ -975,6 +975,7 @@ impl Model {
         } else {
             GpuTensor::load_from_source(e, src, "token_embd.weight")?
         };
+        let mut resident = crate::hybrid::ResidentPlan::unsharded(e, src, &cfg);
 
         let mut layers = Vec::with_capacity(cfg.n_layer as usize);
         for il in 0..cfg.n_layer {
@@ -990,7 +991,7 @@ impl Model {
                     ffn_down: GpuTensor::load_from_source(e, src, &p("ffn_down.weight"))?,
                 }
             } else {
-                crate::hybrid::load_ffn(e, src, &cfg, il, None)?
+                crate::hybrid::load_ffn(e, src, &cfg, il, None, &mut resident)?
             };
             layers.push(Layer {
                 attn_norm: GpuTensor::load_from_source(e, src, &p("attn_norm.weight"))?,
