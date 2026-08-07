@@ -6890,14 +6890,27 @@ impl HybridModel {
                     seq_end > win
                 };
                 if swa && swa_naive {
-                    // Windowed mask needed (see the doc note). No windowed FA stamp exists at
-                    // head_dim 128 — every windowed prefill twin in flash_attn.cu is hd256 —
-                    // so this takes the f32 quantized-view floor. NOTE t_kv can be <= win here
+                    // Windowed mask needed (see the doc note). DEFAULT since lane/pp-prefill
+                    // 2026-08-07: the windowed hd128 FA stamp (`fa_prefill_view_ws_w_hd128`) —
+                    // the anatomy profile measured the f32 floor at 565 ms/layer on a pp4096
+                    // (41% of the whole prime) while the unwindowed hd128 FA family did the
+                    // strictly harder causal-4096 in 3.3 ms. NOTE t_kv can be <= win here
                     // (a chunk-0 view on a small chunk); the windowed kernel handles that
                     // identically to the unwindowed one modulo the mask, which is the point.
-                    e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
-                                                  t, t_kv, scale, true, win,
-                                                  kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    // NEW NUMERIC CLASS vs the floor (bf16-MMA online softmax vs f32 serial),
+                    // selected on `seq_end` like every arm here, so the class is uniform for
+                    // the whole request at every MEMRA_PRIME_CHUNK — chunkinv holds by the
+                    // same construction as the chunkfix. MEMRA_STEP35_SWA_FA=0 = rollback to
+                    // the f32 floor (the previous numeric config, kept as the A/B seam).
+                    if std::env::var("MEMRA_STEP35_SWA_FA").as_deref() == Ok("0") {
+                        e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh,
+                                                      nkv, t, t_kv, scale, true, win,
+                                                      kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    } else {
+                        e.fa_prefill_view_ws_w_hd128(&q, &k_view, &v_view, &mut attn, hd, nh,
+                                                     nkv, t, t_kv, scale, true, win,
+                                                     kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    }
                 } else if std::env::var("MEMRA_NOFA").is_ok() {
                     e.sdpa_naive_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                                 t, t_kv, scale, true,
