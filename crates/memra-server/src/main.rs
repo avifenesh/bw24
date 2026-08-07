@@ -50,6 +50,11 @@
 /// controllers (the sidecar shape) can share them.
 pub(crate) mod auth;
 pub(crate) mod constrained;
+/// Dead-darklane valley detection (lane/darklane-training, 2026-08-07): the idle signal over
+/// worker truth (phase + beat age + pending admits) — the sensor the background-job runner
+/// (a lane class BELOW every serving lane) consumes. Engine mechanics only; policy lives
+/// product-side.
+pub(crate) mod darklane;
 /// Inference-liveness state (lane/serve-hardening, gaps G5 + G24): the worker heartbeat every
 /// health answer is derived from, the Xid/GPU-fault watcher, and the sd_notify half of the
 /// systemd contract. Process liveness is NOT inference liveness — this module is the difference.
@@ -1369,6 +1374,12 @@ async fn health_ready(State(st): State<AppState>) -> impl IntoResponse {
 /// Flat serving counters + engine-truth step latency percentiles.
 async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
     let m = st.metrics.lock().map(|m| m.clone()).unwrap_or_default();
+    // Valley signal (lane/darklane-training): seconds the worker has been COMPLETELY idle
+    // (no active sessions, no queued admissions, no pending HTTP handoffs) — worker truth
+    // via health phase + beat age + the PENDING_ADMITS gauge, no new hot-path cost.
+    // 0.0 the instant there is any work. Always published: the field is the idle sensor
+    // whether or not a background job is configured.
+    let idle_s = darklane::ValleySignal::new(st.health.clone()).idle_seconds();
     let mut body = json!({
         "admitted": m.admitted,
         "completed": m.completed,
@@ -1381,6 +1392,7 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
         "prefix_cache_hits": m.prefix_hits,
         "prefix_cache_entries": m.prefix_entries,
         "prefix_cache_bytes": m.prefix_bytes,
+        "serve_idle_seconds": (idle_s * 1000.0).round() / 1000.0,
     });
     // Spec-decode acceptance telemetry (lane/accept-telemetry — the llama.cpp #26389 /
     // vLLM per-draft-position counter schema). Per model, cumulative since model load
@@ -3231,6 +3243,15 @@ mod tests {
         std::thread::spawn(move || {
             h.mark_ready();
             while let Ok(Cmd::Generate(req)) = cmd_rx.recv() {
+                // mirror handle_cmd's saturating PENDING_ADMITS decrement: handlers
+                // increment before send, and a fake worker that never decrements leaks
+                // the process-global gauge into every other test (the valley signal
+                // reads it).
+                let _ = worker::PENDING_ADMITS.fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |v| v.checked_sub(1),
+                );
                 h.beat_busy();
                 let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
                 let _ = req.tx.send(Event::Done {

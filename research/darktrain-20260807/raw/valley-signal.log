@@ -1,0 +1,7 @@
+idle samples: A=2.593 B=4.113
+  ok: idle signal accrues monotonically (2.593 -> 4.113)
+under-load sample: 0.0
+  ok: signal reads 0.0 while a generation is in flight
+post-load sample (after 2s quiet): 2.02
+  ok: signal accrues again after load (2.02 s, fresh epoch)
+probe-valley: 0 failed
