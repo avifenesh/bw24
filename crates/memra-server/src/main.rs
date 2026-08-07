@@ -800,10 +800,17 @@ fn engine_error_body(e: &worker::EngineError) -> serde_json::Value {
 
 /// Full HTTP response for an engine error: status, OpenAI body, and the retry headers.
 fn engine_error_response(e: &worker::EngineError) -> Response {
+    engine_error_response_with_retry_after(e, class_retry_after_s(e.class))
+}
+
+fn engine_error_response_with_retry_after(
+    e: &worker::EngineError,
+    retry_after_s: Option<u64>,
+) -> Response {
     let (status, _, _) = class_http(e.class);
     let mut resp = (status, Json(engine_error_body(e))).into_response();
     let h = resp.headers_mut();
-    match class_retry_after_s(e.class) {
+    match retry_after_s {
         Some(secs) => {
             // Integer seconds, always <= 60 by construction (see the contract note above).
             let secs = secs.min(60);
@@ -822,6 +829,13 @@ fn engine_error_response(e: &worker::EngineError) -> Response {
         None => {}
     }
     resp
+}
+
+fn worker_unavailable_response() -> Response {
+    engine_error_response_with_retry_after(
+        &worker::EngineError::overloaded("worker unavailable"),
+        Some(worker::WORKER_RESPAWN_BACKOFF_BASE_S),
+    )
 }
 
 fn stop_reason_to_finish(r: &str) -> &'static str {
@@ -1888,8 +1902,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
         worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        return rl.attach(with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
+        return rl.attach(with_request_id(&env.id, worker_unavailable_response()));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
@@ -1966,8 +1979,7 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
         worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        return rl.attach(with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
+        return rl.attach(with_request_id(&env.id, worker_unavailable_response()));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
@@ -3017,6 +3029,43 @@ mod tests {
             assert_eq!(ms.parse::<u64>().unwrap(), secs * 1000, "the two headers disagree");
             assert!(resp.headers().get("x-should-retry").is_none(),
                     "a retryable class must not say x-should-retry: false");
+        }
+    }
+
+    #[tokio::test]
+    async fn command_send_failure_obeys_the_retry_contract() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut st = fake_worker_state();
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        drop(cmd_rx);
+        st.cmd_tx = cmd_tx;
+
+        let completion = completions(
+            State(st.clone()),
+            axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "prompt": "test"
+            })).unwrap()),
+        ).await;
+        let chat = chat_completions(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "test"}]
+            })).unwrap()),
+        ).await;
+
+        for resp in [completion, chat] {
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+            assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
+            assert_ne!(resp.headers().get("x-should-retry")
+                .and_then(|v| v.to_str().ok()), Some("false"));
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(payload["error"]["type"], "server_error");
+            assert_eq!(payload["error"]["code"], "overloaded");
         }
     }
 
