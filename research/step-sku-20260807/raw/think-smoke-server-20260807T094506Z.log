@@ -1,0 +1,29 @@
+Running as unit: run-p3711273-i171318201.scope; invocation ID: 7385db8ce4c94ead989ece383858e78d
+[server] starting; models config = [("qwen", "/home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf", None), ("gemma", "/home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[worker]   loaded "gemma": 48 layers, eos=1
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] qwen: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[server] worker ready; serving models: ["qwen", "gemma"]
+[worker] gemma: decode chunk cap 8
+[worker] qwen: decode chunk cap 16 (exact-16 tier)
+[server] listening on http://127.0.0.1:8094
+[meter] admit id=chatcmpl-fb705b719b09e59137e3a66af023b90f tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-d6515fbbce6e38a418d0d9967566880d tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-019ef9c2e41cb12e643a5d40212b1da6 tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-a0e581acdd81bd4f0bdc0b798488354d tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-021f474d621cba576369ebab24022c22 tenant=default lane=interactive model="qwen"
+[meter] admit id=chatcmpl-7efe6deacb05da39dc9af04770dbe2a6 tenant=default lane=interactive model="gemma"
+[worker] observed session VRAM cost for "gemma": 705MB (admission gate = 2x)
+[meter] admit id=chatcmpl-687be6f11d39e28d90116c9d30b2e995 tenant=default lane=interactive model="gemma"
+[meter] admit id=chatcmpl-3c4cbe0605ddee37d9bd3a810119213f tenant=default lane=interactive model="gemma"
+[meter] admit id=chatcmpl-16dd15afde1bbfe96714a69c889c4fbc tenant=default lane=interactive model="gemma"
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

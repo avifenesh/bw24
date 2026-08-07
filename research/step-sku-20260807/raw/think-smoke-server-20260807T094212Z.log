@@ -1,0 +1,17 @@
+Running as unit: run-p3548963-i171149984.scope; invocation ID: 10850925d8004d7aae5572c169d93a13
+[server] starting; models config = [("qwen", "/home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf", None), ("gemma", "/home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "qwen" <- /home/avifenesh/models/qwen3.5-9b-judge-q8_0.gguf
+[worker]   loaded "qwen": 32 layers, eos=248046
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+
+thread 'memra-gpu-worker' (3548981) panicked at crates/memra-engine/src/hybrid.rs:1800:62:
+embed table upload: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[server] FATAL: worker init failed: worker died during init
+[worker] PANIC in the GPU worker thread: embed table upload: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+[worker] respawn attempt 1/1 in 2s (reloading weights)

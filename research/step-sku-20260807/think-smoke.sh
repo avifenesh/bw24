@@ -29,7 +29,12 @@ echo "=== think-smoke $TS (local 5090) ==="
   flock -w 1800 9 || { echo "LOCK TIMEOUT"; exit 75; }
   nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
 
-  MEMRA_MODELS="qwen=$QWEN,gemma=$GEMMA" MEMRA_ADDR=127.0.0.1:$PORT \
+  # MEMRA_SERVE_BATCH=0: gemma4 has NO batched decode arm (decode_batch.rs:553 asserts
+  # non-gemma4, and the B=1 fast path also excludes gemma4), so a plain gemma4 chat on the
+  # default batched scheduler panics the worker — a PRE-EXISTING serving gap this smoke
+  # found (raw/think-smoke-20260807T093918Z.log), not a thinking-surface change. Legacy
+  # round-robin serves both models; the thinking assertions are mode-independent.
+  MEMRA_MODELS="qwen=$QWEN,gemma=$GEMMA" MEMRA_ADDR=127.0.0.1:$PORT MEMRA_SERVE_BATCH=0 \
     systemd-run --user --scope -p CPUQuota=1200% -p MemoryMax=48G --collect \
     ./target/release/memra-server > $RAW/think-smoke-server-$TS.log 2>&1 &
   SRV=$!
