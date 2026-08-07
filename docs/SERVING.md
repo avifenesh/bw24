@@ -407,7 +407,12 @@ gated by the official `openai` Python SDK against a live server
   `message.reasoning` / `delta.reasoning` (+ `reasoning_details`, the OpenRouter
   dialect); `content` is post-think only. `include_reasoning:false` (or
   `reasoning: {exclude: true}`) drops the separated text. Non-think models keep
-  byte-identical no-parser streams.
+  byte-identical no-parser streams. **Gemma-4 dialect** (lane/gemma4-serve-gaps,
+  2026-08-07): `<|channel>thought\n…\n<channel|>` blocks route to `reasoning` the same
+  way — tags, the channel label and the bracketing newlines are syntax — and the splitter
+  runs on *every* gemma4 chat request (channels can open mid-stream even under the
+  closed-channel default). Turn-end control tokens (`<turn|>`, `<end_of_turn>`,
+  `<|im_end|>`) stop generation (`eog_ids()` union) and never reach the client as text.
 - **`max_tokens` omitted** ⇒ context-bounded budget (session ctx − prompt, capped at the
   model's trained context) — the OpenAI default-when-omitted semantics, not a silent
   128-token truncation. Explicit `max_tokens`/`max_completion_tokens` honored exactly.

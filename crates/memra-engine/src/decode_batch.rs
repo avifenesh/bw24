@@ -550,10 +550,19 @@ impl HybridModel {
         if exact16 {
             e.set_verify_exact(true);
         }
-        assert!(
-            !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
-            "decode_step_batch v1 covers the hybrid non-gemma4 trunk only"
-        );
+        // gemma4: NO batched arm at any B (per-layer SWA/global geometry, hd-512 MQA globals,
+        // weightless V-norm, softcapped head — none of it in the generic body below). This was
+        // an assert until 2026-08-07: one serve request panicked the worker, the respawn
+        // re-panicked on the queued request, and the process FATALed
+        // (research/gemma4-serve-20260807/raw/repro-panic-server-*.log). The worker now routes
+        // gemma4 sessions to the per-session eager loop and never calls here; this Err is the
+        // defense-in-depth backstop — a future path that reaches it refuses PER-REQUEST
+        // instead of killing the process. The eager arm (gemma4_decode_step_h) is the
+        // supported decode.
+        if self.is_gemma4_e4b() || self.cfg.gemma4.is_some() {
+            return Err("decode_step_batch has no gemma4 arm (per-layer swa/global geometry, \
+                        softcapped head) — serve gemma4 on the eager per-session path".into());
+        }
         // step35: the batched body below is the generic Full arm (uniform n_head, 128-dim rope
         // everywhere, no window, no head-wise gate). B=1 already routed to the shared eager
         // trunk above; B>1 has no step35 twin.
@@ -665,10 +674,12 @@ impl HybridModel {
     ) -> Result<(Vec<Vec<f32>>, Vec<Option<u32>>), Box<dyn std::error::Error>> {
         let b_n = tokens.len();
         assert!(b_n >= 1 && b_n == caches.len(), "tokens/caches length mismatch");
-        assert!(
-            !self.is_gemma4_e4b() && self.cfg.gemma4.is_none(),
-            "decode_step_batch_ppn covers the hybrid non-gemma4 trunk only"
-        );
+        // gemma4: same no-arm refusal as the unsplit body (see decode_step_batch), Err not
+        // assert — a request must never kill the worker process.
+        if self.is_gemma4_e4b() || self.cfg.gemma4.is_some() {
+            return Err("decode_step_batch_ppn has no gemma4 arm — serve gemma4 on the eager \
+                        per-session path".into());
+        }
         // Same width policy as the unsplit body — the stage split changes WHERE kernels run,
         // never WHICH tier admits the width. Duplicated deliberately rather than hoisted:
         // the exact-16 scope must wrap the whole multi-stage walk (`set_verify_exact` is
