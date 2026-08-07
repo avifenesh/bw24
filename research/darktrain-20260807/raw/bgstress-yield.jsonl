@@ -1,0 +1,5 @@
+{"rep": 1, "yield_wall_s": 0.02, "req_wall_s": 0.1716, "state_after": "T"}
+{"rep": 2, "yield_wall_s": 0.0233, "req_wall_s": 0.1737, "state_after": "T"}
+{"rep": 3, "yield_wall_s": 0.0194, "req_wall_s": 0.1722, "state_after": "T"}
+{"rep": 4, "yield_wall_s": 0.0027, "req_wall_s": 0.172, "state_after": "T"}
+{"rep": 5, "yield_wall_s": 0.0074, "req_wall_s": 0.1877, "state_after": "T"}

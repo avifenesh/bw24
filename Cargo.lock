@@ -582,6 +582,7 @@ dependencies = [
  "axum",
  "cudarc",
  "futures-core",
+ "libc",
  "llguidance",
  "memra-engine",
  "memra-gguf",
