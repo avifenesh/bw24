@@ -113,17 +113,52 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
 
 ## Deliverables checklist
 
-- [ ] Commit 1: PROGRESS.md (this file) — context anchor against restart churn.
-- [ ] Commit 2: tickinv registered as fast-gate arm, RED (ships red deliberately; brief order).
-- [ ] Commit 3+: the fix (request-level seq_end across tick splits) + off-grid-resume arm +
-      canary seam; gate turns green in the fix commit.
-- [ ] Gates on box (18.195.123.14, flock discipline): tickinv all budgets EXACT,
-      off-grid-resume, chunkinv35 (no axis-1 regression), kernel-check ALL GREEN, run-gen argmax
-      MATCH step35 PP-2, run-spec K=1..8 PASS; q9/q35 control on local 5090 if box busy.
-- [ ] Perf: N=5 interleaved AFTER/BEFORE on shipped default serve budget path. STOP bar 1%.
-- [ ] Raw logs under research/tick-seg-20260807/raw/; every claim receipted.
+- [x] Commit 1: PROGRESS.md (ae8e3616) — context anchor against restart churn.
+- [x] Commit 2: tickinv35/tickinv35c registered (bd7c2c30) — tools/tick-invariance-gate.sh,
+      models.tsv rows, map.tsv routes hybrid_forward-class AND memra-server; probe grew
+      --splits (off-grid-resume arms, rows `sp<L>`). RED at registration by construction.
+- [x] Commit 3: the fix (6b535472) — `prime_cache(e, tokens, cache, queued_after)`;
+      seq_end = cache.pos + t + queued_after computed once; worker prefill_tick + step_session
+      pass prefill_queue.len() post-drain; all ~60 single-shot callers pass 0; probe's tickinv
+      replica passes t-fed-take. Seam MEMRA_PRIME_CALLLOCAL=1 restores per-call value
+      (docs/FLAGS.md cataloged). Workspace builds clean.
+- [x] Commit 4: ppprime --budget (cbf4a7d0) — times the serve-shaped multi-call prime.
+- [x] Box scripts (3544fba5): gate-tickseg.sh / exact-tickseg.sh / perf-tickseg.sh.
+- [x] 5090 unaffected-arch control GREEN (9fe7c359,
+      raw/unaffected-q9-q35-5090-20260807T114112Z.log): qwen chunkinv PASS + canary teeth;
+      q9 tickinv budgets 64/32 + sp64 ALL EXACT (arch never reads seq_end); q9/q35 run-gen
+      argmax MATCH at prior-receipt speeds.
+- [ ] Box gate battery (gate-tickseg.sh, dispatched 11:39Z): tickinv35 GREEN + tickinv35c teeth
+      + chunkinv35/c no-regress.
+- [ ] Box exactness (exact-tickseg.sh): kernel-check FULL, run-gen PP-2, ppn-gate, run-spec.
+- [ ] Perf (perf-tickseg.sh): N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1%
+      STOP bar), budget=256 (dark-lane, where arms change), pp512 null control.
+- [ ] Raw logs pulled back; PROGRESS.md finalized.
+
+## Residual found while fixing (NOT fixed here, named for the record)
+
+**step35 prefix-cache entries are EXTENT-CLASSED.** Keying the SWA arm on the request's extent
+(seq_end) makes the arm — and therefore the numeric class of every hidden row, and therefore the
+KV BYTES appended at layers > 0 — a function of the request's total length. Two requests sharing
+a >= 64-token prefix but straddling the window (creator seq_end <= 512 = FA class, consumer
+seq_end > 512 = windowed class, or vice versa) will produce different prefix KV bytes. A
+prefix-cache RESUME therefore continues from bytes of the creator's class, and can differ from a
+cold prime of the same prompt — exactly vLLM #51113's cache-entry-side law ("state snapshot keyed
+by position may only be published at grain-aligned ends" — here the state is additionally keyed
+by the creator's extent, which position-keying cannot see). This is currently INSIDE the
+documented contract (worker.rs prefix-seed comment: "the entry stores whatever config ran"), and
+the same class of cold-vs-resume divergence already exists engine-wide for session continuations.
+The canonical fix is ONE numeric class for all step35 SWA prefill rows regardless of extent
+(always-windowed; the mask is a causal no-op for seq_end <= win) — a default-path perf trade on
+every short interactive prompt, i.e. its own measured lane, not a rider on this one. What THIS
+lane guarantees: a single request is bit-identical under every segmentation serve can produce
+(tick budgets, SLO-capped budgets, LCP splits, off-grid resumes of its own prefix).
 
 ## State log
 
 - 2026-08-07: worktree clean at 006aca75 (lane/tick-seg). Three restart kills burned context on
   re-reads; this file is the anchor. Code map above verified by grep in THIS worktree.
+- 11:39Z: box synced (files-only rsync, no deletions), BOX-COMMIT stamped cbf4a7d0,
+  ~/STATE-tickseg.md written, gate-tickseg.sh dispatched (build 28s green, flock acquired
+  11:40:01Z, cards 0 MiB).
+- 11:41Z: 5090 control battery green in 31s under CPUQuota=1200%.
