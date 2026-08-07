@@ -140,7 +140,13 @@ budget loop already produces unaligned starts (call 2 starts at pos=budget); a d
       LCP class in [64,512] steers the served text pre-fix.
       **chunkinv35 no-regress PASS + chunkinv35c teeth intact** — axis 1 undisturbed by the
       queued_after threading. Battery complete 4/4 rc=0, one flock window 11:40:01Z-12:06:58Z.
-- [ ] Box exactness (exact-tickseg.sh): kernel-check FULL, run-gen PP-2, ppn-gate, run-spec.
+- [x] Box exactness (exact-tickseg.sh, raw/exact-tickseg-20260807T115356Z.log, rc=0):
+      kernel-check FULL model-backed **ALL GREEN**; run-gen PP-2 argmax **6776 MATCH** (same
+      argmax as the chunkfix lane's receipt) + batched-prime MATCH; ppn-gate **BIT-IDENTICAL
+      serial + pipelined** (24 steps, n_vocab=128896, fence=[0,22,45]); run-spec K=1..8
+      **8/8 SELF-CONSISTENCY PASS**, acceptance digit-identical to the chunkfix baseline
+      (K=1 14/18=77.8%; K=2..8 all 15 accepted, 44.1%->11.0%) — the fix is inert on the
+      single-call spec path, receipted not asserted.
 - [ ] Perf (perf-tickseg.sh): N=5 interleaved, cells pp6257 budget=1024 (SHIPPED DEFAULT, 1%
       STOP bar), budget=256 (dark-lane, where arms change), pp512 null control.
 - [ ] Raw logs pulled back; PROGRESS.md finalized.
