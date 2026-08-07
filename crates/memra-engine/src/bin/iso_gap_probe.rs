@@ -43,16 +43,28 @@ fn synth(len: usize, salt: u32) -> Vec<u32> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect(
-        "usage: iso-gap-probe <model.gguf> [--dx 480] [--dy 800] [--steps 96] [--ctx 4096]");
+        "usage: iso-gap-probe <model.gguf> [--dx 480] [--dy 800] [--dys 800,2100,300] \
+         [--steps 96] [--ctx 4096] [--canary]");
     let rest: Vec<String> = args.collect();
     let get = |k: &str, d: usize| -> usize {
         rest.iter().position(|a| a == k)
             .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(d)
     };
     let dx = get("--dx", 480);
-    let dy = get("--dy", 800);
+    // --dys: COMMA LIST of co-resident depths (B = 1 + len). Sweeps the batched mmvq tier
+    // width alongside the FA rung mix — the "regardless of co-residents' depths" bar is over
+    // the WIDTH axis too, not only B=2. Default = the single --dy.
+    let dys: Vec<usize> = rest.iter().position(|a| a == "--dys")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| v.split(',').filter_map(|p| p.trim().parse().ok()).collect::<Vec<usize>>())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![get("--dy", 800)]);
     let steps = get("--steps", 96);
     let ctx = get("--ctx", 4096);
+    // --canary: TEETH. Feed the TEST arm's X one wrong token at step 1 (the
+    // MEMRA_GATE_CANARY precedent) — the comparator MUST report FAIL, proving a real
+    // program/feed change cannot slide through as a vacuous PASS.
+    let canary = rest.iter().any(|a| a == "--canary");
 
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
@@ -62,7 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nhkv = cfg.n_head_kv as usize;
     let hd = cfg.head_dim_k as usize;
     println!("loaded {arch} ({} layers, n_head_kv={nhkv}, head_dim={hd}); \
-              dx={dx} dy={dy} steps={steps}", model.layers.len());
+              dx={dx} dys={dys:?} steps={steps}{}", model.layers.len(),
+             if canary { " CANARY" } else { "" });
 
     // BOTH arms on the batched body (the gate2/gate3 precedent): the B=1 fast path routes
     // solo rows onto the m=1 fused trunk — a DIFFERENT documented config. This probe tests
@@ -73,9 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              if b1_live { "ON" } else { "OFF" });
 
     let px = synth(dx, 1);
-    let py = synth(dy, 5);
+    let pys: Vec<Vec<u32>> = dys.iter().enumerate()
+        .map(|(i, &d)| synth(d, 5 + i as u32 * 3)).collect();
     let tx0 = *px.last().unwrap();
-    let ty0 = *py.last().unwrap();
 
     // ---- REF: X alone, B=1 ----
     let mut c_ref = Cache::new(&e, cfg, ctx)?;
@@ -94,27 +107,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(c_ref);
 
-    // ---- TEST: X with Y, B=2, identically primed ----
+    // ---- TEST: X with the Y herd, B = 1 + |dys|, identically primed ----
     let mut c_x = Cache::new(&e, cfg, ctx)?;
     let _ = model.prime_cache(&e, &px, &mut c_x)?;
-    let mut c_y = Cache::new(&e, cfg, ctx)?;
-    let _ = model.prime_cache(&e, &py, &mut c_y)?;
-    let mut toks = [tx0, ty0];
+    let mut c_ys: Vec<Cache> = Vec::with_capacity(pys.len());
+    for py in &pys {
+        let mut c = Cache::new(&e, cfg, ctx)?;
+        let _ = model.prime_cache(&e, py, &mut c)?;
+        c_ys.push(c);
+    }
+    let mut toks: Vec<u32> = std::iter::once(tx0)
+        .chain(pys.iter().map(|p| *p.last().unwrap())).collect();
     let mut first_div: Option<usize> = None;
     let mut div_steps = 0usize;
     let mut flip_steps = 0usize;
     for s in 0..steps {
-        // the decode_batch seqs-arm predicate, from the public twins (pre-step t_kv = pos+1
-        // AFTER this step's append == pos+1 at entry +1; decode_batch computes it from
-        // caches[i].pos + 1 at entry, which is the POST-append bound of this step)
+        // the decode_batch seqs-arm predicate, from the public twins (t_kv = pos+1 at entry
+        // = this step's POST-append key bound, exactly what batch_layer_ctx computes)
         let tkx = c_x.pos + 1;
-        let tky = c_y.pos + 1;
+        let tkys: Vec<usize> = c_ys.iter().map(|c| c.pos + 1).collect();
         let spx = memra_engine::fa_split_keys_pub(tkx, nhkv);
-        let spy = memra_engine::fa_split_keys_pub(tky, nhkv);
         let seqs = memra_engine::fa_seqs_eligible(tkx, hd)
-            && memra_engine::fa_seqs_eligible(tky, hd) && spx == spy;
+            && tkys.iter().all(|&t| memra_engine::fa_seqs_eligible(t, hd)
+                && memra_engine::fa_split_keys_pub(t, nhkv) == spx);
+        if canary && s == 1 {
+            // TEETH: one wrong token into X's TEST feed — the comparator must FAIL.
+            toks[0] = if toks[0] == 0 { 1 } else { toks[0] - 1 };
+        }
         let logits = {
-            let mut refs = [&mut c_x, &mut c_y];
+            let mut refs: Vec<&mut Cache> = Vec::with_capacity(1 + c_ys.len());
+            refs.push(&mut c_x);
+            for c in c_ys.iter_mut() { refs.push(c); }
             model.decode_step_batch(&e, &toks, &mut refs)?
         };
         let lx = &logits[0];
@@ -132,23 +155,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 first_div = Some(s);
             }
             if div_steps <= 8 || flip {
-                println!("step {s}: X BIT-DIFF vs solo (t_kv X={tkx} sp{spx} / Y={tky} sp{spy}, \
+                println!("step {s}: X BIT-DIFF vs solo (t_kv X={tkx} sp{spx} / Y={tkys:?}, \
                           seqs_arm={seqs}) ndiff={nd} maxdiff={md:.3e}{}",
                          if flip { format!(" ARGMAX FLIP {} -> {am}", ref_toks[s]) } else { String::new() });
             }
         }
         // token feedback: X follows ITS OWN argmax in this arm (the serve regime); a
         // post-flip trajectory diverges by construction, so report tracks bits AND flips.
-        toks = [am, argmax(&logits[1]) as u32];
+        toks[0] = am;
+        for (i, l) in logits.iter().enumerate().skip(1) {
+            toks[i] = argmax(l) as u32;
+        }
     }
     match first_div {
-        None => println!("VERDICT dx={dx} dy={dy}: PASS — X bit-identical solo-vs-coresident, \
-                          all {steps} steps"),
-        Some(s) => println!("VERDICT dx={dx} dy={dy}: FAIL — first bit-diff at step {s} \
+        None if canary => {
+            println!("VERDICT dx={dx} dys={dys:?}: CANARY-BROKEN — injected wrong token \
+                      produced ZERO bit diffs; the comparator has no teeth");
+            HybridModel::set_b1_fast(b1_live);
+            std::process::exit(2);
+        }
+        None => println!("VERDICT dx={dx} dys={dys:?}: PASS — X bit-identical \
+                          solo-vs-coresident, all {steps} steps"),
+        Some(s) if canary => println!("VERDICT dx={dx} dys={dys:?}: CANARY-OK — injected \
+                                       wrong token caught at step {s} (teeth proven)"),
+        Some(s) => println!("VERDICT dx={dx} dys={dys:?}: FAIL — first bit-diff at step {s} \
                              (t_kv X={}), {div_steps}/{steps} steps differ, {flip_steps} argmax \
                              flips", dx + s + 1),
     }
     HybridModel::set_b1_fast(b1_live);
-    if first_div.is_some() { std::process::exit(1); }
+    if first_div.is_some() && !canary { std::process::exit(1); }
     Ok(())
 }
