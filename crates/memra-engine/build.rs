@@ -307,6 +307,14 @@ fn main() {
         // occupancy 12.5%; smaller tiles trade MMA j-reuse for CTAs/SM).
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_IQEXP");
         let iqexp_x = std::env::var("MEMRA_MMQ_X_IQEXP").ok();
+        // ROLLBACK SEAM: MEMRA_IQEXP_K16=1 rebuilds the IQ-experts + IQ4_XS-dense MMQ tiles with
+        // the ORIGINAL m16n8k16.s8 MMA form instead of the m16n8k32.s8 default (lane/iq-experts-
+        // k32, 2026-08-07). The int8 pipe is K-FREE on sm_120a (both forms 16.06 cyc/warp-MMA),
+        // so k32 does 2x the K-work per instruction and halves the f32 fold arity; the merge is
+        // legal because both per-16 scale slots of a 32-block are equal by loader construction.
+        // Receipts: research/iq-k32-20260807/.
+        println!("cargo:rerun-if-env-changed=MEMRA_IQEXP_K16");
+        let iqexp_k16 = std::env::var("MEMRA_IQEXP_K16").ok();
         // TUNE SEAM: MEMRA_MMQ_Y_W4A8=64 halves the row tile AND warp count together (mmq_y =
         // nwarps*16) — 42KB->21KB tile_x, 2 CTA/SM. Unlike MMQ_X, this axis doesn't duplicate
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
@@ -407,6 +415,7 @@ fn main() {
             }
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
+                if iqexp_k16.as_deref() == Some("1") { args.push("-DMEMRA_IQEXP_K16_MMA".into()); }
             }
             // Per-block FP8 MMQ token-tile geometry (X only — the Y/OCC/PIPE seams concluded
             // negative and were deleted; see the TUNE SEAM note above).
