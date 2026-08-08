@@ -1295,39 +1295,184 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      std::env::var("MEMRA_PRIME_CALLLOCAL").unwrap_or_else(|_| "0".into()));
         }
 
-        // SPLIT-VS-UNSPLIT PRIME BIT-IDENTITY (lane/pp-leverb, 2026-08-08): the Lever-B gate,
-        // built RED before the walker exists (the tickinv35 pattern). Two arms in ONE process
+        // PRIME PIPELINE THROUGHPUT (lane/cx-pipeline-prime, 2026-08-08). Compare the
+        // serial and pipelined stage walkers over one sharded model load. Each repetition
+        // runs both arms, with order alternated to control clock drift. Liveness is part of
+        // the measurement contract: both arms must split, SERIAL must not overlap, and PIPE
+        // must overlap every adjacent internal chunk pair.
+        //   pppipeperf <model> pppipeperf --prompt-a <txt|@f> [--reps 5] [--warmup 1]
+        "pppipeperf" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let reps: usize = arg(&rest, "--reps").and_then(|v| v.parse().ok()).unwrap_or(5);
+            let warmup: usize = arg(&rest, "--warmup").and_then(|v| v.parse().ok()).unwrap_or(1);
+            assert!(reps > 0, "pppipeperf --reps must be at least 1");
+            let ids = cx.tok.encode(&pa, true);
+            let t = ids.len();
+            let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
+            let chunk =
+                memra_engine::hybrid_forward::prime_chunk_tokens(t, cx.model.layers.len());
+            let expected = if chunk == 0 || t <= chunk {
+                1
+            } else {
+                let (mut n, mut start) = (0usize, 0usize);
+                while start < t {
+                    let mut end = (start + chunk).min(t);
+                    if t - end > 0 && t - end < min_t {
+                        end = t;
+                    }
+                    n += 1;
+                    start = end;
+                }
+                n
+            };
+            let expected_overlaps = expected.saturating_sub(1);
+            assert!(
+                memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some(),
+                "pppipeperf requires an open PP door"
+            );
+            assert!(
+                expected >= 2,
+                "pppipeperf requires at least two internal chunks (T={t}, chunk={chunk})"
+            );
+            println!(
+                "pppipeperf: T={t} chunk={chunk} chunks={expected} expected_overlaps={} \
+                 reps={reps} warmup={warmup} devices={}",
+                expected_overlaps,
+                std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into()),
+            );
+
+            let run_arm = |pipe: bool|
+                           -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
+                unsafe {
+                    std::env::remove_var("MEMRA_PRIME_PP");
+                    if pipe {
+                        std::env::remove_var("MEMRA_PRIME_PIPE");
+                    } else {
+                        std::env::set_var("MEMRA_PRIME_PIPE", "0");
+                    }
+                }
+                let split0 = memra_engine::pp::prime_split_chunks();
+                let overlap0 = memra_engine::pp::prime_pipe_overlaps();
+                let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + 8)?;
+                let t0 = std::time::Instant::now();
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
+                cx.e.stream().synchronize()?;
+                let dt = t0.elapsed().as_secs_f64();
+                Ok((
+                    dt,
+                    memra_engine::pp::prime_split_chunks() - split0,
+                    memra_engine::pp::prime_pipe_overlaps() - overlap0,
+                ))
+            };
+            let validate = |name: &str, split: usize, overlaps: usize| {
+                let live = split >= expected
+                    && if name == "PIPE" {
+                        overlaps >= expected_overlaps
+                    } else {
+                        overlaps == 0
+                    };
+                assert!(
+                    live,
+                    "{name} not live: split={split} overlaps={overlaps}, \
+                     need split>={expected} and overlaps{}",
+                    if name == "PIPE" {
+                        format!(">={expected_overlaps}")
+                    } else {
+                        "=0".into()
+                    }
+                );
+            };
+
+            for w in 0..warmup {
+                for (name, pipe) in [("SERIAL", false), ("PIPE", true)] {
+                    let (dt, split, overlaps) = run_arm(pipe)?;
+                    validate(name, split, overlaps);
+                    println!(
+                        "  warmup {} arm={name}: {t} tok in {dt:.4}s = {:.1} tok/s \
+                         split={split} overlaps={overlaps}",
+                        w + 1,
+                        t as f64 / dt,
+                    );
+                }
+            }
+
+            let mut serial_times = Vec::with_capacity(reps);
+            let mut pipe_times = Vec::with_capacity(reps);
+            for rep in 1..=reps {
+                let order = if rep % 2 == 1 {
+                    [("SERIAL", false), ("PIPE", true)]
+                } else {
+                    [("PIPE", true), ("SERIAL", false)]
+                };
+                for (name, pipe) in order {
+                    let (dt, split, overlaps) = run_arm(pipe)?;
+                    validate(name, split, overlaps);
+                    println!(
+                        "  rep {rep} arm={name}: {t} tok in {dt:.4}s = {:.1} tok/s \
+                         split={split} overlaps={overlaps}",
+                        t as f64 / dt,
+                    );
+                    if pipe {
+                        pipe_times.push(dt);
+                    } else {
+                        serial_times.push(dt);
+                    }
+                }
+            }
+            unsafe {
+                std::env::remove_var("MEMRA_PRIME_PP");
+                std::env::remove_var("MEMRA_PRIME_PIPE");
+            }
+            serial_times.sort_by(f64::total_cmp);
+            pipe_times.sort_by(f64::total_cmp);
+            let serial_med = serial_times[serial_times.len() / 2];
+            let pipe_med = pipe_times[pipe_times.len() / 2];
+            println!(
+                "pppipeperf MEDIAN: SERIAL {:.1} tok/s ({serial_med:.4}s) | \
+                 PIPE {:.1} tok/s ({pipe_med:.4}s) | speedup {:.3}x | N={reps} \
+                 alternating order, chunk={chunk}, chunks={expected}",
+                t as f64 / serial_med,
+                t as f64 / pipe_med,
+                serial_med / pipe_med,
+            );
+        }
+
+        // PRIME PP SCHEDULE BIT-IDENTITY (lane/pp-leverb + lane/cx-pipeline-prime,
+        // 2026-08-08). Three arms in ONE process
         // over the SAME sharded load (the door must be open BEFORE the probe starts — the
         // gate script exports MEMRA_PP_STAGES/MEMRA_PP_DEVICES; a door-off load of a >VRAM
         // SKU doesn't fit one card, so the reference is the door-open UNSPLIT walk, which
         // prime deliberately keeps callable — its 22% amortized tax is this gate's reference
         // arm, not a refusal case):
-        //   arm REF:   MEMRA_PRIME_PP=0  — today's whole-trunk prime on the primary engine;
-        //   arm SPLIT: MEMRA_PRIME_PP unset — the per-stage prime walker.
+        //   arm REF:    MEMRA_PRIME_PP=0 — whole-trunk prime on the primary engine;
+        //   arm SERIAL: split walker with MEMRA_PRIME_PIPE=0;
+        //   arm PIPE:   split walker with the chunk pipeline live.
         // Compared bit-for-bit: last-row logits, h_seed, the full [T, n_embd] hidden stack,
         // and `--steps` TEACHER-FORCED decode steps replaying the reference greedy stream —
-        // the decode steps read the KV the prime WROTE, so a split prime that lands stage-1
+        // the decode steps read the KV the prime WROTE, so a schedule that lands stage-1
         // KV bytes wrong fails here even if its returned logits agree.
-        // SPLIT LIVENESS TEETH: bit-identity of two identical unsplit walks is vacuous, so
-        // the split arm must ADVANCE pp::PRIME_SPLIT_CHUNKS by the chunk count (and the ref
-        // arm must NOT) — walker absent => counter frozen => RED. `--force-unsplit` is the
-        // canary injection (runs the "split" arm with MEMRA_PRIME_PP=0): once the gate is
-        // green it must flip it back to RED, proving the liveness check has teeth.
-        //   ppsplit <model> ppsplit --prompt-a <txt|@f> [--chunks 4096,513] [--steps 8]
-        //                           [--force-unsplit]
+        // LIVENESS TEETH: SERIAL and PIPE must both advance PRIME_SPLIT_CHUNKS; only PIPE
+        // may advance PRIME_PIPE_OVERLAPS, by at least chunks-1. `--force-serial-pipe`
+        // leaves the split live but runs the PIPE arm with MEMRA_PRIME_PIPE=0 — the direct
+        // canary for overlap liveness. `--force-unsplit` retains the older walker canary.
+        //   ppsplit <model> ppsplit --prompt-a <txt|@f> [--chunks auto,513] [--steps 8]
+        //                           [--soak 200] [--force-unsplit|--force-serial-pipe]
         "ppsplit" => {
             let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
-            let chunks_s = arg(&rest, "--chunks").unwrap_or_else(|| "4096,513".into());
+            let chunks_s = arg(&rest, "--chunks").unwrap_or_else(|| "auto,513".into());
             let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(8);
+            let soak: usize = arg(&rest, "--soak").and_then(|v| v.parse().ok()).unwrap_or(1);
+            assert!(soak > 0, "ppsplit --soak must be at least 1");
             let force_unsplit = rest.iter().any(|a| a == "--force-unsplit");
+            let force_serial_pipe = rest.iter().any(|a| a == "--force-serial-pipe");
             let ids = cx.tok.encode(&pa, true);
             let t = ids.len();
             let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
             assert!(t >= min_t, "ppsplit needs a prompt of >= {min_t} tokens");
             let door_open = memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some();
             println!(
-                "ppsplit: T={t} steps={steps} chunks={chunks_s} door={} devices={} \
-                 force_unsplit={force_unsplit}",
+                "ppsplit: T={t} steps={steps} chunks={chunks_s} soak={soak} door={} devices={} \
+                 force_unsplit={force_unsplit} force_serial_pipe={force_serial_pipe}",
                 if door_open { "OPEN" } else { "SHUT" },
                 std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into())
             );
@@ -1340,22 +1485,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bits = |a: &[f32], b: &[f32]| {
                 a.iter().zip(b).filter(|(x, y)| x.to_bits() != y.to_bits()).count()
             };
-            type ArmOut = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<Vec<f32>>, Vec<u32>, usize);
-            // `replay`: None = greedy self-feed (reference); Some = teacher-force (split arm
-            // consumes the reference stream so a divergence cannot desync the comparison).
-            let run_arm = |split: bool, replay: Option<&[u32]>|
+            #[derive(Clone, Copy)]
+            enum PrimeArm {
+                Ref,
+                Serial,
+                Pipe,
+            }
+            struct ArmOut {
+                logits: Vec<f32>,
+                h_seed: Vec<f32>,
+                hidden: Vec<f32>,
+                decode: Vec<Vec<f32>>,
+                inputs: Vec<u32>,
+                split_chunks: usize,
+                pipe_overlaps: usize,
+            }
+            // `replay`: None = greedy self-feed (reference); Some = teacher-force (the split
+            // arms consume the reference stream so divergence cannot desync comparison).
+            let run_arm = |arm: PrimeArm, replay: Option<&[u32]>|
                           -> Result<ArmOut, Box<dyn std::error::Error>> {
                 unsafe {
-                    if split && !force_unsplit {
-                        std::env::remove_var("MEMRA_PRIME_PP");
-                    } else {
-                        std::env::set_var("MEMRA_PRIME_PP", "0");
+                    match arm {
+                        PrimeArm::Ref => {
+                            std::env::set_var("MEMRA_PRIME_PP", "0");
+                            std::env::set_var("MEMRA_PRIME_PIPE", "0");
+                        }
+                        PrimeArm::Serial => {
+                            if force_unsplit {
+                                std::env::set_var("MEMRA_PRIME_PP", "0");
+                            } else {
+                                std::env::remove_var("MEMRA_PRIME_PP");
+                            }
+                            std::env::set_var("MEMRA_PRIME_PIPE", "0");
+                        }
+                        PrimeArm::Pipe => {
+                            if force_unsplit {
+                                std::env::set_var("MEMRA_PRIME_PP", "0");
+                            } else {
+                                std::env::remove_var("MEMRA_PRIME_PP");
+                            }
+                            if force_serial_pipe {
+                                std::env::set_var("MEMRA_PRIME_PIPE", "0");
+                            } else {
+                                std::env::remove_var("MEMRA_PRIME_PIPE");
+                            }
+                        }
                     }
                 }
-                let c0 = memra_engine::pp::prime_split_chunks();
+                let split0 = memra_engine::pp::prime_split_chunks();
+                let pipe0 = memra_engine::pp::prime_pipe_overlaps();
                 let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + steps + 8)?;
                 let (logits, h_seed, hid) = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
-                let split_chunks = memra_engine::pp::prime_split_chunks() - c0;
+                let split_chunks = memra_engine::pp::prime_split_chunks() - split0;
+                let pipe_overlaps = memra_engine::pp::prime_pipe_overlaps() - pipe0;
                 let hid_h = cx.e.dtoh(&hid)?;
                 let hs_h = cx.e.dtoh(&h_seed)?;
                 let mut inputs: Vec<u32> = Vec::with_capacity(steps);
@@ -1368,15 +1550,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tok = argmax(&l) as u32;
                     dec.push(l);
                 }
-                Ok((logits, hs_h, hid_h, dec, inputs, split_chunks))
+                Ok(ArmOut {
+                    logits,
+                    h_seed: hs_h,
+                    hidden: hid_h,
+                    decode: dec,
+                    inputs,
+                    split_chunks,
+                    pipe_overlaps,
+                })
             };
             let mut fail = false;
             for cv in chunks_s.split(',') {
                 let cv = cv.trim();
-                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
+                let chunk = if cv == "auto" {
+                    unsafe {
+                        std::env::remove_var("MEMRA_PRIME_CHUNK");
+                        std::env::remove_var("MEMRA_PRIME_PP");
+                        std::env::remove_var("MEMRA_PRIME_PIPE");
+                    }
+                    memra_engine::hybrid_forward::prime_chunk_tokens(
+                        t,
+                        cx.model.layers.len(),
+                    )
+                } else {
+                    unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
+                    cv.parse().unwrap_or(0)
+                };
+                let chunk_label = if cv == "auto" {
+                    format!("auto({chunk})")
+                } else {
+                    cv.to_string()
+                };
                 // expected chunk count = prime_cache's own loop (incl. the PRIME_MIN_T tail
                 // merge), so the liveness bar tracks the real segmentation at every --chunks.
-                let chunk: usize = cv.parse().unwrap_or(0);
                 let expected = if chunk == 0 || t <= chunk {
                     1
                 } else {
@@ -1389,33 +1596,143 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     n
                 };
-                let (l_ref, hs_ref, hid_ref, dec_ref, inp_ref, n_ref) = run_arm(false, None)?;
-                let (l_sp, hs_sp, hid_sp, dec_sp, _, n_sp) = run_arm(true, Some(&inp_ref))?;
-                let dl = bits(&l_ref, &l_sp);
-                let dhs = bits(&hs_ref, &hs_sp);
-                let dh = bits(&hid_ref, &hid_sp);
-                let ddec: usize = dec_ref.iter().zip(&dec_sp).map(|(a, b)| bits(a, b)).sum();
-                let exact = dl + dhs + dh + ddec == 0;
-                let live = n_sp >= expected && n_ref == 0;
-                println!(
-                    "  chunk {cv} | logits diff {dl}/{} | h_seed diff {dhs}/{} | hidden diff \
-                     {dh}/{} | decode diff {ddec} over {steps} steps | split_chunks ref={n_ref} \
-                     split={n_sp} (need split >= {expected}, ref == 0) | {}",
-                    l_ref.len(), hs_ref.len(), hid_ref.len(),
-                    match (exact, live) {
-                        (true, true) => "EXACT+LIVE",
-                        (true, false) => "*** SPLIT-NOT-LIVE (bit-identity vacuous)",
-                        (false, _) => "*** MISMATCH",
-                    }
+                let expected_overlaps = expected.saturating_sub(1);
+                let reference = run_arm(PrimeArm::Ref, None)?;
+                let serial = run_arm(PrimeArm::Serial, Some(&reference.inputs))?;
+                let pipe = run_arm(PrimeArm::Pipe, Some(&reference.inputs))?;
+                let serial_diff = (
+                    bits(&reference.logits, &serial.logits),
+                    bits(&reference.h_seed, &serial.h_seed),
+                    bits(&reference.hidden, &serial.hidden),
+                    reference
+                        .decode
+                        .iter()
+                        .zip(&serial.decode)
+                        .map(|(a, b)| bits(a, b))
+                        .sum::<usize>(),
                 );
-                if !(exact && live) { fail = true; }
+                let pipe_diff = (
+                    bits(&serial.logits, &pipe.logits),
+                    bits(&serial.h_seed, &pipe.h_seed),
+                    bits(&serial.hidden, &pipe.hidden),
+                    serial
+                        .decode
+                        .iter()
+                        .zip(&pipe.decode)
+                        .map(|(a, b)| bits(a, b))
+                        .sum::<usize>(),
+                );
+                let serial_exact =
+                    serial_diff.0 + serial_diff.1 + serial_diff.2 + serial_diff.3 == 0;
+                let pipe_exact = pipe_diff.0 + pipe_diff.1 + pipe_diff.2 + pipe_diff.3 == 0;
+                let serial_live = reference.split_chunks == 0
+                    && reference.pipe_overlaps == 0
+                    && serial.split_chunks >= expected
+                    && serial.pipe_overlaps == 0;
+                let pipe_live = expected >= 2
+                    && pipe.split_chunks >= expected
+                    && pipe.pipe_overlaps >= expected_overlaps;
+                let mut soak_exact_failures = usize::from(!pipe_exact);
+                let mut soak_live_failures = usize::from(!pipe_live);
+                for i in 1..soak {
+                    let sample = run_arm(PrimeArm::Pipe, Some(&reference.inputs))?;
+                    let sample_diff = (
+                        bits(&serial.logits, &sample.logits),
+                        bits(&serial.h_seed, &sample.h_seed),
+                        bits(&serial.hidden, &sample.hidden),
+                        serial
+                            .decode
+                            .iter()
+                            .zip(&sample.decode)
+                            .map(|(a, b)| bits(a, b))
+                            .sum::<usize>(),
+                    );
+                    let sample_exact =
+                        sample_diff.0 + sample_diff.1 + sample_diff.2 + sample_diff.3 == 0;
+                    let sample_live = sample.split_chunks >= expected
+                        && sample.pipe_overlaps >= expected_overlaps;
+                    soak_exact_failures += usize::from(!sample_exact);
+                    soak_live_failures += usize::from(!sample_live);
+                    if !sample_exact || !sample_live {
+                        println!(
+                            "    soak {}/{}: diff L/H/S/D={}/{}/{}/{} split={} overlaps={} \
+                             need split>={expected} overlaps>={expected_overlaps}",
+                            i + 1,
+                            soak,
+                            sample_diff.0,
+                            sample_diff.1,
+                            sample_diff.2,
+                            sample_diff.3,
+                            sample.split_chunks,
+                            sample.pipe_overlaps,
+                        );
+                    } else if (i + 1) % 10 == 0 || i + 1 == soak {
+                        println!(
+                            "    soak {}/{}: exact+live (exact_failures={} live_failures={})",
+                            i + 1,
+                            soak,
+                            soak_exact_failures,
+                            soak_live_failures,
+                        );
+                    }
+                }
+                let status = if !serial_exact || soak_exact_failures != 0 {
+                    "*** MISMATCH"
+                } else if !serial_live {
+                    "*** SPLIT-NOT-LIVE (bit-identity vacuous)"
+                } else if soak_live_failures != 0 {
+                    "*** PIPE-NOT-LIVE (serial split replayed)"
+                } else {
+                    "EXACT+SPLIT-LIVE+PIPE-LIVE"
+                };
+                println!(
+                    "  chunk {chunk_label} | serial-vs-ref diff L/H/S/D={}/{}/{}/{} | \
+                     pipe-vs-serial diff L/H/S/D={}/{}/{}/{} | split_chunks R/S/P={}/{}/{} \
+                     need S,P>={expected} | pipe_overlaps R/S/P={}/{}/{} need P>={} | \
+                     soak pipe_primes={} exact_failures={} live_failures={} | {status}",
+                    serial_diff.0,
+                    serial_diff.1,
+                    serial_diff.2,
+                    serial_diff.3,
+                    pipe_diff.0,
+                    pipe_diff.1,
+                    pipe_diff.2,
+                    pipe_diff.3,
+                    reference.split_chunks,
+                    serial.split_chunks,
+                    pipe.split_chunks,
+                    reference.pipe_overlaps,
+                    serial.pipe_overlaps,
+                    pipe.pipe_overlaps,
+                    expected_overlaps,
+                    soak,
+                    soak_exact_failures,
+                    soak_live_failures,
+                );
+                if !(serial_exact
+                    && serial_live
+                    && soak_exact_failures == 0
+                    && soak_live_failures == 0)
+                {
+                    fail = true;
+                }
             }
-            unsafe { std::env::remove_var("MEMRA_PRIME_PP") };
+            unsafe {
+                std::env::remove_var("MEMRA_PRIME_CHUNK");
+                std::env::remove_var("MEMRA_PRIME_PP");
+                std::env::remove_var("MEMRA_PRIME_PIPE");
+            }
             if fail {
-                println!("ppsplit verdict: *** RED (split prime absent, not live, or not bit-identical)");
+                println!(
+                    "ppsplit verdict: *** RED (split/pipeline absent, not live, or not bit-identical)"
+                );
                 std::process::exit(1);
             }
-            println!("ppsplit verdict: SPLIT BIT-IDENTICAL + LIVE (T={t}, chunks={chunks_s}, {steps} decode steps)");
+            println!(
+                "ppsplit verdict: UNSPLIT/SERIAL/PIPE BIT-IDENTICAL + LIVE \
+                 (T={t}, chunks={chunks_s}, {steps} decode steps, \
+                 {soak} pipelined primes per chunk)"
+            );
         }
 
         m => return Err(format!("unknown mode {m}").into()),

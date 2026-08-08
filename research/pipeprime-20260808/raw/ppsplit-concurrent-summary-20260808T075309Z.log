@@ -1,0 +1,5 @@
+    ppsplit: T=4883 steps=8 chunks=4096,513 soak=1 door=OPEN devices=0,1 force_unsplit=false force_serial_pipe=false
+      chunk 4096 | serial-vs-ref diff L/H/S/D=0/0/0/0 | pipe-vs-serial diff L/H/S/D=0/0/0/0 | split_chunks R/S/P=0/2/2 need S,P>=2 | pipe_overlaps R/S/P=0/0/1 need P>=1 | soak pipe_primes=1 exact_failures=0 live_failures=0 | EXACT+SPLIT-LIVE+PIPE-LIVE
+      chunk 513 | serial-vs-ref diff L/H/S/D=0/0/0/0 | pipe-vs-serial diff L/H/S/D=0/0/0/0 | split_chunks R/S/P=0/10/10 need S,P>=10 | pipe_overlaps R/S/P=0/0/9 need P>=9 | soak pipe_primes=1 exact_failures=0 live_failures=0 | EXACT+SPLIT-LIVE+PIPE-LIVE
+    ppsplit verdict: UNSPLIT/SERIAL/PIPE BIT-IDENTICAL + LIVE (T=4883, chunks=4096,513, 8 decode steps, 1 pipelined primes per chunk)
+prime-split-gate: PASS (unsplit/serial/pipeline bit-identical + live; raw log /tmp/prime-split-gate-oybH0W.log)

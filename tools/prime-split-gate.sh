@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# prime-split-gate — the LEVER B bit-identity gate (lane/pp-leverb, 2026-08-08): the chunked
-# prime over an OPEN ppN door must produce BIT-IDENTICAL results split vs unsplit, AND the
-# split must be provably LIVE. Self-gating (`kind=cmd` in tools/fast-gate/models.tsv):
+# prime-split-gate — the PRIME PP schedule gate (lane/pp-leverb +
+# lane/cx-pipeline-prime, 2026-08-08): unsplit, serial split, and pipelined split must be
+# BIT-IDENTICAL, with both the split and the chunk-overlap schedules provably LIVE.
+# Self-gating (`kind=cmd` in tools/fast-gate/models.tsv):
 # exit 0 = PASS.
 #
-#   tools/prime-split-gate.sh [<model.gguf>] [--devices 0,1] [--stages 2] [--chunks 4096,513]
+#   tools/prime-split-gate.sh [<model.gguf>] [--devices 0,1] [--stages 2] [--chunks auto,513]
 #                             [--steps 8] [--prompts <f>] [--canary]
 #
 # WHY THIS GATE EXISTS (research/pp-leverb-20260807/PROGRESS.md): the prime path has NO pp
@@ -14,16 +15,11 @@
 # refuse_unsplit_if_remote — its unsplit walk is a 22% amortized tax, not the decode 28x
 # cliff, and it is precisely this gate's REFERENCE arm (MEMRA_PRIME_PP=0).
 #
-# REGISTERED RED (the tickinv35 pattern): the walker does not exist yet. The probe's split
-# arm requires pp::PRIME_SPLIT_CHUNKS to ADVANCE (bit-identity of two identical unsplit walks
-# is vacuous) — so this gate FAILS today and goes green exactly when the per-stage walker
-# lands, with bit-identity + KV-write correctness (teacher-forced decode steps read the KV
-# the prime wrote) proven in the same run.
-#
-# TEETH: --canary passes --force-unsplit to the probe (the "split" arm runs unsplit), so a
-# GREEN gate must flip RED under the canary. While the gate is still registered-red the
-# canary is trivially red too — it becomes load-bearing at the walker commit, and it is
-# registered NOW so the flip cannot be forgotten (the GAP-1/battery-2 vacuous-canary class).
+# LIVENESS TEETH: the serial and pipeline arms must advance PRIME_SPLIT_CHUNKS; only the
+# pipeline arm may advance PRIME_PIPE_OVERLAPS, by at least chunks-1. --canary passes
+# --force-serial-pipe: the pipeline arm remains a real stage split but takes
+# MEMRA_PRIME_PIPE=0. Bits still agree, split liveness still passes, and ONLY the overlap
+# assertion must turn RED. This directly proves the pipeline counter has teeth.
 #
 # NEEDS 2 GPUs with P2P (the PRO 6000 pair). On a single-GPU rig (the local 5090) it SKIPs:
 # a same-device "split" exercises the seam but not the placement this lever exists for; the
@@ -34,7 +30,7 @@ PROBE=./target/release/concat-prime-probe
 MODEL=""
 DEVICES=0,1
 STAGES=2
-CHUNKS=4096,513
+CHUNKS=auto,513
 STEPS=8
 PROMPTS=""
 CANARY=0
@@ -69,12 +65,12 @@ if [ "$NGPU" -le "$MAXDEV" ] || [ "$NDEV" -lt 2 ]; then
     echo "prime-split-gate: SKIP (needs the multi-GPU placement $DEVICES; $NGPU GPU(s) visible)"
     exit 0
 fi
-# Prompt must exceed the largest chunk so the chunk loop actually segments.
+# Prompt must exercise both the naked auto geometry and the fixed stress chunk.
 PROMPTS="${PROMPTS:-research/chunk-invariance-20260805/prompt-pp6257.txt}"
 [ -f "$PROMPTS" ] || { echo "prime-split-gate: FAIL (missing pinned prompt $PROMPTS)"; exit 1; }
 
 EXTRA=()
-[ "$CANARY" = 1 ] && EXTRA=(--force-unsplit)
+[ "$CANARY" = 1 ] && EXTRA=(--force-serial-pipe)
 LOG=$(mktemp /tmp/prime-split-gate-XXXXXX.log)
 # evidence discipline: tee the raw log, parse the LOG (never the pipe)
 MEMRA_PP_STAGES=$STAGES MEMRA_PP_DEVICES=$DEVICES \
@@ -84,16 +80,16 @@ rc=$?
 grep -E "^ppsplit|^  chunk" "$LOG" | sed 's/^/    /'
 if [ "$CANARY" = 1 ]; then
     if [ $rc -ne 0 ]; then
-        echo "prime-split-gate: PASS (canary broke the assertion as required — gate has teeth; log $LOG)"
+        echo "prime-split-gate: PASS (serial-pipeline canary broke overlap liveness as required; log $LOG)"
         exit 0
     fi
-    echo "prime-split-gate: CANARY UNEXPECTEDLY MATCHED — forcing the split arm unsplit did not"
-    echo "  flip the verdict, so the liveness check cannot detect the mechanism. FIX THE GATE. (log $LOG)"
+    echo "prime-split-gate: CANARY UNEXPECTEDLY MATCHED — forcing the pipeline arm serial did not"
+    echo "  flip the verdict, so overlap liveness cannot detect the mechanism. FIX THE GATE. (log $LOG)"
     exit 1
 fi
 if [ $rc -eq 0 ]; then
-    echo "prime-split-gate: PASS (split prime bit-identical + live; raw log $LOG)"
+    echo "prime-split-gate: PASS (unsplit/serial/pipeline bit-identical + live; raw log $LOG)"
     exit 0
 fi
-echo "prime-split-gate: FAIL rc=$rc — split prime absent, not live, or not bit-identical (log $LOG)"
+echo "prime-split-gate: FAIL rc=$rc — split/pipeline absent, not live, or not bit-identical (log $LOG)"
 exit 1

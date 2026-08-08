@@ -112,18 +112,16 @@ chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts rese
 # MEMRA_PRIME_CALLLOCAL = rollback to per-call seq_end (tick-variant by construction — teeth).
 tickinv35	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24	-	-
 tickinv35c	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary	-	-
-# ppsplit/ppsplitc: the LEVER-B split-vs-unsplit PRIME bit-identity + liveness gate
-# (lane/pp-leverb, research/pp-leverb-20260807/PROGRESS.md §E). Prime has NO pp stage split —
-# under the sharded PP-2 placement dev1 runs ZERO prefill kernels (anatomy receipt) and prime
-# deliberately keeps no refusal (its unsplit walk = the 22% amortized tax AND this gate's
-# reference arm, MEMRA_PRIME_PP=0). REGISTERED RED 2026-08-08: the split arm requires
-# pp::PRIME_SPLIT_CHUNKS to advance, so the gate fails until the per-stage walker lands.
-# Teacher-forced decode steps read the KV the prime wrote — stage-1 KV byte placement is
-# covered, not just returned logits. Needs the 2-GPU placement; SKIPs on single-GPU rigs
-# (the box battery is the authority). ppsplitc = --canary (forces the split arm unsplit;
-# load-bearing at the walker commit — registered now so the flip cannot be forgotten).
-ppsplit	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks 4096,513 --steps 8	-	-
-ppsplitc	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks 4096,513 --steps 8 --canary	-	-
+# ppsplit/ppsplitc: PRIME PP schedule identity + liveness. Three arms share one sharded load:
+# unsplit reference, serial stage split, and chunk-pipelined stage split. Returned
+# logits/h_seed/full hidden stack plus teacher-forced continuation logits must be bit-identical;
+# PRIME_SPLIT_CHUNKS proves both split arms ran, and PRIME_PIPE_OVERLAPS proves the two
+# stage-owned host walkers were concurrently inside their layer ranges. Needs the 2-GPU
+# placement; SKIPs locally.
+# ppsplitc forces only the pipeline arm back to the serial split, so split liveness remains
+# green and the overlap assertion alone must bite.
+ppsplit	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks auto,513 --steps 8	-	-
+ppsplitc	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks auto,513 --steps 8 --canary	-	-
 # b2geo35/b2geo35c: batched-decode GEOMETRY on the launch SKU — step35 served at c=2/c=4 on the
 # DEFAULT batched scheduler over PP-2 must return byte-identical greedy text to the c=1 reference
 # AND prove a B>1 batched step35 tick actually ran (spawn-log chunk cap >= 2 + the engine's
