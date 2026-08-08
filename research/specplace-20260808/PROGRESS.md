@@ -149,6 +149,31 @@ gate now waits for `serve_idle_seconds >= 0.5` before shutdown and rejects
 `CUDA_ERROR_DEINITIALIZED` or `spec pending flush failed`; a full rerun is
 required.
 
+## Final gate battery
+
+Clean receipt: `gates/20260808T105800Z/`, exact source commit `8d8ba1ea`.
+GPU window: 2026-08-08 11:03:00Z-11:04:29Z. Both cards were at 0 MiB
+and the compute-process lists were empty at entry and exit. The window began
+warm after another locked lane; these are correctness/liveness gates, not
+performance medians.
+
+| gate | result |
+|---|---|
+| run-spec single-card | K=1..8, 8/8 self-consistency PASS |
+| run-spec PP-2 dev10 | K=1..8, 8/8 self-consistency PASS |
+| run-spec PP-2 dev01 | K=1..8, 8/8 self-consistency PASS |
+| naked PP-2 policy | LOW=0/HIGH=1, admission OFF, 4/4 complete, 0 spec lines |
+| naked single-card policy | LOW=2/HIGH=4, admission ON, 4/4 complete, 13 spec lines |
+| #87 quick, forced spec | c=2 8/8, c=4 16/16, recovery c=1 4/4; 85 spec lines |
+| #87 error scan | no illegal-address, deinitialized, trap, sentinel, pending-flush, Xid 31, page-table fault, panic, or abort line |
+| serve-smoke | 0 failed; optional Gemma arm skipped because its artifact is absent |
+
+The policy/crash servers each reported at least 0.5 seconds of worker idle
+before SIGTERM. All five load rows had zero errors and zero sheds. The PP-2
+default liveness point was 221.8 aggregate tok/s and the single-card default
+point was 377.4; these are single gate points, not new benchmark cells. Artifact
+and binary hashes are retained in the receipt.
+
 ## Measurement protocol
 
 - One exclusive `/tmp/memra-gpu.lock` hold per sweep.
@@ -191,3 +216,5 @@ boundary. Load points: 36, with 0 errors and 0 shed requests. Temperatures staye
 - 2026-08-08: first box2 gate attempt completed every live check but exposed a
   post-drain CUDA deinitialization line; receipt retained, verdict held pending a
   quiesced-shutdown rerun.
+- 2026-08-08: quiesced-shutdown rerun clean. All required placement, #87, and
+  serve-smoke gates passed; no server error signature remained.

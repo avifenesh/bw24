@@ -1,0 +1,309 @@
+=== specplace gate 20260808T105800Z ===
+host=ip-172-31-11-170 commit=8d8ba1eaad71c4d2c36426f20d24f7e4d28d14be
+/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 5657607424 bytes
+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf 936838816 bytes
+=== release build ===
+   Compiling memra-gguf v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-gguf)
+   Compiling memra-engine v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-engine)
+   Compiling memra-sampling v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-sampling)
+   Compiling memra-server v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-server)
+   Compiling memra-validate v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-validate)
+   Compiling memra-lanes v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-lanes)
+   Compiling memra-kv v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-kv)
+   Compiling memra-tokenizer v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-tokenizer)
+   Compiling memra-runtime v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-runtime)
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 4m 16s
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-engine v0.72.0 (/home/ubuntu/specplace-gates-8d8ba1ea/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 0.76s
+GPU lock acquired 2026-08-08T11:03:00Z
+=== run-spec placement battery ===
+=== run: research/specplace-20260808/gates/20260808T105800Z/runspec-single.log ===
+command: env -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SPEC_K CUDA_VISIBLE_DEVICES=0 MEMRA_QWEN_DC=0 MEMRA_MTP_DRAFT=/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_SPEC_TEMP=0 MEMRA_NGEN=64 /home/ubuntu/specplace-target/release/run-spec /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+[mtp-draft] loading external MTP draft: /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.324s = 194.39 tok/s (gen-only; this run's prime 0.005s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.376s = 167.44 tok/s (0.86x vs generate; this run's prime 0.004s)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.312s = 202.12 tok/s (1.04x vs generate; this run's prime 0.004s)
+  acceptance: 20/86 = 23.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.336s = 187.69 tok/s (0.97x vs generate; this run's prime 0.004s)
+  acceptance: 22/123 = 17.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.382s = 165.02 tok/s (0.85x vs generate; this run's prime 0.004s)
+  acceptance: 23/160 = 14.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.424s = 148.66 tok/s (0.76x vs generate; this run's prime 0.004s)
+  acceptance: 23/200 = 11.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.468s = 134.65 tok/s (0.69x vs generate; this run's prime 0.004s)
+  acceptance: 23/240 = 9.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.528s = 119.29 tok/s (0.61x vs generate; this run's prime 0.004s)
+  acceptance: 23/280 = 8.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 0.595s = 105.94 tok/s (0.54x vs generate; this run's prime 0.004s)
+  acceptance: 23/320 = 7.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+PASS: single-card run-spec K=1..8
+=== run: research/specplace-20260808/gates/20260808T105800Z/runspec-pp2-10.log ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_SPEC_K MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1\,0 MEMRA_QWEN_DC=0 MEMRA_MTP_DRAFT=/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_SPEC_TEMP=0 MEMRA_NGEN=64 /home/ubuntu/specplace-target/release/run-spec /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[mtp-draft] loading external MTP draft: /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.557s = 113.03 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.613s = 102.72 tok/s (0.91x vs generate; this run's prime 0.005s)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.596s = 105.70 tok/s (0.94x vs generate; this run's prime 0.005s)
+  acceptance: 20/86 = 23.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.667s = 94.41 tok/s (0.84x vs generate; this run's prime 0.005s)
+  acceptance: 22/123 = 17.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.752s = 83.82 tok/s (0.74x vs generate; this run's prime 0.005s)
+  acceptance: 23/160 = 14.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.822s = 76.65 tok/s (0.68x vs generate; this run's prime 0.005s)
+  acceptance: 23/200 = 11.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.864s = 72.91 tok/s (0.65x vs generate; this run's prime 0.005s)
+  acceptance: 23/240 = 9.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.929s = 67.81 tok/s (0.60x vs generate; this run's prime 0.005s)
+  acceptance: 23/280 = 8.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 0.997s = 63.22 tok/s (0.56x vs generate; this run's prime 0.005s)
+  acceptance: 23/320 = 7.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+PASS: pp2-10 run-spec K=1..8
+=== run: research/specplace-20260808/gates/20260808T105800Z/runspec-pp2-01.log ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_SPEC_K MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_QWEN_DC=0 MEMRA_MTP_DRAFT=/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_SPEC_TEMP=0 MEMRA_NGEN=64 /home/ubuntu/specplace-target/release/run-spec /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 55
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[mtp-draft] loading external MTP draft: /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.554s = 113.72 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.627s = 100.48 tok/s (0.88x vs generate; this run's prime 0.005s)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.613s = 102.86 tok/s (0.90x vs generate; this run's prime 0.005s)
+  acceptance: 20/86 = 23.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.690s = 91.27 tok/s (0.80x vs generate; this run's prime 0.005s)
+  acceptance: 22/123 = 17.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.774s = 81.44 tok/s (0.72x vs generate; this run's prime 0.005s)
+  acceptance: 23/160 = 14.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.845s = 74.59 tok/s (0.66x vs generate; this run's prime 0.005s)
+  acceptance: 23/200 = 11.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.888s = 70.97 tok/s (0.62x vs generate; this run's prime 0.005s)
+  acceptance: 23/240 = 9.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.954s = 66.02 tok/s (0.58x vs generate; this run's prime 0.005s)
+  acceptance: 23/280 = 8.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 1.024s = 61.55 tok/s (0.54x vs generate; this run's prime 0.005s)
+  acceptance: 23/320 = 7.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+PASS: pp2-01 run-spec K=1..8
+=== naked policy liveness ===
+=== server: policy-pp2-default ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_PP_SHARD -u MEMRA_PP_STREAMS -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1\,0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8131 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+=== run: research/specplace-20260808/gates/20260808T105800Z/policy-pp2-default-c1-load.log ===
+command: python3 tools/load-serve.py --base http://127.0.0.1:8131 --model q9 --concurrency 1 --requests 4 --max-tokens 96 --greedy --warmup 1 --label policy-pp2-default-c1 --out research/specplace-20260808/gates/20260808T105800Z/points.jsonl
+{"ts": "2026-08-08T11:03:30+0000", "label": "policy-pp2-default-c1", "base": "http://127.0.0.1:8131", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.731344972999068, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 221.79288702633772, "req_per_s": 2.3103425731910177, "lat_p50_s": 0.4329267119974247, "lat_p95_s": 0.433149909003987, "lat_mean_s": 0.4327234792508534, "lat_max_s": 0.433149909003987, "errors_sample": []}
+policy-pp2-default worker quiesced (serve_idle_seconds=0.52)
+policy-pp2-default-c1: 4/4 ok, 221.8 aggregate tok/s
+PASS: policy-pp2-default-c1 completion
+PASS: PP-2 placement default logged LOW=0/HIGH=1
+PASS: PP-2 naked default emitted no spec-acc lines
+PASS: PP-2 naked default admitted batched
+=== server: policy-single-default ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_PP_SHARD -u MEMRA_PP_STREAMS -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8131 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+=== run: research/specplace-20260808/gates/20260808T105800Z/policy-single-default-c1-load.log ===
+command: python3 tools/load-serve.py --base http://127.0.0.1:8131 --model q9 --concurrency 1 --requests 4 --max-tokens 96 --greedy --warmup 1 --label policy-single-default-c1 --out research/specplace-20260808/gates/20260808T105800Z/points.jsonl
+{"ts": "2026-08-08T11:03:40+0000", "label": "policy-single-default-c1", "base": "http://127.0.0.1:8131", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.017494428997452, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 377.3976437181669, "req_per_s": 3.9312254553975716, "lat_p50_s": 0.25406802499492187, "lat_p95_s": 0.256364428998495, "lat_mean_s": 0.25426084874925436, "lat_max_s": 0.256364428998495, "errors_sample": []}
+policy-single-default worker quiesced (serve_idle_seconds=0.515)
+policy-single-default-c1: 4/4 ok, 377.4 aggregate tok/s
+PASS: policy-single-default-c1 completion
+PASS: single-card placement default logged LOW=2/HIGH=4
+PASS: single-card naked default ran spec
+=== #87 quick crash gate: formerly fatal dev10, forced spec ===
+=== server: crash-pp2-forced-spec ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_PP_SHARD -u MEMRA_PP_STREAMS -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=1\,0 MEMRA_SPEC_GATE=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8131 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+=== run: research/specplace-20260808/gates/20260808T105800Z/crash-c2-load.log ===
+command: python3 tools/load-serve.py --base http://127.0.0.1:8131 --model q9 --concurrency 2 --requests 8 --max-tokens 96 --greedy --warmup 1 --label crash-c2 --out research/specplace-20260808/gates/20260808T105800Z/points.jsonl
+{"ts": "2026-08-08T11:03:52+0000", "label": "crash-c2", "base": "http://127.0.0.1:8131", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 3.0649728030039114, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 250.5731859177675, "req_per_s": 2.610137353310078, "lat_p50_s": 0.769599721999839, "lat_p95_s": 0.8669551109996974, "lat_mean_s": 0.7319148398755715, "lat_max_s": 0.8669551109996974, "errors_sample": []}
+=== run: research/specplace-20260808/gates/20260808T105800Z/crash-c4-load.log ===
+command: python3 tools/load-serve.py --base http://127.0.0.1:8131 --model q9 --concurrency 4 --requests 16 --max-tokens 96 --greedy --warmup 0 --label crash-c4 --out research/specplace-20260808/gates/20260808T105800Z/points.jsonl
+{"ts": "2026-08-08T11:03:58+0000", "label": "crash-c4", "base": "http://127.0.0.1:8131", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 6.249668342999939, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 245.7730419759676, "req_per_s": 2.560135853916329, "lat_p50_s": 1.4354837089995272, "lat_p95_s": 1.7801259429979837, "lat_mean_s": 1.4663780936248259, "lat_max_s": 1.9411352640017867, "errors_sample": []}
+=== run: research/specplace-20260808/gates/20260808T105800Z/crash-recovery-c1-load.log ===
+command: python3 tools/load-serve.py --base http://127.0.0.1:8131 --model q9 --concurrency 1 --requests 4 --max-tokens 96 --greedy --warmup 0 --label crash-recovery-c1 --out research/specplace-20260808/gates/20260808T105800Z/points.jsonl
+{"ts": "2026-08-08T11:04:00+0000", "label": "crash-recovery-c1", "base": "http://127.0.0.1:8131", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.5346206019967212, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 250.22471319645456, "req_per_s": 2.606507429129735, "lat_p50_s": 0.38405351099936524, "lat_p95_s": 0.38442747500084806, "lat_mean_s": 0.3834967882503406, "lat_max_s": 0.38442747500084806, "errors_sample": []}
+crash-pp2-forced-spec worker quiesced (serve_idle_seconds=0.5)
+crash-c2: 8/8 ok, 250.6 aggregate tok/s
+PASS: crash-c2 completion
+crash-c4: 16/16 ok, 245.8 aggregate tok/s
+PASS: crash-c4 completion
+crash-recovery-c1: 4/4 ok, 250.2 aggregate tok/s
+PASS: crash-recovery-c1 completion
+PASS: #87 gate forced the always-spec rollback
+PASS: #87 gate exercised spec
+PASS: #87 gate fatal/sentinel/teardown-error scan clean
+=== repository serve-smoke ===
+=== run: research/specplace-20260808/gates/20260808T105800Z/serve-smoke.log ===
+command: env -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 tools/serve-smoke.sh /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: cache-metering exactness ==
+  ok: A-req1 cached_tokens == 0
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 cached_tokens == 0
+  ok: A-req2 prompt_tokens == 272
+  ok: A-req3 cached_tokens == 256
+  ok: A-req3 prompt_tokens == 272
+  ok: A-req4 cached_tokens == 256
+  ok: A-req4 prompt_tokens == 272
+  ok: A-req5 cached_tokens == 256
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: prompt_tokens_in == 1632
+  ok: cached_tokens_in == 768
+  ok: computed_tokens_in == prompt - cached
+  ok: cache_hit_token_ratio matches arithmetic
+  ok: prefix_cache_hits == N-2
+  ok: prefix_cache_misses == 3
+  ok: prefix_cache_inserts == 3 (A seed + A split + B seed)
+  ok: prefix_cache_hit_tokens == 768
+  ok: lcp_histogram: 6 probes total
+  ok: lcp_histogram: 2 cold probes in bucket [0]
+  ok: lcp_histogram: 4 probes in K's bucket (edge 256)
+  ok: tick-seg [64,512) window carries the shared-prefix probes
+  ok: tenants[meter-A] split exact
+  ok: tenants[meter-B] split exact (0 cached)
+  ok: economics revenue_multiplier == 1.8889 (factor 1.0)
+cache-meter-gate: 0 failed
+  ok: cache-metering accounting exact (per-request + /metrics + economics)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+== serve-smoke: gemma4 arm SKIP (no model at /data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf)
+serve-smoke: 0 failed
+PASS: tools/serve-smoke.sh
+GPU lock released 2026-08-08T11:04:29Z
+# specplace gate summary
+
+- Host: ip-172-31-11-170
+- Commit: 8d8ba1eaad71c4d2c36426f20d24f7e4d28d14be
+- Script-detected failures: 0
+
+## run-spec
+runspec-pp2-01.log:=== SELF-CONSISTENCY PASS ===
+runspec-pp2-10.log:=== SELF-CONSISTENCY PASS ===
+runspec-single.log:=== SELF-CONSISTENCY PASS ===
+
+## policy
+policy-pp2-default-server.log:[spec-gate] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off
+policy-single-default-server.log:[spec-gate] policy placement=single-or-non-pp2 LOW=2 HIGH=4 source=placement-default spec-admission=on
+crash-pp2-forced-spec-server.log:[spec-gate] policy disabled by MEMRA_SPEC_GATE=0: always-spec
+
+## load points
+- policy-pp2-default-c1: ok=4 err=0 shed=0 agg=221.8 tok/s
+- policy-single-default-c1: ok=4 err=0 shed=0 agg=377.4 tok/s
+- crash-c2: ok=8 err=0 shed=0 agg=250.6 tok/s
+- crash-c4: ok=16 err=0 shed=0 agg=245.8 tok/s
+- crash-recovery-c1: ok=4 err=0 shed=0 agg=250.2 tok/s
+
+## serve-smoke
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: cache-metering exactness ==
+  ok: A-req1 cached_tokens == 0
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 cached_tokens == 0
+  ok: A-req2 prompt_tokens == 272
+  ok: A-req3 cached_tokens == 256
+  ok: A-req3 prompt_tokens == 272
+  ok: A-req4 cached_tokens == 256
+  ok: A-req4 prompt_tokens == 272
+  ok: A-req5 cached_tokens == 256
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: prompt_tokens_in == 1632
+  ok: cached_tokens_in == 768
+  ok: computed_tokens_in == prompt - cached
+  ok: cache_hit_token_ratio matches arithmetic
+  ok: prefix_cache_hits == N-2
+  ok: prefix_cache_misses == 3
+  ok: prefix_cache_inserts == 3 (A seed + A split + B seed)
+  ok: prefix_cache_hit_tokens == 768
+  ok: lcp_histogram: 6 probes total
+  ok: lcp_histogram: 2 cold probes in bucket [0]
+  ok: lcp_histogram: 4 probes in K's bucket (edge 256)
+  ok: tick-seg [64,512) window carries the shared-prefix probes
+  ok: tenants[meter-A] split exact
+  ok: tenants[meter-B] split exact (0 cached)
+  ok: economics revenue_multiplier == 1.8889 (factor 1.0)
+  ok: cache-metering accounting exact (per-request + /metrics + economics)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+== serve-smoke: gemma4 arm SKIP (no model at /data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf)
+serve-smoke: 0 failed
+SPECPLACE_GATES_DONE failures=0
