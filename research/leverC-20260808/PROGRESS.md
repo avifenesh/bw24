@@ -120,3 +120,31 @@ Local proof:
 
 Target-rig exactness and performance remain pending; no winner claim is made from the local
 compile.
+
+## Increment 2 - first Box2 oracle is red
+
+Box2 ran commit `a1e04b43` on the model-backed Step35 artifact. The first grouped layer took the
+intended resident arm, but `MEMRA_MOE_GATE=1` rejected its output:
+
+| Check | Verdict |
+|---|---|
+| grouped arm engagement | `il=3 t=19 dispatch=resident-q8` |
+| grouped vs sequential bytes | **FAIL**, 55,032 / 77,824 f32 elements differ, max diff 1.358427e-5 |
+| model-backed `kernel-check` | `ALL GREEN` |
+
+The remaining acceptance battery was stopped after preserving the failure and kernel receipts.
+No invariance or performance claim is made from this build.
+
+The failed exactness assumption was the whole-layer arithmetic class. The sequential resident
+Step35 path at an unclamped layer runs the fused per-token q8 pair
+`moe_gate_up_silu8_q8` plus `moe_down8_fma_q8`. The first Lever C arm instead ran
+`moe_pairs_matvec_q8_dec` for each projection, a separate activation kernel, a separate down
+matvec, and `moe_pairs_scatter`. Matching row-dot and slot-reduction descriptions were not enough
+to make those two complete kernel chains byte-identical.
+
+The correction is to batch the existing fused per-token program over the prefill token axis:
+host sigmoid routing still supplies the exact `sel` and `w`, while the established
+`moe_gate_up_silu8_dev_q8_rows` / `moe_down8_fma_dev_q8_rows_g` family executes all tokens in one
+launch pair. Those kernels are rows twins of the sequential fused program, not the denied
+softmax router. Step35's clamped layers cannot enter the plain-SiLU rows arm and retain the
+clamp-aware grouped q8 fallback.

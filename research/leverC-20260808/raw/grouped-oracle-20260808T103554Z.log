@@ -1,0 +1,13 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+moe-grouped il=3 t=19 dispatch=resident-q8 active=90/288 m_e: min=1 median=1 mean=1.7 max=17
+moe-stats il=3 t=19 assignments=152 active=90/288 entropy=5.991b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=17
+
+thread 'main' (70164) panicked at crates/memra-engine/src/hybrid_forward.rs:2679:21:
+moe-gate il=3 t=19 MISMATCH: 55032/77824 elems differ, maxdiff=1.358427e-5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
