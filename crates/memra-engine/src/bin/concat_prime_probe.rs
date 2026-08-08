@@ -1314,11 +1314,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // leaves the split live but runs the PIPE arm with MEMRA_PRIME_PIPE=0 — the direct
         // canary for overlap liveness. `--force-unsplit` retains the older walker canary.
         //   ppsplit <model> ppsplit --prompt-a <txt|@f> [--chunks 4096,513] [--steps 8]
-        //                           [--force-unsplit|--force-serial-pipe]
+        //                           [--soak 200] [--force-unsplit|--force-serial-pipe]
         "ppsplit" => {
             let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
             let chunks_s = arg(&rest, "--chunks").unwrap_or_else(|| "4096,513".into());
             let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(8);
+            let soak: usize = arg(&rest, "--soak").and_then(|v| v.parse().ok()).unwrap_or(1);
+            assert!(soak > 0, "ppsplit --soak must be at least 1");
             let force_unsplit = rest.iter().any(|a| a == "--force-unsplit");
             let force_serial_pipe = rest.iter().any(|a| a == "--force-serial-pipe");
             let ids = cx.tok.encode(&pa, true);
@@ -1327,7 +1329,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert!(t >= min_t, "ppsplit needs a prompt of >= {min_t} tokens");
             let door_open = memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some();
             println!(
-                "ppsplit: T={t} steps={steps} chunks={chunks_s} door={} devices={} \
+                "ppsplit: T={t} steps={steps} chunks={chunks_s} soak={soak} door={} devices={} \
                  force_unsplit={force_unsplit} force_serial_pipe={force_serial_pipe}",
                 if door_open { "OPEN" } else { "SHUT" },
                 std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into())
@@ -1471,11 +1473,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let pipe_live = expected >= 2
                     && pipe.split_chunks >= expected
                     && pipe.pipe_overlaps >= expected_overlaps;
-                let status = if !serial_exact || !pipe_exact {
+                let mut soak_exact_failures = usize::from(!pipe_exact);
+                let mut soak_live_failures = usize::from(!pipe_live);
+                for i in 1..soak {
+                    let sample = run_arm(PrimeArm::Pipe, Some(&reference.inputs))?;
+                    let sample_diff = (
+                        bits(&serial.logits, &sample.logits),
+                        bits(&serial.h_seed, &sample.h_seed),
+                        bits(&serial.hidden, &sample.hidden),
+                        serial
+                            .decode
+                            .iter()
+                            .zip(&sample.decode)
+                            .map(|(a, b)| bits(a, b))
+                            .sum::<usize>(),
+                    );
+                    let sample_exact =
+                        sample_diff.0 + sample_diff.1 + sample_diff.2 + sample_diff.3 == 0;
+                    let sample_live = sample.split_chunks >= expected
+                        && sample.pipe_overlaps >= expected_overlaps;
+                    soak_exact_failures += usize::from(!sample_exact);
+                    soak_live_failures += usize::from(!sample_live);
+                    if !sample_exact || !sample_live {
+                        println!(
+                            "    soak {}/{}: diff L/H/S/D={}/{}/{}/{} split={} overlaps={} \
+                             need split>={expected} overlaps>={expected_overlaps}",
+                            i + 1,
+                            soak,
+                            sample_diff.0,
+                            sample_diff.1,
+                            sample_diff.2,
+                            sample_diff.3,
+                            sample.split_chunks,
+                            sample.pipe_overlaps,
+                        );
+                    } else if (i + 1) % 10 == 0 || i + 1 == soak {
+                        println!(
+                            "    soak {}/{}: exact+live (exact_failures={} live_failures={})",
+                            i + 1,
+                            soak,
+                            soak_exact_failures,
+                            soak_live_failures,
+                        );
+                    }
+                }
+                let status = if !serial_exact || soak_exact_failures != 0 {
                     "*** MISMATCH"
                 } else if !serial_live {
                     "*** SPLIT-NOT-LIVE (bit-identity vacuous)"
-                } else if !pipe_live {
+                } else if soak_live_failures != 0 {
                     "*** PIPE-NOT-LIVE (serial split replayed)"
                 } else {
                     "EXACT+SPLIT-LIVE+PIPE-LIVE"
@@ -1483,7 +1529,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  chunk {cv} | serial-vs-ref diff L/H/S/D={}/{}/{}/{} | \
                      pipe-vs-serial diff L/H/S/D={}/{}/{}/{} | split_chunks R/S/P={}/{}/{} \
-                     need S,P>={expected} | pipe_overlaps R/S/P={}/{}/{} need P>={} | {status}",
+                     need S,P>={expected} | pipe_overlaps R/S/P={}/{}/{} need P>={} | \
+                     soak pipe_primes={} exact_failures={} live_failures={} | {status}",
                     serial_diff.0,
                     serial_diff.1,
                     serial_diff.2,
@@ -1499,8 +1546,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     serial.pipe_overlaps,
                     pipe.pipe_overlaps,
                     expected_overlaps,
+                    soak,
+                    soak_exact_failures,
+                    soak_live_failures,
                 );
-                if !(serial_exact && pipe_exact && serial_live && pipe_live) {
+                if !(serial_exact
+                    && serial_live
+                    && soak_exact_failures == 0
+                    && soak_live_failures == 0)
+                {
                     fail = true;
                 }
             }
@@ -1516,7 +1570,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!(
                 "ppsplit verdict: UNSPLIT/SERIAL/PIPE BIT-IDENTICAL + LIVE \
-                 (T={t}, chunks={chunks_s}, {steps} decode steps)"
+                 (T={t}, chunks={chunks_s}, {steps} decode steps, \
+                 {soak} pipelined primes per chunk)"
             );
         }
 
